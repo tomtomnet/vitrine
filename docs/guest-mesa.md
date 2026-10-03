@@ -332,10 +332,12 @@ shows a warning when it draws through virgl.
 
 ## The host side
 
-- QEMU needs `-device virtio-vga-gl,blob=on,hostmem=4G,drm_native_context=on`
-  (`virtio-gpu-gl-pci` on ARM), and `-accel kvm,honor-guest-pat=on` for
-  Intel GPUs and for the AMD patch below. The **DRM native context** box of
-  the Display settings adds them.
+- QEMU needs `-device virtio-gpu-gl-pci,blob=on,hostmem=4G,drm_native_context=on`
+  (or `virtio-vga-gl` with the same properties), and
+  `-accel kvm,honor-guest-pat=on` for Intel GPUs and for the AMD patch below.
+  New Linux VMs on a PC get them from Vitrine's template when their QEMU has
+  them, as Vitrine's own does. Other VMs (on ARM, imported, or older ones)
+  get them on the Arguments page, under Advanced in the VM's settings.
 - The host's virglrenderer needs the native context renderer of its GPU,
   which most distributions leave out. Vitrine builds its own with QEMU
   (`host/build.sh`, which File > Build QEMU runs), with the renderers of AMD
