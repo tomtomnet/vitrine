@@ -375,9 +375,11 @@ qargs=(--prefix="$prefix" --target-list=x86_64-softmmu --without-default-feature
 # sets up podman's storage in the user's home, for cross-builds we never do;
 # no download: the subprojects come with the sources, and Python's tooling
 # from the system and the wheels QEMU carries, rather than from PyPI)
-# and the virglrenderer it is built against: configure probes what it offers
+#
+# The build tree is configured afresh when this line changes.  It names the
+# virglrenderer QEMU is built against too: configure probes what that offers
 # (virgl_renderer_resource_set_guest_dmabuf, its version), and meson keeps
-# what it found until configured afresh, as with --prefix nothing else would
+# what it found, which with --prefix nothing else would make it look again at
 qline="$src/qemu ${qargs[*]} PKG_CONFIG_PATH=$prefix/lib64/pkgconfig virglrenderer=$(cat "$src/virglrenderer.stamp")"
 if [ -f "$qbuild/build.ninja" ] && configured "$qbuild" "$qline"; then
 	echo "configured already"
