@@ -96,7 +96,10 @@ struct Disk {
     bool editable = true;
 };
 QList<Disk> disks(const ArgsFile &args);
-/* After the other disks: -drive file=,format=,if=virtio|ide (SATA on q35) */
+/*
+ * After the other disks: -drive file=,format=,if=virtio|ide (SATA on q35),
+ * the format by imageFormat()
+ */
 void addDisk(ArgsFile &args, const QString &file, Disk::Bus bus);
 /* An empty CD/DVD drive if @iso is empty */
 void addCdrom(ArgsFile &args, const QString &iso);
@@ -106,6 +109,13 @@ void removeDisk(ArgsFile &args, const Disk &disk);
 void setDisc(ArgsFile &args, const Disk &drive, const QString &iso);
 /* The disk format of a file name, e.g. qcow2; empty when unknown */
 QString diskFormat(const QString &path);
+/*
+ * The format of an existing disk image, from its first bytes when @path is
+ * absolute (cloud images named .img are mostly qcow2), else by its name.
+ * A .raw or .iso file stays raw: its first bytes are the guest's, which
+ * must not make QEMU read it as qcow2, with a backing file of its choice.
+ */
+QString imageFormat(const QString &path);
 
 /*
  * The network as the Network page shows it: one card behind NAT, through

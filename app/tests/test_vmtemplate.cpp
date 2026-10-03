@@ -1,5 +1,7 @@
 // SPDX-License-Identifier: GPL-2.0-or-later
+#include <QFile>
 #include <QStandardPaths>
+#include <QTemporaryDir>
 #include <QTest>
 
 #include "core/hostdevices.h"
@@ -158,6 +160,17 @@ private slots:
         o.disk = "/images/guest.img";
         QVERIFY(build(o).toText().contains(
             "-drive file=/images/guest.img,format=raw,if=none,id=disk0,discard=unmap\n"));
+
+        /* a cloud image named .img, which is qcow2: by its first bytes */
+        QTemporaryDir dir;
+        QFile cloud(dir.filePath("jammy-server-cloudimg-amd64.img"));
+        QVERIFY(cloud.open(QIODevice::WriteOnly));
+        cloud.write(QByteArray("QFI\xfb\0\0\0\3") + QByteArray(504, '\0'));
+        cloud.close();
+        o.disk = cloud.fileName();
+        QVERIFY(build(o).toText().contains("-drive file=" + o.disk + ",format=qcow2,"));
+        o.os = Os::Windows;
+        QVERIFY(build(o).toText().contains("-drive file=" + o.disk + ",format=qcow2,"));
     }
 
     /* A QEMU without vitrine's patches refuses what it does not know */

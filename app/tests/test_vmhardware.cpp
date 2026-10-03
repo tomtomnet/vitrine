@@ -246,6 +246,35 @@ private slots:
         }
     }
 
+    /* An existing image's format from its first bytes, not its name */
+    void imageFormats()
+    {
+        QTemporaryDir dir;
+        const auto image = [&dir](const QString &name, const QByteArray &head) {
+            QFile f(dir.filePath(name));
+            if (!f.open(QIODevice::WriteOnly) || f.write(head + QByteArray(512, '\0')) < 0) {
+                return QString();
+            }
+            return dir.filePath(name);
+        };
+        const QString cloud = image("jammy-server-cloudimg-amd64.img", QByteArray("QFI\xfb\0\0\0\3"));
+
+        QCOMPARE(imageFormat(cloud), "qcow2");
+        QCOMPARE(imageFormat(image("plain.img", {})), "raw");
+        QCOMPARE(imageFormat(image("disk.vmdk", "KDMV")), "vmdk");
+        QCOMPARE(imageFormat(image("disk", "vhdxfile")), "vhdx");
+        QCOMPARE(imageFormat(image("disk.bin", QByteArray(0x40, 'x') + "\x7f\x10\xda\xbe")), "vdi");
+        /* a raw disk's start is the guest's */
+        QCOMPARE(imageFormat(image("guest.raw", "QFI\xfb")), "raw");
+        /* by name: relative to the VM folder, or not there yet */
+        QCOMPARE(imageFormat("disk.qcow2"), "qcow2");
+        QCOMPARE(imageFormat("/nonexistent/disk.img"), "raw");
+
+        ArgsFile a = ArgsFile::parse("-m 1G\n");
+        addDisk(a, cloud, Disk::Virtio);
+        QCOMPARE(text(a), "-m 1G\n-drive file=" + cloud + ",format=qcow2,if=virtio,discard=unmap\n");
+    }
+
     /* Where the SSH forward listens */
     void sshAddresses()
     {

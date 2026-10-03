@@ -189,7 +189,7 @@ static void linuxPc(Writer &w, const Options &o,
     if (!o.disk.isEmpty() || !o.iso.isEmpty()) {
         w.section("Storage");
         if (!o.disk.isEmpty()) {
-            const QString format = VmConfig::diskFormat(o.disk);
+            const QString format = VmConfig::imageFormat(o.disk);
             QString drive = "file=" + OptionValue::escape(o.disk);
 
             if (!format.isEmpty()) {
@@ -293,7 +293,7 @@ ArgsFile build(const Options &o, const std::function<void(ArgsFile &)> &addFirmw
     if (!o.disk.isEmpty() || !o.iso.isEmpty()) {
         section("Storage");
         if (!o.disk.isEmpty()) {
-            const QString format = VmConfig::diskFormat(o.disk);
+            const QString format = VmConfig::imageFormat(o.disk);
             QString value = "file=" + OptionValue::escape(o.disk);
 
             if (!format.isEmpty()) {

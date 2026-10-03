@@ -2,6 +2,7 @@
 #include "vmhardware.h"
 
 #include <QCoreApplication>
+#include <QFile>
 #include <QFileInfo>
 #include <QHash>
 #include <QJsonArray>
@@ -725,6 +726,36 @@ QString diskFormat(const QString &path)
     return {};
 }
 
+QString imageFormat(const QString &path)
+{
+    const QString suffix = QFileInfo(path).suffix().toLower();
+    QFile f(path);
+
+    /* relative to the VM folder, not ours; a raw disk's first bytes are the guest's */
+    if (!QFileInfo(path).isAbsolute() || suffix == "raw" || suffix == "iso" ||
+        !f.open(QIODevice::ReadOnly)) {
+        return diskFormat(path);
+    }
+    const QByteArray head = f.read(0x44);
+    if (head.startsWith("QFI\xfb")) {
+        return "qcow2";
+    }
+    if (head.startsWith("KDMV")) {
+        return "vmdk";
+    }
+    if (head.startsWith("vhdxfile")) {
+        return "vhdx";
+    }
+    if (head.startsWith("conectix")) {
+        return "vpc";
+    }
+    /* VDI: its signature at 0x40, little-endian */
+    if (head.size() == 0x44 && head.mid(0x40) == QByteArray("\x7f\x10\xda\xbe", 4)) {
+        return "vdi";
+    }
+    return diskFormat(path);
+}
+
 /* An id no -drive, -device, -blockdev... has yet */
 static QString uniqueId(const ArgsFile &args, const QString &prefix)
 {
@@ -783,7 +814,7 @@ static void insertScsi(ArgsFile &args, const QString &drive, bool cdrom)
 
 void addDisk(ArgsFile &args, const QString &file, Disk::Bus bus)
 {
-    const QString format = diskFormat(file);
+    const QString format = imageFormat(file);
     QString value = "file=" + OptionValue::escape(file);
 
     if (!format.isEmpty()) {
