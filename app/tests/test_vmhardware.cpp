@@ -261,16 +261,26 @@ private slots:
         setNetwork(a, n);
         QCOMPARE(text(a), "-nic none\n-m 1G\n");
 
-        /* with shared memory, passt maps it; a Windows guest gets e1000e */
-        a = ArgsFile::parse("#guest windows\n-machine q35,memory-backend=mem\n"
-                            "-object memory-backend-memfd,id=mem,size=4G,share=on\n-nic none\n");
+        /* with shared memory, passt maps it for a virtio-net card */
+        const QString shared = "-machine q35,memory-backend=mem\n"
+                               "-object memory-backend-memfd,id=mem,size=4G,share=on\n";
+        a = ArgsFile::parse(shared + "-nic none\n");
         n = network(a);
         n.kind = Network::Nat;
         n.backend = "passt";
         setNetwork(a, n);
-        QCOMPARE(text(a), "#guest windows\n-machine q35,memory-backend=mem\n"
-                          "-object memory-backend-memfd,id=mem,size=4G,share=on\n"
-                          "-netdev passt,id=net0,vhost-user=on\n-device e1000e,netdev=net0\n");
+        QCOMPARE(text(a), shared + "-netdev passt,id=net0,vhost-user=on\n"
+                                   "-device virtio-net-pci,netdev=net0\n");
+        /* but not for Windows' e1000e: QEMU refuses vhost-user with other cards */
+        a = ArgsFile::parse("#guest windows\n" + shared + "-nic none\n");
+        setNetwork(a, n);
+        QCOMPARE(text(a), "#guest windows\n" + shared +
+                              "-netdev passt,id=net0\n-device e1000e,netdev=net0\n");
+        a = ArgsFile::parse(shared + "-nic none\n");
+        n.card = "e1000e";
+        setNetwork(a, n);
+        QCOMPARE(text(a), shared + "-netdev passt,id=net0\n-device e1000e,netdev=net0\n");
+        n.card.clear();
 
         /* QEMU's default card: off, or a card of our own for a forward */
         a = ArgsFile::parse("-m 1G\n");

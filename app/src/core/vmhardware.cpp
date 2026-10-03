@@ -1090,15 +1090,20 @@ void setNetwork(ArgsFile &args, const Network &n)
     }
     const QString backend = n.backend.isEmpty() ? QString("user") : n.backend;
     const QString id = uniqueId(args, "net");
-    QString netdev = backend + ",id=" + id;
-    if (backend == "passt" && hasSharedMemory(args)) {
-        /* the data path in passt's process, which maps guest RAM */
-        netdev += ",vhost-user=on";
-    }
     const QString card = !n.card.isEmpty() ? n.card
                          : guest(args).os == "windows" && !machineType(args).startsWith("virt")
                              ? QString("e1000e")
                              : QString("virtio-net-pci");
+    QString netdev = backend + ",id=" + id;
+    /*
+     * The data path in passt's process, which maps guest RAM.  QEMU takes
+     * vhost-user only with a virtio-net card (passt_check_peer_type), so
+     * other cards, e.g. Windows' e1000e, go through passt's socket.
+     */
+    if (backend == "passt" && hasSharedMemory(args) &&
+        (card.startsWith("virtio-net-") || card == "virtio-net")) {
+        netdev += ",vhost-user=on";
+    }
     args.lines.insert(at, optionLine("netdev", withSshForward(OptionValue(netdev), backend,
                                                               n.sshPort).toString()));
     args.lines.insert(at + 1, optionLine("device", card + ",netdev=" + id));

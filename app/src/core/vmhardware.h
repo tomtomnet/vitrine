@@ -132,8 +132,9 @@ Network network(const ArgsFile &args);
  * the card was.  Turning NAT on adds a -netdev of @network.backend (user
  * when empty) and a card (@network.card, else virtio-net-pci, or e1000e
  * for Windows on a PC); passt goes over vhost-user when guest RAM is
- * shared.  Otherwise only the forward changes, on 127.0.0.1, keeping the
- * other keys of the -netdev.
+ * shared and the card is a virtio-net one, which vhost-user needs.
+ * Otherwise only the forward changes, on 127.0.0.1, keeping the other
+ * keys of the -netdev.
  */
 void setNetwork(ArgsFile &args, const Network &network);
 
