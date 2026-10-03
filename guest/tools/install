@@ -58,7 +58,7 @@ n=0 total=6
 step() { n=$((n + 1)); echo "== [$n/$total] $*"; }
 say() { echo "   $*"; }
 error=""
-die() { error=$*; echo "ERROR: $*" >&2; exit "${2:-1}"; }
+die() { error=$1; echo "ERROR: $1" >&2; exit "${2:-1}"; }
 
 [ "$(id -u)" = 0 ] || die "run it as root: sudo bash $0"
 # NAME EVR ARCH FILE, one package of repo/ per line
@@ -76,9 +76,14 @@ installed() {  # installed NAME [ARCH]: true if installed (in that arch)
 }
 
 secure_boot() {
-	# the variable's 4 bytes of attributes, then its value
-	v=$(od -An -t u1 -j4 -N1 /sys/firmware/efi/efivars/SecureBoot-8be4df61-93ca-11d2-aa0d-00e098e30200 2> /dev/null)
-	[ "$(echo $v)" = 1 ]
+	# EFI's global variable SecureBoot: 4 bytes of attributes, then its value;
+	# mokutil's answer where the variable cannot be read
+	var=/sys/firmware/efi/efivars/SecureBoot-8be4df61-93ca-11d2-aa0d-00e098032b8c
+	if [ -r "$var" ]; then
+		[ "$(od -An -t u1 -j4 -N1 "$var" | tr -d ' ')" = 1 ]
+	else
+		mokutil --sb-state 2> /dev/null | grep -q 'SecureBoot enabled'
+	fi
 }
 
 # The version locks of the tools in /etc/dnf/versionlock.toml (dnf5): for

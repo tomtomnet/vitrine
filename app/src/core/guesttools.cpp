@@ -208,6 +208,7 @@ Report parseReport(const QJsonObject &s)
         r.secureBoot = s["secureBoot"].toBool();
     }
     r.desktops = stringHash(s["desktops"].toObject());
+    r.driverPresent = driver["present"].toBool(true);
     r.driverLoaded = driver["loaded"].toBool();
     r.driverPatched = driver["patched"].toBool();
     r.taint = driver["taint"].toString();
@@ -331,7 +332,7 @@ State evaluate(const Inputs &in)
         if (r.rebootNeeded) {
             return State::RebootNeeded;
         }
-        if (!r.driverPatched) {
+        if (!r.driverPatched && r.driverPresent) {
             return State::DriverNotActive;
         }
         if (in.medium.isValid() &&
@@ -363,8 +364,12 @@ QString failureReason(const QString &output)
 QString driverProblem(const Report &r)
 {
     if (r.secureBoot.value_or(false)) {
-        return QObject::tr("Secure Boot is on, and the driver is not signed: turn Secure Boot "
-                           "off in the VM's firmware settings");
+        return r.driverLoaded
+                   ? QObject::tr("Secure Boot is on, and the driver is not signed: turn Secure "
+                                 "Boot off in the VM's firmware settings")
+                   : QObject::tr("Secure Boot is on, and the kernel refused the driver, which "
+                                 "is not signed: the VM has no graphics driver. Turn Secure Boot "
+                                 "off in the VM's firmware settings");
     }
     for (const Kernel &k : r.kernels) {
         if (k.version != r.kernel) {

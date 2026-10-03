@@ -252,6 +252,7 @@ private slots:
         QCOMPARE(r.kernels[1].driver, "no-headers");
         QCOMPARE(r.secureBoot, std::optional<bool>(false));
         QCOMPARE(r.desktops.value("kde"), "6.7.5");
+        QVERIFY(r.driverPresent);           // not said: assumed
         QVERIFY(r.driverLoaded);
         QVERIFY(r.driverPatched);
         QCOMPARE(r.taint, "OE");
@@ -349,6 +350,9 @@ private slots:
         in.report.rebootNeeded = false;
         in.report.driverPatched = false;
         QCOMPARE(evaluate(in), State::DriverNotActive);
+        in.report.driverPresent = false;            // no virtio GPU: nothing to drive
+        QCOMPARE(evaluate(in), State::Installed);
+        in.report.driverPresent = true;
         in.report.driverPatched = true;
         in.report.installedMedium = "0000000000000000";
         QCOMPARE(evaluate(in), State::UpdateAvailable);
@@ -437,6 +441,9 @@ private slots:
 
         r.secureBoot = true;
         QVERIFY(driverProblem(r).contains("Secure Boot"));
+        r.driverLoaded = false;
+        QVERIFY(driverProblem(r).contains("no graphics driver"));
+        r.driverLoaded = true;
         r.secureBoot = false;
         QVERIFY(driverProblem(r).contains("restart the guest"));
         r.kernel = "7.2.5-200.fc44.x86_64";
@@ -549,17 +556,24 @@ private slots:
         if (!image.isEmpty()) {
             QCOMPARE(pending(vm.id()), Pending::None);   // what the start brought
         }
-        QTRY_VERIFY_WITH_TIMEOUT(monitor->hasAgent() && !monitor->inputs().installing &&
-                                     (monitor->state() == State::Installed ||
-                                      monitor->state() == State::Failed ||
-                                      monitor->state() == State::DriverNotActive),
+        /* a failed install stays Failed once the medium's agent has gone */
+        QTRY_VERIFY_WITH_TIMEOUT(monitor->state() == State::Failed ||
+                                     (monitor->hasAgent() && !monitor->inputs().installing &&
+                                      (monitor->state() == State::Installed ||
+                                       monitor->state() == State::DriverNotActive)),
                                  (timeout > 0 ? timeout : 1800) * 1000);
         const Report r = monitor->report();
         qInfo("guest: tools %s, kernel %s, driver %s (taint %s), capsets %s, KWin %s%s",
               qPrintable(r.tools), qPrintable(r.kernel), r.driverPatched ? "patched" : "stock",
               qPrintable(r.taint), qPrintable(r.capsets.join(',')),
               qPrintable(r.packages.value("kwin")), r.kwinPatched ? " (vitrine's)" : "");
-        QCOMPARE(monitor->state(), State::Installed);
+        /* VITRINE_TEST_GUEST_EXPECT=failed: a guest the installer refuses */
+        if (qEnvironmentVariable("VITRINE_TEST_GUEST_EXPECT") == "failed") {
+            qInfo("%s", qPrintable(monitor->text()));
+            QCOMPARE(monitor->state(), State::Failed);
+        } else {
+            QCOMPARE(monitor->state(), State::Installed);
+        }
 
         /* Shut Down: through the agent, which the monitor gave the runner */
         vm.runner()->powerdown();

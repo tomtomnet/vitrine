@@ -12,11 +12,32 @@ kver=$(uname -r)
 taint=$(cat /sys/module/virtio_gpu/taint 2> /dev/null || true)
 rc=0
 
-secure_boot() {
-	# the variable's 4 bytes of attributes, then its value
-	v=$(od -An -t u1 -j4 -N1 /sys/firmware/efi/efivars/SecureBoot-8be4df61-93ca-11d2-aa0d-00e098e30200 2> /dev/null)
-	[ "$(echo $v)" = 1 ]
+# a virtio GPU in the VM (virtio device id 16)
+gpu_present() {
+	grep -qsx 0x0010 /sys/bus/virtio/devices/*/device
 }
+
+secure_boot() {
+	# EFI's global variable SecureBoot: 4 bytes of attributes, then its value;
+	# mokutil's answer where the variable cannot be read
+	var=/sys/firmware/efi/efivars/SecureBoot-8be4df61-93ca-11d2-aa0d-00e098032b8c
+	if [ -r "$var" ]; then
+		[ "$(od -An -t u1 -j4 -N1 "$var" | tr -d ' ')" = 1 ]
+	else
+		mokutil --sb-state 2> /dev/null | grep -q 'SecureBoot enabled'
+	fi
+}
+
+if [ ! -d /sys/module/virtio_gpu ]; then
+	gpu_present || exit 0
+	if secure_boot; then
+		why="Secure Boot is on, and the kernel refused the driver, which is not signed"
+	else
+		why="see: journalctl -b -k | grep -i virtio"
+	fi
+	echo "<3>no virtio-gpu driver runs, the VM has no graphics driver: $why"
+	exit 1
+fi
 
 case "$taint" in
 *O*)

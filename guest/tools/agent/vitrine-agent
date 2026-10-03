@@ -88,13 +88,16 @@ def os_release():
 
 def secure_boot():
     """True or False under UEFI, None without (BIOS)"""
+    if not os.path.isdir("/sys/firmware/efi"):
+        return None
     try:
+        # EFI's global variable: 4 bytes of attributes, then its value
         with open("/sys/firmware/efi/efivars/"
-                  "SecureBoot-8be4df61-93ca-11d2-aa0d-00e098e30200", "rb") as f:
+                  "SecureBoot-8be4df61-93ca-11d2-aa0d-00e098032b8c", "rb") as f:
             data = f.read()
         return len(data) >= 5 and data[4] == 1
     except OSError:
-        return False if os.path.isdir("/sys/firmware/efi") else None
+        return "SecureBoot enabled" in run(["mokutil", "--sb-state"])
 
 
 def packages():
@@ -138,7 +141,9 @@ def driver():
         value = read(f"/sys/module/virtio_gpu/parameters/{name}")
         if value is not None:
             params[name] = value
-    return {"loaded": taint is not None, "patched": "O" in (taint or ""),
+    # a virtio GPU in the VM (virtio device id 16), driven or not
+    present = any(read(d) == "0x0010" for d in glob.glob("/sys/bus/virtio/devices/*/device"))
+    return {"present": present, "loaded": taint is not None, "patched": "O" in (taint or ""),
             "taint": taint, "params": params,
             "vblankoffdelay": read("/sys/module/drm/parameters/vblankoffdelay")}
 

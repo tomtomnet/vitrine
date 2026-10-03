@@ -2,7 +2,7 @@
 # exact version, and dnf takes an installed one of the same version as done.
 Name:           vitrine-guest-tools
 Version:        0.1.0
-Release:        9%{?dist}
+Release:        11%{?dist}
 Summary:        vitrine guest tools: patched virtio-gpu driver, settings and agent
 
 # the driver's sources (dkms/vendor, dkms/patches) are the kernel's: MIT
@@ -124,6 +124,14 @@ fi
 %dir %{_sharedstatedir}/%{name}
 
 %changelog
+* Sat Oct 03 2026 vitrine <noreply@anthropic.com> - 0.1.0-11
+- the installer's error messages without their exit code
+* Sat Oct 03 2026 vitrine <noreply@anthropic.com> - 0.1.0-10
+- Secure Boot read from EFI's global variable (its GUID was wrong: the
+  installer did not refuse a Secure Boot guest), mokutil as a fallback;
+  the driver check also when no virtio-gpu driver loaded at all (the
+  kernel refused the unsigned one); the agent says whether the VM has a
+  virtio GPU
 * Sat Oct 03 2026 vitrine <noreply@anthropic.com> - 0.1.0-9
 - the agent finds the virtio-gpu render node under a PCI device too (it
   reported no capability sets)

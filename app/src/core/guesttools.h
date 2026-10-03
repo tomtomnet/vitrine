@@ -98,6 +98,7 @@ struct Report {
     QList<Kernel> kernels;
     std::optional<bool> secureBoot;     // none without UEFI
     QHash<QString, QString> desktops;   // kde: 6.7.5
+    bool driverPresent = true;          // a virtio GPU in the VM (older agents: assumed)
     bool driverLoaded = false;
     bool driverPatched = false;
     QString taint;
