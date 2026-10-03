@@ -106,6 +106,16 @@ Ctrl+Alt+F toggles full screen, F9 shows or hides the VM list, Ctrl+H asks
 the guest to shut down, Ctrl+L shows QEMU's log. Closing vitrine can leave
 its VMs running; it finds them again at its next start.
 
+Clipboard: text copied on the host can be pasted in the guest, and the other
+way around, through spice-vdagent in the guest (new VMs have its channel).
+Text only. In a Plasma Wayland guest, text copied in Wayland applications
+reaches the host only with the guest tools, which add a bridge between the
+guest's Wayland and X11 clipboards. On a Wayland host, text copied in the
+guest replaces the host clipboard only if vitrine's window had a key press,
+a click or the mouse entering it since the last host copy; copying in the
+guest with its keys or mouse does that. QEMU's SDL window shares the
+clipboard too, and on Wayland waits for a key or click in it.
+
 Files: VMs in `~/.local/share/vitrine/vms/<id>/` (`vm.args`, a new VM's
 disk, `qemu.log`), vitrine's QEMU in `~/.local/share/vitrine/stack/`, the
 guest tools in `~/.local/share/vitrine/guest-tools/`, QEMU's build trees in
