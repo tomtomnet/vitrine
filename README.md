@@ -4,9 +4,10 @@ A Qt application for running Linux desktop virtual machines with QEMU/KVM.
 The guest uses the host's GPU through virtio-gpu DRM native context, and the
 app shows the guest's display through QEMU's D-Bus display.
 
-QEMU, virglrenderer and the guest's graphics stack (virtio-gpu driver, Mesa,
-KWin) are used at pinned upstream versions, with the patches vitrine needs
-kept in this repository.
+Vitrine builds its own QEMU: the qemu-gui fork of QEMU and upstream
+virglrenderer, each at the commit `host/versions.conf` pins, with the patches
+in `host/patches`. The guest needs Mesa built with native context for the
+host's GPU: see [docs/guest-mesa.md](docs/guest-mesa.md).
 
 Early development: there is nothing to install or run yet.
 
