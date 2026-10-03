@@ -82,6 +82,9 @@ private:
     void createWindow(bool fullScreen);
     void destroyWindow();
     void updateHostActive();
+    /* grabChanged() if the grab changed: DisplayWindow does not signal the
+       grab it takes or leaves itself (Ctrl+Alt+G, a click with a relative mouse) */
+    void checkGrab();
 
     Options m_opts;
     Stats m_stats;
@@ -96,6 +99,7 @@ private:
     QLabel *m_placeholder = nullptr;    // in m_host while full screen
     bool m_fullScreen = false;
     bool m_hasKeyboard = false;
+    QString m_grabState;    // as last signalled
     /* what the guest said last, for a new window */
     QSize m_guestSize;
     QImage m_cursor;
