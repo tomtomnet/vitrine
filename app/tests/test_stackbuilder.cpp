@@ -281,7 +281,12 @@ private slots:
         QVERIFY(write(fixture + "/patches/README.md", "notes\n"));
         QVERIFY(write(fixture + "/patches/qemu/notes.txt", "notes\n"));
         QVERIFY(write(fixture + "/patches/qemu/.hidden.patch", "x\n"));
+        /* bash's glob matches with case */
+        QVERIFY(write(fixture + "/patches/qemu/0008-extra.PATCH", "x\n"));
+        QVERIFY(write(fixture + "/patches/qemu/0009-mixed.Patch", "x\n"));
         QCOMPARE(StackBuilder::inputStamp(fixture), fixtureStamp);
+        QCOMPARE(run("bash", {fixture + "/build.sh", "--print-stamp"}, {}, &status).trimmed(),
+                 fixtureStamp);
         /* a patch does, a new one too, and versions.conf */
         QVERIFY(write(fixture + "/patches/qemu/b.patch", "changed\n"));
         const QString changed = StackBuilder::inputStamp(fixture);

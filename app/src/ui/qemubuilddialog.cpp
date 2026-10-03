@@ -65,8 +65,11 @@ QemuBuildDialog::QemuBuildDialog(QWidget *parent)
     auto *buttons = new QDialogButtonBox(QDialogButtonBox::Close);
     const QString host = StackBuilder::hostDir();
     const StackBuilder::Versions versions = StackBuilder::versions(host);
+    /* those build.sh applies: its glob matches with case */
     const auto patches = [&host](const char *component) {
-        return QDir(host + "/patches/" + component).entryList({"*.patch"}, QDir::Files).size();
+        return QDir(host + "/patches/" + component)
+            .entryList({"*.patch"}, QDir::Files | QDir::CaseSensitive)
+            .size();
     };
 
     if (versions.isValid()) {

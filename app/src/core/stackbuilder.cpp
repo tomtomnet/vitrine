@@ -205,7 +205,8 @@ StackBuilder::Versions StackBuilder::versions(const QString &hostDir)
 /*
  * As build.sh: the sha256 of the lines that sha256sum prints for
  * versions.conf, build.sh, then the *.patch files of patches/qemu and of
- * patches/virglrenderer, each folder in C order
+ * patches/virglrenderer, each folder in C order.  Matched with case, as
+ * bash's glob is: a .PATCH file is none.
  */
 QString StackBuilder::inputStamp(const QString &hostDir)
 {
@@ -218,7 +219,8 @@ QString StackBuilder::inputStamp(const QString &hostDir)
     for (const char *name : {"qemu", "virglrenderer"}) {
         const QString component = QString::fromLatin1(name);
         QStringList patches = QDir(hostDir + "/patches/" + component)
-                                  .entryList({"*.patch"}, QDir::Files, QDir::NoSort);
+                                  .entryList({"*.patch"}, QDir::Files | QDir::CaseSensitive,
+                                             QDir::NoSort);
         std::sort(patches.begin(), patches.end());
         for (const QString &patch : std::as_const(patches)) {
             files << "patches/" + component + '/' + patch;
