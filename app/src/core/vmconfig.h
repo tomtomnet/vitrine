@@ -66,7 +66,15 @@ struct Cpus {
     int cores = 0;
     int threads = 0;
     QString model;          // -cpu model, e.g. host; empty for the default
+    /*
+     * -smp has maxcpus= (CPU hotplug), or levels besides sockets, cores and
+     * threads (dies=, modules=...), whose product QEMU checks: a count or
+     * topology written without them would not start.  The pages leave
+     * such a line to the Arguments page.
+     */
+    bool custom = false;
 };
+/* The count as QEMU takes it: cpus=, else maxcpus=, else the product of the levels */
 Cpus cpus(const ArgsFile &args);
 /*
  * @cpus with the sockets, cores and threads it leaves out worked out as
@@ -83,7 +91,7 @@ void setCpuModel(ArgsFile &args, const QString &model);
 /*
  * @count processors, in the shape of the topology if one is given: the
  * threads per core and the sockets stay when @count is a multiple of
- * them, the cores make up the rest
+ * them, the cores make up the rest.  A custom -smp line stays as it is.
  */
 void setCpuCount(ArgsFile &args, int count);
 /* FEATURE=on on the -cpu line, unless the line sets it already, either way */

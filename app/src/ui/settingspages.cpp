@@ -227,12 +227,22 @@ void HardwarePage::load(const ArgsFile &args)
        an untouched page writes nothing */
     m_loadedMemory = m_memory->value();
     m_loadedCpus = m_cpus->value();
-    m_topology->setText(cpus.threads > 1
-                            ? tr("%n threads per core, as far as the number allows: the "
-                                 "Machine page sets the topology.",
-                                 nullptr, cpus.threads)
-                            : QString());
-    m_topology->setVisible(cpus.threads > 1);
+    /* maxcpus=, dies=...: a count written without them would not start */
+    m_cpus->setEnabled(!cpus.custom);
+    m_cpuSlider->setEnabled(!cpus.custom);
+    if (cpus.custom) {
+        m_topology->setText(tr("The processors of this VM are set up by hand (-smp %1): "
+                               "change them on the Arguments page.")
+                                .arg(args.lines[args.indexOf("smp")].value.trimmed()
+                                         .toHtmlEscaped()));
+    } else {
+        m_topology->setText(cpus.threads > 1
+                                ? tr("%n threads per core, as far as the number allows: the "
+                                     "Machine page sets the topology.",
+                                     nullptr, cpus.threads)
+                                : QString());
+    }
+    m_topology->setVisible(!m_topology->text().isEmpty());
 }
 
 void HardwarePage::save(ArgsFile &args)
@@ -1544,10 +1554,15 @@ void MachinePage::describe()
 
 void MachinePage::updateTopology()
 {
-    const int count = m_topology->isChecked()
+    const int count = m_topology->isChecked() && !m_loadedCpus.custom
                           ? m_sockets->value() * m_cores->value() * m_threads->value()
                           : m_loadedCpus.count;
-    m_count->setText(tr("%n processors in all.", nullptr, count));
+    m_count->setText(m_loadedCpus.custom
+                         ? tr("%n processors in all. The -smp line has keys this page does "
+                              "not follow, such as maxcpus or dies: change it on the "
+                              "Arguments page.",
+                              nullptr, count)
+                         : tr("%n processors in all.", nullptr, count));
 }
 
 void MachinePage::load(const ArgsFile &args)
@@ -1565,8 +1580,10 @@ void MachinePage::load(const ArgsFile &args)
         m_cores->setValue(shown.cores);
         m_threads->setValue(shown.threads);
         m_topology->setChecked(m_loadedTopology);
+        /* maxcpus=, dies=...: numbers written without them would not start */
+        m_topology->setEnabled(!m_loadedCpus.custom);
         for (QSpinBox *spin : {m_sockets, m_cores, m_threads}) {
-            spin->setEnabled(m_loadedTopology);
+            spin->setEnabled(m_loadedTopology && !m_loadedCpus.custom);
         }
         /* compare with what the page shows */
         m_shownCpus.sockets = m_sockets->value();
@@ -1589,6 +1606,9 @@ void MachinePage::load(const ArgsFile &args)
 
 bool MachinePage::topologyChanged() const
 {
+    if (m_loadedCpus.custom) {
+        return false;
+    }
     if (m_topology->isChecked() != m_loadedTopology) {
         return true;
     }

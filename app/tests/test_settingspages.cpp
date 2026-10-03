@@ -131,6 +131,36 @@ private slots:
         topology->setChecked(false);
         page.save(args);
         QCOMPARE(text(args), "-smp 8\n");
+
+        /* maxcpus= or dies=: the topology is the Arguments page's, the model still here */
+        args = ArgsFile::parse("-cpu host\n-smp 8,sockets=1,dies=2,cores=4,threads=1\n");
+        page.load(args);
+        QVERIFY(!topology->isEnabled());
+        QVERIFY(!sockets->isEnabled());
+        QVERIFY(!page.isModified());
+        model->setCurrentText("max");
+        page.save(args);
+        QCOMPARE(text(args), "-cpu max\n-smp 8,sockets=1,dies=2,cores=4,threads=1\n");
+    }
+
+    void hardwarePageLeavesCustomCpus()
+    {
+        HardwarePage page;
+        auto *cpus = page.findChild<QSpinBox *>("cpus");
+        QVERIFY(cpus);
+
+        ArgsFile args = ArgsFile::parse("-m 1G\n-smp 4,maxcpus=8,sockets=1,cores=8,threads=1\n");
+        page.load(args);
+        QCOMPARE(cpus->value(), 4);
+        QVERIFY(!cpus->isEnabled());
+        QVERIFY(!page.isModified());
+
+        args = ArgsFile::parse("-m 1G\n-smp 4\n");
+        page.load(args);
+        QVERIFY(cpus->isEnabled());
+        cpus->setValue(2);
+        page.save(args);
+        QCOMPARE(text(args), "-m 1G\n-smp 2\n");
     }
 };
 
