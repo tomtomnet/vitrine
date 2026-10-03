@@ -1,0 +1,173 @@
+--- a/src/compositor.cpp	2026-09-29 22:41:18.517531820 +0200
++++ b/src/compositor.cpp	2026-09-29 22:41:18.531777240 +0200
+@@ -622,6 +622,7 @@
+             .highPriority = isCursor,
+             .surfaceDamage = Region(),
+             .requiredAlphaBits = isCursor ? 8u : 0u,
++            .cursor = isCursor,
+         });
+         view->setUnderlay(underlay);
+         unusedOutputLayers.removeOne(layer);
+@@ -805,6 +806,12 @@
+             layer.surfaceDamage |= layer.view->layer()->deviceRepaints();
+             layer.view->layer()->resetRepaints();
+             if (layer.view->layer()->isEnabled() && !layer.directScanout) {
++                // for the render time estimate: what this frame renders
++                if (layer.cursor) {
++                    frame->setCursorRendered();
++                } else {
++                    frame->setContentRendered();
++                }
+                 result &= renderLayer(layer.view, logicalOutput, output, frame, layer.surfaceDamage);
+                 if (!result) {
+                     qCWarning(KWIN_CORE, "Rendering a layer failed!");
+--- a/src/compositor.h	2026-09-29 22:41:18.519810658 +0200
++++ b/src/compositor.h	2026-09-29 22:41:18.531605037 +0200
+@@ -111,6 +111,7 @@
+         bool highPriority = false;
+         Region surfaceDamage;
+         uint32_t requiredAlphaBits;
++        bool cursor = false;
+     };
+     enum class SetupType {
+         Ideal,
+--- a/src/core/renderbackend.cpp	2026-09-29 22:40:30.931843776 +0200
++++ b/src/core/renderbackend.cpp	2026-09-29 23:08:46.188378877 +0200
+@@ -151,6 +151,31 @@
+     return m_renderTimeQueries.size() > 1;
+ }
+ 
++void OutputFrame::setCursorRendered()
++{
++    m_cursorRendered = true;
++}
++
++void OutputFrame::setContentRendered()
++{
++    m_contentRendered = true;
++}
++
++bool OutputFrame::onlyCursorRendered() const
++{
++    return m_cursorRendered && !m_contentRendered;
++}
++
++bool OutputFrame::cursorRendered() const
++{
++    return m_cursorRendered;
++}
++
++bool OutputFrame::contentRendered() const
++{
++    return m_contentRendered;
++}
++
+ std::optional<double> OutputFrame::brightness() const
+ {
+     return m_brightness;
+--- a/src/core/renderbackend.h	2026-09-29 22:40:30.927200891 +0200
++++ b/src/core/renderbackend.h	2026-09-29 23:08:46.188349141 +0200
+@@ -96,6 +96,16 @@
+      * only putting client buffers on planes
+      */
+     bool renderedByCompositor() const;
++    /**
++     * A layer tells what it rendered for this frame: the cursor, or content.
++     * A frame for which only the cursor was rendered says nothing about how
++     * long the frames with content take
++     */
++    void setCursorRendered();
++    void setContentRendered();
++    bool onlyCursorRendered() const;
++    bool cursorRendered() const;
++    bool contentRendered() const;
+ 
+     std::optional<double> brightness() const;
+     void setBrightness(double brightness);
+@@ -119,6 +129,8 @@
+     PresentationMode m_presentationMode = PresentationMode::VSync;
+     std::vector<std::unique_ptr<RenderTimeQuery>> m_renderTimeQueries;
+     bool m_presented = false;
++    bool m_cursorRendered = false;
++    bool m_contentRendered = false;
+     std::optional<double> m_brightness;
+     std::optional<double> m_dimmingFactor;
+     std::optional<double> m_artificialHdrHeadroom;
+--- a/src/core/renderjournal.cpp	2026-09-29 23:08:25.928211445 +0200
++++ b/src/core/renderjournal.cpp	2026-09-29 23:08:46.188248022 +0200
+@@ -74,6 +74,11 @@
+     m_result = mix(renderTime, m_result, ratio);
+ }
+ 
++void RenderJournal::skip(std::chrono::nanoseconds presentationTimestamp)
++{
++    add(m_result, presentationTimestamp);
++}
++
+ std::chrono::nanoseconds RenderJournal::result() const
+ {
+     return m_result + m_variance * 2;
+--- a/src/core/renderjournal.h	2026-09-29 23:08:25.923274710 +0200
++++ b/src/core/renderjournal.h	2026-09-29 23:08:46.188214609 +0200
+@@ -23,6 +23,11 @@
+     explicit RenderJournal();
+ 
+     void add(std::chrono::nanoseconds renderTime, std::chrono::nanoseconds presentationTimestamp);
++    /**
++     * A frame that says nothing about how long frames take to render:
++     * time passes for what is remembered, nothing is learned
++     */
++    void skip(std::chrono::nanoseconds presentationTimestamp);
+ 
+     std::chrono::nanoseconds result() const;
+ 
+--- a/src/core/renderloop.cpp	2026-09-29 22:40:30.937654183 +0200
++++ b/src/core/renderloop.cpp	2026-09-29 23:08:46.188317241 +0200
+@@ -30,6 +30,8 @@
+ // panel it shows no gain, and it costs up to a refresh of latency long after a loaded phase),
+ // KWIN_LATE_FLIP_STEP_US sets how much earlier frames start per late flip (500 by default)
+ static const bool s_lateFlipCompensation = qEnvironmentVariableIntValue("KWIN_LATE_FLIP_COMPENSATION") != 0;
++// KWIN_RENDER_ESTIMATE_UPSTREAM=1: the frames for which only the cursor was rendered count for the render time estimate
++static const bool s_upstreamEstimate = qEnvironmentVariableIntValue("KWIN_RENDER_ESTIMATE_UPSTREAM") != 0;
+ static const std::chrono::nanoseconds s_lateFlipStep = std::chrono::microseconds(qEnvironmentVariableIsEmpty("KWIN_LATE_FLIP_STEP_US") ? 500 : std::max(10, qEnvironmentVariableIntValue("KWIN_LATE_FLIP_STEP_US")));
+ 
+ RenderLoopPrivate::RenderLoopPrivate(RenderLoop *q, BackendOutput *output)
+@@ -137,14 +139,14 @@
+ {
+     if (output && s_printDebugInfo && !m_debugOutput) {
+         m_debugOutput = std::fstream(qPrintable("kwin perf statistics " + output->name() + ".csv"), std::ios::out);
+-        *m_debugOutput << "target pageflip timestamp,pageflip timestamp,render start,render end,safety margin,refresh duration,vrr,tearing,predicted render time,late flip compensation\n";
++        *m_debugOutput << "target pageflip timestamp,pageflip timestamp,render start,render end,safety margin,refresh duration,vrr,tearing,predicted render time,late flip compensation,cursor rendered,content rendered\n";
+     }
+     if (m_debugOutput) {
+         auto times = renderTime.value_or(RenderTimeSpan{});
+         const bool vrr = mode == PresentationMode::AdaptiveSync || mode == PresentationMode::AdaptiveAsync;
+         const bool tearing = mode == PresentationMode::Async || mode == PresentationMode::AdaptiveAsync;
+         *m_debugOutput << frame->targetPageflipTime().time_since_epoch().count() << "," << timestamp.count() << "," << times.start.time_since_epoch().count() << "," << times.end.time_since_epoch().count()
+-                       << "," << safetyMargin.count() << "," << frame->refreshDuration().count() << "," << (vrr ? 1 : 0) << "," << (tearing ? 1 : 0) << "," << frame->predictedRenderTime().count() << "," << lateFlipCompensation.count() << "\n";
++                       << "," << safetyMargin.count() << "," << frame->refreshDuration().count() << "," << (vrr ? 1 : 0) << "," << (tearing ? 1 : 0) << "," << frame->predictedRenderTime().count() << "," << lateFlipCompensation.count() << "," << (frame->cursorRendered() ? 1 : 0) << "," << (frame->contentRendered() ? 1 : 0) << "\n";
+     }
+ 
+     Q_ASSERT(pendingFrameCount > 0);
+@@ -152,7 +154,20 @@
+ 
+     notifyVblank(timestamp);
+ 
+-    if (renderTime) {
++    if (renderTime && !s_upstreamEstimate && frame && frame->onlyCursorRendered()) {
++        // The estimate is the smoothed render time plus twice the largest recent
++        // excess over it, remembered for seconds, and the next frames start that
++        // much earlier. While a client's buffers go straight to the screen a frame
++        // takes 0.1 ms; the frame for which the cursor is rendered, because its
++        // shape changed, counts as 2 ms at least, as anything rendered with OpenGL.
++        // One such frame takes the estimate from 0.2 to 4.7 ms: the compositor
++        // works two refreshes ahead for seconds, and the client's frames are shown
++        // a refresh later (key to screen with a fullscreen client on bare metal:
++        // 14.2 ms, and 18.4 ms when the pointer's shape changes with every key).
++        // The time it takes to render the cursor says nothing about the frames
++        // with content.
++        renderJournal.skip(timestamp);
++    } else if (renderTime) {
+         renderJournal.add(renderTime->end - renderTime->start, timestamp);
+     }
+     if (s_lateFlipCompensation && mode == PresentationMode::VSync && frame) {

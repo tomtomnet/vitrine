@@ -1,0 +1,236 @@
+Subject: [PATCH] iris: keep buffers in the reuse cache longer under virtio-gpu
+
+iris drops a buffer from its reuse cache about a second after the last
+reference to it goes away.  Dropping it costs whatever the CPU mapping of
+its replacement costs, and on bare metal that is cheap: first touching
+every page of a fresh 16 MiB mapping takes 0.9 ms on an Arc Pro B50,
+roughly 0.2 us per 4 KiB page.
+
+Behind a virtio-gpu native context it is not cheap.  Every page of a new
+mapping faults into a range the host GPU driver exposes to the VMM, which
+the guest resolves one 4 KiB page at a time: the same 16 MiB mapping takes
+14 ms in the guest, about 4.3 us per page, and a 3840x2036 buffer takes
+33 ms.  The cost is linear in the number of pages, measures the same on Xe
+and amdgpu hosts, and does not change with the mapping's cache mode, so it
+comes from the virtualisation path rather than from either vendor driver.
+
+A cache hit avoids all of it, because a cached BO keeps the CPU mapping it
+already faulted in: allocating, mapping and writing a 16 MiB buffer right
+after freeing one takes 0.62 ms, against 19 ms when the cache has expired.
+But one second is short enough that ordinary desktop work keeps missing.
+An animation that starts after a pause, or a window resized again after
+the user stopped to look at it, reallocates and refaults everything.
+
+So hold buffers for eight seconds when the device is virtio.  Bare metal
+keeps the one second timeout.
+
+The longer timeout needs a bound.  Expiring after a second bounds the
+cache on its own, and it is the only bound iris has: Xe never sets
+has_madvise_purgeable, so the IRIS_MADVICE_DONT_NEED that cached buffers
+carry is a no-op there and the kernel cannot reclaim them under pressure.
+Track the size of the cache and free the least recently released buffers
+once it grows past an eighth of memory, which is the limit radeonsi's
+pb_cache uses.  IRIS_BO_CACHE_SECONDS and IRIS_BO_CACHE_MAX_MB override
+the timeout and the limit.
+
+Note this cannot help buffers that are shared or scanned out, which
+bucket_for_size() refuses to cache on Xe.
+
+Measured in a Fedora 44 guest on an Arc Pro B50 host, 3840x2036, medians
+of three runs of nctx_latency_bench --idle, with the timeout at 1 s (the
+behaviour this replaces) and at 8 s:
+
+                                                    1 s        8 s
+  full-size upload, new texture, after 2.5 s     38.65 ms    4.01 ms
+  16 MiB allocate + map + write, after 2.5 s     19.45 ms    0.68 ms
+  full-size upload, new texture, no pause         3.13 ms    3.12 ms
+  first touch of every page, never cached        18.03 ms   18.02 ms
+
+Every other line moves by less than the spread between runs.  "first touch
+of every page" allocates twenty buffers before freeing any, so it never
+hits the cache; that part of the gap is untouched.
+
+What it costs: the cache converges on the working set rather than on the
+timeout, so a program that keeps allocating holds the same amount either
+way - 316 MiB of mappings after six bursts allocating and freeing 1 GiB
+each, at 1 s and at 8 s alike.  What changes is how long it is held once
+the program stops.  After a burst that leaves 262 MiB cached, the mappings
+go away 2 s later with the old timeout and 9 s later with the new one.
+None of that is guest RAM: these are PFN mappings of host memory, and
+VmRSS does not move.  The cap does bound it, IRIS_BO_CACHE_MAX_MB=256 pins
+the same test at 250 MiB instead of 316 MiB.
+---
+--- a/src/gallium/drivers/iris/iris_bufmgr.c
++++ b/src/gallium/drivers/iris/iris_bufmgr.c
+@@ -169,6 +169,33 @@
+ 
+ #define BUCKET_ARRAY_SIZE 25
+ 
++/**
++ * Seconds an unused buffer stays in the cache, on bare metal and behind a
++ * virtio-gpu native context.
++ *
++ * Dropping a cached buffer costs whatever the CPU mapping of its replacement
++ * costs, which on bare metal is about 0.2 us per 4 KiB page.  In a guest each
++ * page of a new mapping instead faults into a range the host GPU driver
++ * exposes, measured at about 4 us per page on both Xe and amdgpu hosts: first
++ * touching a new 16 MiB mapping takes 14 ms in the guest against 0.9 ms on
++ * the host.  A cache hit skips all of it, because a cached BO keeps the CPU
++ * mapping it already faulted in.  So hold buffers long enough for work that
++ * resumes after a pause - an animation, a window being resized again - to
++ * reuse them rather than fault in a new mapping.
++ */
++#define BO_CACHE_SECONDS 1
++#define BO_CACHE_SECONDS_VIRTIO 8
++
++/**
++ * Fraction of memory the cached buffers are allowed to hold on to.
++ *
++ * Expiring after a second bounds the cache on its own.  The longer timeout
++ * used under virtio does not, and Xe has no purgeable madvise for the kernel
++ * to reclaim it under pressure (has_madvise_purgeable is i915 only), so bound
++ * it explicitly.
++ */
++#define BO_CACHE_MAX_SIZE_DIVISOR 8
++
+ struct iris_bucket_cache {
+    struct bo_cache_bucket bucket[BUCKET_ARRAY_SIZE];
+    int num_buckets;
+@@ -190,6 +217,15 @@
+    /** Array of lists of cached gem objects of power-of-two sizes */
+    struct iris_bucket_cache *bucket_cache;
+ 
++   /** Seconds a buffer stays in bucket_cache after its last reference. */
++   time_t bo_cache_seconds;
++
++   /** Total size of the buffers currently sitting in bucket_cache. */
++   uint64_t bo_cache_size;
++
++   /** Free the oldest cached buffers once bo_cache_size passes this. */
++   uint64_t bo_cache_max_size;
++
+    time_t time;
+ 
+    struct hash_table *name_table;
+@@ -305,6 +341,17 @@
+    return (index < cache->num_buckets) ? &cache->bucket[index] : NULL;
+ }
+ 
++/** Takes a buffer out of the cache without freeing it. */
++static void
++bo_cache_remove(struct iris_bufmgr *bufmgr, struct iris_bo *bo)
++{
++   simple_mtx_assert_locked(&bufmgr->lock);
++   assert(bufmgr->bo_cache_size >= bo->size);
++
++   list_del(&bo->head);
++   bufmgr->bo_cache_size -= bo->size;
++}
++
+ enum iris_memory_zone
+ iris_memzone_for_address(uint64_t address)
+ {
+@@ -1073,7 +1120,7 @@
+       if (iris_bo_busy(cur))
+          return NULL;
+ 
+-      list_del(&cur->head);
++      bo_cache_remove(bufmgr, cur);
+ 
+       /* Tell the kernel we need this BO and check if it still exist */
+       if (!iris_bo_madvise(cur, IRIS_MADVICE_WILL_NEED)) {
+@@ -1618,6 +1665,44 @@
+                                       IRIS_HEAP_SYSTEM_MEMORY_UNCACHED_COMPRESSED;
+ }
+ 
++/**
++ * Frees the least recently released buffers until the cache is back within
++ * its budget.  Buffers are appended to their bucket as they are released, so
++ * the oldest one overall heads one of the buckets.
++ */
++static void
++trim_bo_cache(struct iris_bufmgr *bufmgr)
++{
++   simple_mtx_assert_locked(&bufmgr->lock);
++
++   while (bufmgr->bo_cache_size > bufmgr->bo_cache_max_size) {
++      struct iris_bo *oldest = NULL;
++
++      for (int h = 0; h < iris_get_heap_max(bufmgr); h++) {
++         struct iris_bucket_cache *cache = &bufmgr->bucket_cache[h];
++
++         for (int i = 0; i < cache->num_buckets; i++) {
++            struct bo_cache_bucket *bucket = &cache->bucket[i];
++
++            if (list_is_empty(&bucket->head))
++               continue;
++
++            struct iris_bo *bo =
++               list_first_entry(&bucket->head, struct iris_bo, head);
++
++            if (!oldest || bo->real.free_time < oldest->real.free_time)
++               oldest = bo;
++         }
++      }
++
++      if (!oldest)
++         break;
++
++      bo_cache_remove(bufmgr, oldest);
++      bo_free(oldest);
++   }
++}
++
+ /** Frees all cached buffers significantly older than @time. */
+ static void
+ cleanup_bo_cache(struct iris_bufmgr *bufmgr, time_t time)
+@@ -1634,10 +1719,10 @@
+          struct bo_cache_bucket *bucket = &cache->bucket[i];
+ 
+          list_for_each_entry_safe(struct iris_bo, bo, &bucket->head, head) {
+-            if (time - bo->real.free_time <= 1)
++            if (time - bo->real.free_time <= bufmgr->bo_cache_seconds)
+                break;
+ 
+-            list_del(&bo->head);
++            bo_cache_remove(bufmgr, bo);
+ 
+             bo_free(bo);
+          }
+@@ -1676,6 +1761,9 @@
+       bo->name = NULL;
+ 
+       list_addtail(&bo->head, &bucket->head);
++      bufmgr->bo_cache_size += bo->size;
++
++      trim_bo_cache(bufmgr);
+    } else {
+       bo_free(bo);
+    }
+@@ -1900,7 +1988,7 @@
+          struct bo_cache_bucket *bucket = &cache->bucket[i];
+ 
+          list_for_each_entry_safe(struct iris_bo, bo, &bucket->head, head) {
+-            list_del(&bo->head);
++            bo_cache_remove(bufmgr, bo);
+ 
+             bo_free(bo);
+          }
+@@ -2429,6 +2517,17 @@
+    devinfo = &bufmgr->devinfo;
+    bufmgr->bo_reuse = bo_reuse;
+    iris_bufmgr_get_meminfo(bufmgr, devinfo);
++
++   bufmgr->bo_cache_seconds =
++      debug_get_num_option("IRIS_BO_CACHE_SECONDS",
++                           devinfo->is_virtio ? BO_CACHE_SECONDS_VIRTIO
++                                              : BO_CACHE_SECONDS);
++   bufmgr->bo_cache_max_size =
++      debug_get_num_option("IRIS_BO_CACHE_MAX_MB",
++                           (bufmgr->vram.size + bufmgr->sys.size) /
++                           (BO_CACHE_MAX_SIZE_DIVISOR * 1024 * 1024)) *
++      (1024 * 1024);
++
+    bufmgr->kmd_backend = iris_kmd_backend_get(devinfo->kmd_type);
+ 
+    intel_common_update_device_info(bufmgr->fd, devinfo);

@@ -1,0 +1,322 @@
+#!/bin/bash
+# SPDX-License-Identifier: GPL-2.0-or-later
+# vitrine guest tools: install, update or remove them in this Fedora guest.
+#
+#   sudo bash /run/media/$USER/VITRINETOOL/install     (from the tools medium)
+#   sudo bash /run/media/$USER/VITRINETOOL/install --uninstall
+#
+# It installs, from the medium's repository (repo/) and Fedora's:
+#   - vitrine-guest-tools: the patched virtio-gpu driver as a DKMS module,
+#     built for every kernel that has its headers and again for each new
+#     kernel, its module options, the compositor's settings, boot-time
+#     fix-ups, and the agent that tells vitrine how the guest is doing
+#   - dkms and the kernel headers (Fedora's: the newest kernel comes along
+#     when the running one's headers are gone from the repositories)
+#   - vitrine's Mesa (native context) in place of each Mesa package installed
+#   - vitrine's KWin, on a Plasma guest whose Plasma is the version it was
+#     built for (else the KWin installed stays)
+# then keeps Mesa and KWin at those versions (dnf versionlock, x86_64 only:
+# 32-bit Mesa stays Fedora's).  A reboot finishes it.  It can run again any
+# time: it does what is missing, nothing when all is there.
+#
+# Options: --reboot     reboot at the end if needed
+#          --no-kwin    keep the installed KWin
+#          --force      install again what is installed already
+#          --yes        ask nothing (the default off a terminal)
+#          --uninstall  remove the tools, back to Fedora's Mesa and KWin
+# The output goes to the journal too: journalctl -t vitrine-guest-tools
+set -uo pipefail
+
+medium=$(cd -- "$(dirname -- "$(readlink -f "${BASH_SOURCE[0]}")")" && pwd)
+state=/var/lib/vitrine-guest-tools
+run=/run/vitrine-guest-tools
+lockfile=/etc/dnf/versionlock.toml
+override=/etc/modprobe.d/vitrine-virtio-gpu.conf
+reboot=0 kwin=1 force=0 yes=0 uninstall=0
+[ -t 0 ] || yes=1
+for a in "$@"; do
+	case "$a" in
+	--reboot) reboot=1 ;;
+	--no-kwin) kwin=0 ;;
+	--force) force=1 ;;
+	--yes) yes=1 ;;
+	--uninstall) uninstall=1 ;;
+	-h|--help) sed -n '3,30p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
+	*) echo "unknown option $a (see --help)" >&2; exit 2 ;;
+	esac
+done
+
+# into the journal as well, unless the output goes there already (a unit) or
+# the caller logs it (the agent)
+if [ -z "${VITRINE_INSTALL_LOGGED:-}" ] && command -v logger > /dev/null &&
+   [ "${JOURNAL_STREAM:-}" != "$(stat -L -c '%d:%i' /proc/self/fd/1 2> /dev/null)" ]; then
+	exec > >(tee >(logger -t vitrine-guest-tools)) 2>&1
+fi
+
+n=0 total=6
+step() { n=$((n + 1)); echo "== [$n/$total] $*"; }
+say() { echo "   $*"; }
+die() { echo "ERROR: $*" >&2; exit "${2:-1}"; }
+
+[ "$(id -u)" = 0 ] || die "run it as root: sudo bash $0"
+# NAME EVR ARCH FILE, one package of repo/ per line
+packages_txt=$medium/packages.txt
+
+# the medium's package @1 (name), as name-evr.arch; empty if none
+medium_nevra() {
+	awk -v n="$1" '$1 == n && ($3 == "x86_64" || $3 == "noarch") { print $1 "-" $2 "." $3; exit }' "$packages_txt"
+}
+medium_names() {  # medium_names PATTERN (awk regex on the name)
+	awk -v p="$1" '$1 ~ p && ($3 == "x86_64" || $3 == "noarch") { print $1 }' "$packages_txt" | sort -u
+}
+installed() {  # installed NAME [ARCH]: true if installed (in that arch)
+	rpm -q --qf '%{ARCH}\n' "$1" 2> /dev/null | grep -qx "${2:-.*}"
+}
+
+secure_boot() {
+	# the variable's 4 bytes of attributes, then its value
+	v=$(od -An -t u1 -j4 -N1 /sys/firmware/efi/efivars/SecureBoot-8be4df61-93ca-11d2-aa0d-00e098e30200 2> /dev/null)
+	[ "$(echo $v)" = 1 ]
+}
+
+# The version locks of the tools in /etc/dnf/versionlock.toml (dnf5): for
+# each package NAME=EVR, x86_64 at that EVR, any other architecture free.
+# The entries are told by their comment; the user's own stay.
+versionlock() {  # versionlock NAME=EVR... (none: only remove the tools' entries)
+	python3 - "$lockfile" "$@" <<'EOF'
+import json, os, sys, tomllib
+path, pairs = sys.argv[1], sys.argv[2:]
+tag = "vitrine-guest-tools"
+try:
+    with open(path, "rb") as f:
+        data = tomllib.load(f)
+except FileNotFoundError:
+    data = {"version": "1.0"}
+entries = [e for e in data.get("packages", []) if not str(e.get("comment", "")).startswith(tag)]
+for pair in pairs:
+    name, evr = pair.split("=", 1)
+    entries.append({"name": name, "comment": f"{tag}: vitrine's build",
+                    "conditions": [{"key": "evr", "comparator": "=", "value": evr}]})
+    entries.append({"name": name, "comment": f"{tag}: other architectures (32-bit) free",
+                    "conditions": [{"key": "arch", "comparator": "!=", "value": "x86_64"}]})
+q = json.dumps
+out = [f"version = {q(str(data.get('version', '1.0')))}"]
+for e in entries:
+    out += ["", "[[packages]]"]
+    out += [f"{k} = {q(str(v))}" for k, v in e.items() if k != "conditions"]
+    for c in e.get("conditions", []):
+        out.append("[[packages.conditions]]")
+        out += [f"{k} = {q(str(v))}" for k, v in c.items()]
+if not entries and not os.path.exists(path):
+    sys.exit(0)
+tmp = path + ".vitrine-new"
+with open(tmp, "w") as f:
+    f.write("\n".join(out) + "\n")
+os.replace(tmp, path)
+EOF
+}
+
+# What the research setup (qemu-gui-experimental's guest image) put in, which
+# the tools replace: its DKMS module, units, kernel arguments and dnf exclude
+migrate_research() {
+	if [ -d /usr/src/virtio-gpu-nctx-1.0 ] || dkms status -m virtio-gpu-nctx 2> /dev/null | grep -q .; then
+		say "removing the research setup's driver (virtio-gpu-nctx)"
+		dkms remove virtio-gpu-nctx/1.0 --all > /dev/null 2>&1 || true
+		rm -rf /usr/src/virtio-gpu-nctx-1.0 /etc/depmod.d/virtio-gpu-nctx.conf
+	fi
+	for unit in virtio-gpu-nctx-check mtrr-hostmem-wb; do
+		if [ -f "/etc/systemd/system/$unit.service" ]; then
+			say "removing the research setup's $unit.service"
+			systemctl disable "$unit.service" > /dev/null 2>&1 || true
+			rm -f "/etc/systemd/system/$unit.service" "/usr/local/sbin/$unit.sh"
+		fi
+	done
+	if [ -f /etc/vmtest-kargs ]; then
+		say "removing the research setup's kernel arguments: $(cat /etc/vmtest-kargs)"
+		grubby --update-kernel=ALL --remove-args="$(cat /etc/vmtest-kargs)" || true
+		rm -f /etc/vmtest-kargs
+	fi
+	# its exclude would hide the medium's Mesa and KWin from dnf too
+	if grep -Eq '^excludepkgs=mesa-\*(,kwin,kwin-libs,kwin-common,kwin-devel,kwin-x11\*)?$' /etc/dnf/dnf.conf 2> /dev/null; then
+		say "removing the research setup's excludepkgs from /etc/dnf/dnf.conf (version locks instead)"
+		sed -i -E '/^excludepkgs=mesa-\*(,kwin,kwin-libs,kwin-common,kwin-devel,kwin-x11\*)?$/d' /etc/dnf/dnf.conf
+	fi
+}
+
+dnf_medium=(dnf -y --setopt=install_weak_deps=False
+            "--repofrompath=vitrine-tools,$medium/repo" --setopt=vitrine-tools.gpgcheck=0)
+
+if [ "$uninstall" = 1 ]; then
+	total=3
+	step "Removing the version locks of Mesa and KWin"
+	versionlock || die "cannot edit $lockfile"
+	step "Removing vitrine-guest-tools (driver, settings, agent)"
+	if installed vitrine-guest-tools; then
+		dnf -y remove vitrine-guest-tools || die "dnf remove failed"
+	fi
+	rm -f "$override"
+	step "Fedora's Mesa and KWin again"
+	names=$(rpm -qa --qf '%{NAME}\n' 'mesa-*' 'kwin*' | sort -u)
+	# shellcheck disable=SC2086
+	[ -z "$names" ] || dnf -y distro-sync $names || die "dnf distro-sync failed: Fedora's repositories are needed"
+	rm -rf "$state"
+	mkdir -p "$run" && touch "$run/reboot-needed"
+	echo "The guest tools are removed. Restart the guest to finish."
+	[ "$reboot" = 1 ] && systemctl --no-block reboot
+	exit 0
+fi
+
+[ -f "$medium/medium.env" ] || die "$medium is not a vitrine tools medium (no medium.env)"
+# TOOLS_VERSION, TOOLS_EVR, FEDORA_RELEASE, MEDIUM_ID, KWIN_VERSION
+# shellcheck source=/dev/null
+. "$medium/medium.env"
+
+step "Checking the guest"
+# shellcheck source=/dev/null
+. /etc/os-release
+[ "${ID:-}" = fedora ] || die "these tools are for Fedora $FEDORA_RELEASE; this guest is ${PRETTY_NAME:-unknown}" 4
+[ "${VERSION_ID:-}" = "$FEDORA_RELEASE" ] ||
+	die "these tools are for Fedora $FEDORA_RELEASE; this guest is Fedora ${VERSION_ID:-?}: it needs the tools built for its release" 4
+[ "$(uname -m)" = x86_64 ] || die "these tools are for x86_64 guests" 4
+if secure_boot; then
+	die "Secure Boot is on in this VM. The graphics driver of the guest tools is a
+kernel module built in the guest, and it is not signed: with Secure Boot the
+kernel refuses it, and the VM would be left with no graphics driver at all.
+Turn Secure Boot off for this VM (its firmware settings), then run this again." 3
+fi
+say "Fedora $VERSION_ID, kernel $(uname -r), tools $TOOLS_EVR (medium $MEDIUM_ID)"
+
+# the KWin of the medium only for the Plasma it was built for
+plasma=$(rpm -q --qf '%{VERSION}' plasma-workspace 2> /dev/null || true)
+[ -n "$plasma" ] || plasma=$(rpm -q --qf '%{VERSION}' kwin 2> /dev/null || true)
+use_kwin=0
+if [ "$kwin" = 0 ]; then
+	say "KWin: kept (--no-kwin)"
+elif ! installed kwin; then
+	say "KWin: not installed (no Plasma), nothing to do"
+elif [ -z "${KWIN_VERSION:-}" ]; then
+	say "KWin: none on this medium, the installed one stays"
+elif [ "$plasma" != "$KWIN_VERSION" ]; then
+	say "KWin: this guest has Plasma $plasma, the medium's KWin is for $KWIN_VERSION: the installed KWin stays"
+else
+	use_kwin=1
+	say "KWin: vitrine's build for Plasma $KWIN_VERSION"
+fi
+
+# Mesa: the medium's build of each Mesa package installed (x86_64)
+want=("$(medium_nevra vitrine-guest-tools)")
+[ -n "${want[0]}" ] || die "the medium has no vitrine-guest-tools package"
+mesa=()
+for name in $(medium_names '^mesa-'); do
+	installed "$name" x86_64 && mesa+=("$(medium_nevra "$name")")
+done
+[ ${#mesa[@]} -gt 0 ] && say "Mesa: vitrine's build of ${#mesa[@]} packages" ||
+	say "Mesa: none installed (no desktop?), nothing to replace"
+kwin_pkgs=()
+if [ "$use_kwin" = 1 ]; then
+	for name in $(medium_names '^kwin'); do
+		case "$name" in
+		kwin|kwin-common|kwin-libs) kwin_pkgs+=("$(medium_nevra "$name")") ;;
+		*) installed "$name" x86_64 && kwin_pkgs+=("$(medium_nevra "$name")") ;;
+		esac
+	done
+fi
+want+=("${mesa[@]}" "${kwin_pkgs[@]}")
+
+# nothing to do when what this medium installs is all there
+up_to_date() {
+	[ "$force" = 0 ] && [ "$(cat "$state/medium" 2> /dev/null)" = "$MEDIUM_ID" ] || return 1
+	rpm -q "${want[@]}" > /dev/null 2>&1 || return 1
+	if [ "$use_kwin" = 1 ]; then [ -s "$state/kwin" ]; else [ ! -e "$state/kwin" ]; fi
+}
+if up_to_date; then
+	echo "The guest tools of this medium are installed: nothing to do."
+	exit 0
+fi
+
+if [ "$yes" = 0 ]; then
+	echo
+	echo "This installs: ${want[*]}"
+	echo "and dkms with the kernel headers from Fedora, then rebuilds the initramfs."
+	read -r -p "Go on? [Y/n] " answer
+	case "$answer" in [nN]*) exit 1 ;; esac
+fi
+
+step "Preparing"
+mkdir -p "$run" "$state"
+# the RPM's scriptlets leave the initramfs to this script (once, at the end)
+touch "$run/installer-active"
+trap 'rm -f "$run/installer-active"' EXIT
+migrate_research
+# the tools' own locks would keep the medium's new builds out
+versionlock || die "cannot edit $lockfile"
+before=$(rpm -qa | sort | sha256sum)
+old_override=$(cat "$override" 2> /dev/null || true)
+
+step "Installing the packages (Fedora's repositories are needed for dkms and the kernel headers)"
+# dkms brings kernel-devel-matched, the newest kernel's headers; `kernel` then
+# brings that kernel's modules too.  The running kernel's headers, if
+# Fedora still has them, give the driver at once to that kernel too.
+extra=(dkms kernel "kernel-devel-$(uname -r)")
+"${dnf_medium[@]}" --skip-unavailable install "${want[@]}" "${extra[@]}" ||
+	die "dnf failed: see above (no network? the guest needs Fedora's repositories)"
+missing=()
+for p in "${want[@]}"; do
+	rpm -q "$p" > /dev/null 2>&1 || missing+=("$p")
+done
+[ ${#missing[@]} -eq 0 ] || die "not installed: ${missing[*]}"
+installed dkms || die "dkms is not installed"
+# the driver's options: blob_flush_fence=3 with vitrine's KWin (it waits for
+# the fence the driver puts on the buffers), else the package's =1
+if [ "$use_kwin" = 1 ]; then
+	sed 's/^\(options virtio_gpu .*\)blob_flush_fence=1/\1blob_flush_fence=3/' \
+		/usr/lib/modprobe.d/vitrine-virtio-gpu.conf > "$override.new" && mv "$override.new" "$override"
+else
+	rm -f "$override"
+fi
+
+step "Building the graphics driver for each kernel with headers"
+/usr/libexec/vitrine-guest-tools/dkms-sync --no-initramfs || driver_failed=1
+
+step "Making the initramfs"
+if [ "$force" = 1 ] || [ "$(rpm -qa | sort | sha256sum)" != "$before" ] ||
+   [ "$(cat "$override" 2> /dev/null || true)" != "$old_override" ] || [ -n "${driver_failed:-}" ] ||
+   ! [ -s "$state/medium" ]; then
+	dracut -f --regenerate-all || die "dracut failed"
+	touch "$run/reboot-needed"
+else
+	say "nothing changed"
+fi
+
+step "Finishing"
+locks=()
+for p in "${mesa[@]}" "${kwin_pkgs[@]}"; do
+	locks+=("$(rpm -q --qf '%{NAME}=%{EPOCHNUM}:%{VERSION}-%{RELEASE}' "$p")")
+done
+versionlock "${locks[@]}" || die "cannot edit $lockfile"
+[ ${#locks[@]} -gt 0 ] && say "version locks: ${locks[*]%%=*}"
+if [ "$use_kwin" = 1 ]; then
+	rpm -q kwin > "$state/kwin"
+else
+	rm -f "$state/kwin"
+fi
+printf '%s\n' "${want[@]}" > "$state/packages"
+echo "$MEDIUM_ID" > "$state/medium"
+cat > "$state/state.json" <<EOF
+{"medium": "$MEDIUM_ID", "tools": "$TOOLS_EVR", "date": "$(date -Iseconds)", "kwin": $([ "$use_kwin" = 1 ] && echo true || echo false), "fence": $([ "$use_kwin" = 1 ] && echo 3 || echo 1), "driverBuilt": $([ -n "${driver_failed:-}" ] && echo false || echo true)}
+EOF
+# the agent: udev starts it for vitrine's port (the rule is new)
+udevadm control --reload > /dev/null 2>&1 || true
+udevadm trigger --subsystem-match=virtio-ports --action=add > /dev/null 2>&1 || true
+
+echo
+if [ -n "${driver_failed:-}" ]; then
+	echo "The guest tools are installed, but the graphics driver could not be built for every kernel (see above)."
+else
+	echo "The guest tools are installed."
+fi
+if [ -e "$run/reboot-needed" ]; then
+	echo "Restart the guest to use them."
+	[ "$reboot" = 1 ] && systemctl --no-block reboot
+fi
+exit 0

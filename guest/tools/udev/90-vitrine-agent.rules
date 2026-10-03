@@ -1,0 +1,2 @@
+# vitrine guest tools: the agent runs while the VM has vitrine's port
+SUBSYSTEM=="virtio-ports", ATTR{name}=="org.vitrine.agent.0", TAG+="systemd", ENV{SYSTEMD_WANTS}+="vitrine-agent.service"

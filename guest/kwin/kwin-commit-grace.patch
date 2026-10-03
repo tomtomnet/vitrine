@@ -1,0 +1,47 @@
+--- a/src/backends/drm/drm_commit_thread.cpp
++++ b/src/backends/drm/drm_commit_thread.cpp
+@@ -19,9 +19,14 @@
+ 
+ using namespace std::chrono_literals;
+ 
++
+ namespace KWin
+ {
+ 
++// KWIN_DRM_COMMIT_GRACE_US: how long after the vblank a commit may still go out
++// while its buffers become readable, instead of waiting for the next vblank
++static const std::chrono::microseconds s_commitGrace{environmentVariableIntValue("KWIN_DRM_COMMIT_GRACE_US").value_or(0)};
++
+ DrmCommitThread::DrmCommitThread(DrmGpu *gpu, const QString &name)
+     : m_gpu(gpu)
+     , m_targetPageflipTime(std::chrono::steady_clock::now())
+@@ -86,6 +91,29 @@
+                 }
+             }
+             optimizeCommits(m_targetPageflipTime);
++            if (s_commitGrace > 0ns && !m_vrr && !m_tearing && !m_commits.front()->isReadyFor(m_targetPageflipTime)
++                && m_commits.front()->isReadyFor(m_targetPageflipTime + m_minVblankInterval)) {
++                // The commit is for this vblank but its buffers are not readable yet
++                // (their GPU work is not done). In a virtual machine the vblank is
++                // told early on purpose, and a commit a little after it still makes
++                // the screen: wait for the buffers up to the grace, in small steps,
++                // rather than give the whole refresh away.
++                const auto giveUp = m_targetPageflipTime + s_commitGrace;
++                bool changed = false;
++                while (!m_commits.front()->areBuffersReadable() && std::chrono::steady_clock::now() < giveUp) {
++                    const auto commits = m_commits.size();
++                    lock.unlock();
++                    std::this_thread::sleep_for(50us);
++                    lock.lock();
++                    if (m_commits.empty() || m_commits.size() != commits) {
++                        changed = true;
++                        break;
++                    }
++                }
++                if (changed) {
++                    continue;
++                }
++            }
+             if (!m_commits.front()->isReadyFor(m_targetPageflipTime)) {
+                 // no commit is ready yet, reschedule
+                 if (m_vrr || m_tearing) {

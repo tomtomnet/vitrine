@@ -1,0 +1,16 @@
+[Unit]
+Description=vitrine guest agent
+Documentation=file:/usr/libexec/vitrine-guest-tools/vitrine-agent
+ConditionVirtualization=vm
+# the port of the VM vitrine runs it with; udev starts this unit when it appears
+BindsTo=dev-virtio\x2dports-org.vitrine.agent.0.device
+After=dev-virtio\x2dports-org.vitrine.agent.0.device
+IgnoreOnIsolate=yes
+
+[Service]
+ExecStart=/usr/libexec/vitrine-guest-tools/vitrine-agent
+Restart=on-failure
+RestartSec=5
+
+[Install]
+WantedBy=dev-virtio\x2dports-org.vitrine.agent.0.device

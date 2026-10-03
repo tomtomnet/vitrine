@@ -1,0 +1,310 @@
+Zero-copy display: the flip event of a commit whose scanout flush carries a
+fence (module parameter blob_flush_fence) waits for that fence as well as for
+its vblank tick, and the commit itself no longer waits for it.
+
+The host completes the fence of a flush when its compositor released the
+buffer shown before, so the compositor here hears of the flip - and may render
+into the buffer flipped from - only once the host no longer shows it.  The
+earlier version waited for the fence in the plane update, before the crtc flush
+armed the event: the event then came a whole refresh after the tick it was for,
+and the compositor, two refreshes ahead, starved for buffers.
+
+The event goes out at the later of the tick it is due at (the next one, or the
+one just gone in the flip grace) and the fence, with the tick's count and time,
+checked at the commit, at every tick and after every batch of host responses
+(no fence callback: the event lock is never taken inside the fence's lock).
+After 100 ms it goes out whatever the host did.  debugfs
+virtio-gpu-flip-gate counts the gated events and their waits.
+
+diff -ru a/drivers/gpu/drm/virtio/virtgpu_debugfs.c b/drivers/gpu/drm/virtio/virtgpu_debugfs.c
+--- a/drivers/gpu/drm/virtio/virtgpu_debugfs.c	2026-10-02 09:17:48.104188520 +0200
++++ b/drivers/gpu/drm/virtio/virtgpu_debugfs.c	2026-10-02 09:19:37.866089835 +0200
+@@ -95,10 +95,43 @@
+ 	return 0;
+ }
+ 
++static int
++virtio_gpu_debugfs_flip_gate(struct seq_file *m, void *data)
++{
++	struct drm_info_node *node = (struct drm_info_node *)m->private;
++	struct drm_device *dev = node->minor->dev;
++	struct virtio_gpu_device *vgdev = dev->dev_private;
++	int i;
++
++	seq_printf(m, "blob_flush_fence %d\n", virtio_gpu_modparam_blob_flush_fence);
++	for (i = 0; i < vgdev->num_scanouts; i++) {
++		struct virtio_gpu_output *output = &vgdev->outputs[i];
++		u64 events, waited, timeouts, wait_ns, max_ns;
++		bool pending;
++
++		spin_lock_irq(&dev->event_lock);
++		events = output->gate_events;
++		waited = output->gate_waited;
++		timeouts = output->gate_timeouts;
++		wait_ns = output->gate_wait_ns;
++		max_ns = output->gate_wait_max_ns;
++		pending = output->gated_event != NULL;
++		spin_unlock_irq(&dev->event_lock);
++		if (!events)
++			continue;
++		seq_printf(m, "output %d: %llu gated flip events, %llu waited for the host, %llu let go after 100 ms, mean wait %llu us, max %llu us%s\n",
++			   i, events, waited, timeouts,
++			   div64_u64(wait_ns, events) / 1000, max_ns / 1000,
++			   pending ? ", one pending" : "");
++	}
++	return 0;
++}
++
+ static struct drm_info_list virtio_gpu_debugfs_list[] = {
+ 	{ "virtio-gpu-features", virtio_gpu_features },
+ 	{ "virtio-gpu-irq-fence", virtio_gpu_debugfs_irq_info, 0, NULL },
+ 	{ "virtio-gpu-host-visible-mm", virtio_gpu_debugfs_host_visible_mm },
++	{ "virtio-gpu-flip-gate", virtio_gpu_debugfs_flip_gate },
+ };
+ 
+ #define VIRTIO_GPU_DEBUGFS_ENTRIES ARRAY_SIZE(virtio_gpu_debugfs_list)
+diff -ru a/drivers/gpu/drm/virtio/virtgpu_display.c b/drivers/gpu/drm/virtio/virtgpu_display.c
+--- a/drivers/gpu/drm/virtio/virtgpu_display.c	2026-10-02 09:17:48.104206333 +0200
++++ b/drivers/gpu/drm/virtio/virtgpu_display.c	2026-10-02 09:19:37.865903946 +0200
+@@ -91,7 +91,7 @@
+  * from rendering into a buffer the host still shows.
+  */
+ int virtio_gpu_modparam_blob_flush_fence;
+-MODULE_PARM_DESC(blob_flush_fence, "Fence the flush of host blob scanouts too and wait for it (zero-copy display, default 0)");
++MODULE_PARM_DESC(blob_flush_fence, "Fence the flush of host blob scanouts too and hold the flip event until it completes (zero-copy display, default 0)");
+ module_param_named(blob_flush_fence, virtio_gpu_modparam_blob_flush_fence, int, 0644);
+ 
+ static ktime_t virtio_gpu_vblank_interval(struct virtio_gpu_output *output)
+@@ -100,6 +100,64 @@
+ 	return output->vblank_interval ?: ns_to_ktime(NSEC_PER_SEC / 60);
+ }
+ 
++/*
++ * The gated flip event (zero copy): out once its fence completed and its
++ * vblank was counted, or after 100 ms whatever the host did, or now with
++ * @force.  Called with the event_lock held, at the commit, at every tick
++ * and after every batch of host responses.
++ */
++static void virtio_gpu_flip_gate_try(struct virtio_gpu_output *output, bool force)
++{
++	struct drm_crtc *crtc = &output->crtc;
++	s64 waited;
++
++	lockdep_assert_held(&crtc->dev->event_lock);
++	if (!output->gated_event)
++		return;
++	waited = ktime_to_ns(ktime_sub(ktime_get(), output->gate_time));
++	if (!force &&
++	    (!test_bit(DMA_FENCE_FLAG_SIGNALED_BIT, &output->gate_fence->flags) ||
++	     (s64)(drm_crtc_vblank_count(crtc) - output->gate_count) < 0)) {
++		if (waited < 100 * NSEC_PER_MSEC)
++			return;
++		output->gate_timeouts++;
++		pr_warn_ratelimited("virtio-gpu: flip event let go after 100 ms without the host's release\n");
++	}
++	drm_crtc_send_vblank_event(crtc, output->gated_event);
++	output->gated_event = NULL;
++	if (output->gate_ref)
++		drm_crtc_vblank_put(crtc);
++	output->gate_ref = false;
++	dma_fence_put(output->gate_fence);
++	output->gate_fence = NULL;
++	output->gate_wait_ns += waited;
++	if (waited > output->gate_wait_max_ns)
++		output->gate_wait_max_ns = waited;
++}
++
++static void virtio_gpu_flip_gate_poll_one(struct virtio_gpu_output *output)
++{
++	struct drm_device *dev = output->crtc.dev;
++	unsigned long flags;
++
++	if (!READ_ONCE(output->gated_event))
++		return;
++	spin_lock_irqsave(&dev->event_lock, flags);
++	virtio_gpu_flip_gate_try(output, false);
++	spin_unlock_irqrestore(&dev->event_lock, flags);
++}
++
++/* After the host's responses were processed: a gate's fence may be done. */
++void virtio_gpu_flip_gate_poll(struct virtio_gpu_device *vgdev)
++{
++	int i;
++
++	if (!virtio_gpu_modparam_blob_flush_fence)
++		return;
++	for (i = 0; i < vgdev->num_scanouts; i++)
++		virtio_gpu_flip_gate_poll_one(&vgdev->outputs[i]);
++}
++
+ /* Count a vblank, unless one was counted less than half a refresh before. */
+ static bool virtio_gpu_vblank_count(struct virtio_gpu_output *output, ktime_t when)
+ {
+@@ -136,8 +194,10 @@
+ 			      HRTIMER_MODE_ABS);
+ 	spin_unlock_irqrestore(&output->vblank_lock, flags);
+ 
+-	if (counted)
++	if (counted) {
+ 		drm_crtc_handle_vblank(&output->crtc);
++		virtio_gpu_flip_gate_poll_one(output);
++	}
+ 	return counted;
+ }
+ 
+@@ -209,8 +269,10 @@
+ 	hrtimer_forward(timer, now, virtio_gpu_vblank_interval(output));
+ 	spin_unlock_irqrestore(&output->vblank_lock, flags);
+ 
+-	if (counted)
++	if (counted) {
+ 		drm_crtc_handle_vblank(&output->crtc);
++		virtio_gpu_flip_gate_poll_one(output);
++	}
+ 	return HRTIMER_RESTART;
+ }
+ 
+@@ -300,6 +362,12 @@
+ 		output->vblank_timer_on = false;
+ 		spin_unlock_irqrestore(&output->vblank_lock, flags);
+ 		hrtimer_cancel(&output->vblank_timer);
++
++		spin_lock_irqsave(&vgdev->ddev->event_lock, flags);
++		virtio_gpu_flip_gate_try(output, true);
++		spin_unlock_irqrestore(&vgdev->ddev->event_lock, flags);
++		dma_fence_put(output->flip_fence);
++		output->flip_fence = NULL;
+ 	}
+ }
+ 
+@@ -369,6 +437,9 @@
+ 	struct virtio_gpu_device *vgdev = dev->dev_private;
+ 	struct virtio_gpu_output *output = drm_crtc_to_virtio_gpu_output(crtc);
+ 
++	spin_lock_irq(&dev->event_lock);
++	virtio_gpu_flip_gate_try(output, true);
++	spin_unlock_irq(&dev->event_lock);
+ 	drm_crtc_vblank_off(crtc);
+ 
+ 	virtio_gpu_cmd_set_scanout(vgdev, output->index, 0, 0, 0, 0, 0);
+@@ -414,6 +485,9 @@
+ 	struct drm_crtc_state *crtc_state = drm_atomic_get_new_crtc_state(state, crtc);
+ 	struct virtio_gpu_output *output = drm_crtc_to_virtio_gpu_output(crtc);
+ 	struct drm_pending_vblank_event *event;
++	struct dma_fence *fence = output->flip_fence;
++
++	output->flip_fence = NULL;
+ 
+ 	/*
+ 	 * virtio-gpu can't do modeset and plane update operations
+@@ -429,7 +503,26 @@
+ 	event = crtc_state->event;
+ 	crtc_state->event = NULL;
+ 
+-	if (event) {
++	if (event && fence && !test_bit(DMA_FENCE_FLAG_SIGNALED_BIT, &fence->flags)) {
++		/* the one before, should the core ever let a commit overtake it */
++		virtio_gpu_flip_gate_try(output, true);
++		/* due at the tick just gone (in its grace) or at the next one */
++		output->gate_count = drm_crtc_vblank_count(crtc);
++		output->gate_ref = false;
++		if (!virtio_gpu_flip_in_grace(output) && drm_crtc_vblank_get(crtc) == 0) {
++			output->gate_count++;
++			output->gate_ref = true;
++		}
++		output->gated_event = event;
++		output->gate_fence = fence;
++		output->gate_time = ktime_get();
++		output->gate_events++;
++		fence = NULL;
++		/* the host may have answered already */
++		virtio_gpu_flip_gate_try(output, false);
++		if (output->gated_event)
++			output->gate_waited++;
++	} else if (event) {
+ 		if (virtio_gpu_flip_in_grace(output))
+ 			/* for the tick just gone: the host still shows it then */
+ 			drm_crtc_send_vblank_event(crtc, event);
+@@ -440,6 +533,7 @@
+ 	}
+ 
+ 	spin_unlock_irq(&dev->event_lock);
++	dma_fence_put(fence);
+ }
+ 
+ static const struct drm_crtc_helper_funcs virtio_gpu_crtc_helper_funcs = {
+diff -ru a/drivers/gpu/drm/virtio/virtgpu_drv.h b/drivers/gpu/drm/virtio/virtgpu_drv.h
+--- a/drivers/gpu/drm/virtio/virtgpu_drv.h	2026-10-02 09:17:48.104250486 +0200
++++ b/drivers/gpu/drm/virtio/virtgpu_drv.h	2026-10-02 09:19:14.295276762 +0200
+@@ -217,6 +217,24 @@
+ 	ktime_t vblank_host_time;
+ 	u32 vblank_count;
+ 	bool vblank_timer_on;
++	/*
++	 * Zero copy (blob_flush_fence): the host completes the fence of a
++	 * scanout flush when its compositor released the buffer shown before.
++	 * The flip event of the commit then waits for that fence as well as
++	 * for its vblank tick - the commit itself does not wait - so the
++	 * compositor does not render into a buffer the host still shows, and
++	 * hears of the flip at the tick's count and time.  The gate's fields
++	 * are under the device's event_lock.
++	 */
++	struct dma_fence *flip_fence;	/* from the plane update to the crtc flush */
++	struct drm_pending_vblank_event *gated_event;
++	struct dma_fence *gate_fence;
++	u64 gate_count;			/* the vblank it is due at */
++	ktime_t gate_time;		/* when it was gated */
++	bool gate_ref;			/* holds a vblank reference */
++	/* debugfs virtio-gpu-flip-gate */
++	u64 gate_events, gate_waited, gate_timeouts;
++	u64 gate_wait_ns, gate_wait_max_ns;
+ };
+ extern int virtio_gpu_modparam_host_vblank;
+ extern int virtio_gpu_modparam_flip_grace_us;
+@@ -225,6 +243,7 @@
+ bool virtio_gpu_host_vblank_irq(struct virtio_gpu_device *vgdev);
+ void virtio_gpu_host_vblank(struct virtio_gpu_device *vgdev, u32 mask);
+ void virtio_gpu_vblank_fini(struct virtio_gpu_device *vgdev);
++void virtio_gpu_flip_gate_poll(struct virtio_gpu_device *vgdev);
+ #define VIRTIO_GPU_EVENT_VBLANK_SHIFT 16
+ #define VIRTIO_GPU_EVENT_VBLANK_MASK (0xffffu << VIRTIO_GPU_EVENT_VBLANK_SHIFT)
+ #define drm_crtc_to_virtio_gpu_output(x) \
+diff -ru a/drivers/gpu/drm/virtio/virtgpu_plane.c b/drivers/gpu/drm/virtio/virtgpu_plane.c
+--- a/drivers/gpu/drm/virtio/virtgpu_plane.c	2026-10-02 09:17:48.104371824 +0200
++++ b/drivers/gpu/drm/virtio/virtgpu_plane.c	2026-10-02 09:19:14.295401296 +0200
+@@ -245,8 +245,22 @@
+ 					      width, height, objs,
+ 					      vgplane_st->fence);
+ 		virtio_gpu_notify(vgdev);
+-		dma_fence_wait_timeout(&vgplane_st->fence->f, true,
+-				       msecs_to_jiffies(50));
++		if (virtio_gpu_modparam_blob_flush_fence && bo->host3d_blob &&
++		    plane->state->crtc) {
++			/*
++			 * Zero copy: the flip event waits for this fence (the
++			 * crtc flush gates it), the commit goes on now.  A wait
++			 * here would arm the event after the tick it is for.
++			 */
++			struct virtio_gpu_output *output =
++				drm_crtc_to_virtio_gpu_output(plane->state->crtc);
++
++			dma_fence_put(output->flip_fence);
++			output->flip_fence = dma_fence_get(&vgplane_st->fence->f);
++		} else {
++			dma_fence_wait_timeout(&vgplane_st->fence->f, true,
++					       msecs_to_jiffies(50));
++		}
+ 	} else {
+ 		virtio_gpu_cmd_resource_flush(vgdev, bo->hw_res_handle, x, y,
+ 					      width, height, NULL, NULL);
+diff -ru a/drivers/gpu/drm/virtio/virtgpu_vq.c b/drivers/gpu/drm/virtio/virtgpu_vq.c
+--- a/drivers/gpu/drm/virtio/virtgpu_vq.c	2026-10-02 09:17:48.104474597 +0200
++++ b/drivers/gpu/drm/virtio/virtgpu_vq.c	2026-10-02 09:19:37.866016047 +0200
+@@ -265,6 +265,7 @@
+ 			entry->resp_cb(vgdev, entry);
+ 	}
+ 	wake_up(&vgdev->ctrlq.ack_queue);
++	virtio_gpu_flip_gate_poll(vgdev);
+ 
+ 	list_for_each_entry_safe(entry, tmp, &reclaim_list, list) {
+ 		if (entry->objs)

@@ -1,0 +1,13 @@
+#!/bin/sh
+# SPDX-License-Identifier: GPL-2.0-or-later
+# vitrine guest tools: run at boot, as root, by the unit vitrine hands the
+# guest's systemd when the user asked for the tools
+# (bootstrap/vitrine-tools-bootstrap.service), with this medium mounted here.
+# The agent of the medium runs the installer and tells vitrine how it goes;
+# the guest restarts at the end.  When the tools of this medium are there
+# already (the restart, with the same unit), the installer does nothing.
+here=$(dirname "$(readlink -f "$0")")
+if command -v python3 > /dev/null; then
+	exec python3 "$here/vitrine-agent" --install "$here" --reboot
+fi
+exec /bin/bash "$here/install" --yes --reboot

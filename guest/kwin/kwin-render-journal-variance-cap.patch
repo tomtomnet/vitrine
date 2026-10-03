@@ -1,0 +1,67 @@
+--- a/src/core/renderjournal.h	2026-09-29 08:43:50.572531153 +0200
++++ b/src/core/renderjournal.h	2026-09-29 08:43:50.585650290 +0200
+@@ -27,6 +27,7 @@
+     std::chrono::nanoseconds result() const;
+ 
+ private:
++    std::chrono::nanoseconds m_varianceCap;
+     std::chrono::nanoseconds m_result{0};
+     std::chrono::nanoseconds m_variance{0};
+     std::optional<std::chrono::nanoseconds> m_lastAdd;
+--- a/src/core/renderjournal.cpp	2026-09-29 08:43:50.575569199 +0200
++++ b/src/core/renderjournal.cpp	2026-09-29 08:46:55.469313842 +0200
+@@ -6,6 +6,8 @@
+ 
+ #include "renderjournal.h"
+ 
++#include <QtGlobal>
++
+ #include <algorithm>
+ #include <cmath>
+ 
+@@ -14,7 +16,10 @@
+ namespace KWin
+ {
+ 
++static std::chrono::nanoseconds varianceCapFromEnvironment();
++
+ RenderJournal::RenderJournal()
++    : m_varianceCap(varianceCapFromEnvironment())
+ {
+ }
+ 
+@@ -23,6 +28,25 @@
+     return std::chrono::nanoseconds(int64_t(std::round(duration1.count() * ratio + duration2.count() * (1 - ratio))));
+ }
+ 
++/*
++ * The estimate is the smoothed render time plus twice the largest recent
++ * excess over it, and that excess decays over seconds.  Where single long
++ * frames are a fact of life (virtual machines: the first CPU touch of a
++ * new buffer costs milliseconds) one such frame keeps the compositor two
++ * vblanks ahead for seconds afterwards, a whole refresh of latency for
++ * nothing.  KWIN_RENDER_JOURNAL_VARIANCE_CAP_US bounds the excess that is
++ * remembered; unset, nothing changes.
++ */
++static std::chrono::nanoseconds varianceCapFromEnvironment()
++{
++    bool ok = false;
++    const int us = qEnvironmentVariableIntValue("KWIN_RENDER_JOURNAL_VARIANCE_CAP_US", &ok);
++    if (!ok || us <= 0) {
++        return std::chrono::nanoseconds::max();
++    }
++    return std::chrono::microseconds(us);
++}
++
+ void RenderJournal::add(std::chrono::nanoseconds renderTime, std::chrono::nanoseconds presentationTimestamp)
+ {
+     const auto timeDifference = m_lastAdd ? presentationTimestamp - *m_lastAdd : 10s;
+@@ -31,7 +55,7 @@
+     static constexpr std::chrono::nanoseconds varianceTimeConstant = 6s;
+     const double varianceRatio = std::clamp(timeDifference.count() / double(varianceTimeConstant.count()), 0.001, 0.1);
+     const auto renderTimeDiff = std::max(renderTime - m_result, 0ns);
+-    m_variance = std::max(mix(renderTimeDiff, m_variance, varianceRatio), renderTimeDiff);
++    m_variance = std::min(std::max(mix(renderTimeDiff, m_variance, varianceRatio), renderTimeDiff), m_varianceCap);
+ 
+     static constexpr std::chrono::nanoseconds timeConstant = 500ms;
+     const double ratio = std::clamp(timeDifference.count() / double(timeConstant.count()), 0.01, 1.0);

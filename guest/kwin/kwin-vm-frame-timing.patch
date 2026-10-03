@@ -1,0 +1,104 @@
+diff --git a/src/backends/drm/drm_commit_thread.cpp b/src/backends/drm/drm_commit_thread.cpp
+index deafa26..f1b328f 100644
+--- a/src/backends/drm/drm_commit_thread.cpp
++++ b/src/backends/drm/drm_commit_thread.cpp
+@@ -359,15 +359,23 @@ void DrmCommitThread::clearDroppedCommits()
+ 
+ // TODO reduce the default for this, once we have a more accurate way to know when an atomic commit
+ // is actually applied. Waiting for the commit returning seems to work on Intel and AMD, but not with NVidia
+-static const std::chrono::microseconds s_safetyMarginMinimum{environmentVariableIntValue("KWIN_DRM_OVERRIDE_SAFETY_MARGIN").value_or(1000)};
++static const std::optional<int> s_safetyMarginOverride = environmentVariableIntValue("KWIN_DRM_OVERRIDE_SAFETY_MARGIN");
++static constexpr std::chrono::microseconds s_defaultSafetyMarginMinimum{1000};
++// In virtual machines, commits usually wait for the host to process the new frame,
++// which takes longer and varies more than with real hardware
++static constexpr std::chrono::microseconds s_virtualMachineSafetyMarginMinimum{2500};
+ 
+ void DrmCommitThread::setModeInfo(uint32_t maximum, std::chrono::nanoseconds vblankTime)
+ {
+     std::unique_lock lock(m_mutex);
+     m_minVblankInterval = std::chrono::nanoseconds(1'000'000'000'000ull / maximum);
++    std::chrono::microseconds safetyMarginMinimum = m_gpu->drmDevice()->isVirtualMachine() ? s_virtualMachineSafetyMarginMinimum : s_defaultSafetyMarginMinimum;
++    if (s_safetyMarginOverride) {
++        safetyMarginMinimum = std::chrono::microseconds(*s_safetyMarginOverride);
++    }
+     // the kernel rejects commits that happen during vblank
+     // the 1.5ms on top of that was chosen experimentally, for the time it takes to commit + scheduling inaccuracies
+-    m_baseSafetyMargin = vblankTime + s_safetyMarginMinimum;
++    m_baseSafetyMargin = vblankTime + safetyMarginMinimum;
+     m_safetyMargin = m_baseSafetyMargin + m_additionalSafetyMargin;
+ }
+ 
+diff --git a/src/opengl/eglcontext.cpp b/src/opengl/eglcontext.cpp
+index 7f50187..0f2ab3a 100644
+--- a/src/opengl/eglcontext.cpp
++++ b/src/opengl/eglcontext.cpp
+@@ -114,7 +114,7 @@ EglContext::EglContext(EglDisplay *display, EGLConfig config, ::EGLContext conte
+     , m_renderer((const char *)glGetString(GL_RENDERER))
+     , m_isOpenglES(m_versionString.startsWith("OpenGL ES"))
+     , m_extensions(getExtensions(this))
+-    , m_supportsTimerQueries(checkTimerQuerySupport())
++    , m_supportsTimerQueries(checkTimerQuerySupport(display))
+     , m_supportsTextureStorage(checkTextureStorageSupport(this))
+     , m_supportsTextureSwizzle(checkTextureSwizzleSupport(this))
+     , m_supportsARGB32Textures(!m_isOpenglES || hasOpenglExtension(QByteArrayLiteral("GL_EXT_texture_format_BGRA8888")))
+@@ -340,11 +340,18 @@ std::shared_ptr<GLTexture> EglContext::importDmaBufAsTexture(const DmaBufAttribu
+     }
+ }
+ 
+-bool EglContext::checkTimerQuerySupport() const
++bool EglContext::checkTimerQuerySupport(EglDisplay *display) const
+ {
+     if (qEnvironmentVariableIsSet("KWIN_NO_TIMER_QUERY")) {
+         return false;
+     }
++    // With virtual GPUs, reading the GPU clock can be a synchronous round trip to the host
++    // (e.g. with virtio-gpu native contexts). That delays every frame, and the measured
++    // render times include the transport delays, so they are inflated. Without them,
++    // though, the estimate has no GPU time in it at all: KWIN_FORCE_TIMER_QUERY=1 keeps them
++    if (display->isVirtualMachine() && !qEnvironmentVariableIntValue("KWIN_FORCE_TIMER_QUERY")) {
++        return false;
++    }
+     if (m_isOpenglES) {
+         // 3.0 is required so query functions can be used without "EXT" suffix.
+         // Timer queries are still not part of the core OpenGL ES specification.
+diff --git a/src/opengl/eglcontext.h b/src/opengl/eglcontext.h
+index ed2f1ba..e8b53cd 100644
+--- a/src/opengl/eglcontext.h
++++ b/src/opengl/eglcontext.h
+@@ -111,7 +111,7 @@ public:
+ 
+ private:
+     static ::EGLContext createContext(EglDisplay *display, EGLConfig config, ::EGLContext sharedContext);
+-    bool checkTimerQuerySupport() const;
++    bool checkTimerQuerySupport(EglDisplay *display) const;
+     void setShaderManager(ShaderManager *manager);
+     void setStreamingBuffer(GLVertexBuffer *vbo);
+     void setIndexBuffer(IndexBuffer *buffer);
+diff --git a/src/opengl/egldisplay.cpp b/src/opengl/egldisplay.cpp
+index 067e92e..7c7edda 100644
+--- a/src/opengl/egldisplay.cpp
++++ b/src/opengl/egldisplay.cpp
+@@ -202,6 +202,11 @@ bool EglDisplay::isSoftwareRenderer() const
+     return m_isSoftwareRenderer;
+ }
+ 
++bool EglDisplay::isVirtualMachine() const
++{
++    return m_drmDevice && m_drmDevice->isVirtualMachine();
++}
++
+ EGLImageKHR EglDisplay::importDmaBufAsImage(const DmaBufAttributes &dmabuf) const
+ {
+     QList<EGLint> attribs;
+diff --git a/src/opengl/egldisplay.h b/src/opengl/egldisplay.h
+index 1de384b..58bdff5 100644
+--- a/src/opengl/egldisplay.h
++++ b/src/opengl/egldisplay.h
+@@ -43,6 +43,7 @@ public:
+     std::optional<dev_t> renderDevNode() const;
+ 
+     bool isSoftwareRenderer() const;
++    bool isVirtualMachine() const;
+     bool supportsBufferAge() const;
+     bool supportsNativeFence() const;
+ 

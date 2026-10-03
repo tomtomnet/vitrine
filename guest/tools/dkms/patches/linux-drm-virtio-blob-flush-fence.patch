@@ -1,0 +1,54 @@
+Zero-copy display: the flush of a host blob scanout carries a fence and the plane
+update waits for it, as for a dumb buffer, when the module parameter
+blob_flush_fence is set (default 0). The host completes that fence when its
+compositor released the buffer shown before, so the guest does not render into
+a buffer the host still shows.
+
+--- a/drivers/gpu/drm/virtio/virtgpu_display.c	2026-10-01 00:58:24.106434164 +0200
++++ b/drivers/gpu/drm/virtio/virtgpu_display.c	2026-10-01 00:58:49.347014865 +0200
+@@ -83,6 +83,17 @@
+ MODULE_PARM_DESC(flip_grace_us, "A flip this long after the host's vblank tick still completes for that tick (default 1200)");
+ module_param_named(flip_grace_us, virtio_gpu_modparam_flip_grace_us, int, 0644);
+ 
++/*
++ * Zero copy: the host puts the scanout buffer itself on its screen, and it
++ * completes the flush of a frame only when its compositor released the
++ * buffer shown before, so the flush of a host blob carries a fence and the
++ * plane update waits for it (as for a dumb buffer), which keeps the guest
++ * from rendering into a buffer the host still shows.
++ */
++int virtio_gpu_modparam_blob_flush_fence;
++MODULE_PARM_DESC(blob_flush_fence, "Fence the flush of host blob scanouts too and wait for it (zero-copy display, default 0)");
++module_param_named(blob_flush_fence, virtio_gpu_modparam_blob_flush_fence, int, 0644);
++
+ static ktime_t virtio_gpu_vblank_interval(struct virtio_gpu_output *output)
+ {
+ 	/* 60 Hz until there is a mode */
+--- a/drivers/gpu/drm/virtio/virtgpu_drv.h	2026-10-01 00:58:24.106396884 +0200
++++ b/drivers/gpu/drm/virtio/virtgpu_drv.h	2026-10-01 00:58:49.347076040 +0200
+@@ -220,6 +220,7 @@
+ };
+ extern int virtio_gpu_modparam_host_vblank;
+ extern int virtio_gpu_modparam_flip_grace_us;
++extern int virtio_gpu_modparam_blob_flush_fence;
+ bool virtio_gpu_flip_in_grace(struct virtio_gpu_output *output);
+ bool virtio_gpu_host_vblank_irq(struct virtio_gpu_device *vgdev);
+ void virtio_gpu_host_vblank(struct virtio_gpu_device *vgdev, u32 mask);
+--- a/drivers/gpu/drm/virtio/virtgpu_plane.c	2026-10-01 00:58:24.106475992 +0200
++++ b/drivers/gpu/drm/virtio/virtgpu_plane.c	2026-10-01 00:58:49.347113831 +0200
+@@ -392,11 +392,13 @@
+ 
+ 	drm_gem_plane_helper_prepare_fb(plane, new_state);
+ 
+-	if (!bo || (plane->type == DRM_PLANE_TYPE_PRIMARY && !bo->guest_blob))
++	if (!bo || (plane->type == DRM_PLANE_TYPE_PRIMARY && !bo->guest_blob &&
++		    !(virtio_gpu_modparam_blob_flush_fence && bo->host3d_blob)))
+ 		return 0;
+ 
+ 	obj = new_state->fb->obj[0];
+-	if (bo->dumb || drm_gem_is_imported(obj)) {
++	if (bo->dumb || drm_gem_is_imported(obj) ||
++	    (virtio_gpu_modparam_blob_flush_fence && bo->host3d_blob)) {
+ 		vgplane_st->fence = virtio_gpu_fence_alloc(vgdev,
+ 						     vgdev->fence_drv.context,
+ 						     0);

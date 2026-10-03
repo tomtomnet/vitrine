@@ -1,0 +1,74 @@
+The host ticks the vblank a lead before its own vertical blank; a flip committed
+up to flip_grace_us after the tick still reaches the screen at that blank, so the
+driver completes it for that tick instead of the next one (module parameter
+flip_grace_us, default 1200; 0 disables).
+
+--- a/drivers/gpu/drm/virtio/virtgpu_drv.h	2026-09-30 05:34:45.960822878 +0200
++++ b/drivers/gpu/drm/virtio/virtgpu_drv.h	2026-09-30 05:35:05.233724870 +0200
+@@ -219,6 +219,8 @@
+ 	bool vblank_timer_on;
+ };
+ extern int virtio_gpu_modparam_host_vblank;
++extern int virtio_gpu_modparam_flip_grace_us;
++bool virtio_gpu_flip_in_grace(struct virtio_gpu_output *output);
+ bool virtio_gpu_host_vblank_irq(struct virtio_gpu_device *vgdev);
+ void virtio_gpu_host_vblank(struct virtio_gpu_device *vgdev, u32 mask);
+ void virtio_gpu_vblank_fini(struct virtio_gpu_device *vgdev);
+--- a/drivers/gpu/drm/virtio/virtgpu_display.c	2026-09-30 05:34:45.961114626 +0200
++++ b/drivers/gpu/drm/virtio/virtgpu_display.c	2026-09-30 05:35:22.137247279 +0200
+@@ -79,6 +79,10 @@
+ MODULE_PARM_DESC(host_vblank, "Tick the vblank when the host reports one (default 1)");
+ module_param_named(host_vblank, virtio_gpu_modparam_host_vblank, int, 0644);
+ 
++int virtio_gpu_modparam_flip_grace_us = 1200;
++MODULE_PARM_DESC(flip_grace_us, "A flip this long after the host's vblank tick still completes for that tick (default 1200)");
++module_param_named(flip_grace_us, virtio_gpu_modparam_flip_grace_us, int, 0644);
++
+ static ktime_t virtio_gpu_vblank_interval(struct virtio_gpu_output *output)
+ {
+ 	/* 60 Hz until there is a mode */
+@@ -366,6 +370,32 @@
+ 	return 0;
+ }
+ 
++/*
++ * The host ticks the vblank early, a lead before its own vertical blank,
++ * so that a frame flipped at the tick reaches the screen at that blank.  A
++ * flip a little after the tick still makes it, the host shows it at the
++ * same blank: complete it for the tick just gone, with its count and time,
++ * or the compositor would take the frame for a refresh late and skip the
++ * next one.
++ */
++bool virtio_gpu_flip_in_grace(struct virtio_gpu_output *output)
++{
++	unsigned long flags;
++	ktime_t last;
++	bool in;
++
++	if (!virtio_gpu_modparam_host_vblank || virtio_gpu_modparam_flip_grace_us <= 0)
++		return false;
++	spin_lock_irqsave(&output->vblank_lock, flags);
++	last = output->vblank_host_time;
++	spin_unlock_irqrestore(&output->vblank_lock, flags);
++	if (!last)
++		return false;
++	in = ktime_before(ktime_get(),
++			  ktime_add_us(last, virtio_gpu_modparam_flip_grace_us));
++	return in;
++}
++
+ static void virtio_gpu_crtc_atomic_flush(struct drm_crtc *crtc,
+ 					 struct drm_atomic_commit *state)
+ {
+@@ -389,7 +419,10 @@
+ 	crtc_state->event = NULL;
+ 
+ 	if (event) {
+-		if (drm_crtc_vblank_get(crtc) == 0)
++		if (virtio_gpu_flip_in_grace(output))
++			/* for the tick just gone: the host still shows it then */
++			drm_crtc_send_vblank_event(crtc, event);
++		else if (drm_crtc_vblank_get(crtc) == 0)
+ 			drm_crtc_arm_vblank_event(crtc, event);
+ 		else
+ 			drm_crtc_send_vblank_event(crtc, event);

@@ -1,0 +1,73 @@
+Zero-copy display: blob_flush_fence=3 - the flip event goes out at its tick,
+and the flush fence (completed by the host when its compositor released the
+buffer shown before) is put on that buffer as a reader fence instead.
+
+Holding the flip event until the host's release (blob_flush_fence=1) kept the
+compositor from rendering into a buffer the host still showed, but the event
+then came after the host's own flip, ~3 ms after the tick, and the next frame
+could not be committed before it: 4-9 % of the guest's frames flipped a
+refresh late (0 % on the copy path).  With the fence on the buffer itself a
+compositor that waits for a buffer's readers before rendering into it (KWin
+with KWIN_SWAPCHAIN_WAIT_READERS=1, which takes another buffer meanwhile) is
+kept off it just as well, and the flips keep the guest's own pace.  Only the
+compositor's own buffers honour it: run it without direct scanout of client
+buffers (KWIN_DRM_NO_DIRECT_SCANOUT=1).
+
+diff -ru a/drivers/gpu/drm/virtio/virtgpu_display.c b/drivers/gpu/drm/virtio/virtgpu_display.c
+--- a/drivers/gpu/drm/virtio/virtgpu_display.c	2026-10-02 14:21:09.180600021 +0200
++++ b/drivers/gpu/drm/virtio/virtgpu_display.c	2026-10-02 14:21:09.197092804 +0200
+@@ -91,7 +91,7 @@
+  * from rendering into a buffer the host still shows.
+  */
+ int virtio_gpu_modparam_blob_flush_fence;
+-MODULE_PARM_DESC(blob_flush_fence, "Fence the flush of host blob scanouts too and hold the flip event until it completes (zero-copy display, default 0)");
++MODULE_PARM_DESC(blob_flush_fence, "Fence the flush of host blob scanouts too (zero-copy display): 1 = hold the flip event until it completes; 3 = put it on the buffer flipped away from instead, for a compositor that waits for a buffer's readers (KWin: KWIN_SWAPCHAIN_WAIT_READERS=1); default 0");
+ module_param_named(blob_flush_fence, virtio_gpu_modparam_blob_flush_fence, int, 0644);
+ 
+ /*
+diff -ru a/drivers/gpu/drm/virtio/virtgpu_plane.c b/drivers/gpu/drm/virtio/virtgpu_plane.c
+--- a/drivers/gpu/drm/virtio/virtgpu_plane.c	2026-10-02 14:21:09.180755262 +0200
++++ b/drivers/gpu/drm/virtio/virtgpu_plane.c	2026-10-02 14:21:09.197229230 +0200
+@@ -224,6 +224,7 @@
+ }
+ 
+ static void virtio_gpu_resource_flush(struct drm_plane *plane,
++				      struct drm_framebuffer *old_fb,
+ 				      uint32_t x, uint32_t y,
+ 				      uint32_t width, uint32_t height)
+ {
+@@ -251,7 +252,24 @@
+ 					      width, height, objs,
+ 					      vgplane_st->fence);
+ 		virtio_gpu_notify(vgdev);
+-		if (virtio_gpu_modparam_blob_flush_fence && bo->host3d_blob &&
++		if (virtio_gpu_modparam_blob_flush_fence == 3 && bo->host3d_blob) {
++			/*
++			 * The host completes this fence when its compositor
++			 * released the buffer shown before: that buffer keeps it
++			 * as a reader, and a compositor that waits for a buffer's
++			 * readers does not render into it before.  The flip event
++			 * goes out at its tick.
++			 */
++			if (old_fb && old_fb != plane->state->fb && old_fb->obj[0]) {
++				struct dma_resv *resv = old_fb->obj[0]->resv;
++
++				dma_resv_lock(resv, NULL);
++				if (!dma_resv_reserve_fences(resv, 1))
++					dma_resv_add_fence(resv, &vgplane_st->fence->f,
++							   DMA_RESV_USAGE_READ);
++				dma_resv_unlock(resv);
++			}
++		} else if (virtio_gpu_modparam_blob_flush_fence && bo->host3d_blob &&
+ 		    plane->state->crtc) {
+ 			/*
+ 			 * Zero copy: the flip event waits for this fence (the
+@@ -363,7 +381,7 @@
+ 		}
+ 	}
+ 
+-	virtio_gpu_resource_flush(plane,
++	virtio_gpu_resource_flush(plane, old_state->fb,
+ 				  rect.x1,
+ 				  rect.y1,
+ 				  rect.x2 - rect.x1,

@@ -1,0 +1,197 @@
+diff --git a/src/core/renderloop.cpp b/src/core/renderloop.cpp
+index 91512e8..af935cc 100644
+--- a/src/core/renderloop.cpp
++++ b/src/core/renderloop.cpp
+@@ -15,6 +15,9 @@
+ 
+ #include <filesystem>
+ 
++#include <sys/timerfd.h>
++#include <unistd.h>
++
+ using namespace std::chrono_literals;
+ 
+ namespace KWin
+@@ -39,17 +42,74 @@ static const bool s_lateFlipCompensation = qEnvironmentVariableIntValue("KWIN_LA
+ static const bool s_idleFrameEarly = qEnvironmentVariableIntValue("KWIN_IDLE_FRAME_EARLY") != 0;
+ // KWIN_RENDER_ESTIMATE_UPSTREAM=1: the frames for which only the cursor was rendered count for the render time estimate
+ static const bool s_upstreamEstimate = qEnvironmentVariableIntValue("KWIN_RENDER_ESTIMATE_UPSTREAM") != 0;
++// KWIN_FRAME_SLACK_US: how much earlier than the estimate and the safety margin demand a
++// frame starts, instead of the millisecond on top, and the composite timer then wakes
++// the loop at the planned time: Qt's timers count whole milliseconds and the wait is
++// cut down to them, so a frame starts up to a millisecond earlier still. That is one
++// to two milliseconds of latency for every frame; in the guest of a virtual machine
++// the commit and the flip have a grace after the tick (KWIN_DRM_COMMIT_GRACE_US, the
++// virtio-gpu flip grace), so a frame that runs over still makes its vblank.
++// Unset: nothing changes.
++static const std::optional<std::chrono::nanoseconds> s_frameSlack = qEnvironmentVariableIsEmpty("KWIN_FRAME_SLACK_US")
++    ? std::nullopt
++    : std::optional<std::chrono::nanoseconds>(std::chrono::microseconds(std::max(0, qEnvironmentVariableIntValue("KWIN_FRAME_SLACK_US"))));
+ static const std::chrono::nanoseconds s_lateFlipStep = std::chrono::microseconds(qEnvironmentVariableIsEmpty("KWIN_LATE_FLIP_STEP_US") ? 500 : std::max(10, qEnvironmentVariableIntValue("KWIN_LATE_FLIP_STEP_US")));
+ 
+ RenderLoopPrivate::RenderLoopPrivate(RenderLoop *q, BackendOutput *output)
+     : q(q)
+     , output(output)
+ {
++    if (s_frameSlack) {
++        preciseTimer = FileDescriptor(timerfd_create(CLOCK_MONOTONIC, TFD_NONBLOCK | TFD_CLOEXEC));
++    }
++    if (preciseTimer.isValid()) {
++        preciseTimerNotifier = std::make_unique<QSocketNotifier>(preciseTimer.get(), QSocketNotifier::Read);
++        QObject::connect(preciseTimerNotifier.get(), &QSocketNotifier::activated, q, [this]() {
++            uint64_t expirations = 0;
++            // nothing to read: the timer was set again or stopped since it expired
++            if (read(preciseTimer.get(), &expirations, sizeof(expirations)) != sizeof(expirations) || !preciseTimerArmed) {
++                return;
++            }
++            preciseTimerArmed = false;
++            dispatch();
++        });
++    }
++}
++
++bool RenderLoopPrivate::compositeTimerActive() const
++{
++    return preciseTimerNotifier ? preciseTimerArmed : compositeTimer.isActive();
++}
++
++void RenderLoopPrivate::startCompositeTimer(std::chrono::nanoseconds renderTimestamp, std::chrono::nanoseconds currentTime)
++{
++    if (!preciseTimerNotifier) {
++        compositeTimer.start(std::max(0ms, std::chrono::duration_cast<std::chrono::milliseconds>(renderTimestamp - currentTime)), Qt::PreciseTimer, q);
++        return;
++    }
++    // steady_clock is CLOCK_MONOTONIC; a time in the past expires at once
++    const int64_t when = std::max<int64_t>(renderTimestamp.count(), 1);
++    itimerspec spec{};
++    spec.it_value.tv_sec = when / 1'000'000'000;
++    spec.it_value.tv_nsec = when % 1'000'000'000;
++    timerfd_settime(preciseTimer.get(), TFD_TIMER_ABSTIME, &spec, nullptr);
++    preciseTimerArmed = true;
++}
++
++void RenderLoopPrivate::stopCompositeTimer()
++{
++    if (!preciseTimerNotifier) {
++        compositeTimer.stop();
++        return;
++    }
++    const itimerspec spec{};
++    timerfd_settime(preciseTimer.get(), 0, &spec, nullptr);
++    preciseTimerArmed = false;
+ }
+ 
+ void RenderLoopPrivate::scheduleNextRepaint()
+ {
+-    if (kwinApp()->isTerminating() || compositeTimer.isActive() || preparingNewFrame) {
++    if (kwinApp()->isTerminating() || compositeTimerActive() || preparingNewFrame) {
+         return;
+     }
+     scheduleRepaint(nextPresentationTimestamp);
+@@ -63,7 +123,9 @@ void RenderLoopPrivate::scheduleRepaint(std::chrono::nanoseconds lastTargetTimes
+ 
+     // Estimate when it's a good time to perform the next compositing cycle.
+     // the 1ms on top of the safety margin is required for timer and scheduler inaccuracies
+-    std::chrono::nanoseconds expectedCompositingTime = std::min(renderJournal.result() + safetyMargin + 1ms + lateFlipCompensation, 2 * vblankInterval);
++    // (KWIN_FRAME_SLACK_US: that slack, with a timer that keeps the planned time)
++    const std::chrono::nanoseconds slack = preciseTimerNotifier ? *s_frameSlack : 1ms;
++    std::chrono::nanoseconds expectedCompositingTime = std::min(renderJournal.result() + safetyMargin + slack + lateFlipCompensation, 2 * vblankInterval);
+ 
+     if (presentationMode == PresentationMode::VSync) {
+         // normal presentation: pageflips only happen at vblank
+@@ -79,7 +141,7 @@ void RenderLoopPrivate::scheduleRepaint(std::chrono::nanoseconds lastTargetTimes
+         } else if (warmupFramesLeft > 0) {
+             expectedCompositingTime = std::max(vblankInterval - 1us, expectedCompositingTime);
+             warmupFramesLeft--;
+-        } else if (s_idleFrameEarly && pageflipsSince >= 2 && !compositeTimer.isActive()) {
++        } else if (s_idleFrameEarly && pageflipsSince >= 2 && !compositeTimerActive()) {
+             // the loop was idle: nothing waits on this frame's place in the
+             // cadence, so render it now rather than hold it for the lead
+             expectedCompositingTime = std::max(vblankInterval - 1us, expectedCompositingTime);
+@@ -109,7 +171,7 @@ void RenderLoopPrivate::scheduleRepaint(std::chrono::nanoseconds lastTargetTimes
+             }
+         }
+ 
+-        if (compositeTimer.isActive()) {
++        if (compositeTimerActive()) {
+             // we already scheduled this frame, but we got a new timestamp
+             // which might require starting to composite earlier than we planned
+             // It's important here that we do not change the targeted vblank interval,
+@@ -135,7 +197,7 @@ void RenderLoopPrivate::scheduleRepaint(std::chrono::nanoseconds lastTargetTimes
+ 
+     const std::chrono::nanoseconds nextRenderTimestamp = nextPresentationTimestamp - expectedCompositingTime;
+     scheduledLate = nextRenderTimestamp < currentTime;
+-    compositeTimer.start(std::max(0ms, std::chrono::duration_cast<std::chrono::milliseconds>(nextRenderTimestamp - currentTime)), Qt::PreciseTimer, q);
++    startCompositeTimer(nextRenderTimestamp, currentTime);
+ }
+ 
+ void RenderLoopPrivate::delayScheduleRepaint()
+@@ -207,7 +269,7 @@ void RenderLoopPrivate::notifyFrameCompleted(std::chrono::nanoseconds timestamp,
+             lateFlipCompensation = std::max<std::chrono::nanoseconds>(lateFlipCompensation - s_lateFlipStep / 50, 0ns);
+         }
+     }
+-    if (compositeTimer.isActive()) {
++    if (compositeTimerActive()) {
+         // reschedule to match the new timestamp and render time
+         scheduleRepaint(lastPresentationTimestamp);
+     }
+@@ -263,7 +325,7 @@ void RenderLoop::inhibit()
+     d->inhibitCount++;
+ 
+     if (d->inhibitCount == 1) {
+-        d->compositeTimer.stop();
++        d->stopCompositeTimer();
+     }
+ }
+ 
+@@ -301,7 +363,7 @@ void RenderLoop::setRefreshRate(int refreshRate)
+     d->refreshRate = refreshRate;
+     Q_EMIT refreshRateChanged();
+ 
+-    if (d->compositeTimer.isActive()) {
++    if (d->compositeTimerActive()) {
+         d->scheduleRepaint(d->lastPresentationTimestamp);
+     }
+ }
+diff --git a/src/core/renderloop_p.h b/src/core/renderloop_p.h
+index 3ad823c..cdc9c6d 100644
+--- a/src/core/renderloop_p.h
++++ b/src/core/renderloop_p.h
+@@ -9,10 +9,13 @@
+ #include "renderbackend.h"
+ #include "renderjournal.h"
+ #include "renderloop.h"
++#include "utils/filedescriptor.h"
+ 
+ #include <QBasicTimer>
++#include <QSocketNotifier>
+ 
+ #include <fstream>
++#include <memory>
+ #include <optional>
+ 
+ namespace KWin
+@@ -37,6 +40,13 @@ public:
+     void notifyFrameCompleted(std::chrono::nanoseconds timestamp, std::optional<RenderTimeSpan> renderTime, PresentationMode mode, OutputFrame *frame);
+     void notifyVblank(std::chrono::nanoseconds timestamp);
+ 
++    // the composite timer: compositeTimer, or with KWIN_FRAME_SLACK_US set a
++    // timerfd that wakes the loop at the planned time rather than whole
++    // milliseconds early
++    bool compositeTimerActive() const;
++    void startCompositeTimer(std::chrono::nanoseconds renderTimestamp, std::chrono::nanoseconds currentTime);
++    void stopCompositeTimer();
++
+     RenderLoop *const q;
+     BackendOutput *const output;
+     std::optional<std::fstream> m_debugOutput;
+@@ -45,6 +55,9 @@ public:
+     bool wasTripleBuffering = false;
+     int doubleBufferingCounter = 0;
+     QBasicTimer compositeTimer;
++    FileDescriptor preciseTimer;
++    std::unique_ptr<QSocketNotifier> preciseTimerNotifier;
++    bool preciseTimerArmed = false;
+     RenderJournal renderJournal;
+     int refreshRate = 60000;
+     int pendingFrameCount = 0;

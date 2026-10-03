@@ -1,0 +1,62 @@
+#!/bin/sh
+# vitrine guest tools: build the patched virtio-gpu driver (DKMS module
+# vitrine-virtio-gpu) for every installed kernel that has its headers
+# (kernel-devel), then make the initramfs of those kernels again: the driver
+# loads from there.  Kernels installed later get it from dkms's own
+# kernel-install hook (40-dkms.install, which runs before dracut's).
+#
+#   dkms-sync [--no-initramfs | --all-initramfs]
+#     --no-initramfs   the caller makes the initramfs (the installer, once)
+#     --all-initramfs  every kernel's initramfs, not only those of kernels
+#                      the driver was built for now (its options changed)
+set -u
+name=vitrine-virtio-gpu
+version=@VERSION@
+initramfs=changed
+for a in "$@"; do
+	case "$a" in
+	--no-initramfs) initramfs=none ;;
+	--all-initramfs) initramfs=all ;;
+	*) echo "unknown argument $a" >&2; exit 2 ;;
+	esac
+done
+say() { echo "vitrine-virtio-gpu: $*"; }
+
+[ -d "/usr/src/$name-$version" ] || { say "no sources in /usr/src/$name-$version" >&2; exit 1; }
+if ! dkms status -m "$name" -v "$version" 2> /dev/null | grep -q .; then
+	dkms add -m "$name" -v "$version" || exit 1
+fi
+
+rc=0
+changed=""
+for dir in /lib/modules/*/; do
+	k=$(basename "$dir")
+	# what a removed kernel leaves behind
+	[ -e "$dir/vmlinuz" ] || continue
+	if [ ! -e "$dir/build/Makefile" ]; then
+		say "$k: no kernel headers (kernel-devel-$k), it keeps the stock driver"
+		continue
+	fi
+	if dkms status -m "$name" -v "$version" -k "$k" 2> /dev/null | grep -q ': installed'; then
+		say "$k: built already"
+		continue
+	fi
+	say "$k: building"
+	if dkms install -m "$name" -v "$version" -k "$k"; then
+		changed="$changed $k"
+	else
+		say "$k: the build failed, see /var/lib/dkms/$name/$version/build/make.log" >&2
+		rc=1
+	fi
+done
+
+case "$initramfs" in
+none) ;;
+all) kernels=$(for d in /lib/modules/*/; do [ -e "$d/vmlinuz" ] && basename "$d"; done) ;;
+changed) kernels=$changed ;;
+esac
+for k in ${kernels:-}; do
+	say "$k: initramfs"
+	dracut -f --kver "$k" || rc=1
+done
+exit $rc

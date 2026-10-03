@@ -1,0 +1,119 @@
+--- a/src/core/renderbackend.h
++++ b/src/core/renderbackend.h
+@@ -13,6 +13,7 @@
+ 
+ #include <QObject>
+ #include <QPointer>
++#include <atomic>
+ #include <memory>
+ 
+ namespace KWin
+@@ -119,6 +120,15 @@
+ private:
+     std::optional<RenderTimeSpan> queryRenderTime() const;
+ 
++public:
++    /**
++     * The backend found the frame's GPU work done at @p when, having waited for
++     * it: the render time then reaches up to that, whatever the queries say.
++     * Callable from the backend's threads.
++     */
++    void setGpuDone(std::chrono::steady_clock::time_point when);
++
++private:
+     const QPointer<RenderLoop> m_loop;
+     const std::chrono::nanoseconds m_refreshDuration;
+     const std::chrono::steady_clock::time_point m_targetPageflipTime;
+@@ -128,6 +138,9 @@
+     std::optional<ContentType> m_contentType;
+     PresentationMode m_presentationMode = PresentationMode::VSync;
+     std::vector<std::unique_ptr<RenderTimeQuery>> m_renderTimeQueries;
++    // when the frame's GPU work was found done, told by the backend that
++    // waited for it (any thread); 0 when nobody had to wait
++    std::atomic<int64_t> m_gpuDoneNs{0};
+     bool m_presented = false;
+     bool m_cursorRendered = false;
+     bool m_contentRendered = false;
+--- a/src/core/renderbackend.cpp
++++ b/src/core/renderbackend.cpp
+@@ -65,6 +65,11 @@
+     m_feedbacks.push_back(std::move(feedback));
+ }
+ 
++void OutputFrame::setGpuDone(std::chrono::steady_clock::time_point when)
++{
++    m_gpuDoneNs.store(when.time_since_epoch().count(), std::memory_order_relaxed);
++}
++
+ std::optional<RenderTimeSpan> OutputFrame::queryRenderTime() const
+ {
+     if (m_renderTimeQueries.empty()) {
+@@ -82,6 +87,12 @@
+         }
+         ret = ret | *opt;
+     }
++    // the GPU was seen still at work after the queries' end (the queries only
++    // measure the CPU where the GPU clock is not read): the frame took that long
++    const std::chrono::steady_clock::time_point gpuDone{std::chrono::nanoseconds(m_gpuDoneNs.load(std::memory_order_relaxed))};
++    if (gpuDone.time_since_epoch().count() && gpuDone > ret.end) {
++        ret.end = gpuDone;
++    }
+     return ret;
+ }
+ 
+--- a/src/backends/drm/drm_commit.h
++++ b/src/backends/drm/drm_commit.h
+@@ -76,6 +76,11 @@
+     void pageFlipped(std::chrono::nanoseconds timestamp) override;
+ 
+     bool areBuffersReadable() const;
++    /**
++     * The buffers were found readable at @p when after a wait: their frames'
++     * GPU work ended then
++     */
++    void markGpuDone(std::chrono::steady_clock::time_point when);
+     void setDeadline(std::chrono::steady_clock::time_point deadline);
+     std::optional<bool> isVrr() const;
+     /**
+--- a/src/backends/drm/drm_commit.cpp
++++ b/src/backends/drm/drm_commit.cpp
+@@ -200,6 +200,15 @@
+     });
+ }
+ 
++void DrmAtomicCommit::markGpuDone(std::chrono::steady_clock::time_point when)
++{
++    for (const auto &[plane, frame] : m_frames) {
++        if (frame) {
++            frame->setGpuDone(when);
++        }
++    }
++}
++
+ void DrmAtomicCommit::setDeadline(std::chrono::steady_clock::time_point deadline)
+ {
+     for (const auto &[plane, buffer] : m_buffers) {
+--- a/src/backends/drm/drm_commit_thread.cpp
++++ b/src/backends/drm/drm_commit_thread.cpp
+@@ -100,8 +100,10 @@
+                 // rather than give the whole refresh away.
+                 const auto giveUp = m_targetPageflipTime + s_commitGrace;
+                 bool changed = false;
++                bool waited = false;
+                 while (!m_commits.front()->areBuffersReadable() && std::chrono::steady_clock::now() < giveUp) {
+                     const auto commits = m_commits.size();
++                    waited = true;
+                     lock.unlock();
+                     std::this_thread::sleep_for(50us);
+                     lock.lock();
+@@ -113,6 +115,10 @@
+                 if (changed) {
+                     continue;
+                 }
++                if (waited && m_commits.front()->areBuffersReadable()) {
++                    // the render loop learns how long the GPU really took
++                    m_commits.front()->markGpuDone(std::chrono::steady_clock::now());
++                }
+             }
+             if (!m_commits.front()->isReadyFor(m_targetPageflipTime)) {
+                 // no commit is ready yet, reschedule

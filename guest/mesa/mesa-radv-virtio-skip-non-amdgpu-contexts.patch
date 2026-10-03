@@ -1,0 +1,70 @@
+radv: skip virtio-gpu devices without an amdgpu native context
+
+With -Damdgpu-virtio=true, RADV accepts every virtio-gpu device and only
+finds out while initializing the winsys that the native context belongs to
+another driver (e.g. an Intel Xe or i915 context when intel-virtio is
+enabled in the same build). It then prints "vdrm_device_connect failed" and
+"radv/amdgpu: failed to initialize device." and returns
+VK_ERROR_INITIALIZATION_FAILED, so the Vulkan loader also logs an error for
+the RADV ICD in every Vulkan application.
+
+Query the DRM capset first, like the gallium pipe-loader does, and return
+VK_ERROR_INCOMPATIBLE_DRIVER without logging when the context type is not
+VIRTGPU_DRM_CONTEXT_AMDGPU.
+
+--- a/src/amd/vulkan/radv_physical_device.c
++++ b/src/amd/vulkan/radv_physical_device.c
+@@ -40,6 +40,10 @@
+ #include "drm-uapi/amdgpu_drm.h"
+ #include "util/os_drm.h"
+ #include "winsys/amdgpu/radv_amdgpu_winsys_public.h"
++#ifdef HAVE_AMDGPU_VIRTIO
++#include "drm-uapi/virtgpu_drm.h"
++#include "virtio/virtio-gpu/drm_hw.h"
++#endif
+ #endif
+ #include "git_sha1.h"
+ 
+@@ -2514,6 +2518,30 @@
+    return true;
+ }
+ 
++#ifdef HAVE_AMDGPU_VIRTIO
++/* A virtio-gpu device may expose a native context for another driver (or none
++ * at all), so check the context type before trying to initialize it. Skip the
++ * device silently on a mismatch, like vdrm does, instead of failing the whole
++ * enumeration with VK_ERROR_INITIALIZATION_FAILED and logging errors.
++ */
++static bool
++radv_is_amdgpu_virtio_device(int fd)
++{
++   struct virgl_renderer_capset_drm caps = {0};
++   struct drm_virtgpu_get_caps args = {
++      .cap_set_id = VIRTGPU_DRM_CAPSET_DRM,
++      .cap_set_ver = 0,
++      .addr = (uintptr_t)&caps,
++      .size = sizeof(caps),
++   };
++
++   if (drmIoctl(fd, DRM_IOCTL_VIRTGPU_GET_CAPS, &args))
++      return false;
++
++   return caps.context_type == VIRTGPU_DRM_CONTEXT_AMDGPU;
++}
++#endif
++
+ static VkResult
+ radv_physical_device_try_create(struct radv_instance *instance, drmDevicePtr drm_device,
+                                 struct radv_physical_device **pdev_out)
+@@ -2554,6 +2582,11 @@
+    } else
+ #ifdef HAVE_AMDGPU_VIRTIO
+       if (!strcmp(version->name, "virtio_gpu")) {
++      if (!radv_is_amdgpu_virtio_device(fd)) {
++         drmFreeVersion(version);
++         close(fd);
++         return VK_ERROR_INCOMPATIBLE_DRIVER;
++      }
+       drm_device_type = RADV_DRM_DEVICE_VIRTIO;
+    } else
+ #endif

@@ -1,0 +1,58 @@
+Subject: [PATCH] drm/virtio: keep the damage clips on a flip unless the buffer is dumb
+
+Since "drm/virtio: Disable damage clipping if FB changed since last
+page-flip" the driver flushes the whole plane whenever the framebuffer
+changes, because uploads are done per buffer.  A compositor flips to
+another buffer of its swapchain every frame, so every flush covers the
+whole screen, although the commit's damage clips say what changed.
+
+A blob - a native context's buffer, or guest memory the host maps
+itself - is not uploaded: the host renders into it or reads it directly.  For it the clips only tell the host
+which part of the screen changed since the previous frame, whichever
+buffer that was in, and a host that copies the scanout into buffers of its
+own (QEMU's SDL window with its own swapchain) can copy just that instead
+of a whole 4K frame per refresh.
+
+Only dumb buffers are uploaded per buffer: keep the clips for every other
+framebuffer; a dumb one still flushes the whole plane on a flip.  The flag
+is now decided for every commit: a duplicated plane state inherits it, so
+once set (at the first flip after boot) it stayed set for good.  Module parameter blob_damage=0 restores the full
+flushes.
+
+--- a/drivers/gpu/drm/virtio/virtgpu_plane.c
++++ b/drivers/gpu/drm/virtio/virtgpu_plane.c
+@@ -40,6 +40,11 @@
+ MODULE_PARM_DESC(flush_unchanged, "Flush the scanout on commits that leave it unchanged (default 0)");
+ module_param_named(flush_unchanged, virtio_gpu_modparam_flush_unchanged, int, 0644);
+ 
++/* blob_damage=0 flushes the whole plane again whenever a framebuffer is flipped in */
++static int virtio_gpu_modparam_blob_damage = 1;
++MODULE_PARM_DESC(blob_damage, "Keep the damage clips when a framebuffer that is not a dumb buffer is flipped in (default 1)");
++module_param_named(blob_damage, virtio_gpu_modparam_blob_damage, int, 0644);
++
+ static const uint32_t virtio_gpu_formats[] = {
+ 	DRM_FORMAT_HOST_XRGB8888,
+ };
+@@ -120,9 +125,20 @@
+ 	 * Ignore damage clips if the framebuffer attached to the plane's state
+ 	 * has changed since the last plane update (page-flip). In this case, a
+ 	 * full plane update should happen because uploads are done per-buffer.
++	 *
++	 * Only dumb buffers are uploaded: the host renders into the others or reads the guest's
++	 * memory itself, so the clips only tell the host which part of the
++	 * screen changed since the previous frame, whichever buffer that was in
++	 * - the damage of the atomic commit.  A host that copies the scanout
++	 * into its own buffers can then copy just that.
++	 *
++	 * The flag is decided anew for every commit: a duplicated plane state
++	 * inherits it, and once set it would stay set.
+ 	 */
+-	if (old_plane_state->fb != new_plane_state->fb)
+-		new_plane_state->ignore_damage_clips = true;
++	new_plane_state->ignore_damage_clips =
++		old_plane_state->fb != new_plane_state->fb &&
++		!(virtio_gpu_modparam_blob_damage &&
++		  !gem_to_virtio_gpu_obj(new_plane_state->fb->obj[0])->dumb);
+ 
+ 	crtc_state = drm_atomic_get_crtc_state(state,
+ 					       new_plane_state->crtc);

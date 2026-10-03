@@ -1,0 +1,116 @@
+Zero-copy display with tiled buffers: the module option tiled_scanout=1 makes
+the primary planes advertise, besides linear, GFX11's 256 KiB and 64 KiB R_X
+swizzles without DCC for every count of pipes and packers.
+
+A host that reads the layout of the guest's scanout buffer from its amdgpu
+metadata (the qemu-gui fork's QEMU_SDL_ZC_TILED=explicit) can put tiled
+buffers on its screen as they are.  Without modifiers on the planes the
+compositor's buffers are tiled already, but a fullscreen client's are then
+allocated with modifiers the plane does not list, and the compositor
+composites it instead of scanning it out: +2.7 ms key to screen on the
+laptop (2026-10-03).  With linear_scanout=1 everything is linear instead,
+which costs the compositor and the copy path.  This list lets guest Mesa
+pick the tiled layout of its GPU (it ignores the entries of other GPUs) for
+both.  DCC stays out: its planes would have to be passed along.  The cursor
+plane keeps linear only.  Read at probe (0444): a kernel argument.
+
+--- a/drivers/gpu/drm/virtio/virtgpu_display.c	2026-10-03 03:40:21.044850993 +0200
++++ b/drivers/gpu/drm/virtio/virtgpu_display.c	2026-10-03 03:40:21.046417253 +0200
+@@ -105,6 +105,18 @@
+ MODULE_PARM_DESC(linear_scanout, "Advertise the linear modifier, so that scanout buffers are linear (zero-copy display, default 0)");
+ module_param_named(linear_scanout, virtio_gpu_modparam_linear_scanout, int, 0444);
+ 
++/*
++ * Zero copy with tiled buffers: a host that reads the layout from the
++ * buffer's amdgpu metadata (the qemu-gui fork) can show tiled buffers too.
++ * The primary planes then also advertise the tiled layouts that guest Mesa
++ * may choose for the GPU (see virtio_gpu_scanout_modifiers), so that the
++ * compositor's buffers and a fullscreen client's stay tiled and the latter
++ * can still go to the plane directly.  Read at probe: a module option.
++ */
++int virtio_gpu_modparam_tiled_scanout;
++MODULE_PARM_DESC(tiled_scanout, "Advertise tiled AMD layouts (GFX11 R_X, no DCC) on the primary planes besides linear, for a host that reads the layout from the buffer (zero-copy display, default 0)");
++module_param_named(tiled_scanout, virtio_gpu_modparam_tiled_scanout, int, 0444);
++
+ static ktime_t virtio_gpu_vblank_interval(struct virtio_gpu_output *output)
+ {
+ 	/* 60 Hz until there is a mode */
+@@ -771,7 +783,8 @@
+ 	vgdev->ddev->mode_config.max_height = YRES_MAX;
+ 
+ 	vgdev->ddev->mode_config.fb_modifiers_not_supported =
+-		!virtio_gpu_modparam_linear_scanout;
++		!virtio_gpu_modparam_linear_scanout &&
++		!virtio_gpu_modparam_tiled_scanout;
+ 
+ 	for (i = 0 ; i < vgdev->num_scanouts; ++i)
+ 		vgdev_output_init(vgdev, i);
+--- a/drivers/gpu/drm/virtio/virtgpu_drv.h	2026-10-03 03:40:21.047319457 +0200
++++ b/drivers/gpu/drm/virtio/virtgpu_drv.h	2026-10-03 03:40:21.048768406 +0200
+@@ -241,6 +241,7 @@
+ extern int virtio_gpu_modparam_flip_grace_us;
+ extern int virtio_gpu_modparam_blob_flush_fence;
+ extern int virtio_gpu_modparam_linear_scanout;
++extern int virtio_gpu_modparam_tiled_scanout;
+ bool virtio_gpu_flip_in_grace(struct virtio_gpu_output *output);
+ bool virtio_gpu_host_vblank_irq(struct virtio_gpu_device *vgdev);
+ void virtio_gpu_host_vblank(struct virtio_gpu_device *vgdev, u32 mask);
+--- a/drivers/gpu/drm/virtio/virtgpu_plane.c	2026-10-03 03:40:21.049606839 +0200
++++ b/drivers/gpu/drm/virtio/virtgpu_plane.c	2026-10-03 03:40:21.051141109 +0200
+@@ -59,6 +59,42 @@
+ 	DRM_FORMAT_MOD_INVALID,
+ };
+ 
++/*
++ * tiled_scanout: linear and GFX11's 256 KiB and 64 KiB R_X swizzles without
++ * DCC, for every count of pipes and packers - the GPU is the host's, which
++ * this driver does not know; guest Mesa only takes the ones of its GPU from
++ * the list, and the host finds the layout in the buffer's metadata.  DCC is
++ * left out: its planes would have to be passed along.
++ */
++#define VIRTIO_GPU_TILED_MODIFIERS (1 + 2 * 8 * 8 + 1)
++static uint64_t virtio_gpu_tiled_modifiers[VIRTIO_GPU_TILED_MODIFIERS];
++
++static const uint64_t *virtio_gpu_primary_modifiers(void)
++{
++	static const int tiles[] = {
++		AMD_FMT_MOD_TILE_GFX11_256K_R_X,
++		AMD_FMT_MOD_TILE_GFX9_64K_R_X,
++	};
++	int n = 0, t, pipes, packers;
++
++	if (!virtio_gpu_modparam_tiled_scanout)
++		return virtio_gpu_modparam_linear_scanout ?
++			virtio_gpu_linear_modifiers : NULL;
++	if (virtio_gpu_tiled_modifiers[VIRTIO_GPU_TILED_MODIFIERS - 1] == DRM_FORMAT_MOD_INVALID)
++		return virtio_gpu_tiled_modifiers;
++	for (t = 0; t < ARRAY_SIZE(tiles); t++)
++		for (pipes = 0; pipes < 8; pipes++)
++			for (packers = 0; packers < 8; packers++)
++				virtio_gpu_tiled_modifiers[n++] = AMD_FMT_MOD |
++					AMD_FMT_MOD_SET(TILE_VERSION, AMD_FMT_MOD_TILE_VER_GFX11) |
++					AMD_FMT_MOD_SET(TILE, tiles[t]) |
++					AMD_FMT_MOD_SET(PIPE_XOR_BITS, pipes) |
++					AMD_FMT_MOD_SET(PACKERS, packers);
++	virtio_gpu_tiled_modifiers[n++] = DRM_FORMAT_MOD_LINEAR;
++	virtio_gpu_tiled_modifiers[n] = DRM_FORMAT_MOD_INVALID;
++	return virtio_gpu_tiled_modifiers;
++}
++
+ uint32_t virtio_gpu_translate_format(uint32_t drm_fourcc)
+ {
+ 	uint32_t format;
+@@ -776,8 +812,11 @@
+ 	plane = drmm_universal_plane_alloc(dev, struct drm_plane, dev,
+ 					   1 << index, &virtio_gpu_plane_funcs,
+ 					   formats, nformats,
+-					   virtio_gpu_modparam_linear_scanout ?
+-					   virtio_gpu_linear_modifiers : NULL,
++					   type == DRM_PLANE_TYPE_CURSOR ?
++					   (virtio_gpu_modparam_linear_scanout ||
++					    virtio_gpu_modparam_tiled_scanout ?
++					    virtio_gpu_linear_modifiers : NULL) :
++					   virtio_gpu_primary_modifiers(),
+ 					   type, NULL);
+ 	if (IS_ERR(plane))
+ 		return plane;

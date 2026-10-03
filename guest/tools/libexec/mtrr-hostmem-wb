@@ -1,0 +1,30 @@
+#!/bin/sh
+# vitrine guest tools: drop the uncachable MTRR that covers the virtio-gpu hostmem BAR.
+#
+# OVMF marks every PCI memory BAR uncachable in the MTRRs it installs (edk2
+# PR #13129).  The guest kernel then turns every write-back request on that
+# range into UC- (pat_x_mtrr_type()), and with honor-guest-pat=on that is the
+# type the hardware uses.  CPU access to "cached" GPU buffers then runs at
+# uncached speed: about 75 MB/s instead of 32 GB/s, measured with
+# bench/cachetype_probe.
+#
+# Removing the entry leaves the 64-bit PCI window on the default MTRR type,
+# which is write-back here.  Device registers are unaffected: drivers map them
+# with ioremap(), which asks for UC- explicitly.
+#
+# Only mappings created afterwards change, so this has to run before the
+# display manager.  MTRRs are reprogrammed by the firmware at every boot.
+set -eu
+
+# The 64-bit window sits above 4 GiB, so match a base with at least 10 hex
+# digits; the 2-4 GiB entry has 9 and is left alone.
+reg=$(sed -n 's/^reg\([0-9][0-9]*\): base=0x[0-9a-f]\{10,\} .*uncachable$/\1/p' \
+      /proc/mtrr | head -1)
+
+if [ -z "$reg" ]; then
+	echo "mtrr-hostmem-wb: no uncachable MTRR above 4 GiB, nothing to do"
+	exit 0
+fi
+
+echo "disable=$reg" > /proc/mtrr
+echo "mtrr-hostmem-wb: disabled reg$reg"

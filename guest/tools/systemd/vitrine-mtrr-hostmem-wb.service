@@ -1,0 +1,15 @@
+[Unit]
+Description=vitrine: drop the uncachable MTRR over the virtio-gpu hostmem BAR
+Documentation=https://github.com/tianocore/edk2/pull/13129
+ConditionVirtualization=vm
+ConditionPathExists=/proc/mtrr
+# only mappings made afterwards change: before the desktop
+Before=display-manager.service plasmalogin.service sddm.service gdm.service
+
+[Service]
+Type=oneshot
+ExecStart=/usr/libexec/vitrine-guest-tools/mtrr-hostmem-wb
+RemainAfterExit=yes
+
+[Install]
+WantedBy=multi-user.target

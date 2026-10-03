@@ -1,0 +1,65 @@
+Subject: [PATCH] radeonsi: keep buffers in the reuse cache longer under virtio-gpu
+
+The amdgpu winsys releases an unused buffer from pb_cache half a second
+after the last reference to it goes away.  Dropping it costs whatever the
+CPU mapping of its replacement costs, and on bare metal that is cheap:
+first touching every page of a fresh 16 MiB mapping takes 0.8 ms on an
+RX 9070 XT, roughly 0.2 us per 4 KiB page.
+
+Behind a virtio-gpu native context it is not cheap.  Every page of a new
+mapping faults into a range the host GPU driver exposes to the VMM, which
+the guest resolves one 4 KiB page at a time: the same 16 MiB mapping takes
+18 ms in the guest, about 4.3 us per page.  The cost is linear in the
+number of pages and measures the same on an Intel Xe host, so it comes
+from the virtualisation path rather than from the amdgpu driver.
+
+A cache hit avoids all of it, because a cached buffer keeps the CPU
+mapping it already faulted in.  But half a second is short enough that
+ordinary desktop work keeps missing: an animation that starts after a
+pause reallocates and refaults everything.  In the guest that measured
+19.4 ms for a 16 MiB buffer allocated, mapped and written after 2.5 s of
+idle, against 1.5 ms on the host.
+
+So hold buffers for eight seconds when the device is virtio.  Bare metal
+keeps the half second timeout.  pb_cache still enforces its own size
+limit, so the longer timeout needs no further bound.
+
+Only compile-tested: this was developed in a guest with an Intel host, and
+measured there with the equivalent iris change.  The amdgpu numbers above
+come from the same benchmark run on an RX 9070 XT host.
+---
+--- a/src/gallium/winsys/amdgpu/drm/amdgpu_winsys.c
++++ b/src/gallium/winsys/amdgpu/drm/amdgpu_winsys.c
+@@ -35,6 +35,22 @@
+ static struct hash_table *dev_tab = NULL;
+ static simple_mtx_t dev_tab_mutex = SIMPLE_MTX_INITIALIZER;
+ 
++/**
++ * How long an unused buffer stays in the cache, on bare metal and behind a
++ * virtio-gpu native context.
++ *
++ * Dropping a cached buffer costs whatever the CPU mapping of its replacement
++ * costs, which on bare metal is about 0.2 us per 4 KiB page.  In a guest each
++ * page of a new mapping instead faults into a range the host GPU driver
++ * exposes, measured at about 4 us per page: first touching a new 16 MiB
++ * mapping takes 18 ms in the guest against 0.8 ms on the host.  A cache hit
++ * skips all of it.  So hold buffers long enough for work that resumes after a
++ * pause - an animation, a window being resized again - to reuse them rather
++ * than fault in a new mapping.  pb_cache still enforces its size limit.
++ */
++#define BO_CACHE_USECS 500000
++#define BO_CACHE_USECS_VIRTIO 8000000
++
+ #if MESA_DEBUG
+ DEBUG_GET_ONCE_BOOL_OPTION(all_bos, "RADEON_ALL_BOS", false)
+ #endif
+@@ -506,7 +522,8 @@
+ 
+       /* Create managers. */
+       pb_cache_init(&aws->bo_cache, RADEON_NUM_HEAPS,
+-                    500000, aws->check_vm ? 1.0f : 1.5f, 0,
++                    is_virtio ? BO_CACHE_USECS_VIRTIO : BO_CACHE_USECS,
++                    aws->check_vm ? 1.0f : 1.5f, 0,
+                     ((uint64_t)aws->info.vram_size_kb + aws->info.gart_size_kb) * 1024 / 8,
+                     offsetof(struct amdgpu_bo_real_reusable, cache_entry), aws,
+                     /* Cast to void* because one of the function parameters

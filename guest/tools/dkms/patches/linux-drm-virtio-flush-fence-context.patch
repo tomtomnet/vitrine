@@ -1,0 +1,83 @@
+Zero-copy display: the flush fence the host holds until its compositor
+released the buffer shown before gets a dma-fence context of its own.
+
+virtio_gpu_fence_event_process() signals, with each completed fence, every
+earlier fence of the same context.  The held flush fence shared the default
+context with the cursor plane's transfers and resource commands, so any of
+them completing while the host held the flush signalled it early: the flip
+event went out, the compositor rendered into a buffer the host still showed
+(corruption of moved windows, a darker panel for a refresh).  The command
+still goes out without a ring index, so the host still holds it.
+
+diff -ru a/drivers/gpu/drm/virtio/virtgpu_display.c b/drivers/gpu/drm/virtio/virtgpu_display.c
+--- a/drivers/gpu/drm/virtio/virtgpu_display.c	2026-10-02 10:28:50.705614608 +0200
++++ b/drivers/gpu/drm/virtio/virtgpu_display.c	2026-10-02 10:29:01.310638844 +0200
+@@ -672,6 +672,7 @@
+ 	int ret;
+ 
+ 	output->index = index;
++	output->flush_fence_context = dma_fence_context_alloc(1);
+ 	spin_lock_init(&output->vblank_lock);
+ 	hrtimer_setup(&output->vblank_timer, virtio_gpu_vblank_timer,
+ 		      CLOCK_MONOTONIC, HRTIMER_MODE_ABS);
+diff -ru a/drivers/gpu/drm/virtio/virtgpu_drv.h b/drivers/gpu/drm/virtio/virtgpu_drv.h
+--- a/drivers/gpu/drm/virtio/virtgpu_drv.h	2026-10-02 10:28:50.705686883 +0200
++++ b/drivers/gpu/drm/virtio/virtgpu_drv.h	2026-10-02 10:28:50.720223047 +0200
+@@ -227,6 +227,7 @@
+ 	 * are under the device's event_lock.
+ 	 */
+ 	struct dma_fence *flip_fence;	/* from the plane update to the crtc flush */
++	u64 flush_fence_context;	/* the held flush fences' own (see prepare_fb) */
+ 	struct drm_pending_vblank_event *gated_event;
+ 	struct dma_fence *gate_fence;
+ 	u64 gate_count;			/* the vblank it is due at */
+@@ -527,6 +528,7 @@
+ struct virtio_gpu_fence *virtio_gpu_fence_alloc(struct virtio_gpu_device *vgdev,
+ 						uint64_t base_fence_ctx,
+ 						uint32_t ring_idx);
++void virtio_gpu_fence_own_context(struct virtio_gpu_fence *fence, u64 context);
+ void virtio_gpu_fence_emit(struct virtio_gpu_device *vgdev,
+ 			  struct virtio_gpu_ctrl_hdr *cmd_hdr,
+ 			  struct virtio_gpu_fence *fence);
+diff -ru a/drivers/gpu/drm/virtio/virtgpu_fence.c b/drivers/gpu/drm/virtio/virtgpu_fence.c
+--- a/drivers/gpu/drm/virtio/virtgpu_fence.c	2026-10-02 10:28:50.705800436 +0200
++++ b/drivers/gpu/drm/virtio/virtgpu_fence.c	2026-10-02 10:28:50.720253955 +0200
+@@ -81,6 +81,19 @@
+ 	return fence;
+ }
+ 
++/*
++ * Move a fence not emitted yet to a dma-fence context of its own.  Fences of a
++ * context complete in order: virtio_gpu_fence_event_process() signals the
++ * earlier ones of a context with each, which is wrong for a fence the host
++ * completes late on purpose (the flush held for the compositor's release, zero
++ * copy).  The command still goes out without a ring index.
++ */
++void virtio_gpu_fence_own_context(struct virtio_gpu_fence *fence, u64 context)
++{
++	dma_fence_init(&fence->f, &virtio_gpu_fence_ops, &fence->drv->lock,
++		       context, 0);
++}
++
+ void virtio_gpu_fence_emit(struct virtio_gpu_device *vgdev,
+ 			  struct virtio_gpu_ctrl_hdr *cmd_hdr,
+ 			  struct virtio_gpu_fence *fence)
+diff -ru a/drivers/gpu/drm/virtio/virtgpu_plane.c b/drivers/gpu/drm/virtio/virtgpu_plane.c
+--- a/drivers/gpu/drm/virtio/virtgpu_plane.c	2026-10-02 10:28:50.705939598 +0200
++++ b/drivers/gpu/drm/virtio/virtgpu_plane.c	2026-10-02 10:28:50.720313847 +0200
+@@ -440,6 +440,15 @@
+ 						     0);
+ 		if (!vgplane_st->fence)
+ 			return -ENOMEM;
++		/*
++		 * Zero copy: the host holds this one until its compositor released
++		 * the buffer shown before; any other fence (a cursor update's, a
++		 * resource's) completing in the meantime must not signal it.
++		 */
++		if (virtio_gpu_modparam_blob_flush_fence && bo->host3d_blob &&
++		    plane->type == DRM_PLANE_TYPE_PRIMARY && new_state->crtc)
++			virtio_gpu_fence_own_context(vgplane_st->fence,
++				drm_crtc_to_virtio_gpu_output(new_state->crtc)->flush_fence_context);
+ 	}
+ 
+ 	if (drm_gem_is_imported(obj)) {

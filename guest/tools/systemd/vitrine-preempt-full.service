@@ -1,0 +1,18 @@
+# The research guests booted with preempt=full; this sets it at run time
+# (PREEMPT_DYNAMIC kernels), with no kernel argument to carry over to every
+# kernel.  With Fedora's default (lazy) a woken task waits for the next timer
+# tick before it takes the CPU from a busy one, and a frame crosses several
+# such wake-ups.
+[Unit]
+Description=vitrine: full kernel preemption
+ConditionVirtualization=vm
+ConditionPathExists=/sys/kernel/debug/sched/preempt
+After=sys-kernel-debug.mount
+
+[Service]
+Type=oneshot
+ExecStart=/bin/sh -c 'echo full > /sys/kernel/debug/sched/preempt'
+RemainAfterExit=yes
+
+[Install]
+WantedBy=multi-user.target

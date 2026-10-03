@@ -1,0 +1,544 @@
+#!/usr/bin/python3
+# SPDX-License-Identifier: GPL-2.0-or-later
+"""vitrine guest agent: tells vitrine, on the host, the state of the guest
+tools, and runs its few commands, over the virtio-serial port
+org.vitrine.agent.0 that vitrine gives every VM.
+
+Protocol: one JSON object per line, both ways.
+  host -> guest  {"cmd": "status" | "install-from-medium" | "request-reboot", "id": N}
+  guest -> host  {"type": "hello", "protocol": 1, "agent": VERSION, "status": {...}}
+                 {"type": "status", "id": N, "status": {...}}
+                 {"type": "progress", "id": N, "step": TEXT, "current": I, "total": T}
+                 {"type": "result", "id": N, "cmd": CMD, "ok": BOOL, "error": TEXT,
+                  "rebootNeeded": BOOL}
+                 {"type": "error", "id": N, "error": TEXT}
+The hello goes out each time the host side opens the port.  The commands are
+fixed actions: the host cannot make the guest run anything else.
+
+  vitrine-agent                 the service (vitrine-agent.service)
+  vitrine-agent --status        prints the status and exits
+  vitrine-agent --install DIR [--reboot]
+                                runs DIR/install (the tools medium) and reports
+                                its progress on the port; the bootstrap that
+                                vitrine passes the guest at boot does this
+"""
+
+import ctypes
+import errno
+import fcntl
+import json
+import os
+import re
+import select
+import struct
+import subprocess
+import sys
+import time
+
+AGENT_VERSION = "@VERSION@"
+PROTOCOL = 1
+PORT = "/dev/virtio-ports/org.vitrine.agent.0"
+LABEL = "VITRINETOOL"
+STATE_DIR = "/var/lib/vitrine-guest-tools"
+RUN_DIR = "/run/vitrine-guest-tools"
+DKMS_NAME = "vitrine-virtio-gpu"
+MAX_LINE = 65536
+# the installer's steps: "== [2/6] Installing the packages"
+STEP = re.compile(r"^== \[(\d+)/(\d+)\] (.*)$")
+PACKAGES = ["vitrine-guest-tools", "mesa-dri-drivers", "mesa-vulkan-drivers", "mesa-libEGL",
+            "mesa-libgbm", "kwin", "kwin-common", "kwin-libs", "plasma-workspace",
+            "gnome-shell", "kernel-core", "dkms"]
+CAPSETS = {1: "virgl", 2: "virgl2", 3: "gfxstream-vulkan", 4: "venus", 5: "cross-domain",
+           6: "drm"}
+
+
+def log(text):
+    print(text, flush=True)
+
+
+def run(cmd, timeout=60):
+    """The output of @cmd, empty if it fails to run"""
+    try:
+        return subprocess.run(cmd, capture_output=True, text=True, timeout=timeout).stdout
+    except (OSError, subprocess.SubprocessError):
+        return ""
+
+
+def read(path, default=None):
+    try:
+        with open(path, encoding="utf-8", errors="replace") as f:
+            return f.read().strip()
+    except OSError:
+        return default
+
+
+def os_release():
+    info = {}
+    for line in (read("/etc/os-release", "") or "").splitlines():
+        if "=" in line:
+            key, value = line.split("=", 1)
+            info[key] = value.strip().strip('"')
+    return {"id": info.get("ID"), "version": info.get("VERSION_ID"),
+            "name": info.get("PRETTY_NAME")}
+
+
+def secure_boot():
+    """True or False under UEFI, None without (BIOS)"""
+    try:
+        with open("/sys/firmware/efi/efivars/"
+                  "SecureBoot-8be4df61-93ca-11d2-aa0d-00e098e30200", "rb") as f:
+            data = f.read()
+        return len(data) >= 5 and data[4] == 1
+    except OSError:
+        return False if os.path.isdir("/sys/firmware/efi") else None
+
+
+def packages():
+    """{name: version-release} of the installed ones (x86_64 or noarch)"""
+    out = run(["rpm", "-q", "--qf", "%{NAME} %{VERSION}-%{RELEASE} %{ARCH}\n"] + PACKAGES)
+    found = {}
+    for line in out.splitlines():
+        parts = line.split()
+        if len(parts) == 3 and parts[2] != "i686":
+            # the newest kernel-core last
+            found[parts[0]] = parts[1]
+    return found
+
+
+def kernels():
+    """The installed kernels with their headers and the driver's DKMS state"""
+    states = {}
+    for line in run(["dkms", "status", "-m", DKMS_NAME]).splitlines():
+        # vitrine-virtio-gpu/0.1.0, 7.2.7-200.fc44.x86_64, x86_64: installed
+        m = re.match(r"^[^,]+/([^,]+), ([^,]+), [^:]+: (\w+)", line)
+        if m:
+            states[m.group(2)] = m.group(3)
+    found = []
+    try:
+        names = sorted(os.listdir("/lib/modules"))
+    except OSError:
+        names = []
+    for k in names:
+        if not os.path.exists(f"/lib/modules/{k}/vmlinuz"):
+            continue
+        headers = os.path.exists(f"/lib/modules/{k}/build/Makefile")
+        found.append({"version": k, "headers": headers,
+                      "driver": states.get(k, "missing" if headers else "no-headers")})
+    return found
+
+
+def driver():
+    taint = read("/sys/module/virtio_gpu/taint")
+    params = {}
+    for name in ("blob_flush_fence", "tiled_scanout", "host_vblank", "flip_grace_us"):
+        value = read(f"/sys/module/virtio_gpu/parameters/{name}")
+        if value is not None:
+            params[name] = value
+    return {"loaded": taint is not None, "patched": "O" in (taint or ""),
+            "taint": taint, "params": params,
+            "vblankoffdelay": read("/sys/module/drm/parameters/vblankoffdelay")}
+
+
+def virtio_render_node():
+    try:
+        nodes = sorted(n for n in os.listdir("/dev/dri") if n.startswith("renderD"))
+    except OSError:
+        return None
+    for node in nodes:
+        drv = os.path.realpath(f"/sys/class/drm/{node}/device/driver")
+        if os.path.basename(drv) == "virtio_gpu":
+            return f"/dev/dri/{node}"
+    return None
+
+
+def capsets():
+    """What the host offers the guest's GPU: the capability sets (virgl,
+    venus, drm = native context), from DRM_IOCTL_VIRTGPU_GETPARAM"""
+    node = virtio_render_node()
+    if not node:
+        return None
+    # _IOWR('d', DRM_COMMAND_BASE + DRM_VIRTGPU_GETPARAM, struct { u64 param; u64 value; })
+    request = (3 << 30) | (16 << 16) | (ord("d") << 8) | (0x40 + 0x03)
+
+    def getparam(fd, param):
+        value = ctypes.c_uint64(0)
+        arg = bytearray(struct.pack("QQ", param, ctypes.addressof(value)))
+        fcntl.ioctl(fd, request, arg, True)
+        return value.value & 0xffffffff
+
+    try:
+        fd = os.open(node, os.O_RDWR | os.O_CLOEXEC)
+    except OSError:
+        return None
+    try:
+        mask = getparam(fd, 7)            # VIRTGPU_PARAM_SUPPORTED_CAPSET_IDs
+        context_init = getparam(fd, 6)    # VIRTGPU_PARAM_CONTEXT_INIT
+    except OSError:
+        return None
+    finally:
+        os.close(fd)
+    return {"capsets": [name for bit, name in CAPSETS.items() if mask & (1 << bit)],
+            "contextInit": bool(context_init)}
+
+
+def sessions():
+    found = []
+    for line in run(["loginctl", "list-sessions", "--no-legend"]).splitlines():
+        sid = line.split()[0] if line.split() else ""
+        if not sid:
+            continue
+        props = {}
+        for p in run(["loginctl", "show-session", sid, "-p", "Type", "-p", "Desktop",
+                      "-p", "Class", "-p", "Active"]).splitlines():
+            if "=" in p:
+                key, value = p.split("=", 1)
+                props[key] = value
+        if props.get("Class") == "user" and props.get("Type") in ("wayland", "x11"):
+            found.append({"desktop": props.get("Desktop", ""), "type": props["Type"],
+                          "active": props.get("Active") == "yes"})
+    return found
+
+
+def preempt():
+    """The kernel's preemption model: the one in parentheses"""
+    text = read("/sys/kernel/debug/sched/preempt")
+    m = re.search(r"\((\w+)\)", text or "")
+    return m.group(1) if m else None
+
+
+def status(installing=False):
+    pkgs = packages()
+    desktops = {}
+    if "plasma-workspace" in pkgs:
+        desktops["kde"] = pkgs["plasma-workspace"].split("-")[0]
+    if "gnome-shell" in pkgs:
+        desktops["gnome"] = pkgs["gnome-shell"].split("-")[0]
+    installed_kwin = run(["rpm", "-q", "kwin"]).strip()
+    tools_kwin = read(f"{STATE_DIR}/kwin")
+    state = None
+    try:
+        with open(f"{STATE_DIR}/state.json", encoding="utf-8") as f:
+            state = json.load(f)
+    except (OSError, ValueError):
+        pass
+    return {
+        "tools": pkgs.get("vitrine-guest-tools"),
+        "agent": AGENT_VERSION,
+        "os": os_release(),
+        "kernel": os.uname().release,
+        "kernels": kernels(),
+        "secureBoot": secure_boot(),
+        "desktops": desktops,
+        "sessions": sessions(),
+        "driver": driver(),
+        "gpu": capsets(),
+        "packages": pkgs,
+        "kwinPatched": bool(tools_kwin) and installed_kwin == tools_kwin,
+        "preempt": preempt(),
+        "rebootNeeded": os.path.exists(f"{RUN_DIR}/reboot-needed"),
+        "installed": state,
+        "installing": installing,
+    }
+
+
+class Port:
+    """The guest's end of the virtio-serial port.  It reads as hung up while
+    no one holds the host's end (vitrine connects to QEMU's socket)."""
+
+    def __init__(self):
+        self.fd = None
+        self.connected = False
+        self.inbuf = b""
+        self.outbuf = b""
+
+    def open(self):
+        try:
+            self.fd = os.open(PORT, os.O_RDWR | os.O_NONBLOCK | os.O_CLOEXEC)
+        except OSError as e:
+            # busy: the bootstrap at boot, or the other agent, has it
+            if e.errno not in (errno.ENOENT, errno.EBUSY, errno.ENXIO):
+                log(f"cannot open {PORT}: {e}")
+            self.fd = None
+        return self.fd is not None
+
+    def close(self):
+        if self.fd is not None:
+            os.close(self.fd)
+        self.fd = None
+        self.connected = False
+
+    def probe(self):
+        """True when the host side just opened"""
+        if self.fd is None:
+            return False
+        p = select.poll()
+        p.register(self.fd, select.POLLIN | select.POLLOUT)
+        events = p.poll(0)
+        hung_up = not events or any(ev & (select.POLLHUP | select.POLLERR) for _, ev in events)
+        was = self.connected
+        self.connected = not hung_up
+        if not self.connected:
+            self.inbuf = self.outbuf = b""
+        return self.connected and not was
+
+    def send(self, message):
+        if not self.connected:
+            return
+        if len(self.outbuf) < (1 << 20):
+            self.outbuf += json.dumps(message, separators=(",", ":")).encode() + b"\n"
+        self.flush()
+
+    def flush(self):
+        while self.outbuf and self.connected:
+            try:
+                n = os.write(self.fd, self.outbuf)
+            except BlockingIOError:
+                return
+            except OSError:
+                self.connected = False
+                self.outbuf = b""
+                return
+            self.outbuf = self.outbuf[n:]
+
+    def read_messages(self):
+        """The complete lines the host sent, decoded; [] on a hang-up"""
+        try:
+            data = os.read(self.fd, 65536)
+        except BlockingIOError:
+            return []
+        except OSError:
+            data = b""
+        if not data:
+            self.connected = False
+            self.inbuf = self.outbuf = b""
+            return []
+        self.inbuf += data
+        messages = []
+        while b"\n" in self.inbuf:
+            line, self.inbuf = self.inbuf.split(b"\n", 1)
+            try:
+                message = json.loads(line)
+                messages.append(message if isinstance(message, dict) else {})
+            except ValueError:
+                messages.append({})
+        if len(self.inbuf) > MAX_LINE:
+            self.inbuf = b""
+        return messages
+
+
+class Install:
+    """The installer of the tools medium, run with its output read line by line"""
+
+    def __init__(self, medium, request_id, port, mounted=None):
+        self.id = request_id
+        self.port = port
+        self.mounted = mounted
+        self.tail = []
+        self.step = ""
+        env = dict(os.environ, VITRINE_INSTALL_LOGGED="1")
+        self.proc = subprocess.Popen(["/bin/bash", os.path.join(medium, "install"), "--yes"],
+                                     stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+                                     stdin=subprocess.DEVNULL, env=env)
+        os.set_blocking(self.proc.stdout.fileno(), False)
+        self.buf = b""
+
+    def fileno(self):
+        return self.proc.stdout.fileno()
+
+    def read(self):
+        """False once the installer's output ended"""
+        try:
+            data = os.read(self.fileno(), 65536)
+        except BlockingIOError:
+            return True
+        if data:
+            self.buf += data
+            *lines, self.buf = self.buf.split(b"\n")
+        else:
+            lines, self.buf = ([self.buf] if self.buf else []), b""
+        for raw in lines:
+            line = raw.decode(errors="replace").rstrip()
+            log(line)
+            self.tail = (self.tail + [line])[-25:]
+            m = STEP.match(line)
+            if m:
+                self.step = m.group(3)
+                self.port.send({"type": "progress", "id": self.id, "step": self.step,
+                                "current": int(m.group(1)), "total": int(m.group(2))})
+                plymouth(f"vitrine guest tools: {self.step}")
+        return bool(data)
+
+    def finish(self):
+        rc = self.proc.wait()
+        if self.mounted:
+            subprocess.run(["umount", self.mounted], check=False)
+        ok = rc == 0
+        error = "" if ok else "\n".join(line for line in self.tail if line)
+        result = {"type": "result", "id": self.id, "cmd": "install-from-medium", "ok": ok,
+                  "error": error, "rebootNeeded": os.path.exists(f"{RUN_DIR}/reboot-needed")}
+        self.port.send(result)
+        return result
+
+
+def plymouth(text):
+    """A line under the boot splash, while there is one"""
+    try:
+        if subprocess.run(["plymouth", "--ping"], capture_output=True).returncode == 0:
+            subprocess.run(["plymouth", "display-message", f"--text={text}"],
+                           capture_output=True, check=False)
+    except OSError:
+        pass
+
+
+def mount_medium():
+    """The tools medium mounted read-only, or an error"""
+    dev = f"/dev/disk/by-label/{LABEL}"
+    if not os.path.exists(dev):
+        return None, "the tools medium is not attached to the VM"
+    mnt = f"{RUN_DIR}/medium"
+    os.makedirs(mnt, exist_ok=True)
+    subprocess.run(["umount", mnt], capture_output=True, check=False)
+    r = subprocess.run(["mount", "-o", "ro", dev, mnt], capture_output=True, text=True)
+    if r.returncode != 0:
+        return None, f"cannot mount the tools medium: {r.stderr.strip()}"
+    if not os.path.exists(f"{mnt}/install"):
+        subprocess.run(["umount", mnt], check=False)
+        return None, "the medium has no installer"
+    return mnt, ""
+
+
+def agent_file_changed(started_with):
+    try:
+        return os.stat(__file__).st_mtime != started_with
+    except OSError:
+        return False
+
+
+def serve():
+    port = Port()
+    install = None
+    started_with = os.stat(__file__).st_mtime
+    log(f"vitrine agent {AGENT_VERSION}, on {PORT}")
+    while True:
+        if port.fd is None and not port.open():
+            time.sleep(2)
+            continue
+        if port.probe():
+            port.send({"type": "hello", "protocol": PROTOCOL, "agent": AGENT_VERSION,
+                       "status": status(install is not None)})
+        p = select.poll()
+        if port.connected:
+            p.register(port.fd, select.POLLIN | (select.POLLOUT if port.outbuf else 0))
+        if install:
+            p.register(install.fileno(), select.POLLIN)
+        # while the host's end is closed, the port reads as hung up at once:
+        # look again in a while instead
+        events = p.poll(None if port.connected else 500)
+        for fd, ev in events:
+            if install and fd == install.fileno():
+                if not install.read():
+                    install.finish()
+                    install = None
+                    if agent_file_changed(started_with):
+                        # updated by the install: the new agent takes over
+                        port.close()
+                        os.execv(sys.executable, [sys.executable, __file__])
+                continue
+            if ev & (select.POLLHUP | select.POLLERR):
+                port.connected = False
+                continue
+            if ev & select.POLLOUT:
+                port.flush()
+            if ev & select.POLLIN:
+                for message in port.read_messages():
+                    install = command(message, port, install)
+
+
+def command(message, port, install):
+    cmd = message.get("cmd")
+    rid = message.get("id")
+    if cmd == "status":
+        port.send({"type": "status", "id": rid, "status": status(install is not None)})
+    elif cmd == "install-from-medium":
+        if install:
+            port.send({"type": "error", "id": rid, "error": "an install is running"})
+            return install
+        mnt, error = mount_medium()
+        if not mnt:
+            port.send({"type": "result", "id": rid, "cmd": cmd, "ok": False, "error": error,
+                       "rebootNeeded": False})
+            return None
+        log("installing from the tools medium, as the host asked")
+        return Install(mnt, rid, port, mounted=mnt)
+    elif cmd == "request-reboot":
+        port.send({"type": "result", "id": rid, "cmd": cmd, "ok": True, "error": "",
+                   "rebootNeeded": False})
+        log("rebooting, as the host asked")
+        subprocess.run(["systemctl", "--no-block", "reboot"], check=False)
+    else:
+        port.send({"type": "error", "id": rid, "error": f"unknown command {cmd!r}"})
+    return install
+
+
+def install_once(medium, reboot):
+    """The bootstrap: the installer of @medium, its progress on the port if
+    the port is free (the host gets it once it connects)"""
+    port = Port()
+    port.open()
+    port.probe()
+    install = Install(medium, None, port)
+    hello = False
+    while True:
+        if port.probe() or (port.connected and not hello):
+            hello = True
+            port.send({"type": "hello", "protocol": PROTOCOL, "agent": AGENT_VERSION,
+                       "status": status(True)})
+        p = select.poll()
+        p.register(install.fileno(), select.POLLIN)
+        if port.connected:
+            p.register(port.fd, select.POLLIN | (select.POLLOUT if port.outbuf else 0))
+        for fd, ev in p.poll(500):
+            if fd == install.fileno():
+                if not install.read():
+                    result = install.finish()
+                    # give the host a moment to read the result
+                    deadline = time.monotonic() + 3
+                    while port.outbuf and port.connected and time.monotonic() < deadline:
+                        port.flush()
+                        time.sleep(0.05)
+                    port.close()
+                    if result["ok"] and result["rebootNeeded"] and reboot:
+                        log("rebooting to finish the install")
+                        plymouth("vitrine guest tools: restarting")
+                        subprocess.run(["systemctl", "--no-block", "reboot"], check=False)
+                    return 0 if result["ok"] else 1
+            elif ev & (select.POLLHUP | select.POLLERR):
+                port.connected = False
+            elif ev & select.POLLIN:
+                # commands wait for the agent proper; tell the host so
+                for message in port.read_messages():
+                    if message.get("cmd") == "status":
+                        port.send({"type": "status", "id": message.get("id"),
+                                   "status": status(True)})
+                    else:
+                        port.send({"type": "error", "id": message.get("id"),
+                                   "error": "the guest tools are being installed"})
+            elif ev & select.POLLOUT:
+                port.flush()
+
+
+def main(argv):
+    if len(argv) >= 2 and argv[1] == "--status":
+        print(json.dumps(status(), indent=2))
+        return 0
+    if len(argv) >= 3 and argv[1] == "--install":
+        return install_once(argv[2], "--reboot" in argv[3:])
+    if len(argv) > 1:
+        print(__doc__.strip(), file=sys.stderr)
+        return 2
+    serve()
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main(sys.argv))

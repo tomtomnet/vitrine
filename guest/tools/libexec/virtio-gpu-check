@@ -1,0 +1,52 @@
+#!/bin/sh
+# vitrine guest tools: is the patched virtio-gpu driver the one running?
+#
+# modinfo only says what modprobe would load; the driver in use comes from
+# the initramfs.  The taint field is the honest answer: O (out of tree) is
+# ours.  Then blob_flush_fence=3 is kept only with the KWin the installer
+# put in (KWIN_SWAPCHAIN_WAIT_READERS): with another one, the host would
+# turn zero copy off.  Runs at boot, before the display manager; the
+# journal has its findings (journalctl -b -u vitrine-virtio-gpu-check).
+set -u
+state=/var/lib/vitrine-guest-tools
+kver=$(uname -r)
+taint=$(cat /sys/module/virtio_gpu/taint 2> /dev/null || true)
+rc=0
+
+secure_boot() {
+	# the variable's 4 bytes of attributes, then its value
+	v=$(od -An -t u1 -j4 -N1 /sys/firmware/efi/efivars/SecureBoot-8be4df61-93ca-11d2-aa0d-00e098e30200 2> /dev/null)
+	[ "$(echo $v)" = 1 ]
+}
+
+case "$taint" in
+*O*)
+	echo "the patched virtio-gpu driver runs (taint $taint)"
+	;;
+*)
+	if secure_boot; then
+		why="Secure Boot is on, and the patched driver is not signed"
+	elif ! dkms status -m vitrine-virtio-gpu -k "$kver" 2> /dev/null | grep -q ': installed'; then
+		if [ -e "/lib/modules/$kver/build/Makefile" ]; then
+			why="it is not built for $kver (sudo dkms autoinstall -k $kver; /var/lib/dkms/vitrine-virtio-gpu/*/build/make.log)"
+		else
+			why="$kver has no kernel headers (sudo dnf install kernel-devel-$kver, or update the kernel and reboot)"
+		fi
+	else
+		why="it is built for $kver but not in the initramfs (sudo dracut -f --kver $kver, then reboot)"
+	fi
+	echo "<4>the stock virtio-gpu driver runs: $why"
+	rc=1
+	;;
+esac
+
+fence=/sys/module/virtio_gpu/parameters/blob_flush_fence
+if [ -w "$fence" ] && [ "$(cat "$fence")" = 3 ]; then
+	want=$(cat "$state/kwin" 2> /dev/null || true)
+	have=$(rpm -q kwin 2> /dev/null || true)
+	if [ -z "$want" ] || [ "$have" != "$want" ]; then
+		echo 1 > "$fence"
+		echo "<4>blob_flush_fence 3 -> 1: KWin is ${have:-not installed}, not the one of the guest tools (${want:-none}); install the guest tools again"
+	fi
+fi
+exit $rc

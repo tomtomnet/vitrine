@@ -1,0 +1,190 @@
+diff -ur a/src/backends/drm/drm_commit.cpp b/src/backends/drm/drm_commit.cpp
+--- a/src/backends/drm/drm_commit.cpp	2026-09-29 09:42:28.429408632 +0200
++++ b/src/backends/drm/drm_commit.cpp	2026-09-29 09:43:07.031181739 +0200
+@@ -209,6 +209,13 @@
+     }
+ }
+ 
++bool DrmAtomicCommit::scheduledLate() const
++{
++    return std::ranges::any_of(m_frames, [](const auto &pair) {
++        return pair.second && pair.second->scheduledLate();
++    });
++}
++
+ std::optional<bool> DrmAtomicCommit::isVrr() const
+ {
+     return m_vrr;
+diff -ur a/src/backends/drm/drm_commit.h b/src/backends/drm/drm_commit.h
+--- a/src/backends/drm/drm_commit.h	2026-09-29 09:42:28.429425594 +0200
++++ b/src/backends/drm/drm_commit.h	2026-09-29 09:43:07.031153937 +0200
+@@ -78,6 +78,12 @@
+     bool areBuffersReadable() const;
+     void setDeadline(std::chrono::steady_clock::time_point deadline);
+     std::optional<bool> isVrr() const;
++    /**
++     * Whether a frame in this commit was requested too late to be rendered with
++     * the usual lead, so the commit may come after its deadline regardless of
++     * how much safety margin the commit thread keeps
++     */
++    bool scheduledLate() const;
+     const std::unordered_set<DrmPlane *> &modifiedPlanes() const;
+ 
+     void merge(DrmAtomicCommit *onTop);
+diff -ur a/src/backends/drm/drm_commit_thread.cpp b/src/backends/drm/drm_commit_thread.cpp
+--- a/src/backends/drm/drm_commit_thread.cpp	2026-09-29 09:42:28.457417662 +0200
++++ b/src/backends/drm/drm_commit_thread.cpp	2026-09-29 09:43:07.031257882 +0200
+@@ -166,7 +166,11 @@
+         const auto targetTimestamp = m_targetPageflipTime - m_baseSafetyMargin;
+         // this is how much safety we need to add or remove to achieve that next time
+         const auto safetyDifference = targetTimestamp - m_lastCommitTime;
+-        if (safetyDifference < std::chrono::nanoseconds::zero()) {
++        if (safetyDifference < std::chrono::nanoseconds::zero() && commit->scheduledLate()) {
++            // the frame was requested too late for its vblank and rendered at
++            // once; being late here says nothing about the safety margin, and
++            // growing it would only make every following frame wait longer
++        } else if (safetyDifference < std::chrono::nanoseconds::zero()) {
+             // the commit was done later than desired, immediately add the
+             // required difference to make sure that it doesn't happen again
+             m_additionalSafetyMargin -= safetyDifference;
+@@ -363,7 +367,7 @@
+ static constexpr std::chrono::microseconds s_defaultSafetyMarginMinimum{1000};
+ // In virtual machines, commits usually wait for the host to process the new frame,
+ // which takes longer and varies more than with real hardware
+-static constexpr std::chrono::microseconds s_virtualMachineSafetyMarginMinimum{2500};
++static constexpr std::chrono::microseconds s_virtualMachineSafetyMarginMinimum{1000};
+ 
+ void DrmCommitThread::setModeInfo(uint32_t maximum, std::chrono::nanoseconds vblankTime)
+ {
+diff -ur a/src/core/renderbackend.cpp b/src/core/renderbackend.cpp
+--- a/src/core/renderbackend.cpp	2026-09-29 09:42:28.431722517 +0200
++++ b/src/core/renderbackend.cpp	2026-09-29 09:43:07.031128600 +0200
+@@ -48,6 +48,7 @@
+     , m_refreshDuration(refreshDuration)
+     , m_targetPageflipTime(loop->nextPresentationTimestamp())
+     , m_predictedRenderTime(loop->predictedRenderTime())
++    , m_scheduledLate(loop->scheduledLate())
+ {
+ }
+ 
+@@ -138,6 +139,11 @@
+     return m_predictedRenderTime;
+ }
+ 
++bool OutputFrame::scheduledLate() const
++{
++    return m_scheduledLate;
++}
++
+ std::optional<double> OutputFrame::brightness() const
+ {
+     return m_brightness;
+diff -ur a/src/core/renderbackend.h b/src/core/renderbackend.h
+--- a/src/core/renderbackend.h	2026-09-29 09:42:28.431735151 +0200
++++ b/src/core/renderbackend.h	2026-09-29 09:43:07.031079407 +0200
+@@ -90,6 +90,7 @@
+     std::chrono::steady_clock::time_point targetPageflipTime() const;
+     std::chrono::nanoseconds refreshDuration() const;
+     std::chrono::nanoseconds predictedRenderTime() const;
++    bool scheduledLate() const;
+ 
+     std::optional<double> brightness() const;
+     void setBrightness(double brightness);
+@@ -107,6 +108,7 @@
+     const std::chrono::nanoseconds m_refreshDuration;
+     const std::chrono::steady_clock::time_point m_targetPageflipTime;
+     const std::chrono::nanoseconds m_predictedRenderTime;
++    const bool m_scheduledLate;
+     std::vector<std::shared_ptr<PresentationFeedback>> m_feedbacks;
+     std::optional<ContentType> m_contentType;
+     PresentationMode m_presentationMode = PresentationMode::VSync;
+diff -ur a/src/core/renderjournal.cpp b/src/core/renderjournal.cpp
+--- a/src/core/renderjournal.cpp	2026-09-29 09:42:28.458581107 +0200
++++ b/src/core/renderjournal.cpp	2026-09-29 09:42:41.738864601 +0200
+@@ -35,7 +35,9 @@
+  * new buffer costs milliseconds) one such frame keeps the compositor two
+  * vblanks ahead for seconds afterwards, a whole refresh of latency for
+  * nothing.  KWIN_RENDER_JOURNAL_VARIANCE_CAP_US bounds the excess that is
+- * remembered; unset, nothing changes.
++ * remembered, KWIN_RENDER_JOURNAL_VARIANCE_TIME_MS is how long it is
++ * remembered for (the time constant of its decay, 6000 by default); unset,
++ * nothing changes.
+  */
+ static std::chrono::nanoseconds varianceCapFromEnvironment()
+ {
+@@ -47,12 +49,22 @@
+     return std::chrono::microseconds(us);
+ }
+ 
++static std::chrono::nanoseconds varianceTimeConstantFromEnvironment()
++{
++    bool ok = false;
++    const int ms = qEnvironmentVariableIntValue("KWIN_RENDER_JOURNAL_VARIANCE_TIME_MS", &ok);
++    if (!ok || ms <= 0) {
++        return 6s;
++    }
++    return std::chrono::milliseconds(ms);
++}
++
+ void RenderJournal::add(std::chrono::nanoseconds renderTime, std::chrono::nanoseconds presentationTimestamp)
+ {
+     const auto timeDifference = m_lastAdd ? presentationTimestamp - *m_lastAdd : 10s;
+     m_lastAdd = presentationTimestamp;
+ 
+-    static constexpr std::chrono::nanoseconds varianceTimeConstant = 6s;
++    static const std::chrono::nanoseconds varianceTimeConstant = varianceTimeConstantFromEnvironment();
+     const double varianceRatio = std::clamp(timeDifference.count() / double(varianceTimeConstant.count()), 0.001, 0.1);
+     const auto renderTimeDiff = std::max(renderTime - m_result, 0ns);
+     m_variance = std::min(std::max(mix(renderTimeDiff, m_variance, varianceRatio), renderTimeDiff), m_varianceCap);
+diff -ur a/src/core/renderloop.cpp b/src/core/renderloop.cpp
+--- a/src/core/renderloop.cpp	2026-09-29 09:42:28.431794672 +0200
++++ b/src/core/renderloop.cpp	2026-09-29 09:43:07.031030255 +0200
+@@ -109,6 +109,7 @@
+     }
+ 
+     const std::chrono::nanoseconds nextRenderTimestamp = nextPresentationTimestamp - expectedCompositingTime;
++    scheduledLate = nextRenderTimestamp < currentTime;
+     compositeTimer.start(std::max(0ms, std::chrono::duration_cast<std::chrono::milliseconds>(nextRenderTimestamp - currentTime)), Qt::PreciseTimer, q);
+ }
+ 
+@@ -321,6 +322,11 @@
+     return d->renderJournal.result();
+ }
+ 
++bool RenderLoop::scheduledLate() const
++{
++    return d->scheduledLate;
++}
++
+ } // namespace KWin
+ 
+ #include "moc_renderloop.cpp"
+diff -ur a/src/core/renderloop.h b/src/core/renderloop.h
+--- a/src/core/renderloop.h	2026-09-29 09:42:28.431809380 +0200
++++ b/src/core/renderloop.h	2026-09-29 09:43:07.031000329 +0200
+@@ -100,6 +100,13 @@
+      */
+     std::chrono::nanoseconds predictedRenderTime() const;
+ 
++    /**
++     * Whether the frame being prepared was requested too late to be rendered
++     * with the usual lead before its target vblank, so it renders at once and
++     * may miss that vblank through no fault of the pipeline.
++     */
++    bool scheduledLate() const;
++
+     // TODO integrate cursor updates into the render loop / frame scheduling somehow?
+     // and then remove this again
+     bool activeWindowControlsVrrRefreshRate() const;
+diff -ur a/src/core/renderloop_p.h b/src/core/renderloop_p.h
+--- a/src/core/renderloop_p.h	2026-09-29 09:42:28.431826091 +0200
++++ b/src/core/renderloop_p.h	2026-09-29 09:43:07.030914898 +0200
+@@ -52,6 +52,8 @@
+     int inhibitCount = 0;
+     bool pendingReschedule = false;
+     std::chrono::nanoseconds safetyMargin{0};
++    // the next frame was requested too late for its lead: it renders at once
++    bool scheduledLate = false;
+ 
+     PresentationMode presentationMode = PresentationMode::VSync;
+     int maxPendingFrameCount = 1;

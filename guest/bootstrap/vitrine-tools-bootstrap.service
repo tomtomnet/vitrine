@@ -1,0 +1,26 @@
+# vitrine passes this unit to the guest's systemd at boot (SMBIOS credential
+# systemd.extra-unit.vitrine-tools-bootstrap.service, systemd 256 and later,
+# honoured in VMs only) with the tools medium attached, when the user asked
+# for the guest tools: it installs them before the desktop starts, then the
+# guest restarts.  It is gone at the next start of the VM.
+[Unit]
+Description=vitrine guest tools: install them from the tools medium
+Documentation=https://github.com/tomtomnet/vitrine
+# the credential adds it to the initrd too
+ConditionPathExists=!/etc/initrd-release
+ConditionVirtualization=vm
+Requires=dev-disk-by\x2dlabel-VITRINETOOL.device
+After=dev-disk-by\x2dlabel-VITRINETOOL.device network-online.target
+Wants=network-online.target
+Before=display-manager.service plasmalogin.service sddm.service gdm.service
+
+[Service]
+Type=oneshot
+TimeoutStartSec=45min
+ExecStartPre=/usr/bin/mkdir -p /run/vitrine-tools-medium
+ExecStartPre=-/usr/bin/umount /run/vitrine-tools-medium
+ExecStartPre=/usr/bin/mount -o ro /dev/disk/by-label/VITRINETOOL /run/vitrine-tools-medium
+ExecStart=/bin/sh /run/vitrine-tools-medium/bootstrap
+ExecStopPost=-/usr/bin/umount /run/vitrine-tools-medium
+StandardOutput=journal+console
+StandardError=journal+console

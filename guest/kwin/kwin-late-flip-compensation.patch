@@ -1,0 +1,111 @@
+diff -ur a/src/core/renderbackend.cpp b/src/core/renderbackend.cpp
+--- a/src/core/renderbackend.cpp
++++ b/src/core/renderbackend.cpp
+@@ -144,6 +144,13 @@
+     return m_scheduledLate;
+ }
+ 
++bool OutputFrame::renderedByCompositor() const
++{
++    // the compositor's own query for the whole frame is always there;
++    // a layer that was rendered adds its own
++    return m_renderTimeQueries.size() > 1;
++}
++
+ std::optional<double> OutputFrame::brightness() const
+ {
+     return m_brightness;
+diff -ur a/src/core/renderbackend.h b/src/core/renderbackend.h
+--- a/src/core/renderbackend.h
++++ b/src/core/renderbackend.h
+@@ -91,6 +91,11 @@
+     std::chrono::nanoseconds refreshDuration() const;
+     std::chrono::nanoseconds predictedRenderTime() const;
+     bool scheduledLate() const;
++    /**
++     * Whether the compositor rendered something for this frame, as opposed to
++     * only putting client buffers on planes
++     */
++    bool renderedByCompositor() const;
+ 
+     std::optional<double> brightness() const;
+     void setBrightness(double brightness);
+diff -ur a/src/core/renderloop.cpp b/src/core/renderloop.cpp
+--- a/src/core/renderloop.cpp
++++ b/src/core/renderloop.cpp
+@@ -26,6 +26,11 @@
+ }
+ 
+ static const bool s_printDebugInfo = qEnvironmentVariableIntValue("KWIN_LOG_PERFORMANCE_DATA") != 0;
++// KWIN_LATE_FLIP_COMPENSATION=1 turns the late flip compensation on (off by default: on the
++// panel it shows no gain, and it costs up to a refresh of latency long after a loaded phase),
++// KWIN_LATE_FLIP_STEP_US sets how much earlier frames start per late flip (500 by default)
++static const bool s_lateFlipCompensation = qEnvironmentVariableIntValue("KWIN_LATE_FLIP_COMPENSATION") != 0;
++static const std::chrono::nanoseconds s_lateFlipStep = std::chrono::microseconds(qEnvironmentVariableIsEmpty("KWIN_LATE_FLIP_STEP_US") ? 500 : std::max(10, qEnvironmentVariableIntValue("KWIN_LATE_FLIP_STEP_US")));
+ 
+ RenderLoopPrivate::RenderLoopPrivate(RenderLoop *q, BackendOutput *output)
+     : q(q)
+@@ -49,7 +53,7 @@
+ 
+     // Estimate when it's a good time to perform the next compositing cycle.
+     // the 1ms on top of the safety margin is required for timer and scheduler inaccuracies
+-    std::chrono::nanoseconds expectedCompositingTime = std::min(renderJournal.result() + safetyMargin + 1ms, 2 * vblankInterval);
++    std::chrono::nanoseconds expectedCompositingTime = std::min(renderJournal.result() + safetyMargin + 1ms + lateFlipCompensation, 2 * vblankInterval);
+ 
+     if (presentationMode == PresentationMode::VSync) {
+         // normal presentation: pageflips only happen at vblank
+@@ -132,14 +136,14 @@
+ {
+     if (output && s_printDebugInfo && !m_debugOutput) {
+         m_debugOutput = std::fstream(qPrintable("kwin perf statistics " + output->name() + ".csv"), std::ios::out);
+-        *m_debugOutput << "target pageflip timestamp,pageflip timestamp,render start,render end,safety margin,refresh duration,vrr,tearing,predicted render time\n";
++        *m_debugOutput << "target pageflip timestamp,pageflip timestamp,render start,render end,safety margin,refresh duration,vrr,tearing,predicted render time,late flip compensation\n";
+     }
+     if (m_debugOutput) {
+         auto times = renderTime.value_or(RenderTimeSpan{});
+         const bool vrr = mode == PresentationMode::AdaptiveSync || mode == PresentationMode::AdaptiveAsync;
+         const bool tearing = mode == PresentationMode::Async || mode == PresentationMode::AdaptiveAsync;
+         *m_debugOutput << frame->targetPageflipTime().time_since_epoch().count() << "," << timestamp.count() << "," << times.start.time_since_epoch().count() << "," << times.end.time_since_epoch().count()
+-                       << "," << safetyMargin.count() << "," << frame->refreshDuration().count() << "," << (vrr ? 1 : 0) << "," << (tearing ? 1 : 0) << "," << frame->predictedRenderTime().count() << "\n";
++                       << "," << safetyMargin.count() << "," << frame->refreshDuration().count() << "," << (vrr ? 1 : 0) << "," << (tearing ? 1 : 0) << "," << frame->predictedRenderTime().count() << "," << lateFlipCompensation.count() << "\n";
+     }
+ 
+     Q_ASSERT(pendingFrameCount > 0);
+@@ -150,6 +154,25 @@
+     if (renderTime) {
+         renderJournal.add(renderTime->end - renderTime->start, timestamp);
+     }
++    if (s_lateFlipCompensation && mode == PresentationMode::VSync && frame) {
++        // A frame that was planned and rendered in time, and still reached the
++        // screen a refresh late, was held up after its commit: the flip waits for
++        // the frame's rendering to complete on the GPU, which may be busy with
++        // other work, and in a virtual machine for the host as well. The measured
++        // render time shows none of that, so the following frames would be just as
++        // late: start them earlier, and come back slowly while flips are on time.
++        // Frames requested too late, and frames the compositor did not render
++        // (direct scanout: the client is late, not the compositor) do not count.
++        const std::chrono::nanoseconds vblankInterval(1'000'000'000'000ull / refreshRate);
++        const auto late = timestamp - frame->targetPageflipTime().time_since_epoch();
++        if (late > vblankInterval / 2) {
++            if (frame->renderedByCompositor() && !frame->scheduledLate()) {
++                lateFlipCompensation = std::min<std::chrono::nanoseconds>(lateFlipCompensation + s_lateFlipStep, vblankInterval);
++            }
++        } else {
++            lateFlipCompensation = std::max<std::chrono::nanoseconds>(lateFlipCompensation - s_lateFlipStep / 50, 0ns);
++        }
++    }
+     if (compositeTimer.isActive()) {
+         // reschedule to match the new timestamp and render time
+         scheduleRepaint(lastPresentationTimestamp);
+diff -ur a/src/core/renderloop_p.h b/src/core/renderloop_p.h
+--- a/src/core/renderloop_p.h
++++ b/src/core/renderloop_p.h
+@@ -54,6 +54,8 @@
+     std::chrono::nanoseconds safetyMargin{0};
+     // the next frame was requested too late for its lead: it renders at once
+     bool scheduledLate = false;
++    // how much earlier frames start because planned frames reached the screen late
++    std::chrono::nanoseconds lateFlipCompensation{0};
+ 
+     PresentationMode presentationMode = PresentationMode::VSync;
+     int maxPendingFrameCount = 1;

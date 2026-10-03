@@ -1,0 +1,29 @@
+Subject: [PATCH] drm/virtio: attach imported dma-bufs to the 3D context
+
+Objects created by importing a dma-buf of another device use
+virtgpu_gem_dma_buf_funcs, which lacks the .open and .close callbacks that
+regular virtio-gpu objects use to attach their resource to the 3D context of
+the file and to detach it again.  The host is therefore never told that the
+importing context may use the resource.  With DRM native context every later
+reference to it is rejected ("invalid res_id") and the import fails, for
+example when Mesa imports the udmabuf a Wayland compositor creates for a
+wl_shm client buffer.
+
+Use virtio_gpu_gem_object_open() and virtio_gpu_gem_object_close() for
+imported objects too, so that they are attached to and detached from the 3D
+context of every file holding a handle, like any other virtio-gpu object.
+
+---
+diff --git a/drivers/gpu/drm/virtio/virtgpu_prime.c b/drivers/gpu/drm/virtio/virtgpu_prime.c
+index 70b3b836e..dc400c38c 100644
+--- a/drivers/gpu/drm/virtio/virtgpu_prime.c
++++ b/drivers/gpu/drm/virtio/virtgpu_prime.c
+@@ -273,6 +273,8 @@ static int virtgpu_dma_buf_init_obj(struct drm_device *dev,
+ }
+ 
+ static const struct drm_gem_object_funcs virtgpu_gem_dma_buf_funcs = {
++	.open = virtio_gpu_gem_object_open,
++	.close = virtio_gpu_gem_object_close,
+ 	.free = virtgpu_dma_buf_free_obj,
+ };
+ 

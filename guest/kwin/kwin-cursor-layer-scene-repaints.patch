@@ -1,0 +1,19 @@
+--- a/src/scene/scene.cpp
++++ b/src/scene/scene.cpp
+@@ -654,6 +654,16 @@
+ void Scene::addLogicalRepaint(const Region &logicalRegion)
+ {
+     for (const auto &view : std::as_const(m_views)) {
++        // The view of the cursor plane shows the cursor item alone, and that
++        // item schedules its own repaints. A repaint of the scene, as an effect
++        // asks for at every frame of its animation, has nothing for it: rendering
++        // the cursor layer again costs a synchronous readback where the cursor
++        // plane takes a dumb buffer (virtual machines)
++        if (const auto itemView = dynamic_cast<ItemView *>(view)) {
++            if (qobject_cast<CursorItem *>(itemView->item())) {
++                continue;
++            }
++        }
+         addLogicalRepaint(view, logicalRegion);
+     }
+ }

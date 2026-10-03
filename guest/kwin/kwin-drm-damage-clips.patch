@@ -1,0 +1,271 @@
+From: tomtomnet <tompere8000@proton.me>
+Subject: [PATCH] drm: set FB_DAMAGE_CLIPS to what changed since the plane's previous buffer
+
+KWin sets FB_DAMAGE_CLIPS to 0 on every commit: no damage information,
+i.e. the whole plane.  Drivers that copy the scanout - a virtual GPU whose
+host copies the guest's frame into a window of its own (virtio-gpu with
+QEMU's SDL window: a whole 4K frame per refresh) - or panels that update
+selectively then always do it all.
+
+An EglGbmLayer knows what changed in a buffer it rendered since the one it
+rendered before: the frame's damage.  The kernel applies commits in order,
+so a commit's damage is relative to the buffer of the previous commit for
+that plane: DrmPlane remembers the buffer of the last presentation handed
+to the commit thread, and the pipeline puts the layer's damage into a blob
+for FB_DAMAGE_CLIPS when the new buffer was rendered right after that one.
+When the commit thread merges two commits that both give the plane a buffer,
+the merged commit says "everything" (0): the first buffer never reaches the
+screen.  So do scanout buffers, shadow buffers, transforms, and every 240th
+commit, in case one got lost.  KWIN_DRM_DAMAGE_CLIPS=0 restores 0 always.
+
+diff --git a/src/backends/drm/drm_commit.cpp b/src/backends/drm/drm_commit.cpp
+index 88ce299..f068471 100644
+--- a/src/backends/drm/drm_commit.cpp
++++ b/src/backends/drm/drm_commit.cpp
+@@ -14,6 +14,7 @@
+ #include "drm_crtc.h"
+ #include "drm_gpu.h"
+ #include "drm_object.h"
++#include "drm_plane.h"
+ #include "drm_property.h"
+ 
+ #include <QCoreApplication>
+@@ -253,6 +254,14 @@ const std::unordered_set<DrmPlane *> &DrmAtomicCommit::modifiedPlanes() const
+ 
+ void DrmAtomicCommit::merge(DrmAtomicCommit *onTop)
+ {
++    // a plane both commits give a buffer to: the first one never reaches the
++    // screen, so the damage of the second (relative to it) is not the plane's
++    std::vector<DrmPlane *> damageLost;
++    for (const auto &[plane, buffer] : onTop->m_buffers) {
++        if (m_buffers.contains(plane) && plane->fbDamage.isValid()) {
++            damageLost.push_back(plane);
++        }
++    }
+     for (const auto &[obj, properties] : onTop->m_properties) {
+         auto &ownProperties = m_properties[obj];
+         for (const auto &[prop, value] : properties) {
+@@ -267,6 +276,10 @@ void DrmAtomicCommit::merge(DrmAtomicCommit *onTop)
+     for (const auto &[prop, blob] : onTop->m_blobs) {
+         m_blobs[prop] = blob;
+     }
++    for (DrmPlane *plane : damageLost) {
++        addProperty(plane->fbDamage, 0);
++        m_blobs.erase(&plane->fbDamage);
++    }
+     if (onTop->m_vrr) {
+         m_vrr = onTop->m_vrr;
+     }
+diff --git a/src/backends/drm/drm_egl_layer.cpp b/src/backends/drm/drm_egl_layer.cpp
+index 7ef0782..54f33bb 100644
+--- a/src/backends/drm/drm_egl_layer.cpp
++++ b/src/backends/drm/drm_egl_layer.cpp
+@@ -69,7 +69,28 @@ std::optional<OutputLayerBeginFrameInfo> EglGbmLayer::doBeginFrame()
+ 
+ bool EglGbmLayer::doEndFrame(const Region &renderedDeviceRegion, const Region &damagedDeviceRegion, OutputFrame *frame)
+ {
+-    return m_surface.endRendering(damagedDeviceRegion, frame);
++    const std::shared_ptr<DrmFramebuffer> before = m_surface.currentBuffer();
++    if (!m_surface.endRendering(damagedDeviceRegion, frame)) {
++        m_damageBuffer.reset();
++        return false;
++    }
++    m_previousBuffer = before;
++    m_damageBuffer = m_surface.currentBuffer();
++    m_damage = damagedDeviceRegion;
++    return true;
++}
++
++std::optional<Region> EglGbmLayer::damageSince(const std::shared_ptr<DrmFramebuffer> &previous) const
++{
++    // only for a buffer rendered right after @previous, 1:1
++    if (m_scanoutBuffer || !previous || !m_damageBuffer
++        || m_damageBuffer != m_surface.currentBuffer()
++        || m_previousBuffer != previous
++        || drmOutput()->needsShadowBuffer()
++        || offloadTransform() != OutputTransform::Kind::Normal) {
++        return std::nullopt;
++    }
++    return m_damage;
+ }
+ 
+ bool EglGbmLayer::preparePresentationTest()
+diff --git a/src/backends/drm/drm_egl_layer.h b/src/backends/drm/drm_egl_layer.h
+index 2debcfe..3041870 100644
+--- a/src/backends/drm/drm_egl_layer.h
++++ b/src/backends/drm/drm_egl_layer.h
+@@ -32,6 +32,7 @@ public:
+     bool doEndFrame(const Region &renderedDeviceRegion, const Region &damagedDeviceRegion, OutputFrame *frame) override;
+     bool preparePresentationTest() override;
+     std::shared_ptr<DrmFramebuffer> currentBuffer() const override;
++    std::optional<Region> damageSince(const std::shared_ptr<DrmFramebuffer> &previous) const override;
+     void releaseBuffers() override;
+ 
+ private:
+@@ -40,6 +41,10 @@ private:
+ 
+     EglGbmLayerSurface m_surface;
+     std::shared_ptr<DrmFramebuffer> m_scanoutBuffer;
++    // the last rendered buffer, the one rendered before it, and what changed between them
++    std::shared_ptr<DrmFramebuffer> m_damageBuffer;
++    std::shared_ptr<DrmFramebuffer> m_previousBuffer;
++    Region m_damage;
+ };
+ 
+ }
+diff --git a/src/backends/drm/drm_layer.cpp b/src/backends/drm/drm_layer.cpp
+index ac956d2..6a477c4 100644
+--- a/src/backends/drm/drm_layer.cpp
++++ b/src/backends/drm/drm_layer.cpp
+@@ -94,6 +94,11 @@ DrmPipelineLayer::DrmPipelineLayer(DrmPlane::TypeIndex type)
+ {
+ }
+ 
++std::optional<Region> DrmPipelineLayer::damageSince(const std::shared_ptr<DrmFramebuffer> &previous) const
++{
++    return std::nullopt;
++}
++
+ DrmPlane *DrmPipelineLayer::plane() const
+ {
+     return m_plane;
+diff --git a/src/backends/drm/drm_layer.h b/src/backends/drm/drm_layer.h
+index 5a8049b..c43a211 100644
+--- a/src/backends/drm/drm_layer.h
++++ b/src/backends/drm/drm_layer.h
+@@ -43,6 +43,12 @@ public:
+     FormatModifierMap supportedAsyncDrmFormats() const override;
+ 
+     virtual std::shared_ptr<DrmFramebuffer> currentBuffer() const = 0;
++    /**
++     * What changed in currentBuffer() since @p previous, in buffer pixels,
++     * when the layer knows it (it rendered the two one after the other);
++     * nullopt means everything may have.
++     */
++    virtual std::optional<Region> damageSince(const std::shared_ptr<DrmFramebuffer> &previous) const;
+ 
+     DrmPlane *plane() const;
+ 
+diff --git a/src/backends/drm/drm_pipeline.cpp b/src/backends/drm/drm_pipeline.cpp
+index 55de7ad..de45a78 100644
+--- a/src/backends/drm/drm_pipeline.cpp
++++ b/src/backends/drm/drm_pipeline.cpp
+@@ -15,6 +15,7 @@
+ #include "core/iccprofile.h"
+ #include "core/session.h"
+ #include "drm_backend.h"
++#include "drm_blob.h"
+ #include "drm_buffer.h"
+ #include "drm_commit.h"
+ #include "drm_commit_thread.h"
+@@ -76,6 +77,9 @@ DrmPipeline::Error DrmPipeline::present(const QList<OutputLayer *> &layersToUpda
+             if (Error err = prepareAtomicPlane(partialUpdate.get(), pipelineLayer->plane(), pipelineLayer, frame); err != Error::None) {
+                 return err;
+             }
++            if (pipelineLayer->plane()) {
++                pipelineLayer->plane()->setQueuedBuffer(pipelineLayer->isEnabled() ? pipelineLayer->currentBuffer() : nullptr);
++            }
+         }
+         if (layersToUpdate.isEmpty()) {
+             // work around amdgpu not giving us a valid pageflip timestamp
+@@ -83,6 +87,9 @@ DrmPipeline::Error DrmPipeline::present(const QList<OutputLayer *> &layersToUpda
+             if (Error err = prepareAtomicPlane(partialUpdate.get(), m_pending.layers.front()->plane(), m_pending.layers.front(), frame); err != Error::None) {
+                 return err;
+             }
++            if (const auto plane = m_pending.layers.front()->plane()) {
++                plane->setQueuedBuffer(m_pending.layers.front()->isEnabled() ? m_pending.layers.front()->currentBuffer() : nullptr);
++            }
+         }
+         if (m_pending.needsModesetProperties && !prepareAtomicModeset(partialUpdate.get())) {
+             return Error::InvalidArguments;
+@@ -269,7 +276,40 @@ DrmPipeline::Error DrmPipeline::prepareAtomicPlane(DrmAtomicCommit *commit, DrmP
+         commit->addProperty(plane->zpos, layer->zpos());
+     }
+     if (plane->fbDamage.isValid()) {
+-        commit->addProperty(plane->fbDamage, 0);
++        /*
++         * What changed since the buffer of the last presentation queued for
++         * this plane - the kernel applies commits in order: drivers that
++         * copy the scanout (a virtual GPU whose host copies the guest's frame
++         * into its own window) or update a panel selectively need not do it
++         * all.  Every 240th such commit says "everything" again, in case a
++         * commit got lost.  KWIN_DRM_DAMAGE_CLIPS=0: always everything (0).
++         *
++         * The kernel takes only clips inside the framebuffer and fails the
++         * whole commit otherwise (EINVAL, "invalid damage clip"), while a full
++         * repaint is an infinite region and windows reach past the screen in
++         * the overview or a desktop switch: clip to the buffer, and say
++         * "everything" when that leaves the whole buffer or nothing.
++         */
++        static const bool s_damageClips = environmentVariableBoolValue("KWIN_DRM_DAMAGE_CLIPS").value_or(true);
++        std::shared_ptr<DrmBlob> blob;
++        if (s_damageClips && fb != plane->queuedBuffer() && fb->buffer()) {
++            const auto damage = layer->damageSince(plane->queuedBuffer());
++            const QSize size = fb->buffer()->size();
++            const Rect bounds(0, 0, size.width(), size.height());
++            const Region clipped = damage ? damage->intersected(bounds) : Region();
++            if (!clipped.isEmpty() && !(clipped == Region(bounds)) && ++plane->damageCommits % 240 != 0) {
++                std::vector<drm_mode_rect> clips;
++                for (const Rect &r : clipped.rects()) {
++                    clips.push_back(drm_mode_rect{r.left(), r.top(), r.right(), r.bottom()});
++                }
++                blob = DrmBlob::create(gpu(), clips.data(), clips.size() * sizeof(drm_mode_rect));
++            }
++        }
++        if (blob) {
++            commit->addBlob(plane->fbDamage, blob);
++        } else {
++            commit->addProperty(plane->fbDamage, 0);
++        }
+     }
+ 
+     const auto colorPipelines = plane->colorPipelines();
+diff --git a/src/backends/drm/drm_plane.cpp b/src/backends/drm/drm_plane.cpp
+index ca2104a..08b073e 100644
+--- a/src/backends/drm/drm_plane.cpp
++++ b/src/backends/drm/drm_plane.cpp
+@@ -237,6 +237,16 @@ FormatModifierMap DrmPlane::tearingFormats() const
+     return m_supportedTearingFormats;
+ }
+ 
++std::shared_ptr<DrmFramebuffer> DrmPlane::queuedBuffer() const
++{
++    return m_queued;
++}
++
++void DrmPlane::setQueuedBuffer(const std::shared_ptr<DrmFramebuffer> &b)
++{
++    m_queued = b;
++}
++
+ std::shared_ptr<DrmFramebuffer> DrmPlane::currentBuffer() const
+ {
+     return m_current;
+diff --git a/src/backends/drm/drm_plane.h b/src/backends/drm/drm_plane.h
+index 80f5602..91b7e86 100644
+--- a/src/backends/drm/drm_plane.h
++++ b/src/backends/drm/drm_plane.h
+@@ -48,6 +48,15 @@ public:
+ 
+     std::shared_ptr<DrmFramebuffer> currentBuffer() const;
+     void setCurrentBuffer(const std::shared_ptr<DrmFramebuffer> &b);
++    /**
++     * The buffer of the last presentation handed to the commit thread for
++     * this plane: the kernel applies commits in order, so the next one's
++     * damage is relative to it.
++     */
++    std::shared_ptr<DrmFramebuffer> queuedBuffer() const;
++    void setQueuedBuffer(const std::shared_ptr<DrmFramebuffer> &b);
++    /** counts commits with damage clips, for a full one now and then */
++    int damageCommits = 0;
+     void releaseCurrentBuffer();
+ 
+     void set(DrmAtomicCommit *commit, const Rect &src, const Rect &dst);
+@@ -114,6 +123,7 @@ public:
+ 
+ private:
+     std::shared_ptr<DrmFramebuffer> m_current;
++    std::shared_ptr<DrmFramebuffer> m_queued;
+     std::deque<std::shared_ptr<DrmFramebufferData>> m_lastBuffers;
+ 
+     FormatModifierMap m_supportedFormats;

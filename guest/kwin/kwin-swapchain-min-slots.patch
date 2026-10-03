@@ -1,0 +1,70 @@
+From: tomtomnet <tompere8000@proton.me>
+Subject: [PATCH] opengl/eglswapchain: KWIN_SWAPCHAIN_MIN_SLOTS - a swapchain of at least N buffers, reused oldest first
+
+For a virtual machine whose host shows the guest's buffers themselves (zero
+copy): a buffer may only be rendered into again once the host no longer
+shows it.  The first free slot, as acquire() takes by default, can be the one
+released by the flip just done - the buffer the host may still scan out - so
+the guest's driver had to hold every flip event until the host released the
+buffer before (after the host's own flip), which left the compositor about a
+millisecond to commit its next frame and cost frames.  Reused oldest first
+out of at least four, a buffer comes back three frames after it was shown,
+and the flip event only has to wait for the buffer before the previous one,
+which the host normally released a refresh earlier.  The first frames each
+get a new buffer until there are N; then the free slot used longest ago is
+taken (age 0, never rendered into, counts as the oldest).
+
+--- a/src/opengl/eglswapchain.cpp	2026-10-02 13:44:39.828864609 +0200
++++ b/src/opengl/eglswapchain.cpp	2026-10-02 13:44:39.839737444 +0200
+@@ -14,6 +14,7 @@
+ #include "opengl/eglcontext.h"
+ #include "opengl/glutils.h"
+ #include "utils/common.h"
++#include "utils/envvar.h"
+ 
+ #include <drm_fourcc.h>
+ #include <errno.h>
+@@ -122,13 +123,38 @@
+     return m_modifier;
+ }
+ 
++// KWIN_SWAPCHAIN_MIN_SLOTS=N: at least N buffers, reused oldest first.  In a
++// virtual machine whose host shows the guest's buffers themselves (zero copy),
++// a buffer may only be rendered into again once the host stopped showing it:
++// reused oldest first out of four, a buffer comes back three frames after it
++// was shown, and the guest's flip event only has to wait for the host to
++// release the buffer before the previous one - normally done a refresh earlier.
++// The first free one, as by default, can be the buffer the screen still shows.
++static const int s_minSlots = environmentVariableIntValue("KWIN_SWAPCHAIN_MIN_SLOTS").value_or(0);
++
+ std::shared_ptr<EglSwapchainSlot> EglSwapchain::acquire()
+ {
+-    const auto it = std::ranges::find_if(std::as_const(m_slots), [](const auto &slot) {
+-        return !slot->isBusy();
+-    });
+-    if (it != m_slots.cend()) {
+-        return *it;
++    if (s_minSlots > 0 && m_slots.count() >= s_minSlots) {
++        // the free slot used longest ago; age 0 = never rendered into, the oldest
++        std::shared_ptr<EglSwapchainSlot> oldest;
++        for (const auto &slot : std::as_const(m_slots)) {
++            if (slot->isBusy()) {
++                continue;
++            }
++            if (!oldest || slot->m_age == 0 || (oldest->m_age != 0 && slot->m_age > oldest->m_age)) {
++                oldest = slot;
++            }
++        }
++        if (oldest) {
++            return oldest;
++        }
++    } else if (s_minSlots <= 0) {
++        const auto it = std::ranges::find_if(std::as_const(m_slots), [](const auto &slot) {
++            return !slot->isBusy();
++        });
++        if (it != m_slots.cend()) {
++            return *it;
++        }
+     }
+ 
+     GraphicsBuffer *buffer = m_allocator->allocate(GraphicsBufferOptions{

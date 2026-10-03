@@ -1,0 +1,194 @@
+Subject: [PATCH] drm/virtio: do not flush planes that a commit leaves unchanged
+
+KWin includes every enabled plane in each atomic commit, so a cursor move
+commits the primary plane with the same framebuffer and no damage clips,
+and every frame commits the cursor plane where it already is.  The damage
+helper reports the former as full-plane damage and the driver flushes the
+whole scanout: the host presents the same frame again at every vblank
+while the pointer moves.  The latter sends a cursor move to the same
+place, and the host sets its cursor again at every frame of the guest.
+
+During full-screen effects KWin also redraws its cursor plane with every
+frame, into another dumb buffer each time but with the same picture.  That
+is an upload and a wait for the host inside every commit: 0.6 ms on an idle
+host, 3 ms when the host GPU is busy, which is more than the compositor
+leaves between its commit and the vblank, so a quarter of the frames miss
+it.
+
+Skip the flush when the framebuffer, its source rectangle and the damage
+clips are unchanged, the cursor move when the position is, and the cursor
+upload when the picture is the one the host already has; damage clips and
+dirtyfb still flush.  Module parameter flush_unchanged (default 0)
+restores the old behaviour.
+
+--- a/drivers/gpu/drm/virtio/virtgpu_plane.c	2026-09-29 14:33:54.497252825 +0200
++++ b/drivers/gpu/drm/virtio/virtgpu_plane.c	2026-09-29 14:33:54.515573132 +0200
+@@ -27,6 +27,7 @@
+ #include <drm/drm_damage_helper.h>
+ #include <drm/drm_fourcc.h>
+ #include <drm/drm_gem_atomic_helper.h>
++#include <linux/moduleparam.h>
+ #include <linux/virtio_dma_buf.h>
+ #include <drm/drm_managed.h>
+ #include <drm/drm_panic.h>
+@@ -34,6 +35,11 @@
+ 
+ #include "virtgpu_drv.h"
+ 
++/* flush_unchanged=1 restores the flush on commits that change nothing on a plane */
++static int virtio_gpu_modparam_flush_unchanged;
++MODULE_PARM_DESC(flush_unchanged, "Flush the scanout on commits that leave it unchanged (default 0)");
++module_param_named(flush_unchanged, virtio_gpu_modparam_flush_unchanged, int, 0644);
++
+ static const uint32_t virtio_gpu_formats[] = {
+ 	DRM_FORMAT_HOST_XRGB8888,
+ };
+@@ -263,6 +269,26 @@
+ 	if (!drm_atomic_helper_damage_merged(old_state, plane->state, &rect))
+ 		return;
+ 
++	/*
++	 * A commit that keeps the framebuffer and its source rectangle and
++	 * carries no damage clips is the compositor updating another plane
++	 * (its cursor plane, as a rule: KWin includes every enabled plane in
++	 * each commit).  The damage helper reports that as full-plane damage,
++	 * but nothing on the scanout changed, and flushing it would only make
++	 * the host present the same frame again, at every vblank while the
++	 * pointer moves.  A compositor that draws into the buffer it scans out
++	 * says so with damage clips (or a dirtyfb), which are honoured.
++	 */
++	if (!virtio_gpu_modparam_flush_unchanged &&
++	    plane->state->fb == old_state->fb &&
++	    plane->state->src_w == old_state->src_w &&
++	    plane->state->src_h == old_state->src_h &&
++	    plane->state->src_x == old_state->src_x &&
++	    plane->state->src_y == old_state->src_y &&
++	    !output->needs_modeset &&
++	    !drm_plane_get_damage_clips_count(plane->state))
++		return;
++
+ 	bo = gem_to_virtio_gpu_obj(plane->state->fb->obj[0]);
+ 	if (bo->dumb)
+ 		virtio_gpu_update_dumb_bo(vgdev, plane->state, &rect);
+@@ -425,6 +451,69 @@
+ 		virtio_gpu_cleanup_imported_obj(obj);
+ }
+ 
++/*
++ * KWin redraws its cursor plane along with every frame of a full-screen
++ * effect: another buffer each time, the same picture.  For a dumb buffer
++ * that is an upload and a wait for the host in every commit, 0.6 ms on an
++ * idle host and several with a busy GPU, which is more than the compositor
++ * leaves between its commit and the vblank.  Tell the same picture in
++ * another buffer from a new one, so that only a new one is uploaded.
++ */
++#define VIRTIO_GPU_CURSOR_CACHE_BYTES (256 * 256 * 4)
++
++static struct {
++	void *image;
++	size_t size;
++	u32 w, h;
++	s32 hot_x, hot_y;
++} virtio_gpu_cursor_cache[VIRTIO_GPU_MAX_SCANOUTS];
++
++static bool virtio_gpu_cursor_same_image(struct virtio_gpu_output *output,
++					 struct drm_plane_state *state)
++{
++	struct drm_framebuffer *fb = state->fb;
++	size_t size = (size_t)fb->pitches[0] * fb->height;
++	struct iosys_map map;
++	bool same = false;
++	int i = output->index;
++	void *pixels;
++
++	if (i < 0 || i >= VIRTIO_GPU_MAX_SCANOUTS || !size ||
++	    size > VIRTIO_GPU_CURSOR_CACHE_BYTES ||
++	    fb->offsets[0] + size > fb->obj[0]->size)
++		return false;
++	if (drm_gem_vmap(fb->obj[0], &map))
++		return false;
++	if (map.is_iomem)
++		goto out;
++	if (!virtio_gpu_cursor_cache[i].image) {
++		virtio_gpu_cursor_cache[i].image =
++			drmm_kmalloc(output->crtc.dev,
++				     VIRTIO_GPU_CURSOR_CACHE_BYTES, GFP_KERNEL);
++		if (!virtio_gpu_cursor_cache[i].image)
++			goto out;
++		virtio_gpu_cursor_cache[i].size = 0;
++	}
++	pixels = map.vaddr + fb->offsets[0];
++	same = virtio_gpu_cursor_cache[i].size == size &&
++	       virtio_gpu_cursor_cache[i].w == fb->width &&
++	       virtio_gpu_cursor_cache[i].h == fb->height &&
++	       virtio_gpu_cursor_cache[i].hot_x == state->hotspot_x &&
++	       virtio_gpu_cursor_cache[i].hot_y == state->hotspot_y &&
++	       !memcmp(virtio_gpu_cursor_cache[i].image, pixels, size);
++	if (!same) {
++		memcpy(virtio_gpu_cursor_cache[i].image, pixels, size);
++		virtio_gpu_cursor_cache[i].size = size;
++		virtio_gpu_cursor_cache[i].w = fb->width;
++		virtio_gpu_cursor_cache[i].h = fb->height;
++		virtio_gpu_cursor_cache[i].hot_x = state->hotspot_x;
++		virtio_gpu_cursor_cache[i].hot_y = state->hotspot_y;
++	}
++out:
++	drm_gem_vunmap(fb->obj[0], &map);
++	return same;
++}
++
+ static void virtio_gpu_cursor_plane_update(struct drm_plane *plane,
+ 					   struct drm_atomic_commit *state)
+ {
+@@ -437,6 +526,7 @@
+ 	struct virtio_gpu_plane_state *vgplane_st;
+ 	struct virtio_gpu_object *bo = NULL;
+ 	uint32_t handle;
++	bool new_image;
+ 
+ 	if (plane->state->crtc)
+ 		output = drm_crtc_to_virtio_gpu_output(plane->state->crtc);
+@@ -454,7 +544,16 @@
+ 		handle = 0;
+ 	}
+ 
+-	if (bo && bo->dumb && (plane->state->fb != old_state->fb)) {
++	new_image = plane->state->fb != old_state->fb;
++	if (new_image && bo && bo->dumb && old_state->fb &&
++	    !virtio_gpu_modparam_flush_unchanged &&
++	    virtio_gpu_cursor_same_image(output, plane->state))
++		new_image = false;
++	else if (new_image && bo && bo->dumb)
++		/* remember the picture that is uploaded now */
++		virtio_gpu_cursor_same_image(output, plane->state);
++
++	if (bo && bo->dumb && new_image) {
+ 		/* new cursor -- update & wait */
+ 		struct virtio_gpu_object_array *objs;
+ 
+@@ -475,7 +574,7 @@
+ 		dma_fence_wait(&vgplane_st->fence->f, true);
+ 	}
+ 
+-	if (plane->state->fb != old_state->fb) {
++	if (new_image) {
+ 		DRM_DEBUG("update, handle %d, pos +%d+%d, hot %d,%d\n", handle,
+ 			  plane->state->crtc_x,
+ 			  plane->state->crtc_y,
+@@ -494,6 +593,16 @@
+ 			output->cursor.hot_y = cpu_to_le32(0);
+ 		}
+ 	} else {
++		/*
++		 * The same cursor at the same place: the compositor committed
++		 * the plane along with another one.  Telling the host again
++		 * makes it set its cursor again, at every frame of the guest.
++		 */
++		if (!virtio_gpu_modparam_flush_unchanged &&
++		    plane->state->crtc == old_state->crtc &&
++		    plane->state->crtc_x == old_state->crtc_x &&
++		    plane->state->crtc_y == old_state->crtc_y)
++			return;
+ 		DRM_DEBUG("move +%d+%d\n",
+ 			  plane->state->crtc_x,
+ 			  plane->state->crtc_y);

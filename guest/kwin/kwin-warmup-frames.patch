@@ -1,0 +1,36 @@
+--- a/src/core/renderloop.cpp
++++ b/src/core/renderloop.cpp
+@@ -25,6 +25,9 @@
+     return loop->d.get();
+ }
+ 
++// KWIN_WARMUP_FRAMES: how many frames after an idle stretch start a whole refresh
++// early, as the first one does (0: only the first)
++static const int s_warmupFrames = qEnvironmentVariableIntValue("KWIN_WARMUP_FRAMES");
+ static const bool s_printDebugInfo = qEnvironmentVariableIntValue("KWIN_LOG_PERFORMANCE_DATA") != 0;
+ // KWIN_LATE_FLIP_COMPENSATION=1 turns the late flip compensation on (off by default: on the
+ // panel it shows no gain, and it costs up to a refresh of latency long after a loaded phase),
+@@ -65,6 +68,13 @@
+             // if it's been a while since the last frame, the GPU is likely in a low power state and render time will be increased
+             // -> take that into account and start compositing very early
+             expectedCompositingTime = std::max(vblankInterval - 1us, expectedCompositingTime);
++            // and so will the frames right after it (KWIN_WARMUP_FRAMES): in a virtual
++            // machine the first frames of an animation take longer than the estimate,
++            // which only remembers the last second, and each one lost is a repeat
++            warmupFramesLeft = s_warmupFrames;
++        } else if (warmupFramesLeft > 0) {
++            expectedCompositingTime = std::max(vblankInterval - 1us, expectedCompositingTime);
++            warmupFramesLeft--;
+         }
+         const uint64_t pageflipsSinceLastToTarget = std::max<int64_t>(std::round((lastTargetTimestamp - lastPresentationTimestamp).count() / double(vblankInterval.count())), 0);
+         uint64_t pageflipsInAdvance = std::min<int64_t>(expectedCompositingTime / vblankInterval + 1, maxPendingFrameCount);
+--- a/src/core/renderloop_p.h
++++ b/src/core/renderloop_p.h
+@@ -59,6 +59,7 @@
+ 
+     PresentationMode presentationMode = PresentationMode::VSync;
+     int maxPendingFrameCount = 1;
++    int warmupFramesLeft = 0;
+ 
+     QBasicTimer delayedVrrTimer;
+ };

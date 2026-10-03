@@ -1,0 +1,380 @@
+Subject: [PATCH] drm/virtio: count the vblanks in the driver, at the ticks of the host
+
+virtio-gpu paces its vblank with the DRM core's free-running timer.  With
+an out-of-tree QEMU that ticks the vblank with the config interrupt (event
+bits 16 and up of the config space, one per scanout, say which scanout a
+tick is for), the driver counts the vblanks itself: at the ticks of the
+host, and at those of a timer when the host is silent.  The DRM core sees
+the count as a hardware counter.
+
+With one output the tick is taken in the interrupt handler, without
+reading the config space (exits to the host that wait for its main loop)
+and without a work item (that waits for a CPU in a busy guest).
+
+Module parameter host_vblank (default 1).
+
+--- a/drivers/gpu/drm/virtio/virtgpu_drv.h	2026-09-29 15:19:43.881948519 +0200
++++ b/drivers/gpu/drm/virtio/virtgpu_drv.h	2026-09-29 15:20:40.472833966 +0200
+@@ -27,6 +27,7 @@
+ #define VIRTIO_DRV_H
+ 
+ #include <linux/dma-direction.h>
++#include <linux/hrtimer.h>
+ #include <linux/virtio.h>
+ #include <linux/virtio_ids.h>
+ #include <linux/virtio_config.h>
+@@ -205,7 +206,24 @@
+ 	int cur_x;
+ 	int cur_y;
+ 	bool needs_modeset;
+-};
++	/*
++	 * The vblank, counted by the driver: at the ticks of the host or,
++	 * when there are none, of the timer.
++	 */
++	spinlock_t vblank_lock;
++	struct hrtimer vblank_timer;
++	ktime_t vblank_interval;
++	ktime_t vblank_time;
++	ktime_t vblank_host_time;
++	u32 vblank_count;
++	bool vblank_timer_on;
++};
++extern int virtio_gpu_modparam_host_vblank;
++bool virtio_gpu_host_vblank_irq(struct virtio_gpu_device *vgdev);
++void virtio_gpu_host_vblank(struct virtio_gpu_device *vgdev, u32 mask);
++void virtio_gpu_vblank_fini(struct virtio_gpu_device *vgdev);
++#define VIRTIO_GPU_EVENT_VBLANK_SHIFT 16
++#define VIRTIO_GPU_EVENT_VBLANK_MASK (0xffffu << VIRTIO_GPU_EVENT_VBLANK_SHIFT)
+ #define drm_crtc_to_virtio_gpu_output(x) \
+ 	container_of(x, struct virtio_gpu_output, crtc)
+ 
+@@ -283,6 +301,9 @@
+ 	struct drm_mm host_visible_mm;
+ 
+ 	struct work_struct config_changed_work;
++	/* when the config space was last looked at, and whether it says which output a tick is for */
++	unsigned long config_checked;
++	bool vblank_in_config;
+ 
+ 	struct work_struct obj_free_work;
+ 	spinlock_t obj_free_lock;
+--- a/drivers/gpu/drm/virtio/virtgpu_drv.c	2026-09-29 15:19:43.881590316 +0200
++++ b/drivers/gpu/drm/virtio/virtgpu_drv.c	2026-09-29 15:20:40.472878009 +0200
+@@ -145,6 +145,14 @@
+ 	struct drm_device *dev = vdev->priv;
+ 	struct virtio_gpu_device *vgdev = dev->dev_private;
+ 
++	/*
++	 * A host that ticks the vblank does it with this interrupt.  The tick
++	 * is counted here and now: reading the config space first is a few
++	 * exits to the host, each of them waiting for whatever its main loop
++	 * is doing, and a work item waits for a CPU in a busy guest.
++	 */
++	if (virtio_gpu_host_vblank_irq(vgdev))
++		return;
+ 	schedule_work(&vgdev->config_changed_work);
+ }
+ 
+--- a/drivers/gpu/drm/virtio/virtgpu_kms.c	2026-09-29 15:19:43.881702126 +0200
++++ b/drivers/gpu/drm/virtio/virtgpu_kms.c	2026-09-29 15:20:40.472920498 +0200
+@@ -43,6 +43,13 @@
+ 	/* read the config space */
+ 	virtio_cread_le(vgdev->vdev, struct virtio_gpu_config,
+ 			events_read, &events_read);
++	if (events_read & VIRTIO_GPU_EVENT_VBLANK_MASK) {
++		/* with one output the interrupt was the tick */
++		if (READ_ONCE(vgdev->vblank_in_config))
++			virtio_gpu_host_vblank(vgdev, (events_read & VIRTIO_GPU_EVENT_VBLANK_MASK)
++					       >> VIRTIO_GPU_EVENT_VBLANK_SHIFT);
++		events_clear |= events_read & VIRTIO_GPU_EVENT_VBLANK_MASK;
++	}
+ 	if (events_read & VIRTIO_GPU_EVENT_DISPLAY) {
+ 		if (vgdev->num_scanouts) {
+ 			if (vgdev->has_edid)
+@@ -297,6 +304,7 @@
+ 	flush_work(&vgdev->ctrlq.dequeue_work);
+ 	flush_work(&vgdev->cursorq.dequeue_work);
+ 	flush_work(&vgdev->config_changed_work);
++	virtio_gpu_vblank_fini(vgdev);
+ 	virtio_reset_device(vgdev->vdev);
+ 	vgdev->vdev->config->del_vqs(vgdev->vdev);
+ }
+--- a/drivers/gpu/drm/virtio/virtgpu_display.c	2026-09-29 15:19:43.881563035 +0200
++++ b/drivers/gpu/drm/virtio/virtgpu_display.c	2026-09-29 15:20:57.713421241 +0200
+@@ -50,6 +50,244 @@
+ #define drm_connector_to_virtio_gpu_output(x) \
+ 	container_of(x, struct virtio_gpu_output, conn)
+ 
++/*
++ * The vblank.
++ *
++ * virtio-gpu has no vblank of its own, and the DRM core's vblank timer paces
++ * the guest: free-running at the mode's refresh rate and unrelated to the
++ * moment the host shows a frame, so a compositor's frames reach the host's
++ * compositor at a random phase of the real refresh.
++ *
++ * Here the driver counts the vblanks itself.  A host that knows when its
++ * display refreshes ticks the vblank with the config interrupt (an
++ * out-of-tree QEMU extension; with several outputs, event bits 16 and up of
++ * the config space say which one a tick is for).  A timer stands in when the
++ * host is silent: every tick of the host sets it a quarter of a refresh
++ * behind the next one, and once it has expired it runs at the mode's refresh
++ * rate.  Two ticks less than half a refresh apart are one vblank that both
++ * have seen.
++ *
++ * The count and the time of the last vblank change together, under a lock,
++ * and they are all the DRM core gets to see (as a hardware counter).  An
++ * earlier version restarted the core's vblank timer at every tick and let
++ * the core derive the count from times, one of them the expiry time of that
++ * timer: read while another CPU was restarting it, time went backwards, the
++ * count jumped ahead by a random 32-bit number and the page flip that was
++ * waiting for the next vblank waited for ever.
++ */
++int virtio_gpu_modparam_host_vblank = 1;
++MODULE_PARM_DESC(host_vblank, "Tick the vblank when the host reports one (default 1)");
++module_param_named(host_vblank, virtio_gpu_modparam_host_vblank, int, 0644);
++
++static ktime_t virtio_gpu_vblank_interval(struct virtio_gpu_output *output)
++{
++	/* 60 Hz until there is a mode */
++	return output->vblank_interval ?: ns_to_ktime(NSEC_PER_SEC / 60);
++}
++
++/* Count a vblank, unless one was counted less than half a refresh before. */
++static bool virtio_gpu_vblank_count(struct virtio_gpu_output *output, ktime_t when)
++{
++	ktime_t interval = virtio_gpu_vblank_interval(output);
++
++	lockdep_assert_held(&output->vblank_lock);
++
++	if (output->vblank_time &&
++	    ktime_before(when, ktime_add(output->vblank_time, interval / 2)))
++		return false;
++	output->vblank_count++;
++	output->vblank_time = when;
++	return true;
++}
++
++static bool virtio_gpu_host_vblank_tick(struct virtio_gpu_output *output)
++{
++	unsigned long flags;
++	ktime_t now, interval;
++	bool counted;
++
++	spin_lock_irqsave(&output->vblank_lock, flags);
++	now = ktime_get();
++	interval = virtio_gpu_vblank_interval(output);
++	counted = virtio_gpu_vblank_count(output, now);
++	output->vblank_host_time = now;
++	/*
++	 * Counted or not, the next tick is due a refresh from now: the timer
++	 * waits for it a little longer.
++	 */
++	if (output->vblank_timer_on)
++		hrtimer_start(&output->vblank_timer,
++			      ktime_add(now, interval + interval / 4),
++			      HRTIMER_MODE_ABS);
++	spin_unlock_irqrestore(&output->vblank_lock, flags);
++
++	if (counted)
++		drm_crtc_handle_vblank(&output->crtc);
++	return counted;
++}
++
++/*
++ * The config interrupt, taken as a tick of the vblank.  Returns true if that
++ * is all there is to do, false if the config space is to be read: when the
++ * interrupt did not come as a tick would, with more than one output (the
++ * config space says which one a tick is for), and once a second in any case.
++ */
++bool virtio_gpu_host_vblank_irq(struct virtio_gpu_device *vgdev)
++{
++	struct virtio_gpu_output *output = NULL;
++	int i, enabled = 0;
++	bool counted;
++
++	if (!virtio_gpu_modparam_host_vblank)
++		return false;
++	for (i = 0; i < vgdev->num_scanouts; i++) {
++		if (READ_ONCE(vgdev->outputs[i].crtc.enabled)) {
++			output = &vgdev->outputs[i];
++			enabled++;
++		}
++	}
++	WRITE_ONCE(vgdev->vblank_in_config, enabled > 1);
++	if (enabled > 1)
++		return false;
++	counted = output ? virtio_gpu_host_vblank_tick(output) : true;
++	if (!counted || time_after(jiffies, vgdev->config_checked + HZ)) {
++		vgdev->config_checked = jiffies;
++		return false;
++	}
++	return true;
++}
++
++/* The ticks that the config space reports, one bit per output. */
++void virtio_gpu_host_vblank(struct virtio_gpu_device *vgdev, u32 mask)
++{
++	int i;
++
++	if (!virtio_gpu_modparam_host_vblank)
++		return;
++	for (i = 0; i < vgdev->num_scanouts && i < 16; i++) {
++		if ((mask & BIT(i)) && READ_ONCE(vgdev->outputs[i].crtc.enabled))
++			virtio_gpu_host_vblank_tick(&vgdev->outputs[i]);
++	}
++}
++
++static enum hrtimer_restart virtio_gpu_vblank_timer(struct hrtimer *timer)
++{
++	struct virtio_gpu_output *output =
++		container_of(timer, struct virtio_gpu_output, vblank_timer);
++	unsigned long flags;
++	ktime_t now, when;
++	bool counted;
++
++	spin_lock_irqsave(&output->vblank_lock, flags);
++	/* switched off, or set again by a tick of the host, in the meantime */
++	if (!output->vblank_timer_on || hrtimer_is_queued(timer)) {
++		spin_unlock_irqrestore(&output->vblank_lock, flags);
++		return HRTIMER_NORESTART;
++	}
++	/* the vblank was when the timer was due, this may run a little later */
++	now = ktime_get();
++	when = hrtimer_get_expires(timer);
++	if (ktime_after(when, now) ||
++	    ktime_before(when, ktime_sub(now, virtio_gpu_vblank_interval(output))))
++		when = now;
++	counted = virtio_gpu_vblank_count(output, when);
++	hrtimer_forward(timer, now, virtio_gpu_vblank_interval(output));
++	spin_unlock_irqrestore(&output->vblank_lock, flags);
++
++	if (counted)
++		drm_crtc_handle_vblank(&output->crtc);
++	return HRTIMER_RESTART;
++}
++
++static int virtio_gpu_enable_vblank(struct drm_crtc *crtc)
++{
++	struct virtio_gpu_output *output = drm_crtc_to_virtio_gpu_output(crtc);
++	struct drm_vblank_crtc *vblank = drm_crtc_vblank_crtc(crtc);
++	unsigned long flags;
++	ktime_t now, interval, next;
++
++	drm_calc_timestamping_constants(crtc, &crtc->mode);
++
++	spin_lock_irqsave(&output->vblank_lock, flags);
++	if (vblank->framedur_ns)
++		output->vblank_interval = ns_to_ktime(vblank->framedur_ns);
++	interval = virtio_gpu_vblank_interval(output);
++	now = ktime_get();
++	if (!output->vblank_time) {
++		output->vblank_time = now;
++	} else if (ktime_after(now, ktime_add(output->vblank_time, interval))) {
++		/* the vblanks there would have been since the last one counted */
++		u64 missed = div64_u64(ktime_to_ns(ktime_sub(now, output->vblank_time)),
++				       ktime_to_ns(interval));
++
++		output->vblank_count += missed;
++		output->vblank_time = ktime_add_ns(output->vblank_time,
++						   missed * ktime_to_ns(interval));
++	}
++	next = ktime_add(output->vblank_time, interval);
++	/* a host that ticks: wait for its tick a little longer */
++	if (virtio_gpu_modparam_host_vblank && output->vblank_host_time &&
++	    ktime_before(now, ktime_add(output->vblank_host_time, 2 * interval)))
++		next = ktime_add(next, interval / 4);
++	output->vblank_timer_on = true;
++	hrtimer_start(&output->vblank_timer, next, HRTIMER_MODE_ABS);
++	spin_unlock_irqrestore(&output->vblank_lock, flags);
++
++	return 0;
++}
++
++static void virtio_gpu_disable_vblank(struct drm_crtc *crtc)
++{
++	struct virtio_gpu_output *output = drm_crtc_to_virtio_gpu_output(crtc);
++	unsigned long flags;
++
++	/*
++	 * No hrtimer_cancel() here: the timer function may be waiting for
++	 * a lock of the DRM core that the caller holds.  It finds the timer
++	 * switched off.
++	 */
++	spin_lock_irqsave(&output->vblank_lock, flags);
++	output->vblank_timer_on = false;
++	hrtimer_try_to_cancel(&output->vblank_timer);
++	spin_unlock_irqrestore(&output->vblank_lock, flags);
++}
++
++static u32 virtio_gpu_get_vblank_counter(struct drm_crtc *crtc)
++{
++	struct virtio_gpu_output *output = drm_crtc_to_virtio_gpu_output(crtc);
++
++	return READ_ONCE(output->vblank_count);
++}
++
++static bool virtio_gpu_get_vblank_timestamp(struct drm_crtc *crtc,
++					     int *max_error,
++					     ktime_t *vblank_time,
++					     bool in_vblank_irq)
++{
++	struct virtio_gpu_output *output = drm_crtc_to_virtio_gpu_output(crtc);
++	unsigned long flags;
++
++	spin_lock_irqsave(&output->vblank_lock, flags);
++	*vblank_time = output->vblank_time ?: ktime_get();
++	spin_unlock_irqrestore(&output->vblank_lock, flags);
++	return true;
++}
++
++void virtio_gpu_vblank_fini(struct virtio_gpu_device *vgdev)
++{
++	int i;
++
++	for (i = 0; i < vgdev->num_scanouts; i++) {
++		struct virtio_gpu_output *output = &vgdev->outputs[i];
++		unsigned long flags;
++
++		spin_lock_irqsave(&output->vblank_lock, flags);
++		output->vblank_timer_on = false;
++		spin_unlock_irqrestore(&output->vblank_lock, flags);
++		hrtimer_cancel(&output->vblank_timer);
++	}
++}
++
+ static const struct drm_crtc_funcs virtio_gpu_crtc_funcs = {
+ 	.set_config             = drm_atomic_helper_set_config,
+ 	.destroy                = drm_crtc_cleanup,
+@@ -58,7 +296,10 @@
+ 	.reset                  = drm_atomic_helper_crtc_reset,
+ 	.atomic_duplicate_state = drm_atomic_helper_crtc_duplicate_state,
+ 	.atomic_destroy_state   = drm_atomic_helper_crtc_destroy_state,
+-	DRM_CRTC_VBLANK_TIMER_FUNCS,
++	.enable_vblank          = virtio_gpu_enable_vblank,
++	.disable_vblank         = virtio_gpu_disable_vblank,
++	.get_vblank_counter     = virtio_gpu_get_vblank_counter,
++	.get_vblank_timestamp   = virtio_gpu_get_vblank_timestamp,
+ };
+ 
+ static const struct drm_framebuffer_funcs virtio_gpu_fb_funcs = {
+@@ -282,6 +523,9 @@
+ 	int ret;
+ 
+ 	output->index = index;
++	spin_lock_init(&output->vblank_lock);
++	hrtimer_setup(&output->vblank_timer, virtio_gpu_vblank_timer,
++		      CLOCK_MONOTONIC, HRTIMER_MODE_ABS);
+ 	if (index == 0) {
+ 		output->info.enabled = cpu_to_le32(true);
+ 		output->info.r.width = cpu_to_le32(XRES_DEF);
+@@ -381,6 +625,8 @@
+ 	for (i = 0 ; i < vgdev->num_scanouts; ++i)
+ 		vgdev_output_init(vgdev, i);
+ 
++	/* the driver's own count of the vblanks */
++	vgdev->ddev->max_vblank_count = 0xffffffff;
+ 	ret = drm_vblank_init(vgdev->ddev, vgdev->num_scanouts);
+ 	if (ret)
+ 		return ret;

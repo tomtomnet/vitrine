@@ -1,0 +1,128 @@
+diff -ur kwin-6.7.5.orig/src/backends/drm/drm_commit_thread.cpp kwin-6.7.5/src/backends/drm/drm_commit_thread.cpp
+--- a/src/backends/drm/drm_commit_thread.cpp	2026-09-30 21:18:59.389120076 +0200
++++ b/src/backends/drm/drm_commit_thread.cpp	2026-09-30 22:22:08.498638457 +0200
+@@ -32,6 +32,14 @@
+ // KWIN_DRM_COMMIT_GRACE_US: how long after the vblank a commit may still go out
+ // while its buffers become readable, instead of waiting for the next vblank
+ static const std::chrono::microseconds s_commitGrace{environmentVariableIntValue("KWIN_DRM_COMMIT_GRACE_US").value_or(0)};
++// KWIN_DRM_COMMIT_EARLY: a commit goes out as soon as the GPU is done with its
++// buffers instead of just before the vblank (for the guest of a VM: the host shows
++// a frame sooner when it has it sooner, and a frame that missed its slot and was
++// rendered at once does not wait a whole refresh for the next one).  1: only a
++// frame after an idle stretch (two refreshes without a flip) - the frames of an
++// animation keep their fixed phase before the vblank, which the host's pacing
++// relies on; 2: every frame.
++static const int s_commitEarly = environmentVariableIntValue("KWIN_DRM_COMMIT_EARLY").value_or(0);
+ 
+ DrmCommitThread::DrmCommitThread(DrmGpu *gpu, const QString &name)
+     : m_gpu(gpu)
+@@ -92,12 +100,17 @@
+                 // the commit at hand, and tell its frames when it did: the
+                 // render loop then knows the GPU's time, which the GL queries
+                 // do not give where they are off (virtual machines)
+-                auto watched = s_watchGpu ? m_commits.front()->watched() : std::vector<DrmAtomicCommit::Watched>{};
++                auto watched = (s_watchGpu || s_commitEarly) ? m_commits.front()->watched() : std::vector<DrmAtomicCommit::Watched>{};
++                const bool lone = now - m_lastPageflip > 2 * m_minVblankInterval;
++                const bool canGoEarly = (s_commitEarly == 2 || (s_commitEarly == 1 && lone)) && !m_vrr && !m_tearing && !watched.empty();
+                 lock.unlock();
++                bool done = false;
+                 if (!watched.empty()) {
+-                    watchGpu(std::move(watched), m_targetPageflipTime - m_safetyMargin);
++                    done = watchGpu(std::move(watched), m_targetPageflipTime - m_safetyMargin);
++                }
++                if (!(canGoEarly && done)) {
++                    std::this_thread::sleep_until(m_targetPageflipTime - m_safetyMargin);
+                 }
+-                std::this_thread::sleep_until(m_targetPageflipTime - m_safetyMargin);
+                 lock.lock();
+                 // the main thread might've modified the list
+                 if (m_commits.empty()) {
+@@ -197,9 +210,10 @@
+ 
+ /*
+  * Poll the sync files of the buffers until all are readable or @p until
+- * comes; the frames get the time the last one became readable.
++ * comes; the frames get the time the last one became readable.  Returns
++ * whether all the buffers are readable.
+  */
+-void DrmCommitThread::watchGpu(std::vector<DrmAtomicCommit::Watched> &&watched, TimePoint until)
++bool DrmCommitThread::watchGpu(std::vector<DrmAtomicCommit::Watched> &&watched, TimePoint until)
+ {
+     std::vector<pollfd> fds;
+     for (const auto &w : watched) {
+@@ -212,17 +226,19 @@
+     }
+     if (fds.empty()) {
+         // done before the commit was handed over, or nothing to poll
+-        return;
++        return std::ranges::all_of(watched, [](const auto &w) {
++            return w.buffer->isReadable();
++        });
+     }
+     while (true) {
+         const auto now = std::chrono::steady_clock::now();
+         if (now >= until) {
+-            return;
++            return false;
+         }
+         const auto left = std::chrono::duration_cast<std::chrono::milliseconds>(until - now);
+         const int ret = poll(fds.data(), fds.size(), std::max<int>(1, left.count() + 1));
+         if (ret < 0 && errno != EINTR) {
+-            return;
++            return false;
+         }
+         bool all = true;
+         for (const auto &w : watched) {
+@@ -238,13 +254,13 @@
+                     w.frame->setGpuDone(done);
+                 }
+             }
+-            return;
++            return true;
+         }
+         std::erase_if(fds, [&](const pollfd &p) {
+             return p.revents & (POLLIN | POLLERR | POLLHUP | POLLNVAL);
+         });
+         if (fds.empty()) {
+-            return;
++            return false;
+         }
+     }
+ }
+diff -ur kwin-6.7.5.orig/src/backends/drm/drm_commit_thread.h kwin-6.7.5/src/backends/drm/drm_commit_thread.h
+--- a/src/backends/drm/drm_commit_thread.h	2026-09-30 21:18:59.389004970 +0200
++++ b/src/backends/drm/drm_commit_thread.h	2026-09-30 21:20:29.856939028 +0200
+@@ -50,7 +50,7 @@
+     TimePoint estimateNextVblank(TimePoint now) const;
+     void optimizeCommits(TimePoint pageflipTarget);
+     void submit();
+-    void watchGpu(std::vector<DrmAtomicCommit::Watched> &&watched, TimePoint until);
++    bool watchGpu(std::vector<DrmAtomicCommit::Watched> &&watched, TimePoint until);
+     void handlePing();
+ 
+     DrmGpu *const m_gpu;
+diff -ur kwin-6.7.5.orig/src/core/renderloop.cpp kwin-6.7.5/src/core/renderloop.cpp
+--- a/src/core/renderloop.cpp	2026-09-30 21:18:59.400208944 +0200
++++ b/src/core/renderloop.cpp	2026-09-30 21:21:07.702130051 +0200
+@@ -33,6 +33,10 @@
+ // panel it shows no gain, and it costs up to a refresh of latency long after a loaded phase),
+ // KWIN_LATE_FLIP_STEP_US sets how much earlier frames start per late flip (500 by default)
+ static const bool s_lateFlipCompensation = qEnvironmentVariableIntValue("KWIN_LATE_FLIP_COMPENSATION") != 0;
++// KWIN_IDLE_FRAME_EARLY=1: a frame requested while the loop was idle is rendered at once,
++// not at the usual lead before the next vblank (the guest of a VM: the host takes a lone
++// frame as it comes, and with KWIN_DRM_COMMIT_EARLY the frame leaves as soon as it is done)
++static const bool s_idleFrameEarly = qEnvironmentVariableIntValue("KWIN_IDLE_FRAME_EARLY") != 0;
+ // KWIN_RENDER_ESTIMATE_UPSTREAM=1: the frames for which only the cursor was rendered count for the render time estimate
+ static const bool s_upstreamEstimate = qEnvironmentVariableIntValue("KWIN_RENDER_ESTIMATE_UPSTREAM") != 0;
+ static const std::chrono::nanoseconds s_lateFlipStep = std::chrono::microseconds(qEnvironmentVariableIsEmpty("KWIN_LATE_FLIP_STEP_US") ? 500 : std::max(10, qEnvironmentVariableIntValue("KWIN_LATE_FLIP_STEP_US")));
+@@ -75,6 +79,10 @@
+         } else if (warmupFramesLeft > 0) {
+             expectedCompositingTime = std::max(vblankInterval - 1us, expectedCompositingTime);
+             warmupFramesLeft--;
++        } else if (s_idleFrameEarly && pageflipsSince >= 2 && !compositeTimer.isActive()) {
++            // the loop was idle: nothing waits on this frame's place in the
++            // cadence, so render it now rather than hold it for the lead
++            expectedCompositingTime = std::max(vblankInterval - 1us, expectedCompositingTime);
+         }
+         const uint64_t pageflipsSinceLastToTarget = std::max<int64_t>(std::round((lastTargetTimestamp - lastPresentationTimestamp).count() / double(vblankInterval.count())), 0);
+         uint64_t pageflipsInAdvance = std::min<int64_t>(expectedCompositingTime / vblankInterval + 1, maxPendingFrameCount);
