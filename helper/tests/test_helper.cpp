@@ -508,6 +508,51 @@ private slots:
         QVERIFY(b.finished());
     }
 
+    /*
+     * A helper killed between the two writes of a CPU's change (runtime
+     * and period), setting it or putting it back: the next one finishes
+     * putting it back - it is its own half-way pair, not another tool's
+     */
+    void fairServerHalfWay_data()
+    {
+        QTest::addColumn<int>("killAt");
+        QTest::addColumn<bool>("restoring");
+        /* setting: cpu0's runtime, then its period... (8 writes) */
+        QTest::newRow("setting, after cpu0's runtime") << 1 << false;
+        QTest::newRow("setting, after cpu2's runtime") << 5 << false;
+        /* putting back: cpu0's period, then its runtime... */
+        QTest::newRow("restoring, after cpu0's period") << 9 << true;
+        QTest::newRow("restoring, after cpu3's period") << 15 << true;
+    }
+    void fairServerHalfWay()
+    {
+        QFETCH(int, killAt);
+        QFETCH(bool, restoring);
+        FakeQemu qemu;
+        {
+            Helper a(m_root, {QString("VITRINE_HELPER_TEST_KILL_AT=%1").arg(killAt)});
+            QVERIFY(a.ready());
+            a.answer("watch " + qemu.pidText());
+            const QString on = a.answer("fair-server on");
+            if (restoring) {
+                QVERIFY(on.startsWith("ok fair-server on: 4 cpus"));
+                qemu.stop();
+            }
+            QVERIFY(a.finished());
+        }
+        QVERIFY(journal().contains("killed"));
+        QVERIFY(!fairAll("1000000000/50000000"));
+        QVERIFY(stateExists("fair-server"));
+        Helper b(m_root);
+        QCOMPARE(b.line(), QString("restored fair-server: 4 cpus back to 1000 ms / 50 ms"));
+        QVERIFY(b.ready());
+        b.closeInput();
+        QVERIFY(b.finished());
+        QVERIFY(!b.all().join('\n').contains("left fair-server"));
+        QVERIFY(fairAll("1000000000/50000000"));
+        QCOMPARE(stateFiles(), QStringList({"lock"}));
+    }
+
     /* vitrine quits while its VMs run: the helper keeps the settings until the last one ends */
     void inputClosedWhileVmsRun()
     {

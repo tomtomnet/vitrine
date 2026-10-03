@@ -416,6 +416,20 @@ static void fair_restore(void)
             }
         } else if (cur_p == c.period && cur_r == c.runtime) {
             already++;
+        } else if ((cur_p == c.period || cur_p == c.new_period) &&
+                   (cur_r == c.runtime || cur_r == c.new_runtime)) {
+            /*
+             * Half-way, as fair_set() leaves it between its two writes: a
+             * helper killed there, setting or restoring.  Not another
+             * tool's change: theirs would not be one of our pairs.  (The
+             * other mixed pair cannot happen: its runtime would exceed its
+             * period, which the kernel refuses.)
+             */
+            if (fair_set(c.id, cur_p, cur_r, c.period, c.runtime) == 0) {
+                restored++;
+            } else {
+                failed++;
+            }
         } else {
             left++;
         }

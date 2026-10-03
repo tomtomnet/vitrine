@@ -10,6 +10,9 @@
  * kept in memory (an unprivileged test cannot make threads real-time); the
  * processes and /proc are real.  This build refuses to run as root, and the
  * installed helper has no test root at all.
+ *
+ * VITRINE_HELPER_TEST_KILL_AT=N kills it (SIGKILL) right after its Nth
+ * write, as a crash or a kill in the middle of a change would.
  */
 #define _GNU_SOURCE
 #include <errno.h>
@@ -26,6 +29,7 @@
 #include "../src/helper.h"
 
 static char root[256];
+static int writes;      /* for VITRINE_HELPER_TEST_KILL_AT */
 
 bool sys_init(void)
 {
@@ -275,6 +279,11 @@ int sys_write(const char *path, const char *value)
         err = put(path, value);
     }
     journal("write %s %s%s", rel, v, err ? " FAILED" : "");
+    if (getenv("VITRINE_HELPER_TEST_KILL_AT") &&
+        ++writes == atoi(getenv("VITRINE_HELPER_TEST_KILL_AT"))) {
+        journal("killed");
+        raise(SIGKILL);
+    }
     return err;
 }
 
