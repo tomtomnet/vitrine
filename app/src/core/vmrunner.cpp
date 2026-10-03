@@ -265,6 +265,8 @@ struct VmRunner::Private
     QString sharePath(qsizetype i) const { return runDir() + QString("/fs%1.sock").arg(i); }
     QString agentPath() const { return runDir() + "/qga.sock"; }
     QString displayPath() const { return runDir() + "/display.sock"; }
+    /* The arguments of the run, which vm.args may no longer be, for attach() */
+    QString runArgsPath() const { return runDir() + "/run.args"; }
     QString qmpArg() const;
     /* @problems: the cards whose properties could not be read, for the log */
     QStringList commandLine(const ArgsFile &args, const QString &qemu,
@@ -363,7 +365,7 @@ void VmRunner::Private::removeRuntimeFiles() const
     QDir rt(runDir());
 
     for (const QString &name : rt.entryList({"qmp.sock", "qemu.pid", "fs*.sock*", "qga.sock",
-                                             "display.sock"},
+                                             "display.sock", "run.args"},
                                             QDir::AllEntries | QDir::System |
                                                 QDir::Hidden)) {
         rt.remove(name);
@@ -878,7 +880,12 @@ QStringList VmRunner::shellAssignments(const QStringList &environment)
 
 QString VmRunner::displaySocket() const
 {
-    if (!isActive() || VmConfig::screen(d->args) != VmConfig::Screen::Embedded) {
+    /*
+     * By the QEMU that runs, not by the arguments: start() removes the
+     * sockets of earlier runs, so the socket is there only if this QEMU
+     * was started with it, whatever vm.args says now
+     */
+    if (!isActive() || !QFileInfo::exists(d->displayPath())) {
         return {};
     }
     return d->displayPath();
@@ -900,7 +907,7 @@ void VmRunner::start(const ArgsFile &args)
     }
     /* left running by an earlier run of the manager */
     if (d->runningPid() > 0) {
-        attach();
+        attach(args);
         return;
     }
 
@@ -974,6 +981,10 @@ void VmRunner::start(const ArgsFile &args)
         log.write(("vitrine: " + line + '\n').toUtf8());
     }
     log.close();
+    QFile saved(d->runArgsPath());
+    if (saved.open(QIODevice::WriteOnly)) {
+        saved.write(args.toText().toUtf8());
+    }
 
     d->setState(State::Starting);
     d->clock.start();
@@ -1011,6 +1022,11 @@ void VmRunner::attach(const ArgsFile &args)
     if (pid <= 0) {
         d->removeRuntimeFiles();
         return;
+    }
+    /* what it was started with: its screen and shares, not those of vm.args now */
+    QFile saved(d->runArgsPath());
+    if (saved.open(QIODevice::ReadOnly)) {
+        d->args = ArgsFile::parse(QString::fromUtf8(saved.readAll()));
     }
     d->pid = pid;
     /* the binary it runs, not the one the preferences may name now */

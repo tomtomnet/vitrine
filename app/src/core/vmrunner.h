@@ -60,20 +60,22 @@ public:
     /*
      * The QMP socket of the VM's display, for the view to attach with
      * getfd + add_client: a monitor of its own, since the runner keeps the
-     * main one.  Empty unless the running VM shows in vitrine's window.
+     * main one.  Empty unless the running QEMU shows in vitrine's window.
      */
     QString displaySocket() const;
     /*
      * The arguments of the current run, or the last: those given to start(),
-     * or to attach() for a QEMU found running.  vm.args may have changed since.
+     * which a QEMU found running by attach() keeps beside its sockets.
+     * vm.args may have changed since.
      */
     ArgsFile runArgs() const;
 
     /* The state goes Starting, then Running once QMP answers, or back to
        Stopped with failed() */
     void start(const ArgsFile &args);
-    /* Picks up a QEMU started by an earlier run of the manager, if any;
-       @args, those of the VM, tell which shared folders to mount */
+    /* Picks up a QEMU started by an earlier run of the manager, if any,
+       with the arguments it was started with; @args, those of the VM, stand
+       in for them for a QEMU of a vitrine that did not keep them */
     void attach(const ArgsFile &args = {});
     void pause();
     void resume();

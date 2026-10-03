@@ -386,11 +386,22 @@ private slots:
         QCOMPARE(runner->state(), VmRunner::State::Running);
         QCOMPARE(failed.size(), 0);
 
-        /* the manager quits, the VM runs on, the next manager finds it */
+        /* the manager quits, the VM runs on, the next manager finds it, with
+           the arguments it runs with, whatever vm.args says now */
+        const ArgsFile edited = ArgsFile::parse("-display dbus,p2p=yes,gl=on\n");
         delete runner;
         runner = new VmRunner(id, tmp.path());
-        runner->attach();
+        runner->attach(edited);
         QTRY_COMPARE_WITH_TIMEOUT(runner->state(), VmRunner::State::Running, 10000);
+        QCOMPARE(runner->runArgs().toText(), args.toText());
+        QCOMPARE(runner->displaySocket(), "");
+        /* one started by a vitrine that did not keep them: what it serves */
+        delete runner;
+        QVERIFY(QFile::remove(runDir + "/run.args"));
+        runner = new VmRunner(id, tmp.path());
+        runner->attach(edited);
+        QTRY_COMPARE_WITH_TIMEOUT(runner->state(), VmRunner::State::Running, 10000);
+        QCOMPARE(runner->displaySocket(), "");
         delete runner;
         runner = new VmRunner(id, tmp.path());
         QSignalSpy failed2(runner, &VmRunner::failed);
@@ -404,6 +415,7 @@ private slots:
         QVERIFY(!runner->qmp());
         QVERIFY(!QFileInfo::exists(runDir + "/qmp.sock"));
         QVERIFY(!QFileInfo::exists(runDir + "/qemu.pid"));
+        QVERIFY(!QFileInfo::exists(runDir + "/run.args"));
         QVERIFY(gone(pid));
         delete runner;
     }
