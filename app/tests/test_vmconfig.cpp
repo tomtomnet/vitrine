@@ -314,7 +314,7 @@ private slots:
     void freePorts()
     {
         const int first = freePort({});
-        QVERIFY(first >= 2222);
+        QVERIFY(first >= 10022);
         QVERIFY(freePort({first}) > first);
         QCOMPARE(freePort({}, 100) >= 1024, true);
 

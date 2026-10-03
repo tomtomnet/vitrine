@@ -136,8 +136,9 @@ bool hasUsbController(const ArgsFile &args);
 
 /*
  * A TCP port for a forward to a VM, from @from up: none of @taken (those
- * of the other VMs) and free on 127.0.0.1 now
+ * of the other VMs) and free on 127.0.0.1 now.  Not from 2222, the usual
+ * port of hand-made VMs, which may be stopped now and want it later.
  */
-int freePort(const QList<int> &taken, int from = 2222);
+int freePort(const QList<int> &taken, int from = 10022);
 
 }

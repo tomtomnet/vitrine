@@ -723,10 +723,9 @@ QStringList VmRunner::commandLine(const ArgsFile &args) const
                            "name=org.qemu.guest_agent.0,id=%1").arg(kAgentPort);
     }
     if (VmConfig::screen(args) == VmConfig::Screen::Embedded) {
-        command << "-chardev"
-                << QString("socket,id=vitrine-display,path=%1,server=on,wait=off")
-                       .arg(OptionValue::escape(d->displayPath()))
-                << "-mon" << "chardev=vitrine-display,mode=control";
+        /* a second -qmp; -mon is deprecated */
+        command << "-qmp"
+                << QString("unix:%1,server=on,wait=off").arg(OptionValue::escape(d->displayPath()));
     }
     command << "-qmp" << d->qmpArg() << "-pidfile" << d->pidPath();
     return command;

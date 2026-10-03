@@ -135,13 +135,11 @@ private slots:
             runner.commandLine(ArgsFile::parse("-m 1G\n-display dbus,p2p=yes,gl=on\n"));
         const QStringList sdl = runner.commandLine(ArgsFile::parse("-m 1G\n-display sdl,gl=on\n"));
         const QStringList bus = runner.commandLine(ArgsFile::parse("-m 1G\n-display dbus\n"));
-        const QString chardev =
-            "socket,id=vitrine-display,path=" + runDir + "/display.sock,server=on,wait=off";
+        const QString monitor = "unix:" + runDir + "/display.sock,server=on,wait=off";
 
-        QCOMPARE(embedded.mid(5, 4), QStringList({"-chardev", chardev, "-mon",
-                                                  "chardev=vitrine-display,mode=control"}));
-        QVERIFY(!sdl.contains(chardev));
-        QVERIFY(!bus.contains(chardev));
+        QCOMPARE(embedded.mid(5, 2), QStringList({"-qmp", monitor}));
+        QVERIFY(!sdl.contains(monitor));
+        QVERIFY(!bus.contains(monitor));
         QCOMPARE(runner.displaySocket(), "");   // not running
     }
 
