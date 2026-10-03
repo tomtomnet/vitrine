@@ -42,6 +42,7 @@
 #include "ui/perfmonitor.h"
 #include "ui/preferencesdialog.h"
 #include "ui/qemubuilddialog.h"
+#include "ui/stackbanner.h"
 #include "ui/qemudocs.h"
 #include "ui/referencepanel.h"
 #include "ui/textdialog.h"
@@ -224,10 +225,11 @@ MainWindow::MainWindow(VmStore *store, QWidget *parent)
     m_splitter->setChildrenCollapsible(false);
     m_splitter->setSizes({260, 800});
     setCentralWidget(m_splitter);
+    /* Vitrine's QEMU not built, out of date, building */
+    connect(StackBanner::addTo(this), &StackBanner::buildRequested, this, &MainWindow::buildQemu);
 
     m_qemuStatus->setObjectName("qemuStatus");
     m_updates = new UpdateNotifier(this);
-    connect(m_updates, &UpdateNotifier::buildQemuRequested, this, &MainWindow::buildQemu);
     statusBar()->addPermanentWidget(m_perf);
     statusBar()->addPermanentWidget(m_updates->button());
     statusBar()->addPermanentWidget(new MemoryMonitor(store, this));

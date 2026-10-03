@@ -3,19 +3,18 @@
 
 #include <QDialog>
 
-class QCheckBox;
-class QComboBox;
+#include "core/stackbuilder.h"
+
 class QLabel;
-class QLineEdit;
 class QPlainTextEdit;
 class QProgressBar;
 class QPushButton;
-class QemuBuilder;
 
 /*
- * Builds qemu-gui, kept up to date from its repository, and makes it the
- * QEMU of the VMs.  With DRM native context, it first builds a
- * virglrenderer of its own with the renderers of every GPU that has one.
+ * Builds Vitrine's QEMU (StackBuilder: host/build.sh), or updates it when
+ * this version of Vitrine pins other sources or patches than the last
+ * build.  Nothing to choose: the window shows what gets built, the steps,
+ * and the log.  Closing it leaves the build running; Stop stops it.
  */
 class QemuBuildDialog : public QDialog
 {
@@ -24,37 +23,36 @@ class QemuBuildDialog : public QDialog
 public:
     explicit QemuBuildDialog(QWidget *parent = nullptr);
 
+    /* "Build Vitrine's QEMU", or "Update Vitrine's QEMU" when out of date */
+    static QString title(StackBuilder::State state);
+    /* "Vitrine's build of 3 October 2026, QEMU 11.1.50 + 7 patches" */
+    static QString describe(const StackBuilder::Build &build);
+    /* What the state means for the user, in a sentence or two */
+    static QString explain(StackBuilder::State state, const StackBuilder::Build &build);
+
 signals:
-    /* The binary chosen as the QEMU of the VMs */
+    /* The QEMU of the VMs changed: a build replaced the one they used */
     void qemuChanged(const QString &binary);
     /* A build ended well */
     void built();
 
-protected:
-    void closeEvent(QCloseEvent *event) override;
-
 private:
     void build();
+    void started();
+    void stepStarted(int step, int total, const QString &text);
     void finished(const QString &error);
     void updateState();
-    void updateVirglStatus();
-    /* The fork's branches, from GitHub; master and the chosen one until then */
-    void listBranches();
-    void setBranches(QStringList names, const QString &chosen);
-    QString branch() const;
-    void updateBranchNote();
+    void showMissing();
 
-    QemuBuilder *m_builder;
-    QComboBox *m_branch;
-    QLabel *m_branchNote;
-    QComboBox *m_preset;
-    QLineEdit *m_configure;
-    QCheckBox *m_virgl;
-    QLabel *m_virglStatus;
+    StackBuilder *m_builder;
+    QLabel *m_about;
+    QLabel *m_status;
+    QLabel *m_missing;
     QLabel *m_step;
     QProgressBar *m_progress;
+    QLabel *m_background;
     QPlainTextEdit *m_log;
     QPushButton *m_build;
     QPushButton *m_cancel;
-    QPushButton *m_use;
+    QString m_qemuBefore;
 };

@@ -83,11 +83,33 @@ QString qemuSystemName()
     return "qemu-system-" + hostArch();
 }
 
+QString stackDir()
+{
+    return dataDir() + "/stack";
+}
+
+QString stackQemu()
+{
+    const QFileInfo qemu(stackDir() + "/current/bin/" + qemuSystemName());
+
+    return qemu.isExecutable() ? qemu.canonicalFilePath() : QString();
+}
+
 QString qemuBinary()
 {
-    const QString configured = setting("qemu/binary");
-    return configured.isEmpty() ? QStandardPaths::findExecutable(qemuSystemName())
-                                : configured;
+    const QString custom = customQemuBinary();
+    return custom.isEmpty() ? defaultQemuBinary() : custom;
+}
+
+QString defaultQemuBinary()
+{
+    const QString stack = stackQemu();
+    return stack.isEmpty() ? QStandardPaths::findExecutable(qemuSystemName()) : stack;
+}
+
+QString customQemuBinary()
+{
+    return setting("qemu/binary");
 }
 
 void setQemuBinary(const QString &path)
