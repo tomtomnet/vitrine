@@ -95,6 +95,9 @@ private:
     VmDetails *m_details;
     QSplitter *m_splitter;
     QLabel *m_qemuStatus;
+    /* How many VMs run, or which the closing window waits for: a widget of
+       its own, so that the status bar's messages keep their time */
+    QLabel *m_running;
     /* The consoles, by VM id, in the stack the Console tab shows */
     QStackedWidget *m_consoles;
     QWidget *m_noConsole;

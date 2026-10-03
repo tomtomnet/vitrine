@@ -192,7 +192,8 @@ public:
 MainWindow::MainWindow(VmStore *store, QWidget *parent)
     : QMainWindow(parent), m_store(store), m_list(new QListWidget),
       m_right(new QStackedWidget), m_pane(new VmPane), m_details(m_pane->details()),
-      m_splitter(new QSplitter), m_qemuStatus(new QLabel), m_consoles(new QStackedWidget),
+      m_splitter(new QSplitter), m_qemuStatus(new QLabel), m_running(new QLabel),
+      m_consoles(new QStackedWidget),
       m_noConsole(new QWidget), m_input(new QLabel), m_perf(new PerfMonitor)
 {
     auto *welcome = new QWidget;
@@ -242,6 +243,10 @@ MainWindow::MainWindow(VmStore *store, QWidget *parent)
     m_input->setObjectName("input");
     m_input->setContentsMargins(0, 0, fontMetrics().averageCharWidth() * 3, 0);
     m_input->hide();
+    m_running->setObjectName("running");
+    m_running->setContentsMargins(0, 0, fontMetrics().averageCharWidth() * 3, 0);
+    m_running->hide();
+    statusBar()->addPermanentWidget(m_running);
     statusBar()->addPermanentWidget(m_input);
     statusBar()->addPermanentWidget(m_perf);
     statusBar()->addPermanentWidget(m_updates->button());
@@ -890,12 +895,13 @@ void MainWindow::updateStatus()
             }
         }
         names.sort();
-        statusBar()->showMessage(tr("Waiting for %1 to shut down, then closing")
-                                     .arg(names.join(", ")));
+        m_running->setText(tr("Waiting for %1 to shut down, then closing")
+                               .arg(names.join(", ")));
+        m_running->show();
         return;
     }
-    statusBar()->showMessage(running == 0 ? QString()
-                                          : tr("%n running", nullptr, running));
+    m_running->setText(tr("%n running", nullptr, running));
+    m_running->setVisible(running > 0);
 }
 
 void MainWindow::newVm()
