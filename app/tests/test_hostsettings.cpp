@@ -19,6 +19,7 @@
 #include <csignal>
 #include <memory>
 
+#include <pwd.h>
 #include <unistd.h>
 
 #include "core/hostsettings.h"
@@ -425,7 +426,9 @@ private:
         const QString bin = m_root + "/bin";
         writeFile(bin + "/pkcheck", QString("#!/bin/sh\necho \"$*\" >> %1/pkcheck.log\n"
                                             "exit $(cat %1/answer)\n").arg(m_root).toUtf8());
-        writeFile(bin + "/pkexec", QString("#!/bin/sh\necho \"$*\" >> %1/pkexec.log\nexec %2\n")
+        /* pkexec --disable-internal-agent HELPER [ARG...] */
+        writeFile(bin + "/pkexec", QString("#!/bin/sh\necho \"$*\" >> %1/pkexec.log\n"
+                                           "shift 2\nexec %2 \"$@\"\n")
                                        .arg(m_root, HELPER_FAKE).toUtf8());
         for (const QString &name : {"pkcheck", "pkexec"}) {
             QFile::setPermissions(bin + "/" + name, QFileDevice::ReadOwner | QFileDevice::ExeOwner);
@@ -778,6 +781,65 @@ private slots:
         qemu.stop();
         QTRY_COMPARE(finished.size(), 2);
         QCOMPARE(fair(0), QString("1000000000/50000000"));
+    }
+
+    /*
+     * vitrine's QEMU without its capability (built before the group was
+     * joined, or with tuning off): given at the start, without a word when
+     * polkit says no (a VM start says it), once per run
+     */
+    void capabilityCatchUp()
+    {
+        const QString stack = Paths::stackDir();
+        const QString bin = stack + "/0123abcd/bin";
+        /* the helper's rule: a QEMU in the caller's home folder */
+        const struct passwd *pw = getpwuid(getuid());
+        if (!pw || !QFileInfo(stack).absoluteFilePath().startsWith(
+                       QDir(pw->pw_dir).canonicalPath() + '/')) {
+            QSKIP("the test's data folder is not in the home folder");
+        }
+        const QString qemu = bin + "/" + Paths::qemuSystemName();
+        QDir(stack).removeRecursively();
+        QVERIFY(QDir().mkpath(bin));
+        QVERIFY(QFile::copy(FAKE_QEMU, qemu));
+        QFile::setPermissions(qemu, QFileDevice::ReadOwner | QFileDevice::WriteOwner |
+                                        QFileDevice::ExeOwner);
+        QVERIFY(QFile::link("0123abcd", stack + "/current"));
+        QCOMPARE(Paths::stackQemu(), QFileInfo(qemu).canonicalFilePath());
+        fakePolkit();
+        auto setcaps = [this]() {
+            return QString::fromUtf8(readFile(m_root + "/journal")).split('\n').filter("setcap ");
+        };
+
+        writeFile(m_root + "/answer", "2\n");
+        {
+            HostSettings hs(nullptr);
+            QSignalSpy notices(&hs, &HostSettings::notice);
+            QTRY_COMPARE(polkitLog("pkcheck").size(), 1);
+            QTest::qWait(200);
+            QVERIFY(polkitLog("pkexec").isEmpty());
+            QVERIFY(notices.isEmpty());
+        }
+        writeFile(m_root + "/answer", "0\n");
+        {
+            HostSettings hs(nullptr);
+            QSignalSpy notices(&hs, &HostSettings::notice);
+            QTRY_COMPARE(polkitLog("pkexec").size(), 1);
+            QCOMPARE(polkitLog("pkexec").first(),
+                     "--disable-internal-agent " VITRINE_HELPER_PATH " setcap " +
+                         QFileInfo(qemu).canonicalFilePath());
+            /* the helper's test build set it, in its journal: not on the file */
+            QTRY_COMPARE(setcaps().size(), 1);
+            QVERIFY(notices.isEmpty());
+            /* turned off and on again: tried once per run */
+            HostSettings::setEnabled(false);
+            hs.preferencesChanged();
+            HostSettings::setEnabled(true);
+            hs.preferencesChanged();
+            QTest::qWait(200);
+            QCOMPARE(polkitLog("pkexec").size(), 1);
+        }
+        QDir(stack).removeRecursively();
     }
 
     void capabilityWithoutHelper()

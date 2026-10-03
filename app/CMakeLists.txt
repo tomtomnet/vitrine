@@ -275,6 +275,7 @@ if(BUILD_TESTING)
     target_compile_definitions(test_hostsettings PRIVATE
         HELPER_FAKE="$<TARGET_FILE:vitrine-helper-fake>"
         FAKE_QEMU="$<TARGET_FILE:fake-qemu>"
+        VITRINE_HELPER_PATH="${VITRINE_HELPER_PATH}"
         TEST_WORK_DIR="${CMAKE_CURRENT_BINARY_DIR}/test-work")
     add_dependencies(test_hostsettings vitrine-helper-fake fake-qemu)
     # the same stand-in, for QEMUs found running

@@ -83,7 +83,9 @@ What this amounts to:
   capabilities. It sets the file's mode to 0700 first, so no one else can
   run it. Any write to the file drops the capability (the kernel does
   that): each build needs it again, and vitrine asks the helper after each
-  build.
+  build, and when it starts or tuning is turned on again if its QEMU lacks
+  it (built before you joined the group, say). A VM gets it at its next
+  start.
 
 Give the group to the people you would give real-time priority to.
 

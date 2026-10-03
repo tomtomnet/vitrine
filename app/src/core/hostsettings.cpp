@@ -24,6 +24,7 @@
 #include <sys/socket.h>
 #include <sys/syscall.h>
 #include <sys/wait.h>
+#include <sys/xattr.h>
 #include <unistd.h>
 
 #include "core/paths.h"
@@ -216,6 +217,31 @@ static void checkAccess(QObject *context, const std::function<void(const QString
     check->start("pkcheck", {"--action-id", kAction, "--process", subject()});
 }
 
+/* vitrine-helper setcap @path, once polkit said yes */
+static void setcap(const QString &path, QObject *context,
+                   const std::function<void(const QString &error)> &done)
+{
+    auto *run = new QProcess(context);
+    run->setProcessChannelMode(QProcess::MergedChannels);
+    QObject::connect(run, &QProcess::finished, context, [run, path, done](int code) {
+        const QString last = QString::fromUtf8(run->readAll()).trimmed().section('\n', -1);
+        const QString prefix = "error setcap " + path + ": ";
+        run->deleteLater();
+        /* "error setcap PATH: why", or pkexec's own message */
+        done(code == 0 ? QString()
+             : last.startsWith(prefix) ? last.mid(prefix.size())
+             : last.isEmpty() ? HostSettings::tr("vitrine-helper failed") : last);
+    });
+    QObject::connect(run, &QProcess::errorOccurred, context,
+                     [run, done](QProcess::ProcessError error) {
+        if (error == QProcess::FailedToStart) {
+            run->deleteLater();
+            done(HostSettings::tr("pkexec is not installed"));
+        }
+    });
+    run->start("pkexec", {"--disable-internal-agent", VITRINE_HELPER_PATH, "setcap", path});
+}
+
 void HostSettings::grantCapability(const QString &qemu, QObject *context,
                                    const std::function<void(const QString &error)> &done)
 {
@@ -235,25 +261,39 @@ void HostSettings::grantCapability(const QString &qemu, QObject *context,
             done(why);
             return;
         }
-        auto *run = new QProcess(context);
-        run->setProcessChannelMode(QProcess::MergedChannels);
-        QObject::connect(run, &QProcess::finished, context, [run, path, done](int code) {
-            const QString last = QString::fromUtf8(run->readAll()).trimmed().section('\n', -1);
-            const QString prefix = "error setcap " + path + ": ";
-            run->deleteLater();
-            /* "error setcap PATH: why", or pkexec's own message */
-            done(code == 0 ? QString()
-                 : last.startsWith(prefix) ? last.mid(prefix.size())
-                 : last.isEmpty() ? tr("vitrine-helper failed") : last);
-        });
-        QObject::connect(run, &QProcess::errorOccurred, context,
-                         [run, done](QProcess::ProcessError error) {
-            if (error == QProcess::FailedToStart) {
-                run->deleteLater();
-                done(tr("pkexec is not installed"));
+        setcap(path, context, done);
+    });
+}
+
+void HostSettings::ensureCapability(bool granted)
+{
+    /* canonical: the build itself, not `current` */
+    const QString qemu = Paths::stackQemu();
+    char value[64];
+
+    if (!enabled() || !helperInstalled() || qemu.isEmpty() || m_capabilityTried.contains(qemu) ||
+        getxattr(QFile::encodeName(qemu).constData(), "security.capability", value,
+                 sizeof(value)) >= 0 ||
+        errno != ENODATA) {
+        return;
+    }
+    auto grant = [this, qemu]() {
+        m_capabilityTried.insert(qemu);
+        setcap(qemu, this, [this](const QString &error) {
+            if (!error.isEmpty()) {
+                say(tr("Vitrine's QEMU cannot make its threads real-time: %1.").arg(error));
             }
         });
-        run->start("pkexec", {"--disable-internal-agent", VITRINE_HELPER_PATH, "setcap", path});
+    };
+    if (granted) {
+        grant();
+        return;
+    }
+    /* polkit's no is said at a VM start, not here */
+    checkAccess(this, [grant](const QString &why) {
+        if (why.isEmpty()) {
+            grant();
+        }
     });
 }
 
@@ -275,7 +315,13 @@ HostSettings::HostSettings(VmStore *store, QObject *parent)
         connect(store, &VmStore::added, this, &HostSettings::watchVm);
         connect(store, &VmStore::removed, this, [this](const QString &id) { m_tuned.remove(id); });
     }
-    /* each build is a new file, without the capability of the one before */
+    /*
+     * Each build is a new file, without the capability of the one before:
+     * given after each build, and, when it lacks it, now - a QEMU built
+     * before joining the vitrine group or while tuning was off.  It takes
+     * effect at the next start of each VM: a running QEMU keeps what it has.
+     */
+    ensureCapability();
     connect(StackBuilder::instance(), &StackBuilder::built, this, [this](const QString &qemu) {
         /* without the helper, a VM start says it */
         if (!enabled() || !helperInstalled()) {
@@ -368,6 +414,7 @@ void HostSettings::preferencesChanged()
     /* on, or another floor: each running VM tuned again - a run that
        started untuned among them; what the helper holds already, it says
        so ("already"), and a floor it holds it replaces */
+    ensureCapability();
     if (!m_store) {
         return;
     }
@@ -451,6 +498,8 @@ void HostSettings::start()
             m_said.remove(text);
         }
         m_refusals.clear();
+        /* the group joined since vitrine started, say */
+        ensureCapability(true);
         if (!m_out.isEmpty()) {
             spawn({"pkexec", "--disable-internal-agent", VITRINE_HELPER_PATH});
         }
