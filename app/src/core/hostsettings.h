@@ -84,6 +84,9 @@ public:
      * every CPU at real-time priority.  A host window in front changes
      * nothing: the VM last in front keeps them.  Through QEMU's own
      * x-vcpu-priority, or the helper's rt where QEMU lacks CAP_SYS_NICE.
+     * A VM started later, or tuned again, goes behind once the helper's rt
+     * is done with it.  VMs in QEMU's own window (SDL) are left real-time:
+     * which window the desktop has in front is not known here.
      */
     void setFront(const QString &vmId);
     /* The app's (MainWindow makes it), for setFront(); null before */
@@ -112,6 +115,8 @@ private:
 
     void watchVm(Vm *vm);
     void vmStateChanged(Vm *vm);
+    /* @vm in front or behind, as m_front says */
+    void applyFront(Vm *vm);
     void start();
     void spawn(const QStringList &command);
     void readHelper();

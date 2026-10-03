@@ -752,6 +752,18 @@ VmConsole *MainWindow::currentConsole() const
 
 void MainWindow::consoleChanged(VmConsole *console)
 {
+    /*
+     * Focus priority: the VM whose screen has the keyboard - its console
+     * with the focus in the active window, or its full-screen window active
+     * - is in front, any console, selected or not.  Losing the keyboard to
+     * a host window changes nothing (HostSettings::setFront).  VMs in
+     * QEMU's own window are not followed.
+     */
+    const VmView *view = console->view();
+    HostSettings *host = HostSettings::instance();
+    if (view && view->hasKeyboard() && console->vm() && host) {
+        host->setFront(console->vm()->id());
+    }
     if (console == currentConsole()) {
         updateActions();
         updateInput();

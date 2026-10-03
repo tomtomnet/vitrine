@@ -30,6 +30,7 @@
 #include "core/paths.h"
 #include "core/qmpclient.h"
 #include "core/stackbuilder.h"
+#include "core/vmhardware.h"
 #include "core/vmrunner.h"
 #include "core/vmstore.h"
 
@@ -409,6 +410,16 @@ void HostSettings::preferencesChanged()
             m_out = "release\n";
             flush();
         }
+        /* and focus priority: the vCPUs QEMU itself made real-time, or
+           ordinary at nice -5, are not the helper's to put back */
+        for (Vm *vm : m_store && !m_front.isEmpty() ? m_store->vms() : QList<Vm *>()) {
+            QmpClient *qmp = vm->runner()->qmp();
+            if (qmp && m_tuned.contains(vm->id()) &&
+                VmConfig::screen(vm->runner()->runArgs()) != VmConfig::Screen::OwnWindow) {
+                qmp->execute("x-vcpu-priority", QJsonObject{{"realtime", false}, {"nice", 0}});
+            }
+        }
+        m_front.clear();
         return;
     }
     /* on, or another floor: each running VM tuned again - a run that
@@ -433,30 +444,40 @@ void HostSettings::setFront(const QString &vmId)
     }
     m_front = vmId;
     for (Vm *vm : m_store->vms()) {
-        const qint64 pid = m_tuned.value(vm->id());
-        QmpClient *qmp = vm->runner()->qmp();
-        const bool capable = hasSysNice(pid);
-        QJsonObject arguments{{"realtime", vm == front}};
-
-        if (!pid || !qmp) {
-            continue;
-        }
-        if (vm == front && !capable) {
-            /* QEMU may not make its threads real-time again: the helper may */
-            if (m_fd >= 0) {
-                m_out += "rt " + QByteArray::number(pid) + '\n';
-                flush();
-            }
-            continue;
-        }
-        if (vm != front) {
-            /* the patch stops at the first thread it fails on: no lower nice
-               than this QEMU may set */
-            arguments["nice"] = capable ? -5 : 0;
-        }
-        /* a QEMU without the command (not vitrine's) says so: nothing to do */
-        qmp->execute("x-vcpu-priority", arguments);
+        applyFront(vm);
     }
+}
+
+void HostSettings::applyFront(Vm *vm)
+{
+    const qint64 pid = m_tuned.value(vm->id());
+    QmpClient *qmp = vm->runner()->qmp();
+    const bool front = vm->id() == m_front;
+
+    if (m_front.isEmpty() || !pid || !qmp) {
+        return;
+    }
+    /* SDL: its window's focus is not known here, behind or not */
+    if (!front && VmConfig::screen(vm->runner()->runArgs()) == VmConfig::Screen::OwnWindow) {
+        return;
+    }
+    const bool capable = hasSysNice(pid);
+    QJsonObject arguments{{"realtime", front}};
+    if (front && !capable) {
+        /* QEMU may not make its threads real-time again: the helper may */
+        if (m_fd >= 0) {
+            m_out += "rt " + QByteArray::number(pid) + '\n';
+            flush();
+        }
+        return;
+    }
+    if (!front) {
+        /* the patch stops at the first thread it fails on: no lower nice
+           than this QEMU may set */
+        arguments["nice"] = capable ? -5 : 0;
+    }
+    /* a QEMU without the command (not vitrine's) says so: nothing to do */
+    qmp->execute("x-vcpu-priority", arguments);
 }
 
 void HostSettings::start()
@@ -626,6 +647,19 @@ void HostSettings::handleLine(const QString &line)
         if (m_expected.isEmpty() && m_out.isEmpty() && m_fd >= 0) {
             /* nothing left to watch: it ends, putting everything back */
             ::shutdown(m_fd, SHUT_WR);
+        }
+    } else if (line.startsWith("ok rt ")) {
+        /*
+         * "ok rt PID: N of M threads real-time": every thread of that QEMU,
+         * the vCPUs of a VM behind the one in front among them - a VM that
+         * started since, or tuned again, or one whose x-vcpu-priority went
+         * out before the helper got to it.  Behind again, now.
+         */
+        const qint64 pid = line.section(' ', 2, 2).section(':', 0, 0).toLongLong();
+        for (Vm *vm : m_store ? m_store->vms() : QList<Vm *>()) {
+            if (pid > 0 && m_tuned.value(vm->id()) == pid && vm->id() != m_front) {
+                applyFront(vm);
+            }
         }
     } else if (word == "error" && (line.endsWith(": watch a QEMU first") ||
                                    line.endsWith(": watch the process first"))) {

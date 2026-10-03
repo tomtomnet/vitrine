@@ -632,7 +632,9 @@ private slots:
 
     /*
      * VMs found running (as at vitrine's start): tuned as their runners see
-     * them run, then focus priority between them
+     * them run, then focus priority between them.  "three" starts while
+     * "one" is in front; "four" shows in QEMU's own window (SDL), whose
+     * focus is not known.
      */
     void runningVmsAndFocus()
     {
@@ -643,9 +645,11 @@ private slots:
         qputenv("XDG_RUNTIME_DIR", runtime.path().toLocal8Bit());
         std::vector<std::unique_ptr<FakeQemu>> qemus;
         std::vector<std::unique_ptr<FakeQmp>> qmps;
-        for (const QString id : {"one", "two"}) {
+        for (const QString id : {"one", "two", "three", "four"}) {
             QDir(vms.path()).mkpath(id);
-            writeFile(vms.path() + "/" + id + "/vm.args", "-name " + id.toLatin1() + "\n");
+            writeFile(vms.path() + "/" + id + "/vm.args",
+                      "-name " + id.toLatin1() +
+                          (id == "four" ? "\n-display sdl\n" : "\n-display dbus,p2p=yes\n"));
             const QString run = Paths::vmRuntimeDir(id);
             /* what the runner looks for: its -qmp argument, its pid file */
             qemus.push_back(std::make_unique<FakeQemu>(
@@ -658,11 +662,11 @@ private slots:
         QSignalSpy lines(&hs, &HostSettings::helperLine), notices(&hs, &HostSettings::notice);
         fake(hs);
         QCOMPARE(HostSettings::instance(), &hs);
-        for (Vm *vm : store.vms()) {
-            vm->runner()->attach(vm->args());
+        for (const QString id : {"one", "two", "four"}) {
+            store.find(id)->runner()->attach(store.find(id)->args());
         }
-        for (const auto &qemu : qemus) {
-            QTRY_VERIFY(saw(lines, QString("ok rt %1").arg(qemu->pid())));
+        for (int i : {0, 1, 3}) {
+            QTRY_VERIFY(saw(lines, QString("ok rt %1").arg(qemus[i]->pid())));
         }
         QCOMPARE(fair(0), QString("10000000/1000000"));
         QVERIFY(notices.isEmpty());
@@ -687,13 +691,32 @@ private slots:
         hs.setFront("one");
         QTest::qWait(100);
         QVERIFY(lines.isEmpty());
+        /* a VM started meanwhile: behind once the helper's rt is done with it */
+        store.find("three")->runner()->attach(store.find("three")->args());
+        QTRY_VERIFY(saw(lines, QString("ok rt %1").arg(qemus[2]->pid())));
+        QTRY_COMPARE(priority(*qmps[2]), QByteArray(R"({"nice":0,"realtime":false})"));
+        /* SDL: left as it is */
+        QCOMPARE(priority(*qmps[3]), QByteArray());
         /* "two" in front */
         hs.setFront("two");
         QTRY_VERIFY(saw(lines, QString("ok rt %1").arg(qemus[1]->pid())));
         QTRY_COMPARE(priority(*qmps[0]), QByteArray(R"({"nice":0,"realtime":false})"));
+        QCOMPARE(priority(*qmps[3]), QByteArray());
         /* unknown VMs change nothing */
-        hs.setFront("three");
+        hs.setFront("five");
         hs.setFront(QString());
+
+        /* tuning turned off: QEMU's own priorities back to ordinary too */
+        for (const auto &qmp : qmps) {
+            qmp->commands.clear();
+        }
+        HostSettings::setEnabled(false);
+        hs.preferencesChanged();
+        for (int i : {0, 1, 2}) {
+            QTRY_COMPARE(priority(*qmps[i]), QByteArray(R"({"nice":0,"realtime":false})"));
+        }
+        QCOMPARE(priority(*qmps[3]), QByteArray());
+        QTRY_VERIFY(!hs.helperRunning());
 
         for (auto &qemu : qemus) {
             qemu->stop();
