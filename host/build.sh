@@ -111,7 +111,7 @@ fedora=(git gcc gcc-c++ make meson ninja-build pkgconf-pkg-config python3 python
 	util-linux glib2-devel pixman-devel zlib-devel libslirp-devel SDL2-devel libepoxy-devel
 	mesa-libgbm-devel mesa-libEGL-devel libdrm-devel libva-devel libusb1-devel
 	pulseaudio-libs-devel pipewire-devel spice-protocol libzstd-devel libpng-devel
-	libcap-ng-devel libattr-devel wayland-devel wayland-protocols-devel)
+	libcap-ng-devel libattr-devel wayland-devel wayland-protocols-devel bzip2)
 missing=()
 need_cmd() { local c; for c in "$@"; do command -v "$c" > /dev/null 2>&1 || missing+=("command $c"); done; }
 need_pc() { local m; for m in "$@"; do pkg-config --exists "$m" 2> /dev/null || missing+=("pkg-config $m"); done; }
@@ -124,7 +124,8 @@ check_deps() {
 	# QEMU
 	need_pc glib-2.0 gio-unix-2.0 pixman-1 zlib slirp sdl2 libusb-1.0 libpulse libpipewire-0.3 \
 		spice-protocol libzstd libpng libcap-ng wayland-client
-	need_cmd wayland-scanner gdbus-codegen
+	# bzip2 unpacks the x86_64 UEFI firmware QEMU installs with its other blobs
+	need_cmd wayland-scanner gdbus-codegen bzip2
 }
 tell_missing() {
 	local m
