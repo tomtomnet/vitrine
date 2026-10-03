@@ -110,6 +110,41 @@ private slots:
 
         a = ArgsFile::parse("-smp cores=4,threads=2\n");
         QCOMPARE(VmConfig::cpus(a).count, 8);
+
+        /* the model alone: -smp and the flags of -cpu stay */
+        a = ArgsFile::parse("-smp 8,cores=4\n-cpu host,+avx\n");
+        setCpuModel(a, "max");
+        QCOMPARE(a.toText(), "-smp 8,cores=4\n-cpu max,+avx\n");
+        setCpuModel(a, {});
+        QCOMPARE(a.toText(), "-smp 8,cores=4\n");
+        setCpuModel(a, "host");
+        QCOMPARE(a.toText(), "-smp 8,cores=4\n-cpu host\n");
+    }
+
+    /* What QEMU makes of the topology keys -smp leaves out */
+    void derivedTopologies()
+    {
+        const auto derived = [](const char *smp) {
+            const Cpus d = derivedTopology(VmConfig::cpus(ArgsFile::parse(QString("-smp %1\n").arg(smp))));
+            return QString("%1x%2x%3").arg(d.sockets).arg(d.cores).arg(d.threads);
+        };
+
+        /* the cores take what the others leave */
+        QCOMPARE(derived("8"), "1x8x1");
+        QCOMPARE(derived("8,threads=2"), "1x4x2");
+        QCOMPARE(derived("8,sockets=2"), "2x4x1");
+        /* then the sockets */
+        QCOMPARE(derived("8,cores=4"), "2x4x1");
+        QCOMPARE(derived("cpus=16,cores=4,threads=2"), "2x4x2");
+        /* then the threads */
+        QCOMPARE(derived("8,sockets=1,cores=4"), "1x4x2");
+        QCOMPARE(derived("8,sockets=2,cores=2"), "2x2x2");
+        /* all given, or none with no count */
+        QCOMPARE(derived("16,sockets=1,cores=8,threads=2"), "1x8x2");
+        QCOMPARE(derived("cores=4,threads=2"), "1x4x2");
+        /* a count that does not divide, which QEMU refuses: as given */
+        QCOMPARE(derived("6,cores=4"), "1x4x1");
+        QCOMPARE(derived("3,sockets=2,threads=2"), "2x1x2");
     }
 
     void cpuFeature()
@@ -309,6 +344,34 @@ private slots:
         a = ArgsFile::parse("-m 1G\n");
         setCpuCount(a, 2);
         QCOMPARE(a.toText(), "-m 1G\n-smp 2\n");
+
+        /* maxcpus= or levels the topology above leaves out: as written,
+           QEMU checks their product */
+        for (const char *smp : {"-smp 4,maxcpus=8,sockets=1,cores=8,threads=1\n",
+                                "-smp 4,maxcpus=8\n",
+                                "-smp 8,sockets=1,dies=2,cores=4,threads=1\n",
+                                "-smp 8,modules=2,cores=4\n"}) {
+            a = ArgsFile::parse(smp);
+            QVERIFY(VmConfig::cpus(a).custom);
+            setCpuCount(a, 6);
+            QCOMPARE(a.toText(), smp);
+        }
+        /* a level of 1 changes nothing */
+        a = ArgsFile::parse("-smp 8,sockets=1,dies=1,cores=8\n");
+        QVERIFY(!VmConfig::cpus(a).custom);
+        setCpuCount(a, 4);
+        QCOMPARE(a.toText(), "-smp 4,sockets=1,dies=1,cores=4\n");
+    }
+
+    /* The count QEMU runs when -smp gives none */
+    void cpuCountRead()
+    {
+        QCOMPARE(VmConfig::cpus(ArgsFile::parse("-smp maxcpus=8\n")).count, 8);
+        QCOMPARE(VmConfig::cpus(ArgsFile::parse("-smp 4,maxcpus=8\n")).count, 4);
+        QCOMPARE(VmConfig::cpus(ArgsFile::parse("-smp sockets=1,dies=2,cores=4\n")).count, 8);
+        QCOMPARE(VmConfig::cpus(ArgsFile::parse("-smp sockets=2\n")).count, 2);
+        QVERIFY(!VmConfig::cpus(ArgsFile::parse("-smp 8,sockets=2\n")).custom);
+        QVERIFY(!VmConfig::cpus(ArgsFile::parse("-m 1G\n")).custom);
     }
 
     void freePorts()

@@ -230,8 +230,10 @@ bool NewVmDialog::create(Vm *vm, QString *error)
     const int system = m_os->currentData().toInt();
     const VmTemplate::Defaults defaults = VmTemplate::defaults(kSystems[system].os);
     const TemplateFirmware choice = defaults.firmware;
-    /* the QEMU it runs with, which may lack some of what vitrine's has */
+    /* the QEMU it runs with, which may lack some of what vitrine's has;
+       asked now if its documentation is not loaded (yet) */
     const QemuInfo *info = QemuDocs::preferred()->info();
+    const QString qemu = QemuDocs::preferred()->binary();
     std::optional<Firmware> firmware;
     VmTemplate::Options o;
     QString firmwareError;
@@ -242,14 +244,14 @@ bool NewVmDialog::create(Vm *vm, QString *error)
     o.memoryMiB = m_memory->value();
     o.cpus = m_cpus->value();
     o.graphics = defaults.graphics;
-    o.passt = VmTemplate::hasPasst(info);
-    o.gpuProperties = VmTemplate::gpuProperties(info);
+    o.passt = VmTemplate::hasPasst(info, qemu);
+    o.gpuProperties = VmTemplate::gpuProperties(info, qemu);
     if (o.os == Os::Linux) {
-        /* the guest's SSH, on a port no other VM forwards */
+        /* the guest's SSH, on a port no other VM forwards, whatever for */
         QList<int> taken;
         for (const Vm *other : m_store->vms()) {
-            if (other != vm && VmConfig::network(other->args()).sshPort > 0) {
-                taken << VmConfig::network(other->args()).sshPort;
+            if (other != vm) {
+                taken << VmConfig::forwardedPorts(other->args());
             }
         }
         o.sshPort = VmConfig::freePort(taken);

@@ -5,6 +5,7 @@
 #include <QStringList>
 
 #include <functional>
+#include <optional>
 
 #include "core/argsfile.h"
 
@@ -53,11 +54,11 @@ struct Options {
     int sshPort = 0;
     bool passt = false;
     /*
-     * The properties of virtio-gpu-gl-pci in the QEMU the VM runs with,
-     * from QemuInfo, to leave out those of vitrine's QEMU it lacks; empty
-     * when not known: vitrine's QEMU, which has them all
+     * The properties of virtio-gpu-gl-pci in the QEMU the VM runs with, to
+     * leave out those of vitrine's QEMU it lacks; not set for vitrine's
+     * QEMU, which has them all
      */
-    QStringList gpuProperties;
+    std::optional<QStringList> gpuProperties;
 };
 
 struct Defaults {
@@ -74,12 +75,17 @@ bool hasBios(const QString &arch = {});
 bool hasVga(const QString &arch = {});
 
 /*
- * NAT through passt: installed on this computer, and in the QEMU of @info
- * (null when not known yet), which has it if built with it
+ * What the QEMU at @binary offers, from @info, its QemuInfo, else (null:
+ * not loaded yet, or it could not be) asked from the binary itself.
+ * Without a binary to ask, the QEMU is vitrine's, to build; one that does
+ * not answer is taken for vitrine's only if it is, else as offering none.
+ *
+ * NAT through passt: installed on this computer, and in that QEMU, which
+ * has it if built with it.
  */
-bool hasPasst(const QemuInfo *info);
-/* The properties of virtio-gpu-gl-pci in the QEMU of @info, empty when not known */
-QStringList gpuProperties(const QemuInfo *info);
+bool hasPasst(const QemuInfo *info, const QString &binary);
+/* The properties of virtio-gpu-gl-pci; not set for vitrine's QEMU */
+std::optional<QStringList> gpuProperties(const QemuInfo *info, const QString &binary);
 
 /*
  * The arguments, in sections.  @addFirmware is called where the firmware

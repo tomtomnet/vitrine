@@ -7,7 +7,8 @@ leaves it to QEMU's own SDL window.
 
 QEMU (the qemu-gui fork), virglrenderer and the guest's graphics stack
 (virtio-gpu driver, Mesa, KWin) are used at pinned versions, with the patches
-vitrine needs kept in this repository.
+vitrine needs kept in this repository: `host/versions.conf` and `host/patches`
+for the QEMU and virglrenderer vitrine builds, `guest/` for the guest's.
 
 Early development. It is built and tried on Fedora 44 KDE Plasma (Wayland)
 with an AMD Radeon 780M, with Fedora 44 KDE guests. It is not packaged.
@@ -17,8 +18,8 @@ with an AMD Radeon 780M, with Fedora 44 KDE guests. It is not packaged.
 - A Fedora 44 x86-64 host with KVM (`/dev/kvm`). Other distributions and X11
   are not tried; the keyboard grab and pointer lock use Wayland protocols.
 - For 3D through DRM native context: on the host, an AMD GPU (amdgpu) or an
-  Intel GPU on the xe driver (only AMD is tried); in the guest, Linux 6.14 or
-  later and a Mesa with native context, which the guest tools install in
+  Intel GPU on the i915 or xe driver (only AMD is tried); in the guest, Linux
+  6.14 or later and a Mesa with native context, which the guest tools install in
   Fedora 44 guests ([docs/guest-mesa.md](docs/guest-mesa.md) covers others).
   Otherwise the guest falls back to virgl.
 - An internet connection to build vitrine's QEMU and the guest tools.
@@ -38,10 +39,11 @@ Building vitrine's QEMU (the list in `host/build.sh`; `host/build.sh
 
 ```
 sudo dnf install git gcc gcc-c++ make meson ninja-build pkgconf-pkg-config python3 \
-    python3-pyyaml binutils util-linux glib2-devel pixman-devel zlib-devel libslirp-devel \
-    SDL2-devel libepoxy-devel mesa-libgbm-devel mesa-libEGL-devel libdrm-devel libva-devel \
-    libusb1-devel pulseaudio-libs-devel pipewire-devel spice-protocol libzstd-devel \
-    libpng-devel libcap-ng-devel libattr-devel wayland-devel wayland-protocols-devel bzip2
+    python3-pyyaml python3-wheel python3-setuptools python3-pip binutils util-linux \
+    glib2-devel pixman-devel zlib-devel libslirp-devel SDL2-devel libepoxy-devel \
+    mesa-libgbm-devel mesa-libEGL-devel libdrm-devel libva-devel libusb1-devel \
+    pulseaudio-libs-devel pipewire-devel spice-protocol libzstd-devel libpng-devel \
+    libcap-ng-devel libattr-devel wayland-devel wayland-protocols-devel bzip2
 ```
 
 Building the guest tools (without createrepo_c, the script runs it in podman):

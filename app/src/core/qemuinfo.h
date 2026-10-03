@@ -66,6 +66,19 @@ struct QemuInfo {
     static QList<QemuPropertyDoc> parsePropertyHelp(const QString &text);
     /* A header line, then one "name description" per line */
     static QList<QemuNamedDoc> parseListHelp(const QString &text);
+
+    /*
+     * Asked from @binary now, in a few milliseconds, where the QemuInfo
+     * the loader reads in the background is not at hand: the names of the
+     * properties of @device (none for a device it lacks), and of a list
+     * such as -netdev help.  Empty with @error when it did not answer
+     * (did not start, timed out, failed); only answers are kept, for as
+     * long as the binary stays the same.
+     */
+    static QStringList probeProperties(const QString &binary, const QString &device,
+                                       QString *error = nullptr);
+    static QStringList probeList(const QString &binary, const QString &option,
+                                 QString *error = nullptr);
     static QString rstToHtml(const QString &rst);
 };
 

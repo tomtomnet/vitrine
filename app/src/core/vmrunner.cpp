@@ -138,12 +138,12 @@ static QString qemuFor(const ArgsFile &args)
  * -smbios get them; a QEMU named otherwise, like qemu-kvm, is taken for
  * one of the host's architecture.
  */
-static QString fstabExtra(const ArgsFile &args)
+static QString fstabExtra(const ArgsFile &args, const QString &qemu)
 {
     static const QRegularExpression target("^qemu-system-([a-z0-9_]+)");
     static const QStringList smbios{"x86_64", "i386",    "aarch64",    "arm",
                                     "riscv64", "riscv32", "loongarch64"};
-    const QRegularExpressionMatch m = target.match(QFileInfo(qemuFor(args)).fileName());
+    const QRegularExpressionMatch m = target.match(QFileInfo(qemu).fileName());
     QString lines;
 
     /* a credential of its own; isapc refuses type 11, and has no PCI for virtiofs */
@@ -155,41 +155,6 @@ static QString fstabExtra(const ArgsFile &args)
         lines += fstabLine(s) + '\n';
     }
     return lines;
-}
-
-/*
- * The properties of a device in @binary, from its help, which takes a few
- * milliseconds; kept for as long as the binary stays the same.  Empty
- * when they cannot be read.
- */
-static QStringList deviceProperties(const QString &binary, const QString &driver)
-{
-    static QHash<QString, QStringList> cache;
-    const QFileInfo fi(binary);
-    const QString key = QString("%1|%2|%3|%4").arg(fi.canonicalFilePath(),
-                                                   QString::number(fi.lastModified().toMSecsSinceEpoch()),
-                                                   QString::number(fi.size()), driver);
-    QProcess p;
-    QStringList names;
-
-    if (auto it = cache.constFind(key); it != cache.constEnd()) {
-        return *it;
-    }
-    if (!fi.isExecutable()) {
-        return {};
-    }
-    p.start(binary, {"-device", driver + ",help"});
-    if (p.waitForFinished(5000) && p.exitStatus() == QProcess::NormalExit) {
-        for (const QemuPropertyDoc &prop :
-             QemuInfo::parsePropertyHelp(QString::fromUtf8(p.readAllStandardOutput()))) {
-            names << prop.name;
-        }
-    } else {
-        p.kill();
-        p.waitForFinished(1000);
-    }
-    cache.insert(key, names);
-    return names;
 }
 
 static QString shellQuote(const QStringList &args)
@@ -229,6 +194,13 @@ struct VmRunner::Private
     QTimer *killTimer;
     QElapsedTimer clock;
     ArgsFile args;              // of the run being started
+    /*
+     * The QEMU of the run and its command line, made once at start: the
+     * preferences or `current` may change while virtiofsd starts, and the
+     * log must tell what runs
+     */
+    QString qemu;
+    QStringList command;
     bool embedded = false;      // its screen in vitrine's window: displaySocket()
     qint64 pid = 0;             // QEMU
     QList<Helper> helpers;      // virtiofsd started for this run
@@ -250,6 +222,9 @@ struct VmRunner::Private
     QString argsPath() const { return runDir() + "/run.args"; }
     QString qmpArg() const;
     QString displayArg() const;
+    /* @problems: the cards whose properties could not be read, for the log */
+    QStringList commandLine(const ArgsFile &args, const QString &qemu,
+                            QStringList *problems = nullptr) const;
     QString logPath() const { return dir + "/qemu.log"; }
     QString logTail(bool qemuErrors = true) const;
     qint64 runningPid() const;
@@ -313,7 +288,7 @@ QString VmRunner::Private::logTail(bool qemuErrors) const
     if (f.size() > 16384) {
         f.seek(f.size() - 16384);
     }
-    const QString prefix = QFileInfo(qemuFor(args)).fileName() + ':';
+    const QString prefix = QFileInfo(qemu.isEmpty() ? qemuFor(args) : qemu).fileName() + ':';
     for (const QString &line : QString::fromUtf8(f.readAll()).split('\n')) {
         const QString t = line.trimmed();
         if (t.isEmpty() || t.startsWith("vitrine:")) {
@@ -433,7 +408,6 @@ void VmRunner::Private::cleanup()
 
 void VmRunner::Private::launchQemu()
 {
-    const QStringList command = q->commandLine(args);
     QString launchError;
 
     if (!launch(command.first(), command.mid(1), &pid, &launchError,
@@ -726,22 +700,37 @@ QString VmRunner::logPath() const
 
 QStringList VmRunner::commandLine(const ArgsFile &args) const
 {
-    const QList<VmConfig::Share> shares = VmConfig::shares(args);
-    QStringList command{qemuFor(args)};
+    /* the QEMU resolved once: `current` may switch to a new build meanwhile */
+    return d->commandLine(args, qemuFor(args));
+}
 
-    command += withComputedProperties(args, [&args](const QString &driver) {
-                   return deviceProperties(qemuFor(args), driver);
+QStringList VmRunner::Private::commandLine(const ArgsFile &args, const QString &qemu,
+                                          QStringList *problems) const
+{
+    const QList<VmConfig::Share> shares = VmConfig::shares(args);
+    QStringList command{qemu};
+
+    command += withComputedProperties(args, [&qemu, problems](const QString &driver) {
+                   QString error;
+                   const QStringList names = QemuInfo::probeProperties(qemu, driver, &error);
+                   if (!error.isEmpty() && problems) {
+                       *problems << VmRunner::tr("cannot read the properties of %1 from %2 "
+                                                 "(%3): it runs without those vitrine "
+                                                 "computes, such as its swap targets")
+                                        .arg(driver, qemu, error);
+                   }
+                   return names;
                }).argv();
     for (qsizetype i = 0; i < shares.size(); i++) {
         command << "-chardev"
                 << QString("socket,id=vitrine-fs%1,path=%2")
-                       .arg(QString::number(i), OptionValue::escape(d->sharePath(i)))
+                       .arg(QString::number(i), OptionValue::escape(sharePath(i)))
                 << "-device"
                 << QString("vhost-user-fs-pci,queue-size=1024,chardev=vitrine-fs%1,tag=%2")
                        .arg(QString::number(i), OptionValue::escape(shares[i].tag));
     }
     /* systemd in the guest mounts the shares at boot, else qemu-ga does */
-    const QString fstab = fstabExtra(args);
+    const QString fstab = fstabExtra(args, qemu);
     if (!fstab.isEmpty()) {
         command << "-smbios"
                 << "type=11,value=io.systemd.credential.binary:fstab.extra=" +
@@ -750,7 +739,7 @@ QStringList VmRunner::commandLine(const ArgsFile &args) const
     if (addsAgent(args)) {
         command << "-chardev"
                 << QString("socket,id=vitrine-ga,path=%1,server=on,wait=off")
-                       .arg(OptionValue::escape(d->agentPath()))
+                       .arg(OptionValue::escape(agentPath()))
                 << "-device" << "virtio-serial-pci,id=vitrine-serial"
                 << "-device"
                 << QString("virtserialport,bus=vitrine-serial.0,chardev=vitrine-ga,"
@@ -758,26 +747,26 @@ QStringList VmRunner::commandLine(const ArgsFile &args) const
     }
     if (VmConfig::screen(args) == VmConfig::Screen::Embedded) {
         /* a second -qmp; -mon is deprecated */
-        command << "-qmp" << d->displayArg();
+        command << "-qmp" << displayArg();
     }
     /* the guest tools' agent, on qemu-ga's controller if there is one */
-    if (GuestTools::addsAgentPort(args, qemuFor(args))) {
+    if (GuestTools::addsAgentPort(args, qemu)) {
         if (!addsAgent(args)) {
             command << "-device" << "virtio-serial-pci,id=vitrine-serial";
         }
-        command += GuestTools::agentPortArgs(d->toolsAgentPath());
+        command += GuestTools::agentPortArgs(toolsAgentPath());
     }
     /* the guest tools asked for: the medium, and the unit that installs them at boot */
-    const GuestTools::Pending tools = GuestTools::pending(d->id);
+    const GuestTools::Pending tools = GuestTools::pending(id);
     const GuestTools::Medium medium = GuestTools::medium();
     if (tools != GuestTools::Pending::None && medium.isValid() &&
-        GuestTools::canBootstrap(args, qemuFor(args))) {
+        GuestTools::canBootstrap(args, qemu)) {
         command += GuestTools::mediumArgs(medium.image);
         if (tools == GuestTools::Pending::Bootstrap) {
             command += GuestTools::bootstrapArgs();
         }
     }
-    command << "-qmp" << d->qmpArg() << "-pidfile" << d->pidPath();
+    command << "-qmp" << qmpArg() << "-pidfile" << pidPath();
     return command;
 }
 
@@ -807,7 +796,23 @@ ArgsFile VmRunner::withComputedProperties(
         {"x-vblank-swap-target-zc", embedded ? "4500" : "3500"},
     };
     ArgsFile out = args;
+    QStringList global;
 
+    /*
+     * Those the user sets with -global: QEMU applies them when it creates
+     * the card, and the -device line's own after, which would win.  Any
+     * driver counts, as the card's inner device and parent types take them
+     * too, and only vitrine's virtio-gpu has these properties.
+     */
+    for (int i : args.indexesOf("global")) {
+        const OptionValue g = args.valueAt(i);
+        if (g.has("property")) {
+            global << g.get("property");
+        } else if (!g.items().isEmpty()) {
+            /* DRIVER.PROPERTY=VALUE, split at the first dot as QEMU does */
+            global << g.items().first().key.section('.', 1);
+        }
+    }
     for (int i : out.indexesOf("device")) {
         OptionValue v = out.valueAt(i);
         QStringList known;
@@ -818,7 +823,7 @@ ArgsFile VmRunner::withComputedProperties(
         }
         known = propertiesOf(v.implied());
         for (const auto &[key, value] : computed) {
-            if (!v.has(key) && known.contains(key)) {
+            if (!v.has(key) && !global.contains(key) && known.contains(key)) {
                 v.set(key, value);
                 changed = true;
             }
@@ -834,7 +839,8 @@ ArgsFile VmRunner::withComputedProperties(
  * QEMU's SDL window as the research launcher runs it: input read at the
  * refresh rate while it has the focus, and in full screen the guest's
  * buffers go to the screen as they are (the guest's driver must hold them,
- * else QEMU copies them, as other QEMUs ignore the variables)
+ * else QEMU copies them, as other QEMUs ignore the variables).  A VM's
+ * "#env NAME=0" turns each off in Vitrine's QEMU.
  */
 static const QStringList kSdlEnvironment = {
     "QEMU_SDL_POLL_FOCUSED=1",
@@ -860,6 +866,17 @@ QStringList VmRunner::environment(const ArgsFile &args)
 QString VmRunner::agentSocket() const
 {
     return isActive() ? d->toolsAgentPath() : QString();
+}
+
+QStringList VmRunner::shellAssignments(const QStringList &environment)
+{
+    QStringList out;
+
+    for (const QString &var : environment) {
+        const qsizetype eq = var.indexOf('=');
+        out << (eq < 0 ? shellQuote({var}) : var.left(eq + 1) + shellQuote({var.mid(eq + 1)}));
+    }
+    return out;
 }
 
 QString VmRunner::displaySocket() const
@@ -891,6 +908,8 @@ void VmRunner::start(const ArgsFile &args)
     d->stopRequested = false;
     d->killStep = 0;
     d->args = args;
+    d->qemu = qemu;
+    d->command.clear();
     d->embedded = VmConfig::screen(args) == VmConfig::Screen::Embedded;
     if (qemu.isEmpty() || !QFileInfo(qemu).isExecutable()) {
         d->fail(VmConfig::qemuBinary(args).isEmpty()
@@ -950,12 +969,17 @@ void VmRunner::start(const ArgsFile &args)
         return;
     }
     const QStringList environment = VmRunner::environment(args);
+    /* what launchQemu() runs, after virtiofsd if any */
+    QStringList problems;
+    d->command = d->commandLine(args, qemu, &problems);
     log.write(QString("vitrine: %1 %2%3\n")
                   .arg(QDateTime::currentDateTime().toString(Qt::ISODate),
-                       environment.isEmpty() ? QString() : shellQuote(environment) + ' ',
-                       shellQuote(commandLine(args)))
+                       environment.isEmpty()
+                           ? QString() : shellAssignments(environment).join(' ') + ' ',
+                       shellQuote(d->command))
                   .toUtf8());
-    for (const QString &line : std::as_const(remade)) {
+    const QStringList notes = remade + problems;
+    for (const QString &line : notes) {
         log.write(("vitrine: " + line + '\n').toUtf8());
     }
     log.close();
@@ -999,19 +1023,23 @@ void VmRunner::attach(const ArgsFile &args)
     }
     /*
      * The run's own arguments, not vm.args: the screen (in this window, in
-     * QEMU's, none), the shares to mount, the QEMU of the log.  A QEMU
-     * started by a vitrine that did not keep them has vm.args, and its
-     * command line tells whether its screen can show here.
+     * QEMU's, none), the shares to mount.  A QEMU started by a vitrine that
+     * did not keep them has vm.args, and its command line tells whether its
+     * screen can show here.
      */
+    const QStringList running = cmdline(pid);
     QFile runArgs(d->argsPath());
     if (runArgs.open(QIODevice::ReadOnly)) {
         d->args = ArgsFile::parse(QString::fromUtf8(runArgs.readAll()));
         d->embedded = VmConfig::screen(d->args) == VmConfig::Screen::Embedded;
     } else {
         d->args = args;
-        d->embedded = cmdline(pid).contains(d->displayArg());
+        d->embedded = running.contains(d->displayArg());
     }
     d->pid = pid;
+    /* the binary it runs, not the one the preferences may name now */
+    d->qemu = running.value(0);
+    d->command.clear();
     d->error.clear();
     d->stopRequested = false;
     d->killStep = 0;

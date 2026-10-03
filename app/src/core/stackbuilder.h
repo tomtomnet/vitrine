@@ -88,6 +88,15 @@ public:
     static Build current();
     static State state(const QString &hostDir, const QString &stackDir);
     static State state();
+    /*
+     * Removes the builds of @stackDir nothing needs any more, some 170 MB
+     * each: all but `current`, those a running process was started from
+     * (any VM's QEMU, also of another vitrine), and those of the binaries
+     * in @keep (the QEMU of the preferences, those of the VMs' #qemu).
+     * Leftovers of builds that never ended go too.  Nothing while a build
+     * holds the stack's lock.  Returns the folders removed.
+     */
+    static QStringList prune(const QString &stackDir, const QStringList &keep);
     /* The cores, but no more than the memory affords, about 1 GiB each */
     static int defaultJobs();
 
@@ -160,4 +169,6 @@ private:
     QStringList m_warnings;
     QString m_error;
     QString m_prefix;           // the one built, or up to date
+    QString m_stack;            // of the build running
+    QString m_before;           // the prefix `current` named when it started
 };

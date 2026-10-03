@@ -49,7 +49,8 @@ struct Graphics {
     bool venus = false;
     /* hostmem=, the memory window of blob resources; 0 when not given */
     qint64 hostmemMiB = 0;
-    /* -display: sdl, gtk, none...; empty for QEMU's default */
+    /* -display: sdl, gtk, none...; empty for QEMU's default (-display
+       vnc= is a VNC server, not the window) */
     QString display;
     /* Why it is Custom */
     QString custom;
@@ -64,8 +65,10 @@ void setGraphics(ArgsFile &args, const Graphics &graphics);
 /*
  * Where the VM's screen shows: in vitrine's window, through QEMU's D-Bus
  * display (-display dbus,p2p=yes); in a window of QEMU's own (sdl, gtk, or
- * QEMU's default); or nowhere (none, egl-headless, -nographic, or a D-Bus
- * display on the session bus, which vitrine cannot attach to)
+ * QEMU's default, which it opens only without -vnc and -spice); or nowhere
+ * (none, egl-headless, -nographic, VNC or SPICE alone, or a D-Bus
+ * display on the session bus or the bus of addr=, which vitrine cannot
+ * attach to)
  */
 enum class Screen { Embedded, OwnWindow, None };
 Screen screen(const ArgsFile &args);
@@ -93,7 +96,10 @@ struct Disk {
     bool editable = true;
 };
 QList<Disk> disks(const ArgsFile &args);
-/* After the other disks: -drive file=,format=,if=virtio|ide (SATA on q35) */
+/*
+ * After the other disks: -drive file=,format=,if=virtio|ide (SATA on q35),
+ * the format by imageFormat()
+ */
 void addDisk(ArgsFile &args, const QString &file, Disk::Bus bus);
 /* An empty CD/DVD drive if @iso is empty */
 void addCdrom(ArgsFile &args, const QString &iso);
@@ -103,6 +109,13 @@ void removeDisk(ArgsFile &args, const Disk &disk);
 void setDisc(ArgsFile &args, const Disk &drive, const QString &iso);
 /* The disk format of a file name, e.g. qcow2; empty when unknown */
 QString diskFormat(const QString &path);
+/*
+ * The format of an existing disk image, from its first bytes when @path is
+ * absolute (cloud images named .img are mostly qcow2), else by its name.
+ * A .raw or .iso file stays raw: its first bytes are the guest's, which
+ * must not make QEMU read it as qcow2, with a backing file of its choice.
+ */
+QString imageFormat(const QString &path);
 
 /*
  * The network as the Network page shows it: one card behind NAT, through
@@ -123,17 +136,34 @@ struct Network {
     QString card;
     /* The host port forwarded to the guest's port 22, 0 for none */
     int sshPort = 0;
+    /*
+     * The address of this computer that forward listens on, as written:
+     * empty (or 0.0.0.0) for all, which other computers reach too, a
+     * loopback one, or another; passt's may name an interface (%eth0).
+     * setNetwork() writes 127.0.0.1 when it writes the forward.
+     */
+    QString sshAddress;
     /* Why it is Custom */
     QString custom;
 };
 Network network(const ArgsFile &args);
+/* An address of this computer only, e.g. 127.0.0.1 or [::1] */
+bool isLoopback(const QString &address);
+/*
+ * The ports of this computer the VM forwards to it over TCP: hostfwd= and
+ * passt's tcp-ports=, on every -netdev, -nic and -net, JSON ones too,
+ * whatever the Network page makes of them.  A port for another VM's
+ * forward must be none of them, even while this VM is stopped.
+ */
+QList<int> forwardedPorts(const ArgsFile &args);
 /*
  * Nat or Off; a Custom network is left alone.  Off puts -nic none where
  * the card was.  Turning NAT on adds a -netdev of @network.backend (user
  * when empty) and a card (@network.card, else virtio-net-pci, or e1000e
  * for Windows on a PC); passt goes over vhost-user when guest RAM is
- * shared.  Otherwise only the forward changes, on 127.0.0.1, keeping the
- * other keys of the -netdev.
+ * shared and the card is a virtio-net one, which vhost-user needs.
+ * Otherwise only the forward changes, on 127.0.0.1, keeping the other
+ * keys of the -netdev.
  */
 void setNetwork(ArgsFile &args, const Network &network);
 

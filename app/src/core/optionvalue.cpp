@@ -85,10 +85,11 @@ bool OptionValue::flag(const QString &key, bool fallback) const
 {
     const QString value = get(key).toLower();
 
-    if (value == "on" || value == "yes" || value == "true") {
+    /* as QEMU's qapi_bool_parse() takes them */
+    if (value == "on" || value == "yes" || value == "true" || value == "y") {
         return true;
     }
-    if (value == "off" || value == "no" || value == "false") {
+    if (value == "off" || value == "no" || value == "false" || value == "n") {
         return false;
     }
     return fallback;

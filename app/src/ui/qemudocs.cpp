@@ -75,7 +75,19 @@ QemuDocs *QemuDocs::forArgs(const ArgsFile &args)
 
 void QemuDocs::reloadPreferred()
 {
-    preferred()->setBinary(Paths::qemuBinary());
+    QemuDocs *docs = preferred();
+    const QString binary = Paths::qemuBinary();
+
+    /*
+     * The same binary, chosen another way, e.g. the preferences naming the
+     * QEMU found by default: changed() all the same, for what follows the
+     * preferences themselves, as the banner of Vitrine's QEMU does
+     */
+    if (docs->m_loader && binary == docs->m_binary) {
+        emit docs->changed();
+        return;
+    }
+    docs->setBinary(binary);
 }
 
 QemuDocs::QemuDocs(bool preferred)

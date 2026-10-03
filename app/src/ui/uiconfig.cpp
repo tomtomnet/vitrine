@@ -6,6 +6,7 @@
 #include <QRegularExpression>
 
 #include "core/qemuinfo.h"
+#include "core/vmrunner.h"
 
 namespace UiConfig {
 
@@ -245,9 +246,7 @@ QString commandText(const QStringList &command, const QString &dir,
     QStringList lines;
     QString current;
 
-    for (const QString &var : environment) {
-        lines << shellQuote(var);
-    }
+    lines << VmRunner::shellAssignments(environment);
     for (qsizetype i = 0; i < command.size(); i++) {
         const QString &arg = command[i];
         if (i == 0) {

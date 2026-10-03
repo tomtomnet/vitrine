@@ -2,8 +2,12 @@
 #include "vmhardware.h"
 
 #include <QCoreApplication>
+#include <QFile>
 #include <QFileInfo>
 #include <QHash>
+#include <QJsonArray>
+#include <QJsonDocument>
+#include <QJsonObject>
 #include <QRegularExpression>
 #include <QSet>
 
@@ -242,23 +246,57 @@ static const QHash<QString, QStringList> kDisplayKeys = {
     {"dbus", {"p2p", "gl", "addr", "rendernode", "audiodev"}},
 };
 
+/* -display vnc=...: a VNC server, as -vnc, which leaves the window as it is */
+static bool isVncDisplay(const ArgsFile &args, int line)
+{
+    return args.lines[line].value.trimmed().startsWith("vnc");
+}
+
+/* The -display line of the window: the last one, but for -display vnc= */
+static int windowLine(const ArgsFile &args)
+{
+    const QList<int> lines = args.indexesOf("display");
+
+    for (auto it = lines.crbegin(); it != lines.crend(); ++it) {
+        if (!isVncDisplay(args, *it)) {
+            return *it;
+        }
+    }
+    return -1;
+}
+
+/* A display over the network: -vnc, -spice or -display vnc= */
+static bool hasRemoteDisplay(const ArgsFile &args)
+{
+    if (args.indexOf("vnc") >= 0 || args.indexOf("spice") >= 0) {
+        return true;
+    }
+    for (int line : args.indexesOf("display")) {
+        if (isVncDisplay(args, line)) {
+            return true;
+        }
+    }
+    return false;
+}
+
 Screen screen(const ArgsFile &args)
 {
-    const int line = lastIndex(args, "display");
+    const int line = windowLine(args);
 
     if (args.indexOf("nographic") >= 0) {
         return Screen::None;
     }
-    if (line < 0) {
-        return Screen::OwnWindow;
-    }
-    const OptionValue v = args.valueAt(line);
+    const OptionValue v = line < 0 ? OptionValue() : args.valueAt(line);
     const QString type = v.implied();
-    if (type == "dbus") {
-        const QString p2p = v.get("p2p", "off");
-        return p2p == "yes" || p2p == "on" ? Screen::Embedded : Screen::None;
+    if (line < 0 || type == "default") {
+        /* QEMU's default window, which it opens only without a remote display */
+        return hasRemoteDisplay(args) ? Screen::None : Screen::OwnWindow;
     }
-    if (type == "sdl" || type == "gtk" || type == "cocoa" || type == "default") {
+    if (type == "dbus") {
+        /* with addr=, on a bus of its own, which QEMU refuses with p2p= */
+        return v.flag("p2p") && !v.has("addr") ? Screen::Embedded : Screen::None;
+    }
+    if (type == "sdl" || type == "gtk" || type == "cocoa") {
         return Screen::OwnWindow;
     }
     return Screen::None;
@@ -299,7 +337,7 @@ Graphics graphics(const ArgsFile &args)
     const QList<int> cards = cardLines(args);
     const int vgaLine = lastIndex(args, "vga");
     const QString vga = vgaLine < 0 ? QString() : args.lines[vgaLine].value.trimmed();
-    const int displayLine = lastIndex(args, "display");
+    const int displayLine = windowLine(args);
     Graphics g;
 
     if (displayLine >= 0) {
@@ -491,7 +529,8 @@ static void setCard(ArgsFile &args, const Graphics &now, const Graphics &g)
 /* @gl: 1 on, 0 off, -1 as it is; a new window has it on for @accelerated */
 static void setWindow(ArgsFile &args, const QString &display, int gl, bool accelerated)
 {
-    const int line = lastIndex(args, "display");
+    /* a -display vnc= stays, as -vnc would */
+    const int line = windowLine(args);
 
     if (line < 0) {
         if (display.isEmpty()) {
@@ -529,8 +568,10 @@ static void setWindow(ArgsFile &args, const QString &display, int gl, bool accel
     }
     const QString type = v.implied();
     if (type == "dbus") {
-        /* vitrine attaches to the display over a socket of its own */
+        /* vitrine attaches to the display over a socket of its own, not
+           the bus of addr=, which QEMU refuses with p2p= */
         v.set("p2p", "yes");
+        v.remove("addr");
         if (gl == -1 && accelerated && v.get("gl", "off") == "off") {
             v.set("gl", "on");
         }
@@ -571,7 +612,7 @@ void setScreen(ArgsFile &args, Screen screen)
     g.display = screen == Screen::Embedded ? "dbus" : screen == Screen::OwnWindow ? "sdl" : "none";
     setGraphics(args, g);
     /* virgl needs OpenGL in the window, whichever it is */
-    const int line = lastIndex(args, "display");
+    const int line = windowLine(args);
     if (g.kind == Graphics::Accelerated && screen != Screen::None && line >= 0) {
         OptionValue v = args.valueAt(line);
         if (v.get("gl", "off") == "off") {
@@ -685,6 +726,36 @@ QString diskFormat(const QString &path)
     return {};
 }
 
+QString imageFormat(const QString &path)
+{
+    const QString suffix = QFileInfo(path).suffix().toLower();
+    QFile f(path);
+
+    /* relative to the VM folder, not ours; a raw disk's first bytes are the guest's */
+    if (!QFileInfo(path).isAbsolute() || suffix == "raw" || suffix == "iso" ||
+        !f.open(QIODevice::ReadOnly)) {
+        return diskFormat(path);
+    }
+    const QByteArray head = f.read(0x44);
+    if (head.startsWith("QFI\xfb")) {
+        return "qcow2";
+    }
+    if (head.startsWith("KDMV")) {
+        return "vmdk";
+    }
+    if (head.startsWith("vhdxfile")) {
+        return "vhdx";
+    }
+    if (head.startsWith("conectix")) {
+        return "vpc";
+    }
+    /* VDI: its signature at 0x40, little-endian */
+    if (head.size() == 0x44 && head.mid(0x40) == QByteArray("\x7f\x10\xda\xbe", 4)) {
+        return "vdi";
+    }
+    return diskFormat(path);
+}
+
 /* An id no -drive, -device, -blockdev... has yet */
 static QString uniqueId(const ArgsFile &args, const QString &prefix)
 {
@@ -743,7 +814,7 @@ static void insertScsi(ArgsFile &args, const QString &drive, bool cdrom)
 
 void addDisk(ArgsFile &args, const QString &file, Disk::Bus bus)
 {
-    const QString format = diskFormat(file);
+    const QString format = imageFormat(file);
     QString value = "file=" + OptionValue::escape(file);
 
     if (!format.isEmpty()) {
@@ -915,27 +986,49 @@ static QList<int> nicLines(const ArgsFile &args)
 /*
  * The host port of a forward to the guest's @guestPort over TCP, or 0:
  * hostfwd=[tcp|udp]:[HOSTADDR]:HOSTPORT-[GUESTADDR]:GUESTPORT for user,
- * tcp-ports=[ADDR/]PORT[:GUESTPORT] for passt (ranges are not followed)
+ * tcp-ports=[ADDR[%IF]/]PORT[:GUESTPORT] for passt (ranges are not
+ * followed); @address, the host address it listens on, empty for all
  */
-static int forwardPort(const QString &backend, const QString &rule, int guestPort)
+static int forwardPort(const QString &backend, const QString &rule, int guestPort,
+                       QString *address = nullptr)
 {
-    static const QRegularExpression hostfwd("^(tcp|udp)?:([^:]*):(\\d+)-([^:]*):(\\d+)$");
-    static const QRegularExpression passt("^(?:[^/]*/)?(\\d+)(?::(\\d+))?$");
+    static const QRegularExpression hostfwd(
+        "^(tcp|udp)?:(\\[[^\\]]*\\]|[^:]*):(\\d+)-([^:]*):(\\d+)$");
+    static const QRegularExpression passt("^(?:([^/]*)/)?(\\d+)(?::(\\d+))?$");
+    int port = 0;
+    QString addr;
 
     if (backend == "passt") {
         const QRegularExpressionMatch m = passt.match(rule);
         if (!m.hasMatch()) {
             return 0;
         }
-        const int host = m.captured(1).toInt();
-        const int guest = m.captured(2).isEmpty() ? host : m.captured(2).toInt();
-        return guest == guestPort ? host : 0;
+        const int host = m.captured(2).toInt();
+        const int guest = m.captured(3).isEmpty() ? host : m.captured(3).toInt();
+        port = guest == guestPort ? host : 0;
+        addr = m.captured(1);
+    } else {
+        const QRegularExpressionMatch m = hostfwd.match(rule);
+        if (!m.hasMatch() || m.captured(1) == "udp" || m.captured(5).toInt() != guestPort) {
+            return 0;
+        }
+        port = m.captured(3).toInt();
+        addr = m.captured(2);
     }
-    const QRegularExpressionMatch m = hostfwd.match(rule);
-    if (!m.hasMatch() || m.captured(1) == "udp" || m.captured(5).toInt() != guestPort) {
-        return 0;
+    if (address && port > 0) {
+        *address = addr;
     }
-    return m.captured(3).toInt();
+    return port;
+}
+
+bool isLoopback(const QString &address)
+{
+    /* 127.0.0.2%lo, [::1] */
+    QString host = address.section('%', 0, 0);
+    if (host.startsWith('[') && host.endsWith(']')) {
+        host = host.mid(1, host.size() - 2);
+    }
+    return host.startsWith("127.") || host == "::1" || host == "localhost";
 }
 
 static QString forwardKey(const QString &backend)
@@ -943,11 +1036,11 @@ static QString forwardKey(const QString &backend)
     return backend == "passt" ? "tcp-ports" : "hostfwd";
 }
 
-static int sshForward(const OptionValue &v, const QString &backend)
+static int sshForward(const OptionValue &v, const QString &backend, QString *address)
 {
     for (const OptionValue::Item &item : v.items()) {
         if (item.key == forwardKey(backend) && !item.bare) {
-            if (const int port = forwardPort(backend, item.value, 22); port > 0) {
+            if (const int port = forwardPort(backend, item.value, 22, address); port > 0) {
                 return port;
             }
         }
@@ -1017,7 +1110,7 @@ static Network readNetwork(const ArgsFile &args, NetLines *lines)
     } else if (netdevs.isEmpty()) {
         n.backend = type;
         n.card = v.get("model");
-        n.sshPort = sshForward(v, type);
+        n.sshPort = sshForward(v, type, &n.sshAddress);
     } else {
         const QString id = v.get("id");
         QList<int> cards;
@@ -1033,7 +1126,7 @@ static Network readNetwork(const ArgsFile &args, NetLines *lines)
         l.card = cards.first();
         n.backend = type;
         n.card = args.valueAt(l.card).implied();
-        n.sshPort = sshForward(v, type);
+        n.sshPort = sshForward(v, type, &n.sshAddress);
     }
     if (lines) {
         *lines = l;
@@ -1044,6 +1137,77 @@ static Network readNetwork(const ArgsFile &args, NetLines *lines)
 Network network(const ArgsFile &args)
 {
     return readNetwork(args, nullptr);
+}
+
+/* The host ports of a hostfwd= rule of QEMU's user network, if over TCP */
+static QList<int> hostfwdPorts(const QString &rule)
+{
+    /* [tcp|udp]:[HOSTADDR]:HOSTPORT-..., the address maybe in brackets */
+    static const QRegularExpression hostfwd("^(tcp|udp)?:(\\[[^\\]]*\\]|[^:]*):(\\d+)-");
+    const QRegularExpressionMatch m = hostfwd.match(rule.trimmed());
+
+    if (!m.hasMatch() || m.captured(1) == "udp") {
+        return {};
+    }
+    return {m.captured(3).toInt()};
+}
+
+/*
+ * The host ports of a passt tcp-ports= spec: [ADDR[%IF]/]PORTS, PORTS a
+ * list of [~]FIRST[-LAST][:GUEST...], or all, auto or none, which name no
+ * port of their own
+ */
+static QList<int> passtPorts(const QString &spec)
+{
+    static const QRegularExpression range("^(\\d+)(?:-(\\d+))?(?::.*)?$");
+    const QString ports = spec.section('/', -1);
+    QList<int> list;
+
+    for (const QString &item : ports.split(',', Qt::SkipEmptyParts)) {
+        /* an exclusion from a range: counting the port anyway is safe */
+        const QRegularExpressionMatch m = range.match(item.trimmed().remove('~'));
+        if (!m.hasMatch()) {
+            continue;
+        }
+        const int first = m.captured(1).toInt();
+        const int last = m.captured(2).isEmpty() ? first : m.captured(2).toInt();
+        for (int port = first; port <= qMin(last, 65535); port++) {
+            list << port;
+        }
+    }
+    return list;
+}
+
+QList<int> forwardedPorts(const ArgsFile &args)
+{
+    QList<int> lines = args.indexesOf("netdev");
+    QList<int> ports;
+
+    lines << args.indexesOf("nic") << args.indexesOf("net");
+    for (int line : std::as_const(lines)) {
+        const QString text = args.lines[line].value.trimmed();
+
+        if (text.startsWith('{')) {
+            /* QAPI: lists of String, {"str": "..."} */
+            const QJsonObject netdev = QJsonDocument::fromJson(text.toUtf8()).object();
+            for (const QJsonValue rule : netdev.value("hostfwd").toArray()) {
+                ports << hostfwdPorts(rule.isObject() ? rule["str"].toString() : rule.toString());
+            }
+            for (const QJsonValue spec : netdev.value("tcp-ports").toArray()) {
+                ports << passtPorts(spec.isObject() ? spec["str"].toString() : spec.toString());
+            }
+            continue;
+        }
+        const OptionValue v(text);
+        for (const OptionValue::Item &item : v.items()) {
+            if (item.key == "hostfwd" && !item.bare) {
+                ports << hostfwdPorts(item.value);
+            } else if (item.key == "tcp-ports" && !item.bare) {
+                ports << passtPorts(item.value);
+            }
+        }
+    }
+    return ports;
 }
 
 void setNetwork(ArgsFile &args, const Network &n)
@@ -1090,15 +1254,20 @@ void setNetwork(ArgsFile &args, const Network &n)
     }
     const QString backend = n.backend.isEmpty() ? QString("user") : n.backend;
     const QString id = uniqueId(args, "net");
-    QString netdev = backend + ",id=" + id;
-    if (backend == "passt" && hasSharedMemory(args)) {
-        /* the data path in passt's process, which maps guest RAM */
-        netdev += ",vhost-user=on";
-    }
     const QString card = !n.card.isEmpty() ? n.card
                          : guest(args).os == "windows" && !machineType(args).startsWith("virt")
                              ? QString("e1000e")
                              : QString("virtio-net-pci");
+    QString netdev = backend + ",id=" + id;
+    /*
+     * The data path in passt's process, which maps guest RAM.  QEMU takes
+     * vhost-user only with a virtio-net card (passt_check_peer_type), so
+     * other cards, e.g. Windows' e1000e, go through passt's socket.
+     */
+    if (backend == "passt" && hasSharedMemory(args) &&
+        (card.startsWith("virtio-net-") || card == "virtio-net")) {
+        netdev += ",vhost-user=on";
+    }
     args.lines.insert(at, optionLine("netdev", withSshForward(OptionValue(netdev), backend,
                                                               n.sshPort).toString()));
     args.lines.insert(at + 1, optionLine("device", card + ",netdev=" + id));

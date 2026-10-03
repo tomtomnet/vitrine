@@ -227,12 +227,22 @@ void HardwarePage::load(const ArgsFile &args)
        an untouched page writes nothing */
     m_loadedMemory = m_memory->value();
     m_loadedCpus = m_cpus->value();
-    m_topology->setText(cpus.threads > 1
-                            ? tr("%n threads per core, as far as the number allows: the "
-                                 "Machine page sets the topology.",
-                                 nullptr, cpus.threads)
-                            : QString());
-    m_topology->setVisible(cpus.threads > 1);
+    /* maxcpus=, dies=...: a count written without them would not start */
+    m_cpus->setEnabled(!cpus.custom);
+    m_cpuSlider->setEnabled(!cpus.custom);
+    if (cpus.custom) {
+        m_topology->setText(tr("The processors of this VM are set up by hand (-smp %1): "
+                               "change them on the Arguments page.")
+                                .arg(args.lines[args.indexOf("smp")].value.trimmed()
+                                         .toHtmlEscaped()));
+    } else {
+        m_topology->setText(cpus.threads > 1
+                                ? tr("%n threads per core, as far as the number allows: the "
+                                     "Machine page sets the topology.",
+                                     nullptr, cpus.threads)
+                                : QString());
+    }
+    m_topology->setVisible(!m_topology->text().isEmpty());
 }
 
 void HardwarePage::save(ArgsFile &args)
@@ -304,25 +314,32 @@ void DisplayPage::load(const ArgsFile &args)
     QString custom;
 
     m_loaded = screen;
-    /* none checked for a VM that shows nowhere */
-    for (QRadioButton *b : {m_embedded, m_ownWindow}) {
-        b->setAutoExclusive(false);
-        b->setChecked(false);
-        b->setAutoExclusive(true);
-    }
+    /*
+     * None checked for a VM that shows nowhere.  The buttons' group keeps
+     * one checked while it is exclusive, whatever their autoExclusive says,
+     * and a button left checked would make an untouched page modified
+     */
+    QButtonGroup *group = m_embedded->group();
+    group->setExclusive(false);
     m_embedded->setChecked(screen == VmConfig::Screen::Embedded);
     m_ownWindow->setChecked(screen == VmConfig::Screen::OwnWindow);
+    group->setExclusive(true);
 
     if (args.indexOf("nographic") >= 0) {
         custom = tr("This VM has no screen (-nographic): change it on the Arguments page.");
+    } else if (screen == VmConfig::Screen::None &&
+               (display.isEmpty() || display == "default")) {
+        custom = tr("This VM shows its screen over VNC or SPICE only. Choosing below adds a "
+                    "window.");
     } else if (screen == VmConfig::Screen::None) {
         custom = tr("This VM shows its screen nowhere Vitrine can (-display %1). Choosing "
                     "below replaces it.")
                      .arg(display.toHtmlEscaped());
     } else if (screen == VmConfig::Screen::OwnWindow && display != "sdl") {
-        custom = display.isEmpty() ? tr("The screen shows in QEMU's default window.")
-                                   : tr("The screen shows in QEMU's %1 window.")
-                                         .arg(display.toUpper().toHtmlEscaped());
+        custom = display.isEmpty() || display == "default"
+                     ? tr("The screen shows in QEMU's default window.")
+                     : tr("The screen shows in QEMU's %1 window.")
+                           .arg(display.toUpper().toHtmlEscaped());
     }
     m_custom->setText(custom);
     m_custom->setVisible(!custom.isEmpty());
@@ -1252,14 +1269,17 @@ NetworkPage::NetworkPage(Vm *vm, QWidget *parent)
     m_port->setObjectName("sshPort");
     m_port->setRange(1024, 65535);
     m_sshInfo->setTextInteractionFlags(Qt::TextSelectableByMouse);
+    /* it shows an address as written in vm.args */
+    m_sshInfo->setTextFormat(Qt::PlainText);
     sshRow->addWidget(m_ssh);
     sshRow->addWidget(m_port);
     sshRow->addStretch();
 
     form->addRow(QString(), m_nat);
     form->addRow(QString(), Widgets::hint(tr("Through this computer's connection (NAT): the VM "
-                                             "reaches the network and the internet, other "
-                                             "computers do not reach the VM.")));
+                                             "reaches the network and the internet; other "
+                                             "computers reach the VM only through the ports "
+                                             "forwarded to it.")));
     form->addRow(QString(), sshRow);
     form->addRow(QString(), m_sshInfo);
     layout->addWidget(m_custom);
@@ -1269,12 +1289,13 @@ NetworkPage::NetworkPage(Vm *vm, QWidget *parent)
     connect(m_nat, &QCheckBox::toggled, this, &NetworkPage::update);
     connect(m_ssh, &QCheckBox::toggled, this, [this](bool on) {
         if (on && m_loaded.sshPort == 0 && m_port->value() == m_port->minimum()) {
-            /* a port no other VM uses, free now */
-            QList<int> taken;
+            /* a port no other VM forwards, whatever for, nor this one's
+               other forwards, which stay; and free now */
+            QList<int> taken = m_otherForwards;
             if (auto *store = m_vm ? qobject_cast<VmStore *>(m_vm->parent()) : nullptr) {
                 for (const Vm *other : store->vms()) {
-                    if (other != m_vm && VmConfig::network(other->args()).sshPort > 0) {
-                        taken << VmConfig::network(other->args()).sshPort;
+                    if (other != m_vm) {
+                        taken << VmConfig::forwardedPorts(other->args());
                     }
                 }
             }
@@ -1299,8 +1320,29 @@ void NetworkPage::update()
     m_ssh->setEnabled(!custom && m_nat->isChecked());
     m_port->setEnabled(!custom && m_nat->isChecked() && m_ssh->isChecked());
     m_sshInfo->setVisible(!custom && m_nat->isChecked() && m_ssh->isChecked());
-    m_sshInfo->setText(tr("From this computer only: ssh -p %1 USER@127.0.0.1")
-                           .arg(m_port->value()));
+
+    /* where the forward listens: as written, unless saving writes it anew, on 127.0.0.1 */
+    const bool kept = m_loaded.sshPort > 0 && m_port->value() == m_loaded.sshPort;
+    const QString address = kept ? m_loaded.sshAddress : QString("127.0.0.1");
+    const QString host = address.section('%', 0, 0);
+    const QString port = QString::number(m_port->value());
+    QString text;
+
+    if (VmConfig::isLoopback(address)) {
+        text = tr("From this computer only: ssh -p %1 USER@%2").arg(port, host);
+    } else if (host.isEmpty() || host == "0.0.0.0" || host == "::" || host == "[::]") {
+        text = address.contains('%')
+                   ? tr("From other computers, through %2: ssh -p %1 USER@ADDRESS, with an "
+                        "address of this computer there.")
+                         .arg(port, address.section('%', 1))
+                   : tr("From this computer, ssh -p %1 USER@127.0.0.1, and from other "
+                        "computers too: it listens on all the addresses of this computer.")
+                         .arg(port);
+    } else {
+        text = tr("On %2 only, which other computers may reach: ssh -p %1 USER@%2")
+                   .arg(port, host);
+    }
+    m_sshInfo->setText(text);
 }
 
 void NetworkPage::load(const ArgsFile &args)
@@ -1308,8 +1350,12 @@ void NetworkPage::load(const ArgsFile &args)
     const QSignalBlocker a(m_nat), b(m_ssh), c(m_port);
 
     m_loaded = VmConfig::network(args);
+    m_otherForwards = VmConfig::forwardedPorts(args);
+    m_otherForwards.removeOne(m_loaded.sshPort);
     /* where the VM had none: passt, if at hand */
-    m_backend = VmTemplate::hasPasst(QemuDocs::forArgs(args)->info()) ? "passt" : "user";
+    m_backend = VmTemplate::hasPasst(QemuDocs::forArgs(args)->info(),
+                                     QemuDocs::forArgs(args)->binary())
+                    ? "passt" : "user";
     m_nat->setChecked(m_loaded.kind == VmConfig::Network::Nat);
     m_ssh->setChecked(m_loaded.sshPort > 0);
     m_port->setMinimum(qMin(1024, m_loaded.sshPort > 0 ? m_loaded.sshPort : 1024));
@@ -1366,6 +1412,9 @@ MachinePage::MachinePage(QWidget *parent)
     auto *form = Widgets::form();
 
     m_topology->setObjectName("topology");
+    m_sockets->setObjectName("sockets");
+    m_cores->setObjectName("cores");
+    m_threads->setObjectName("threads");
     for (QSpinBox *spin : {m_sockets, m_cores, m_threads}) {
         spin->setRange(1, 1024);
         spin->setEnabled(false);
@@ -1539,10 +1588,15 @@ void MachinePage::describe()
 
 void MachinePage::updateTopology()
 {
-    const int count = m_topology->isChecked()
+    const int count = m_topology->isChecked() && !m_loadedCpus.custom
                           ? m_sockets->value() * m_cores->value() * m_threads->value()
                           : m_loadedCpus.count;
-    m_count->setText(tr("%n processors in all.", nullptr, count));
+    m_count->setText(m_loadedCpus.custom
+                         ? tr("%n processors in all. The -smp line has keys this page does "
+                              "not follow, such as maxcpus or dies: change it on the "
+                              "Arguments page.",
+                              nullptr, count)
+                         : tr("%n processors in all.", nullptr, count));
 }
 
 void MachinePage::load(const ArgsFile &args)
@@ -1551,21 +1605,24 @@ void MachinePage::load(const ArgsFile &args)
     m_loadedMachine = VmConfig::machineType(args);
     {
         const QSignalBlocker a(m_sockets), b(m_cores), c(m_threads), d(m_topology);
-        const bool given = m_loadedCpus.sockets > 0 || m_loadedCpus.cores > 0 ||
+        /* what -smp leaves out, as QEMU works it out, e.g. 2 sockets for "8,cores=4" */
+        const VmConfig::Cpus shown = VmConfig::derivedTopology(m_loadedCpus);
+
+        m_loadedTopology = m_loadedCpus.sockets > 0 || m_loadedCpus.cores > 0 ||
                            m_loadedCpus.threads > 0;
-        m_sockets->setValue(qMax(m_loadedCpus.sockets, 1));
-        m_cores->setValue(qMax(m_loadedCpus.cores, 1));
-        m_threads->setValue(qMax(m_loadedCpus.threads, 1));
-        m_topology->setChecked(given);
+        m_sockets->setValue(shown.sockets);
+        m_cores->setValue(shown.cores);
+        m_threads->setValue(shown.threads);
+        m_topology->setChecked(m_loadedTopology);
+        /* maxcpus=, dies=...: numbers written without them would not start */
+        m_topology->setEnabled(!m_loadedCpus.custom);
         for (QSpinBox *spin : {m_sockets, m_cores, m_threads}) {
-            spin->setEnabled(given);
+            spin->setEnabled(m_loadedTopology && !m_loadedCpus.custom);
         }
         /* compare with what the page shows */
-        if (given) {
-            m_loadedCpus.sockets = m_sockets->value();
-            m_loadedCpus.cores = m_cores->value();
-            m_loadedCpus.threads = m_threads->value();
-        }
+        m_shownCpus.sockets = m_sockets->value();
+        m_shownCpus.cores = m_cores->value();
+        m_shownCpus.threads = m_threads->value();
     }
     updateTopology();
     m_model->setCurrentText(m_loadedCpus.model);
@@ -1581,34 +1638,61 @@ void MachinePage::load(const ArgsFile &args)
     describe();
 }
 
+bool MachinePage::topologyChanged() const
+{
+    if (m_loadedCpus.custom) {
+        return false;
+    }
+    if (m_topology->isChecked() != m_loadedTopology) {
+        return true;
+    }
+    return m_topology->isChecked() && (m_sockets->value() != m_shownCpus.sockets ||
+                                       m_cores->value() != m_shownCpus.cores ||
+                                       m_threads->value() != m_shownCpus.threads);
+}
+
 void MachinePage::save(ArgsFile &args)
 {
-    VmConfig::Cpus cpus;
     const QString machine = m_machine->currentText().trimmed();
-
-    cpus.count = m_loadedCpus.count;
-    if (m_topology->isChecked()) {
-        cpus.sockets = m_sockets->value();
-        cpus.cores = m_cores->value();
-        cpus.threads = m_threads->value();
-        cpus.count = cpus.sockets * cpus.cores * cpus.threads;
-    }
     /* "host,topoext=on": the model, then flags for the -cpu line */
     const QString model = m_model->currentText().trimmed();
     const OptionValue flags(model.section(',', 1));
-    cpus.model = model.section(',', 0, 0).trimmed();
-    if (cpus.count != m_loadedCpus.count || cpus.sockets != m_loadedCpus.sockets ||
-        cpus.cores != m_loadedCpus.cores || cpus.threads != m_loadedCpus.threads ||
-        cpus.model != m_loadedCpus.model) {
+    const QString modelName = model.section(',', 0, 0).trimmed();
+    const bool topology = topologyChanged();
+
+    /*
+     * -smp only when the topology was edited: the count is the Hardware
+     * page's, and numbers the page made up must not change it
+     */
+    if (topology) {
+        VmConfig::Cpus cpus = m_loadedCpus;
+
+        cpus.sockets = cpus.cores = cpus.threads = 0;
+        if (m_topology->isChecked()) {
+            cpus.sockets = m_sockets->value();
+            cpus.cores = m_cores->value();
+            cpus.threads = m_threads->value();
+            cpus.count = cpus.sockets * cpus.cores * cpus.threads;
+        }
+        cpus.model = modelName;
         VmConfig::setCpus(args, cpus);
-        m_loadedCpus = cpus;
+    } else if (modelName != m_loadedCpus.model) {
+        VmConfig::setCpuModel(args, modelName);
+    }
+    if (topology || modelName != m_loadedCpus.model) {
         /* AMD: the guest sees the threads of its cores only with topoext */
-        if (cpus.threads > 1 && (cpus.model == "host" || cpus.model == "max") &&
+        const int threads = VmConfig::derivedTopology(VmConfig::cpus(args)).threads;
+        if (threads > 1 && (modelName == "host" || modelName == "max") &&
             HostDevices::cpuHasFlag("topoext")) {
             VmConfig::enableCpuFeature(args, "topoext");
         }
     }
-    if (!cpus.model.isEmpty() && !flags.isEmpty()) {
+    m_loadedCpus = VmConfig::cpus(args);
+    m_loadedTopology = m_topology->isChecked();
+    m_shownCpus.sockets = m_sockets->value();
+    m_shownCpus.cores = m_cores->value();
+    m_shownCpus.threads = m_threads->value();
+    if (!modelName.isEmpty() && !flags.isEmpty()) {
         const int cpu = args.indexOf("cpu");
         OptionValue v = args.valueAt(cpu);
         QString extra;
@@ -1625,7 +1709,7 @@ void MachinePage::save(ArgsFile &args)
             }
         }
         args.setValueAt(cpu, v.toString() + extra);
-        m_model->setCurrentText(cpus.model);
+        m_model->setCurrentText(modelName);
     }
     if (!machine.isEmpty() && machine != m_loadedMachine) {
         VmConfig::setMachineType(args, machine);
@@ -1641,15 +1725,9 @@ bool MachinePage::isModified() const
 {
     const QString machine = m_machine->currentText().trimmed();
 
-    if (m_model->currentText().trimmed() != m_loadedCpus.model ||
-        (!machine.isEmpty() && machine != m_loadedMachine) || chosenQemu() != m_loadedQemu) {
-        return true;
-    }
-    if (!m_topology->isChecked()) {
-        return m_loadedCpus.sockets || m_loadedCpus.cores || m_loadedCpus.threads;
-    }
-    return m_sockets->value() != m_loadedCpus.sockets ||
-           m_cores->value() != m_loadedCpus.cores || m_threads->value() != m_loadedCpus.threads;
+    return m_model->currentText().trimmed() != m_loadedCpus.model ||
+           (!machine.isEmpty() && machine != m_loadedMachine) || chosenQemu() != m_loadedQemu ||
+           topologyChanged();
 }
 
 /* Boot */

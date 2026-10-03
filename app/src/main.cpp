@@ -4,10 +4,13 @@
 #include <QLocalSocket>
 #include <QLockFile>
 #include <QThread>
+#include <QTimer>
 
 #include <cstdio>
 
 #include "core/paths.h"
+#include "core/stackbuilder.h"
+#include "core/vmconfig.h"
 #include "core/vmrunner.h"
 #include "core/vmstore.h"
 #include "ui/icons.h"
@@ -99,6 +102,21 @@ int main(int argc, char **argv)
                      [](Vm *vm) { vm->runner()->attach(vm->args()); });
     /* load the QEMU documentation in the background now */
     QemuDocs::preferred();
+    /*
+     * The builds of Vitrine's QEMU nothing runs or names any more, now and
+     * after each build: a minute after, once the VMs started meanwhile run
+     * from the build they began with
+     */
+    const auto prune = [&store]() {
+        QStringList keep = {Paths::customQemuBinary()};
+        for (const Vm *vm : store.vms()) {
+            keep << VmConfig::qemuBinary(vm->args());
+        }
+        StackBuilder::prune(Paths::stackDir(), keep);
+    };
+    prune();
+    QObject::connect(StackBuilder::instance(), &StackBuilder::built, &store,
+                     [&store, prune]() { QTimer::singleShot(60000, &store, prune); });
 
     MainWindow window(&store);
     QLocalServer server;

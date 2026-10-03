@@ -294,6 +294,8 @@ private:
     QSpinBox *m_port;
     QLabel *m_sshInfo;
     VmConfig::Network m_loaded;
+    /* The host ports of the VM's forwards but the SSH one, which stay */
+    QList<int> m_otherForwards;
     /* passt, if this computer and the VM's QEMU have it */
     QString m_backend;
 };
@@ -320,6 +322,8 @@ private:
     void updateQemu();
     void fillLists();
     void updateTopology();
+    /* The topology box or its numbers differ from what load() showed */
+    bool topologyChanged() const;
     void describe();
 
     QemuDocs *m_docs = nullptr;
@@ -337,7 +341,11 @@ private:
     QLineEdit *m_qemuPath;
     QLabel *m_qemuInfo;
 
+    /* As -smp and -cpu say */
     VmConfig::Cpus m_loadedCpus;
+    /* The topology load() showed: the box, and QEMU's numbers */
+    bool m_loadedTopology = false;
+    VmConfig::Cpus m_shownCpus;
     QString m_loadedMachine;
     QString m_loadedQemu;
 };

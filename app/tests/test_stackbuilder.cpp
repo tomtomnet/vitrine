@@ -10,6 +10,7 @@
 
 #include <cerrno>
 #include <csignal>
+#include <sys/file.h>
 
 #include "core/paths.h"
 #include "core/stackbuilder.h"
@@ -39,7 +40,8 @@ lib = shared_library('virglrenderer', 'virgl.c', version : '1.9.0', install : tr
 import('pkgconfig').generate(lib, name : 'virglrenderer', description : 'test')
 )";
 static const char kVirglOptions[] = R"(option('drm-renderers', type : 'array', value : [],
-       choices : ['amdgpu-experimental', 'xe-experimental'])
+       choices : ['amdgpu-experimental', 'i915-experimental', 'xe-experimental', 'msm',
+                  'asahi'])
 option('video', type : 'boolean', value : false)
 option('venus', type : 'boolean', value : false)
 )";
@@ -281,7 +283,12 @@ private slots:
         QVERIFY(write(fixture + "/patches/README.md", "notes\n"));
         QVERIFY(write(fixture + "/patches/qemu/notes.txt", "notes\n"));
         QVERIFY(write(fixture + "/patches/qemu/.hidden.patch", "x\n"));
+        /* bash's glob matches with case */
+        QVERIFY(write(fixture + "/patches/qemu/0008-extra.PATCH", "x\n"));
+        QVERIFY(write(fixture + "/patches/qemu/0009-mixed.Patch", "x\n"));
         QCOMPARE(StackBuilder::inputStamp(fixture), fixtureStamp);
+        QCOMPARE(run("bash", {fixture + "/build.sh", "--print-stamp"}, {}, &status).trimmed(),
+                 fixtureStamp);
         /* a patch does, a new one too, and versions.conf */
         QVERIFY(write(fixture + "/patches/qemu/b.patch", "changed\n"));
         const QString changed = StackBuilder::inputStamp(fixture);
@@ -493,6 +500,99 @@ echo "vitrine-build: built: /nowhere"
         QTRY_VERIFY_WITH_TIMEOUT(::kill(sleeper, 0) != 0 && errno == ESRCH, 10000);
     }
 
+    /* The builds nothing runs or names any more go */
+    void prunesOldBuilds()
+    {
+        const QString stack = m_tmp.filePath("prune-stack");
+        const auto prefix = [&stack](const char *name, bool complete = true) {
+            const QString dir = stack + '/' + name;
+            const QString binary = dir + "/bin/qemu-system-x86_64";
+            if (!write(binary, "x\n", true) ||
+                (complete && !write(dir + "/share/vitrine/stack.conf", "STAMP=x\n"))) {
+                return QString();
+            }
+            return binary;
+        };
+        QVERIFY(!prefix("aaaaaaaaaaaaaaaa").isEmpty());
+        QVERIFY(!prefix("bbbbbbbbbbbbbbbb").isEmpty());
+        const QString named = prefix("cccccccccccccccc");
+        const QString running = prefix("dddddddddddddddd");
+        QVERIFY(!prefix("eeeeeeeeeeeeeeee", false).isEmpty());
+        QVERIFY(QDir().mkpath(stack + "/other"));
+        QVERIFY(QFile::link("aaaaaaaaaaaaaaaa", stack + "/current"));
+        /* a QEMU of an older build, still running */
+        QVERIFY(QFile::remove(running));
+        QVERIFY(QFile::copy(QStandardPaths::findExecutable("sleep"), running));
+        QVERIFY(QFile::setPermissions(running, QFileDevice::ReadOwner | QFileDevice::ExeOwner));
+        QProcess vm;
+        vm.start(running, {"60"});
+        QVERIFY(vm.waitForStarted());
+
+        /* not while a build holds the stack */
+        QFile lock(stack + "/.lock");
+        QVERIFY(lock.open(QIODevice::WriteOnly));
+        QVERIFY(::flock(lock.handle(), LOCK_EX | LOCK_NB) == 0);
+        QVERIFY(StackBuilder::prune(stack, {}).isEmpty());
+        ::flock(lock.handle(), LOCK_UN);
+        lock.close();
+
+        const QStringList removed = StackBuilder::prune(stack, {named});
+        vm.kill();
+        vm.waitForFinished();
+        const QString canonical = QFileInfo(stack).canonicalFilePath();
+        QCOMPARE(removed, QStringList({canonical + "/bbbbbbbbbbbbbbbb",
+                                       canonical + "/eeeeeeeeeeeeeeee"}));
+        for (const char *kept : {"aaaaaaaaaaaaaaaa", "cccccccccccccccc", "dddddddddddddddd",
+                                 "other"}) {
+            QVERIFY2(QFileInfo::exists(stack + '/' + kept), kept);
+        }
+        QVERIFY(StackBuilder::current(stack).isValid());
+    }
+
+    /* A Stop that came once `current` switched: the build is done all the same */
+    void stopAfterTheSwitch()
+    {
+        const QString pidFile = m_tmp.filePath("late-pid");
+        const QString stack = m_tmp.filePath("late-stack");
+        StackBuilder b;
+        b.setHostDir(hostDir("late-host", QString(R"sh(#!/bin/bash
+stack=$2
+echo "vitrine-build: step 8/8: checking the installation"
+mkdir -p "$stack/0123456789abcdef/bin" "$stack/0123456789abcdef/share/vitrine"
+echo STAMP=abc > "$stack/0123456789abcdef/share/vitrine/stack.conf"
+ln -sfn 0123456789abcdef "$stack/current"
+sh -c 'echo $$ > %1; exec sleep 300'
+echo "vitrine-build: built: $stack/0123456789abcdef"
+)sh").arg(pidFile).toUtf8()));
+        b.setStackDir(stack);
+        b.setWorkDir(m_tmp.filePath("late-work"));
+        QSignalSpy finished(&b, &StackBuilder::finished);
+        QSignalSpy built(&b, &StackBuilder::built);
+
+        b.start();
+        QTRY_VERIFY_WITH_TIMEOUT(QFileInfo(pidFile).size() > 0, 10000);
+        b.cancel();
+        QVERIFY(finished.wait(10000));
+        QCOMPARE(finished[0][0].toString(), "");
+        QCOMPARE(built.size(), 1);
+        QCOMPARE(built[0][0].toString(), StackBuilder::current(stack).qemuBinary());
+        QVERIFY(!b.wasStopped());
+
+        /* stopped before it switched: stopped, `current` as it was */
+        QFile::remove(pidFile);
+        b.setHostDir(hostDir("early-host", QString(R"sh(#!/bin/bash
+sh -c 'echo $$ > %1; exec sleep 300'
+)sh").arg(pidFile).toUtf8()));
+        finished.clear();
+        b.start();
+        QTRY_VERIFY_WITH_TIMEOUT(QFileInfo(pidFile).size() > 0, 10000);
+        b.cancel();
+        QVERIFY(finished.wait(10000));
+        QCOMPARE(finished[0][0].toString(), "Stopped");
+        QCOMPARE(built.size(), 1);
+        QVERIFY(b.wasStopped());
+    }
+
     /*
      * The real build.sh with stand-ins for the components: fetch at the
      * pinned commits, patches, prefix per stamp, RUNPATH and ldd checks,
@@ -509,25 +609,55 @@ echo "vitrine-build: built: /nowhere"
         }
         const QString realHost = StackBuilder::hostDir();
         int status = 0;
+        /* the stand-ins run no configure of QEMU's: the Python modules only it
+           needs may be stand-ins too */
+        const QString python = m_tmp.filePath("e2e/python");
+        for (const char *module : {"yaml", "wheel", "setuptools", "pip"}) {
+            run("python3", {"-c", QString("import %1").arg(module)}, {}, &status);
+            if (status != 0) {
+                QVERIFY(write(QString("%1/%2/__init__.py").arg(python, module), ""));
+            }
+        }
+        const QByteArray pythonPath = qgetenv("PYTHONPATH");
+        qputenv("PYTHONPATH", python.toUtf8() + (pythonPath.isEmpty() ? "" : ":" + pythonPath));
         const QString deps = run("bash", {realHost + "/build.sh", "--print-deps"}, {}, &status);
         if (status != 0) {
             QSKIP(qPrintable("needs the build dependencies of build.sh:\n" + deps));
         }
+        const auto read = [](const QString &path) {
+            QFile f(path);
+            return f.open(QIODevice::ReadOnly) ? QString::fromUtf8(f.readAll()) : QString();
+        };
 
-        /* the components' repositories */
+        /* the components' repositories, QEMU's with a meson subproject of its own */
         const QString virglRepo = m_tmp.filePath("e2e/virgl-repo");
         const QString qemuRepo = m_tmp.filePath("e2e/qemu-repo");
+        const QString subRepo = m_tmp.filePath("e2e/keycodemapdb-repo");
         QVERIFY(write(virglRepo + "/meson.build", kVirglMeson));
         QVERIFY(write(virglRepo + "/meson_options.txt", kVirglOptions));
         QVERIFY(write(virglRepo + "/virgl.c", "int virgl_renderer_init(void) { return 0; }\n"));
+        QVERIFY(write(subRepo + "/README", "v1\n"));
         QVERIFY(write(qemuRepo + "/configure", kQemuConfigure, true));
         QVERIFY(write(qemuRepo + "/qemu.c", kQemuMain));
         QVERIFY(write(qemuRepo + "/qemu-options.hx", "DEF(\"m\", HAS_ARG, QEMU_OPTION_m, \"\", QEMU_ARCH_ALL)\n"));
-        for (const QString &repo : {virglRepo, qemuRepo}) {
+        QVERIFY(write(qemuRepo + "/meson.build", "project('qemu', 'c')\n"));
+        QVERIFY(write(qemuRepo + "/subprojects/.gitignore", "/keycodemapdb\n"));
+        QVERIFY(write(qemuRepo + "/subprojects/packagefiles/keycodemapdb/meson.build", "pf1\n"));
+        for (const QString &repo : {virglRepo, subRepo}) {
             git(repo, {"init", "-q", "-b", "main"});
             git(repo, {"add", "."});
             git(repo, {"commit", "-q", "-m", "first"});
         }
+        const auto wrap = [&]() {
+            return QString("[wrap-git]\nurl = file://%1\nrevision = %2\ndepth = 1\n"
+                           "patch_directory = keycodemapdb\n")
+                .arg(subRepo, git(subRepo, {"rev-parse", "HEAD"}))
+                .toUtf8();
+        };
+        QVERIFY(write(qemuRepo + "/subprojects/keycodemapdb.wrap", wrap()));
+        git(qemuRepo, {"init", "-q", "-b", "main"});
+        git(qemuRepo, {"add", "."});
+        git(qemuRepo, {"commit", "-q", "-m", "first"});
 
         /* host/: the real build.sh, its versions and patches */
         const QString host = m_tmp.filePath("e2e/host");
@@ -577,6 +707,11 @@ echo "vitrine-build: built: /nowhere"
         QVERIFY(QFileInfo::exists(first.prefix + "/share/qemu/qemu-options.hx"));
         QVERIFY(QFileInfo::exists(work + "/src/qemu/MARK"));
         QVERIFY(QFileInfo::exists(work + "/src/virglrenderer/MARK"));
+        /* the subproject, downloaded with the sources, its patch files in */
+        const QString sub = work + "/src/qemu/subprojects/keycodemapdb";
+        QCOMPARE(read(sub + "/README"), "v1\n");
+        QCOMPARE(read(sub + "/meson.build"), "pf1\n");
+        QVERIFY(write(sub + "/KEPT", "\n"));
         /* the run path build.sh checked */
         const QString dynamic = run("readelf", {"-d", first.qemuBinary()});
         QVERIFY2(dynamic.contains("RUNPATH") && dynamic.contains("[" + first.prefix + "/lib64]"),
@@ -608,6 +743,8 @@ echo "vitrine-build: built: /nowhere"
         QFile mark(work + "/src/qemu/MARK");
         QVERIFY(mark.open(QIODevice::ReadOnly));
         QCOMPARE(mark.readAll(), "two\n");
+        /* what the subproject comes from did not change: kept, not downloaded again */
+        QVERIFY(QFileInfo::exists(sub + "/KEPT"));
         /* the VMs running keep theirs */
         QVERIFY(StackBuilder::Build::read(first.prefix).isValid());
         QVERIFY(QFileInfo(first.qemuBinary()).isExecutable());
@@ -622,6 +759,79 @@ echo "vitrine-build: built: /nowhere"
         QVERIFY(!QFileInfo::exists(stack + '/' + StackBuilder::inputStamp(host).left(16)));
         QCOMPARE(StackBuilder::state(host, stack), StackBuilder::State::Outdated);
         QCOMPARE(built.size(), 3);
+
+        /* 5. into a prefix of the caller's, which is installed over */
+        QVERIFY(QFile::remove(host + "/patches/qemu/0002-broken.patch"));
+        const QString prefix = m_tmp.filePath("e2e/prefix");
+        const QString manifest = prefix + "/share/vitrine/stack.conf";
+        const auto buildInto = [&]() {
+            return run("bash", {host + "/build.sh", "--prefix", prefix, "--work", work, "-j", "4"},
+                       {}, &status);
+        };
+        QString out = buildInto();
+        QVERIFY2(status == 0 && out.contains("vitrine-build: built: " + prefix), qPrintable(out));
+        QVERIFY(StackBuilder::Build::read(prefix).isValid());
+        /* virglrenderer changed: QEMU's configure probes it again */
+        QVERIFY(write(host + "/patches/virglrenderer/0001-mark.patch",
+                      QString(newFile).arg("MARK", "virgl two").toUtf8()));
+        out = buildInto();
+        QVERIFY2(status == 0 && !out.contains("configured already"), qPrintable(out));
+        const QString built2 = StackBuilder::Build::read(prefix).stamp;
+        /* failed half-way: no manifest, nothing taken for complete */
+        QVERIFY(write(host + "/patches/qemu/0002-broken.patch",
+                      "--- a/nothing\n+++ b/nothing\n@@ -1 +1 @@\n-a\n+b\n"));
+        out = buildInto();
+        QVERIFY2(status != 0 && out.contains("does not apply"), qPrintable(out));
+        QVERIFY(!QFileInfo::exists(manifest));
+        QVERIFY(QFile::remove(host + "/patches/qemu/0002-broken.patch"));
+        out = buildInto();
+        QVERIFY2(status == 0 && !out.contains("up to date"), qPrintable(out));
+        QCOMPARE(StackBuilder::Build::read(prefix).stamp, built2);
+
+        /* 6. the subproject follows what it comes from */
+        const auto buildOk = [&]() {
+            output.clear();
+            const QString error = build(b, 300000);
+            return error.isEmpty() ? QString() : error + "\n" + log(output);
+        };
+        /* its patch files, changed by a patch */
+        QVERIFY(write(host + "/patches/qemu/0002-packagefiles.patch",
+                      "diff --git a/subprojects/packagefiles/keycodemapdb/meson.build "
+                      "b/subprojects/packagefiles/keycodemapdb/meson.build\n"
+                      "--- a/subprojects/packagefiles/keycodemapdb/meson.build\n"
+                      "+++ b/subprojects/packagefiles/keycodemapdb/meson.build\n"
+                      "@@ -1 +1 @@\n-pf1\n+pf2\n"));
+        QString failure = buildOk();
+        QVERIFY2(failure.isEmpty(), qPrintable(failure));
+        QCOMPARE(read(sub + "/meson.build"), "pf2\n");
+        QVERIFY(!QFileInfo::exists(sub + "/KEPT"));
+        /* its revision, in a new QEMU commit */
+        QVERIFY(write(subRepo + "/README", "v2\n"));
+        git(subRepo, {"commit", "-q", "-am", "second"});
+        QVERIFY(write(qemuRepo + "/subprojects/keycodemapdb.wrap", wrap()));
+        git(qemuRepo, {"commit", "-q", "-am", "new keycodemapdb"});
+        QVERIFY(write(host + "/versions.conf", versions()));
+        failure = buildOk();
+        QVERIFY2(failure.isEmpty(), qPrintable(failure));
+        QCOMPARE(read(sub + "/README"), "v2\n");
+        QCOMPARE(read(sub + "/meson.build"), "pf2\n");
+        /* a download cut short, then a build of other inputs: downloaded again */
+        QVERIFY(QDir(sub).removeRecursively());
+        QVERIFY(QDir().mkpath(sub + "/.git"));
+        QVERIFY(QFile::remove(work + "/src/qemu.subprojects"));
+        QVERIFY(write(host + "/patches/virglrenderer/0001-mark.patch",
+                      QString(newFile).arg("MARK", "virgl three").toUtf8()));
+        failure = buildOk();
+        QVERIFY2(failure.isEmpty(), qPrintable(failure));
+        QCOMPARE(read(sub + "/README"), "v2\n");
+        /* nothing else of the last build stays in the sources: nested repositories neither */
+        QVERIFY(QDir().mkpath(work + "/src/qemu/subprojects/stale/.git"));
+        QVERIFY(write(host + "/patches/qemu/0001-mark.patch",
+                      QString(newFile).arg("MARK", "three").toUtf8()));
+        failure = buildOk();
+        QVERIFY2(failure.isEmpty(), qPrintable(failure));
+        QVERIFY(!QFileInfo::exists(work + "/src/qemu/subprojects/stale"));
+        QCOMPARE(read(sub + "/README"), "v2\n");
     }
 };
 

@@ -127,6 +127,19 @@ private slots:
             {"-display none\n", Screen::None},
             {"-display egl-headless\n", Screen::None},
             {"-display sdl\n-nographic\n", Screen::None},
+            /* p2p as QEMU reads booleans */
+            {"-display dbus,p2p=true\n", Screen::Embedded},
+            {"-display dbus,p2p=y\n", Screen::Embedded},
+            {"-display dbus,p2p=n\n", Screen::None},
+            /* QEMU opens no window of its own beside a remote display */
+            {"-vnc :0\n", Screen::None},
+            {"-spice port=5900\n", Screen::None},
+            {"-display vnc=:0\n", Screen::None},
+            {"-display default\n-vnc :0\n", Screen::None},
+            {"-display sdl\n-vnc :0\n", Screen::OwnWindow},
+            {"-display sdl\n-display vnc=:0\n", Screen::OwnWindow},
+            {"-display default\n", Screen::OwnWindow},
+            {"-daemonize\n", Screen::OwnWindow},
         };
         for (const auto &[args, expected] : cases) {
             QVERIFY2(screen(ArgsFile::parse(args)) == expected, args);
@@ -160,6 +173,26 @@ private slots:
         a = ArgsFile::parse("-device qxl-vga\n-device virtio-gpu-pci\n-display gtk\n");
         setScreen(a, Screen::Embedded);
         QCOMPARE(text(a), "-device qxl-vga\n-device virtio-gpu-pci\n-display dbus,p2p=yes\n");
+
+        /* VNC alone: a window beside it; a -display vnc= stays as it is */
+        a = ArgsFile::parse("-vnc :0\n");
+        setScreen(a, Screen::OwnWindow);
+        QCOMPARE(text(a), "-vnc :0\n-display sdl\n");
+        QVERIFY(screen(a) == Screen::OwnWindow);
+        a = ArgsFile::parse("-display sdl\n-display vnc=:0\n");
+        setScreen(a, Screen::Embedded);
+        QCOMPARE(text(a), "-display dbus,p2p=yes\n-display vnc=:0\n");
+
+        /* a D-Bus display on a bus of its own: QEMU refuses addr= with p2p= */
+        a = ArgsFile::parse("-display dbus,addr=unix:path=/run/user/1000/qemu.bus\n");
+        QVERIFY(screen(a) == Screen::None);
+        setScreen(a, Screen::Embedded);
+        QCOMPARE(text(a), "-display dbus,p2p=yes\n");
+        QVERIFY(screen(a) == Screen::Embedded);
+        a = ArgsFile::parse("-device virtio-vga-gl\n-display dbus,addr=unix:path=/x,p2p=yes\n");
+        QVERIFY(screen(a) == Screen::None);
+        setScreen(a, Screen::Embedded);
+        QCOMPARE(text(a), "-device virtio-vga-gl\n-display dbus,p2p=yes,gl=on\n");
     }
 
     void readNetwork()
@@ -213,6 +246,91 @@ private slots:
         }
     }
 
+    /* An existing image's format from its first bytes, not its name */
+    void imageFormats()
+    {
+        QTemporaryDir dir;
+        const auto image = [&dir](const QString &name, const QByteArray &head) {
+            QFile f(dir.filePath(name));
+            if (!f.open(QIODevice::WriteOnly) || f.write(head + QByteArray(512, '\0')) < 0) {
+                return QString();
+            }
+            return dir.filePath(name);
+        };
+        const QString cloud = image("jammy-server-cloudimg-amd64.img", QByteArray("QFI\xfb\0\0\0\3"));
+
+        QCOMPARE(imageFormat(cloud), "qcow2");
+        QCOMPARE(imageFormat(image("plain.img", {})), "raw");
+        QCOMPARE(imageFormat(image("disk.vmdk", "KDMV")), "vmdk");
+        QCOMPARE(imageFormat(image("disk", "vhdxfile")), "vhdx");
+        QCOMPARE(imageFormat(image("disk.bin", QByteArray(0x40, 'x') + "\x7f\x10\xda\xbe")), "vdi");
+        /* a raw disk's start is the guest's */
+        QCOMPARE(imageFormat(image("guest.raw", "QFI\xfb")), "raw");
+        /* by name: relative to the VM folder, or not there yet */
+        QCOMPARE(imageFormat("disk.qcow2"), "qcow2");
+        QCOMPARE(imageFormat("/nonexistent/disk.img"), "raw");
+
+        ArgsFile a = ArgsFile::parse("-m 1G\n");
+        addDisk(a, cloud, Disk::Virtio);
+        QCOMPARE(text(a), "-m 1G\n-drive file=" + cloud + ",format=qcow2,if=virtio,discard=unmap\n");
+    }
+
+    /* Where the SSH forward listens */
+    void sshAddresses()
+    {
+        const auto address = [](const char *args) {
+            return network(ArgsFile::parse(args)).sshAddress;
+        };
+
+        QCOMPARE(address("-nic user,hostfwd=tcp::2222-:22\n"), "");
+        QCOMPARE(address("-nic user,hostfwd=tcp:127.0.0.1:2222-:22\n"), "127.0.0.1");
+        QCOMPARE(address("-nic user,hostfwd=tcp:192.168.1.5:2222-:22\n"), "192.168.1.5");
+        QCOMPARE(address("-nic user,hostfwd=tcp:[::1]:2222-:22\n"), "[::1]");
+        QCOMPARE(network(ArgsFile::parse("-nic user,hostfwd=tcp:[::1]:2222-:22\n")).sshPort, 2222);
+        QCOMPARE(address("-nic passt,tcp-ports=10022:22\n"), "");
+        QCOMPARE(address("-nic passt,tcp-ports=127.0.0.1/10022:22\n"), "127.0.0.1");
+        QCOMPARE(address("-nic passt,tcp-ports=%eth0/10022:22\n"), "%eth0");
+
+        QVERIFY(isLoopback("127.0.0.1"));
+        QVERIFY(isLoopback("127.0.0.2%lo"));
+        QVERIFY(isLoopback("[::1]"));
+        QVERIFY(isLoopback("::1"));
+        QVERIFY(!isLoopback(""));
+        QVERIFY(!isLoopback("0.0.0.0"));
+        QVERIFY(!isLoopback("192.168.1.5"));
+        QVERIFY(!isLoopback("%eth0"));
+    }
+
+    /* The ports to keep clear of for another VM's forward */
+    void forwardedHostPorts()
+    {
+        const auto ports = [](const char *args) {
+            return forwardedPorts(ArgsFile::parse(args));
+        };
+
+        QCOMPARE(ports("-m 1G\n"), QList<int>());
+        /* the forward the Network page follows, and the others */
+        QCOMPARE(ports("-netdev user,id=n0,hostfwd=tcp:127.0.0.1:2222-:22,hostfwd=::8080-:80,"
+                       "hostfwd=udp::5353-:53,hostfwd=tcp:[::1]:2223-:22\n"
+                       "-device e1000e,netdev=n0\n"),
+                 QList<int>({2222, 8080, 2223}));
+        /* two networks, which the page leaves to the Arguments page */
+        QCOMPARE(ports("-netdev passt,id=n0,tcp-ports=127.0.0.1/10022:22\n"
+                       "-device virtio-net-pci,netdev=n0\n"
+                       "-netdev user,id=n1\n-device e1000e,netdev=n1\n"),
+                 QList<int>({10022}));
+        /* passt's lists and ranges, as QemuOpts escapes commas */
+        QCOMPARE(ports("-nic passt,tcp-ports=%eth0/10030-10032:30-32,,~10031,,all,udp-ports=10040\n"),
+                 QList<int>({10030, 10031, 10032, 10031}));
+        /* in JSON, and the legacy -net */
+        QCOMPARE(ports("-netdev {\"type\":\"passt\",\"id\":\"n0\","
+                       "\"tcp-ports\":[{\"str\":\"127.0.0.1/10050:22\"}]}\n"
+                       "-netdev {\"type\":\"user\",\"id\":\"n1\","
+                       "\"hostfwd\":[{\"str\":\"tcp::10051-:80\"}]}\n"
+                       "-net user,hostfwd=tcp::10052-:22\n"),
+                 QList<int>({10050, 10051, 10052}));
+    }
+
     void setNetworks()
     {
         const QString passt = "-m 1G\n"
@@ -261,16 +379,26 @@ private slots:
         setNetwork(a, n);
         QCOMPARE(text(a), "-nic none\n-m 1G\n");
 
-        /* with shared memory, passt maps it; a Windows guest gets e1000e */
-        a = ArgsFile::parse("#guest windows\n-machine q35,memory-backend=mem\n"
-                            "-object memory-backend-memfd,id=mem,size=4G,share=on\n-nic none\n");
+        /* with shared memory, passt maps it for a virtio-net card */
+        const QString shared = "-machine q35,memory-backend=mem\n"
+                               "-object memory-backend-memfd,id=mem,size=4G,share=on\n";
+        a = ArgsFile::parse(shared + "-nic none\n");
         n = network(a);
         n.kind = Network::Nat;
         n.backend = "passt";
         setNetwork(a, n);
-        QCOMPARE(text(a), "#guest windows\n-machine q35,memory-backend=mem\n"
-                          "-object memory-backend-memfd,id=mem,size=4G,share=on\n"
-                          "-netdev passt,id=net0,vhost-user=on\n-device e1000e,netdev=net0\n");
+        QCOMPARE(text(a), shared + "-netdev passt,id=net0,vhost-user=on\n"
+                                   "-device virtio-net-pci,netdev=net0\n");
+        /* but not for Windows' e1000e: QEMU refuses vhost-user with other cards */
+        a = ArgsFile::parse("#guest windows\n" + shared + "-nic none\n");
+        setNetwork(a, n);
+        QCOMPARE(text(a), "#guest windows\n" + shared +
+                              "-netdev passt,id=net0\n-device e1000e,netdev=net0\n");
+        a = ArgsFile::parse(shared + "-nic none\n");
+        n.card = "e1000e";
+        setNetwork(a, n);
+        QCOMPARE(text(a), shared + "-netdev passt,id=net0\n-device e1000e,netdev=net0\n");
+        n.card.clear();
 
         /* QEMU's default card: off, or a card of our own for a forward */
         a = ArgsFile::parse("-m 1G\n");

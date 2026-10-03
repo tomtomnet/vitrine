@@ -3,6 +3,7 @@
 
 #include <QDir>
 #include <QRegularExpression>
+#include <QSet>
 
 #include <arpa/inet.h>
 #include <netinet/in.h>
@@ -264,15 +265,29 @@ Cpus cpus(const ArgsFile &args)
     const int cpu = args.indexOf("cpu");
 
     if (smp >= 0) {
+        /* QEMU's other levels; 1 changes nothing */
+        static const char *const levels[] = {"drawers", "books", "dies", "clusters", "modules"};
         const OptionValue v = args.valueAt(smp);
         const QString count = v.implied().isEmpty() ? v.get("cpus") : v.implied();
+        const int maxCpus = v.get("maxcpus").toInt();
+        int others = 1;
 
         c.sockets = v.get("sockets").toInt();
         c.cores = v.get("cores").toInt();
         c.threads = v.get("threads").toInt();
+        c.custom = v.has("maxcpus");
+        for (const char *level : levels) {
+            if (v.has(level)) {
+                const int n = v.get(level).toInt();
+                others *= qMax(n, 1);
+                c.custom = c.custom || n != 1;
+            }
+        }
         c.count = count.toInt();
         if (c.count <= 0) {
-            c.count = qMax(c.sockets, 1) * qMax(c.cores, 1) * qMax(c.threads, 1);
+            c.count = maxCpus > 0 ? maxCpus
+                                  : others * qMax(c.sockets, 1) * qMax(c.cores, 1) *
+                                        qMax(c.threads, 1);
         }
     }
     if (cpu >= 0) {
@@ -311,26 +326,61 @@ static void setSmp(ArgsFile &args, const Cpus &c)
     args.setValueAt(smp, v);
 }
 
-void setCpus(ArgsFile &args, const Cpus &c)
+Cpus derivedTopology(const Cpus &c)
 {
-    int cpu = args.indexOf("cpu");
+    /* hw/core/machine-smp.c, machine_parse_smp_config(), prefer_sockets off */
+    Cpus d = c;
+    const int n = c.count;
 
-    setSmp(args, c);
-    if (c.model.isEmpty()) {
+    if (d.cores <= 0) {
+        d.sockets = qMax(d.sockets, 1);
+        d.threads = qMax(d.threads, 1);
+        d.cores = n / (d.sockets * d.threads);
+    } else if (d.sockets <= 0) {
+        d.threads = qMax(d.threads, 1);
+        d.sockets = n / (d.cores * d.threads);
+    }
+    if (d.threads <= 0) {
+        d.threads = n / (d.sockets * d.cores);
+    }
+    if (d.sockets <= 0 || d.cores <= 0 || d.threads <= 0 ||
+        d.sockets * d.cores * d.threads != n) {
+        /* QEMU refuses such a line: what it says, at least */
+        d.sockets = qMax(c.sockets, 1);
+        d.cores = qMax(c.cores, 1);
+        d.threads = qMax(c.threads, 1);
+    }
+    return d;
+}
+
+void setCpuModel(ArgsFile &args, const QString &model)
+{
+    const int cpu = args.indexOf("cpu");
+
+    if (model.isEmpty()) {
         args.removeAll("cpu");
     } else if (cpu < 0) {
-        args.add("cpu", c.model);
+        args.add("cpu", model);
     } else {
         OptionValue m = args.valueAt(cpu);
-        m.setImplied(c.model);
+        m.setImplied(model);
         args.setValueAt(cpu, m);
     }
+}
+
+void setCpus(ArgsFile &args, const Cpus &c)
+{
+    setSmp(args, c);
+    setCpuModel(args, c.model);
 }
 
 void setCpuCount(ArgsFile &args, int count)
 {
     Cpus c = cpus(args);
 
+    if (c.custom) {
+        return;
+    }
     if (c.sockets > 0 || c.cores > 0 || c.threads > 0) {
         int threads = qMax(c.threads, 1);
         int sockets = qMax(c.sockets, 1);
@@ -662,8 +712,11 @@ static bool portFree(int port)
 
 int freePort(const QList<int> &taken, int from)
 {
+    /* passt's ranges can make it long */
+    const QSet<int> used(taken.cbegin(), taken.cend());
+
     for (int port = qMax(from, 1024); port < 65536; port++) {
-        if (!taken.contains(port) && portFree(port)) {
+        if (!used.contains(port) && portFree(port)) {
             return port;
         }
     }

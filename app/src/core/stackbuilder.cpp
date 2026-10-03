@@ -9,12 +9,15 @@
 #include <QPointer>
 #include <QProcess>
 #include <QRegularExpression>
+#include <QSet>
 #include <QStandardPaths>
 #include <QThread>
 #include <QTimer>
 
 #include <algorithm>
 #include <csignal>
+#include <fcntl.h>
+#include <sys/file.h>
 #include <sys/types.h>
 #include <unistd.h>
 
@@ -205,7 +208,8 @@ StackBuilder::Versions StackBuilder::versions(const QString &hostDir)
 /*
  * As build.sh: the sha256 of the lines that sha256sum prints for
  * versions.conf, build.sh, then the *.patch files of patches/qemu and of
- * patches/virglrenderer, each folder in C order
+ * patches/virglrenderer, each folder in C order.  Matched with case, as
+ * bash's glob is: a .PATCH file is none.
  */
 QString StackBuilder::inputStamp(const QString &hostDir)
 {
@@ -218,7 +222,8 @@ QString StackBuilder::inputStamp(const QString &hostDir)
     for (const char *name : {"qemu", "virglrenderer"}) {
         const QString component = QString::fromLatin1(name);
         QStringList patches = QDir(hostDir + "/patches/" + component)
-                                  .entryList({"*.patch"}, QDir::Files, QDir::NoSort);
+                                  .entryList({"*.patch"}, QDir::Files | QDir::CaseSensitive,
+                                             QDir::NoSort);
         std::sort(patches.begin(), patches.end());
         for (const QString &patch : std::as_const(patches)) {
             files << "patches/" + component + '/' + patch;
@@ -265,6 +270,58 @@ StackBuilder::State StackBuilder::state(const QString &hostDir, const QString &s
 StackBuilder::State StackBuilder::state()
 {
     return state(hostDir(), Paths::stackDir());
+}
+
+QStringList StackBuilder::prune(const QString &stackDir, const QStringList &keep)
+{
+    static const QRegularExpression stampFolder("^[0-9a-f]{16}$");
+    const QString stack = QFileInfo(stackDir).canonicalFilePath();
+    QSet<QString> needed;
+    QStringList removed;
+
+    if (stack.isEmpty()) {
+        return {};
+    }
+    /* build.sh's: no build makes a prefix meanwhile, nor switches `current` */
+    const int lock = ::open(QFile::encodeName(stack + "/.lock").constData(),
+                            O_WRONLY | O_CREAT | O_CLOEXEC, 0644);
+    if (lock < 0) {
+        return {};
+    }
+    if (::flock(lock, LOCK_EX | LOCK_NB) != 0) {
+        ::close(lock);
+        return {};
+    }
+    /* the folder of the stack @path is in, if any */
+    const auto folderOf = [&stack](const QString &path) {
+        const QString canonical = QFileInfo(path).canonicalFilePath();
+        return canonical.startsWith(stack + '/')
+                   ? canonical.mid(stack.size() + 1).section('/', 0, 0) : QString();
+    };
+    needed << folderOf(stack + "/current");
+    for (const QString &binary : keep) {
+        needed << folderOf(binary);
+    }
+    /*
+     * What runs, by argv[0]: VmRunner starts QEMU by the path of its build,
+     * and /proc/PID/exe of a QEMU with file capabilities is not readable;
+     * a QEMU keeps loading modules and firmware from its prefix
+     */
+    for (const QString &pid : QDir("/proc").entryList(QDir::Dirs | QDir::NoDotAndDotDot)) {
+        QFile cmdline("/proc/" + pid + "/cmdline");
+        if (pid.front().isDigit() && cmdline.open(QIODevice::ReadOnly)) {
+            needed << folderOf(QString::fromLocal8Bit(cmdline.readAll().split('\0').value(0)));
+        }
+    }
+    for (const QString &name : QDir(stack).entryList(QDir::Dirs | QDir::NoDotAndDotDot)) {
+        if (stampFolder.match(name).hasMatch() && !needed.contains(name) &&
+            QDir(stack + '/' + name).removeRecursively()) {
+            removed << stack + '/' + name;
+        }
+    }
+    ::flock(lock, LOCK_UN);
+    ::close(lock);
+    return removed;
 }
 
 int StackBuilder::defaultJobs()
@@ -323,6 +380,8 @@ void StackBuilder::start()
     m_warnings.clear();
     m_error.clear();
     m_prefix.clear();
+    m_stack = stack;
+    m_before = current(stack).prefix;
 
     if (!isHostDir(host)) {
         m_error = tr("This installation of Vitrine has no host/build.sh to build its QEMU with");
@@ -441,6 +500,22 @@ void StackBuilder::done(int code, bool crashed)
     m_process = nullptr;
     m_pid = 0;
 
+    /*
+     * By what was done: a build that switched `current` is the VMs' QEMU
+     * now, even if a Stop came too late to keep it from it (build.sh
+     * holds the stack's lock, so no other build switched it); one that
+     * ended well is, even if Stop came after it did
+     */
+    const Build now = current(m_stack);
+    if (now.isValid() && now.prefix != m_before) {
+        m_cancelled = false;
+        emit built(now.qemuBinary());
+        emit finished({});
+        return;
+    }
+    if (code == 0 && !crashed && Build::read(m_prefix).isValid()) {
+        m_cancelled = false;
+    }
     if (m_cancelled) {
         emit finished(tr("Stopped"));
         return;

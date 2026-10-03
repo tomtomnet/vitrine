@@ -137,8 +137,8 @@ target_link_libraries(vitrine_vmview
 # come with Qt6::Gui and GL entry points are resolved at run time
 target_compile_definitions(vitrine_vmview PRIVATE QT_NO_KEYWORDS)
 
-qt_add_executable(vitrine
-    src/main.cpp
+# The windows, a library of their own so that tests can use them
+qt_add_library(vitrine_ui STATIC
     src/ui/argseditor.cpp
     src/ui/argseditor.h
     src/ui/banner.cpp
@@ -198,9 +198,15 @@ qt_add_executable(vitrine
     src/ui/widgets.cpp
     src/ui/widgets.h
 )
+target_link_libraries(vitrine_ui PUBLIC vitrine_core vitrine_vmview Qt6::DBus Qt6::Widgets)
+target_compile_options(vitrine_ui PRIVATE -Wall -Wextra)
+
+qt_add_executable(vitrine
+    src/main.cpp
+)
 qt_add_resources(vitrine icons PREFIX /icons BASE data
     FILES data/vitrine.svg)
-target_link_libraries(vitrine PRIVATE vitrine_core vitrine_vmview Qt6::DBus Qt6::Widgets)
+target_link_libraries(vitrine PRIVATE vitrine_ui)
 target_compile_definitions(vitrine PRIVATE VITRINE_VERSION="${PROJECT_VERSION}")
 
 # The commit it is built from, for the update check; none outside a git checkout
@@ -224,7 +230,7 @@ if(GIT_FOUND AND IS_DIRECTORY "${CMAKE_SOURCE_DIR}/.git")
 endif()
 # rewritten only when it changes: only what includes it builds again
 configure_file(src/buildinfo.h.in buildinfo.h @ONLY)
-target_include_directories(vitrine PRIVATE "${CMAKE_CURRENT_BINARY_DIR}")
+target_include_directories(vitrine_ui PRIVATE "${CMAKE_CURRENT_BINARY_DIR}")
 target_compile_options(vitrine PRIVATE -Wall -Wextra)
 
 include(GNUInstallDirs)
@@ -236,6 +242,22 @@ install(FILES data/vitrine.svg
 
 if(BUILD_TESTING)
     find_package(Qt6 REQUIRED COMPONENTS Test)
+    # Each test runs with a home of its own: Qt's test mode puts the settings
+    # in ~/.qttest, one file for every test, which ctest -j runs side by side
+    # (one test's reset or qemu/binary would be another's mid-run).  And with
+    # a runtime folder of its own, short and out of the build tree, which
+    # Qt creates (0700): the sockets of the VMs the tests start go there, and
+    # must fit in sun_path (107 bytes) wherever the build tree is; one per
+    # build tree, as builds in several worktrees may test at once.
+    execute_process(COMMAND id -u OUTPUT_VARIABLE uid OUTPUT_STRIP_TRAILING_WHITESPACE)
+    string(SHA1 tree "${CMAKE_BINARY_DIR}")
+    string(SUBSTRING "${tree}" 0 8 tree)
+    function(vitrine_test_env name)
+        set(home ${CMAKE_CURRENT_BINARY_DIR}/test-home/${name})
+        file(MAKE_DIRECTORY ${home})
+        set_property(TEST ${name} APPEND PROPERTY ENVIRONMENT
+            "HOME=${home}" "XDG_RUNTIME_DIR=/tmp/vitrine-test-${uid}-${tree}-${name}" ${ARGN})
+    endfunction()
     foreach(name
             argsfile
             diskinfo
@@ -264,12 +286,16 @@ if(BUILD_TESTING)
         qt_add_executable(test_${name} tests/test_${name}.cpp)
         target_link_libraries(test_${name} PRIVATE vitrine_core Qt6::Test)
         add_test(NAME ${name} COMMAND test_${name})
-        # a home of its own: Qt's test mode puts the settings in ~/.qttest,
-        # one file for every test, which ctest -j runs side by side (one
-        # test's reset or qemu/binary would be another's mid-run)
-        set(home ${CMAKE_CURRENT_BINARY_DIR}/test-home/${name})
-        file(MAKE_DIRECTORY ${home})
-        set_tests_properties(${name} PROPERTIES ENVIRONMENT "HOME=${home}")
+        vitrine_test_env(${name})
+    endforeach()
+    # the windows': widgets that are never shown, so no screen either
+    foreach(name
+            settingspages
+            stackbanner)
+        qt_add_executable(test_${name} tests/test_${name}.cpp)
+        target_link_libraries(test_${name} PRIVATE vitrine_ui Qt6::Test)
+        add_test(NAME ${name} COMMAND test_${name})
+        vitrine_test_env(${name} QT_QPA_PLATFORM=offscreen)
     endforeach()
     # the helper's test build on a fake tree, and its QEMU stand-in (helper/)
     target_compile_definitions(test_hostsettings PRIVATE
@@ -289,6 +315,6 @@ if(BUILD_TESTING)
     target_compile_options(test_vmview PRIVATE -Wall -Wextra)
     add_test(NAME vmview COMMAND test_vmview)
     # freed memory filled and not cached per thread: a use after free shows
-    set_tests_properties(vmview PROPERTIES ENVIRONMENT
+    vitrine_test_env(vmview
         "GLIBC_TUNABLES=glibc.malloc.tcache_count=0:glibc.malloc.perturb=165")
 endif()

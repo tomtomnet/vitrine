@@ -452,6 +452,73 @@ static QString inlineRst(const QString &text)
     return out;
 }
 
+/* What @binary prints for @args, kept for clean answers only */
+static QString probe(const QString &binary, const QStringList &args, QString *error)
+{
+    static QHash<QString, QString> cache;
+    const QFileInfo fi(binary);
+    const QString key = QString("%1|%2|%3|%4").arg(fi.canonicalFilePath(),
+                                                   QString::number(fi.lastModified().toMSecsSinceEpoch()),
+                                                   QString::number(fi.size()), args.join(' '));
+    QProcess p;
+
+    if (auto it = cache.constFind(key); it != cache.constEnd()) {
+        return *it;
+    }
+    if (!fi.isExecutable()) {
+        if (error) {
+            *error = QemuInfoLoader::tr("%1 is not an executable").arg(binary);
+        }
+        return {};
+    }
+    p.start(binary, args);
+    if (!p.waitForFinished(5000)) {
+        const QString why = p.error() == QProcess::FailedToStart
+                                ? p.errorString() : QemuInfoLoader::tr("no answer within 5 s");
+        p.kill();
+        p.waitForFinished(1000);
+        if (error) {
+            *error = why;
+        }
+        return {};
+    }
+    /* QEMU answers with status 0 for a device it lacks too */
+    if (p.exitStatus() != QProcess::NormalExit || p.exitCode() != 0) {
+        const QString err = QString::fromLocal8Bit(p.readAllStandardError()).trimmed();
+        if (error) {
+            *error = p.exitStatus() != QProcess::NormalExit ? QemuInfoLoader::tr("it crashed")
+                     : !err.isEmpty() ? err.section('\n', 0, 0)
+                                      : QemuInfoLoader::tr("exit status %1").arg(p.exitCode());
+        }
+        return {};
+    }
+    const QString out = QString::fromUtf8(p.readAllStandardOutput());
+    cache.insert(key, out);
+    return out;
+}
+
+QStringList QemuInfo::probeProperties(const QString &binary, const QString &device,
+                                      QString *error)
+{
+    QStringList names;
+
+    for (const QemuPropertyDoc &prop :
+         parsePropertyHelp(probe(binary, {"-device", device + ",help"}, error))) {
+        names << prop.name;
+    }
+    return names;
+}
+
+QStringList QemuInfo::probeList(const QString &binary, const QString &option, QString *error)
+{
+    QStringList names;
+
+    for (const QemuNamedDoc &item : parseListHelp(probe(binary, {'-' + option, "help"}, error))) {
+        names << item.name;
+    }
+    return names;
+}
+
 static bool isBullet(const QString &trimmed)
 {
     static const QRegularExpression enumerated("^\\d+\\. ");

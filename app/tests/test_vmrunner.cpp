@@ -243,6 +243,15 @@ private slots:
                           "-device virtio-gpu-gl-pci,x-vblank-swap-target-zc=0\n"),
                  "#guest linux,desktop=kde\n-device virtio-gpu-gl-pci,"
                  "x-vblank-swap-target-zc=0,x-vblank-swap-target=4500\n");
+        /* and those of -global, in either form, which QEMU would apply first */
+        QCOMPARE(computed("-device virtio-gpu-gl-pci\n"
+                          "-global virtio-gpu-gl-pci.x-vblank-swap-target=5000\n"),
+                 "-device virtio-gpu-gl-pci,x-vblank-swap-target-zc=3500\n"
+                 "-global virtio-gpu-gl-pci.x-vblank-swap-target=5000\n");
+        QCOMPARE(computed("-global driver=virtio-gpu-gl-device,property=x-vblank-swap-target-zc,"
+                          "value=0\n-device virtio-vga-gl\n"),
+                 "-global driver=virtio-gpu-gl-device,property=x-vblank-swap-target-zc,"
+                 "value=0\n-device virtio-vga-gl,x-vblank-swap-target=6000\n");
         /* a QEMU without them, or one whose properties are not known */
         QCOMPARE(computed("-device virtio-gpu-gl-pci,blob=on\n", {"blob"}),
                  "-device virtio-gpu-gl-pci,blob=on\n");
@@ -281,6 +290,34 @@ private slots:
                  QStringList({"-device", "virtio-gpu-gl-pci,blob=on"}));
     }
 
+    /* A QEMU that could not answer once, e.g. on a host short of memory, is
+       asked again; the run's log says what its card went without */
+    void failedProbesAreNotKept()
+    {
+        VmRunner runner(id, tmp.path());
+        const QByteArray once = tmp.filePath("answered-once").toUtf8();
+        const QString qemu = script("flaky-qemu", "case \"$2\" in\n"
+                                                  "*,help)\n"
+                                                  "  [ -e " + once + " ] || { : > " + once + "; "
+                                                  "echo 'out of memory' >&2; exit 1; }\n"
+                                                  "  echo 'virtio-gpu-gl-pci options:'\n"
+                                                  "  echo '  x-vblank-swap-target=<uint32>'\n"
+                                                  "  exit 0 ;;\n"
+                                                  "esac\n"
+                                                  "exit 1");
+        const ArgsFile args = ArgsFile::parse("#qemu " + qemu + "\n-device virtio-gpu-gl-pci\n");
+
+        QFile::remove(QString::fromUtf8(once));
+        runner.start(args);
+        QTRY_COMPARE(runner.state(), VmRunner::State::Stopped);
+        const QString log = read(runner.logPath());
+        QVERIFY2(log.contains("vitrine: cannot read the properties of virtio-gpu-gl-pci from " +
+                              qemu + " (out of memory)"),
+                 qPrintable(log));
+        QCOMPARE(runner.commandLine(args).mid(1, 2),
+                 QStringList({"-device", "virtio-gpu-gl-pci,x-vblank-swap-target=6000"}));
+    }
+
     /* QEMU's environment: the SDL window's settings, then #env */
     void environment()
     {
@@ -295,6 +332,27 @@ private slots:
                  QStringList());
         QCOMPARE(VmRunner::environment(ArgsFile::parse("-display gtk\n#env A=b\n")),
                  QStringList({"A=b"}));
+    }
+
+    /* The environment as the log and Show Command Line print it: a shell
+       must take it as assignments, with the values QEMU gets */
+    void environmentForAShell()
+    {
+        const QStringList env = VmRunner::environment(ArgsFile::parse(
+            "-display gtk\n#env PULSE_PROP=media.role=game application.name=vm\n"
+            "#env EMPTY=\n#env TILDE=~/x\n#env QUOTE=it's $HOME\n#env PLAIN=1\n"));
+        const QStringList assignments = VmRunner::shellAssignments(env);
+
+        QCOMPARE(assignments,
+                 QStringList({"PULSE_PROP='media.role=game application.name=vm'", "EMPTY=''",
+                              "TILDE='~/x'", "QUOTE='it'\\''s $HOME'", "PLAIN=1"}));
+        QProcess sh;
+        sh.start("/bin/sh", {"-c", assignments.join(' ') +
+                                       " printenv PULSE_PROP EMPTY TILDE QUOTE PLAIN"});
+        QVERIFY(sh.waitForFinished(10000));
+        QCOMPARE(sh.exitCode(), 0);
+        QCOMPARE(QString::fromUtf8(sh.readAllStandardOutput()),
+                 "media.role=game application.name=vm\n\n~/x\nit's $HOME\n1\n");
     }
 
     /* a share to mount: the port of the guest agent, unless the VM has its own */
@@ -394,13 +452,22 @@ private slots:
         QCOMPARE(runner->state(), VmRunner::State::Running);
         QCOMPARE(failed.size(), 0);
 
-        /* the manager quits, the VM runs on, the next manager finds it,
-           with the run's arguments whatever vm.args says by then */
+        /* the manager quits, the VM runs on, the next manager finds it, with
+           the arguments it runs with, whatever vm.args says now */
+        const ArgsFile edited = ArgsFile::parse("-display dbus,p2p=yes,gl=on\n");
         delete runner;
         runner = new VmRunner(id, tmp.path());
-        runner->attach(ArgsFile::parse("-m 1G\n-display sdl\n"));
+        runner->attach(edited);
         QTRY_COMPARE_WITH_TIMEOUT(runner->state(), VmRunner::State::Running, 10000);
         QCOMPARE(runner->runArgs().toText(), args.toText());
+        QCOMPARE(runner->displaySocket(), "");
+        /* one started by a vitrine that did not keep them: what it serves */
+        delete runner;
+        QVERIFY(QFile::remove(runDir + "/run.args"));
+        runner = new VmRunner(id, tmp.path());
+        runner->attach(edited);
+        QTRY_COMPARE_WITH_TIMEOUT(runner->state(), VmRunner::State::Running, 10000);
+        QCOMPARE(runner->displaySocket(), "");
         delete runner;
         runner = new VmRunner(id, tmp.path());
         QSignalSpy failed2(runner, &VmRunner::failed);
@@ -689,6 +756,44 @@ private slots:
         QCOMPARE(runner.state(), VmRunner::State::Stopped);
         QCOMPARE(failed.size(), 0);
         QTRY_VERIFY2(gone(helper), qPrintable(read(QString("/proc/%1/stat").arg(helper))));
+    }
+
+    /* The QEMU of a start is the one it began with, even if the preferences
+       or `current` change while virtiofsd starts */
+    void oneQemuPerStart()
+    {
+        VmRunner runner(id, tmp.path());
+        QSignalSpy failed(&runner, &VmRunner::failed);
+        const QByteArray go = tmp.filePath("go").toUtf8();
+        const QByteArray ran = tmp.filePath("ran").toUtf8();
+        const QString first = script("qemu-first", "echo first > " + ran);
+        const QString second = script("qemu-second", "echo second > " + ran);
+
+        QFile::remove(QString::fromUtf8(go));
+        QFile::remove(QString::fromUtf8(ran));
+        /* opens its "socket" when told to */
+        Paths::setVirtiofsd(script("waiting-virtiofsd",
+                                   "while [ ! -e " + go + " ]; do sleep 0.05; done\n"
+                                   ": >\"${1#--socket-path=}\"\n"
+                                   "while :; do sleep 0.1; done"));
+        Paths::setQemuBinary(first);
+        runner.start(ArgsFile::parse("-machine q35,memory-backend=mem\n"
+                                     "-object memory-backend-memfd,id=mem,size=128M\n"
+                                     "#share tag=t,path=" + tmp.path() + "\n"));
+        QCOMPARE(runner.state(), VmRunner::State::Starting);
+        Paths::setQemuBinary(second);
+        QFile f(QString::fromUtf8(go));
+        QVERIFY(f.open(QIODevice::WriteOnly));
+        f.close();
+
+        /* the stand-in ends at once: QEMU stopped */
+        QTRY_COMPARE_WITH_TIMEOUT(failed.size(), 1, 10000);
+        QCOMPARE(read(QString::fromUtf8(ran)).trimmed(), "first");
+        const QString log = read(runner.logPath());
+        QVERIFY2(log.section('\n', 0, 0).contains(first), qPrintable(log));
+        QVERIFY(!log.contains(second));
+        Paths::setQemuBinary(testQemu());
+        Paths::setVirtiofsd({});
     }
 
     void sharedFolder()

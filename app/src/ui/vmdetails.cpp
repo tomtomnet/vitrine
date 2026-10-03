@@ -18,7 +18,9 @@
 #include "core/diskinfo.h"
 #include "core/gpucontexts.h"
 #include "core/hostdevices.h"
+#include "core/paths.h"
 #include "core/qemuinfo.h"
+#include "core/stackbuilder.h"
 #include "core/vmconfig.h"
 #include "core/vmhardware.h"
 #include "core/vmrunner.h"
@@ -190,12 +192,23 @@ void VmDetails::refresh()
                 .arg(kGuestMesaGuide));
         m_contextsNote->show();
         break;
-    case GpuContexts::Status::NotOffered:
+    case GpuContexts::Status::NotOffered: {
+        /* a build would not help if the VM runs Vitrine's QEMU as host/ builds it */
+        const QString own = VmConfig::qemuBinary(m_vm->args());
+        const QString qemu = QFileInfo(own.isEmpty() ? Paths::qemuBinary() : own)
+                                 .canonicalFilePath();
+        const bool built = !qemu.isEmpty() && qemu == Paths::stackQemu() &&
+                           StackBuilder::state() == StackBuilder::State::UpToDate;
         m_contextsNote->setText(
-            tr("This computer offers the guest no DRM native context: the virglrenderer QEMU "
-               "uses has none for its GPU. File > Build QEMU builds one with native context."));
+            built ? tr("This computer offers the guest no DRM native context: Vitrine's QEMU has "
+                       "it for AMD GPUs, and for Intel GPUs on the i915 or Xe driver, and this "
+                       "computer's GPU is none of them.")
+                  : tr("This computer offers the guest no DRM native context: the virglrenderer "
+                       "QEMU uses has none for its GPU. File > Build QEMU builds Vitrine's QEMU, "
+                       "which has it for AMD GPUs, and for Intel GPUs on the i915 or Xe driver."));
         m_contextsNote->show();
         break;
+    }
     default:
         m_contextsNote->hide();
     }

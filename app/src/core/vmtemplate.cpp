@@ -2,6 +2,7 @@
 #include "vmtemplate.h"
 
 #include <QFile>
+#include <QFileInfo>
 #include <QStandardPaths>
 
 #include "core/hostdevices.h"
@@ -43,30 +44,58 @@ bool hasVga(const QString &arch)
     return !isArm(arch);
 }
 
-bool hasPasst(const QemuInfo *info)
+/* No QEMU to ask: vitrine's, which the user is to build */
+static bool noBinary(const QString &binary)
 {
+    return binary.isEmpty() || !QFileInfo(binary).isExecutable();
+}
+
+static bool isStackQemu(const QString &binary)
+{
+    const QString stack = Paths::stackQemu();
+    return !stack.isEmpty() && QFileInfo(binary).canonicalFilePath() == stack;
+}
+
+bool hasPasst(const QemuInfo *info, const QString &binary)
+{
+    QString error;
+
     if (QStandardPaths::findExecutable("passt").isEmpty()) {
         return false;
     }
-    if (!info) {
+    if (info) {
+        for (const QemuNamedDoc &netdev : info->netdevs) {
+            if (netdev.name == "passt") {
+                return true;
+            }
+        }
+        return false;
+    }
+    if (noBinary(binary)) {
         return true;
     }
-    for (const QemuNamedDoc &netdev : info->netdevs) {
-        if (netdev.name == "passt") {
-            return true;
-        }
-    }
-    return false;
+    const QStringList netdevs = QemuInfo::probeList(binary, "netdev", &error);
+    return error.isEmpty() ? netdevs.contains("passt") : isStackQemu(binary);
 }
 
-QStringList gpuProperties(const QemuInfo *info)
+std::optional<QStringList> gpuProperties(const QemuInfo *info, const QString &binary)
 {
+    static const QString card = "virtio-gpu-gl-pci";
     QStringList names;
+    QString error;
 
-    if (info) {
-        for (const QemuPropertyDoc &p : info->properties.value("virtio-gpu-gl-pci")) {
+    if (info && (info->properties.contains(card) || !info->device(card))) {
+        for (const QemuPropertyDoc &p : info->properties.value(card)) {
             names << p.name;
         }
+        return names;
+    }
+    if (noBinary(binary)) {
+        return std::nullopt;
+    }
+    names = QemuInfo::probeProperties(binary, card, &error);
+    if (!error.isEmpty() && isStackQemu(binary)) {
+        return std::nullopt;
     }
     return names;
 }
@@ -123,7 +152,7 @@ struct Writer {
  * following what the host's compositor needs.  Those of vitrine's QEMU
  * that @known lacks stay out, as QEMU refuses unknown properties.
  */
-static QString gpuDevice(const QStringList &known)
+static QString gpuDevice(const std::optional<QStringList> &known)
 {
     static const char *const properties[][2] = {
         {"hostmem", "4G"},
@@ -137,7 +166,7 @@ static QString gpuDevice(const QStringList &known)
     QString value = "virtio-gpu-gl-pci";
 
     for (const auto &p : properties) {
-        if (known.isEmpty() || known.contains(p[0])) {
+        if (!known || known->contains(p[0])) {
             value += QString(",%1=%2").arg(p[0], p[1]);
         }
     }
@@ -148,8 +177,8 @@ static QString gpuDevice(const QStringList &known)
 static void linuxPc(Writer &w, const Options &o,
                     const std::function<void(ArgsFile &)> &addFirmware)
 {
-    const bool nativeContext = o.gpuProperties.isEmpty() ||
-                               o.gpuProperties.contains("drm_native_context");
+    const bool nativeContext = !o.gpuProperties ||
+                               o.gpuProperties->contains("drm_native_context");
     int threads = o.threadsPerCore > 0 ? o.threadsPerCore : hostThreadsPerCore();
 
     if (o.cpus % threads != 0) {
@@ -189,7 +218,7 @@ static void linuxPc(Writer &w, const Options &o,
     if (!o.disk.isEmpty() || !o.iso.isEmpty()) {
         w.section("Storage");
         if (!o.disk.isEmpty()) {
-            const QString format = VmConfig::diskFormat(o.disk);
+            const QString format = VmConfig::imageFormat(o.disk);
             QString drive = "file=" + OptionValue::escape(o.disk);
 
             if (!format.isEmpty()) {
@@ -293,7 +322,7 @@ ArgsFile build(const Options &o, const std::function<void(ArgsFile &)> &addFirmw
     if (!o.disk.isEmpty() || !o.iso.isEmpty()) {
         section("Storage");
         if (!o.disk.isEmpty()) {
-            const QString format = VmConfig::diskFormat(o.disk);
+            const QString format = VmConfig::imageFormat(o.disk);
             QString value = "file=" + OptionValue::escape(o.disk);
 
             if (!format.isEmpty()) {

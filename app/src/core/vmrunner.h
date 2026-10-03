@@ -44,7 +44,8 @@ public:
     QStringList commandLine(const ArgsFile &args) const;
     /*
      * @args with the properties vitrine computes for the 3D card, those
-     * that @args leaves out and the card has in the VM's QEMU
+     * that @args leaves out (on the card's line, and with -global) and the
+     * card has in the VM's QEMU
      * (@propertiesOf a driver; empty when not known, and then none):
      * x-vblank-swap-target by the guest's desktop, 4500 us for KDE, 6000
      * otherwise; x-vblank-swap-target-zc 3500 us, 4500 in vitrine's window
@@ -57,9 +58,15 @@ public:
      */
     static QStringList environment(const ArgsFile &args);
     /*
+     * @environment (NAME=VALUE) as shell assignments before a command: the
+     * values quoted where needed, never the names, since a shell takes a
+     * quoted 'NAME=VALUE' for the name of the command
+     */
+    static QStringList shellAssignments(const QStringList &environment);
+    /*
      * The QMP socket of the VM's display, for the view to attach with
      * getfd + add_client: a monitor of its own, since the runner keeps the
-     * main one.  Empty unless the running VM shows in vitrine's window.
+     * main one.  Empty unless the running QEMU shows in vitrine's window.
      */
     QString displaySocket() const;
     /* The socket of the vitrine agent's port (guest tools), while active */
