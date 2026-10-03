@@ -272,8 +272,10 @@ checkout "$src/virglrenderer" "$VIRGL_URL" "$VIRGL_COMMIT" "${virgl_patches[@]}"
 
 begin "building virglrenderer"
 vbuild=$work/virglrenderer-build
+# native context for AMD GPUs, and Intel ones on the i915 or the Xe driver;
+# the msm and asahi renderers serve ARM hosts, which this x86_64 QEMU is not for
 vargs=(--prefix="$prefix" --libdir=lib64 --buildtype=debugoptimized
-	-Ddrm-renderers=amdgpu-experimental,xe-experimental -Dvideo=true -Dvenus=false)
+	-Ddrm-renderers=amdgpu-experimental,i915-experimental,xe-experimental -Dvideo=true -Dvenus=false)
 vline="$src/virglrenderer ${vargs[*]}"
 # configured afresh when the options change: the prefix does with each new stamp
 if [ ! -f "$vbuild/build.ninja" ] || ! configured "$vbuild" "$vline"; then

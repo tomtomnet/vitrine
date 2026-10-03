@@ -39,7 +39,8 @@ lib = shared_library('virglrenderer', 'virgl.c', version : '1.9.0', install : tr
 import('pkgconfig').generate(lib, name : 'virglrenderer', description : 'test')
 )";
 static const char kVirglOptions[] = R"(option('drm-renderers', type : 'array', value : [],
-       choices : ['amdgpu-experimental', 'xe-experimental'])
+       choices : ['amdgpu-experimental', 'i915-experimental', 'xe-experimental', 'msm',
+                  'asahi'])
 option('video', type : 'boolean', value : false)
 option('venus', type : 'boolean', value : false)
 )";

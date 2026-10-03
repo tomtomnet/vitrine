@@ -338,7 +338,9 @@ shows a warning when it draws through virgl.
   the Display settings adds them.
 - The host's virglrenderer needs the native context renderer of its GPU,
   which most distributions leave out. Vitrine builds its own with QEMU
-  (`host/build.sh`, which File > Build QEMU runs).
+  (`host/build.sh`, which File > Build QEMU runs), with the renderers of AMD
+  GPUs and of Intel GPUs on the i915 or Xe driver. Its QEMU is an x86_64
+  one: Qualcomm, Apple and Mali hosts need another QEMU and virglrenderer.
 - On AMD, that virglrenderer also carries a
   [write-combining patch](../host/patches/virglrenderer/0002-amdgpu-force-wc.patch):
   without it the guest's uploads stall, and KDE stutters however good its
