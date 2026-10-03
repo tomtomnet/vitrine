@@ -20,7 +20,8 @@ class VmStore;
  * kernel's fair server at 10 ms / 1 ms, a GPU clock floor on AMD APUs and
  * real-time QEMU threads.  They need root: vitrine-helper applies them,
  * started with pkexec when a VM starts.  Members of the vitrine group need
- * no password; polkit is asked first, without interaction, so that
+ * no password; polkit is asked first, without interaction, each time the
+ * helper starts (a membership given or taken meanwhile counts), so that
  * everyone else gets their VMs untuned and a word in the status bar once,
  * never a password dialog at each start.  The helper watches the QEMU
  * processes and puts everything back after the last one, crash included,
@@ -32,7 +33,8 @@ class HostSettings : public QObject
 
 public:
     /* Tunes for the VMs of @store as they start or are found running, and
-       gives each new build of vitrine's QEMU its capability */
+       gives vitrine's QEMU its capability: each new build, and one that
+       lacks it (built before the group was joined, or with tuning off) */
     explicit HostSettings(VmStore *store, QObject *parent = nullptr);
     /* Lets the helper go on alone: it keeps the settings while VMs run */
     ~HostSettings() override;
@@ -44,7 +46,8 @@ public:
     static QString gpuFloor();
     static void setGpuFloor(const QString &floor);
 
-    /* The installed helper; $VITRINE_HELPER names another one (tests) */
+    /* The installed helper, the one polkit's action names and the only one
+       pkexec runs; $VITRINE_HELPER names another for helperInstalled() (tests) */
     static QString helperPath();
     static bool helperInstalled();
     /* The calling user is in the vitrine group (the user database's view,
@@ -67,6 +70,12 @@ public:
 
     /* What a VM start does, for the QEMU @pid */
     void tune(qint64 pid);
+    /*
+     * The preferences changed (Preferences > Tune the host): applied to the
+     * VMs running now, not at the next start - off lets everything go,
+     * on or another GPU floor tunes each running VM again
+     */
+    void preferencesChanged();
 
     /*
      * Focus priority: the vCPUs of the VM in front - its console or
@@ -75,6 +84,9 @@ public:
      * every CPU at real-time priority.  A host window in front changes
      * nothing: the VM last in front keeps them.  Through QEMU's own
      * x-vcpu-priority, or the helper's rt where QEMU lacks CAP_SYS_NICE.
+     * A VM started later, or tuned again, goes behind once the helper's rt
+     * is done with it.  VMs in QEMU's own window (SDL) are left real-time:
+     * which window the desktop has in front is not known here.
      */
     void setFront(const QString &vmId);
     /* The app's (MainWindow makes it), for setFront(); null before */
@@ -98,10 +110,13 @@ signals:
     void helperFinished();
 
 private:
-    enum class Access { Unknown, Checking, Granted, Denied };
+    /* polkit's answer is not kept: Denied only when pkexec itself refused */
+    enum class Access { Unknown, Checking, Denied };
 
     void watchVm(Vm *vm);
     void vmStateChanged(Vm *vm);
+    /* @vm in front or behind, as m_front says */
+    void applyFront(Vm *vm);
     void start();
     void spawn(const QStringList &command);
     void readHelper();
@@ -109,7 +124,12 @@ private:
     void flush();
     void reap();
     void closeHelper();
-    void deny(const QString &why);
+    /* No helper for the VMs asked for: for this start only, or (@always)
+       for the rest of the run */
+    void deny(const QString &why, bool always = false);
+    /* grantCapability() for the stack's QEMU if it has none, once per run
+       and binary; @granted: polkit said yes just now */
+    void ensureCapability(bool granted = false);
     void say(const QString &text);
 
     VmStore *m_store;
@@ -120,6 +140,8 @@ private:
     QSet<qint64> m_expected;            // QEMUs asked to be watched, not ended
     Access m_access = Access::Unknown;
     QSet<QString> m_said;
+    QSet<QString> m_refusals;           // said by deny()
+    QSet<QString> m_capabilityTried;    // ensureCapability(): QEMUs asked for
     int m_restarts = 0;
 
     /* the helper: its stdin, stdout and stderr are one end of a socket pair */

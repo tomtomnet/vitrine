@@ -192,7 +192,8 @@ public:
 MainWindow::MainWindow(VmStore *store, QWidget *parent)
     : QMainWindow(parent), m_store(store), m_list(new QListWidget),
       m_right(new QStackedWidget), m_pane(new VmPane), m_details(m_pane->details()),
-      m_splitter(new QSplitter), m_qemuStatus(new QLabel), m_consoles(new QStackedWidget),
+      m_splitter(new QSplitter), m_qemuStatus(new QLabel), m_running(new QLabel),
+      m_consoles(new QStackedWidget),
       m_noConsole(new QWidget), m_input(new QLabel), m_perf(new PerfMonitor)
 {
     auto *welcome = new QWidget;
@@ -242,6 +243,10 @@ MainWindow::MainWindow(VmStore *store, QWidget *parent)
     m_input->setObjectName("input");
     m_input->setContentsMargins(0, 0, fontMetrics().averageCharWidth() * 3, 0);
     m_input->hide();
+    m_running->setObjectName("running");
+    m_running->setContentsMargins(0, 0, fontMetrics().averageCharWidth() * 3, 0);
+    m_running->hide();
+    statusBar()->addPermanentWidget(m_running);
     statusBar()->addPermanentWidget(m_input);
     statusBar()->addPermanentWidget(m_perf);
     statusBar()->addPermanentWidget(m_updates->button());
@@ -529,6 +534,7 @@ void MainWindow::stateChanged(Vm *vm, VmRunner::State state)
     if (state == VmRunner::State::Stopped) {
         /* for failed(), which follows */
         m_endedFrom[id] = m_states.value(id);
+        m_shutDownOnceUp.remove(id);
         /* the last of those the closing window waited for */
         if (m_closeAfter.remove(id) && m_closeAfter.isEmpty()) {
             QTimer::singleShot(0, this, &QWidget::close);
@@ -538,6 +544,13 @@ void MainWindow::stateChanged(Vm *vm, VmRunner::State state)
         m_errors.remove(id);
         if (state != VmRunner::State::Starting) {
             m_starting.remove(id);
+        }
+        /* the closing window waits for it to shut down, but it was starting
+           when asked, without QMP to ask it through: now */
+        if (m_shutDownOnceUp.contains(id) && state == VmRunner::State::Paused) {
+            vm->runner()->resume();
+        } else if (state == VmRunner::State::Running && m_shutDownOnceUp.remove(id)) {
+            vm->runner()->powerdown();
         }
     }
     m_states[id] = state;
@@ -739,6 +752,18 @@ VmConsole *MainWindow::currentConsole() const
 
 void MainWindow::consoleChanged(VmConsole *console)
 {
+    /*
+     * Focus priority: the VM whose screen has the keyboard - its console
+     * with the focus in the active window, or its full-screen window active
+     * - is in front, any console, selected or not.  Losing the keyboard to
+     * a host window changes nothing (HostSettings::setFront).  VMs in
+     * QEMU's own window are not followed.
+     */
+    const VmView *view = console->view();
+    HostSettings *host = HostSettings::instance();
+    if (view && view->hasKeyboard() && console->vm() && host) {
+        host->setFront(console->vm()->id());
+    }
     if (console == currentConsole()) {
         updateActions();
         updateInput();
@@ -754,7 +779,8 @@ void MainWindow::updateInput()
         m_input->hide();
         return;
     }
-    if (console->vm()->runner()->state() == VmRunner::State::Paused) {
+    if (!view->inputEnabled()) {
+        /* QEMU drops input: the keys go to the window (Resume) */
         m_input->setText(tr("Paused"));
     } else if (view->grabbed()) {
         m_input->setText(tr("The VM has the keyboard · Ctrl+Alt+G releases"));
@@ -881,12 +907,13 @@ void MainWindow::updateStatus()
             }
         }
         names.sort();
-        statusBar()->showMessage(tr("Waiting for %1 to shut down, then closing")
-                                     .arg(names.join(", ")));
+        m_running->setText(tr("Waiting for %1 to shut down, then closing")
+                               .arg(names.join(", ")));
+        m_running->show();
         return;
     }
-    statusBar()->showMessage(running == 0 ? QString()
-                                          : tr("%n running", nullptr, running));
+    m_running->setText(tr("%n running", nullptr, running));
+    m_running->setVisible(running > 0);
 }
 
 void MainWindow::newVm()
@@ -1142,13 +1169,14 @@ void MainWindow::closeEvent(QCloseEvent *event)
 
     /* asked again: what the user answers now goes */
     m_closeAfter.clear();
+    m_shutDownOnceUp.clear();
     updateStatus();
     if (!m_pane->confirmChanges(tr("Apply them before closing?"))) {
         event->ignore();
         return;
     }
     /* VMs outlive the window, but those shown in it go on without a screen */
-    QList<Vm *> shown;
+    QList<QPointer<Vm>> shown;
     QStringList names;
     for (Vm *each : m_store->vms()) {
         if (!each->runner()->displaySocket().isEmpty()) {
@@ -1179,23 +1207,47 @@ void MainWindow::closeEvent(QCloseEvent *event)
                      "and closes the window once they are off."));
         box->exec();
         if (box->clickedButton() == shutDown) {
+            /* as they are now: one may have stopped while the question was
+               open, and would never say Stopped again to close the window */
+            QString first;
             for (Vm *each : std::as_const(shown)) {
-                /* a paused guest would not see the button */
-                if (each->runner()->state() == VmRunner::State::Paused) {
-                    each->runner()->resume();
+                VmRunner *runner = each ? each->runner() : nullptr;
+                if (!runner || !runner->isActive()) {
+                    continue;
                 }
-                each->runner()->powerdown();
+                switch (runner->state()) {
+                case VmRunner::State::Paused:
+                    /* a paused guest would not see the button */
+                    runner->resume();
+                    runner->powerdown();
+                    break;
+                case VmRunner::State::Running:
+                    runner->powerdown();
+                    break;
+                case VmRunner::State::Starting:
+                    /* no QMP yet: once it runs (stateChanged()) */
+                    m_shutDownOnceUp.insert(each->id());
+                    break;
+                default:
+                    /* stopping already */
+                    break;
+                }
                 m_closeAfter.insert(each->id());
+                if (first.isEmpty()) {
+                    first = each->id();
+                }
             }
-            /* the guest may ask first, on its screen (KDE does): the window
-               stays until they are off */
-            select(shown.first()->id());
-            m_pane->setTab(VmPane::Console);
-            updateStatus();
-            event->ignore();
-            return;
-        }
-        if (box->clickedButton() != keep) {
+            if (!first.isEmpty()) {
+                /* the guest may ask first, on its screen (KDE does): the
+                   window stays until they are off */
+                select(first);
+                m_pane->setTab(VmPane::Console);
+                updateStatus();
+                event->ignore();
+                return;
+            }
+            /* all of them off meanwhile: the window closes now */
+        } else if (box->clickedButton() != keep) {
             event->ignore();
             return;
         }

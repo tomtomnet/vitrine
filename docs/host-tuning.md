@@ -34,12 +34,16 @@ sudo groupadd --system vitrine
 sudo usermod -aG vitrine "$USER"
 ```
 
-polkit sees the new membership at the next VM start (`id` lists it once
-you log in again). Preferences > Tune the host while VMs run turns it off
-again for you.
+vitrine asks polkit again before each start of the helper: the new
+membership counts from the next VM start, without restarting vitrine
+(`id` lists it once you log in again). Preferences > Tune the host while
+VMs run turns it off again for you, at once for the VMs running too (and
+on again, or another GPU clock floor, the same way).
 
 To take it back: `sudo gpasswd -d "$USER" vitrine` (and
-`sudo groupdel vitrine` when nobody is left in it).
+`sudo groupdel vitrine` when nobody is left in it). From the next VM start
+on, vitrine runs the VMs without these settings, without asking for a
+password.
 
 ## What the group allows
 
@@ -79,7 +83,9 @@ What this amounts to:
   capabilities. It sets the file's mode to 0700 first, so no one else can
   run it. Any write to the file drops the capability (the kernel does
   that): each build needs it again, and vitrine asks the helper after each
-  build.
+  build, and when it starts or tuning is turned on again if its QEMU lacks
+  it (built before you joined the group, say). A VM gets it at its next
+  start.
 
 Give the group to the people you would give real-time priority to.
 
@@ -88,14 +94,26 @@ Give the group to the people you would give real-time priority to.
 `cmake --install` puts the helper in `<prefix>/libexec/vitrine-helper`,
 the polkit action in `<prefix>/share/polkit-1/actions` and the rule for the
 group in `<prefix>/share/polkit-1/rules.d`. polkit reads only
-`/usr/share/polkit-1` (and `/etc/polkit-1/rules.d`), so install with
-`-DCMAKE_INSTALL_PREFIX=/usr`, or set `VITRINE_POLKIT_ACTIONS_DIR` and
-`VITRINE_POLKIT_RULES_DIR` to those folders. The action names the helper
-by its installed path.
+`/usr/share/polkit-1` (and `/etc/polkit-1/rules.d`), so configure with
+that prefix, or set `VITRINE_POLKIT_ACTIONS_DIR` and
+`VITRINE_POLKIT_RULES_DIR` to those folders:
+
+```
+cmake -B build -DCMAKE_INSTALL_PREFIX=/usr
+cmake --build build
+sudo cmake --install build
+```
+
+The action and the app name the helper by its installed path, fixed when
+configuring: `cmake --install --prefix` with another prefix is refused.
 
 ## When something looks wrong
 
 - `journalctl -t vitrine-helper` lists what the helper changed and put back.
+- "polkit wants a password here" for a member of the group: the rule
+  applies only in a local, active desktop session (not over ssh or
+  waypipe, not from a session switched away from), and only once
+  `49-vitrine.rules` is where polkit reads rules (see Installing).
 - Its state is in `/run/vitrine-helper` (root only; gone at the next boot).
   A helper that died while holding settings leaves its state there: the next
   helper puts them back when it starts. To do it now:

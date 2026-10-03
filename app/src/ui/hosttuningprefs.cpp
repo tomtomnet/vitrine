@@ -70,9 +70,16 @@ void HostTuningPrefs::update()
 void HostTuningPrefs::save() const
 {
     const QString floor = m_floor->currentData().toString();
+    const bool wasEnabled = HostSettings::enabled();
+    const QString wasFloor = HostSettings::gpuFloor();
 
     if (m_tune->isEnabled()) {
         HostSettings::setEnabled(m_tune->isChecked());
     }
     HostSettings::setGpuFloor(floor == "mhz" ? QString::number(m_mhz->value()) : floor);
+    /* for the VMs running now, not only the next ones */
+    HostSettings *running = HostSettings::instance();
+    if (running && (HostSettings::enabled() != wasEnabled || HostSettings::gpuFloor() != wasFloor)) {
+        running->preferencesChanged();
+    }
 }

@@ -264,11 +264,31 @@ if(BUILD_TESTING)
         qt_add_executable(test_${name} tests/test_${name}.cpp)
         target_link_libraries(test_${name} PRIVATE vitrine_core Qt6::Test)
         add_test(NAME ${name} COMMAND test_${name})
+        # a home of its own: Qt's test mode puts the settings in ~/.qttest,
+        # one file for every test, which ctest -j runs side by side (one
+        # test's reset or qemu/binary would be another's mid-run)
+        set(home ${CMAKE_CURRENT_BINARY_DIR}/test-home/${name})
+        file(MAKE_DIRECTORY ${home})
+        set_tests_properties(${name} PROPERTIES ENVIRONMENT "HOME=${home}")
     endforeach()
     # the helper's test build on a fake tree, and its QEMU stand-in (helper/)
     target_compile_definitions(test_hostsettings PRIVATE
         HELPER_FAKE="$<TARGET_FILE:vitrine-helper-fake>"
         FAKE_QEMU="$<TARGET_FILE:fake-qemu>"
+        VITRINE_HELPER_PATH="${VITRINE_HELPER_PATH}"
         TEST_WORK_DIR="${CMAKE_CURRENT_BINARY_DIR}/test-work")
     add_dependencies(test_hostsettings vitrine-helper-fake fake-qemu)
+    # the same stand-in, for QEMUs found running
+    target_compile_definitions(test_vmrunner PRIVATE FAKE_QEMU="$<TARGET_FILE:fake-qemu>")
+    add_dependencies(test_vmrunner fake-qemu)
+
+    # VmView against a stand-in for QEMU's display (QMP and D-Bus), offscreen
+    qt_add_executable(test_vmview tests/test_vmview.cpp)
+    target_link_libraries(test_vmview PRIVATE vitrine_vmview PkgConfig::GIO Qt6::Test Qt6::Widgets)
+    target_compile_definitions(test_vmview PRIVATE QT_NO_KEYWORDS)
+    target_compile_options(test_vmview PRIVATE -Wall -Wextra)
+    add_test(NAME vmview COMMAND test_vmview)
+    # freed memory filled and not cached per thread: a use after free shows
+    set_tests_properties(vmview PROPERTIES ENVIRONMENT
+        "GLIBC_TUNABLES=glibc.malloc.tcache_count=0:glibc.malloc.perturb=165")
 endif()

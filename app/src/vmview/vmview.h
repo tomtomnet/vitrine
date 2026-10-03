@@ -15,6 +15,7 @@
 #include "vmview/stats.h"
 
 class QLabel;
+class QTimer;
 class QWidget;
 class DBusDisplay;
 class DisplayWindow;
@@ -58,8 +59,16 @@ public:
     QString grabState() const;
     void setGrab(bool on);
     /* Whether the keys go to the guest: the screen has the focus in the
-       active window */
+       active window, and input is on */
     bool hasKeyboard() const;
+    /*
+     * Off while QEMU drops input (the VM paused): the screen then takes no
+     * keys, which go to the window's shortcuts instead (Resume among
+     * them), and lets go of those held and of the grab.  On by default.
+     * Full screen, the window still takes them: Ctrl+Alt+F brings it back.
+     */
+    void setInputEnabled(bool on);
+    bool inputEnabled() const;
     /* Gives the keyboard to the guest */
     void focus();
     void sendCtrlAltDel();
@@ -82,12 +91,15 @@ private:
     void createWindow(bool fullScreen);
     void destroyWindow();
     void updateHostActive();
+    /* What the render thread does with the guest's buffers while it does not draw */
+    void releaseUndrawn();
     /* grabChanged() if the grab changed: DisplayWindow does not signal the
        grab it takes or leaves itself (Ctrl+Alt+G, a click with a relative mouse) */
     void checkGrab();
 
     Options m_opts;
-    Stats m_stats;
+    /* on the heap: it outlives the view while D-Bus calls complete (detach) */
+    std::unique_ptr<Stats> m_stats;
     FrameMailbox m_mailbox;
     WaylandExtras *m_wayland = nullptr;
     DBusDisplay *m_dbus = nullptr;
@@ -99,6 +111,12 @@ private:
     QLabel *m_placeholder = nullptr;    // in m_host while full screen
     bool m_fullScreen = false;
     bool m_hasKeyboard = false;
+    bool m_inputEnabled = true;
+    /* releaseUndrawn() until the window is first exposed, or for good if
+       its render thread failed */
+    QTimer *m_undrawn = nullptr;
+    bool m_exposedOnce = false;
+    bool m_renderFailed = false;
     QString m_grabState;    // as last signalled
     /* what the guest said last, for a new window */
     QSize m_guestSize;

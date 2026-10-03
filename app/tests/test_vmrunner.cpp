@@ -3,6 +3,11 @@
 #include <QDir>
 #include <QFile>
 #include <QFileInfo>
+#include <QJsonDocument>
+#include <QJsonObject>
+#include <QLocalServer>
+#include <QLocalSocket>
+#include <QProcess>
 #include <QSignalSpy>
 #include <QStandardPaths>
 #include <QTemporaryDir>
@@ -44,6 +49,63 @@ static bool gone(qint64 pid)
     }
     return ::kill(pid_t(pid), 0) != 0 && errno == ESRCH;
 }
+
+/* QEMU's end of QMP: answers every command, query-status with @status;
+   events on demand */
+class FakeMonitor : public QObject
+{
+public:
+    explicit FakeMonitor(const QString &path)
+    {
+        QLocalServer::removeServer(path);
+        m_server.listen(path);
+        connect(&m_server, &QLocalServer::newConnection, this, [this]() {
+            QLocalSocket *peer = m_server.nextPendingConnection();
+            m_peers << peer;
+            connect(peer, &QLocalSocket::readyRead, this, [this, peer]() { read(peer); });
+            peer->write(R"({"QMP": {"version": {"qemu": {"major": 11}}, "capabilities": []}})"
+                        "\n");
+        });
+    }
+    QString status = "running";
+    /* to every monitor connection */
+    void event(const QString &name)
+    {
+        for (QLocalSocket *peer : std::as_const(m_peers)) {
+            if (peer->state() == QLocalSocket::ConnectedState) {
+                peer->write(QJsonDocument(QJsonObject{{"event", name}, {"data", QJsonObject()}})
+                                .toJson(QJsonDocument::Compact) + '\n');
+            }
+        }
+    }
+    void close()
+    {
+        for (QLocalSocket *peer : std::as_const(m_peers)) {
+            peer->disconnectFromServer();
+        }
+    }
+
+private:
+    void read(QLocalSocket *peer)
+    {
+        QByteArray &buffer = m_buffers[peer];
+        buffer += peer->readAll();
+        qsizetype nl;
+        while ((nl = buffer.indexOf('\n')) >= 0) {
+            const QJsonObject command = QJsonDocument::fromJson(buffer.left(nl)).object();
+            QJsonObject reply{{"return", QJsonObject()}, {"id", command["id"]}};
+            buffer.remove(0, nl + 1);
+            if (command["execute"] == "query-status") {
+                reply["return"] = QJsonObject{{"running", status == "running"}, {"status", status}};
+            }
+            peer->write(QJsonDocument(reply).toJson(QJsonDocument::Compact) + '\n');
+        }
+    }
+
+    QLocalServer m_server;
+    QList<QLocalSocket *> m_peers;
+    QHash<QLocalSocket *, QByteArray> m_buffers;
+};
 
 class TestVmRunner : public QObject
 {
@@ -321,6 +383,7 @@ private slots:
         QVERIFY(runner->qmp() && runner->qmp()->isReady());
         QVERIFY(read(runner->logPath()).startsWith("vitrine: "));
         QVERIFY(qemuPid() > 0);
+        QCOMPARE(read(runDir + "/run.args"), args.toText());
 
         runner->pause();
         QTRY_COMPARE(runner->state(), VmRunner::State::Paused);
@@ -331,11 +394,13 @@ private slots:
         QCOMPARE(runner->state(), VmRunner::State::Running);
         QCOMPARE(failed.size(), 0);
 
-        /* the manager quits, the VM runs on, the next manager finds it */
+        /* the manager quits, the VM runs on, the next manager finds it,
+           with the run's arguments whatever vm.args says by then */
         delete runner;
         runner = new VmRunner(id, tmp.path());
-        runner->attach();
+        runner->attach(ArgsFile::parse("-m 1G\n-display sdl\n"));
         QTRY_COMPARE_WITH_TIMEOUT(runner->state(), VmRunner::State::Running, 10000);
+        QCOMPARE(runner->runArgs().toText(), args.toText());
         delete runner;
         runner = new VmRunner(id, tmp.path());
         QSignalSpy failed2(runner, &VmRunner::failed);
@@ -349,8 +414,135 @@ private slots:
         QVERIFY(!runner->qmp());
         QVERIFY(!QFileInfo::exists(runDir + "/qmp.sock"));
         QVERIFY(!QFileInfo::exists(runDir + "/qemu.pid"));
+        QVERIFY(!QFileInfo::exists(runDir + "/run.args"));
         QVERIFY(gone(pid));
         delete runner;
+    }
+
+    /*
+     * A guest's own suspend to RAM is no pause from here: QEMU takes input
+     * there.  A QEMU stand-in found running, its monitor sending the events.
+     */
+    void suspended()
+    {
+        const QStringList command = VmRunner(id, tmp.path()).commandLine({});
+        FakeMonitor monitor(runDir + "/qmp.sock");
+        QProcess qemu;
+        qemu.start(FAKE_QEMU, {"-qmp", command[command.size() - 3]});
+        QVERIFY(qemu.waitForStarted());
+        QFile pid(runDir + "/qemu.pid");
+        QVERIFY(pid.open(QIODevice::WriteOnly));
+        pid.write(QByteArray::number(qemu.processId()) + '\n');
+        pid.close();
+
+        VmRunner runner(id, tmp.path());
+        QSignalSpy suspended(&runner, &VmRunner::suspendedChanged);
+        runner.attach(ArgsFile::parse(kHeadless));
+        QTRY_COMPARE(runner.state(), VmRunner::State::Running);
+        QVERIFY(!runner.isSuspended());
+        monitor.event("SUSPEND");
+        QTRY_COMPARE(runner.state(), VmRunner::State::Paused);
+        QVERIFY(runner.isSuspended());
+        QCOMPARE(suspended.size(), 1);
+        /* paused from here as it sleeps: QEMU drops input now */
+        monitor.event("STOP");
+        QTRY_COMPARE(suspended.size(), 2);
+        QCOMPARE(runner.state(), VmRunner::State::Paused);
+        QVERIFY(!runner.isSuspended());
+        monitor.event("RESUME");
+        QTRY_COMPARE(runner.state(), VmRunner::State::Running);
+        monitor.event("SUSPEND");
+        QTRY_VERIFY(runner.isSuspended());
+        monitor.event("WAKEUP");
+        QTRY_COMPARE(runner.state(), VmRunner::State::Running);
+        QVERIFY(!runner.isSuspended());
+
+        /* found asleep */
+        monitor.status = "suspended";
+        {
+            VmRunner again(id, tmp.path());
+            again.attach(ArgsFile::parse(kHeadless));
+            QTRY_COMPARE(again.state(), VmRunner::State::Paused);
+            QVERIFY(again.isSuspended());
+        }
+
+        monitor.close();
+        qemu.kill();
+        qemu.waitForFinished();
+        QTRY_COMPARE_WITH_TIMEOUT(runner.state(), VmRunner::State::Stopped, 10000);
+        QVERIFY(!runner.isSuspended());
+    }
+
+    /*
+     * A QEMU found running is what it was started as, not what vm.args says
+     * now: its screen in this window or in QEMU's, its shares.  One started
+     * by a vitrine that did not keep its arguments has vm.args, and its own
+     * command line says whether its screen can show here.  Start finds it
+     * running too.
+     */
+    void foundRunning_data()
+    {
+        QTest::addColumn<QString>("kept");          // run.args; null: none
+        QTest::addColumn<bool>("displayMonitor");   // on QEMU's command line
+        QTest::addColumn<QString>("vmArgs");
+        QTest::addColumn<bool>("viaStart");
+        QTest::addColumn<QString>("expected");      // runArgs()
+        QTest::addColumn<bool>("embedded");         // displaySocket()
+
+        const QString embedded = "-m 1G\n-display dbus,p2p=yes,gl=on\n";
+        const QString sdl = "-m 1G\n-display sdl,gl=on\n";
+        QTest::newRow("embedded, now SDL") << embedded << true << sdl << false << embedded << true;
+        QTest::newRow("SDL, now embedded") << sdl << false << embedded << false << sdl << false;
+        QTest::newRow("by start") << embedded << true << sdl << true << embedded << true;
+        QTest::newRow("older vitrine, embedded")
+            << QString() << true << sdl << false << sdl << true;
+        QTest::newRow("older vitrine, SDL")
+            << QString() << false << embedded << false << embedded << false;
+        QTest::newRow("older vitrine, by start")
+            << QString() << true << embedded << true << embedded << true;
+    }
+    void foundRunning()
+    {
+        QFETCH(QString, kept);
+        QFETCH(bool, displayMonitor);
+        QFETCH(QString, vmArgs);
+        QFETCH(bool, viaStart);
+        QFETCH(QString, expected);
+        QFETCH(bool, embedded);
+        const QStringList command = VmRunner(id, tmp.path()).commandLine({});
+        QStringList arguments{"-qmp", command[command.size() - 3]};
+        if (displayMonitor) {
+            arguments << "-qmp" << "unix:" + runDir + "/display.sock,server=on,wait=off";
+        }
+        FakeMonitor monitor(runDir + "/qmp.sock");
+        QProcess qemu;
+        qemu.start(FAKE_QEMU, arguments);
+        QVERIFY(qemu.waitForStarted());
+        QFile pid(runDir + "/qemu.pid");
+        QVERIFY(pid.open(QIODevice::WriteOnly));
+        pid.write(QByteArray::number(qemu.processId()) + '\n');
+        pid.close();
+        if (!kept.isNull()) {
+            QFile f(runDir + "/run.args");
+            QVERIFY(f.open(QIODevice::WriteOnly));
+            f.write(kept.toUtf8());
+        }
+
+        VmRunner runner(id, tmp.path());
+        if (viaStart) {
+            runner.start(ArgsFile::parse(vmArgs));
+        } else {
+            runner.attach(ArgsFile::parse(vmArgs));
+        }
+        QTRY_COMPARE(runner.state(), VmRunner::State::Running);
+        QCOMPARE(runner.runArgs().toText(), expected);
+        QCOMPARE(runner.displaySocket(), embedded ? runDir + "/display.sock" : QString());
+
+        monitor.close();
+        qemu.kill();
+        qemu.waitForFinished();
+        QTRY_COMPARE_WITH_TIMEOUT(runner.state(), VmRunner::State::Stopped, 10000);
+        QVERIFY(!QFileInfo::exists(runDir + "/run.args"));
     }
 
     void attachWithoutVm()
@@ -358,7 +550,7 @@ private slots:
         VmRunner runner(id, tmp.path());
         QSignalSpy states(&runner, &VmRunner::stateChanged);
 
-        runner.attach();
+        runner.attach(ArgsFile::parse(kHeadless));
         QTest::qWait(100);
         QCOMPARE(runner.state(), VmRunner::State::Stopped);
         QCOMPARE(states.size(), 0);

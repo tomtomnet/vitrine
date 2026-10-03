@@ -416,6 +416,20 @@ static void fair_restore(void)
             }
         } else if (cur_p == c.period && cur_r == c.runtime) {
             already++;
+        } else if ((cur_p == c.period || cur_p == c.new_period) &&
+                   (cur_r == c.runtime || cur_r == c.new_runtime)) {
+            /*
+             * Half-way, as fair_set() leaves it between its two writes: a
+             * helper killed there, setting or restoring.  Not another
+             * tool's change: theirs would not be one of our pairs.  (The
+             * other mixed pair cannot happen: its runtime would exceed its
+             * period, which the kernel refuses.)
+             */
+            if (fair_set(c.id, cur_p, cur_r, c.period, c.runtime) == 0) {
+                restored++;
+            } else {
+                failed++;
+            }
         } else {
             left++;
         }
@@ -694,27 +708,41 @@ static const char *card_unavailable(const char *card, struct od_table *od)
 static void gpu_restore(const char *card)
 {
     char key[32], level[32], saved[32] = "";
-    unsigned min = 0, max = 0;
+    unsigned min = 0, max = 0, was_min = 0, was_max = 0;
     struct od_table od;
     char *text;
+    int n;
 
     snprintf(key, sizeof(key), "gpu-floor-%s", card);
     if (!(text = state_read(key))) {
         return;
     }
-    if (sscanf(text, "level %31s min %u max %u", saved, &min, &max) != 3 ||
-        strcmp(saved, "manual") == 0) {
+    /* "was": the table before; not in the states of an older helper */
+    n = sscanf(text, "level %31s min %u max %u was %u %u", saved, &min, &max, &was_min,
+               &was_max);
+    if (n < 3 || strcmp(saved, "manual") == 0) {
         free(text);
         state_remove(key);
         return;
     }
     free(text);
+    /*
+     * Ours: level manual with the table as written - or as it was, the
+     * table of a helper killed in its own sequence (after "manual", before
+     * the commit; or putting it back, after the reset).  The level was auto
+     * before (gpu_floor() leaves any other alone), so manual with either
+     * table is this helper's doing, and the level stuck at manual would
+     * keep every later floor away ("the performance level is manual").
+     */
     if (card_level(card, level, sizeof(level)) && strcmp(level, "manual") == 0 &&
-        card_od(card, &od) && od.min == min && od.max == max) {
+        card_od(card, &od) &&
+        ((od.min == min && od.max == max) ||
+         (n == 5 && od.min == was_min && od.max == was_max))) {
         char cmd[40];
         int err, lerr;
 
-        /* the driver's own range back, then the level it had */
+        /* the driver's own range back (committed: a reset not committed
+           yet may hold the floor still), then the level it had */
         err = card_write(card, "pp_od_clk_voltage", "r\n");
         if (!err) {
             err = card_write(card, "pp_od_clk_voltage", "c\n");
@@ -724,6 +752,10 @@ static void gpu_restore(const char *card)
         reply("restored gpu-floor %s: level %s%s", card, saved,
               err || lerr ? " (some writes failed)" : "");
         sys_log("%s: clock floor %u MHz off, level %s", card, min, saved);
+        if (lerr) {
+            /* still manual: the next helper tries again */
+            return;
+        }
     } else if (card_level(card, level, sizeof(level)) && strcmp(level, saved) == 0) {
         reply("restored gpu-floor %s: level %s already", card, saved);
     } else {
@@ -829,7 +861,8 @@ void gpu_floor(const char *card, const char *value)
         reply("skip gpu-floor %s: %s", card, why);
         return;
     }
-    snprintf(text, sizeof(text), "level %s\nmin %u\nmax %u\n", level, mhz, od.range_hi);
+    snprintf(text, sizeof(text), "level %s\nmin %u\nmax %u\nwas %u %u\n", level, mhz,
+             od.range_hi, od.min, od.max);
     if (!state_write(key, text)) {
         err = errno;
         hold_close(h, true);

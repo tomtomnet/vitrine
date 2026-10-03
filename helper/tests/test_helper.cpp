@@ -10,6 +10,7 @@
 #include <QFile>
 #include <QProcess>
 #include <QRegularExpression>
+#include <QScopeGuard>
 #include <QTest>
 #include <QXmlStreamReader>
 
@@ -507,6 +508,122 @@ private slots:
         QVERIFY(b.finished());
     }
 
+    /*
+     * A helper killed between the two writes of a CPU's change (runtime
+     * and period), setting it or putting it back: the next one finishes
+     * putting it back - it is its own half-way pair, not another tool's
+     */
+    void fairServerHalfWay_data()
+    {
+        QTest::addColumn<int>("killAt");
+        QTest::addColumn<bool>("restoring");
+        /* setting: cpu0's runtime, then its period... (8 writes) */
+        QTest::newRow("setting, after cpu0's runtime") << 1 << false;
+        QTest::newRow("setting, after cpu2's runtime") << 5 << false;
+        /* putting back: cpu0's period, then its runtime... */
+        QTest::newRow("restoring, after cpu0's period") << 9 << true;
+        QTest::newRow("restoring, after cpu3's period") << 15 << true;
+    }
+    void fairServerHalfWay()
+    {
+        QFETCH(int, killAt);
+        QFETCH(bool, restoring);
+        FakeQemu qemu;
+        {
+            Helper a(m_root, {QString("VITRINE_HELPER_TEST_KILL_AT=%1").arg(killAt)});
+            QVERIFY(a.ready());
+            a.answer("watch " + qemu.pidText());
+            const QString on = a.answer("fair-server on");
+            if (restoring) {
+                QVERIFY(on.startsWith("ok fair-server on: 4 cpus"));
+                qemu.stop();
+            }
+            QVERIFY(a.finished());
+        }
+        QVERIFY(journal().contains("killed"));
+        QVERIFY(!fairAll("1000000000/50000000"));
+        QVERIFY(stateExists("fair-server"));
+        Helper b(m_root);
+        QCOMPARE(b.line(), QString("restored fair-server: 4 cpus back to 1000 ms / 50 ms"));
+        QVERIFY(b.ready());
+        b.closeInput();
+        QVERIFY(b.finished());
+        QVERIFY(!b.all().join('\n').contains("left fair-server"));
+        QVERIFY(fairAll("1000000000/50000000"));
+        QCOMPARE(stateFiles(), QStringList({"lock"}));
+    }
+
+    /*
+     * A helper killed in its own sequence of a GPU floor - manual, s 0,
+     * s 1, c; back: r, c, the level - leaves the level at manual: the next
+     * one puts it back, and a floor can be set again
+     */
+    void gpuFloorHalfWay_data()
+    {
+        QTest::addColumn<int>("killAt");
+        QTest::addColumn<bool>("restoring");
+        QTest::newRow("setting, after manual") << 1 << false;
+        QTest::newRow("setting, after s 0") << 2 << false;
+        QTest::newRow("setting, after s 1") << 3 << false;
+        QTest::newRow("setting, after c") << 4 << false;
+        QTest::newRow("restoring, after r") << 5 << true;
+        QTest::newRow("restoring, after c") << 6 << true;
+    }
+    void gpuFloorHalfWay()
+    {
+        QFETCH(int, killAt);
+        QFETCH(bool, restoring);
+        {
+            FakeQemu qemu;
+            Helper a(m_root, {QString("VITRINE_HELPER_TEST_KILL_AT=%1").arg(killAt)});
+            QVERIFY(a.ready());
+            a.answer("watch " + qemu.pidText());
+            const QString floor = a.answer("gpu-floor card1 auto");
+            if (restoring) {
+                QVERIFY(floor.startsWith("ok gpu-floor card1 1800 MHz"));
+                qemu.stop();
+            }
+            QVERIFY(a.finished());
+        }
+        QVERIFY(journal().contains("killed"));
+        QCOMPARE(level(), QString("manual"));
+        QVERIFY(stateExists("gpu-floor-card1"));
+
+        FakeQemu qemu;
+        Helper b(m_root);
+        QCOMPARE(b.line(), QString("restored gpu-floor card1: level auto"));
+        QVERIFY(b.ready());
+        QCOMPARE(level(), QString("auto"));
+        QCOMPARE(odTable(), od(800, 2700));
+        /* nothing left in the way */
+        b.answer("watch " + qemu.pidText());
+        QCOMPARE(b.answer("gpu-floor card1 auto"),
+                 QString("ok gpu-floor card1 1800 MHz (was 800 MHz, level auto)"));
+        qemu.stop();
+        QVERIFY(b.finished());
+        QCOMPARE(level(), QString("auto"));
+        QCOMPARE(stateFiles(), QStringList({"lock"}));
+    }
+
+    /* The state an older helper left (no "was"): the floor as written is still its own */
+    void gpuFloorOlderState()
+    {
+        const QString card = path(kCard);
+        writeFile(card + "/power_dpm_force_performance_level", "manual\n");
+        writeFile(card + "/pp_od_clk_voltage", od(1800, 2700));
+        QVERIFY(QDir().mkpath(path("/run/vitrine-helper")));
+        QFile::setPermissions(path("/run/vitrine-helper"),
+                              QFileDevice::ReadOwner | QFileDevice::WriteOwner | QFileDevice::ExeOwner);
+        writeFile(path("/run/vitrine-helper/gpu-floor-card1.state"), "level auto\nmin 1800\nmax 2700\n");
+        Helper b(m_root);
+        QCOMPARE(b.line(), QString("restored gpu-floor card1: level auto"));
+        QVERIFY(b.ready());
+        QCOMPARE(level(), QString("auto"));
+        QCOMPARE(odTable(), od(800, 2700));
+        b.closeInput();
+        QVERIFY(b.finished());
+    }
+
     /* vitrine quits while its VMs run: the helper keeps the settings until the last one ends */
     void inputClosedWhileVmsRun()
     {
@@ -640,6 +757,16 @@ private slots:
         posix_spawn_file_actions_destroy(&actions);
         qunsetenv("VITRINE_HELPER_TEST_ROOT");
         ::close(sv[1]);
+        /* a check that fails returns at once: the helper goes too, not left
+           holding the fake tree for the tests after this one */
+        bool reaped = false;
+        const auto cleanup = qScopeGuard([&]() {
+            if (!reaped) {
+                ::kill(pid, SIGKILL);
+                waitpid(pid, nullptr, 0);
+            }
+            ::close(sv[0]);
+        });
         fcntl(sv[0], F_SETFL, O_NONBLOCK);
         /* each one answered: far more replies than the socket holds */
         QByteArray requests = "watch " + qemu.pidText().toLatin1() + "\nfair-server on\n";
@@ -663,16 +790,37 @@ private slots:
         QTRY_VERIFY(fairAll("10000000/1000000"));
         qemu.stop();
         QTRY_VERIFY_WITH_TIMEOUT(fairAll("1000000000/50000000"), 5000);
-        /* it ends; Qt's own SIGCHLD handling may reap it before this does */
+        /*
+         * It ends, with status 0.  Reaped here, once - posix_spawn's child
+         * is not Qt's to reap - and not in QTRY_VERIFY, which evaluates its
+         * condition again after it holds: the waitpid() after the one that
+         * reaped it got ECHILD, and the status was never looked at.
+         */
         int status = 0;
         pid_t r = 0;
-        QTRY_VERIFY((r = waitpid(pid, &status, WNOHANG)) != 0);
-        if (r == pid) {
-            QVERIFY(WIFEXITED(status) && WEXITSTATUS(status) == 0);
-        } else {
-            QVERIFY(errno == ECHILD && !QFile::exists(QString("/proc/%1").arg(pid)));
+        QElapsedTimer waited;
+        waited.start();
+        while ((r = waitpid(pid, &status, WNOHANG)) == 0 && waited.elapsed() < 5000) {
+            QTest::qWait(20);
         }
-        ::close(sv[0]);
+        reaped = r == pid;
+        QCOMPARE(r, pid);
+        QVERIFY(WIFEXITED(status));
+        QCOMPARE(WEXITSTATUS(status), 0);
+    }
+
+    /* The stand-in QEMU ends with its stdin, as when the test that started
+       it dies: a crashed test leaves no stand-ins behind, nor helpers
+       watching them */
+    void fakeQemuEndsWithTheTest()
+    {
+        QProcess qemu;
+        qemu.start(FAKE_QEMU, {});
+        QVERIFY(qemu.waitForStarted());
+        QVERIFY(!qemu.waitForFinished(200));
+        qemu.closeWriteChannel();
+        QVERIFY(qemu.waitForFinished(2000));
+        QCOMPARE(qemu.exitStatus(), QProcess::NormalExit);
     }
 
     /* SIGTERM (a shutdown): everything back before the end */

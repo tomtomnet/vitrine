@@ -24,11 +24,13 @@
 #include <sys/socket.h>
 #include <sys/syscall.h>
 #include <sys/wait.h>
+#include <sys/xattr.h>
 #include <unistd.h>
 
 #include "core/paths.h"
 #include "core/qmpclient.h"
 #include "core/stackbuilder.h"
+#include "core/vmhardware.h"
 #include "core/vmrunner.h"
 #include "core/vmstore.h"
 
@@ -192,8 +194,13 @@ static void checkAccess(QObject *context, const std::function<void(const QString
         if (status == QProcess::NormalExit && code == 0) {
             done(QString());
         } else if (status == QProcess::NormalExit && (code == 2 || code == 3)) {
-            /* a password would be needed */
-            done(HostSettings::tr("it needs membership of the vitrine group"));
+            /* a password would be needed: the group's rule wants a member
+               at a local, active session (49-vitrine.rules), and polkit to
+               read it - which the app cannot see: the folder is root's */
+            done(HostSettings::inVitrineGroup()
+                     ? HostSettings::tr("polkit wants a password here: the vitrine group's rule "
+                                        "applies in a local, active desktop session only")
+                     : HostSettings::tr("it needs membership of the vitrine group"));
         } else if (err.contains("not registered")) {
             done(HostSettings::tr("the helper's polkit policy is not installed"));
         } else {
@@ -209,6 +216,31 @@ static void checkAccess(QObject *context, const std::function<void(const QString
     });
     /* no --allow-user-interaction: never a dialog from here */
     check->start("pkcheck", {"--action-id", kAction, "--process", subject()});
+}
+
+/* vitrine-helper setcap @path, once polkit said yes */
+static void setcap(const QString &path, QObject *context,
+                   const std::function<void(const QString &error)> &done)
+{
+    auto *run = new QProcess(context);
+    run->setProcessChannelMode(QProcess::MergedChannels);
+    QObject::connect(run, &QProcess::finished, context, [run, path, done](int code) {
+        const QString last = QString::fromUtf8(run->readAll()).trimmed().section('\n', -1);
+        const QString prefix = "error setcap " + path + ": ";
+        run->deleteLater();
+        /* "error setcap PATH: why", or pkexec's own message */
+        done(code == 0 ? QString()
+             : last.startsWith(prefix) ? last.mid(prefix.size())
+             : last.isEmpty() ? HostSettings::tr("vitrine-helper failed") : last);
+    });
+    QObject::connect(run, &QProcess::errorOccurred, context,
+                     [run, done](QProcess::ProcessError error) {
+        if (error == QProcess::FailedToStart) {
+            run->deleteLater();
+            done(HostSettings::tr("pkexec is not installed"));
+        }
+    });
+    run->start("pkexec", {"--disable-internal-agent", VITRINE_HELPER_PATH, "setcap", path});
 }
 
 void HostSettings::grantCapability(const QString &qemu, QObject *context,
@@ -230,25 +262,39 @@ void HostSettings::grantCapability(const QString &qemu, QObject *context,
             done(why);
             return;
         }
-        auto *run = new QProcess(context);
-        run->setProcessChannelMode(QProcess::MergedChannels);
-        QObject::connect(run, &QProcess::finished, context, [run, path, done](int code) {
-            const QString last = QString::fromUtf8(run->readAll()).trimmed().section('\n', -1);
-            const QString prefix = "error setcap " + path + ": ";
-            run->deleteLater();
-            /* "error setcap PATH: why", or pkexec's own message */
-            done(code == 0 ? QString()
-                 : last.startsWith(prefix) ? last.mid(prefix.size())
-                 : last.isEmpty() ? tr("vitrine-helper failed") : last);
-        });
-        QObject::connect(run, &QProcess::errorOccurred, context,
-                         [run, done](QProcess::ProcessError error) {
-            if (error == QProcess::FailedToStart) {
-                run->deleteLater();
-                done(tr("pkexec is not installed"));
+        setcap(path, context, done);
+    });
+}
+
+void HostSettings::ensureCapability(bool granted)
+{
+    /* canonical: the build itself, not `current` */
+    const QString qemu = Paths::stackQemu();
+    char value[64];
+
+    if (!enabled() || !helperInstalled() || qemu.isEmpty() || m_capabilityTried.contains(qemu) ||
+        getxattr(QFile::encodeName(qemu).constData(), "security.capability", value,
+                 sizeof(value)) >= 0 ||
+        errno != ENODATA) {
+        return;
+    }
+    auto grant = [this, qemu]() {
+        m_capabilityTried.insert(qemu);
+        setcap(qemu, this, [this](const QString &error) {
+            if (!error.isEmpty()) {
+                say(tr("Vitrine's QEMU cannot make its threads real-time: %1.").arg(error));
             }
         });
-        run->start("pkexec", {"--disable-internal-agent", helperPath(), "setcap", path});
+    };
+    if (granted) {
+        grant();
+        return;
+    }
+    /* polkit's no is said at a VM start, not here */
+    checkAccess(this, [grant](const QString &why) {
+        if (why.isEmpty()) {
+            grant();
+        }
     });
 }
 
@@ -270,7 +316,13 @@ HostSettings::HostSettings(VmStore *store, QObject *parent)
         connect(store, &VmStore::added, this, &HostSettings::watchVm);
         connect(store, &VmStore::removed, this, [this](const QString &id) { m_tuned.remove(id); });
     }
-    /* each build is a new file, without the capability of the one before */
+    /*
+     * Each build is a new file, without the capability of the one before:
+     * given after each build, and, when it lacks it, now - a QEMU built
+     * before joining the vitrine group or while tuning was off.  It takes
+     * effect at the next start of each VM: a running QEMU keeps what it has.
+     */
+    ensureCapability();
     connect(StackBuilder::instance(), &StackBuilder::built, this, [this](const QString &qemu) {
         /* without the helper, a VM start says it */
         if (!enabled() || !helperInstalled()) {
@@ -336,12 +388,51 @@ void HostSettings::tune(qint64 pid)
     }
     m_expected.insert(pid);
     m_out += ("watch " + n + "\nfair-server on\n").toLatin1();
-    /* auto: on APUs only (measured on a Radeon 780M); off: let a floor go */
-    for (const QString &card : amdCards(m_sysRoot, floor == "auto")) {
-        m_out += QString("gpu-floor %1 %2\n").arg(card, floor).toLatin1();
+    /* auto: on APUs only (measured on a Radeon 780M), none on the other
+       cards, where a fixed one chosen before goes; off: let a floor go */
+    const QStringList apus = amdCards(m_sysRoot, true);
+    for (const QString &card : amdCards(m_sysRoot, false)) {
+        const QString value = floor != "auto" ? floor : apus.contains(card) ? "auto" : "off";
+        m_out += QString("gpu-floor %1 %2\n").arg(card, value).toLatin1();
     }
     m_out += ("rt " + n + '\n').toLatin1();
     start();
+}
+
+void HostSettings::preferencesChanged()
+{
+    if (!enabled()) {
+        /* off: everything back now, not after the last VM, and nothing
+           queued for a helper still starting (its check or its "ready") */
+        m_out.clear();
+        m_expected.clear();
+        if (m_fd >= 0) {
+            m_out = "release\n";
+            flush();
+        }
+        /* and focus priority: the vCPUs QEMU itself made real-time, or
+           ordinary at nice -5, are not the helper's to put back */
+        for (Vm *vm : m_store && !m_front.isEmpty() ? m_store->vms() : QList<Vm *>()) {
+            QmpClient *qmp = vm->runner()->qmp();
+            if (qmp && m_tuned.contains(vm->id()) &&
+                VmConfig::screen(vm->runner()->runArgs()) != VmConfig::Screen::OwnWindow) {
+                qmp->execute("x-vcpu-priority", QJsonObject{{"realtime", false}, {"nice", 0}});
+            }
+        }
+        m_front.clear();
+        return;
+    }
+    /* on, or another floor: each running VM tuned again - a run that
+       started untuned among them; what the helper holds already, it says
+       so ("already"), and a floor it holds it replaces */
+    ensureCapability();
+    if (!m_store) {
+        return;
+    }
+    m_tuned.clear();
+    for (Vm *vm : m_store->vms()) {
+        vmStateChanged(vm);
+    }
 }
 
 void HostSettings::setFront(const QString &vmId)
@@ -353,30 +444,40 @@ void HostSettings::setFront(const QString &vmId)
     }
     m_front = vmId;
     for (Vm *vm : m_store->vms()) {
-        const qint64 pid = m_tuned.value(vm->id());
-        QmpClient *qmp = vm->runner()->qmp();
-        const bool capable = hasSysNice(pid);
-        QJsonObject arguments{{"realtime", vm == front}};
-
-        if (!pid || !qmp) {
-            continue;
-        }
-        if (vm == front && !capable) {
-            /* QEMU may not make its threads real-time again: the helper may */
-            if (m_fd >= 0) {
-                m_out += "rt " + QByteArray::number(pid) + '\n';
-                flush();
-            }
-            continue;
-        }
-        if (vm != front) {
-            /* the patch stops at the first thread it fails on: no lower nice
-               than this QEMU may set */
-            arguments["nice"] = capable ? -5 : 0;
-        }
-        /* a QEMU without the command (not vitrine's) says so: nothing to do */
-        qmp->execute("x-vcpu-priority", arguments);
+        applyFront(vm);
     }
+}
+
+void HostSettings::applyFront(Vm *vm)
+{
+    const qint64 pid = m_tuned.value(vm->id());
+    QmpClient *qmp = vm->runner()->qmp();
+    const bool front = vm->id() == m_front;
+
+    if (m_front.isEmpty() || !pid || !qmp) {
+        return;
+    }
+    /* SDL: its window's focus is not known here, behind or not */
+    if (!front && VmConfig::screen(vm->runner()->runArgs()) == VmConfig::Screen::OwnWindow) {
+        return;
+    }
+    const bool capable = hasSysNice(pid);
+    QJsonObject arguments{{"realtime", front}};
+    if (front && !capable) {
+        /* QEMU may not make its threads real-time again: the helper may */
+        if (m_fd >= 0) {
+            m_out += "rt " + QByteArray::number(pid) + '\n';
+            flush();
+        }
+        return;
+    }
+    if (!front) {
+        /* the patch stops at the first thread it fails on: no lower nice
+           than this QEMU may set */
+        arguments["nice"] = capable ? -5 : 0;
+    }
+    /* a QEMU without the command (not vitrine's) says so: nothing to do */
+    qmp->execute("x-vcpu-priority", arguments);
 }
 
 void HostSettings::start()
@@ -397,19 +498,31 @@ void HostSettings::start()
         deny(tr("vitrine-helper is not installed"));
         return;
     }
-    if (m_access == Access::Granted) {
-        spawn({"pkexec", "--disable-internal-agent", helperPath()});
-        return;
-    }
+    /*
+     * polkit, asked before each start of the helper and never remembered:
+     * a membership of the vitrine group given since counts (no restart of
+     * vitrine), and one taken back too - pkexec would hand a request polkit
+     * wants a password for to the desktop's agent, a dialog at a VM start
+     * (--disable-internal-agent only turns off its own).  A membership
+     * taken between the check and pkexec is the window left.  pkexec runs
+     * the installed helper only, the one the action names.
+     */
     m_access = Access::Checking;
     checkAccess(this, [this](const QString &why) {
+        m_access = Access::Unknown;
         if (!why.isEmpty()) {
             deny(why);
             return;
         }
-        m_access = Access::Granted;
+        /* granted: a refusal said earlier is news again if it comes back */
+        for (const QString &text : std::as_const(m_refusals)) {
+            m_said.remove(text);
+        }
+        m_refusals.clear();
+        /* the group joined since vitrine started, say */
+        ensureCapability(true);
         if (!m_out.isEmpty()) {
-            spawn({"pkexec", "--disable-internal-agent", helperPath()});
+            spawn({"pkexec", "--disable-internal-agent", VITRINE_HELPER_PATH});
         }
     });
 }
@@ -517,7 +630,9 @@ void HostSettings::handleLine(const QString &line)
     emit helperLine(line);
     if (!protocol.contains(word)) {
         /* pkexec's, before the helper runs: why it did not */
-        m_foreign << line;
+        if (!line.isEmpty()) {
+            m_foreign << line;
+        }
     } else if (word == "ready") {
         m_ready = true;
         flush();
@@ -533,7 +648,21 @@ void HostSettings::handleLine(const QString &line)
             /* nothing left to watch: it ends, putting everything back */
             ::shutdown(m_fd, SHUT_WR);
         }
-    } else if (word == "error" && line.endsWith(": watch a QEMU first")) {
+    } else if (line.startsWith("ok rt ")) {
+        /*
+         * "ok rt PID: N of M threads real-time": every thread of that QEMU,
+         * the vCPUs of a VM behind the one in front among them - a VM that
+         * started since, or tuned again, or one whose x-vcpu-priority went
+         * out before the helper got to it.  Behind again, now.
+         */
+        const qint64 pid = line.section(' ', 2, 2).section(':', 0, 0).toLongLong();
+        for (Vm *vm : m_store ? m_store->vms() : QList<Vm *>()) {
+            if (pid > 0 && m_tuned.value(vm->id()) == pid && vm->id() != m_front) {
+                applyFront(vm);
+            }
+        }
+    } else if (word == "error" && (line.endsWith(": watch a QEMU first") ||
+                                   line.endsWith(": watch the process first"))) {
         /* after a watch that failed: said already, if worth it */
     } else if (word == "skip" || word == "error") {
         /* "skip fair-server: kernel lockdown (integrity)" */
@@ -571,27 +700,44 @@ void HostSettings::reap()
     /* what it said last */
     readHelper();
     const bool ran = m_ready;
-    const QString why = m_foreign.isEmpty() ? tr("vitrine-helper did not start") : m_foreign.last();
+    /* asked to be watched, neither ended nor refused: a VM that started as
+       the helper was ending (its requests came too late), or those of a
+       helper that failed */
+    const QSet<qint64> pending = m_expected;
+    /* pkexec's own line, not what follows it ("This incident has been
+       reported.") */
+    QString why = m_foreign.isEmpty() ? tr("vitrine-helper did not start") : m_foreign.first();
+    for (const QString &line : std::as_const(m_foreign)) {
+        if (line.startsWith("Error executing command")) {
+            why = line;
+            break;
+        }
+    }
     m_pid = 0;
     closeHelper();
     m_out.clear();
     m_expected.clear();
     emit helperFinished();
     if (!ran) {
-        /* pkexec refused it, or it could not start */
-        deny(why);
+        /* pkexec refused it, though polkit said yes, or it could not start:
+           not again in this run */
+        deny(why, true);
         return;
     }
-    /* it ends after the last VM it watched: a VM running now started
-       meanwhile (its requests came too late), or the helper failed */
-    if (!m_store || !enabled() || m_restarts >= kRestarts) {
+    /*
+     * It ends after the last VM it watched.  Started again for those only:
+     * not for every VM that runs, among which one it refused to watch (a
+     * QEMU of another name), which would have it started and refused again
+     * until the restarts of the run were used up.
+     */
+    if (!m_store || !enabled() || pending.isEmpty() || m_restarts >= kRestarts) {
         return;
     }
-    m_tuned.clear();
+    m_restarts++;
     for (Vm *vm : m_store->vms()) {
-        if (alive(vm->runner()->pid())) {
-            m_restarts++;
-            vmStateChanged(vm);
+        const qint64 pid = m_tuned.value(vm->id());
+        if (pending.contains(pid) && alive(pid)) {
+            tune(pid);
         }
     }
 }
@@ -615,11 +761,17 @@ void HostSettings::closeHelper()
     m_ready = false;
 }
 
-void HostSettings::deny(const QString &why)
+void HostSettings::deny(const QString &why, bool always)
 {
-    m_access = Access::Denied;
+    if (always) {
+        m_access = Access::Denied;
+    }
+    /* the VMs asked for go untuned: none of them is waited for */
     m_out.clear();
-    say(tr("Host tuning is off: %1.").arg(why));
+    m_expected.clear();
+    const QString text = tr("Host tuning is off: %1.").arg(why);
+    m_refusals.insert(text);
+    say(text);
 }
 
 void HostSettings::say(const QString &text)
