@@ -124,6 +124,8 @@ private:
      * shuts down (KDE's logout screen)
      */
     QSet<QString> m_closeAfter;
+    /* Of those, the VMs still starting when asked: asked once they run */
+    QSet<QString> m_shutDownOnceUp;
 
     QAction *m_new;
     QAction *m_import;

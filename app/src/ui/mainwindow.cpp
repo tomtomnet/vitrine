@@ -529,6 +529,7 @@ void MainWindow::stateChanged(Vm *vm, VmRunner::State state)
     if (state == VmRunner::State::Stopped) {
         /* for failed(), which follows */
         m_endedFrom[id] = m_states.value(id);
+        m_shutDownOnceUp.remove(id);
         /* the last of those the closing window waited for */
         if (m_closeAfter.remove(id) && m_closeAfter.isEmpty()) {
             QTimer::singleShot(0, this, &QWidget::close);
@@ -538,6 +539,13 @@ void MainWindow::stateChanged(Vm *vm, VmRunner::State state)
         m_errors.remove(id);
         if (state != VmRunner::State::Starting) {
             m_starting.remove(id);
+        }
+        /* the closing window waits for it to shut down, but it was starting
+           when asked, without QMP to ask it through: now */
+        if (m_shutDownOnceUp.contains(id) && state == VmRunner::State::Paused) {
+            vm->runner()->resume();
+        } else if (state == VmRunner::State::Running && m_shutDownOnceUp.remove(id)) {
+            vm->runner()->powerdown();
         }
     }
     m_states[id] = state;
@@ -1143,13 +1151,14 @@ void MainWindow::closeEvent(QCloseEvent *event)
 
     /* asked again: what the user answers now goes */
     m_closeAfter.clear();
+    m_shutDownOnceUp.clear();
     updateStatus();
     if (!m_pane->confirmChanges(tr("Apply them before closing?"))) {
         event->ignore();
         return;
     }
     /* VMs outlive the window, but those shown in it go on without a screen */
-    QList<Vm *> shown;
+    QList<QPointer<Vm>> shown;
     QStringList names;
     for (Vm *each : m_store->vms()) {
         if (!each->runner()->displaySocket().isEmpty()) {
@@ -1180,23 +1189,47 @@ void MainWindow::closeEvent(QCloseEvent *event)
                      "and closes the window once they are off."));
         box->exec();
         if (box->clickedButton() == shutDown) {
+            /* as they are now: one may have stopped while the question was
+               open, and would never say Stopped again to close the window */
+            QString first;
             for (Vm *each : std::as_const(shown)) {
-                /* a paused guest would not see the button */
-                if (each->runner()->state() == VmRunner::State::Paused) {
-                    each->runner()->resume();
+                VmRunner *runner = each ? each->runner() : nullptr;
+                if (!runner || !runner->isActive()) {
+                    continue;
                 }
-                each->runner()->powerdown();
+                switch (runner->state()) {
+                case VmRunner::State::Paused:
+                    /* a paused guest would not see the button */
+                    runner->resume();
+                    runner->powerdown();
+                    break;
+                case VmRunner::State::Running:
+                    runner->powerdown();
+                    break;
+                case VmRunner::State::Starting:
+                    /* no QMP yet: once it runs (stateChanged()) */
+                    m_shutDownOnceUp.insert(each->id());
+                    break;
+                default:
+                    /* stopping already */
+                    break;
+                }
                 m_closeAfter.insert(each->id());
+                if (first.isEmpty()) {
+                    first = each->id();
+                }
             }
-            /* the guest may ask first, on its screen (KDE does): the window
-               stays until they are off */
-            select(shown.first()->id());
-            m_pane->setTab(VmPane::Console);
-            updateStatus();
-            event->ignore();
-            return;
-        }
-        if (box->clickedButton() != keep) {
+            if (!first.isEmpty()) {
+                /* the guest may ask first, on its screen (KDE does): the
+                   window stays until they are off */
+                select(first);
+                m_pane->setTab(VmPane::Console);
+                updateStatus();
+                event->ignore();
+                return;
+            }
+            /* all of them off meanwhile: the window closes now */
+        } else if (box->clickedButton() != keep) {
             event->ignore();
             return;
         }
