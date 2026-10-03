@@ -304,9 +304,17 @@ private slots:
         QCOMPARE(fair(0), QString("1000000000/50000000"));
     }
 
-    /* Turned off while VMs run: the next start lets everything go */
+    /* Turned off while VMs run: everything back at once (or, missed, at
+       the next start) */
+    void disabledWhileRunning_data()
+    {
+        QTest::addColumn<bool>("told");
+        QTest::newRow("preferences") << true;
+        QTest::newRow("next start") << false;
+    }
     void disabledWhileRunning()
     {
+        QFETCH(bool, told);
         FakeQemu q1, q2;
         HostSettings hs(nullptr);
         QSignalSpy lines(&hs, &HostSettings::helperLine), finished(&hs, &HostSettings::helperFinished);
@@ -314,11 +322,77 @@ private slots:
         hs.tune(q1.pid());
         QTRY_VERIFY(saw(lines, QString("ok rt %1").arg(q1.pid())));
         HostSettings::setEnabled(false);
-        hs.tune(q2.pid());
+        if (told) {
+            hs.preferencesChanged();
+        } else {
+            hs.tune(q2.pid());
+        }
         QTRY_COMPARE(finished.size(), 1);
         QCOMPARE(fair(0), QString("1000000000/50000000"));
         QCOMPARE(level(), QString("auto"));
         QVERIFY(saw(lines, QString("restored rt %1").arg(q1.pid())));
+    }
+
+    /*
+     * The preferences while a VM runs: turned on, the running VM is tuned;
+     * another floor replaces the one held; turned off, everything back
+     */
+    void preferencesWhileRunning()
+    {
+        QTemporaryDir runtime(QDir::tempPath() + "/vt-XXXXXX");
+        QTemporaryDir vms;
+        QVERIFY(runtime.isValid() && vms.isValid());
+        qputenv("XDG_RUNTIME_DIR", runtime.path().toLocal8Bit());
+        QDir(vms.path()).mkpath("one");
+        writeFile(vms.path() + "/one/vm.args", "-name one\n");
+        const QString run = Paths::vmRuntimeDir("one");
+        FakeQemu qemu({"-qmp", QString("unix:%1/qmp.sock,server=on,wait=off").arg(run)});
+        writeFile(run + "/qemu.pid", QByteArray::number(qemu.pid()) + "\n");
+        FakeQmp qmp(run + "/qmp.sock");
+        VmStore store(vms.path());
+        HostSettings hs(&store);
+        QSignalSpy lines(&hs, &HostSettings::helperLine), finished(&hs, &HostSettings::helperFinished);
+        fake(hs);
+        /* it started while tuning was off */
+        HostSettings::setEnabled(false);
+        store.vms().first()->runner()->attach(store.vms().first()->args());
+        QTRY_COMPARE(store.vms().first()->runner()->state(), VmRunner::State::Running);
+        QTest::qWait(100);
+        QVERIFY(!hs.helperRunning());
+
+        HostSettings::setEnabled(true);
+        hs.preferencesChanged();
+        QTRY_VERIFY(saw(lines, QString("ok rt %1").arg(qemu.pid())));
+        QCOMPARE(fair(0), QString("10000000/1000000"));
+        QCOMPARE(odTable(), od(1800, 2700).trimmed());
+
+        HostSettings::setGpuFloor("2000");
+        hs.preferencesChanged();
+        QTRY_VERIFY(saw(lines, "ok gpu-floor card1 2000 MHz"));
+        QCOMPARE(odTable(), od(2000, 2700).trimmed());
+
+        HostSettings::setEnabled(false);
+        hs.preferencesChanged();
+        QTRY_COMPARE(finished.size(), 1);
+        QCOMPARE(fair(0), QString("1000000000/50000000"));
+        QCOMPARE(level(), QString("auto"));
+        QCOMPARE(odTable(), od(800, 2700).trimmed());
+    }
+
+    /* auto: a floor on APUs only, a fixed one chosen before goes from the others */
+    void autoFloorElsewhere()
+    {
+        amdCard(m_root + "/sys", "card2", 1);   // discrete
+        HostSettings::setGpuFloor("auto");
+        FakeQemu qemu;
+        HostSettings hs(nullptr);
+        QSignalSpy lines(&hs, &HostSettings::helperLine), notices(&hs, &HostSettings::notice);
+        fake(hs);
+        hs.tune(qemu.pid());
+        QTRY_VERIFY(saw(lines, QString("ok rt %1").arg(qemu.pid())));
+        QVERIFY(saw(lines, "ok gpu-floor card1 1800 MHz"));
+        QVERIFY(saw(lines, "ok gpu-floor card2 off"));
+        QVERIFY(notices.isEmpty());
     }
 
     /* Not installed: said once, the VMs run untuned */

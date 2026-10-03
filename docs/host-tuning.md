@@ -37,7 +37,8 @@ sudo usermod -aG vitrine "$USER"
 vitrine asks polkit again before each start of the helper: the new
 membership counts from the next VM start, without restarting vitrine
 (`id` lists it once you log in again). Preferences > Tune the host while
-VMs run turns it off again for you.
+VMs run turns it off again for you, at once for the VMs running too (and
+on again, or another GPU clock floor, the same way).
 
 To take it back: `sudo gpasswd -d "$USER" vitrine` (and
 `sudo groupdel vitrine` when nobody is left in it). From the next VM start

@@ -69,6 +69,12 @@ public:
 
     /* What a VM start does, for the QEMU @pid */
     void tune(qint64 pid);
+    /*
+     * The preferences changed (Preferences > Tune the host): applied to the
+     * VMs running now, not at the next start - off lets everything go,
+     * on or another GPU floor tunes each running VM again
+     */
+    void preferencesChanged();
 
     /*
      * Focus priority: the vCPUs of the VM in front - its console or

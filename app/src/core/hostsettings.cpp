@@ -341,12 +341,40 @@ void HostSettings::tune(qint64 pid)
     }
     m_expected.insert(pid);
     m_out += ("watch " + n + "\nfair-server on\n").toLatin1();
-    /* auto: on APUs only (measured on a Radeon 780M); off: let a floor go */
-    for (const QString &card : amdCards(m_sysRoot, floor == "auto")) {
-        m_out += QString("gpu-floor %1 %2\n").arg(card, floor).toLatin1();
+    /* auto: on APUs only (measured on a Radeon 780M), none on the other
+       cards, where a fixed one chosen before goes; off: let a floor go */
+    const QStringList apus = amdCards(m_sysRoot, true);
+    for (const QString &card : amdCards(m_sysRoot, false)) {
+        const QString value = floor != "auto" ? floor : apus.contains(card) ? "auto" : "off";
+        m_out += QString("gpu-floor %1 %2\n").arg(card, value).toLatin1();
     }
     m_out += ("rt " + n + '\n').toLatin1();
     start();
+}
+
+void HostSettings::preferencesChanged()
+{
+    if (!enabled()) {
+        /* off: everything back now, not after the last VM, and nothing
+           queued for a helper still starting (its check or its "ready") */
+        m_out.clear();
+        m_expected.clear();
+        if (m_fd >= 0) {
+            m_out = "release\n";
+            flush();
+        }
+        return;
+    }
+    /* on, or another floor: each running VM tuned again - a run that
+       started untuned among them; what the helper holds already, it says
+       so ("already"), and a floor it holds it replaces */
+    if (!m_store) {
+        return;
+    }
+    m_tuned.clear();
+    for (Vm *vm : m_store->vms()) {
+        vmStateChanged(vm);
+    }
 }
 
 void HostSettings::setFront(const QString &vmId)
