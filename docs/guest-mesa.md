@@ -256,8 +256,8 @@ not upstream yet, in
 Thanks to cmspam for them. The repository has three patches:
 
 - `virglrenderer-xe-native-context.patch`, for the host: an Xe renderer in
-  virglrenderer (`-Ddrm-renderers=xe-experimental`). File > Build QEMU
-  applies it when it builds virglrenderer.
+  virglrenderer (`-Ddrm-renderers=xe-experimental`). Vitrine's QEMU build
+  applies it, rebased, as `host/patches/virglrenderer/0001-xe-native-context.patch`.
 - `mesa-01-xe-native-context-plus-iris-upload-fix.patch`, for the guest: Xe
   in Mesa's Intel virtio layer, which iris (OpenGL) and ANV (Vulkan) share,
   and a fix for slow uploads. It goes on Mesa 26.1 or later, built with
@@ -303,8 +303,8 @@ See [Arch](#arch).
 
 Keep the patches of the host and the guest from the same time: the two
 sides talk a protocol of their own, and cmspam warns that mismatched
-versions can crash. File > Build QEMU takes the newest virglrenderer patch
-each time it builds.
+versions can crash. Vitrine pins the host's side: virglrenderer's commit in
+`host/versions.conf` and its patches in `host/patches/virglrenderer`.
 
 ## Checking it works
 
@@ -337,10 +337,10 @@ shows a warning when it draws through virgl.
   Intel GPUs and for the AMD patch below. The **DRM native context** box of
   the Display settings adds them.
 - The host's virglrenderer needs the native context renderer of its GPU,
-  which most distributions leave out. File > Build QEMU builds one, see
-  [Building QEMU and virglrenderer](../README.md#building-qemu-and-virglrenderer).
+  which most distributions leave out. Vitrine builds its own with QEMU
+  (`host/build.sh`, which File > Build QEMU runs).
 - On AMD, that virglrenderer also carries a
-  [write-combining patch](../data/patches/virglrenderer-amdgpu-force-wc.patch):
+  [write-combining patch](../host/patches/virglrenderer/0002-amdgpu-force-wc.patch):
   without it the guest's uploads stall, and KDE stutters however good its
   Mesa is. For Intel Xe, cmspam's Mesa patch does the same on the guest
   side: it maps the upload buffers write-combined.

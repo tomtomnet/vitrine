@@ -203,6 +203,9 @@ void ArgsHighlighter::highlightBlock(const QString &text)
             setFormat(start, 5, m_directive);
         } else if (isDirective(u"#env")) {
             setFormat(start, 4, m_directive);
+        } else if (isDirective(u"#guest")) {
+            setFormat(start, 6, m_directive);
+            highlightKeys(text, start + 7);
         } else {
             setFormat(start, int(text.size()) - start, m_comment);
         }

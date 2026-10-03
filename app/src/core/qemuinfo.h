@@ -14,7 +14,8 @@
  *
  * All of it comes from the binary's own help output, so it always matches
  * the build that runs the VM.  The full option descriptions come from
- * qemu-options.hx when the binary sits in a build tree next to it.
+ * qemu-options.hx when the binary sits in a build tree next to it, or in a
+ * prefix that has it in share/qemu, as Vitrine's QEMU does.
  */
 struct QemuOptionDoc {
     QString name;           // without the dash
@@ -84,7 +85,7 @@ public:
     bool isLoaded() const { return m_loaded; }
     const QemuInfo &info() const { return m_info; }
     QString binary() const { return m_binary; }
-    /* qemu-options.hx of the source tree the binary was built in, if any */
+    /* qemu-options.hx of the source tree the binary was built in, or of its prefix */
     static QString findOptionsHx(const QString &binary);
     /* Emits propertiesLoaded() once known */
     void loadProperties(const QString &device);

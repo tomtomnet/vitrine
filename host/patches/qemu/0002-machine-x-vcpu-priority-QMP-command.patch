@@ -1,0 +1,109 @@
+From 9ece5b03f7a982aa1c91c9022ac10c56e7747476 Mon Sep 17 00:00:00 2001
+From: tomtomnet <tompere8000@proton.me>
+Date: Fri, 2 Oct 2026 08:45:57 +0200
+Subject: [PATCH 2/4] machine: x-vcpu-priority QMP command
+
+Switches the vCPU threads between real-time (SCHED_FIFO) and ordinary
+scheduling (with a nice value) at run time, so that only the VM in front keeps
+real-time vCPUs when several run (vm_focus_priority.py drives it).
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+Claude-Session: https://claude.ai/code/session_01M8iTzFPtyk2Gzbt6CLnRYK
+---
+ hw/core/machine-qmp-cmds.c | 35 +++++++++++++++++++++++++++++++++++
+ qapi/machine.json          | 29 +++++++++++++++++++++++++++++
+ 2 files changed, 64 insertions(+)
+
+diff --git a/hw/core/machine-qmp-cmds.c b/hw/core/machine-qmp-cmds.c
+index 9c08b1751..9197507b0 100644
+--- a/hw/core/machine-qmp-cmds.c
++++ b/hw/core/machine-qmp-cmds.c
+@@ -8,6 +8,10 @@
+  */
+ 
+ #include "qemu/osdep.h"
++#ifdef CONFIG_LINUX
++#include <sched.h>
++#include <sys/resource.h>
++#endif
+ #include "hw/acpi/vmgenid.h"
+ #include "hw/core/boards.h"
+ #include "hw/core/nmi.h"
+@@ -59,6 +63,37 @@ AcceleratorInfo *qmp_query_accelerators(Error **errp)
+  * fast means: we NEVER interrupt vCPU threads to retrieve
+  * information from KVM.
+  */
++void qmp_x_vcpu_priority(bool realtime, bool has_nice, int64_t nice,
++                         Error **errp)
++{
++#ifdef CONFIG_LINUX
++    struct sched_param sp = { .sched_priority = realtime ? 1 : 0 };
++    CPUState *cs;
++
++    if (!has_nice) {
++        nice = -5;
++    }
++    CPU_FOREACH(cs) {
++        if (!cs->thread_id) {
++            continue;
++        }
++        if (sched_setscheduler(cs->thread_id, realtime ? SCHED_FIFO : SCHED_OTHER,
++                               &sp) < 0) {
++            error_setg_errno(errp, errno, "vCPU %d: cannot set its scheduling",
++                             cs->cpu_index);
++            return;
++        }
++        if (!realtime && setpriority(PRIO_PROCESS, cs->thread_id, nice) < 0) {
++            error_setg_errno(errp, errno, "vCPU %d: cannot set nice %" PRId64,
++                             cs->cpu_index, nice);
++            return;
++        }
++    }
++#else
++    error_setg(errp, "x-vcpu-priority is only supported on Linux hosts");
++#endif
++}
++
+ CpuInfoFastList *qmp_query_cpus_fast(Error **errp)
+ {
+     MachineState *ms = MACHINE(qdev_get_machine());
+diff --git a/qapi/machine.json b/qapi/machine.json
+index b1be5608b..a068e11cc 100644
+--- a/qapi/machine.json
++++ b/qapi/machine.json
+@@ -141,6 +141,35 @@
+ ##
+ { 'command': 'query-cpus-fast', 'returns': [ 'CpuInfoFast' ] }
+ 
++##
++# @x-vcpu-priority:
++#
++# Schedule the vCPU threads in real time (SCHED_FIFO priority 1) or
++# as ordinary threads (SCHED_OTHER with a nice value): a desktop VM
++# brought to the front gets real-time vCPUs, one sent to the back
++# gives them up, so that several busy VMs cannot take every host CPU
++# at real-time priority.  Real time needs CAP_SYS_NICE in QEMU.
++#
++# @realtime: SCHED_FIFO 1 if true, SCHED_OTHER if false
++#
++# @nice: the vCPU threads' nice value when not real-time (default -5)
++#
++# Features:
++#
++# @unstable: This command is experimental.
++#
++# Since: 11.2
++#
++# .. qmp-example::
++#
++#     -> { "execute": "x-vcpu-priority",
++#          "arguments": { "realtime": false } }
++#     <- { "return": {} }
++##
++{ 'command': 'x-vcpu-priority',
++  'data': { 'realtime': 'bool', '*nice': 'int' },
++  'features': [ 'unstable' ] }
++
+ ##
+ # @CompatProperty:
+ #

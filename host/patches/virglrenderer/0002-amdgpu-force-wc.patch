@@ -1,7 +1,3 @@
-Origin: a local fix of the qemu-gui-manager author, not upstream.
-qemu-gui-manager ships it, and File > Build QEMU applies it to the
-virglrenderer it builds with DRM native context.
-
 amdgpu: force write-combining for host-visible blob mappings
 
 Report write-combining for all mappable host-visible blobs in the AMDGPU

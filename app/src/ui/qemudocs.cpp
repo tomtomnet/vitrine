@@ -7,6 +7,7 @@
 #include <QSet>
 
 #include "core/paths.h"
+#include "core/stackbuilder.h"
 #include "core/vmconfig.h"
 
 /* One loader per binary, whichever QemuDocs use it */
@@ -45,6 +46,9 @@ QemuDocs *QemuDocs::preferred()
     if (!docs) {
         docs = new QemuDocs(true);
         docs->setBinary(Paths::qemuBinary());
+        /* a build of Vitrine's QEMU is another binary, in another prefix */
+        QObject::connect(StackBuilder::instance(), &StackBuilder::built, docs,
+                         []() { reloadPreferred(); });
     }
     return docs;
 }

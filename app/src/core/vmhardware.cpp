@@ -4,6 +4,7 @@
 #include <QCoreApplication>
 #include <QFileInfo>
 #include <QHash>
+#include <QRegularExpression>
 #include <QSet>
 
 #include <climits>
@@ -563,6 +564,23 @@ void setGraphics(ArgsFile &args, const Graphics &g)
     setWindow(args, g.display, gl, accelerated);
 }
 
+void setScreen(ArgsFile &args, Screen screen)
+{
+    Graphics g = graphics(args);
+
+    g.display = screen == Screen::Embedded ? "dbus" : screen == Screen::OwnWindow ? "sdl" : "none";
+    setGraphics(args, g);
+    /* virgl needs OpenGL in the window, whichever it is */
+    const int line = lastIndex(args, "display");
+    if (g.kind == Graphics::Accelerated && screen != Screen::None && line >= 0) {
+        OptionValue v = args.valueAt(line);
+        if (v.get("gl", "off") == "off") {
+            v.set("gl", "on");
+            args.setValueAt(line, v);
+        }
+    }
+}
+
 /* Disks */
 
 static const QStringList kHardDisks = {"hda", "hdb", "hdc", "hdd"};
@@ -890,6 +908,200 @@ static QList<int> nicLines(const ArgsFile &args)
         }
     }
     return lines;
+}
+
+/* Network */
+
+/*
+ * The host port of a forward to the guest's @guestPort over TCP, or 0:
+ * hostfwd=[tcp|udp]:[HOSTADDR]:HOSTPORT-[GUESTADDR]:GUESTPORT for user,
+ * tcp-ports=[ADDR/]PORT[:GUESTPORT] for passt (ranges are not followed)
+ */
+static int forwardPort(const QString &backend, const QString &rule, int guestPort)
+{
+    static const QRegularExpression hostfwd("^(tcp|udp)?:([^:]*):(\\d+)-([^:]*):(\\d+)$");
+    static const QRegularExpression passt("^(?:[^/]*/)?(\\d+)(?::(\\d+))?$");
+
+    if (backend == "passt") {
+        const QRegularExpressionMatch m = passt.match(rule);
+        if (!m.hasMatch()) {
+            return 0;
+        }
+        const int host = m.captured(1).toInt();
+        const int guest = m.captured(2).isEmpty() ? host : m.captured(2).toInt();
+        return guest == guestPort ? host : 0;
+    }
+    const QRegularExpressionMatch m = hostfwd.match(rule);
+    if (!m.hasMatch() || m.captured(1) == "udp" || m.captured(5).toInt() != guestPort) {
+        return 0;
+    }
+    return m.captured(3).toInt();
+}
+
+static QString forwardKey(const QString &backend)
+{
+    return backend == "passt" ? "tcp-ports" : "hostfwd";
+}
+
+static int sshForward(const OptionValue &v, const QString &backend)
+{
+    for (const OptionValue::Item &item : v.items()) {
+        if (item.key == forwardKey(backend) && !item.bare) {
+            if (const int port = forwardPort(backend, item.value, 22); port > 0) {
+                return port;
+            }
+        }
+    }
+    return 0;
+}
+
+/* @v with the forward to the guest's SSH on @port (none for 0), the others kept */
+static OptionValue withSshForward(const OptionValue &v, const QString &backend, int port)
+{
+    const QString key = forwardKey(backend);
+    QStringList parts;
+
+    for (const OptionValue::Item &item : v.items()) {
+        if (item.key != key || item.bare || forwardPort(backend, item.value, 22) == 0) {
+            parts << OptionValue::itemText(item);
+        }
+    }
+    if (port > 0) {
+        parts << key + '=' + (backend == "passt" ? QString("127.0.0.1/%1:22")
+                                                 : QString("tcp:127.0.0.1:%1-:22")).arg(port);
+    }
+    return OptionValue(parts.join(','));
+}
+
+/* The lines the Network page follows: the -netdev or -nic, the card of a -netdev */
+struct NetLines {
+    int net = -1;
+    int card = -1;
+};
+
+static Network readNetwork(const ArgsFile &args, NetLines *lines)
+{
+    const QList<int> netdevs = args.indexesOf("netdev");
+    const QList<int> nics = args.indexesOf("nic");
+    Network n;
+
+    auto custom = [&n](const QString &why) {
+        n.kind = Network::Custom;
+        n.custom = why;
+        return n;
+    };
+    if (!args.indexesOf("net").isEmpty()) {
+        return custom(tr("legacy -net options"));
+    }
+    if (netdevs.isEmpty() && nics.isEmpty()) {
+        /* QEMU's default card, unless -nodefaults */
+        n.kind = args.indexOf("nodefaults") >= 0 ? Network::Off : Network::Nat;
+        return n;
+    }
+    if (netdevs.size() + nics.size() > 1) {
+        return custom(tr("%1 networks").arg(netdevs.size() + nics.size()));
+    }
+    const int line = netdevs.isEmpty() ? nics.first() : netdevs.first();
+    if (args.lines[line].value.trimmed().startsWith('{')) {
+        return custom(tr("-netdev in JSON"));
+    }
+    const OptionValue v = args.valueAt(line);
+    const QString type = v.implied().isEmpty() ? v.get("type") : v.implied();
+    NetLines l;
+
+    l.net = line;
+    if (type == "none" && netdevs.isEmpty()) {
+        n.kind = Network::Off;
+    } else if (type != "user" && type != "passt") {
+        return custom(type.isEmpty() ? tr("a network without a type") : type);
+    } else if (netdevs.isEmpty()) {
+        n.backend = type;
+        n.card = v.get("model");
+        n.sshPort = sshForward(v, type);
+    } else {
+        const QString id = v.get("id");
+        QList<int> cards;
+
+        for (int i : args.indexesOf("device")) {
+            if (!id.isEmpty() && args.valueAt(i).get("netdev") == id) {
+                cards << i;
+            }
+        }
+        if (cards.size() != 1) {
+            return custom(cards.isEmpty() ? tr("a -netdev without a card") : tr("several cards"));
+        }
+        l.card = cards.first();
+        n.backend = type;
+        n.card = args.valueAt(l.card).implied();
+        n.sshPort = sshForward(v, type);
+    }
+    if (lines) {
+        *lines = l;
+    }
+    return n;
+}
+
+Network network(const ArgsFile &args)
+{
+    return readNetwork(args, nullptr);
+}
+
+void setNetwork(ArgsFile &args, const Network &n)
+{
+    NetLines l;
+    const Network now = readNetwork(args, &l);
+
+    if (now.kind == Network::Custom || n.kind == Network::Custom) {
+        return;
+    }
+    if (n.kind == Network::Off) {
+        if (now.kind == Network::Off) {
+            return;
+        }
+        if (l.net < 0) {
+            /* QEMU's default card */
+            args.add("nic", "none");
+            return;
+        }
+        const int at = l.card < 0 ? l.net : qMin(l.net, l.card);
+        if (l.card >= 0) {
+            args.removeAt(qMax(l.net, l.card));
+        }
+        args.removeAt(at);
+        args.lines.insert(at, optionLine("nic", "none"));
+        return;
+    }
+
+    if (now.kind == Network::Nat && !now.backend.isEmpty()) {
+        if (n.sshPort != now.sshPort) {
+            args.setValueAt(l.net, withSshForward(args.valueAt(l.net), now.backend, n.sshPort));
+        }
+        return;
+    }
+    if (now.kind == Network::Nat && n.sshPort == 0) {
+        /* QEMU's default card, which forwards nothing: as it is */
+        return;
+    }
+    /* a card of our own: where -nic none was, else at the end */
+    int at = int(args.lines.size());
+    if (l.net >= 0) {
+        at = l.net;
+        args.removeAt(l.net);
+    }
+    const QString backend = n.backend.isEmpty() ? QString("user") : n.backend;
+    const QString id = uniqueId(args, "net");
+    QString netdev = backend + ",id=" + id;
+    if (backend == "passt" && hasSharedMemory(args)) {
+        /* the data path in passt's process, which maps guest RAM */
+        netdev += ",vhost-user=on";
+    }
+    const QString card = !n.card.isEmpty() ? n.card
+                         : guest(args).os == "windows" && !machineType(args).startsWith("virt")
+                             ? QString("e1000e")
+                             : QString("virtio-net-pci");
+    args.lines.insert(at, optionLine("netdev", withSshForward(OptionValue(netdev), backend,
+                                                              n.sshPort).toString()));
+    args.lines.insert(at + 1, optionLine("device", card + ",netdev=" + id));
 }
 
 BootDevice firstBootDevice(const ArgsFile &args)

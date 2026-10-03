@@ -30,14 +30,14 @@ qt_add_library(vitrine_core STATIC
     src/core/paths.h
     src/core/perfstats.cpp
     src/core/perfstats.h
-    src/core/qemubuilder.cpp
-    src/core/qemubuilder.h
     src/core/qemuinfo.cpp
     src/core/qemuinfo.h
     src/core/qmpclient.cpp
     src/core/qmpclient.h
     src/core/snapshots.cpp
     src/core/snapshots.h
+    src/core/stackbuilder.cpp
+    src/core/stackbuilder.h
     src/core/updatecheck.cpp
     src/core/updatecheck.h
     src/core/vmconfig.cpp
@@ -54,9 +54,9 @@ qt_add_library(vitrine_core STATIC
     src/core/vmtemplate.h
 )
 target_include_directories(vitrine_core PUBLIC src)
-# the virglrenderer patches File > Build QEMU applies
-qt_add_resources(vitrine_core virglpatches PREFIX / BASE data
-    FILES data/patches/virglrenderer-amdgpu-force-wc.patch)
+# host/ of the source tree: what a build tree's app builds its QEMU with
+target_compile_definitions(vitrine_core PRIVATE
+    VITRINE_HOST_SOURCE_DIR="${PROJECT_SOURCE_DIR}/host")
 # what the runner passes a guest to install the guest tools at boot
 qt_add_resources(vitrine_core guestbootstrap PREFIX /guest BASE ../guest
     FILES ../guest/bootstrap/vitrine-tools-bootstrap.service
@@ -171,6 +171,8 @@ qt_add_executable(vitrine
     src/ui/settingspages.h
     src/ui/snapshotview.cpp
     src/ui/snapshotview.h
+    src/ui/stackbanner.cpp
+    src/ui/stackbanner.h
     src/ui/textdialog.cpp
     src/ui/textdialog.h
     src/ui/uiconfig.cpp
@@ -239,10 +241,10 @@ if(BUILD_TESTING)
             importer
             optionvalue
             perfstats
-            qemubuilder
             qemuinfo
             qmpclient
             snapshots
+            stackbuilder
             updatecheck
             vmcloner
             vmconfig
