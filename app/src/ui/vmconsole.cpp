@@ -14,6 +14,7 @@
 #include "core/vmrunner.h"
 #include "core/vmstore.h"
 #include "ui/banner.h"
+#include "ui/guesttoolsdialog.h"
 #include "ui/icons.h"
 #include "ui/vmdetails.h"
 #include "vmview/vmview.h"
@@ -92,6 +93,9 @@ VmConsole::VmConsole(Vm *vm, QWidget *parent)
         column->addStretch(2);
         column->addLayout(header);
         column->addWidget(m_error);
+        auto *tools = new GuestToolsBanner;
+        tools->setVm(vm);
+        column->addWidget(tools);
         column->addSpacing(16);
         column->addWidget(m_start, 0, Qt::AlignLeft);
         column->addSpacing(16);

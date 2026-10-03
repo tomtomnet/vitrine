@@ -231,6 +231,7 @@ struct VmRunner::Private
     qint64 pid = 0;             // QEMU
     QList<Helper> helpers;      // virtiofsd started for this run
     GuestAgent *agent = nullptr;    // mounting the shares
+    std::function<bool()> shutdownHandler;
     bool connecting = false;
     bool stopRequested = false; // the end of the run is no failure
     int killStep = 0;
@@ -985,9 +986,22 @@ void VmRunner::resume()
 
 void VmRunner::powerdown()
 {
+    if (d->shutdownHandler && isActive() && d->shutdownHandler()) {
+        return;
+    }
+    pressPowerButton();
+}
+
+void VmRunner::pressPowerButton()
+{
     if (d->qmp->isReady()) {
         d->qmp->execute("system_powerdown", {}, d->reportErrors("system_powerdown"));
     }
+}
+
+void VmRunner::setShutdownHandler(const std::function<bool()> &handler)
+{
+    d->shutdownHandler = handler;
 }
 
 void VmRunner::reset()

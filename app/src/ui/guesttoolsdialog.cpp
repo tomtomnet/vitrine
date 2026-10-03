@@ -192,20 +192,8 @@ void GuestToolsDialog::go(bool medium)
                 next();
             }
         });
-        /* the agent powers the guest off at once; Plasma would answer the
-           power button with its logout screen and wait */
-        GuestToolsMonitor *monitor = GuestToolsMonitor::of(m_vm);
-        if (monitor->hasAgent()) {
-            connect(monitor, &GuestToolsMonitor::commandFinished, this,
-                    [this](const QString &command, bool ok) {
-                if (command == "shutdown" && !ok && m_vm && m_step == Step::ShuttingDown) {
-                    m_vm->runner()->powerdown();
-                }
-            });
-            monitor->requestShutdown();
-        } else {
-            m_vm->runner()->powerdown();
-        }
+        /* through the agent if the guest has one (VmRunner's shutdown handler) */
+        m_vm->runner()->powerdown();
         m_timeout->start(kShutdownMs);
         return;
     }

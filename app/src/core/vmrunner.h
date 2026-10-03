@@ -72,8 +72,18 @@ public:
     void attach(const ArgsFile &args = {});
     void pause();
     void resume();
-    /* ACPI power button */
+    /* Asks the guest to shut down: through the shutdown handler if it takes
+       the request, else with the ACPI power button */
     void powerdown();
+    /* The ACPI power button only */
+    void pressPowerButton();
+    /*
+     * The guest's own way to shut down, tried first by powerdown(): returns
+     * true if it took the request.  The guest tools' agent is one: a KDE
+     * guest answers the power button with its logout screen, which waits
+     * for someone at the guest's screen to confirm.
+     */
+    void setShutdownHandler(const std::function<bool()> &handler);
     void reset();
     /* Quits QEMU at once */
     void forceOff();

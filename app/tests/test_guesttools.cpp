@@ -366,6 +366,19 @@ private slots:
         in.running = false;
         QCOMPARE(evaluate(in), State::Unknown);
 
+        /* off: what the last run showed */
+        Inputs off;
+        off.medium = medium;
+        off.remembered = State::NotInstalled;
+        QCOMPARE(evaluate(off), State::NotInstalled);
+        off.remembered = State::Installed;
+        off.rememberedTools = medium.tools;
+        QCOMPARE(evaluate(off), State::Unknown);
+        off.rememberedTools = "0.0.9-1.fc44";
+        QCOMPARE(evaluate(off), State::UpdateAvailable);
+        off.pending = Pending::Bootstrap;
+        QCOMPARE(evaluate(off), State::Pending);
+
         /* the installer of this medium failed where the host did not see it */
         in.running = true;
         in.report.osVersion = "44";
@@ -446,9 +459,26 @@ private slots:
         QTRY_VERIFY(found);
         QVERIFY(readOnly);
 
+        /* Shut Down asks the shutdown handler first, the power button if it declines */
+        int asked = 0;
+        bool takes = true;
+        runner.setShutdownHandler([&]() {
+            asked++;
+            return takes;
+        });
+        runner.powerdown();
+        QCOMPARE(asked, 1);
+        takes = false;
+        runner.powerdown();     // the power button: a VM without a guest stays up
+        QCOMPARE(asked, 2);
+        QTest::qWait(200);
+        QCOMPARE(runner.state(), VmRunner::State::Running);
+
         runner.forceOff();
         QTRY_COMPARE_WITH_TIMEOUT(runner.state(), VmRunner::State::Stopped, 15000);
         QVERIFY(!QFileInfo::exists(socket));
+        runner.powerdown();     // not running: the handler is not asked
+        QCOMPARE(asked, 2);
         setPending(id, Pending::None);
         Paths::setQemuBinary({});
         QDir(dataDir()).removeRecursively();
@@ -510,7 +540,8 @@ private slots:
               qPrintable(r.packages.value("kwin")), r.kwinPatched ? " (vitrine's)" : "");
         QCOMPARE(monitor->state(), State::Installed);
 
-        monitor->requestShutdown();
+        /* Shut Down: through the agent, which the monitor gave the runner */
+        vm.runner()->powerdown();
         QTRY_COMPARE_WITH_TIMEOUT(vm.runner()->state(), VmRunner::State::Stopped, 60000);
         QDir(dataDir()).removeRecursively();
     }

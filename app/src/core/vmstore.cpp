@@ -12,6 +12,7 @@
 
 #include "core/paths.h"
 #include "core/vmconfig.h"
+#include "core/guesttools.h"
 #include "core/vmrunner.h"
 
 static const char kArgsFile[] = "vm.args";
@@ -21,6 +22,8 @@ Vm::Vm(const QString &dir, QObject *parent)
 {
     m_runner = new VmRunner(id(), m_dir, this);
     reload();
+    /* its guest tools: their agent, which Shut Down goes through */
+    GuestToolsMonitor::of(this);
 }
 
 QString Vm::id() const

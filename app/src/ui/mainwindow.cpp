@@ -423,10 +423,10 @@ void MainWindow::createActions()
     machine->addActions({m_start, m_showWindow, m_pause, m_shutDown, m_reset, m_forceOff});
     machine->addSeparator();
     machine->addActions({m_ctrlAltDel, m_releaseInput});
-    machine->addSeparator();
-    machine->addActions({m_log, m_folder, m_command});
     machine->addAction(tr("Install &Guest Tools…"), this,
                        [this]() { GuestToolsDialog::run(this, current()); });
+    machine->addSeparator();
+    machine->addActions({m_log, m_folder, m_command});
     machine->addSeparator();
     machine->addActions({m_clone, m_remove});
 

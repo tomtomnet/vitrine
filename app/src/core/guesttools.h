@@ -161,6 +161,10 @@ struct Inputs {
     bool failed = false;
     Report report;
     Medium medium;
+    /* What the last run of the VM showed, for while it is off: NotInstalled,
+       Installed (with the tools' version-release), or Unknown */
+    State remembered = State::Unknown;
+    QString rememberedTools;
 };
 State evaluate(const Inputs &in);
 /* Why the stock driver runs, from the report */
@@ -201,9 +205,6 @@ public:
     void installFromMedium();
     /* The agent restarts the guest */
     void requestReboot();
-    /* The agent powers the guest off at once: Plasma answers the ACPI power
-       button with its logout screen, which waits for someone to confirm */
-    void requestShutdown();
     /* The next start brings the medium and the bootstrap, or the medium only */
     void setPending(GuestTools::Pending pending);
 
@@ -222,6 +223,10 @@ private:
     void qmpEvent(const QString &name, const QJsonObject &data);
     void guestRestarted();
     void send(const QString &command);
+    /* The runner's shutdown handler: the agent powers the guest off at once */
+    bool shutDownThroughAgent();
+    /* What this run showed, for while the VM is off */
+    void remember();
 
     Vm *m_vm;
     QLocalSocket *m_socket;
@@ -241,4 +246,6 @@ private:
     QString m_error;
     qint64 m_nextId = 1;
     int m_polls = 0;
+    /* the power button, if the agent does not answer the shutdown */
+    QTimer *m_shutdownFallback;
 };

@@ -151,6 +151,11 @@ static QString pendingKey(const QString &vmId)
     return "guesttools/pending/" + vmId;
 }
 
+static QString lastKey(const QString &vmId)
+{
+    return "guesttools/last/" + vmId;
+}
+
 Pending pending(const QString &vmId)
 {
     const QString value =
@@ -278,7 +283,18 @@ QByteArray commandLine(const QString &command, qint64 id)
 State evaluate(const Inputs &in)
 {
     if (!in.running) {
-        return in.pending != Pending::None ? State::Pending : State::Unknown;
+        if (in.pending != Pending::None) {
+            return State::Pending;
+        }
+        /* what its last run showed: no tools, or older ones than the medium's */
+        if (in.remembered == State::NotInstalled) {
+            return State::NotInstalled;
+        }
+        if (in.remembered == State::Installed && in.medium.isValid() &&
+            !in.rememberedTools.isEmpty() && in.rememberedTools != in.medium.tools) {
+            return State::UpdateAvailable;
+        }
+        return State::Unknown;
     }
     if (in.installing) {
         return State::Installing;
@@ -372,8 +388,18 @@ GuestToolsMonitor *GuestToolsMonitor::of(Vm *vm)
 
 GuestToolsMonitor::GuestToolsMonitor(Vm *vm)
     : QObject(vm), m_vm(vm), m_socket(new QLocalSocket(this)), m_retry(new QTimer(this)),
-      m_grace(new QTimer(this)), m_contexts(new GpuContexts(this)), m_poll(new QTimer(this))
+      m_grace(new QTimer(this)), m_contexts(new GpuContexts(this)), m_poll(new QTimer(this)),
+      m_shutdownFallback(new QTimer(this))
 {
+    /* "not-installed", or "installed" and the version, as the last run left it */
+    const QString last = QSettings(Paths::settingsPath(), QSettings::IniFormat)
+                             .value(lastKey(vm->id())).toString();
+    m_in.remembered = last == "not-installed"         ? State::NotInstalled
+                      : last.startsWith("installed ") ? State::Installed
+                                                      : State::Unknown;
+    m_in.rememberedTools = last.section(' ', 1);
+    m_in.medium = GuestTools::medium();
+
     m_retry->setSingleShot(true);
     m_retry->setInterval(kRetryMs);
     m_grace->setSingleShot(true);
@@ -414,7 +440,61 @@ GuestToolsMonitor::GuestToolsMonitor(Vm *vm)
         }
     });
     connect(vm->runner(), &VmRunner::stateChanged, this, &GuestToolsMonitor::runnerChanged);
+    connect(this, &GuestToolsMonitor::changed, this, &GuestToolsMonitor::remember);
+
+    /* Shut Down goes through the agent while there is one: Plasma answers
+       the power button with its logout screen, which waits for a click */
+    m_shutdownFallback->setSingleShot(true);
+    m_shutdownFallback->setInterval(5000);
+    connect(m_shutdownFallback, &QTimer::timeout, this, [this]() {
+        if (m_vm->runner()->state() == VmRunner::State::Running) {
+            m_vm->runner()->pressPowerButton();
+        }
+    });
+    vm->runner()->setShutdownHandler([guard = QPointer<GuestToolsMonitor>(this)]() {
+        return guard && guard->shutDownThroughAgent();
+    });
     runnerChanged();
+}
+
+bool GuestToolsMonitor::shutDownThroughAgent()
+{
+    if (!m_in.running || !m_in.agentSeen ||
+        m_socket->state() != QLocalSocket::ConnectedState) {
+        return false;
+    }
+    send("shutdown");
+    m_shutdownFallback->start();
+    return true;
+}
+
+void GuestToolsMonitor::remember()
+{
+    QString value;
+
+    if (!m_in.running) {
+        return;
+    }
+    switch (state()) {
+    case State::NotInstalled:
+        value = "not-installed";
+        break;
+    case State::Installed:
+    case State::UpdateAvailable:
+    case State::RebootNeeded:
+    case State::DriverNotActive:
+    case State::MesaNotActive:
+        value = "installed " + m_in.report.tools;
+        break;
+    default:
+        return;
+    }
+    if (m_in.remembered != (value == "not-installed" ? State::NotInstalled : State::Installed) ||
+        m_in.rememberedTools != value.section(' ', 1)) {
+        QSettings(Paths::settingsPath(), QSettings::IniFormat).setValue(lastKey(m_vm->id()), value);
+        m_in.remembered = value == "not-installed" ? State::NotInstalled : State::Installed;
+        m_in.rememberedTools = value.section(' ', 1);
+    }
 }
 
 State GuestToolsMonitor::state() const
@@ -442,7 +522,12 @@ void GuestToolsMonitor::runnerChanged()
         /* a new run, started here or found running */
         const Pending started = m_started ? m_startPending : Pending::None;
 
+        const State remembered = m_in.remembered;
+        const QString rememberedTools = m_in.rememberedTools;
+
         m_in = Inputs{};
+        m_in.remembered = remembered;
+        m_in.rememberedTools = rememberedTools;
         m_in.running = true;
         m_in.bootstrapRun = started == Pending::Bootstrap;
         if (started != Pending::None) {
@@ -467,9 +552,11 @@ void GuestToolsMonitor::runnerChanged()
         m_in.agentSeen = false;
         m_in.installing = false;
         m_in.pending = GuestTools::pending(m_vm->id());
+        m_in.medium = GuestTools::medium();
         m_retry->stop();
         m_grace->stop();
         m_poll->stop();
+        m_shutdownFallback->stop();
         m_socket->abort();
         m_buffer.clear();
     }
@@ -534,6 +621,12 @@ void GuestToolsMonitor::handle(const Message &m)
         break;
     case Message::Type::Result:
         emit commandFinished(m.command, m.ok, m.error);
+        if (m.command == "shutdown") {
+            m_shutdownFallback->stop();
+            if (!m.ok) {
+                m_vm->runner()->pressPowerButton();
+            }
+        }
         if (m.command == "install-from-medium") {
             m_in.installing = false;
             m_in.failed = !m.ok;
@@ -544,7 +637,9 @@ void GuestToolsMonitor::handle(const Message &m)
         }
         break;
     case Message::Type::Error:
-        m_error = m.error;
+        /* a command this agent does not know (an older one): shutdown falls
+           back to the power button by its timer */
+        qInfo("guest agent of %s: %s", qPrintable(m_vm->id()), qPrintable(m.error));
         break;
     case Message::Type::Invalid:
         return;
@@ -600,10 +695,6 @@ void GuestToolsMonitor::requestReboot()
     send("request-reboot");
 }
 
-void GuestToolsMonitor::requestShutdown()
-{
-    send("shutdown");
-}
 
 void GuestToolsMonitor::setPending(Pending pending)
 {
@@ -622,6 +713,11 @@ QString GuestToolsMonitor::text() const
     case State::Installed:
         return {};
     case State::NotInstalled:
+        if (!m_in.running) {
+            return tr("The guest tools were not installed when this VM last ran: vitrine's "
+                      "graphics driver, Mesa with native context and KWin make a Fedora guest "
+                      "smoother.");
+        }
         if (m_in.bootstrapRun) {
             return tr("The guest did not install the guest tools at its start: that needs "
                       "Fedora %1 with systemd 256 or later. To install them by hand, attach "
@@ -663,6 +759,10 @@ QString GuestToolsMonitor::text() const
         return tr("The guest tools are installed, but the guest draws through virgl, not "
                   "native context: its Mesa is not the one of the tools.");
     case State::UpdateAvailable:
+        if (!m_in.running) {
+            return tr("Guest tools %1 are available; this guest had %2 when it last ran.")
+                .arg(m_in.medium.tools.toHtmlEscaped(), m_in.rememberedTools.toHtmlEscaped());
+        }
         return tr("Guest tools %1 are available; this guest has %2.")
             .arg(m_in.medium.tools.toHtmlEscaped(), r.tools.toHtmlEscaped());
     case State::Unsupported:
