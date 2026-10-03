@@ -180,6 +180,8 @@ flip_current() {
 }
 
 if [ -f "$manifest" ] && grep -qx "STAMP=$stamp" "$manifest"; then
+	# no Stop between switching `current` and saying so (see the end)
+	trap '' TERM INT HUP
 	flip_current
 	say "up to date: $prefix"
 	exit 0
@@ -351,7 +353,11 @@ for p in drm_native_context x-host-vblank; do
 done
 echo "QEMU $version, virtio-gpu-gl-pci with drm_native_context and x-host-vblank"
 
-# what was built, written last: a prefix with it is complete
+# what was built, written last: a prefix with it is complete.  From here
+# on, a Stop would leave `current` switched to it while the app hears of
+# a failure: the few commands left run to their end, and the commands
+# they start ignore the signals too
+trap '' TERM INT HUP
 mkdir -p "$(dirname "$manifest")"
 patch_names() { local p; for p in "$@"; do printf '%s ' "$(basename "$p")"; done; }
 cat > "$manifest.new" << EOF

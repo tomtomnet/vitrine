@@ -493,6 +493,50 @@ echo "vitrine-build: built: /nowhere"
         QTRY_VERIFY_WITH_TIMEOUT(::kill(sleeper, 0) != 0 && errno == ESRCH, 10000);
     }
 
+    /* A Stop that came once `current` switched: the build is done all the same */
+    void stopAfterTheSwitch()
+    {
+        const QString pidFile = m_tmp.filePath("late-pid");
+        const QString stack = m_tmp.filePath("late-stack");
+        StackBuilder b;
+        b.setHostDir(hostDir("late-host", QString(R"sh(#!/bin/bash
+stack=$2
+echo "vitrine-build: step 8/8: checking the installation"
+mkdir -p "$stack/0123456789abcdef/bin" "$stack/0123456789abcdef/share/vitrine"
+echo STAMP=abc > "$stack/0123456789abcdef/share/vitrine/stack.conf"
+ln -sfn 0123456789abcdef "$stack/current"
+sh -c 'echo $$ > %1; exec sleep 300'
+echo "vitrine-build: built: $stack/0123456789abcdef"
+)sh").arg(pidFile).toUtf8()));
+        b.setStackDir(stack);
+        b.setWorkDir(m_tmp.filePath("late-work"));
+        QSignalSpy finished(&b, &StackBuilder::finished);
+        QSignalSpy built(&b, &StackBuilder::built);
+
+        b.start();
+        QTRY_VERIFY_WITH_TIMEOUT(QFileInfo(pidFile).size() > 0, 10000);
+        b.cancel();
+        QVERIFY(finished.wait(10000));
+        QCOMPARE(finished[0][0].toString(), "");
+        QCOMPARE(built.size(), 1);
+        QCOMPARE(built[0][0].toString(), StackBuilder::current(stack).qemuBinary());
+        QVERIFY(!b.wasStopped());
+
+        /* stopped before it switched: stopped, `current` as it was */
+        QFile::remove(pidFile);
+        b.setHostDir(hostDir("early-host", QString(R"sh(#!/bin/bash
+sh -c 'echo $$ > %1; exec sleep 300'
+)sh").arg(pidFile).toUtf8()));
+        finished.clear();
+        b.start();
+        QTRY_VERIFY_WITH_TIMEOUT(QFileInfo(pidFile).size() > 0, 10000);
+        b.cancel();
+        QVERIFY(finished.wait(10000));
+        QCOMPARE(finished[0][0].toString(), "Stopped");
+        QCOMPARE(built.size(), 1);
+        QVERIFY(b.wasStopped());
+    }
+
     /*
      * The real build.sh with stand-ins for the components: fetch at the
      * pinned commits, patches, prefix per stamp, RUNPATH and ldd checks,

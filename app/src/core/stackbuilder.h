@@ -160,4 +160,6 @@ private:
     QStringList m_warnings;
     QString m_error;
     QString m_prefix;           // the one built, or up to date
+    QString m_stack;            // of the build running
+    QString m_before;           // the prefix `current` named when it started
 };

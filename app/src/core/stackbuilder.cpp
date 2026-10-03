@@ -323,6 +323,8 @@ void StackBuilder::start()
     m_warnings.clear();
     m_error.clear();
     m_prefix.clear();
+    m_stack = stack;
+    m_before = current(stack).prefix;
 
     if (!isHostDir(host)) {
         m_error = tr("This installation of Vitrine has no host/build.sh to build its QEMU with");
@@ -441,6 +443,22 @@ void StackBuilder::done(int code, bool crashed)
     m_process = nullptr;
     m_pid = 0;
 
+    /*
+     * By what was done: a build that switched `current` is the VMs' QEMU
+     * now, even if a Stop came too late to keep it from it (build.sh
+     * holds the stack's lock, so no other build switched it); one that
+     * ended well is, even if Stop came after it did
+     */
+    const Build now = current(m_stack);
+    if (now.isValid() && now.prefix != m_before) {
+        m_cancelled = false;
+        emit built(now.qemuBinary());
+        emit finished({});
+        return;
+    }
+    if (code == 0 && !crashed && Build::read(m_prefix).isValid()) {
+        m_cancelled = false;
+    }
     if (m_cancelled) {
         emit finished(tr("Stopped"));
         return;
