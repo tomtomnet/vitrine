@@ -21,6 +21,7 @@ class DBusDisplay;
 class DisplayWindow;
 class Listener;
 class Renderer;
+class VmClipboard;
 class WaylandExtras;
 
 /*
@@ -29,7 +30,8 @@ class WaylandExtras;
  *
  * attach() connects to the VM's display monitor (VmRunner::displaySocket):
  * getfd + add_client hand QEMU one end of a socket for a peer-to-peer D-Bus
- * connection, on which the view registers its listener.  widget() shows the
+ * connection, on which the view registers its listener and shares the
+ * clipboard (VmClipboard).  widget() shows the
  * screen in a layout, as a Wayland subsurface.  Full screen moves it to a
  * window of its own, the only way the compositor can put the guest's
  * buffers on the screen as they are: the switch re-creates the window and
@@ -104,6 +106,7 @@ private:
     WaylandExtras *m_wayland = nullptr;
     DBusDisplay *m_dbus = nullptr;
     std::unique_ptr<Listener> m_listener;
+    VmClipboard *m_clipboard = nullptr;
     Renderer *m_renderer = nullptr;
     DisplayWindow *m_window = nullptr;
     QPointer<QWidget> m_host;           // what widget() returns

@@ -123,6 +123,8 @@ qt_add_library(vitrine_vmview STATIC
     src/vmview/stats.h
     src/vmview/swapchain.cpp
     src/vmview/swapchain.h
+    src/vmview/vmclipboard.cpp
+    src/vmview/vmclipboard.h
     src/vmview/vmview.cpp
     src/vmview/vmview.h
     src/vmview/waylandextras.cpp
@@ -136,6 +138,9 @@ target_link_libraries(vitrine_vmview
 # GLib's headers use the names of Qt's signals/slots keywords; Qt's GL headers
 # come with Qt6::Gui and GL entry points are resolved at run time
 target_compile_definitions(vitrine_vmview PRIVATE QT_NO_KEYWORDS)
+# vitrine's own files there; the research side's build as they come
+set_source_files_properties(src/vmview/vmview.cpp src/vmview/vmclipboard.cpp
+    PROPERTIES COMPILE_OPTIONS "-Wall;-Wextra")
 
 # The windows, a library of their own so that tests can use them
 qt_add_library(vitrine_ui STATIC
@@ -318,5 +323,14 @@ if(BUILD_TESTING)
     add_test(NAME vmview COMMAND test_vmview)
     # freed memory filled and not cached per thread: a use after free shows
     vitrine_test_env(vmview
+        "GLIBC_TUNABLES=glibc.malloc.tcache_count=0:glibc.malloc.perturb=165")
+
+    # the clipboard shared with the guest, against a stand-in for QEMU's side
+    qt_add_executable(test_vmclipboard tests/test_vmclipboard.cpp)
+    target_link_libraries(test_vmclipboard PRIVATE vitrine_vmview PkgConfig::GIO Qt6::Test Qt6::Widgets)
+    target_compile_definitions(test_vmclipboard PRIVATE QT_NO_KEYWORDS)
+    target_compile_options(test_vmclipboard PRIVATE -Wall -Wextra)
+    add_test(NAME vmclipboard COMMAND test_vmclipboard)
+    set_tests_properties(vmclipboard PROPERTIES ENVIRONMENT
         "GLIBC_TUNABLES=glibc.malloc.tcache_count=0:glibc.malloc.perturb=165")
 endif()

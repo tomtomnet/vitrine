@@ -11,7 +11,8 @@ Keep them unchanged, so that its changes port over by copying the files:
 `sha256sum -c UPSTREAM.sha256` lists the files that no longer match the
 version taken. vitrine's own code is `vmview.{h,cpp}`: it attaches to a
 running QEMU and puts the display in a widget, or in a window of its own
-for full screen.
+for full screen; and `vmclipboard.{h,cpp}`: the host clipboard shared
+with the guest through the display's org.qemu.Display1.Clipboard.
 
 | file | what it does |
 |---|---|

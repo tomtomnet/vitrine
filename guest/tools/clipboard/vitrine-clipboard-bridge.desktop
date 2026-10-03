@@ -1,0 +1,9 @@
+[Desktop Entry]
+Type=Application
+Name=vdagent clipboard bridge
+Comment=Share the Wayland clipboard with spice-vdagent
+Exec=/usr/libexec/vitrine-guest-tools/vdagent-clipboard-bridge
+NoDisplay=true
+# GNOME keeps its X11 and Wayland clipboards in sync by itself
+NotShowIn=GNOME;
+X-KDE-autostart-phase=2
