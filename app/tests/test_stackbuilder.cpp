@@ -19,10 +19,10 @@
 static const char kManifest[] = R"(# What host/build.sh built here
 STAMP=%1
 BUILT=2026-10-03T11:30:26Z
-QEMU_URL=https://github.com/tomtomnet/qemu-gui.git
-QEMU_COMMIT=49fd506758831883132515839a89d2c6238ef796
+QEMU_URL=https://gitlab.com/qemu-project/qemu.git
+QEMU_COMMIT=3876503faff51ce3a132dbbd0ab42c10f2269319
 QEMU_VERSION=11.1.50
-QEMU_PATCHES=research/0001-a.patch research/0002-b.patch research/0003-c.patch research/0004-d.patch research/0005-e.patch research/0006-f.patch vitrine/0001-g.patch
+QEMU_PATCHES=fork/0001-a.patch fork/0002-b.patch research/0001-c.patch research/0002-d.patch research/0003-e.patch research/0004-f.patch vitrine/0001-g.patch
 VIRGL_URL=https://gitlab.freedesktop.org/virgl/virglrenderer.git
 VIRGL_COMMIT=cf6c62da2a1384b194f463e6221371962fe99575
 VIRGL_VERSION=1.3.0
@@ -188,7 +188,8 @@ private slots:
         QVERIFY2(!host.isEmpty(), "host/ of the source tree");
         const StackBuilder::Versions real = StackBuilder::versions(host);
         QVERIFY(real.isValid());
-        QCOMPARE(real.qemuUrl, "https://github.com/tomtomnet/qemu-gui.git");
+        /* upstream QEMU: the fork's commits are patches */
+        QCOMPARE(real.qemuUrl, "https://gitlab.com/qemu-project/qemu.git");
         QCOMPARE(real.qemuCommit.size(), 40);
         QCOMPARE(real.virglCommit.size(), 40);
     }

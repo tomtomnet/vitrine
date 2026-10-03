@@ -70,8 +70,8 @@ QemuBuildDialog::QemuBuildDialog(QWidget *parent)
 
     if (versions.isValid()) {
         m_about->setText(
-            tr("Vitrine runs the VMs with its own QEMU: the <a href=\"%1\">qemu-gui fork</a> at "
-               "%2 with %3 patches, and <a href=\"%4\">virglrenderer</a> at %5 with %6 patches, "
+            tr("Vitrine runs the VMs with its own build of <a href=\"%1\">QEMU</a> at %2 with %3 "
+               "patches and of <a href=\"%4\">virglrenderer</a> at %5 with %6 patches, "
                "for the display in Vitrine's window and 3D acceleration by the host GPU's own "
                "driver. Building downloads their sources and takes a few minutes.")
                 .arg(webPage(versions.qemuUrl).toHtmlEscaped(), versions.qemuCommit.left(8))

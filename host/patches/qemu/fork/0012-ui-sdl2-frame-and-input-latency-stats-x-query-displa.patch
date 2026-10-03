@@ -1,0 +1,1680 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: tomtomnet <tompere8000@proton.me>
+Date: Mon, 28 Sep 2026 17:58:00 +0200
+Subject: [PATCH] ui/sdl2: frame and input latency stats
+ (x-query-display-stats)
+
+The SDL display now measures the guest frames it shows, and the new QMP
+command x-query-display-stats (unstable) returns, for each console, over
+the last second:
+
+- guest flushes, frames presented, dropped, scanned out directly and
+  redrawn, per second;
+- frame latency: from QEMU receiving the guest's flush (dpy_gl_update or
+  a 2D update) to the compositor showing that frame, and QEMU's share of
+  it, from the flush to the end of the buffer swap;
+- the interval between frames on screen;
+- input latency: from a key press, click or wheel turn to the guest's
+  first frame on screen after the event reached it, over the last 10 s.
+  It counts only when the guest had flushed nothing for the 50 ms before,
+  so that the frame is likely its answer. Also how long input waited
+  before the display read it;
+- the guest size, the monitor's refresh rate, and how the end times are
+  known: "presentation", "swap" or "none".
+
+Each duration comes as samples, median, 99th percentile and maximum, in
+microseconds.
+
+On Wayland a frame ends at the compositor's own presentation time: QEMU
+asks wp_presentation for feedback on SDL's wl_surface right before each
+swap, so that the swap's commit carries the request, and dispatches the
+replies on an event queue of its own after SDL has read the compositor's
+events. Elsewhere, X11 and XWayland included, the latency ends when the
+swap returns. Every flush is numbered, so the flushes between two frames
+on screen that the second does not show count as dropped, whether QEMU
+merged them into one redraw or the compositor replaced them.
+
+Meson looks for wayland-client and wayland-scanner, with no option, and
+generates the client code from a bundled presentation-time.xml; the
+summary says "SDL Wayland presentation feedback". Without them QEMU
+builds as before and falls back to swap times. Other displays return an
+empty list of consoles. -trace 'sdl2_stats*' logs every flush, swap,
+presentation and input event with CLOCK_MONOTONIC times. The README says
+what the numbers mean; qemu-gui-manager shows them in its status bar.
+
+Checked against KWin's own frame log (KWIN_LOG_PERFORMANCE_DATA): every
+presentation time QEMU received is a KWin page flip, and predicting each
+frame from KWin's log alone gives the same flip for 3016 of 3020 frames
+at 240 Hz, the other 4 one refresh apart. The main thread's CPU time per
+frame is unchanged within noise (955 us, against 952 us without). A 2D
+virtio-vga guest flipping at 240 Hz shows 239 of its 240 frames per
+second on KWin, with a frame latency of 10.4 ms, of which QEMU 0.2 ms.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+Claude-Session: https://claude.ai/code/session_01M8iTzFPtyk2Gzbt6CLnRYK
+---
+ .github/README.md                |  17 +
+ include/ui/console.h             |   5 +
+ include/ui/sdl2.h                |  26 ++
+ meson.build                      |  16 +
+ qapi/ui.json                     | 162 +++++++
+ ui/meson.build                   |  15 +
+ ui/sdl2-2d.c                     |   5 +
+ ui/sdl2-gl.c                     |   8 +
+ ui/sdl2-stats.c                  | 775 +++++++++++++++++++++++++++++++
+ ui/sdl2.c                        |  16 +
+ ui/trace-events                  |   8 +
+ ui/ui-qmp-cmds.c                 |  21 +
+ ui/wayland/presentation-time.xml | 268 +++++++++++
+ 13 files changed, 1342 insertions(+)
+ create mode 100644 ui/sdl2-stats.c
+ create mode 100644 ui/wayland/presentation-time.xml
+
+diff --git a/.github/README.md b/.github/README.md
+index c66f226b9fcb9f3a7280860ee1f533c1a056b311..9effc340798c9810dbaea6c9b20ca907c1594dbf 100644
+--- a/.github/README.md
++++ b/.github/README.md
+@@ -81,6 +81,23 @@ contexts**.
+   booted. A guest offered native context that only creates virgl contexts
+   has a Mesa without native context support for the GPU.
+   [qemu-gui-manager](https://github.com/tomtomnet/qemu-gui-manager) shows it.
++- **ui/sdl2: frame statistics** (branch `perf-stats`): the SDL display
++  measures its frames, and the QMP command `x-query-display-stats` returns
++  them for the last second, as median, 99th percentile and maximum:
++  - frames on screen, guest flushes and dropped frames per second;
++  - **frame latency**, from QEMU receiving the guest's flush to the
++    compositor showing the frame. On Wayland the compositor says when, in
++    its presentation feedback (`wp_presentation`); on X11 the latency ends
++    when the buffer swap returns, which leaves the compositor out;
++  - QEMU's share of it (flush to buffer swap), and the time between frames;
++  - **input latency**, from a key press or click to the guest's first frame
++    on screen after it, when the guest was idle before, and how long input
++    waited for the display, which reads it on its refresh timer.
++
++  [qemu-gui-manager](https://github.com/tomtomnet/qemu-gui-manager) shows
++  them in its status bar. The presentation feedback needs `wayland-devel`
++  when building: configure's summary says `SDL Wayland presentation
++  feedback: YES`. `-trace 'sdl2_stats*'` logs each frame.
+ - **virtio-gpu-gl: disable the scanouts on reset in the main thread**: a
+   fix. A guest reset of `virtio-gpu-gl` ran display work in a vCPU thread,
+   and with `-display dbus,gl=on` QEMU aborted there
+diff --git a/include/ui/console.h b/include/ui/console.h
+index 3634956949ac1c5572f642f136744f06bb098ae2..58ca8de196b073aca30af52d5bae7443cfa43247 100644
+--- a/include/ui/console.h
++++ b/include/ui/console.h
+@@ -417,6 +417,11 @@ struct QemuDisplay {
+ };
+ 
+ void qemu_display_register(QemuDisplay *ui);
++/*
++ * The display in use fills in the consoles of x-query-display-stats: those
++ * whose frames it measures
++ */
++void qemu_display_set_stats(void (*query)(DisplayStats *stats));
+ bool qemu_display_find_default(DisplayOptions *opts);
+ void qemu_display_early_init(DisplayOptions *opts);
+ void qemu_display_init(DisplayState *ds, DisplayOptions *opts);
+diff --git a/include/ui/sdl2.h b/include/ui/sdl2.h
+index 5417ea31a988bf23484c4fee0b737cf2eea55809..af5986cf21240cac6661d8d070e8be0d6f85d73b 100644
+--- a/include/ui/sdl2.h
++++ b/include/ui/sdl2.h
+@@ -52,6 +52,7 @@ struct sdl2_console {
+     bool menu_presented;    /* a frame was presented since the last refresh */
+     bool menu_stale;        /* the menu changed and is not on screen yet */
+     int menu_top;           /* window rows taken by the docked menu bar */
++    struct sdl2_stats *stats;   /* frame statistics, see sdl2-stats.c */
+ #ifdef CONFIG_OPENGL
+     QemuGLShader *gls;
+     egl_fb guest_fb;
+@@ -83,6 +84,31 @@ void sdl2_clipboard_focus(void);
+ /* A key or mouse button was pressed in a window of the display */
+ void sdl2_clipboard_input(void);
+ 
++/*
++ * Frame statistics for x-query-display-stats, see sdl2-stats.c.  The hooks
++ * do nothing for a console without statistics.
++ */
++void sdl2_stats_init(struct sdl2_console *consoles, int count);
++void sdl2_stats_fini(void);
++/* The window of @scon was destroyed or is about to be created */
++void sdl2_stats_window_changed(struct sdl2_console *scon);
++/* The guest flushed a frame, or updated a 2D display */
++void sdl2_stats_flush(struct sdl2_console *scon);
++/* 2D updates between these two count as one flush: those of one refresh */
++void sdl2_stats_refresh_begin(struct sdl2_console *scon);
++void sdl2_stats_refresh_end(struct sdl2_console *scon);
++/* Around the swap or render present that shows a frame */
++void sdl2_stats_present_begin(struct sdl2_console *scon);
++void sdl2_stats_present_end(struct sdl2_console *scon);
++/*
++ * An input event went to the guest; @answered if the guest likely answers
++ * it with a frame: a key press, a click or a wheel turn
++ */
++void sdl2_stats_input(struct sdl2_console *scon, const SDL_Event *ev,
++                      bool answered);
++/* Handles the compositor's presentation feedback, after SDL read events */
++void sdl2_stats_dispatch(void);
++
+ void sdl2_process_key(struct sdl2_console *scon,
+                       SDL_KeyboardEvent *ev);
+ void sdl2_release_modifiers(struct sdl2_console *scon);
+diff --git a/meson.build b/meson.build
+index 6b2741d11aa8f7ba271d6a250f98af97dad9c761..5637a9d4aaf0028f8dfd68ec926aebdf24aadb1e 100644
+--- a/meson.build
++++ b/meson.build
+@@ -1648,6 +1648,20 @@ else
+   sdl_image = not_found
+ endif
+ 
++# The SDL display asks the Wayland compositor when its frames are shown,
++# for its frame statistics (x-query-display-stats)
++wayland_client = not_found
++wayland_scanner = not_found
++if sdl.found() and host_os == 'linux'
++  wayland_client = dependency('wayland-client', required: false,
++                              method: 'pkg-config')
++  wayland_scanner = find_program('wayland-scanner', required: false,
++                                 native: true)
++  if not wayland_scanner.found()
++    wayland_client = not_found
++  endif
++endif
++
+ rbd = not_found
+ if not get_option('rbd').auto() or have_block
+   librados = cc.find_library('rados', required: get_option('rbd'))
+@@ -2513,6 +2527,7 @@ config_host_data.set('CONFIG_SAFESTACK', get_option('safe_stack'))
+ config_host_data.set('CONFIG_SDL', sdl.found())
+ config_host_data.set('CONFIG_SDL_IMAGE', sdl_image.found())
+ config_host_data.set('CONFIG_SDL_GUI', imgui.found())
++config_host_data.set('CONFIG_SDL_WAYLAND', wayland_client.found())
+ config_host_data.set('CONFIG_SECCOMP', seccomp.found())
+ if seccomp.found()
+   config_host_data.set('CONFIG_SECCOMP_SYSRAWRC', seccomp_has_sysrawrc)
+@@ -4924,6 +4939,7 @@ summary_info += {'D-Bus display':     dbus_display}
+ summary_info += {'SDL support':       sdl}
+ summary_info += {'SDL image support': sdl_image}
+ summary_info += {'SDL control menu':  imgui}
++summary_info += {'SDL Wayland presentation feedback': wayland_client}
+ summary_info += {'GTK support':       gtk}
+ summary_info += {'pixman':            pixman}
+ summary_info += {'VTE support':       vte}
+diff --git a/qapi/ui.json b/qapi/ui.json
+index b2c42a7f57843e52921d9dafafc669c7809a6395..7e517f22adf28da208f61c4c22d7266e2df73493 100644
+--- a/qapi/ui.json
++++ b/qapi/ui.json
+@@ -1581,6 +1581,168 @@
+ { 'command': 'query-display-options',
+   'returns': 'DisplayOptions' }
+ 
++##
++# @DisplayStatsMethod:
++#
++# How a display learns when its frames reach the screen.
++#
++# @none: no frame has been shown yet
++#
++# @swap: when the buffer swap returned.  The latencies then end when
++#     QEMU hands a frame to the window system: the compositor's share
++#     is left out.  This is so on X11, or with a Wayland compositor
++#     without presentation feedback.
++#
++# @presentation: when the compositor showed the frame, from its
++#     Wayland presentation feedback (wp_presentation)
++#
++# Since: 11.2
++##
++{ 'enum': 'DisplayStatsMethod',
++  'data': [ 'none', 'swap', 'presentation' ] }
++
++##
++# @DisplayStatsLatency:
++#
++# The distribution of a duration over the time a statistic covers.
++#
++# @samples: number of measurements; the other members are 0 if there
++#     are none
++#
++# @median: median, in microseconds
++#
++# @p99: 99th percentile, in microseconds
++#
++# @max: maximum, in microseconds
++#
++# Since: 11.2
++##
++{ 'struct': 'DisplayStatsLatency',
++  'data': { 'samples': 'int', 'median': 'int', 'p99': 'int',
++            'max': 'int' } }
++
++##
++# @DisplayStatsConsole:
++#
++# Frame statistics of the window of a graphic console, over the last
++# second unless said otherwise.
++#
++# @console: the console index
++#
++# @width: width of the guest display, in pixels
++#
++# @height: height of the guest display, in pixels
++#
++# @refresh-rate: refresh rate of the host monitor showing the window,
++#     in mHz; 0 if unknown
++#
++# @method: how the times frames reach the screen are known
++#
++# @flushes: guest display updates per second: the flushes of a GPU
++#     scanout, or the updates of a 2D display, those found in one
++#     refresh counting as one
++#
++# @presented: guest frames per second that reached the screen
++#
++# @dropped: guest frames per second that never did, because a newer
++#     one replaced them first: in QEMU, when updates come faster than
++#     it redraws a 2D display, or in the compositor, when frames come
++#     faster than the monitor shows them
++#
++# @direct: frames per second the compositor scanned out directly,
++#     without composing them (zero-copy feedback)
++#
++# @redraws: frames per second QEMU presented without new guest
++#     content: menu, resize or expose redraws
++#
++# @frame-latency: from QEMU receiving a guest flush to that frame on
++#     screen (to the end of its buffer swap with @method swap)
++#
++# @qemu-latency: from QEMU receiving a guest flush to the end of the
++#     buffer swap showing it: QEMU's share of @frame-latency
++#
++# @frame-interval: the time between two guest frames on screen
++#
++# @input-latency: from a key press, click or wheel turn in the window
++#     to the first guest frame on screen that the guest flushed after
++#     the event reached it.  Measured only when the guest had flushed
++#     nothing for 50 ms before, so that the frame is likely its
++#     answer, and over the last 10 seconds.  It starts when the
++#     compositor sent the event, else, when its times are unknown or
++#     wrong, when the display read it.
++#
++# @input-wait: how long input events waited before the display read
++#     them, from the time the compositor sent them: the display reads
++#     input on its refresh timer.  Absent if those times cannot be
++#     known (X11); no samples if they proved wrong, as with some
++#     virtual input devices.
++#
++# Since: 11.2
++##
++{ 'struct': 'DisplayStatsConsole',
++  'data': { 'console': 'int', 'width': 'int', 'height': 'int',
++            'refresh-rate': 'int', 'method': 'DisplayStatsMethod',
++            'flushes': 'number', 'presented': 'number',
++            'dropped': 'number', 'direct': 'number',
++            'redraws': 'number',
++            'frame-latency': 'DisplayStatsLatency',
++            'qemu-latency': 'DisplayStatsLatency',
++            'frame-interval': 'DisplayStatsLatency',
++            'input-latency': 'DisplayStatsLatency',
++            '*input-wait': 'DisplayStatsLatency' } }
++
++##
++# @DisplayStats:
++#
++# Frame statistics of the display.
++#
++# @type: the display in use
++#
++# @consoles: the consoles whose frames the display measures.  Empty
++#     if it measures none: only the SDL display does.
++#
++# Since: 11.2
++##
++{ 'struct': 'DisplayStats',
++  'data': { 'type': 'DisplayType', 'consoles': [ 'DisplayStatsConsole' ] } }
++
++##
++# @x-query-display-stats:
++#
++# Return how many guest frames the display shows, how long they take
++# to reach the screen, and how long input takes to change them.
++#
++# Features:
++#
++# @unstable: This command is experimental.
++#
++# Since: 11.2
++#
++# .. qmp-example::
++#
++#     -> { "execute": "x-query-display-stats" }
++#     <- { "return": {
++#              "type": "sdl",
++#              "consoles": [
++#                  { "console": 0, "width": 1920, "height": 1080,
++#                    "refresh-rate": 240000, "method": "presentation",
++#                    "flushes": 240.0, "presented": 240.0,
++#                    "dropped": 0.0, "direct": 0.0, "redraws": 0.0,
++#                    "frame-latency": { "samples": 240, "median": 6100,
++#                                       "p99": 7900, "max": 8200 },
++#                    "qemu-latency": { "samples": 240, "median": 210,
++#                                      "p99": 420, "max": 510 },
++#                    "frame-interval": { "samples": 239, "median": 4166,
++#                                        "p99": 4180, "max": 4200 },
++#                    "input-latency": { "samples": 3, "median": 11000,
++#                                       "p99": 14000, "max": 14000 },
++#                    "input-wait": { "samples": 120, "median": 2000,
++#                                    "p99": 4000, "max": 4000 } } ] } }
++##
++{ 'command': 'x-query-display-stats',
++  'returns': 'DisplayStats',
++  'features': [ 'unstable' ] }
++
+ ##
+ # @DisplayReloadType:
+ #
+diff --git a/ui/meson.build b/ui/meson.build
+index c5ceef290acaf46e49b57a2ab4a6917c016148ae..2da9ef0143b56b20dd21043b189ceaab31ebd1c1 100644
+--- a/ui/meson.build
++++ b/ui/meson.build
+@@ -169,8 +169,23 @@ if sdl.found()
+     'sdl2-2d.c',
+     'sdl2-clipboard.c',
+     'sdl2-input.c',
++    'sdl2-stats.c',
+     'sdl2.c',
+   ))
++  if wayland_client.found()
++    presentation_time = files('wayland/presentation-time.xml')
++    sdl_ss.add(wayland_client,
++               custom_target('presentation-time-client-protocol.h',
++                             input: presentation_time,
++                             output: 'presentation-time-client-protocol.h',
++                             command: [wayland_scanner, 'client-header',
++                                       '@INPUT@', '@OUTPUT@']),
++               custom_target('presentation-time-protocol.c',
++                             input: presentation_time,
++                             output: 'presentation-time-protocol.c',
++                             command: [wayland_scanner, 'private-code',
++                                       '@INPUT@', '@OUTPUT@']))
++  endif
+   sdl_ss.add(when: opengl, if_true: files('sdl2-gl.c'))
+   sdl_ss.add(when: x11, if_true: files('x_keymap.c'))
+   sdl_ss.add(when: imgui, if_true: [imgui, files('sdl2-gui.cpp', 'sdl2-gui-vm.c')])
+diff --git a/ui/sdl2-2d.c b/ui/sdl2-2d.c
+index 40cf9511846669e398f2006be6add3bdc9747ccc..e84c95eb51aa270225b4a3eb1ef5d0f55aeb4b90 100644
+--- a/ui/sdl2-2d.c
++++ b/ui/sdl2-2d.c
+@@ -51,7 +51,9 @@ static void sdl2_2d_draw(struct sdl2_console *scon, int x, int y, int w, int h)
+     SDL_RenderClear(scon->real_renderer);
+     SDL_RenderCopy(scon->real_renderer, scon->texture, NULL, NULL);
+     sdl2_draw_menu(scon);
++    sdl2_stats_present_begin(scon);
+     SDL_RenderPresent(scon->real_renderer);
++    sdl2_stats_present_end(scon);
+ }
+ 
+ void sdl2_2d_update(DisplayChangeListener *dcl,
+@@ -61,6 +63,7 @@ void sdl2_2d_update(DisplayChangeListener *dcl,
+ 
+     assert(!scon->opengl);
+     scon->frames++;
++    sdl2_stats_flush(scon);
+     sdl2_2d_draw(scon, x, y, w, h);
+ }
+ 
+@@ -137,7 +140,9 @@ void sdl2_2d_refresh(DisplayChangeListener *dcl)
+     struct sdl2_console *scon = container_of(dcl, struct sdl2_console, dcl);
+ 
+     assert(!scon->opengl);
++    sdl2_stats_refresh_begin(scon);
+     qemu_console_hw_update(dcl->con);
++    sdl2_stats_refresh_end(scon);
+     sdl2_poll_events(scon);
+ }
+ 
+diff --git a/ui/sdl2-gl.c b/ui/sdl2-gl.c
+index e0e734b2af09e08d4ed2f994414343f851c2cdd1..fb87c221a099becf4f2bbcd04ea47467b45beea8 100644
+--- a/ui/sdl2-gl.c
++++ b/ui/sdl2-gl.c
+@@ -60,7 +60,9 @@ static void sdl2_gl_render_surface(struct sdl2_console *scon)
+ 
+     surface_gl_render_texture(scon->gls, scon->surface);
+     sdl2_draw_menu(scon);
++    sdl2_stats_present_begin(scon);
+     SDL_GL_SwapWindow(scon->real_window);
++    sdl2_stats_present_end(scon);
+ }
+ 
+ void sdl2_gl_update(DisplayChangeListener *dcl,
+@@ -77,6 +79,7 @@ void sdl2_gl_update(DisplayChangeListener *dcl,
+     SDL_GL_MakeCurrent(scon->real_window, scon->winctx);
+     surface_gl_update_texture(scon->gls, scon->surface, x, y, w, h);
+     scon->updates++;
++    sdl2_stats_flush(scon);
+ }
+ 
+ void sdl2_gl_switch(DisplayChangeListener *dcl,
+@@ -117,7 +120,9 @@ void sdl2_gl_refresh(DisplayChangeListener *dcl)
+ 
+     assert(scon->opengl);
+ 
++    sdl2_stats_refresh_begin(scon);
+     qemu_console_hw_update(dcl->con);
++    sdl2_stats_refresh_end(scon);
+     if (scon->updates && scon->real_window) {
+         scon->updates = 0;
+         scon->frames++;
+@@ -145,7 +150,9 @@ static void sdl2_gl_scanout_present(struct sdl2_console *scon)
+     egl_fb_blit(&scon->win_fb, &scon->guest_fb, !scon->y0_top);
+ 
+     sdl2_draw_menu(scon);
++    sdl2_stats_present_begin(scon);
+     SDL_GL_SwapWindow(scon->real_window);
++    sdl2_stats_present_end(scon);
+ }
+ 
+ void sdl2_gl_redraw(struct sdl2_console *scon)
+@@ -263,6 +270,7 @@ void sdl2_gl_scanout_flush(DisplayChangeListener *dcl,
+     assert(scon->opengl);
+     if (scon->scanout_mode && scon->guest_fb.framebuffer) {
+         scon->frames++;
++        sdl2_stats_flush(scon);
+     }
+     sdl2_gl_scanout_present(scon);
+ }
+diff --git a/ui/sdl2-stats.c b/ui/sdl2-stats.c
+new file mode 100644
+index 0000000000000000000000000000000000000000..ae8bc73b55ccf07e7011233657fe8eeccafbce49
+--- /dev/null
++++ b/ui/sdl2-stats.c
+@@ -0,0 +1,775 @@
++/*
++ * QEMU SDL display: frame statistics
++ *
++ * For x-query-display-stats: how many guest frames reach the screen, how
++ * long they take, and how long input takes to change them.
++ *
++ * - A frame's latency runs from QEMU receiving the guest's flush to the
++ *   compositor showing the frame.  On Wayland the compositor says when, in
++ *   its presentation feedback, asked for on SDL's surface right before each
++ *   buffer swap, so that the swap's commit carries it.  Elsewhere the end of
++ *   the swap is as far as QEMU sees.
++ * - Every flush is numbered.  A frame shows the newest flush QEMU had drawn
++ *   when it swapped, so the flushes between two frames on screen that the
++ *   second does not show were dropped: replaced by a newer one before being
++ *   shown, in QEMU or in the compositor.
++ * - Input latency runs from a key press, click or wheel turn to the first
++ *   frame on screen that holds a flush made after the event reached the
++ *   guest, when the guest was idle before, so that the flush is likely its
++ *   answer.  On Wayland SDL gives the time the compositor sent the event,
++ *   so the latency includes the wait for the display's next refresh, when
++ *   it reads input.  Elsewhere, or when those times prove wrong, it starts
++ *   when the display read the event.
++ *
++ * All of it runs in the main thread, like the rest of the SDL display, and
++ * costs a few clock reads per frame and input event, plus one feedback
++ * request per swap on Wayland.
++ *
++ * SPDX-License-Identifier: GPL-2.0-or-later
++ */
++
++#include "qemu/osdep.h"
++#include "qemu/timer.h"
++#include "qapi/qapi-types-ui.h"
++#include "ui/console.h"
++#include "ui/sdl2.h"
++#include "trace.h"
++
++#ifdef CONFIG_SDL_WAYLAND
++#include <wayland-client.h>
++#include "ui/presentation-time-client-protocol.h"
++#endif
++
++/* What the rates and the frame latencies cover */
++#define STATS_WINDOW_NS     NANOSECONDS_PER_SECOND
++/* The input latencies are fewer: a longer look back */
++#define INPUT_WINDOW_NS     (10 * NANOSECONDS_PER_SECOND)
++/* A guest idle for that long before an input event answers it */
++#define INPUT_IDLE_NS       (50 * SCALE_MS)
++/* ... and within that long, else it did not */
++#define INPUT_TIMEOUT_NS    NANOSECONDS_PER_SECOND
++/* Counts go by buckets, more of them than the window needs */
++#define BUCKET_NS           (50 * SCALE_MS)
++#define NBUCKETS            32
++/* Samples of each duration: a second of frames at 1000 Hz and more */
++#define NSAMPLES            2048
++#define NINPUT_SAMPLES      64
++/* Frames waiting for the compositor's feedback */
++#define NPRESENTS           64
++/* A feedback that never came */
++#define PRESENT_TIMEOUT_NS  (2 * NANOSECONDS_PER_SECOND)
++
++typedef enum {
++    COUNT_FLUSH,
++    COUNT_SHOWN,
++    COUNT_DROPPED,
++    COUNT_DIRECT,
++    COUNT_REDRAW,
++    COUNT__MAX,
++} Count;
++
++typedef struct {
++    int64_t start;              /* 0 if unused */
++    uint32_t n[COUNT__MAX];
++} Bucket;
++
++typedef struct {
++    int64_t t;                  /* when, 0 if unused */
++    int64_t ns;
++} Sample;
++
++typedef struct {
++    Sample *s;
++    unsigned size;              /* a power of two */
++    unsigned next;
++} Samples;
++
++typedef struct Present Present;
++
++struct sdl2_stats {
++    struct sdl2_console *scon;
++
++    uint64_t flush_seq;         /* the guest's flushes so far */
++    int64_t flush_ns;           /* when the newest came */
++    bool in_refresh;            /* 2D updates count once per refresh */
++    bool refresh_flushed;
++
++    uint64_t swapped_seq;       /* the newest flush a swap has shown */
++    uint64_t shown_seq;         /* the newest flush on screen */
++    int64_t shown_ns;           /* when it got there */
++    bool swapped;               /* a frame was swapped */
++    bool feedback;              /* the swap in progress gets feedback */
++    Present *present;           /* its request, if there was room for one */
++
++    int64_t input_ns;           /* an input waiting for the guest's answer */
++    int64_t input_given_ns;     /* when the guest got it */
++    int64_t carried_input_ns;   /* its answer was discarded: the next frame */
++
++    bool wm_checked;            /* looked for the Wayland surface */
++#ifdef CONFIG_SDL_WAYLAND
++    struct wl_surface *surface; /* SDL's, while the window lives */
++#endif
++    uint32_t refresh_ns;        /* the compositor's refresh period */
++
++    Bucket buckets[NBUCKETS];
++    Samples frame_latency;
++    Samples qemu_latency;
++    Samples frame_interval;
++    Samples input_latency;
++    Samples input_wait;
++};
++
++typedef struct sdl2_stats SDL2Stats;
++
++struct Present {
++    SDL2Stats *st;              /* NULL if free */
++#ifdef CONFIG_SDL_WAYLAND
++    struct wp_presentation_feedback *feedback;
++#endif
++    uint64_t flush_seq;         /* the newest flush it shows */
++    int64_t flush_ns;
++    int64_t swap_ns;            /* when its swap ended */
++    int64_t input_ns;           /* the input it answers, if any */
++    int64_t requested_ns;
++};
++
++static struct sdl2_console *stats_consoles;
++static int stats_count;
++static Present presents[NPRESENTS];
++static bool on_wayland;         /* SDL's event times come from the compositor */
++static int64_t last_poll_ns;    /* when the display last read events */
++
++/*
++ * SDL's event times, per kind of input, unless they proved wrong: KWin's
++ * fake input devices, for one, send key events with a stale time
++ */
++typedef enum {
++    INPUT_KEY,
++    INPUT_POINTER,
++    INPUT__MAX,
++} InputKind;
++
++typedef struct {
++    uint32_t stamp;             /* SDL's time of the previous event, in ms */
++    int64_t read_ns;            /* when the display read it */
++    bool wrong;
++} InputTimes;
++
++static InputTimes input_times[INPUT__MAX];
++
++/* An event read at @now, @age ms after SDL's time for it */
++static bool input_time_ok(const SDL_Event *ev, uint32_t age, int64_t now)
++{
++    InputKind kind = ev->type == SDL_KEYDOWN || ev->type == SDL_KEYUP ?
++                     INPUT_KEY : INPUT_POINTER;
++    InputTimes *it = &input_times[kind];
++
++    if (!on_wayland) {
++        return false;           /* SDL stamps X11 events as it reads them */
++    }
++    /* it came after the previous read, else that read would have got it */
++    if ((int64_t)age * SCALE_MS >
++        (last_poll_ns ? now - last_poll_ns : 0) + 100 * SCALE_MS) {
++        it->wrong = true;
++    }
++    /* the same time as an event read long before: a stale time */
++    if (it->read_ns && ev->common.timestamp == it->stamp &&
++        now - it->read_ns > 100 * SCALE_MS) {
++        it->wrong = true;
++    }
++    it->stamp = ev->common.timestamp;
++    it->read_ns = now;
++    return !it->wrong;
++}
++
++/* CLOCK_MONOTONIC on Linux, the clock of Wayland compositors' times */
++static int64_t now_ns(void)
++{
++    return get_clock();
++}
++
++static void samples_init(Samples *s, unsigned size)
++{
++    s->s = g_new0(Sample, size);
++    s->size = size;
++    s->next = 0;
++}
++
++static void samples_add(Samples *s, int64_t t, int64_t ns)
++{
++    s->s[s->next++ & (s->size - 1)] = (Sample) { t, ns };
++}
++
++static void count(SDL2Stats *st, Count what, int64_t t, uint32_t n)
++{
++    int64_t start = t - t % BUCKET_NS;
++    Bucket *b = &st->buckets[(start / BUCKET_NS) % NBUCKETS];
++
++    if (b->start != start) {
++        if (b->start > start) {
++            return;             /* older than the buckets kept */
++        }
++        memset(b, 0, sizeof(*b));
++        b->start = start;
++    }
++    b->n[what] += n;
++}
++
++/* Per second, over the complete buckets of the last second */
++static double rate(SDL2Stats *st, Count what, int64_t now)
++{
++    int64_t end = now - now % BUCKET_NS;
++    int64_t begin = end - STATS_WINDOW_NS;
++    uint64_t sum = 0;
++    int i;
++
++    for (i = 0; i < NBUCKETS; i++) {
++        if (st->buckets[i].start >= begin && st->buckets[i].start < end) {
++            sum += st->buckets[i].n[what];
++        }
++    }
++    return (double)sum * NANOSECONDS_PER_SECOND / STATS_WINDOW_NS;
++}
++
++static int compare_ns(const void *a, const void *b)
++{
++    int64_t x = *(const int64_t *)a, y = *(const int64_t *)b;
++
++    return x < y ? -1 : x > y;
++}
++
++/* Nearest rank, in microseconds */
++static int64_t percentile(const int64_t *v, unsigned n, unsigned pct)
++{
++    unsigned rank = (n * pct + 99) / 100;
++
++    return (v[MAX(rank, 1) - 1] + 500) / 1000;
++}
++
++static DisplayStatsLatency *latency(Samples *s, int64_t since)
++{
++    DisplayStatsLatency *l = g_new0(DisplayStatsLatency, 1);
++    g_autofree int64_t *v = g_new(int64_t, s->size);
++    unsigned i, n = 0;
++
++    for (i = 0; i < s->size; i++) {
++        if (s->s[i].t && s->s[i].t >= since) {
++            v[n++] = s->s[i].ns;
++        }
++    }
++    if (n) {
++        qsort(v, n, sizeof(v[0]), compare_ns);
++        l->samples = n;
++        l->median = percentile(v, n, 50);
++        l->p99 = percentile(v, n, 99);
++        l->max = (v[n - 1] + 500) / 1000;
++    }
++    return l;
++}
++
++/*
++ * A frame reached the screen at @t, showing flushes up to @seq.  @input
++ * is the time of the input event it answers, if any.
++ */
++static void frame_shown(SDL2Stats *st, uint64_t seq, int64_t flush_ns,
++                        int64_t input, int64_t t, bool direct)
++{
++    if (st->carried_input_ns) {
++        input = input ? MIN(input, st->carried_input_ns) : st->carried_input_ns;
++        st->carried_input_ns = 0;
++    }
++    if (seq > st->shown_seq) {
++        count(st, COUNT_SHOWN, t, 1);
++        if (st->shown_seq && seq - st->shown_seq > 1) {
++            count(st, COUNT_DROPPED, t, seq - st->shown_seq - 1);
++        }
++        if (direct) {
++            count(st, COUNT_DIRECT, t, 1);
++        }
++        if (t >= flush_ns) {
++            samples_add(&st->frame_latency, t, t - flush_ns);
++        }
++        if (st->shown_ns && t > st->shown_ns) {
++            samples_add(&st->frame_interval, t, t - st->shown_ns);
++        }
++        st->shown_seq = seq;
++        st->shown_ns = t;
++    } else {
++        count(st, COUNT_REDRAW, t, 1);
++    }
++    if (input && t > input) {
++        samples_add(&st->input_latency, t, t - input);
++    }
++}
++
++/* The input the frame about to be swapped answers, if any */
++static int64_t take_input(SDL2Stats *st, int64_t now)
++{
++    int64_t input = 0;
++
++    if (!st->input_ns) {
++        return 0;
++    }
++    if (st->flush_ns > st->input_given_ns) {
++        input = st->input_ns;
++        st->input_ns = 0;
++    } else if (now - st->input_given_ns > INPUT_TIMEOUT_NS) {
++        st->input_ns = 0;       /* the guest did not answer */
++    }
++    return input;
++}
++
++static void present_free(Present *p)
++{
++#ifdef CONFIG_SDL_WAYLAND
++    if (p->feedback) {
++        wp_presentation_feedback_destroy(p->feedback);
++        p->feedback = NULL;
++    }
++#endif
++    if (p->st && p->st->present == p) {
++        p->st->present = NULL;
++    }
++    p->st = NULL;
++}
++
++#ifdef CONFIG_SDL_WAYLAND
++/*
++ * The presentation feedback, on an event queue of its own: SDL reads the
++ * socket as it polls for events, and sdl2_stats_dispatch() dispatches what
++ * came for the queue.
++ */
++static struct {
++    struct wl_display *display;
++    struct wl_event_queue *queue;
++    struct wp_presentation *presentation;
++    clockid_t clock;
++    bool tried;
++} wl = {
++    .clock = CLOCK_MONOTONIC,
++};
++
++/* The compositor's times are those of its clock, QEMU's CLOCK_MONOTONIC */
++static int64_t to_monotonic(int64_t t)
++{
++    struct timespec a, b;
++
++    if (wl.clock == CLOCK_MONOTONIC ||
++        clock_gettime(wl.clock, &a) || clock_gettime(CLOCK_MONOTONIC, &b)) {
++        return t;
++    }
++    return t - (a.tv_sec - b.tv_sec) * NANOSECONDS_PER_SECOND -
++           (a.tv_nsec - b.tv_nsec);
++}
++
++static void feedback_sync_output(void *data,
++                                 struct wp_presentation_feedback *feedback,
++                                 struct wl_output *output)
++{
++}
++
++static void feedback_presented(void *data,
++                               struct wp_presentation_feedback *feedback,
++                               uint32_t tv_sec_hi, uint32_t tv_sec_lo,
++                               uint32_t tv_nsec, uint32_t refresh,
++                               uint32_t seq_hi, uint32_t seq_lo,
++                               uint32_t flags)
++{
++    Present *p = data;
++    SDL2Stats *st = p->st;
++    int64_t sec = (int64_t)tv_sec_hi << 32 | tv_sec_lo;
++    int64_t t = sec * NANOSECONDS_PER_SECOND + tv_nsec;
++
++    t = to_monotonic(t);
++    if (refresh) {
++        st->refresh_ns = refresh;
++    }
++    trace_sdl2_stats_presented(st->scon->idx, p->flush_seq, t,
++                               p->swap_ns ? t - p->swap_ns : 0, flags);
++    frame_shown(st, p->flush_seq, p->flush_ns, p->input_ns, t,
++                flags & WP_PRESENTATION_FEEDBACK_KIND_ZERO_COPY);
++    present_free(p);
++}
++
++static void feedback_discarded(void *data,
++                               struct wp_presentation_feedback *feedback)
++{
++    Present *p = data;
++    SDL2Stats *st = p->st;
++
++    trace_sdl2_stats_discarded(st->scon->idx, p->flush_seq);
++    /* its content, the answer included, shows with the next frame */
++    if (p->input_ns && (!st->carried_input_ns ||
++                        p->input_ns < st->carried_input_ns)) {
++        st->carried_input_ns = p->input_ns;
++    }
++    present_free(p);
++}
++
++static const struct wp_presentation_feedback_listener feedback_listener = {
++    .sync_output = feedback_sync_output,
++    .presented = feedback_presented,
++    .discarded = feedback_discarded,
++};
++
++static void presentation_clock_id(void *data,
++                                  struct wp_presentation *presentation,
++                                  uint32_t clk_id)
++{
++    wl.clock = clk_id;
++}
++
++static const struct wp_presentation_listener presentation_listener = {
++    .clock_id = presentation_clock_id,
++};
++
++static void registry_global(void *data, struct wl_registry *registry,
++                            uint32_t name, const char *interface,
++                            uint32_t version)
++{
++    if (!strcmp(interface, wp_presentation_interface.name)) {
++        wl.presentation = wl_registry_bind(registry, name,
++                                           &wp_presentation_interface, 1);
++        wp_presentation_add_listener(wl.presentation, &presentation_listener,
++                                     NULL);
++    }
++}
++
++static void registry_global_remove(void *data, struct wl_registry *registry,
++                                   uint32_t name)
++{
++}
++
++static const struct wl_registry_listener registry_listener = {
++    .global = registry_global,
++    .global_remove = registry_global_remove,
++};
++
++/*
++ * Once, when the first window shows: a round trip for the globals, then
++ * one for the clock
++ */
++static void wayland_init(struct wl_display *display)
++{
++    struct wl_display *wrapper;
++    struct wl_registry *registry;
++
++    wl.tried = true;
++    wl.display = display;
++    wl.queue = wl_display_create_queue(display);
++    wrapper = wl_proxy_create_wrapper(display);
++    wl_proxy_set_queue((struct wl_proxy *)wrapper, wl.queue);
++    registry = wl_display_get_registry(wrapper);
++    wl_proxy_wrapper_destroy(wrapper);
++    wl_registry_add_listener(registry, &registry_listener, NULL);
++    wl_display_roundtrip_queue(display, wl.queue);
++    if (wl.presentation) {
++        wl_display_roundtrip_queue(display, wl.queue);
++    }
++    wl_registry_destroy(registry);
++    trace_sdl2_stats_presentation(wl.presentation != NULL, wl.clock);
++}
++#endif
++
++/* The Wayland surface of the window, whose commits can carry feedback */
++static void find_surface(SDL2Stats *st)
++{
++    SDL_SysWMinfo info;
++
++    st->wm_checked = true;
++    SDL_VERSION(&info.version);
++    if (!st->scon->real_window ||
++        !SDL_GetWindowWMInfo(st->scon->real_window, &info)) {
++        return;
++    }
++#if defined(SDL_VIDEO_DRIVER_WAYLAND)
++    if (info.subsystem != SDL_SYSWM_WAYLAND) {
++        return;
++    }
++    on_wayland = true;
++#ifdef CONFIG_SDL_WAYLAND
++    if (!wl.tried) {
++        wayland_init(info.info.wl.display);
++    }
++    if (wl.presentation && info.info.wl.display == wl.display) {
++        st->surface = info.info.wl.surface;
++    }
++#endif
++#endif
++}
++
++static DisplayStatsConsole *console_stats(SDL2Stats *st, int64_t now)
++{
++    struct sdl2_console *scon = st->scon;
++    DisplayStatsConsole *c = g_new0(DisplayStatsConsole, 1);
++    int64_t since = now - STATS_WINDOW_NS;
++
++    c->console = qemu_console_get_index(scon->dcl.con);
++#ifdef CONFIG_OPENGL
++    if (scon->scanout_mode) {
++        c->width = scon->w;
++        c->height = scon->h;
++    } else
++#endif
++    if (scon->surface) {
++        c->width = surface_width(scon->surface);
++        c->height = surface_height(scon->surface);
++    }
++    c->refresh_rate = st->refresh_ns ?
++        (int64_t)(1e12 / st->refresh_ns + 0.5) : scon->refresh_rate;
++#ifdef CONFIG_SDL_WAYLAND
++    if (st->surface) {
++        c->method = DISPLAY_STATS_METHOD_PRESENTATION;
++    } else
++#endif
++    {
++        c->method = st->swapped ? DISPLAY_STATS_METHOD_SWAP
++                                : DISPLAY_STATS_METHOD_NONE;
++    }
++    c->flushes = rate(st, COUNT_FLUSH, now);
++    c->presented = rate(st, COUNT_SHOWN, now);
++    c->dropped = rate(st, COUNT_DROPPED, now);
++    c->direct = rate(st, COUNT_DIRECT, now);
++    c->redraws = rate(st, COUNT_REDRAW, now);
++    c->frame_latency = latency(&st->frame_latency, since);
++    c->qemu_latency = latency(&st->qemu_latency, since);
++    c->frame_interval = latency(&st->frame_interval, since);
++    c->input_latency = latency(&st->input_latency, now - INPUT_WINDOW_NS);
++    if (on_wayland) {
++        c->input_wait = latency(&st->input_wait, since);
++    }
++    return c;
++}
++
++/* The consoles of x-query-display-stats */
++static void sdl2_stats_query(DisplayStats *stats)
++{
++    DisplayStatsConsoleList **tail = &stats->consoles;
++    int64_t now = now_ns();
++    int i;
++
++    for (i = 0; i < stats_count; i++) {
++        struct sdl2_console *scon = &stats_consoles[i];
++
++        if (!scon->stats || !scon->dcl.con ||
++            !qemu_console_is_graphic(scon->dcl.con) ||
++            (!scon->real_window && !scon->stats->flush_seq)) {
++            continue;
++        }
++        QAPI_LIST_APPEND(tail, console_stats(scon->stats, now));
++    }
++}
++
++void sdl2_stats_init(struct sdl2_console *consoles, int count)
++{
++    int i;
++
++    for (i = 0; i < count; i++) {
++        SDL2Stats *st = g_new0(SDL2Stats, 1);
++
++        st->scon = &consoles[i];
++        samples_init(&st->frame_latency, NSAMPLES);
++        samples_init(&st->qemu_latency, NSAMPLES);
++        samples_init(&st->frame_interval, NSAMPLES);
++        samples_init(&st->input_latency, NINPUT_SAMPLES);
++        samples_init(&st->input_wait, NSAMPLES);
++        consoles[i].stats = st;
++    }
++    stats_consoles = consoles;
++    stats_count = count;
++    qemu_display_set_stats(sdl2_stats_query);
++}
++
++void sdl2_stats_fini(void)
++{
++    int i;
++
++    qemu_display_set_stats(NULL);
++    for (i = 0; i < NPRESENTS; i++) {
++        present_free(&presents[i]);
++    }
++    for (i = 0; i < stats_count; i++) {
++        SDL2Stats *st = stats_consoles[i].stats;
++
++        if (st) {
++            g_free(st->frame_latency.s);
++            g_free(st->qemu_latency.s);
++            g_free(st->frame_interval.s);
++            g_free(st->input_latency.s);
++            g_free(st->input_wait.s);
++            g_free(st);
++            stats_consoles[i].stats = NULL;
++        }
++    }
++    stats_consoles = NULL;
++    stats_count = 0;
++#ifdef CONFIG_SDL_WAYLAND
++    g_clear_pointer(&wl.presentation, wp_presentation_destroy);
++    g_clear_pointer(&wl.queue, wl_event_queue_destroy);
++    wl.display = NULL;
++    wl.tried = false;
++#endif
++}
++
++void sdl2_stats_window_changed(struct sdl2_console *scon)
++{
++    SDL2Stats *st = scon->stats;
++
++    if (!st) {
++        return;
++    }
++    st->wm_checked = false;
++#ifdef CONFIG_SDL_WAYLAND
++    st->surface = NULL;
++#endif
++}
++
++void sdl2_stats_flush(struct sdl2_console *scon)
++{
++    SDL2Stats *st = scon->stats;
++
++    if (!st) {
++        return;
++    }
++    if (st->in_refresh) {
++        if (st->refresh_flushed) {
++            return;
++        }
++        st->refresh_flushed = true;
++    }
++    st->flush_ns = now_ns();
++    st->flush_seq++;
++    count(st, COUNT_FLUSH, st->flush_ns, 1);
++    trace_sdl2_stats_flush(scon->idx, st->flush_seq, st->flush_ns);
++}
++
++void sdl2_stats_refresh_begin(struct sdl2_console *scon)
++{
++    if (scon->stats) {
++        scon->stats->in_refresh = true;
++        scon->stats->refresh_flushed = false;
++    }
++}
++
++void sdl2_stats_refresh_end(struct sdl2_console *scon)
++{
++    if (scon->stats) {
++        scon->stats->in_refresh = false;
++    }
++}
++
++void sdl2_stats_present_begin(struct sdl2_console *scon)
++{
++    SDL2Stats *st = scon->stats;
++
++    if (!st) {
++        return;
++    }
++    if (!st->wm_checked) {
++        find_surface(st);
++    }
++    st->present = NULL;
++    st->feedback = false;
++#ifdef CONFIG_SDL_WAYLAND
++    if (st->surface) {
++        int64_t now = now_ns();
++        Present *p = NULL;
++        int i;
++
++        st->feedback = true;
++        for (i = 0; i < NPRESENTS; i++) {
++            if (!presents[i].st) {
++                p = &presents[i];
++                break;
++            }
++        }
++        if (p) {
++            p->st = st;
++            p->flush_seq = st->flush_seq;
++            p->flush_ns = st->flush_ns;
++            p->swap_ns = 0;
++            p->input_ns = take_input(st, now);
++            p->requested_ns = now;
++            p->feedback = wp_presentation_feedback(wl.presentation,
++                                                   st->surface);
++            wp_presentation_feedback_add_listener(p->feedback,
++                                                  &feedback_listener, p);
++            st->present = p;
++        }
++    }
++#endif
++}
++
++void sdl2_stats_present_end(struct sdl2_console *scon)
++{
++    SDL2Stats *st = scon->stats;
++    int64_t now;
++
++    if (!st) {
++        return;
++    }
++    now = now_ns();
++    st->swapped = true;
++    trace_sdl2_stats_swap(scon->idx, st->flush_seq, st->flush_ns, now);
++    if (st->flush_seq > st->swapped_seq) {
++        samples_add(&st->qemu_latency, now, now - st->flush_ns);
++        st->swapped_seq = st->flush_seq;
++    }
++    if (st->feedback) {
++        /* the compositor tells, unless no request was free for this frame */
++        if (st->present) {
++            st->present->swap_ns = now;
++            st->present = NULL;
++        }
++        return;
++    }
++    /* no feedback: the swap is as far as QEMU sees */
++    frame_shown(st, st->flush_seq, st->flush_ns, take_input(st, now), now,
++                false);
++}
++
++void sdl2_stats_input(struct sdl2_console *scon, const SDL_Event *ev,
++                      bool answered)
++{
++    SDL2Stats *st = scon->stats;
++    int64_t now, wait = 0;
++    uint32_t ticks, age;
++
++    if (!st) {
++        return;
++    }
++    now = now_ns();
++    /* both in SDL's milliseconds */
++    ticks = SDL_GetTicks();
++    age = ticks - ev->common.timestamp;
++    if (input_time_ok(ev, age, now)) {
++        wait = (int64_t)age * SCALE_MS;
++        samples_add(&st->input_wait, now, wait);
++    }
++    if (answered && !st->input_ns && now - st->flush_ns > INPUT_IDLE_NS) {
++        st->input_ns = now - wait;
++        st->input_given_ns = now;
++    }
++    trace_sdl2_stats_input(scon->idx, ev->type, now, wait, answered);
++}
++
++void sdl2_stats_dispatch(void)
++{
++    int64_t now;
++    int i;
++
++#ifdef CONFIG_SDL_WAYLAND
++    if (wl.queue) {
++        wl_display_dispatch_queue_pending(wl.display, wl.queue);
++    }
++#endif
++    now = now_ns();
++    for (i = 0; i < NPRESENTS; i++) {
++        if (presents[i].st && presents[i].st->present != &presents[i] &&
++            now - presents[i].requested_ns > PRESENT_TIMEOUT_NS) {
++            present_free(&presents[i]);
++        }
++    }
++    last_poll_ns = now;
++}
++
+diff --git a/ui/sdl2.c b/ui/sdl2.c
+index 746b65a803fe701c7b183871dbf87eab97e8bbe5..58fd92708baf6ccaaae70eacf7971e0586450624 100644
+--- a/ui/sdl2.c
++++ b/ui/sdl2.c
+@@ -170,6 +170,7 @@ void sdl2_window_create(struct sdl2_console *scon)
+         return;
+     }
+     assert(!scon->real_window);
++    sdl2_stats_window_changed(scon);
+ 
+     if (gui_fullscreen) {
+         flags |= SDL_WINDOW_FULLSCREEN_DESKTOP;
+@@ -229,6 +230,7 @@ void sdl2_window_destroy(struct sdl2_console *scon)
+     if (!scon->real_window) {
+         return;
+     }
++    sdl2_stats_window_changed(scon);
+ 
+ #ifdef CONFIG_SDL_GUI
+     if (sdl2_gui_window() == scon->real_window) {
+@@ -651,6 +653,9 @@ static void handle_keydown(SDL_Event *ev)
+     }
+     if (!scon->gui_keysym) {
+         sdl2_process_key(scon, &ev->key);
++        if (qemu_console_is_graphic(scon->dcl.con)) {
++            sdl2_stats_input(scon, ev, !ev->key.repeat);
++        }
+     }
+ }
+ 
+@@ -664,6 +669,9 @@ static void handle_keyup(SDL_Event *ev)
+ 
+     scon->ignore_hotkeys = false;
+     sdl2_process_key(scon, &ev->key);
++    if (qemu_console_is_graphic(scon->dcl.con)) {
++        sdl2_stats_input(scon, ev, false);
++    }
+ }
+ 
+ static void handle_textinput(SDL_Event *ev)
+@@ -700,6 +708,7 @@ static void handle_mousemotion(SDL_Event *ev)
+     dy = (int64_t)ev->motion.yrel * surf_h / scr_h;
+     if (gui_grab || qemu_input_is_absolute(scon->dcl.con) || absolute_enabled) {
+         sdl_send_mouse_event(scon, dx, dy, x, y, ev->motion.state);
++        sdl2_stats_input(scon, ev, false);
+     }
+ }
+ 
+@@ -732,6 +741,7 @@ static void handle_mousebutton(SDL_Event *ev)
+             buttonstate &= ~SDL_BUTTON(bev->button);
+         }
+         sdl_send_mouse_event(scon, 0, 0, x, y, buttonstate);
++        sdl2_stats_input(scon, ev, ev->type == SDL_MOUSEBUTTONDOWN);
+     }
+ }
+ 
+@@ -761,6 +771,7 @@ static void handle_mousewheel(SDL_Event *ev)
+     qemu_input_event_sync();
+     qemu_input_queue_btn(scon->dcl.con, btn, false);
+     qemu_input_event_sync();
++    sdl2_stats_input(scon, ev, true);
+ }
+ 
+ static void handle_windowevent(SDL_Event *ev)
+@@ -986,6 +997,9 @@ void sdl2_poll_events(struct sdl2_console *scon)
+         }
+     }
+ 
++    /* SDL read the compositor's events, the presentation feedback too */
++    sdl2_stats_dispatch();
++
+     busy_interval = scon->busy_interval ? scon->busy_interval :
+                                           SDL2_REFRESH_INTERVAL_BUSY;
+     max_idle_count = SDL2_BUSY_TIMEOUT / busy_interval + 1;
+@@ -1146,6 +1160,7 @@ static void sdl_cleanup(void)
+         qkbd_state_free(sdl2_console[i].kbd);
+         sdl2_window_destroy(&sdl2_console[i]);
+     }
++    sdl2_stats_fini();
+     menu_scon = NULL;
+     g_clear_pointer(&sdl2_console, g_free);
+     sdl2_num_outputs = 0;
+@@ -1295,6 +1310,7 @@ static void sdl2_display_init(DisplayState *ds, DisplayOptions *o)
+         return;
+     }
+     sdl2_console = g_new0(struct sdl2_console, sdl2_num_outputs);
++    sdl2_stats_init(sdl2_console, sdl2_num_outputs);
+     for (i = 0; i < sdl2_num_outputs; i++) {
+         QemuConsole *con = qemu_console_lookup_by_index(i);
+         const DisplayChangeListenerOps *ops = &dcl_2d_ops;
+diff --git a/ui/trace-events b/ui/trace-events
+index 706fe3b6a82abb67823331048d09e0c3d68979fe..d59697bee16fdcd0b8276aa04956368bc7ad966f 100644
+--- a/ui/trace-events
++++ b/ui/trace-events
+@@ -138,6 +138,14 @@ input_event_sync(void) ""
+ sdl2_clipboard_host(const char *what, size_t len) "host clipboard: %s (%zu bytes)"
+ sdl2_clipboard_guest(const char *what, size_t len) "guest copy: %s (%zu bytes)"
+ 
++# sdl2-stats.c
++sdl2_stats_presentation(bool found, int clock) "wp_presentation %d, clock %d"
++sdl2_stats_flush(int con, uint64_t seq, int64_t t) "con %d flush %" PRIu64 " at %" PRId64
++sdl2_stats_swap(int con, uint64_t seq, int64_t flush, int64_t t) "con %d swap of flush %" PRIu64 " (at %" PRId64 ") done at %" PRId64
++sdl2_stats_presented(int con, uint64_t seq, int64_t t, int64_t after_swap, uint32_t flags) "con %d flush %" PRIu64 " on screen at %" PRId64 ", %" PRId64 " ns after the swap, flags 0x%x"
++sdl2_stats_discarded(int con, uint64_t seq) "con %d frame of flush %" PRIu64 " discarded"
++sdl2_stats_input(int con, uint32_t type, int64_t t, int64_t wait, bool answered) "con %d event 0x%x read at %" PRId64 ", waited %" PRId64 " ns, answer watched %d"
++
+ # sdl2-input.c
+ sdl2_process_key(int sdl_scancode, unsigned int lnx, const char *action) "translated SDL scancode %d to Linux scancode %u (%s)"
+ 
+diff --git a/ui/ui-qmp-cmds.c b/ui/ui-qmp-cmds.c
+index 753cc2bf522364443019c51ddd2ed149ee648538..a0bfb9bfd69031136ddfaabbf2c279ffa1d81b9b 100644
+--- a/ui/ui-qmp-cmds.c
++++ b/ui/ui-qmp-cmds.c
+@@ -29,6 +29,27 @@
+ #include <png.h>
+ #endif
+ 
++/* The display in use, if it measures its frames */
++static void (*display_stats_query)(DisplayStats *stats);
++
++void qemu_display_set_stats(void (*query)(DisplayStats *stats))
++{
++    display_stats_query = query;
++}
++
++DisplayStats *qmp_x_query_display_stats(Error **errp)
++{
++    DisplayOptions *opts = qmp_query_display_options(NULL);
++    DisplayStats *stats = g_new0(DisplayStats, 1);
++
++    stats->type = opts->type;
++    qapi_free_DisplayOptions(opts);
++    if (display_stats_query) {
++        display_stats_query(stats);
++    }
++    return stats;
++}
++
+ void qmp_set_password(SetPasswordOptions *opts, Error **errp)
+ {
+     if (opts->protocol == DISPLAY_PROTOCOL_SPICE) {
+diff --git a/ui/wayland/presentation-time.xml b/ui/wayland/presentation-time.xml
+new file mode 100644
+index 0000000000000000000000000000000000000000..c2431c500367fe7237b9c9e50b3d2255d6108082
+--- /dev/null
++++ b/ui/wayland/presentation-time.xml
+@@ -0,0 +1,268 @@
++<?xml version="1.0" encoding="UTF-8"?>
++<protocol name="presentation_time">
++<!-- wrap:70 -->
++
++  <copyright>
++    Copyright © 2013-2014 Collabora, Ltd.
++
++    Permission is hereby granted, free of charge, to any person obtaining a
++    copy of this software and associated documentation files (the "Software"),
++    to deal in the Software without restriction, including without limitation
++    the rights to use, copy, modify, merge, publish, distribute, sublicense,
++    and/or sell copies of the Software, and to permit persons to whom the
++    Software is furnished to do so, subject to the following conditions:
++
++    The above copyright notice and this permission notice (including the next
++    paragraph) shall be included in all copies or substantial portions of the
++    Software.
++
++    THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
++    IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
++    FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT.  IN NO EVENT SHALL
++    THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
++    LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING
++    FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
++    DEALINGS IN THE SOFTWARE.
++  </copyright>
++
++  <interface name="wp_presentation" version="2">
++    <description summary="timed presentation related wl_surface requests">
++
++<!-- Introduction -->
++
++      The main feature of this interface is accurate presentation
++      timing feedback to ensure smooth video playback while maintaining
++      audio/video synchronization. Some features use the concept of a
++      presentation clock, which is defined in the
++      presentation.clock_id event.
++
++      A content update for a wl_surface is submitted by a
++      wl_surface.commit request. Request 'feedback' associates with
++      the wl_surface.commit and provides feedback on the content
++      update, particularly the final realized presentation time.
++
++<!-- Completing presentation -->
++
++      When the final realized presentation time is available, e.g.
++      after a framebuffer flip completes, the requested
++      presentation_feedback.presented events are sent. The final
++      presentation time can differ from the compositor's predicted
++      display update time and the update's target time, especially
++      when the compositor misses its target vertical blanking period.
++    </description>
++
++    <enum name="error">
++      <description summary="fatal presentation errors">
++        These fatal protocol errors may be emitted in response to
++        illegal presentation requests.
++      </description>
++      <entry name="invalid_timestamp" value="0"
++             summary="invalid value in tv_nsec"/>
++      <entry name="invalid_flag" value="1"
++             summary="invalid flag"/>
++    </enum>
++
++    <request name="destroy" type="destructor">
++      <description summary="unbind from the presentation interface">
++        Informs the server that the client will no longer be using
++        this protocol object. Existing objects created by this object
++        are not affected.
++      </description>
++    </request>
++
++    <request name="feedback">
++      <description summary="request presentation feedback information">
++        Request presentation feedback for the current content submission
++        on the given surface. This creates a new presentation_feedback
++        object, which will deliver the feedback information once. If
++        multiple presentation_feedback objects are created for the same
++        submission, they will all deliver the same information.
++
++        For details on what information is returned, see the
++        presentation_feedback interface.
++      </description>
++      <arg name="surface" type="object" interface="wl_surface"
++           summary="target surface"/>
++      <arg name="callback" type="new_id" interface="wp_presentation_feedback"
++           summary="new feedback object"/>
++    </request>
++
++    <event name="clock_id">
++      <description summary="clock ID for timestamps">
++        This event tells the client in which clock domain the
++        compositor interprets the timestamps used by the presentation
++        extension. This clock is called the presentation clock.
++
++        The compositor sends this event when the client binds to the
++        presentation interface. The presentation clock does not change
++        during the lifetime of the client connection.
++
++        The clock identifier is platform dependent. On POSIX platforms, the
++        identifier value is one of the clockid_t values accepted by
++        clock_gettime(). clock_gettime() is defined by POSIX.1-2001.
++
++        Timestamps in this clock domain are expressed as tv_sec_hi,
++        tv_sec_lo, tv_nsec triples, each component being an unsigned
++        32-bit value. Whole seconds are in tv_sec which is a 64-bit
++        value combined from tv_sec_hi and tv_sec_lo, and the
++        additional fractional part in tv_nsec as nanoseconds. Hence,
++        for valid timestamps tv_nsec must be in [0, 999999999].
++
++        Note that clock_id applies only to the presentation clock,
++        and implies nothing about e.g. the timestamps used in the
++        Wayland core protocol input events.
++
++        Compositors should prefer a clock which does not jump and is
++        not slewed e.g. by NTP. The absolute value of the clock is
++        irrelevant. Precision of one millisecond or better is
++        recommended. Clients must be able to query the current clock
++        value directly, not by asking the compositor.
++      </description>
++      <arg name="clk_id" type="uint" summary="platform clock identifier"/>
++    </event>
++
++  </interface>
++
++  <interface name="wp_presentation_feedback" version="2">
++    <description summary="presentation time feedback event">
++      A presentation_feedback object returns an indication that a
++      wl_surface content update has become visible to the user.
++      One object corresponds to one content update submission
++      (wl_surface.commit). There are two possible outcomes: the
++      content update is presented to the user, and a presentation
++      timestamp delivered; or, the user did not see the content
++      update because it was superseded or its surface destroyed,
++      and the content update is discarded.
++
++      Once a presentation_feedback object has delivered a 'presented'
++      or 'discarded' event it is automatically destroyed.
++    </description>
++
++    <event name="sync_output">
++      <description summary="presentation synchronized to this output">
++        As presentation can be synchronized to only one output at a
++        time, this event tells which output it was. This event is only
++        sent prior to the presented event.
++
++        As clients may bind to the same global wl_output multiple
++        times, this event is sent for each bound instance that matches
++        the synchronized output. If a client has not bound to the
++        right wl_output global at all, this event is not sent.
++      </description>
++      <arg name="output" type="object" interface="wl_output"
++           summary="presentation output"/>
++    </event>
++
++    <enum name="kind" bitfield="true">
++      <description summary="bitmask of flags in presented event">
++        These flags provide information about how the presentation of
++        the related content update was done. The intent is to help
++        clients assess the reliability of the feedback and the visual
++        quality with respect to possible tearing and timings.
++      </description>
++      <entry name="vsync" value="0x1">
++        <description summary="presentation was vsync'd">
++          The presentation was synchronized to the "vertical retrace" by
++          the display hardware such that tearing does not happen.
++          Relying on software scheduling is not acceptable for this
++          flag. If presentation is done by a copy to the active
++          frontbuffer, then it must guarantee that tearing cannot
++          happen.
++        </description>
++      </entry>
++      <entry name="hw_clock" value="0x2">
++        <description summary="hardware provided the presentation timestamp">
++          The display hardware provided measurements that the hardware
++          driver converted into a presentation timestamp. Sampling a
++          clock in software is not acceptable for this flag.
++        </description>
++      </entry>
++      <entry name="hw_completion" value="0x4">
++        <description summary="hardware signalled the start of the presentation">
++          The display hardware signalled that it started using the new
++          image content. The opposite of this is e.g. a timer being used
++          to guess when the display hardware has switched to the new
++          image content.
++        </description>
++      </entry>
++      <entry name="zero_copy" value="0x8">
++        <description summary="presentation was done zero-copy">
++          The presentation of this update was done zero-copy. This means
++          the buffer from the client was given to display hardware as
++          is, without copying it. Compositing with OpenGL counts as
++          copying, even if textured directly from the client buffer.
++          Possible zero-copy cases include direct scanout of a
++          fullscreen surface and a surface on a hardware overlay.
++        </description>
++      </entry>
++    </enum>
++
++    <event name="presented" type="destructor">
++      <description summary="the content update was displayed">
++        The associated content update was displayed to the user at the
++        indicated time (tv_sec_hi/lo, tv_nsec). For the interpretation of
++        the timestamp, see presentation.clock_id event.
++
++        The timestamp corresponds to the time when the content update
++        turned into light the first time on the surface's main output.
++        Compositors may approximate this from the framebuffer flip
++        completion events from the system, and the latency of the
++        physical display path if known.
++
++        This event is preceded by all related sync_output events
++        telling which output's refresh cycle the feedback corresponds
++        to, i.e. the main output for the surface. Compositors are
++        recommended to choose the output containing the largest part
++        of the wl_surface, or keeping the output they previously
++        chose. Having a stable presentation output association helps
++        clients predict future output refreshes (vblank).
++
++        The 'refresh' argument gives the compositor's prediction of how
++        many nanoseconds after tv_sec, tv_nsec the very next output
++        refresh may occur. This is to further aid clients in
++        predicting future refreshes, i.e., estimating the timestamps
++        targeting the next few vblanks. If such prediction cannot
++        usefully be done, the argument is zero.
++
++        For version 2 and later, if the output does not have a constant
++        refresh rate, explicit video mode switches excluded, then the
++        refresh argument must be either an appropriate rate picked by the
++        compositor (e.g. fastest rate), or 0 if no such rate exists.
++        For version 1, if the output does not have a constant refresh rate,
++        the refresh argument must be zero.
++
++        The 64-bit value combined from seq_hi and seq_lo is the value
++        of the output's vertical retrace counter when the content
++        update was first scanned out to the display. This value must
++        be compatible with the definition of MSC in
++        GLX_OML_sync_control specification. Note, that if the display
++        path has a non-zero latency, the time instant specified by
++        this counter may differ from the timestamp's.
++
++        If the output does not have a concept of vertical retrace or a
++        refresh cycle, or the output device is self-refreshing without
++        a way to query the refresh count, then the arguments seq_hi
++        and seq_lo must be zero.
++      </description>
++      <arg name="tv_sec_hi" type="uint"
++           summary="high 32 bits of the seconds part of the presentation timestamp"/>
++      <arg name="tv_sec_lo" type="uint"
++           summary="low 32 bits of the seconds part of the presentation timestamp"/>
++      <arg name="tv_nsec" type="uint"
++           summary="nanoseconds part of the presentation timestamp"/>
++      <arg name="refresh" type="uint" summary="nanoseconds till next refresh"/>
++      <arg name="seq_hi" type="uint"
++           summary="high 32 bits of refresh counter"/>
++      <arg name="seq_lo" type="uint"
++           summary="low 32 bits of refresh counter"/>
++      <arg name="flags" type="uint" enum="kind" summary="combination of 'kind' values"/>
++    </event>
++
++    <event name="discarded" type="destructor">
++      <description summary="the content update was not displayed">
++        The content update was never displayed to the user.
++      </description>
++    </event>
++  </interface>
++
++</protocol>

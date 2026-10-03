@@ -1,0 +1,255 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: tomtomnet <tompere8000@proton.me>
+Date: Sat, 26 Sep 2026 15:24:07 +0200
+Subject: [PATCH] virtio-gpu/virgl: give guest-memory blobs a udmabuf for DRM
+ native contexts
+
+When a guest driver imports a dma-buf of another guest device (for example
+the udmabuf a Wayland compositor creates for a wl_shm client buffer), the
+guest virtio-gpu driver creates a VIRTIO_GPU_BLOB_MEM_GUEST blob with the
+USE_SHAREABLE flag.  virglrenderer only gets iovecs for it, and DRM native
+contexts, which only import dma-bufs, ignore the resource: every later use
+of it fails ("invalid res_id") and the guest has to fall back to copies.
+
+When DRM native contexts are enabled and guest RAM is memfd-backed, create a
+udmabuf aliasing the blob pages and hand it to virglrenderer with
+virgl_renderer_resource_set_guest_dmabuf(), so that native contexts import
+it like any other dma-buf.  Blobs whose pages cannot be exported (udmabuf
+list_limit or size_limit_mb exceeded) keep the previous behaviour.
+
+The feature is compiled out when virglrenderer lacks
+virgl_renderer_resource_set_guest_dmabuf().
+
+Ported from the user's DRM native context work (drm-native-context/patches)
+to the experimental zero-copy branch.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+Claude-Session: https://claude.ai/code/session_014Q4Faji8f5ncpq4S3fVqfu
+---
+ hw/display/virtio-gpu-udmabuf-stubs.c |  6 +++
+ hw/display/virtio-gpu-udmabuf.c       | 61 +++++++++++++++++++++++----
+ hw/display/virtio-gpu-virgl.c         | 41 ++++++++++++++++++
+ include/hw/virtio/virtio-gpu.h        |  4 ++
+ meson.build                           |  4 ++
+ 5 files changed, 107 insertions(+), 9 deletions(-)
+
+diff --git a/hw/display/virtio-gpu-udmabuf-stubs.c b/hw/display/virtio-gpu-udmabuf-stubs.c
+index 1a9dfbdec109a4f1e0f5496fb82664c255de043c..68b109d19edd923665fd4b7fbd9e2cc53595a004 100644
+--- a/hw/display/virtio-gpu-udmabuf-stubs.c
++++ b/hw/display/virtio-gpu-udmabuf-stubs.c
+@@ -13,6 +13,12 @@ bool virtio_gpu_init_udmabuf(struct virtio_gpu_simple_resource *res)
+     return false;
+ }
+ 
++int virtio_gpu_create_udmabuf_fd(struct virtio_gpu_simple_resource *res)
++{
++    /* nothing (stub) */
++    return -1;
++}
++
+ void virtio_gpu_fini_udmabuf(struct virtio_gpu_simple_resource *res)
+ {
+     /* nothing (stub) */
+diff --git a/hw/display/virtio-gpu-udmabuf.c b/hw/display/virtio-gpu-udmabuf.c
+index 6d2bc8d9771fe745a406021e584bb839e1ff1705..d823332d9a918f450d2d54701df8ac396c341eb6 100644
+--- a/hw/display/virtio-gpu-udmabuf.c
++++ b/hw/display/virtio-gpu-udmabuf.c
+@@ -27,22 +27,31 @@
+ #include "standard-headers/linux/udmabuf.h"
+ #include "standard-headers/drm/drm_fourcc.h"
+ 
+-static void virtio_gpu_create_udmabuf(struct virtio_gpu_simple_resource *res)
++/*
++ * Creates a udmabuf aliasing the guest RAM pages backing @res and returns its
++ * fd, or -1.  @ioctl_errno is set when the UDMABUF_CREATE_LIST ioctl itself
++ * fails and is 0 otherwise.
++ */
++static int
++virtio_gpu_udmabuf_create_list(struct virtio_gpu_simple_resource *res,
++                               int *ioctl_errno)
+ {
+     struct udmabuf_create_list *list;
+     RAMBlock *rb;
+     ram_addr_t offset;
+-    int udmabuf, i;
++    int udmabuf, fd, i;
++
++    *ioctl_errno = 0;
+ 
+     udmabuf = udmabuf_fd();
+     if (udmabuf < 0) {
+-        return;
++        return -1;
+     }
+ 
+     list = g_try_malloc0(sizeof(struct udmabuf_create_list) +
+                          sizeof(struct udmabuf_create_item) * res->iov_cnt);
+     if (!list) {
+-        return;
++        return -1;
+     }
+ 
+     for (i = 0; i < res->iov_cnt; i++) {
+@@ -52,7 +61,7 @@ static void virtio_gpu_create_udmabuf(struct virtio_gpu_simple_resource *res)
+ 
+         if (!rb || rb->fd < 0) {
+             g_free(list);
+-            return;
++            return -1;
+         }
+ 
+         list->list[i].memfd  = rb->fd;
+@@ -63,12 +72,46 @@ static void virtio_gpu_create_udmabuf(struct virtio_gpu_simple_resource *res)
+     list->count = res->iov_cnt;
+     list->flags = UDMABUF_FLAGS_CLOEXEC;
+ 
+-    res->dmabuf_fd = ioctl(udmabuf, UDMABUF_CREATE_LIST, list);
+-    if (res->dmabuf_fd < 0) {
+-        warn_report("%s: UDMABUF_CREATE_LIST: %s", __func__,
+-                    strerror(errno));
++    fd = ioctl(udmabuf, UDMABUF_CREATE_LIST, list);
++    if (fd < 0) {
++        *ioctl_errno = errno;
+     }
+     g_free(list);
++
++    return fd;
++}
++
++static void virtio_gpu_create_udmabuf(struct virtio_gpu_simple_resource *res)
++{
++    int err;
++
++    res->dmabuf_fd = virtio_gpu_udmabuf_create_list(res, &err);
++    if (err) {
++        warn_report("%s: UDMABUF_CREATE_LIST: %s", __func__, strerror(err));
++    }
++}
++
++/*
++ * Returns a udmabuf aliasing the guest pages of @res without mapping it, for
++ * resources that are handed over to the renderer.  Failures, such as hitting
++ * the udmabuf list_limit or size_limit_mb module parameters, are reported
++ * once.
++ */
++int virtio_gpu_create_udmabuf_fd(struct virtio_gpu_simple_resource *res)
++{
++    int err, fd;
++
++    if (!res->iov_cnt) {
++        return -1;
++    }
++
++    fd = virtio_gpu_udmabuf_create_list(res, &err);
++    if (err) {
++        warn_report_once("%s: UDMABUF_CREATE_LIST: %s", __func__,
++                         strerror(err));
++    }
++
++    return fd;
+ }
+ 
+ static void virtio_gpu_remap_udmabuf(struct virtio_gpu_simple_resource *res)
+diff --git a/hw/display/virtio-gpu-virgl.c b/hw/display/virtio-gpu-virgl.c
+index a9edae71088064f9d9c52028850b9e69160dec5e..cfa7da47e5839a29383696dae632dd1b166dfbde 100644
+--- a/hw/display/virtio-gpu-virgl.c
++++ b/hw/display/virtio-gpu-virgl.c
+@@ -864,6 +864,35 @@ static void virgl_cmd_get_capset(VirtIOGPU *g,
+ }
+ 
+ #if VIRGL_VERSION_MAJOR >= 1
++#ifdef HAVE_VIRGL_RESOURCE_SET_GUEST_DMABUF
++/*
++ * DRM native contexts can only import dma-bufs.  Give shareable guest-memory
++ * blobs, such as dma-bufs of other guest devices imported by the guest
++ * virtio-gpu driver, a udmabuf aliasing their pages so that native contexts
++ * can use them instead of rejecting them.
++ */
++static void
++virgl_resource_set_guest_dmabuf(VirtIOGPU *g,
++                                struct virtio_gpu_virgl_resource *res)
++{
++    VirtIOGPUGL *gl = VIRTIO_GPU_GL(g);
++    int fd;
++
++    if (!gl->have_udmabuf) {
++        return;
++    }
++
++    fd = virtio_gpu_create_udmabuf_fd(&res->base);
++    if (fd < 0) {
++        return;
++    }
++
++    if (virgl_renderer_resource_set_guest_dmabuf(res->base.resource_id, fd)) {
++        close(fd);
++    }
++}
++#endif
++
+ static void virgl_cmd_resource_create_blob(VirtIOGPU *g,
+                                            struct virtio_gpu_ctrl_command *cmd)
+ {
+@@ -926,6 +955,13 @@ static void virgl_cmd_resource_create_blob(VirtIOGPU *g,
+         return;
+     }
+ 
++#ifdef HAVE_VIRGL_RESOURCE_SET_GUEST_DMABUF
++    if (cblob.blob_mem == VIRTIO_GPU_BLOB_MEM_GUEST &&
++        (cblob.blob_flags & VIRTIO_GPU_BLOB_FLAG_USE_SHAREABLE)) {
++        virgl_resource_set_guest_dmabuf(g, res);
++    }
++#endif
++
+     ret = virgl_renderer_resource_get_info(cblob.resource_id, &info);
+     if (ret) {
+         qemu_log_mask(LOG_GUEST_ERROR,
+@@ -1544,6 +1580,11 @@ static int virtio_gpu_virgl_init(VirtIOGPU *g)
+     gl->fence_poll = timer_new_ms(QEMU_CLOCK_VIRTUAL,
+                                   virtio_gpu_fence_poll, g);
+ 
++#ifdef HAVE_VIRGL_RESOURCE_SET_GUEST_DMABUF
++    gl->have_udmabuf = virtio_gpu_drm_enabled(g->parent_obj.conf) &&
++                       virtio_gpu_have_udmabuf();
++#endif
++
+     if (virtio_gpu_stats_enabled(g->parent_obj.conf)) {
+         gl->print_stats = timer_new_ms(QEMU_CLOCK_VIRTUAL,
+                                        virtio_gpu_print_stats, g);
+diff --git a/include/hw/virtio/virtio-gpu.h b/include/hw/virtio/virtio-gpu.h
+index efc6874f2ea676ab9bea8431f504e7c7eba81688..5c9a6021afc4cf84047a4c7256026986d64683f2 100644
+--- a/include/hw/virtio/virtio-gpu.h
++++ b/include/hw/virtio/virtio-gpu.h
+@@ -272,6 +272,9 @@ struct VirtIOGPUGL {
+      * whether it draws through virgl, Venus or DRM native context.
+      */
+     uint32_t contexts_created[VIRTIO_GPU_CAPSET_DRM + 1];
++
++    /* give guest-memory blobs a udmabuf (DRM native context + memfd RAM) */
++    bool have_udmabuf;
+ };
+ 
+ struct VhostUserGPU {
+@@ -397,6 +400,7 @@ bool virtio_gpu_scanout_blob_to_fb(struct virtio_gpu_framebuffer *fb,
+ /* virtio-gpu-udmabuf.c */
+ bool virtio_gpu_have_udmabuf(void);
+ bool virtio_gpu_init_udmabuf(struct virtio_gpu_simple_resource *res);
++int virtio_gpu_create_udmabuf_fd(struct virtio_gpu_simple_resource *res);
+ void virtio_gpu_fini_udmabuf(struct virtio_gpu_simple_resource *res);
+ int virtio_gpu_update_dmabuf(VirtIOGPU *g,
+                              uint32_t scanout_id,
+diff --git a/meson.build b/meson.build
+index c6dae01cba2c5415b9b9c21d427b2db4c1b6b515..6b2741d11aa8f7ba271d6a250f98af97dad9c761 100644
+--- a/meson.build
++++ b/meson.build
+@@ -2549,6 +2549,10 @@ if virgl.found()
+   config_host_data.set('VIRGL_VERSION_MAJOR', virgl.version().split('.')[0])
+   config_host_data.set('VIRGL_VERSION_MINOR', virgl.version().split('.')[1])
+   config_host_data.set('VIRGL_VERSION_MICRO', virgl.version().split('.')[2])
++  config_host_data.set('HAVE_VIRGL_RESOURCE_SET_GUEST_DMABUF',
++                       cc.has_function('virgl_renderer_resource_set_guest_dmabuf',
++                                       prefix: '#include <virglrenderer.h>',
++                                       dependencies: virgl))
+ endif
+ config_host_data.set('CONFIG_VIRTFS', have_virtfs)
+ config_host_data.set('CONFIG_VTE', vte.found())

@@ -1,8 +1,8 @@
 #!/bin/bash
 # SPDX-License-Identifier: GPL-2.0-or-later
 #
-# Builds Vitrine's QEMU: virglrenderer and the qemu-gui fork, each fetched
-# at the commit versions.conf pins and patched with the *.patch files of
+# Builds Vitrine's QEMU: virglrenderer and upstream QEMU, each fetched at
+# the commit versions.conf pins and patched with the *.patch files of
 # patches/<component> and of its folders (see patches_of), installed into a
 # prefix of their own:
 #
@@ -92,7 +92,7 @@ for v in QEMU_URL QEMU_COMMIT VIRGL_URL VIRGL_COMMIT; do
 done
 
 # the patches of a component: its *.patch files and those of its folders
-# (QEMU's research/ and vitrine/), in the C order of their paths
+# (QEMU's fork/, research/ and vitrine/), in the C order of their paths
 # whatever the locale: a folder's patches one after the other in name order,
 # the folders in name order
 patches_of() {
@@ -438,7 +438,7 @@ version=$("$qemu" -version | sed -n 's/^QEMU emulator version \([^ ]*\).*/\1/p')
 "$prefix/bin/qemu-img" --version > /dev/null || die "qemu-img --version failed"
 props=$("$qemu" -device virtio-gpu-gl-pci,help)
 for p in drm_native_context x-host-vblank; do
-	grep -q "^ *$p=" <<< "$props" || die "virtio-gpu-gl-pci has no $p property: not the patched fork"
+	grep -q "^ *$p=" <<< "$props" || die "virtio-gpu-gl-pci has no $p property: not the patched QEMU"
 done
 echo "QEMU $version, virtio-gpu-gl-pci with drm_native_context and x-host-vblank"
 

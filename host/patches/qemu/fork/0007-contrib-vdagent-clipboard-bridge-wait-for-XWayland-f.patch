@@ -1,0 +1,132 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: tomtomnet <tompere8000@proton.me>
+Date: Wed, 23 Sep 2026 17:25:43 +0200
+Subject: [PATCH] contrib/vdagent-clipboard-bridge: wait for XWayland, fix
+ Hyprland docs
+
+Hyprland runs no desktop autostart entries, so neither spice-vdagent nor
+the bridge started there, and the README showed hyprland.conf lines,
+which a Lua config does not take.  Show both forms, and that niri run as
+niri-session does run the autostart entries.
+
+The bridge now waits for the X11 display instead of losing its X11 half
+when it starts before XWayland, and no longer blames the data-control
+protocol when wl-paste stops because the session ended.
+
+Co-Authored-By: Claude Opus 5.5 (1M context) <noreply@anthropic.com>
+---
+ .github/README.md                             | 28 ++++++++++++------
+ .../vdagent-clipboard-bridge                  | 29 ++++++++++++-------
+ 2 files changed, 38 insertions(+), 19 deletions(-)
+
+diff --git a/.github/README.md b/.github/README.md
+index a8d2fb9430565e9e7e9915e5745c956fac201963..1d18b6271bae7d7f7e1e5f4fc1a7ec5c5b74b616 100644
+--- a/.github/README.md
++++ b/.github/README.md
+@@ -135,15 +135,25 @@ it works with any desktop; I tested it with KDE Plasma, Hyprland and niri.
+        sudo install -m 755 contrib/vdagent-clipboard-bridge/vdagent-clipboard-bridge /usr/local/bin/
+ 
+    Then start it with the session:
+-   - **KDE Plasma:**
+-     `cp contrib/vdagent-clipboard-bridge/vdagent-clipboard-bridge.desktop ~/.config/autostart/`
+-   - **Hyprland:** start both `spice-vdagent` and the bridge, e.g.
+-     `exec-once = spice-vdagent` and
+-     `exec-once = /usr/local/bin/vdagent-clipboard-bridge` (or the equivalent
+-     in a Lua config).
+-   - **niri:** `spawn-at-startup "spice-vdagent"` and
+-     `spawn-at-startup "/usr/local/bin/vdagent-clipboard-bridge"` in
+-     `config.kdl`, with `xwayland-satellite` installed for XWayland.
++   - **KDE Plasma, niri and other desktops that run autostart entries**
++     (niri does when started as `niri-session`, the usual way):
++
++         cp contrib/vdagent-clipboard-bridge/vdagent-clipboard-bridge.desktop ~/.config/autostart/
++
++     spice-vdagent starts through its own autostart entry. niri also needs
++     `xwayland-satellite` installed for XWayland.
++   - **Hyprland** runs no autostart entries, so start both spice-vdagent and
++     the bridge in its config. With a Lua config (`hyprland.lua`):
++
++         hl.on("hyprland.start", function ()
++             hl.exec_cmd("spice-vdagent")
++             hl.exec_cmd("/usr/local/bin/vdagent-clipboard-bridge")
++         end)
++
++     With a `hyprland.conf`:
++
++         exec-once = spice-vdagent
++         exec-once = /usr/local/bin/vdagent-clipboard-bridge
+ 
+ Good to know:
+ - Only text is shared.
+diff --git a/contrib/vdagent-clipboard-bridge/vdagent-clipboard-bridge b/contrib/vdagent-clipboard-bridge/vdagent-clipboard-bridge
+index adc05c447eceae6d9db9692adb72dbe0851bc7b1..cdca86789254abe057a5a6c42f75a0deccf6c758 100755
+--- a/contrib/vdagent-clipboard-bridge/vdagent-clipboard-bridge
++++ b/contrib/vdagent-clipboard-bridge/vdagent-clipboard-bridge
+@@ -23,6 +23,7 @@ import os
+ import subprocess
+ import sys
+ import threading
++import time
+ 
+ TEXT = "text/plain;charset=utf-8"
+ 
+@@ -64,8 +65,8 @@ def to_wayland():
+                        stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+ 
+ 
+-def watch_x11():
+-    """Call to_wayland() whenever the X11 CLIPBOARD selection changes owner"""
++def open_x11():
++    """Connect to the X11 display, waiting for XWayland if it is not up yet"""
+     xlib = ctypes.CDLL(ctypes.util.find_library("X11"))
+     xfixes = ctypes.CDLL(ctypes.util.find_library("Xfixes"))
+     xlib.XOpenDisplay.restype = ctypes.c_void_p
+@@ -85,17 +86,24 @@ def watch_x11():
+                                                   ctypes.c_ulong]
+ 
+     dpy = xlib.XOpenDisplay(None)
++    while not dpy:
++        time.sleep(1)
++        dpy = xlib.XOpenDisplay(None)
+     event_base, error_base = ctypes.c_int(), ctypes.c_int()
+-    if not dpy or not xfixes.XFixesQueryExtension(dpy, event_base,
+-                                                  error_base):
+-        sys.exit("vdagent-clipboard-bridge: no X11 display with XFixes")
++    if not xfixes.XFixesQueryExtension(dpy, event_base, error_base):
++        sys.exit("vdagent-clipboard-bridge: the X11 display has no XFixes")
++    return xlib, xfixes, dpy, event_base.value
++
++
++def watch_x11(xlib, xfixes, dpy, event_base):
++    """Call to_wayland() whenever the X11 CLIPBOARD selection changes owner"""
+     clipboard = xlib.XInternAtom(dpy, b"CLIPBOARD", 0)
+     xfixes.XFixesSelectSelectionInput(dpy, xlib.XDefaultRootWindow(dpy),
+                                       clipboard, 1)  # SetSelectionOwner
+     event = ctypes.create_string_buffer(192)        # sizeof(XEvent)
+     while True:
+         xlib.XNextEvent(dpy, event)
+-        if int.from_bytes(event.raw[:4], sys.byteorder) == event_base.value:
++        if int.from_bytes(event.raw[:4], sys.byteorder) == event_base:
+             to_wayland()
+ 
+ 
+@@ -107,14 +115,15 @@ def main():
+         sys.exit("vdagent-clipboard-bridge: needs a Wayland session with "
+                  "XWayland (WAYLAND_DISPLAY and DISPLAY)")
+ 
+-    threading.Thread(target=watch_x11, daemon=True).start()
++    threading.Thread(target=watch_x11, args=open_x11(), daemon=True).start()
+     # wl-paste runs this again, with --to-x11, for each Wayland copy
+     watch = subprocess.run(["wl-paste", "--type", TEXT, "--watch",
+                             sys.executable, os.path.abspath(__file__),
+                             "--to-x11"])
+-    sys.exit("vdagent-clipboard-bridge: wl-paste --watch failed; the "
+-             "compositor needs the data-control protocol (GNOME has none, "
+-             "but does not need this)" if watch.returncode else 0)
++    if watch.returncode:
++        sys.exit("vdagent-clipboard-bridge: wl-paste --watch stopped "
++                 "(GNOME, which has no data-control protocol, does not "
++                 "need this bridge)")
+ 
+ 
+ if __name__ == "__main__":

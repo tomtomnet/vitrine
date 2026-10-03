@@ -1,0 +1,35 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: tomtomnet <tompere8000@proton.me>
+Date: Wed, 23 Sep 2026 14:31:11 +0200
+Subject: [PATCH] ui/sdl2: draw the menu bar without a border
+
+Dear ImGui frames its windows, the main menu bar included, with a one
+pixel border in the style's border color: a grey line ran around the
+bar, between it and the window title bar and above the guest display.
+The dropdown menus and the information window keep theirs, they float
+over the guest display.
+
+Co-Authored-By: Claude Opus 5.5 (1M context) <noreply@anthropic.com>
+---
+ ui/sdl2-gui.cpp | 8 +++++++-
+ 1 file changed, 7 insertions(+), 1 deletion(-)
+
+diff --git a/ui/sdl2-gui.cpp b/ui/sdl2-gui.cpp
+index b4b26e5e81503a430f63c914bd1076d340df76ea..0cabe543d78037ec158f33e1b1e4e55282164038 100644
+--- a/ui/sdl2-gui.cpp
++++ b/ui/sdl2-gui.cpp
+@@ -1256,7 +1256,13 @@ static void info_window(Uint64 now)
+ 
+ static void menu_bar()
+ {
+-    if (!ImGui::BeginMainMenuBar()) {
++    bool open;
++
++    /* a bar across the top of the window, not a window framed in grey */
++    ImGui::PushStyleVar(ImGuiStyleVar_WindowBorderSize, 0.0f);
++    open = ImGui::BeginMainMenuBar();
++    ImGui::PopStyleVar();
++    if (!open) {
+         return;
+     }
+     gui.bar_height = ImGui::GetWindowHeight();
