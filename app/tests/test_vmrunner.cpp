@@ -469,10 +469,19 @@ private slots:
         QTRY_COMPARE_WITH_TIMEOUT(runner->state(), VmRunner::State::Running, 10000);
         QCOMPARE(runner->displaySocket(), "");
         delete runner;
+        /* kept again: start() on the QEMU found running takes them over
+           vm.args, and they go with the other runtime files when it stops */
+        QFile kept(runDir + "/run.args");
+        QVERIFY(kept.open(QIODevice::WriteOnly));
+        kept.write(args.toText().toUtf8());
+        kept.close();
         runner = new VmRunner(id, tmp.path());
         QSignalSpy failed2(runner, &VmRunner::failed);
-        runner->start(args);
+        runner->start(edited);
         QTRY_COMPARE_WITH_TIMEOUT(runner->state(), VmRunner::State::Running, 10000);
+        QCOMPARE(runner->runArgs().toText(), args.toText());
+        QCOMPARE(runner->displaySocket(), "");
+        QVERIFY(QFileInfo::exists(runDir + "/run.args"));
 
         const qint64 pid = qemuPid();
         runner->forceOff();
