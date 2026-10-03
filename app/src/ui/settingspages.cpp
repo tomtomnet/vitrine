@@ -1352,9 +1352,11 @@ void NetworkPage::load(const ArgsFile &args)
     m_loaded = VmConfig::network(args);
     m_otherForwards = VmConfig::forwardedPorts(args);
     m_otherForwards.removeOne(m_loaded.sshPort);
-    /* where the VM had none: passt, if at hand */
-    m_backend = VmTemplate::hasPasst(QemuDocs::forArgs(args)->info(),
-                                     QemuDocs::forArgs(args)->binary())
+    /* where the VM had none: passt, if at hand in its QEMU, vitrine's unless chosen */
+    const QString own = VmConfig::qemuBinary(args);
+    const QString chosen = own.isEmpty() ? Paths::customQemuBinary() : own;
+    const QemuDocs *docs = QemuDocs::forArgs(args);
+    m_backend = VmTemplate::hasPasst(docs->binary() == chosen ? docs->info() : nullptr, chosen)
                     ? "passt" : "user";
     m_nat->setChecked(m_loaded.kind == VmConfig::Network::Nat);
     m_ssh->setChecked(m_loaded.sshPort > 0);

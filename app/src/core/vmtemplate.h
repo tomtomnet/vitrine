@@ -56,7 +56,7 @@ struct Options {
     /*
      * The properties of virtio-gpu-gl-pci in the QEMU the VM runs with, to
      * leave out those of vitrine's QEMU it lacks; not set for vitrine's
-     * QEMU, which has them all
+     * QEMU, built or not, which has them all
      */
     std::optional<QStringList> gpuProperties;
 };
@@ -75,17 +75,20 @@ bool hasBios(const QString &arch = {});
 bool hasVga(const QString &arch = {});
 
 /*
- * What the QEMU at @binary offers, from @info, its QemuInfo, else (null:
- * not loaded yet, or it could not be) asked from the binary itself.
- * Without a binary to ask, the QEMU is vitrine's, to build; one that does
- * not answer is taken for vitrine's only if it is, else as offering none.
+ * What the QEMU a VM runs with offers.  @chosen is the QEMU the user chose
+ * for it, its #qemu line else the other QEMU of the preferences: empty
+ * for vitrine's, which has all the template uses and is not asked, built
+ * or not; until it is, VmRunner::start() refuses to run such a VM with
+ * the system's QEMU.  A chosen QEMU is asked: from @info, its QemuInfo,
+ * else (null: not loaded yet, or it could not be) from the binary itself.
+ * One that does not answer offers none of it, unless it is vitrine's.
  *
  * NAT through passt: installed on this computer, and in that QEMU, which
- * has it if built with it.
+ * has it if built with it, as vitrine's is.
  */
-bool hasPasst(const QemuInfo *info, const QString &binary);
+bool hasPasst(const QemuInfo *info, const QString &chosen);
 /* The properties of virtio-gpu-gl-pci; not set for vitrine's QEMU */
-std::optional<QStringList> gpuProperties(const QemuInfo *info, const QString &binary);
+std::optional<QStringList> gpuProperties(const QemuInfo *info, const QString &chosen);
 
 /*
  * The arguments, in sections.  @addFirmware is called where the firmware

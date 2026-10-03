@@ -1,12 +1,14 @@
 // SPDX-License-Identifier: GPL-2.0-or-later
+#include <QDir>
 #include <QFile>
+#include <QFileInfo>
 #include <QStandardPaths>
 #include <QTemporaryDir>
 #include <QTest>
 
 #include "core/hostdevices.h"
+#include "core/paths.h"
 #include "core/qemuinfo.h"
-
 #include "core/vmconfig.h"
 #include "core/vmhardware.h"
 #include "core/vmtemplate.h"
@@ -38,7 +40,31 @@ class TestVmTemplate : public QObject
 {
     Q_OBJECT
 
+    QTemporaryDir m_tmp;
+
+    /* An executable shell script at @path */
+    static bool script(const QString &path, const QByteArray &body)
+    {
+        QFile f(path);
+
+        if (!QDir().mkpath(QFileInfo(path).path()) || !f.open(QIODevice::WriteOnly) ||
+            f.write("#!/bin/sh\n" + body + "\n") < 0) {
+            return false;
+        }
+        f.close();
+        return f.setPermissions(QFileDevice::ReadOwner | QFileDevice::ExeOwner);
+    }
+
 private slots:
+    void initTestCase()
+    {
+        QVERIFY(m_tmp.isValid());
+        /* Paths' settings and stack in here: vitrine's QEMU not built */
+        qputenv("XDG_DATA_HOME", m_tmp.filePath("data").toUtf8());
+        qputenv("XDG_CONFIG_HOME", m_tmp.filePath("config").toUtf8());
+        qputenv("XDG_CACHE_HOME", m_tmp.filePath("cache").toUtf8());
+    }
+
     /* Linux on a PC: the research launcher's machine (host/run-vm.sh) */
     void x86()
     {
@@ -199,57 +225,98 @@ private slots:
         QVERIFY(build(o).toText().contains("-device virtio-gpu-gl-pci\n-display"));
     }
 
-    /* What the VM's QEMU tells the template and the Network page */
-    void fromQemuInfo()
+    /*
+     * A VM the user chose no QEMU for (no #qemu, none in the preferences)
+     * runs with vitrine's, built or not: the template is not adapted to
+     * the system's QEMU found until vitrine's is built, which would keep
+     * native context out of the VM for good
+     */
+    void vitrinesQemu()
+    {
+        const bool installed = !QStandardPaths::findExecutable("passt").isEmpty();
+        const QString stack = Paths::stackDir();
+        const QString full = "-device virtio-gpu-gl-pci,hostmem=4G,blob=on,drm_native_context=on,"
+                             "x-host-vblank=on,x-vblank-lead=3000,x-vblank-lead-auto=on\n";
+        /* the documentation of QEMU 10.2, loaded: no native context, no passt */
+        QemuInfo system;
+        system.devices = {{"virtio-gpu-gl-pci", "PCI", {}, "Display devices", {}, true}};
+        system.properties["virtio-gpu-gl-pci"] = {{"blob", "bool", {}, "off"},
+                                                  {"hostmem", "size", {}, "0"},
+                                                  {"venus", "bool", {}, "off"}};
+        system.netdevs = {{"user", {}}, {"tap", {}}};
+        Options o = fedora("x86_64");
+
+        /* not built yet */
+        QVERIFY(stack.startsWith(m_tmp.path()));
+        QVERIFY(Paths::stackQemu().isEmpty());
+        QVERIFY(!gpuProperties(nullptr, {}));
+        QVERIFY(!gpuProperties(&system, {}));
+        QCOMPARE(hasPasst(&system, {}), installed);
+        o.gpuProperties = gpuProperties(&system, {});
+        const ArgsFile args = build(o);
+        QVERIFY(args.toText().contains(full));
+        QVERIFY(args.toText().contains("-accel kvm,honor-guest-pat=on\n"));
+        QVERIFY(!args.toText().contains("venus"));
+        QVERIFY(VmConfig::graphics(args).nativeContext);
+
+        /* built: the same, without asking it (this one would not answer) */
+        QVERIFY(script(stack + "/0123456789abcdef/bin/" + Paths::qemuSystemName(), "exit 1"));
+        QVERIFY(QFile::link("0123456789abcdef", stack + "/current"));
+        QVERIFY(!Paths::stackQemu().isEmpty());
+        QVERIFY(!gpuProperties(nullptr, {}));
+        QVERIFY(!gpuProperties(&system, {}));
+        QCOMPARE(hasPasst(&system, {}), installed);
+        QCOMPARE(build(o).toText(), args.toText());
+        /* chosen by its path in the preferences: asked, and taken for
+           vitrine's when it does not answer */
+        QVERIFY(!gpuProperties(nullptr, Paths::stackQemu()));
+        QCOMPARE(hasPasst(nullptr, Paths::stackQemu()), installed);
+        QVERIFY(QFile::remove(stack + "/current"));
+        QVERIFY(Paths::stackQemu().isEmpty());
+    }
+
+    /* Another QEMU the user chose: asked what it offers, and adapted to */
+    void chosenQemu()
     {
         QemuInfo info;
         const bool installed = !QStandardPaths::findExecutable("passt").isEmpty();
-        QTemporaryDir dir;
-        const auto script = [&dir](const QString &name, const QByteArray &body) {
-            QFile f(dir.filePath(name));
-            if (!f.open(QIODevice::WriteOnly) || f.write("#!/bin/sh\n" + body + "\n") < 0) {
-                return QString();
-            }
-            f.close();
-            f.setPermissions(QFileDevice::ReadOwner | QFileDevice::ExeOwner);
-            return f.fileName();
-        };
         /* QEMU 10.2: no native context, no passt */
-        const QString plain = script("qemu-system-x86_64", "case \"$1 $2\" in\n"
-                                                           "'-device virtio-gpu-gl-pci,help')\n"
-                                                           "  echo 'virtio-gpu-gl-pci options:'\n"
-                                                           "  echo '  blob=<bool>'\n"
-                                                           "  echo '  venus=<bool>' ;;\n"
-                                                           "'-netdev help')\n"
-                                                           "  echo 'Available netdev backend types:'\n"
-                                                           "  echo 'user'; echo 'tap' ;;\n"
-                                                           "esac");
-        const QString broken = script("broken-qemu", "exit 127");
+        const QString plain = m_tmp.filePath("plain/" + Paths::qemuSystemName());
+        QVERIFY(script(plain, "case \"$1 $2\" in\n"
+                              "'-device virtio-gpu-gl-pci,help')\n"
+                              "  echo 'virtio-gpu-gl-pci options:'\n"
+                              "  echo '  blob=<bool>'\n"
+                              "  echo '  hostmem=<size>'\n"
+                              "  echo '  venus=<bool>' ;;\n"
+                              "'-netdev help')\n"
+                              "  echo 'Available netdev backend types:'\n"
+                              "  echo 'user'; echo 'tap' ;;\n"
+                              "esac"));
+        const QString broken = m_tmp.filePath("broken/" + Paths::qemuSystemName());
+        QVERIFY(script(broken, "exit 127"));
 
-        /* no QEMU to ask: vitrine's, to build */
-        QVERIFY(!gpuProperties(nullptr, {}));
-        QVERIFY(!gpuProperties(nullptr, "/nonexistent/qemu-system-x86_64"));
-        QCOMPARE(hasPasst(nullptr, {}), installed);
-
-        /* QemuInfo not loaded yet, or not at all: asked from the binary */
-        QCOMPARE(gpuProperties(nullptr, plain), QStringList({"blob", "venus"}));
+        /* its QemuInfo not loaded yet, or not at all: asked from the binary */
+        QCOMPARE(gpuProperties(nullptr, plain), QStringList({"blob", "hostmem", "venus"}));
         QVERIFY(!hasPasst(nullptr, plain));
-        /* one that does not answer, not vitrine's: none taken for granted */
-        QCOMPARE(gpuProperties(nullptr, broken), QStringList());
-        QVERIFY(!hasPasst(nullptr, broken));
-
-        /* so that a VM made before the QemuInfo is in starts with that QEMU */
+        /* so that the VM starts with that QEMU */
         Options o = fedora("x86_64");
         o.gpuProperties = gpuProperties(nullptr, plain);
-        const QString text = build(o).toText();
-        QVERIFY(text.contains("-accel kvm\n"));
-        QVERIFY(text.contains("-device virtio-gpu-gl-pci,blob=on\n"));
-        QVERIFY(!text.contains("venus"));
+        const ArgsFile args = build(o);
+        QVERIFY(args.toText().contains("-accel kvm\n"));
+        QVERIFY(args.toText().contains("-device virtio-gpu-gl-pci,hostmem=4G,blob=on\n"));
+        QVERIFY(!args.toText().contains("venus"));
+        QVERIFY(!VmConfig::graphics(args).nativeContext);
+
+        /* one that does not answer, or is not there: none taken for granted */
+        QCOMPARE(gpuProperties(nullptr, broken), QStringList());
+        QVERIFY(!hasPasst(nullptr, broken));
+        QCOMPARE(gpuProperties(nullptr, m_tmp.filePath("nowhere/qemu")), QStringList());
+        QVERIFY(!hasPasst(nullptr, m_tmp.filePath("nowhere/qemu")));
 
         /* loaded: a QEMU without the card has none, else as it says */
         QCOMPARE(gpuProperties(&info, plain), QStringList());
         info.devices = {{"virtio-gpu-gl-pci", "PCI", {}, "Display devices", {}, true}};
-        QCOMPARE(gpuProperties(&info, plain), QStringList({"blob", "venus"}));
+        QCOMPARE(gpuProperties(&info, plain), QStringList({"blob", "hostmem", "venus"}));
         info.properties["virtio-gpu-gl-pci"] = {{"blob", "bool", {}, "off"},
                                                 {"x-host-vblank", "bool", {}, "on"}};
         QCOMPARE(gpuProperties(&info, plain), QStringList({"blob", "x-host-vblank"}));
