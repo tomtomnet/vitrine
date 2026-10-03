@@ -20,6 +20,7 @@
 #include <cerrno>
 #include <cstring>
 #include <utility>
+#include <gio/gio.h>
 #include <sys/socket.h>
 #include <sys/un.h>
 #include <unistd.h>
@@ -54,6 +55,40 @@ int connectUnix(const QString &path, QString *error)
         return -1;
     }
     return fd;
+}
+
+/*
+ * The display's connection and statistics, once the view is done with them.
+ * GDBus completes DBusDisplay's calls on the GUI thread, from an idle source
+ * one iteration after the reply arrives, with pointers to both (the input
+ * calls' statistics, UIInfo.Apply's display): deleted at once, they would
+ * leave the replies already in, and those the close fails, writing into
+ * freed memory.  So the connection is closed first, which queues a
+ * completion for every call still pending, and both go from an idle of
+ * lower priority than those completions, which run before it.
+ */
+void retire(DBusDisplay *dbus, std::unique_ptr<Stats> stats)
+{
+    struct Retired {
+        DBusDisplay *dbus;
+        std::unique_ptr<Stats> stats;
+    };
+
+    if (GDBusConnection *conn = dbus->connection()) {
+        g_dbus_connection_close_sync(conn, nullptr, nullptr);
+        /* it may return before GDBus marks the connection closed, which is
+           when the pending calls fail: at once, in practice */
+        for (int i = 0; i < 1000 && !g_dbus_connection_is_closed(conn); i++) {
+            g_usleep(100);
+        }
+    }
+    /* not deleteLater(): Qt's posted events have the completions' priority */
+    g_idle_add_full(G_PRIORITY_DEFAULT_IDLE, [](gpointer data) -> gboolean {
+        auto *retired = static_cast<Retired *>(data);
+        delete retired->dbus;
+        delete retired;
+        return G_SOURCE_REMOVE;
+    }, new Retired{dbus, std::move(stats)}, nullptr);
 }
 
 } // namespace
@@ -122,7 +157,11 @@ bool VmView::attach(const QString &monitorSocket, QString *error)
         delete m_wayland;
         m_wayland = nullptr;
     }
-    m_dbus = new DBusDisplay(&m_stats, this);
+    if (!m_stats) {
+        m_stats = std::make_unique<Stats>();
+    }
+    /* no parent: it may outlive the view (retire()) */
+    m_dbus = new DBusDisplay(m_stats.get());
     if (!m_dbus->connectPeer(sv[0], error) || !m_dbus->selectConsole(error)) {
         detach();
         return false;
@@ -168,7 +207,7 @@ bool VmView::attach(const QString &monitorSocket, QString *error)
             }
         }, Qt::QueuedConnection);
     };
-    m_listener = std::make_unique<Listener>(&m_mailbox, &m_stats, m_opts, cb);
+    m_listener = std::make_unique<Listener>(&m_mailbox, m_stats.get(), m_opts, cb);
     createWindow(false);
     const int listenerFd = m_listener->start(error);
     if (listenerFd < 0 || !m_dbus->registerListener(listenerFd, error)) {
@@ -186,8 +225,9 @@ void VmView::detach()
         m_listener->stop();
         m_listener.reset();
     }
-    delete m_dbus;
-    m_dbus = nullptr;
+    if (m_dbus) {
+        retire(std::exchange(m_dbus, nullptr), std::move(m_stats));
+    }
     delete m_wayland;
     m_wayland = nullptr;
 }
@@ -248,7 +288,7 @@ void VmView::createWindow(bool fullScreen)
         m_container->show();
     }
 
-    m_renderer = new Renderer(m_window, &m_mailbox, &m_stats, m_opts);
+    m_renderer = new Renderer(m_window, &m_mailbox, m_stats.get(), m_opts);
     m_renderer->setObjectName(QStringLiteral("render"));   // the thread's name in /proc
     m_renderer->setPresentationSink(m_dbus->connection(), m_dbus->consolePath().toUtf8());
     connect(m_renderer, &Renderer::failed, this, [](const QString &message) {
@@ -374,7 +414,7 @@ void VmView::sendCtrlAltDel()
 
 Stats::Summary VmView::takeStats()
 {
-    return m_stats.take();
+    return m_stats ? m_stats->take() : Stats::Summary();
 }
 
 QSize VmView::guestSize() const

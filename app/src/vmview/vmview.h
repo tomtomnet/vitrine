@@ -87,7 +87,8 @@ private:
     void checkGrab();
 
     Options m_opts;
-    Stats m_stats;
+    /* on the heap: it outlives the view while D-Bus calls complete (detach) */
+    std::unique_ptr<Stats> m_stats;
     FrameMailbox m_mailbox;
     WaylandExtras *m_wayland = nullptr;
     DBusDisplay *m_dbus = nullptr;

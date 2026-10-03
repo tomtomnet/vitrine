@@ -507,6 +507,45 @@ private Q_SLOTS:
         QVERIFY2(wrong.isEmpty(), qPrintable(wrong.join(", ")));
     }
 
+    /*
+     * GDBus completes a call one GUI-thread iteration after its reply, with
+     * pointers to the view's display and statistics: the replies already
+     * in when the view goes, and the call the close fails (UIInfo.Apply,
+     * unanswered), complete after it.
+     */
+    void lateCompletions()
+    {
+        FakeDisplay qemu(socketPath());
+        QWidget top;
+        auto *layout = new QVBoxLayout(&top);
+        auto *view = new VmView;
+        QString error;
+        QVERIFY2(view->attach(socketPath(), &error), qPrintable(error));
+        QTRY_VERIFY(qemu.listening());
+        layout->addWidget(view->widget());
+        /* a size for the guest: UIInfo.Apply, left unanswered */
+        qemu.hold(true);
+        top.resize(800, 600);
+        top.show();
+        QTRY_VERIFY(!qemu.callsTo("UIInfo.Apply").isEmpty());
+        qemu.hold(false);
+
+        /* key calls answered while the GUI thread does not look */
+        const int before = qemu.answered();
+        view->sendCtrlAltDel();
+        for (int i = 0; i < 400 && qemu.answered() < before + 6; i++) {
+            std::this_thread::sleep_for(std::chrono::milliseconds(5));
+        }
+        QCOMPARE(qemu.answered(), before + 6);
+        /* the replies on their way in, their completions queued */
+        std::this_thread::sleep_for(std::chrono::milliseconds(50));
+        delete view;
+        /* they run now */
+        QTest::qWait(200);
+        qemu.letGo();
+        QTest::qWait(50);
+    }
+
     void attachFails()
     {
         VmView view;
