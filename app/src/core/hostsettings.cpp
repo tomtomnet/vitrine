@@ -550,7 +550,8 @@ void HostSettings::handleLine(const QString &line)
             /* nothing left to watch: it ends, putting everything back */
             ::shutdown(m_fd, SHUT_WR);
         }
-    } else if (word == "error" && line.endsWith(": watch a QEMU first")) {
+    } else if (word == "error" && (line.endsWith(": watch a QEMU first") ||
+                                   line.endsWith(": watch the process first"))) {
         /* after a watch that failed: said already, if worth it */
     } else if (word == "skip" || word == "error") {
         /* "skip fair-server: kernel lockdown (integrity)" */
@@ -588,6 +589,10 @@ void HostSettings::reap()
     /* what it said last */
     readHelper();
     const bool ran = m_ready;
+    /* asked to be watched, neither ended nor refused: a VM that started as
+       the helper was ending (its requests came too late), or those of a
+       helper that failed */
+    const QSet<qint64> pending = m_expected;
     /* pkexec's own line, not what follows it ("This incident has been
        reported.") */
     QString why = m_foreign.isEmpty() ? tr("vitrine-helper did not start") : m_foreign.first();
@@ -608,16 +613,20 @@ void HostSettings::reap()
         deny(why, true);
         return;
     }
-    /* it ends after the last VM it watched: a VM running now started
-       meanwhile (its requests came too late), or the helper failed */
-    if (!m_store || !enabled() || m_restarts >= kRestarts) {
+    /*
+     * It ends after the last VM it watched.  Started again for those only:
+     * not for every VM that runs, among which one it refused to watch (a
+     * QEMU of another name), which would have it started and refused again
+     * until the restarts of the run were used up.
+     */
+    if (!m_store || !enabled() || pending.isEmpty() || m_restarts >= kRestarts) {
         return;
     }
-    m_tuned.clear();
+    m_restarts++;
     for (Vm *vm : m_store->vms()) {
-        if (alive(vm->runner()->pid())) {
-            m_restarts++;
-            vmStateChanged(vm);
+        const qint64 pid = m_tuned.value(vm->id());
+        if (pending.contains(pid) && alive(pid)) {
+            tune(pid);
         }
     }
 }

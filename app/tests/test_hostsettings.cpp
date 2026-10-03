@@ -19,6 +19,8 @@
 #include <csignal>
 #include <memory>
 
+#include <unistd.h>
+
 #include "core/hostsettings.h"
 #include "core/paths.h"
 #include "core/vmrunner.h"
@@ -621,6 +623,87 @@ private slots:
         }
         QTRY_COMPARE(fair(0), QString("1000000000/50000000"));
         QTRY_VERIFY(!hs.helperRunning());
+    }
+
+    /*
+     * A VM whose QEMU the helper refuses to watch (another name: a #qemu
+     * line, a wrapper): said once, and the helper is not started again for
+     * it - each start, refused again, used up the restarts of the run
+     */
+    void refusedWatch()
+    {
+        QTemporaryDir runtime(QDir::tempPath() + "/vt-XXXXXX");
+        QTemporaryDir vms;
+        QVERIFY(runtime.isValid() && vms.isValid());
+        qputenv("XDG_RUNTIME_DIR", runtime.path().toLocal8Bit());
+        QDir(vms.path()).mkpath("other");
+        writeFile(vms.path() + "/other/vm.args", "-name other\n");
+        const QString run = Paths::vmRuntimeDir("other");
+        /* no QEMU: a shell, with the runner's -qmp among its arguments */
+        QProcess other;
+        other.start("/bin/sh", {"-c", "sleep 300; :", "sh", "-qmp",
+                                QString("unix:%1/qmp.sock,server=on,wait=off").arg(run)});
+        QVERIFY(other.waitForStarted());
+        writeFile(run + "/qemu.pid", QByteArray::number(other.processId()) + "\n");
+        FakeQmp qmp(run + "/qmp.sock");
+        VmStore store(vms.path());
+        HostSettings hs(&store);
+        QSignalSpy lines(&hs, &HostSettings::helperLine), notices(&hs, &HostSettings::notice),
+            finished(&hs, &HostSettings::helperFinished);
+        fake(hs);
+        for (Vm *vm : store.vms()) {
+            vm->runner()->attach(vm->args());
+        }
+        QTRY_COMPARE(finished.size(), 1);
+        QTest::qWait(500);
+        QCOMPARE(finished.size(), 1);
+        QVERIFY(!hs.helperRunning());
+        QCOMPARE(notices.size(), 1);
+        QVERIFY(notices[0][0].toString().startsWith(
+            QString("Host tuning: watch %1: not a QEMU").arg(other.processId())));
+        other.kill();
+        other.waitForFinished();
+    }
+
+    /* A helper that dies while a VM runs: started again for it */
+    void helperDies()
+    {
+        QTemporaryDir runtime(QDir::tempPath() + "/vt-XXXXXX");
+        QTemporaryDir vms;
+        QVERIFY(runtime.isValid() && vms.isValid());
+        qputenv("XDG_RUNTIME_DIR", runtime.path().toLocal8Bit());
+        QDir(vms.path()).mkpath("one");
+        writeFile(vms.path() + "/one/vm.args", "-name one\n");
+        const QString run = Paths::vmRuntimeDir("one");
+        FakeQemu qemu({"-qmp", QString("unix:%1/qmp.sock,server=on,wait=off").arg(run)});
+        writeFile(run + "/qemu.pid", QByteArray::number(qemu.pid()) + "\n");
+        FakeQmp qmp(run + "/qmp.sock");
+        VmStore store(vms.path());
+        HostSettings hs(&store);
+        QSignalSpy lines(&hs, &HostSettings::helperLine), finished(&hs, &HostSettings::helperFinished);
+        fake(hs);
+        store.vms().first()->runner()->attach(store.vms().first()->args());
+        QTRY_VERIFY(saw(lines, QString("ok rt %1").arg(qemu.pid())));
+
+        /* the helper: this test's child named vitrine-helper-fake */
+        pid_t helper = 0;
+        for (const QString &entry : QDir("/proc").entryList(QDir::Dirs)) {
+            const QByteArray stat = readFile("/proc/" + entry + "/stat");
+            const qsizetype end = stat.lastIndexOf(')');
+            if (stat.contains("(vitrine-helper-") && end > 0 &&
+                stat.mid(end + 4).split(' ').value(0).toLongLong() == getpid()) {
+                helper = pid_t(entry.toInt());
+            }
+        }
+        QVERIFY(helper > 0);
+        lines.clear();
+        ::kill(helper, SIGKILL);
+        QTRY_COMPARE(finished.size(), 1);
+        QTRY_VERIFY(saw(lines, QString("ok rt %1").arg(qemu.pid())));
+        QVERIFY(hs.helperRunning());
+        qemu.stop();
+        QTRY_COMPARE(finished.size(), 2);
+        QCOMPARE(fair(0), QString("1000000000/50000000"));
     }
 
     void capabilityWithoutHelper()
