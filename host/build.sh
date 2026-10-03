@@ -107,7 +107,8 @@ fi
 # --- dependencies -------------------------------------------------------------
 # Fedora's package names; what the build checks for is below (commands and
 # pkg-config modules), so that other distributions can map them
-fedora=(git gcc gcc-c++ make meson ninja-build pkgconf-pkg-config python3 python3-pyyaml binutils
+fedora=(git gcc gcc-c++ make meson ninja-build pkgconf-pkg-config python3 python3-pyyaml
+	python3-wheel python3-setuptools python3-pip binutils
 	util-linux glib2-devel pixman-devel zlib-devel libslirp-devel SDL2-devel libepoxy-devel
 	mesa-libgbm-devel mesa-libEGL-devel libdrm-devel libva-devel libusb1-devel
 	pulseaudio-libs-devel pipewire-devel spice-protocol libzstd-devel libpng-devel
@@ -126,6 +127,12 @@ check_deps() {
 		spice-protocol libzstd libpng libcap-ng wayland-client
 	# bzip2 unpacks the x86_64 UEFI firmware QEMU installs with its other blobs
 	need_cmd wayland-scanner gdbus-codegen bzip2
+	# configure's Python tooling, which it takes from the system or QEMU's
+	# own wheels since it may not download (--disable-download)
+	local m
+	for m in wheel setuptools pip; do
+		python3 -c "import $m" 2> /dev/null || missing+=("python3 module $m")
+	done
 }
 tell_missing() {
 	local m
@@ -164,6 +171,9 @@ fi
 mkdir -p "$work"
 work=$(cd "$work" && pwd)
 manifest=$prefix/share/vitrine/stack.conf
+# QEMU's configure installs Python packages with pip, whose cache would go
+# to the home folder; and so does a configure that make runs again
+export PIP_CACHE_DIR=$work/pip-cache
 
 # one build at a time in a work folder, and in a stack
 exec 8> "$work/.lock"
@@ -231,15 +241,51 @@ command -v passt > /dev/null 2>&1 ||
 export GIT_TERMINAL_PROMPT=0 GIT_ASKPASS=
 git() { command git -c credential.helper= -c advice.detachedHead=false "$@"; }
 
-# checkout DIR URL COMMIT PATCH...: DIR at COMMIT with the patches applied,
-# left alone when it is already (DIR.stamp: the commit and the patches'
-# sha256): rewriting the files would make the build compile them again
+# subprojects DIR NAME...: meson's subprojects NAME of DIR, downloaded as
+# its wraps and their patch files say now, so that configure, which may not
+# download (--disable-download), finds them: all the network use is in the
+# fetch steps.  Downloaded again when those change (meson would build a
+# stale one, its folder having a meson.build), or when a download was cut
+# short: DIR.subprojects says what they come from, once all are there.
+subprojects() {
+	local d=$1 s pd key
+	shift
+	key=$(cd "$d/subprojects" && for s in "$@"; do
+		sha256sum "$s.wrap"
+		pd=$(sed -n 's/^[[:space:]]*patch_directory[[:space:]]*=[[:space:]]*\([^[:space:]]*\).*/\1/p' "$s.wrap")
+		[ -z "$pd" ] || [ ! -d "packagefiles/$pd" ] ||
+			find "packagefiles/$pd" -type f -print0 | LC_ALL=C sort -z | xargs -0r sha256sum
+	done | sha256sum | cut -c1-64)
+	if [ "$(cat "$d.subprojects" 2> /dev/null)" != "$key" ]; then
+		rm -f "$d.subprojects"
+		for s in "$@"; do
+			rm -rf "${d:?}/subprojects/$s"
+		done
+	fi
+	# meson's progress overwrites its line (\r, then an escape that erases
+	# it): as lines of their own, lest the app read the next line of build.sh
+	# as part of one
+	meson subprojects download --sourcedir "$d" "$@" 2>&1 |
+		tr '\r' '\n' | sed 's/\x1b\[K//g; /^[[:space:]]*$/d' ||
+		die "cannot download the subprojects $* of $(basename "$d") (no network?)"
+	echo "$key" > "$d.subprojects"
+}
+
+# checkout DIR URL COMMIT SUBPROJECTS PATCH...: DIR at COMMIT with the
+# patches applied, and its meson SUBPROJECTS (a list, of those it has a wrap
+# for) downloaded; left alone when it is already (DIR.stamp: the commit and
+# the patches' sha256): rewriting the files would make the build compile
+# them again
 checkout() {
-	local d=$1 url=$2 commit=$3 p sums
-	shift 3
+	local d=$1 url=$2 commit=$3 p sums s
+	local -a subs keep=()
+	read -ra subs <<< "$4"
+	shift 4
 	sums=$(cd "$here" && cat "$@" < /dev/null | sha256sum | cut -c1-64)
 	if [ -d "$d/.git" ] && [ "$(cat "$d.stamp" 2> /dev/null)" = "$commit $sums" ]; then
 		echo "$(basename "$d") at ${commit:0:12} with $# patches already"
+		# a subproject gone since is downloaded again; the others stay as they are
+		subprojects_of "$d" "${subs[@]}"
 		return 0
 	fi
 	rm -f "$d.stamp"
@@ -255,12 +301,30 @@ checkout() {
 		git -C "$d" fetch --depth 1 origin "$commit" ||
 		die "cannot fetch $commit from $url (no network, or the commit is gone from the repository)"
 	git -C "$d" checkout -q -f --detach "$commit"
-	git -C "$d" clean -q -fdx
+	# all the last build left goes, nested repositories too (-ff): meson's
+	# downloads are, and meson would build a stale one.  The downloads of
+	# SUBPROJECTS stay, for subprojects() to tell whether they still hold
+	for s in "${subs[@]}"; do
+		keep+=(-e "/subprojects/$s/")
+	done
+	git -C "$d" clean -q -ffdx "${keep[@]}"
 	for p in "$@"; do
 		echo "applying $p"
 		git -C "$d" apply --whitespace=nowarn "$here/$p" || die "$p does not apply to ${commit:0:12}"
 	done
+	subprojects_of "$d" "${subs[@]}"
 	echo "$commit $sums" > "$d.stamp"
+}
+
+# subprojects_of DIR NAME...: subprojects() for those of NAME DIR has a wrap for
+subprojects_of() {
+	local d=$1 s
+	local -a have=()
+	shift
+	for s in "$@"; do
+		[ ! -f "$d/subprojects/$s.wrap" ] || have+=("$s")
+	done
+	[ ${#have[@]} -eq 0 ] || subprojects "$d" "${have[@]}"
 }
 
 # configured DIR LINE: whether build tree DIR was configured with LINE
@@ -271,7 +335,7 @@ mkdir -p "$src"
 
 # --- 2-3. virglrenderer -------------------------------------------------------
 begin "fetching virglrenderer"
-checkout "$src/virglrenderer" "$VIRGL_URL" "$VIRGL_COMMIT" "${virgl_patches[@]}"
+checkout "$src/virglrenderer" "$VIRGL_URL" "$VIRGL_COMMIT" "" "${virgl_patches[@]}"
 
 begin "building virglrenderer"
 vbuild=$work/virglrenderer-build
@@ -293,7 +357,9 @@ meson install -C "$vbuild" --no-rebuild --quiet
 
 # --- 4-7. QEMU ----------------------------------------------------------------
 begin "fetching QEMU"
-checkout "$src/qemu" "$QEMU_URL" "$QEMU_COMMIT" "${qemu_patches[@]}"
+# the subprojects this configuration builds: keycodemapdb, which configure
+# checks for; dtc for --enable-fdt=internal; imgui for --enable-sdl-gui
+checkout "$src/qemu" "$QEMU_URL" "$QEMU_COMMIT" "dtc imgui keycodemapdb" "${qemu_patches[@]}"
 
 begin "configuring QEMU"
 qbuild=$work/qemu-build
@@ -303,10 +369,12 @@ qargs=(--prefix="$prefix" --target-list=x86_64-softmmu --without-default-feature
 	--enable-libusb --enable-pa --enable-pipewire --enable-spice-protocol --enable-passt --enable-gio
 	--enable-dbus-display --enable-slirp --enable-tpm --enable-vhost-kernel --enable-vhost-net
 	--enable-vhost-user --enable-zstd --enable-png --enable-tools --enable-fdt=internal --disable-docs
-	--disable-plugins --disable-containers --container-command=no
+	--disable-plugins --disable-containers --container-command=no --disable-download
 	"--extra-ldflags=-Wl,-rpath,$prefix/lib64")
 # (no containers: configure would otherwise run podman to see if it works, which
-# sets up podman's storage in the user's home, for cross-builds we never do)
+# sets up podman's storage in the user's home, for cross-builds we never do;
+# no download: the subprojects come with the sources, and Python's tooling
+# from the system and the wheels QEMU carries, rather than from PyPI)
 # and the virglrenderer it is built against: configure probes what it offers
 # (virgl_renderer_resource_set_guest_dmabuf, its version), and meson keeps
 # what it found until configured afresh, as with --prefix nothing else would

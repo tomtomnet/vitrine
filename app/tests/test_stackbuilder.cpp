@@ -559,25 +559,55 @@ sh -c 'echo $$ > %1; exec sleep 300'
         }
         const QString realHost = StackBuilder::hostDir();
         int status = 0;
+        /* the stand-ins run no configure of QEMU's: the Python modules only it
+           needs may be stand-ins too */
+        const QString python = m_tmp.filePath("e2e/python");
+        for (const char *module : {"yaml", "wheel", "setuptools", "pip"}) {
+            run("python3", {"-c", QString("import %1").arg(module)}, {}, &status);
+            if (status != 0) {
+                QVERIFY(write(QString("%1/%2/__init__.py").arg(python, module), ""));
+            }
+        }
+        const QByteArray pythonPath = qgetenv("PYTHONPATH");
+        qputenv("PYTHONPATH", python.toUtf8() + (pythonPath.isEmpty() ? "" : ":" + pythonPath));
         const QString deps = run("bash", {realHost + "/build.sh", "--print-deps"}, {}, &status);
         if (status != 0) {
             QSKIP(qPrintable("needs the build dependencies of build.sh:\n" + deps));
         }
+        const auto read = [](const QString &path) {
+            QFile f(path);
+            return f.open(QIODevice::ReadOnly) ? QString::fromUtf8(f.readAll()) : QString();
+        };
 
-        /* the components' repositories */
+        /* the components' repositories, QEMU's with a meson subproject of its own */
         const QString virglRepo = m_tmp.filePath("e2e/virgl-repo");
         const QString qemuRepo = m_tmp.filePath("e2e/qemu-repo");
+        const QString subRepo = m_tmp.filePath("e2e/keycodemapdb-repo");
         QVERIFY(write(virglRepo + "/meson.build", kVirglMeson));
         QVERIFY(write(virglRepo + "/meson_options.txt", kVirglOptions));
         QVERIFY(write(virglRepo + "/virgl.c", "int virgl_renderer_init(void) { return 0; }\n"));
+        QVERIFY(write(subRepo + "/README", "v1\n"));
         QVERIFY(write(qemuRepo + "/configure", kQemuConfigure, true));
         QVERIFY(write(qemuRepo + "/qemu.c", kQemuMain));
         QVERIFY(write(qemuRepo + "/qemu-options.hx", "DEF(\"m\", HAS_ARG, QEMU_OPTION_m, \"\", QEMU_ARCH_ALL)\n"));
-        for (const QString &repo : {virglRepo, qemuRepo}) {
+        QVERIFY(write(qemuRepo + "/meson.build", "project('qemu', 'c')\n"));
+        QVERIFY(write(qemuRepo + "/subprojects/.gitignore", "/keycodemapdb\n"));
+        QVERIFY(write(qemuRepo + "/subprojects/packagefiles/keycodemapdb/meson.build", "pf1\n"));
+        for (const QString &repo : {virglRepo, subRepo}) {
             git(repo, {"init", "-q", "-b", "main"});
             git(repo, {"add", "."});
             git(repo, {"commit", "-q", "-m", "first"});
         }
+        const auto wrap = [&]() {
+            return QString("[wrap-git]\nurl = file://%1\nrevision = %2\ndepth = 1\n"
+                           "patch_directory = keycodemapdb\n")
+                .arg(subRepo, git(subRepo, {"rev-parse", "HEAD"}))
+                .toUtf8();
+        };
+        QVERIFY(write(qemuRepo + "/subprojects/keycodemapdb.wrap", wrap()));
+        git(qemuRepo, {"init", "-q", "-b", "main"});
+        git(qemuRepo, {"add", "."});
+        git(qemuRepo, {"commit", "-q", "-m", "first"});
 
         /* host/: the real build.sh, its versions and patches */
         const QString host = m_tmp.filePath("e2e/host");
@@ -627,6 +657,11 @@ sh -c 'echo $$ > %1; exec sleep 300'
         QVERIFY(QFileInfo::exists(first.prefix + "/share/qemu/qemu-options.hx"));
         QVERIFY(QFileInfo::exists(work + "/src/qemu/MARK"));
         QVERIFY(QFileInfo::exists(work + "/src/virglrenderer/MARK"));
+        /* the subproject, downloaded with the sources, its patch files in */
+        const QString sub = work + "/src/qemu/subprojects/keycodemapdb";
+        QCOMPARE(read(sub + "/README"), "v1\n");
+        QCOMPARE(read(sub + "/meson.build"), "pf1\n");
+        QVERIFY(write(sub + "/KEPT", "\n"));
         /* the run path build.sh checked */
         const QString dynamic = run("readelf", {"-d", first.qemuBinary()});
         QVERIFY2(dynamic.contains("RUNPATH") && dynamic.contains("[" + first.prefix + "/lib64]"),
@@ -658,6 +693,8 @@ sh -c 'echo $$ > %1; exec sleep 300'
         QFile mark(work + "/src/qemu/MARK");
         QVERIFY(mark.open(QIODevice::ReadOnly));
         QCOMPARE(mark.readAll(), "two\n");
+        /* what the subproject comes from did not change: kept, not downloaded again */
+        QVERIFY(QFileInfo::exists(sub + "/KEPT"));
         /* the VMs running keep theirs */
         QVERIFY(StackBuilder::Build::read(first.prefix).isValid());
         QVERIFY(QFileInfo(first.qemuBinary()).isExecutable());
@@ -700,6 +737,51 @@ sh -c 'echo $$ > %1; exec sleep 300'
         out = buildInto();
         QVERIFY2(status == 0 && !out.contains("up to date"), qPrintable(out));
         QCOMPARE(StackBuilder::Build::read(prefix).stamp, built2);
+
+        /* 6. the subproject follows what it comes from */
+        const auto buildOk = [&]() {
+            output.clear();
+            const QString error = build(b, 300000);
+            return error.isEmpty() ? QString() : error + "\n" + log(output);
+        };
+        /* its patch files, changed by a patch */
+        QVERIFY(write(host + "/patches/qemu/0002-packagefiles.patch",
+                      "diff --git a/subprojects/packagefiles/keycodemapdb/meson.build "
+                      "b/subprojects/packagefiles/keycodemapdb/meson.build\n"
+                      "--- a/subprojects/packagefiles/keycodemapdb/meson.build\n"
+                      "+++ b/subprojects/packagefiles/keycodemapdb/meson.build\n"
+                      "@@ -1 +1 @@\n-pf1\n+pf2\n"));
+        QString failure = buildOk();
+        QVERIFY2(failure.isEmpty(), qPrintable(failure));
+        QCOMPARE(read(sub + "/meson.build"), "pf2\n");
+        QVERIFY(!QFileInfo::exists(sub + "/KEPT"));
+        /* its revision, in a new QEMU commit */
+        QVERIFY(write(subRepo + "/README", "v2\n"));
+        git(subRepo, {"commit", "-q", "-am", "second"});
+        QVERIFY(write(qemuRepo + "/subprojects/keycodemapdb.wrap", wrap()));
+        git(qemuRepo, {"commit", "-q", "-am", "new keycodemapdb"});
+        QVERIFY(write(host + "/versions.conf", versions()));
+        failure = buildOk();
+        QVERIFY2(failure.isEmpty(), qPrintable(failure));
+        QCOMPARE(read(sub + "/README"), "v2\n");
+        QCOMPARE(read(sub + "/meson.build"), "pf2\n");
+        /* a download cut short, then a build of other inputs: downloaded again */
+        QVERIFY(QDir(sub).removeRecursively());
+        QVERIFY(QDir().mkpath(sub + "/.git"));
+        QVERIFY(QFile::remove(work + "/src/qemu.subprojects"));
+        QVERIFY(write(host + "/patches/virglrenderer/0001-mark.patch",
+                      QString(newFile).arg("MARK", "virgl three").toUtf8()));
+        failure = buildOk();
+        QVERIFY2(failure.isEmpty(), qPrintable(failure));
+        QCOMPARE(read(sub + "/README"), "v2\n");
+        /* nothing else of the last build stays in the sources: nested repositories neither */
+        QVERIFY(QDir().mkpath(work + "/src/qemu/subprojects/stale/.git"));
+        QVERIFY(write(host + "/patches/qemu/0001-mark.patch",
+                      QString(newFile).arg("MARK", "three").toUtf8()));
+        failure = buildOk();
+        QVERIFY2(failure.isEmpty(), qPrintable(failure));
+        QVERIFY(!QFileInfo::exists(work + "/src/qemu/subprojects/stale"));
+        QCOMPARE(read(sub + "/README"), "v2\n");
     }
 };
 
