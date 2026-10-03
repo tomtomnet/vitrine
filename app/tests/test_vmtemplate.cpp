@@ -189,9 +189,12 @@ private slots:
         QVERIFY(!VmConfig::graphics(args).nativeContext);
 
         /* vitrine's */
-        o.gpuProperties << "drm_native_context" << "x-host-vblank" << "x-vblank-lead"
-                        << "x-vblank-lead-auto" << "x-vblank-swap-target";
+        *o.gpuProperties << "drm_native_context" << "x-host-vblank" << "x-vblank-lead"
+                         << "x-vblank-lead-auto" << "x-vblank-swap-target";
         QCOMPARE(build(o).toText(), build(fedora("x86_64")).toText());
+        /* a QEMU of no properties, e.g. without the card: none of them */
+        o.gpuProperties = QStringList();
+        QVERIFY(build(o).toText().contains("-device virtio-gpu-gl-pci\n-display"));
     }
 
     /* What the VM's QEMU tells the template and the Network page */
@@ -199,18 +202,59 @@ private slots:
     {
         QemuInfo info;
         const bool installed = !QStandardPaths::findExecutable("passt").isEmpty();
+        QTemporaryDir dir;
+        const auto script = [&dir](const QString &name, const QByteArray &body) {
+            QFile f(dir.filePath(name));
+            if (!f.open(QIODevice::WriteOnly) || f.write("#!/bin/sh\n" + body + "\n") < 0) {
+                return QString();
+            }
+            f.close();
+            f.setPermissions(QFileDevice::ReadOwner | QFileDevice::ExeOwner);
+            return f.fileName();
+        };
+        /* QEMU 10.2: no native context, no passt */
+        const QString plain = script("qemu-system-x86_64", "case \"$1 $2\" in\n"
+                                                           "'-device virtio-gpu-gl-pci,help')\n"
+                                                           "  echo 'virtio-gpu-gl-pci options:'\n"
+                                                           "  echo '  blob=<bool>'\n"
+                                                           "  echo '  venus=<bool>' ;;\n"
+                                                           "'-netdev help')\n"
+                                                           "  echo 'Available netdev backend types:'\n"
+                                                           "  echo 'user'; echo 'tap' ;;\n"
+                                                           "esac");
+        const QString broken = script("broken-qemu", "exit 127");
 
-        QCOMPARE(gpuProperties(nullptr), QStringList());
-        QCOMPARE(gpuProperties(&info), QStringList());
+        /* no QEMU to ask: vitrine's, to build */
+        QVERIFY(!gpuProperties(nullptr, {}));
+        QVERIFY(!gpuProperties(nullptr, "/nonexistent/qemu-system-x86_64"));
+        QCOMPARE(hasPasst(nullptr, {}), installed);
+
+        /* QemuInfo not loaded yet, or not at all: asked from the binary */
+        QCOMPARE(gpuProperties(nullptr, plain), QStringList({"blob", "venus"}));
+        QVERIFY(!hasPasst(nullptr, plain));
+        /* one that does not answer, not vitrine's: none taken for granted */
+        QCOMPARE(gpuProperties(nullptr, broken), QStringList());
+        QVERIFY(!hasPasst(nullptr, broken));
+
+        /* so that a VM made before the QemuInfo is in starts with that QEMU */
+        Options o = fedora("x86_64");
+        o.gpuProperties = gpuProperties(nullptr, plain);
+        const QString text = build(o).toText();
+        QVERIFY(text.contains("-accel kvm\n"));
+        QVERIFY(text.contains("-device virtio-gpu-gl-pci,blob=on,venus=off\n"));
+
+        /* loaded: a QEMU without the card has none, else as it says */
+        QCOMPARE(gpuProperties(&info, plain), QStringList());
+        info.devices = {{"virtio-gpu-gl-pci", "PCI", {}, "Display devices", {}, true}};
+        QCOMPARE(gpuProperties(&info, plain), QStringList({"blob", "venus"}));
         info.properties["virtio-gpu-gl-pci"] = {{"blob", "bool", {}, "off"},
                                                 {"x-host-vblank", "bool", {}, "on"}};
-        QCOMPARE(gpuProperties(&info), QStringList({"blob", "x-host-vblank"}));
+        QCOMPARE(gpuProperties(&info, plain), QStringList({"blob", "x-host-vblank"}));
 
-        QCOMPARE(hasPasst(nullptr), installed);
         info.netdevs = {{"user", {}}, {"tap", {}}};
-        QVERIFY(!hasPasst(&info));
+        QVERIFY(!hasPasst(&info, plain));
         info.netdevs << QemuNamedDoc{"passt", {}};
-        QCOMPARE(hasPasst(&info), installed);
+        QCOMPARE(hasPasst(&info, plain), installed);
     }
 
     void windows()
