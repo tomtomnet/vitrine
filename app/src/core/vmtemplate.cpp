@@ -44,24 +44,23 @@ bool hasVga(const QString &arch)
     return !isArm(arch);
 }
 
-/* No QEMU to ask: vitrine's, which the user is to build */
-static bool noBinary(const QString &binary)
-{
-    return binary.isEmpty() || !QFileInfo(binary).isExecutable();
-}
-
+/* The user chose vitrine's QEMU by its path, which may not answer, say out of memory */
 static bool isStackQemu(const QString &binary)
 {
     const QString stack = Paths::stackQemu();
     return !stack.isEmpty() && QFileInfo(binary).canonicalFilePath() == stack;
 }
 
-bool hasPasst(const QemuInfo *info, const QString &binary)
+bool hasPasst(const QemuInfo *info, const QString &chosen)
 {
     QString error;
 
     if (QStandardPaths::findExecutable("passt").isEmpty()) {
         return false;
+    }
+    /* vitrine's, built with it (host/build.sh) */
+    if (chosen.isEmpty()) {
+        return true;
     }
     if (info) {
         for (const QemuNamedDoc &netdev : info->netdevs) {
@@ -71,30 +70,32 @@ bool hasPasst(const QemuInfo *info, const QString &binary)
         }
         return false;
     }
-    if (noBinary(binary)) {
-        return true;
-    }
-    const QStringList netdevs = QemuInfo::probeList(binary, "netdev", &error);
-    return error.isEmpty() ? netdevs.contains("passt") : isStackQemu(binary);
+    const QStringList netdevs = QemuInfo::probeList(chosen, "netdev", &error);
+    return error.isEmpty() ? netdevs.contains("passt") : isStackQemu(chosen);
 }
 
-std::optional<QStringList> gpuProperties(const QemuInfo *info, const QString &binary)
+std::optional<QStringList> gpuProperties(const QemuInfo *info, const QString &chosen)
 {
     static const QString card = "virtio-gpu-gl-pci";
     QStringList names;
     QString error;
 
+    /*
+     * Vitrine's, even before it is built: the system's QEMU found in the
+     * meantime is not the one the VM is for, and what it lacks, native
+     * context first, would stay out of the VM for good
+     */
+    if (chosen.isEmpty()) {
+        return std::nullopt;
+    }
     if (info && (info->properties.contains(card) || !info->device(card))) {
         for (const QemuPropertyDoc &p : info->properties.value(card)) {
             names << p.name;
         }
         return names;
     }
-    if (noBinary(binary)) {
-        return std::nullopt;
-    }
-    names = QemuInfo::probeProperties(binary, card, &error);
-    if (!error.isEmpty() && isStackQemu(binary)) {
+    names = QemuInfo::probeProperties(chosen, card, &error);
+    if (!error.isEmpty() && isStackQemu(chosen)) {
         return std::nullopt;
     }
     return names;
@@ -149,8 +150,9 @@ struct Writer {
 /*
  * The research launcher's card: DRM native context, blob resources in a
  * 4 GiB window, and the guest's vblank ticked 3 ms before the host's,
- * following what the host's compositor needs.  Those of vitrine's QEMU
- * that @known lacks stay out, as QEMU refuses unknown properties.
+ * following what the host's compositor needs.  No Venus, which is off by
+ * default.  Those of vitrine's QEMU that @known lacks stay out, as QEMU
+ * refuses unknown properties.
  */
 static QString gpuDevice(const std::optional<QStringList> &known)
 {
@@ -158,7 +160,6 @@ static QString gpuDevice(const std::optional<QStringList> &known)
         {"hostmem", "4G"},
         {"blob", "on"},
         {"drm_native_context", "on"},
-        {"venus", "off"},
         {"x-host-vblank", "on"},
         {"x-vblank-lead", "3000"},
         {"x-vblank-lead-auto", "on"},

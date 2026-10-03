@@ -96,7 +96,8 @@ void StackBanner::refresh()
         button = tr("Show…");
     } else if (state == StackBuilder::State::NotBuilt) {
         text = tr("<b>Vitrine's QEMU is not built yet.</b> VMs need it for their display in "
-                  "this window and for 3D acceleration. Building it takes a few minutes.");
+                  "this window and for 3D acceleration, and new Linux VMs need it to start. "
+                  "Building it takes a few minutes.");
         button = tr("Build…");
     } else if (state == StackBuilder::State::Outdated) {
         text = tr("<b>Vitrine's QEMU is out of date:</b> this version of Vitrine builds it from "

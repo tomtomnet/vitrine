@@ -297,6 +297,7 @@ if(BUILD_TESTING)
     endforeach()
     # the windows': widgets that are never shown, so no screen either
     foreach(name
+            newvmdialog
             settingspages
             stackbanner)
         qt_add_executable(test_${name} tests/test_${name}.cpp)
