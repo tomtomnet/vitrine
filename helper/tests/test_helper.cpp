@@ -553,6 +553,77 @@ private slots:
         QCOMPARE(stateFiles(), QStringList({"lock"}));
     }
 
+    /*
+     * A helper killed in its own sequence of a GPU floor - manual, s 0,
+     * s 1, c; back: r, c, the level - leaves the level at manual: the next
+     * one puts it back, and a floor can be set again
+     */
+    void gpuFloorHalfWay_data()
+    {
+        QTest::addColumn<int>("killAt");
+        QTest::addColumn<bool>("restoring");
+        QTest::newRow("setting, after manual") << 1 << false;
+        QTest::newRow("setting, after s 0") << 2 << false;
+        QTest::newRow("setting, after s 1") << 3 << false;
+        QTest::newRow("setting, after c") << 4 << false;
+        QTest::newRow("restoring, after r") << 5 << true;
+        QTest::newRow("restoring, after c") << 6 << true;
+    }
+    void gpuFloorHalfWay()
+    {
+        QFETCH(int, killAt);
+        QFETCH(bool, restoring);
+        {
+            FakeQemu qemu;
+            Helper a(m_root, {QString("VITRINE_HELPER_TEST_KILL_AT=%1").arg(killAt)});
+            QVERIFY(a.ready());
+            a.answer("watch " + qemu.pidText());
+            const QString floor = a.answer("gpu-floor card1 auto");
+            if (restoring) {
+                QVERIFY(floor.startsWith("ok gpu-floor card1 1800 MHz"));
+                qemu.stop();
+            }
+            QVERIFY(a.finished());
+        }
+        QVERIFY(journal().contains("killed"));
+        QCOMPARE(level(), QString("manual"));
+        QVERIFY(stateExists("gpu-floor-card1"));
+
+        FakeQemu qemu;
+        Helper b(m_root);
+        QCOMPARE(b.line(), QString("restored gpu-floor card1: level auto"));
+        QVERIFY(b.ready());
+        QCOMPARE(level(), QString("auto"));
+        QCOMPARE(odTable(), od(800, 2700));
+        /* nothing left in the way */
+        b.answer("watch " + qemu.pidText());
+        QCOMPARE(b.answer("gpu-floor card1 auto"),
+                 QString("ok gpu-floor card1 1800 MHz (was 800 MHz, level auto)"));
+        qemu.stop();
+        QVERIFY(b.finished());
+        QCOMPARE(level(), QString("auto"));
+        QCOMPARE(stateFiles(), QStringList({"lock"}));
+    }
+
+    /* The state an older helper left (no "was"): the floor as written is still its own */
+    void gpuFloorOlderState()
+    {
+        const QString card = path(kCard);
+        writeFile(card + "/power_dpm_force_performance_level", "manual\n");
+        writeFile(card + "/pp_od_clk_voltage", od(1800, 2700));
+        QVERIFY(QDir().mkpath(path("/run/vitrine-helper")));
+        QFile::setPermissions(path("/run/vitrine-helper"),
+                              QFileDevice::ReadOwner | QFileDevice::WriteOwner | QFileDevice::ExeOwner);
+        writeFile(path("/run/vitrine-helper/gpu-floor-card1.state"), "level auto\nmin 1800\nmax 2700\n");
+        Helper b(m_root);
+        QCOMPARE(b.line(), QString("restored gpu-floor card1: level auto"));
+        QVERIFY(b.ready());
+        QCOMPARE(level(), QString("auto"));
+        QCOMPARE(odTable(), od(800, 2700));
+        b.closeInput();
+        QVERIFY(b.finished());
+    }
+
     /* vitrine quits while its VMs run: the helper keeps the settings until the last one ends */
     void inputClosedWhileVmsRun()
     {
