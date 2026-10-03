@@ -59,8 +59,16 @@ public:
     QString grabState() const;
     void setGrab(bool on);
     /* Whether the keys go to the guest: the screen has the focus in the
-       active window */
+       active window, and input is on */
     bool hasKeyboard() const;
+    /*
+     * Off while QEMU drops input (the VM paused): the screen then takes no
+     * keys, which go to the window's shortcuts instead (Resume among
+     * them), and lets go of those held and of the grab.  On by default.
+     * Full screen, the window still takes them: Ctrl+Alt+F brings it back.
+     */
+    void setInputEnabled(bool on);
+    bool inputEnabled() const;
     /* Gives the keyboard to the guest */
     void focus();
     void sendCtrlAltDel();
@@ -103,6 +111,7 @@ private:
     QLabel *m_placeholder = nullptr;    // in m_host while full screen
     bool m_fullScreen = false;
     bool m_hasKeyboard = false;
+    bool m_inputEnabled = true;
     /* releaseUndrawn() until the window is first exposed, or for good if
        its render thread failed */
     QTimer *m_undrawn = nullptr;

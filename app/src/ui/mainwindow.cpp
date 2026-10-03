@@ -754,7 +754,8 @@ void MainWindow::updateInput()
         m_input->hide();
         return;
     }
-    if (console->vm()->runner()->state() == VmRunner::State::Paused) {
+    if (!view->inputEnabled()) {
+        /* QEMU drops input: the keys go to the window (Resume) */
         m_input->setText(tr("Paused"));
     } else if (view->grabbed()) {
         m_input->setText(tr("The VM has the keyboard · Ctrl+Alt+G releases"));

@@ -277,6 +277,9 @@ if(BUILD_TESTING)
         FAKE_QEMU="$<TARGET_FILE:fake-qemu>"
         TEST_WORK_DIR="${CMAKE_CURRENT_BINARY_DIR}/test-work")
     add_dependencies(test_hostsettings vitrine-helper-fake fake-qemu)
+    # the same stand-in, for QEMUs found running
+    target_compile_definitions(test_vmrunner PRIVATE FAKE_QEMU="$<TARGET_FILE:fake-qemu>")
+    add_dependencies(test_vmrunner fake-qemu)
 
     # VmView against a stand-in for QEMU's display (QMP and D-Bus), offscreen
     qt_add_executable(test_vmview tests/test_vmview.cpp)

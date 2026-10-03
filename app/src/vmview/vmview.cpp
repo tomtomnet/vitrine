@@ -441,6 +441,21 @@ bool VmView::hasKeyboard() const
     return m_hasKeyboard;
 }
 
+void VmView::setInputEnabled(bool on)
+{
+    if (on != m_inputEnabled) {
+        m_inputEnabled = on;
+        /* off: the keys held go up and the grab goes, as when the window
+           loses the keyboard - Ctrl+Alt+G could not release it now */
+        updateHostActive();
+    }
+}
+
+bool VmView::inputEnabled() const
+{
+    return m_inputEnabled;
+}
+
 void VmView::focus()
 {
     if (m_container) {
@@ -513,10 +528,16 @@ bool VmView::eventFilter(QObject *watched, QEvent *event)
     if (watched == m_container && m_window) {
         switch (event->type()) {
         case QEvent::ShortcutOverride:
+            if (!m_inputEnabled) {
+                break;          // the window's shortcuts
+            }
             event->accept();    // the guest's keys before the menus' shortcuts
             return true;
         case QEvent::KeyPress:
         case QEvent::KeyRelease:
+            if (!m_inputEnabled) {
+                break;          // QEMU would drop them
+            }
             m_window->handleKey(static_cast<QKeyEvent *>(event),
                                 event->type() == QEvent::KeyPress);
             checkGrab();
@@ -575,13 +596,15 @@ void VmView::releaseUndrawn()
 }
 
 /* Embedded, the screen has the keyboard while its container has the focus
-   in the active window; in full screen the window tells itself */
+   in the active window and input is on; in full screen the window tells
+   itself */
 void VmView::updateHostActive()
 {
     bool active = false;
 
     if (m_window && m_container) {
-        active = m_container->hasFocus() && m_container->window()->isActiveWindow();
+        active = m_inputEnabled && m_container->hasFocus() &&
+                 m_container->window()->isActiveWindow();
         m_window->setHostActive(active);
     } else if (m_window) {
         active = m_window->isActive();

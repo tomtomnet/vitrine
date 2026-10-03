@@ -233,6 +233,7 @@ struct VmRunner::Private
     GuestAgent *agent = nullptr;    // mounting the shares
     std::function<bool()> shutdownHandler;
     bool connecting = false;
+    bool suspended = false;     // Paused by the guest's own suspend (S3)
     bool stopRequested = false; // the end of the run is no failure
     int killStep = 0;
 
@@ -252,6 +253,7 @@ struct VmRunner::Private
                 QString *error, const QStringList &environment = {}) const;
 
     void setState(State s);
+    void setSuspended(bool on);
     void fail(const QString &message);
     void cleanup();
     void launchQemu();
@@ -381,6 +383,14 @@ void VmRunner::Private::setState(State s)
     }
 }
 
+void VmRunner::Private::setSuspended(bool on)
+{
+    if (suspended != on) {
+        suspended = on;
+        emit q->suspendedChanged(on);
+    }
+}
+
 void VmRunner::Private::fail(const QString &message)
 {
     cleanup();
@@ -396,6 +406,7 @@ void VmRunner::Private::cleanup()
     killTimer->stop();
     phase = Phase::Idle;
     connecting = false;
+    suspended = false;
     qmp->disconnectFromSocket();
     for (const Helper &h : std::as_const(helpers)) {
         signalIfOurs(h.pid, h.marker, SIGTERM);
@@ -500,6 +511,7 @@ void VmRunner::Private::qmpReady()
     connecting = false;
     qmp->execute("query-status", {}, [this](const QJsonValue &result, const QString &err) {
         if (err.isEmpty() && state != State::Stopping) {
+            setSuspended(result["status"].toString() == "suspended");
             setState(result["running"].toBool() ? State::Running : State::Paused);
         }
     });
@@ -563,8 +575,11 @@ void VmRunner::Private::event(const QString &name, const QJsonObject &data)
     } else if (state == State::Stopping) {
         return;
     } else if (name == "STOP" || name == "SUSPEND") {
+        /* before the state: what follows it reads both */
+        setSuspended(name == "SUSPEND");
         setState(State::Paused);
     } else if (name == "RESUME" || name == "WAKEUP") {
+        setSuspended(false);
         setState(State::Running);
     }
 }
@@ -681,6 +696,11 @@ VmRunner::State VmRunner::state() const
 bool VmRunner::isActive() const
 {
     return d->state != State::Stopped;
+}
+
+bool VmRunner::isSuspended() const
+{
+    return d->state == State::Paused && d->suspended;
 }
 
 QString VmRunner::errorString() const

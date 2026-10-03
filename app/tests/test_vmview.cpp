@@ -590,6 +590,63 @@ private Q_SLOTS:
         QTRY_COMPARE(qemu.callsTo("Presentation.ZeroCopy"), QStringList({"Presentation.ZeroCopy (false,)"}));
     }
 
+    /*
+     * Paused, QEMU drops the keys: the screen takes none, so that they reach
+     * the window's shortcuts (Resume among them), and lets go of those held
+     */
+    void inputOff()
+    {
+        FakeDisplay qemu(socketPath());
+        QWidget top;
+        auto *layout = new QVBoxLayout(&top);
+        auto *view = new VmView(&top);
+        QString error;
+        QVERIFY2(view->attach(socketPath(), &error), qPrintable(error));
+        QTRY_VERIFY(qemu.listening());
+        layout->addWidget(view->widget());
+        top.resize(640, 480);
+        top.show();
+        QVERIFY(QTest::qWaitForWindowActive(&top));
+        view->focus();
+        QTRY_VERIFY(view->hasKeyboard());
+        QWidget *screen = QApplication::focusWidget();
+        QVERIFY(screen);
+        auto override = [screen]() {
+            QKeyEvent e(QEvent::ShortcutOverride, Qt::Key_P, Qt::ControlModifier, 25 + 8, 0, 0);
+            e.ignore();
+            QCoreApplication::sendEvent(screen, &e);
+            return e.isAccepted();
+        };
+
+        QVERIFY(view->inputEnabled());
+        QVERIFY(override());
+        key(screen, QEvent::KeyPress);
+        QTRY_COMPARE(qemu.callsTo("Keyboard."), QStringList({"Keyboard.Press (30,)"}));
+
+        /* off with A held: released, the screen loses the keyboard */
+        QSignalSpy changed(view, &VmView::grabChanged);
+        view->setInputEnabled(false);
+        QVERIFY(!view->inputEnabled());
+        QVERIFY(!view->hasKeyboard());
+        QVERIFY(!changed.isEmpty());
+        QTRY_COMPARE(qemu.callsTo("Keyboard."),
+                     QStringList({"Keyboard.Press (30,)", "Keyboard.Release (30,)"}));
+        QVERIFY(!override());
+        key(screen, QEvent::KeyPress);
+        key(screen, QEvent::KeyRelease);
+        QTest::qWait(100);
+        QCOMPARE(qemu.callsTo("Keyboard.").size(), 2);
+
+        /* on again: the keys go to the guest again */
+        view->setInputEnabled(true);
+        QTRY_VERIFY(view->hasKeyboard());
+        QVERIFY(override());
+        key(screen, QEvent::KeyPress);
+        key(screen, QEvent::KeyRelease);
+        QTRY_COMPARE(qemu.callsTo("Keyboard.").size(), 4);
+        delete view;
+    }
+
     void attachFails()
     {
         VmView view;

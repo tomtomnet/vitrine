@@ -30,6 +30,12 @@ public:
     State state() const;
     /* Not Stopped */
     bool isActive() const;
+    /*
+     * Paused because the guest suspended itself to RAM (ACPI S3), where
+     * QEMU still takes input and a key wakes the guest - unlike a pause
+     * from here (stop), where it drops it
+     */
+    bool isSuspended() const;
     /* Why the last start failed or QEMU stopped abnormally */
     QString errorString() const;
     /* <dir>/qemu.log: the output of QEMU and virtiofsd during the last run */
@@ -94,6 +100,9 @@ public:
 
 signals:
     void stateChanged(VmRunner::State state);
+    /* isSuspended() changed, which a pause of a suspended guest does
+       without a state change */
+    void suspendedChanged(bool suspended);
     /* The start failed, QEMU stopped unexpectedly, or refused a command */
     void failed(const QString &error);
     /*

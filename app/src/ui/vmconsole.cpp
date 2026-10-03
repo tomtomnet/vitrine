@@ -32,6 +32,13 @@ static QString memoryText(qint64 mib)
                            : VmConsole::tr("%1 MiB").arg(mib);
 }
 
+/* QEMU drops input while the VM is paused, but for a guest that suspended
+   itself to RAM, which a key wakes */
+static bool takesInput(const VmRunner *runner)
+{
+    return runner->state() == VmRunner::State::Running || runner->isSuspended();
+}
+
 /* Bigger and bold, for titles */
 static QFont scaled(QFont font, qreal factor)
 {
@@ -181,6 +188,7 @@ VmConsole::VmConsole(Vm *vm, QWidget *parent)
     if (vm) {
         connect(vm, &Vm::changed, this, &VmConsole::updateHome);
         connect(vm->runner(), &VmRunner::stateChanged, this, &VmConsole::update);
+        connect(vm->runner(), &VmRunner::suspendedChanged, this, &VmConsole::update);
     }
     update();
 }
@@ -264,6 +272,7 @@ void VmConsole::update()
 
     if (!runner->displaySocket().isEmpty()) {
         if (m_view) {
+            m_view->setInputEnabled(takesInput(runner));
             setPage(Page::Screen);
         } else if (!m_retry->isActive()) {
             m_attempts = 0;
@@ -350,6 +359,7 @@ void VmConsole::attach()
     m_view = view;
     m_attempts = 0;
     m_stats = {};
+    view->setInputEnabled(takesInput(m_vm->runner()));
     connect(view, &VmView::grabChanged, this, &VmConsole::changed);
     connect(view, &VmView::fullScreenChanged, this, &VmConsole::changed);
     m_statsTimer->start();
