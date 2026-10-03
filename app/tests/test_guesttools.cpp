@@ -13,6 +13,7 @@
 #include "core/paths.h"
 #include "core/qmpclient.h"
 #include "core/vmrunner.h"
+#include "core/vmstore.h"
 
 using namespace GuestTools;
 
@@ -450,6 +451,67 @@ private slots:
         QVERIFY(!QFileInfo::exists(socket));
         setPending(id, Pending::None);
         Paths::setQemuBinary({});
+        QDir(dataDir()).removeRecursively();
+    }
+
+    /*
+     * A real guest, end to end, through the app's own code: the runner
+     * starts the VM of VITRINE_TEST_GUEST (a VM folder, its vm.args) with
+     * the agent's port, and with VITRINE_TEST_MEDIUM (a built medium, its
+     * .json beside it) the medium and the bootstrap; the monitor follows
+     * the agent until the tools are in (VITRINE_TEST_GUEST_TIMEOUT
+     * seconds, 1800 by default), then shuts the guest down through it.
+     * Not run without these: it boots a guest for minutes.
+     */
+    void realGuest()
+    {
+        const QString dir = qEnvironmentVariable("VITRINE_TEST_GUEST");
+        const QString image = qEnvironmentVariable("VITRINE_TEST_MEDIUM");
+        const int timeout = qEnvironmentVariableIntValue("VITRINE_TEST_GUEST_TIMEOUT");
+
+        if (dir.isEmpty()) {
+            QSKIP("VITRINE_TEST_GUEST is not set");
+        }
+        Vm vm(dir);
+        if (!image.isEmpty()) {
+            QDir().mkpath(dataDir());
+            const QString to = dataDir() + "/vitrine-guest-tools-fc44";
+            QFile::remove(to + ".img");
+            QFile::remove(to + ".json");
+            QVERIFY(QFile::link(image, to + ".img"));
+            QVERIFY(QFile::copy(QString(image).replace(".img", ".json"), to + ".json"));
+            QVERIFY(GuestTools::medium().isValid());
+            setPending(vm.id(), Pending::Bootstrap);
+        }
+        GuestToolsMonitor *monitor = GuestToolsMonitor::of(&vm);
+        QString last;
+        connect(monitor, &GuestToolsMonitor::changed, this, [&]() {
+            const QString now = QString("state %1: %2").arg(int(monitor->state())).arg(monitor->text());
+            if (now != last) {
+                qInfo("%s", qPrintable(now));
+                last = now;
+            }
+        });
+
+        vm.runner()->start(vm.args());
+        QTRY_COMPARE_WITH_TIMEOUT(vm.runner()->state(), VmRunner::State::Running, 30000);
+        if (!image.isEmpty()) {
+            QCOMPARE(pending(vm.id()), Pending::None);   // what the start brought
+        }
+        QTRY_VERIFY_WITH_TIMEOUT(monitor->hasAgent() && !monitor->inputs().installing &&
+                                     (monitor->state() == State::Installed ||
+                                      monitor->state() == State::Failed ||
+                                      monitor->state() == State::DriverNotActive),
+                                 (timeout > 0 ? timeout : 1800) * 1000);
+        const Report r = monitor->report();
+        qInfo("guest: tools %s, kernel %s, driver %s (taint %s), capsets %s, KWin %s%s",
+              qPrintable(r.tools), qPrintable(r.kernel), r.driverPatched ? "patched" : "stock",
+              qPrintable(r.taint), qPrintable(r.capsets.join(',')),
+              qPrintable(r.packages.value("kwin")), r.kwinPatched ? " (vitrine's)" : "");
+        QCOMPARE(monitor->state(), State::Installed);
+
+        monitor->requestShutdown();
+        QTRY_COMPARE_WITH_TIMEOUT(vm.runner()->state(), VmRunner::State::Stopped, 60000);
         QDir(dataDir()).removeRecursively();
     }
 };
