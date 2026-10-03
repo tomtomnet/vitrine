@@ -47,7 +47,7 @@ private slots:
         QCOMPARE(GpuContexts::statusOf(true, 0, 0), Status::Waiting);
     }
 
-    /* A real QEMU: the qemu-gui build has the counts, others not */
+    /* A real QEMU: Vitrine's has the counts, others not */
     void realQemu()
     {
         const QString qemu = qEnvironmentVariable("VITRINE_TEST_QEMU");

@@ -206,10 +206,38 @@ StackBuilder::Versions StackBuilder::versions(const QString &hostDir)
 }
 
 /*
+ * As build.sh's patches_of: the *.patch files of patches/<component> and
+ * of its folders (not deeper), in the C order of their paths.  Matched with
+ * case, as bash's glob is: a .PATCH file is none; and neither matches
+ * hidden files or folders.
+ */
+QStringList StackBuilder::patches(const QString &hostDir, const QString &component)
+{
+    const QString path = "patches/" + component;
+    const QDir dir(hostDir + '/' + path);
+    QStringList list;
+    const auto add = [&list](const QDir &folder, const QString &prefix) {
+        const QStringList names =
+            folder.entryList({"*.patch"}, QDir::Files | QDir::CaseSensitive, QDir::NoSort);
+        for (const QString &name : names) {
+            list << prefix + name;
+        }
+    };
+
+    if (hostDir.isEmpty()) {
+        return {};
+    }
+    add(dir, path + '/');
+    for (const QString &folder : dir.entryList(QDir::Dirs | QDir::NoDotAndDotDot, QDir::NoSort)) {
+        add(QDir(dir.filePath(folder)), path + '/' + folder + '/');
+    }
+    std::sort(list.begin(), list.end());
+    return list;
+}
+
+/*
  * As build.sh: the sha256 of the lines that sha256sum prints for
- * versions.conf, build.sh, then the *.patch files of patches/qemu and of
- * patches/virglrenderer, each folder in C order.  Matched with case, as
- * bash's glob is: a .PATCH file is none.
+ * versions.conf, build.sh, then the patches of qemu and of virglrenderer.
  */
 QString StackBuilder::inputStamp(const QString &hostDir)
 {
@@ -219,16 +247,7 @@ QString StackBuilder::inputStamp(const QString &hostDir)
     if (hostDir.isEmpty()) {
         return {};
     }
-    for (const char *name : {"qemu", "virglrenderer"}) {
-        const QString component = QString::fromLatin1(name);
-        QStringList patches = QDir(hostDir + "/patches/" + component)
-                                  .entryList({"*.patch"}, QDir::Files | QDir::CaseSensitive,
-                                             QDir::NoSort);
-        std::sort(patches.begin(), patches.end());
-        for (const QString &patch : std::as_const(patches)) {
-            files << "patches/" + component + '/' + patch;
-        }
-    }
+    files << patches(hostDir, "qemu") << patches(hostDir, "virglrenderer");
     for (const QString &name : std::as_const(files)) {
         QFile file(hostDir + '/' + name);
         QCryptographicHash hash(QCryptographicHash::Sha256);

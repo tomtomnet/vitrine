@@ -326,9 +326,9 @@ For Vulkan, `vulkaninfo --summary` (package `vulkan-tools`) shows
 `driverName = radv` and `deviceName = AMD Radeon RX 9070 XT (RADV GFX1201)`
 with native context, and `Virtio-GPU Venus (…)` through Venus.
 
-With the qemu-gui build of QEMU, the Details tab of the running VM says
-**DRM native context: on, in use** once the guest has drawn in 3D, and
-shows a warning when it draws through virgl.
+With Vitrine's QEMU, the Details tab of the running VM says **DRM native
+context: on, in use** once the guest has drawn in 3D, and shows a warning
+when it draws through virgl.
 
 ## The host side
 
