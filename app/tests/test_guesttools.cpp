@@ -568,5 +568,17 @@ private slots:
     }
 };
 
-QTEST_GUILESS_MAIN(TestGuestTools)
+int main(int argc, char **argv)
+{
+    /* realGuest() boots a guest for many minutes, past QtTest's watchdog
+       (5 min, read once, before the first test function) */
+    if (qEnvironmentVariableIsSet("VITRINE_TEST_GUEST") &&
+        !qEnvironmentVariableIsSet("QTEST_FUNCTION_TIMEOUT")) {
+        qputenv("QTEST_FUNCTION_TIMEOUT", "3600000");
+    }
+    QCoreApplication app(argc, argv);
+    TestGuestTools test;
+    QTEST_SET_MAIN_SOURCE_PATH
+    return QTest::qExec(&test, argc, argv);
+}
 #include "test_guesttools.moc"

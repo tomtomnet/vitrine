@@ -29,6 +29,7 @@ with its logout screen, which waits for someone to confirm.
 import ctypes
 import errno
 import fcntl
+import glob
 import json
 import os
 import re
@@ -148,8 +149,11 @@ def virtio_render_node():
     except OSError:
         return None
     for node in nodes:
-        drv = os.path.realpath(f"/sys/class/drm/{node}/device/driver")
-        if os.path.basename(drv) == "virtio_gpu":
+        # the DRM device's parent is the virtio device (MMIO), or the PCI
+        # device whose virtio child virtio_gpu drives
+        dev = f"/sys/class/drm/{node}/device"
+        drivers = [os.path.join(dev, "driver")] + glob.glob(f"{dev}/virtio*/driver")
+        if any(os.path.basename(os.path.realpath(d)) == "virtio_gpu" for d in drivers):
             return f"/dev/dri/{node}"
     return None
 

@@ -2,7 +2,7 @@
 # exact version, and dnf takes an installed one of the same version as done.
 Name:           vitrine-guest-tools
 Version:        0.1.0
-Release:        8%{?dist}
+Release:        9%{?dist}
 Summary:        vitrine guest tools: patched virtio-gpu driver, settings and agent
 
 # the driver's sources (dkms/vendor, dkms/patches) are the kernel's: MIT
@@ -124,6 +124,9 @@ fi
 %dir %{_sharedstatedir}/%{name}
 
 %changelog
+* Sat Oct 03 2026 vitrine <noreply@anthropic.com> - 0.1.0-9
+- the agent finds the virtio-gpu render node under a PCI device too (it
+  reported no capability sets)
 * Sat Oct 03 2026 vitrine <noreply@anthropic.com> - 0.1.0-8
 - blob_flush_fence set at boot by the driver check: dracut does not copy
   /etc/modprobe.d into the initramfs, where the driver loads
