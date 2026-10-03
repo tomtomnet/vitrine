@@ -4,6 +4,8 @@
 #include <QDir>
 #include <QFile>
 #include <QFileInfo>
+#include <QJsonObject>
+#include <QPointer>
 #include <QProcess>
 #include <QRegularExpression>
 #include <QSettings>
@@ -25,6 +27,7 @@
 #include <unistd.h>
 
 #include "core/paths.h"
+#include "core/qmpclient.h"
 #include "core/stackbuilder.h"
 #include "core/vmrunner.h"
 #include "core/vmstore.h"
@@ -39,6 +42,8 @@ static const char kAction[] = "org.vitrine.helper";
 /* A helper that ends while VMs it tuned run is started again, this many
    times at most per run of vitrine */
 static const int kRestarts = 5;
+
+static QPointer<HostSettings> s_instance;
 
 static QSettings settings()
 {
@@ -144,6 +149,23 @@ static bool alive(qint64 pid)
            stat[end + 2] != 'X';
 }
 
+/* The process has CAP_SYS_NICE in effect (the stack's QEMU, setcap'ed) */
+static bool hasSysNice(qint64 pid)
+{
+    QFile f(QString("/proc/%1/status").arg(pid));
+    const QList<QByteArray> lines = f.open(QIODevice::ReadOnly) ? f.readAll().split('\n')
+                                                                : QList<QByteArray>();
+
+    for (const QByteArray &line : lines) {
+        if (line.startsWith("CapEff:")) {
+            bool ok;
+            const qulonglong caps = line.mid(7).trimmed().toULongLong(&ok, 16);
+            return ok && (caps >> 23 & 1);     // CAP_SYS_NICE
+        }
+    }
+    return false;
+}
+
 /* The calling process for pkcheck: pid, start time, uid (no pid reuse) */
 static QString subject()
 {
@@ -230,9 +252,17 @@ void HostSettings::grantCapability(const QString &qemu, QObject *context,
     });
 }
 
+HostSettings *HostSettings::instance()
+{
+    return s_instance;
+}
+
 HostSettings::HostSettings(VmStore *store, QObject *parent)
     : QObject(parent), m_store(store)
 {
+    if (!s_instance) {
+        s_instance = this;
+    }
     if (store) {
         for (Vm *vm : store->vms()) {
             watchVm(vm);
@@ -277,6 +307,9 @@ void HostSettings::vmStateChanged(Vm *vm)
 
     if (state == VmRunner::State::Stopped) {
         m_tuned.remove(vm->id());
+        if (m_front == vm->id()) {
+            m_front.clear();
+        }
     } else if ((state == VmRunner::State::Running || state == VmRunner::State::Paused) &&
                pid > 0 && m_tuned.value(vm->id()) != pid) {
         /* a new run, started here or found running: tuned once */
@@ -309,6 +342,41 @@ void HostSettings::tune(qint64 pid)
     }
     m_out += ("rt " + n + '\n').toLatin1();
     start();
+}
+
+void HostSettings::setFront(const QString &vmId)
+{
+    Vm *front = m_store && !vmId.isEmpty() ? m_store->find(vmId) : nullptr;
+
+    if (!front || vmId == m_front || !m_tuned.contains(vmId) || !enabled()) {
+        return;
+    }
+    m_front = vmId;
+    for (Vm *vm : m_store->vms()) {
+        const qint64 pid = m_tuned.value(vm->id());
+        QmpClient *qmp = vm->runner()->qmp();
+        const bool capable = hasSysNice(pid);
+        QJsonObject arguments{{"realtime", vm == front}};
+
+        if (!pid || !qmp) {
+            continue;
+        }
+        if (vm == front && !capable) {
+            /* QEMU may not make its threads real-time again: the helper may */
+            if (m_fd >= 0) {
+                m_out += "rt " + QByteArray::number(pid) + '\n';
+                flush();
+            }
+            continue;
+        }
+        if (vm != front) {
+            /* the patch stops at the first thread it fails on: no lower nice
+               than this QEMU may set */
+            arguments["nice"] = capable ? -5 : 0;
+        }
+        /* a QEMU without the command (not vitrine's) says so: nothing to do */
+        qmp->execute("x-vcpu-priority", arguments);
+    }
 }
 
 void HostSettings::start()

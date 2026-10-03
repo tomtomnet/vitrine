@@ -5,14 +5,23 @@
  */
 #include <QDir>
 #include <QFile>
+#include <QJsonDocument>
+#include <QJsonObject>
+#include <QLocalServer>
+#include <QLocalSocket>
 #include <QProcess>
 #include <QSignalSpy>
 #include <QStandardPaths>
+#include <QTemporaryDir>
 #include <QTest>
 
 #include <csignal>
+#include <memory>
 
 #include "core/hostsettings.h"
+#include "core/paths.h"
+#include "core/vmrunner.h"
+#include "core/vmstore.h"
 
 static const char kFair[] = "/sys/kernel/debug/sched/fair_server";
 static const char kCard[] = "/sys/class/drm/card1/device";
@@ -50,12 +59,51 @@ static void amdCard(const QString &sys, const QString &card, char format, bool o
     QFile::link("../../../../bus/pci/drivers/amdgpu", device + "/driver");
 }
 
+/* QEMU's end of QMP: running, and taking every other command */
+class FakeQmp : public QObject
+{
+public:
+    explicit FakeQmp(const QString &path)
+    {
+        QLocalServer::removeServer(path);
+        m_server.listen(path);
+        connect(&m_server, &QLocalServer::newConnection, this, [this]() {
+            m_peer = m_server.nextPendingConnection();
+            connect(m_peer, &QLocalSocket::readyRead, this, &FakeQmp::read);
+            m_peer->write(R"({"QMP": {"version": {"qemu": {"major": 11}}, "capabilities": []}})"
+                          "\n");
+        });
+    }
+    QList<QJsonObject> commands;
+
+private:
+    void read()
+    {
+        m_buffer += m_peer->readAll();
+        qsizetype nl;
+        while ((nl = m_buffer.indexOf('\n')) >= 0) {
+            const QJsonObject command = QJsonDocument::fromJson(m_buffer.left(nl)).object();
+            m_buffer.remove(0, nl + 1);
+            const QByteArray result = command["execute"] == "query-status"
+                                          ? R"({"running": true, "status": "running"})"
+                                          : "{}";
+            commands << command;
+            m_peer->write("{\"return\": " + result + ", \"id\": " +
+                          QByteArray::number(command["id"].toInteger()) + "}\n");
+        }
+    }
+
+    QLocalServer m_server;
+    QLocalSocket *m_peer = nullptr;
+    QByteArray m_buffer;
+};
+
 class FakeQemu
 {
 public:
-    FakeQemu()
+    explicit FakeQemu(const QStringList &arguments = {})
     {
-        m_process.start(FAKE_QEMU, {});
+        m_process.start(FAKE_QEMU, arguments);
         m_process.waitForStarted();
         m_pid = m_process.processId();
     }
@@ -421,6 +469,78 @@ private slots:
         if (!levelFile.isEmpty()) {
             QCOMPARE(readFile(levelFile), levelBefore);
         }
+    }
+
+    /*
+     * VMs found running (as at vitrine's start): tuned as their runners see
+     * them run, then focus priority between them
+     */
+    void runningVmsAndFocus()
+    {
+        /* sockets need a short path: a runtime folder of the test's own */
+        QTemporaryDir runtime(QDir::tempPath() + "/vt-XXXXXX");
+        QTemporaryDir vms;
+        QVERIFY(runtime.isValid() && vms.isValid());
+        qputenv("XDG_RUNTIME_DIR", runtime.path().toLocal8Bit());
+        std::vector<std::unique_ptr<FakeQemu>> qemus;
+        std::vector<std::unique_ptr<FakeQmp>> qmps;
+        for (const QString id : {"one", "two"}) {
+            QDir(vms.path()).mkpath(id);
+            writeFile(vms.path() + "/" + id + "/vm.args", "-name " + id.toLatin1() + "\n");
+            const QString run = Paths::vmRuntimeDir(id);
+            /* what the runner looks for: its -qmp argument, its pid file */
+            qemus.push_back(std::make_unique<FakeQemu>(
+                QStringList{"-qmp", QString("unix:%1/qmp.sock,server=on,wait=off").arg(run)}));
+            writeFile(run + "/qemu.pid", QByteArray::number(qemus.back()->pid()) + "\n");
+            qmps.push_back(std::make_unique<FakeQmp>(run + "/qmp.sock"));
+        }
+        VmStore store(vms.path());
+        HostSettings hs(&store);
+        QSignalSpy lines(&hs, &HostSettings::helperLine), notices(&hs, &HostSettings::notice);
+        fake(hs);
+        QCOMPARE(HostSettings::instance(), &hs);
+        for (Vm *vm : store.vms()) {
+            vm->runner()->attach(vm->args());
+        }
+        for (const auto &qemu : qemus) {
+            QTRY_VERIFY(saw(lines, QString("ok rt %1").arg(qemu->pid())));
+        }
+        QCOMPARE(fair(0), QString("10000000/1000000"));
+        QVERIFY(notices.isEmpty());
+
+        /* "one" in front: "two" ordinary (nice 0: the stand-in has no
+           CAP_SYS_NICE), "one" real-time again through the helper */
+        lines.clear();
+        hs.setFront("one");
+        QTRY_VERIFY(saw(lines, QString("ok rt %1").arg(qemus[0]->pid())));
+        auto priority = [](const FakeQmp &qmp) {
+            for (const QJsonObject &c : qmp.commands) {
+                if (c["execute"] == "x-vcpu-priority") {
+                    return QJsonDocument(c["arguments"].toObject()).toJson(QJsonDocument::Compact);
+                }
+            }
+            return QByteArray();
+        };
+        QTRY_COMPARE(priority(*qmps[1]), QByteArray(R"({"nice":0,"realtime":false})"));
+        QCOMPARE(priority(*qmps[0]), QByteArray());
+        /* the same again: nothing */
+        lines.clear();
+        hs.setFront("one");
+        QTest::qWait(100);
+        QVERIFY(lines.isEmpty());
+        /* "two" in front */
+        hs.setFront("two");
+        QTRY_VERIFY(saw(lines, QString("ok rt %1").arg(qemus[1]->pid())));
+        QTRY_COMPARE(priority(*qmps[0]), QByteArray(R"({"nice":0,"realtime":false})"));
+        /* unknown VMs change nothing */
+        hs.setFront("three");
+        hs.setFront(QString());
+
+        for (auto &qemu : qemus) {
+            qemu->stop();
+        }
+        QTRY_COMPARE(fair(0), QString("1000000000/50000000"));
+        QTRY_VERIFY(!hs.helperRunning());
     }
 
     void capabilityWithoutHelper()

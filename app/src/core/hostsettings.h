@@ -68,6 +68,18 @@ public:
     /* What a VM start does, for the QEMU @pid */
     void tune(qint64 pid);
 
+    /*
+     * Focus priority: the vCPUs of the VM in front - its console or
+     * full-screen window has the focus - real-time, those of the other VMs
+     * ordinary (nice -5), so that VMs busy in the background cannot take
+     * every CPU at real-time priority.  A host window in front changes
+     * nothing: the VM last in front keeps them.  Through QEMU's own
+     * x-vcpu-priority, or the helper's rt where QEMU lacks CAP_SYS_NICE.
+     */
+    void setFront(const QString &vmId);
+    /* The app's (MainWindow makes it), for setFront(); null before */
+    static HostSettings *instance();
+
     /* Tests: run @command instead of pkexec <helper>, without asking polkit */
     void setHelperCommand(const QStringList &command) { m_command = command; }
     /* Tests: where /sys is */
@@ -104,6 +116,7 @@ private:
     QStringList m_command;
     QString m_sysRoot = QStringLiteral("/sys");
     QHash<QString, qint64> m_tuned;     // VM id -> its QEMU's pid
+    QString m_front;                    // the VM last in front
     QSet<qint64> m_expected;            // QEMUs asked to be watched, not ended
     Access m_access = Access::Unknown;
     QSet<QString> m_said;
