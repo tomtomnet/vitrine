@@ -145,6 +145,80 @@ private slots:
         QCOMPARE(runner.displaySocket(), "");   // not running
     }
 
+    /* The swap targets of the 3D card, where vm.args leaves them out */
+    void computedProperties()
+    {
+        QStringList asked;
+        auto props = [&](const QStringList &known) {
+            return [&asked, known](const QString &driver) {
+                asked << driver;
+                return known;
+            };
+        };
+        auto computed = [&](const QString &args, const QStringList &known = {
+                                "blob", "x-vblank-swap-target", "x-vblank-swap-target-zc"}) {
+            return VmRunner::withComputedProperties(ArgsFile::parse(args), props(known)).toText();
+        };
+
+        /* KDE in QEMU's window */
+        QCOMPARE(computed("#guest linux,desktop=kde\n-device virtio-gpu-gl-pci,blob=on\n"
+                          "-display sdl,gl=on\n"),
+                 "#guest linux,desktop=kde\n-device virtio-gpu-gl-pci,blob=on,"
+                 "x-vblank-swap-target=4500,x-vblank-swap-target-zc=3500\n"
+                 "-display sdl,gl=on\n");
+        QCOMPARE(asked, QStringList({"virtio-gpu-gl-pci"}));
+        /* another desktop, or none known, in vitrine's window */
+        QCOMPARE(computed("#guest linux,desktop=gnome\n-device virtio-vga-gl\n"
+                          "-display dbus,p2p=yes,gl=on\n"),
+                 "#guest linux,desktop=gnome\n-device virtio-vga-gl,"
+                 "x-vblank-swap-target=6000,x-vblank-swap-target-zc=4500\n"
+                 "-display dbus,p2p=yes,gl=on\n");
+        QCOMPARE(computed("-device virtio-vga-gl\n"),
+                 "-device virtio-vga-gl,x-vblank-swap-target=6000,"
+                 "x-vblank-swap-target-zc=3500\n");
+        /* the user's values win */
+        QCOMPARE(computed("#guest linux,desktop=kde\n"
+                          "-device virtio-gpu-gl-pci,x-vblank-swap-target-zc=0\n"),
+                 "#guest linux,desktop=kde\n-device virtio-gpu-gl-pci,"
+                 "x-vblank-swap-target-zc=0,x-vblank-swap-target=4500\n");
+        /* a QEMU without them, or one whose properties are not known */
+        QCOMPARE(computed("-device virtio-gpu-gl-pci,blob=on\n", {"blob"}),
+                 "-device virtio-gpu-gl-pci,blob=on\n");
+        QCOMPARE(computed("-device virtio-gpu-gl-pci\n", {}), "-device virtio-gpu-gl-pci\n");
+        QCOMPARE(computed("-device virtio-gpu-gl-pci\n", {"x-vblank-swap-target"}),
+                 "-device virtio-gpu-gl-pci,x-vblank-swap-target=6000\n");
+        /* other cards: QEMU not even asked */
+        asked.clear();
+        QCOMPARE(computed("-device virtio-vga\n-device VGA\n-m 1G\n"),
+                 "-device virtio-vga\n-device VGA\n-m 1G\n");
+        QVERIFY(asked.isEmpty());
+    }
+
+    /* The QEMU of the VM tells which properties its card has */
+    void computedOnCommandLine()
+    {
+        const VmRunner runner(id, tmp.path());
+        const QString fork = script("fork-qemu", "case \"$2\" in\n"
+                                                 "virtio-gpu-gl-pci,help) cat <<EOF\n"
+                                                 "virtio-gpu-gl-pci options:\n"
+                                                 "  blob=<bool>            - on/off (default: off)\n"
+                                                 "  x-vblank-swap-target-zc=<uint32> -  (default: 0)\n"
+                                                 "  x-vblank-swap-target=<uint32> -  (default: 6000)\n"
+                                                 "EOF\n;;\nesac");
+        const QString plain = script("plain-qemu", "echo 'virtio-gpu-gl-pci options:'\n"
+                                                   "echo '  blob=<bool>            - on/off'");
+        const QString vm = "-device virtio-gpu-gl-pci,blob=on\n#guest linux,desktop=kde\n"
+                           "-display dbus,p2p=yes,gl=on\n";
+
+        QCOMPARE(runner.commandLine(ArgsFile::parse("#qemu " + fork + "\n" + vm)).mid(1, 2),
+                 QStringList({"-device", "virtio-gpu-gl-pci,blob=on,x-vblank-swap-target=4500,"
+                                         "x-vblank-swap-target-zc=4500"}));
+        QCOMPARE(runner.commandLine(ArgsFile::parse("#qemu " + plain + "\n" + vm)).mid(1, 2),
+                 QStringList({"-device", "virtio-gpu-gl-pci,blob=on"}));
+        QCOMPARE(runner.commandLine(ArgsFile::parse("#qemu /nonexistent/qemu\n" + vm)).mid(1, 2),
+                 QStringList({"-device", "virtio-gpu-gl-pci,blob=on"}));
+    }
+
     /* QEMU's environment: the SDL window's settings, then #env */
     void environment()
     {
