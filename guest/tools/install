@@ -15,8 +15,9 @@
 #   - vitrine's Mesa (native context) in place of each Mesa package installed
 #   - vitrine's KWin, on a Plasma guest whose Plasma is the version it was
 #     built for (else the KWin installed stays)
-# then keeps Mesa and KWin at those versions (dnf versionlock, x86_64 only:
-# 32-bit Mesa stays Fedora's).  A reboot finishes it.  It can run again any
+# then keeps Mesa and KWin at those versions (dnf versionlock).  Mesa is
+# 64-bit only for now: on a guest with 32-bit Mesa (Steam, Wine) it stays
+# Fedora's, as dnf wants both at one version.  A reboot finishes it.  It can run again any
 # time: it does what is missing, nothing when all is there.
 #
 # Options: --reboot     reboot at the end if needed
@@ -81,8 +82,10 @@ secure_boot() {
 }
 
 # The version locks of the tools in /etc/dnf/versionlock.toml (dnf5): for
-# each package NAME=EVR, x86_64 at that EVR, any other architecture free.
-# The entries are told by their comment; the user's own stay.
+# each package NAME=EVR, that EVR (dnf wants the architectures of a
+# multilib package at one version anyway: a 32-bit build of the same
+# version would pass).  The entries are told by their comment; the user's
+# own stay.
 versionlock() {  # versionlock NAME=EVR... (none: only remove the tools' entries)
 	python3 - "$lockfile" "$@" <<'EOF'
 import json, os, sys, tomllib
@@ -98,8 +101,6 @@ for pair in pairs:
     name, evr = pair.split("=", 1)
     entries.append({"name": name, "comment": f"{tag}: vitrine's build",
                     "conditions": [{"key": "evr", "comparator": "=", "value": evr}]})
-    entries.append({"name": name, "comment": f"{tag}: other architectures (32-bit) free",
-                    "conditions": [{"key": "arch", "comparator": "!=", "value": "x86_64"}]})
 q = json.dumps
 out = [f"version = {q(str(data.get('version', '1.0')))}"]
 for e in entries:
@@ -228,11 +229,19 @@ fi
 want=("$(medium_nevra vitrine-guest-tools)")
 [ -n "${want[0]}" ] || die "the medium has no vitrine-guest-tools package"
 mesa=()
-for name in $(medium_names '^mesa-'); do
-	installed "$name" x86_64 && mesa+=("$(medium_nevra "$name")")
-done
-[ ${#mesa[@]} -gt 0 ] && say "Mesa: vitrine's build of ${#mesa[@]} packages" ||
-	say "Mesa: none installed (no desktop?), nothing to replace"
+mesa32=$(rpm -qa --qf '%{NAME}.%{ARCH}\n' 'mesa-*' | grep '\.i686$' | tr '\n' ' ')
+if [ -n "$mesa32" ]; then
+	# dnf wants both architectures of a multilib package at one version, and
+	# the medium has no 32-bit build
+	say "Mesa: Fedora's stays, without native context: this guest has 32-bit Mesa"
+	say "      ($mesa32) for 32-bit programs (Steam, Wine), and vitrine's Mesa is 64-bit only"
+else
+	for name in $(medium_names '^mesa-'); do
+		installed "$name" x86_64 && mesa+=("$(medium_nevra "$name")")
+	done
+	[ ${#mesa[@]} -gt 0 ] && say "Mesa: vitrine's build of ${#mesa[@]} packages" ||
+		say "Mesa: none installed (no desktop?), nothing to replace"
+fi
 kwin_pkgs=()
 if [ "$use_kwin" = 1 ]; then
 	for name in $(medium_names '^kwin'); do
@@ -274,10 +283,12 @@ before=$(rpm -qa | sort | sha256sum)
 old_override=$(cat "$override" 2> /dev/null || true)
 
 step "Installing the packages (Fedora's repositories are needed for dkms and the kernel headers)"
-# dkms brings kernel-devel-matched, the newest kernel's headers; `kernel` then
-# brings that kernel's modules too.  The running kernel's headers, if
-# Fedora still has them, give the driver at once to that kernel too.
-extra=(dkms kernel "kernel-devel-$(uname -r)")
+# The newest kernel and its headers (kernel and kernel-devel are installed
+# side by side: these add the newest when it is not there yet), which the
+# guest boots next; dkms's own kernel-devel-matched does not do it when an
+# older one is installed.  The running kernel's headers too, if Fedora still
+# has them, so that it gets the driver too.
+extra=(dkms kernel kernel-devel "kernel-devel-$(uname -r)")
 "${dnf_medium[@]}" install --skip-unavailable "${want[@]}" "${extra[@]}" ||
 	die "dnf failed: see above (no network? the guest needs Fedora's repositories)"
 missing=()
@@ -297,6 +308,13 @@ fi
 
 step "Building the graphics driver for each kernel with headers"
 /usr/libexec/vitrine-guest-tools/dkms-sync --no-initramfs || driver_failed=1
+# the kernel the guest boots next: the newest
+newest=$(rpm -q --qf '%{VERSION}-%{RELEASE}.%{ARCH}\n' kernel-core | sort -V | tail -1)
+if [ -n "$newest" ] && ! dkms status -m vitrine-virtio-gpu -k "$newest" 2> /dev/null | grep -q ': installed'; then
+	say "WARNING: the newest kernel, $newest, has no patched driver (no headers: kernel-devel-$newest);"
+	say "WARNING: the guest boots it with the stock driver"
+	driver_failed=1
+fi
 
 step "Making the initramfs"
 if [ "$force" = 1 ] || [ "$(rpm -qa | sort | sha256sum)" != "$before" ] ||
