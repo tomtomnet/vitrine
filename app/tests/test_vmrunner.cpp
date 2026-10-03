@@ -218,6 +218,34 @@ private slots:
                  QStringList({"-device", "virtio-gpu-gl-pci,blob=on"}));
     }
 
+    /* A QEMU that could not answer once, e.g. on a host short of memory, is
+       asked again; the run's log says what its card went without */
+    void failedProbesAreNotKept()
+    {
+        VmRunner runner(id, tmp.path());
+        const QByteArray once = tmp.filePath("answered-once").toUtf8();
+        const QString qemu = script("flaky-qemu", "case \"$2\" in\n"
+                                                  "*,help)\n"
+                                                  "  [ -e " + once + " ] || { : > " + once + "; "
+                                                  "echo 'out of memory' >&2; exit 1; }\n"
+                                                  "  echo 'virtio-gpu-gl-pci options:'\n"
+                                                  "  echo '  x-vblank-swap-target=<uint32>'\n"
+                                                  "  exit 0 ;;\n"
+                                                  "esac\n"
+                                                  "exit 1");
+        const ArgsFile args = ArgsFile::parse("#qemu " + qemu + "\n-device virtio-gpu-gl-pci\n");
+
+        QFile::remove(QString::fromUtf8(once));
+        runner.start(args);
+        QTRY_COMPARE(runner.state(), VmRunner::State::Stopped);
+        const QString log = read(runner.logPath());
+        QVERIFY2(log.contains("vitrine: cannot read the properties of virtio-gpu-gl-pci from " +
+                              qemu + " (out of memory)"),
+                 qPrintable(log));
+        QCOMPARE(runner.commandLine(args).mid(1, 2),
+                 QStringList({"-device", "virtio-gpu-gl-pci,x-vblank-swap-target=6000"}));
+    }
+
     /* QEMU's environment: the SDL window's settings, then #env */
     void environment()
     {

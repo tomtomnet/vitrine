@@ -158,9 +158,13 @@ static QString fstabExtra(const ArgsFile &args, const QString &qemu)
 /*
  * The properties of a device in @binary, from its help, which takes a few
  * milliseconds; kept for as long as the binary stays the same.  Empty
- * when they cannot be read.
+ * when they cannot be read, and @error then tells why.  Only a clean
+ * answer is kept: QEMU not starting (out of memory), timing out on a
+ * loaded host or failing must not leave the next starts without them.
+ * QEMU answers cleanly for a device it lacks, which is kept too.
  */
-static QStringList deviceProperties(const QString &binary, const QString &driver)
+static QStringList deviceProperties(const QString &binary, const QString &driver,
+                                    QString *error = nullptr)
 {
     static QHash<QString, QStringList> cache;
     const QFileInfo fi(binary);
@@ -177,14 +181,28 @@ static QStringList deviceProperties(const QString &binary, const QString &driver
         return {};
     }
     p.start(binary, {"-device", driver + ",help"});
-    if (p.waitForFinished(5000) && p.exitStatus() == QProcess::NormalExit) {
-        for (const QemuPropertyDoc &prop :
-             QemuInfo::parsePropertyHelp(QString::fromUtf8(p.readAllStandardOutput()))) {
-            names << prop.name;
-        }
-    } else {
+    if (!p.waitForFinished(5000)) {
+        const QString why = p.error() == QProcess::FailedToStart
+                                ? p.errorString() : VmRunner::tr("no answer within 5 s");
         p.kill();
         p.waitForFinished(1000);
+        if (error) {
+            *error = why;
+        }
+        return {};
+    }
+    if (p.exitStatus() != QProcess::NormalExit || p.exitCode() != 0) {
+        const QString err = QString::fromLocal8Bit(p.readAllStandardError()).trimmed();
+        if (error) {
+            *error = p.exitStatus() != QProcess::NormalExit ? VmRunner::tr("it crashed")
+                     : !err.isEmpty() ? err.section('\n', 0, 0)
+                                      : VmRunner::tr("exit status %1").arg(p.exitCode());
+        }
+        return {};
+    }
+    for (const QemuPropertyDoc &prop :
+         QemuInfo::parsePropertyHelp(QString::fromUtf8(p.readAllStandardOutput()))) {
+        names << prop.name;
     }
     cache.insert(key, names);
     return names;
@@ -248,7 +266,9 @@ struct VmRunner::Private
     QString agentPath() const { return runDir() + "/qga.sock"; }
     QString displayPath() const { return runDir() + "/display.sock"; }
     QString qmpArg() const;
-    QStringList commandLine(const ArgsFile &args, const QString &qemu) const;
+    /* @problems: the cards whose properties could not be read, for the log */
+    QStringList commandLine(const ArgsFile &args, const QString &qemu,
+                            QStringList *problems = nullptr) const;
     QString logPath() const { return dir + "/qemu.log"; }
     QString logTail(bool qemuErrors = true) const;
     qint64 runningPid() const;
@@ -703,13 +723,22 @@ QStringList VmRunner::commandLine(const ArgsFile &args) const
     return d->commandLine(args, qemuFor(args));
 }
 
-QStringList VmRunner::Private::commandLine(const ArgsFile &args, const QString &qemu) const
+QStringList VmRunner::Private::commandLine(const ArgsFile &args, const QString &qemu,
+                                          QStringList *problems) const
 {
     const QList<VmConfig::Share> shares = VmConfig::shares(args);
     QStringList command{qemu};
 
-    command += withComputedProperties(args, [&qemu](const QString &driver) {
-                   return deviceProperties(qemu, driver);
+    command += withComputedProperties(args, [&qemu, problems](const QString &driver) {
+                   QString error;
+                   const QStringList names = deviceProperties(qemu, driver, &error);
+                   if (!error.isEmpty() && problems) {
+                       *problems << VmRunner::tr("cannot read the properties of %1 from %2 "
+                                                 "(%3): it runs without those vitrine "
+                                                 "computes, such as its swap targets")
+                                        .arg(driver, qemu, error);
+                   }
+                   return names;
                }).argv();
     for (qsizetype i = 0; i < shares.size(); i++) {
         command << "-chardev"
@@ -916,14 +945,16 @@ void VmRunner::start(const ArgsFile &args)
     }
     const QStringList environment = VmRunner::environment(args);
     /* what launchQemu() runs, after virtiofsd if any */
-    d->command = d->commandLine(args, qemu);
+    QStringList problems;
+    d->command = d->commandLine(args, qemu, &problems);
     log.write(QString("vitrine: %1 %2%3\n")
                   .arg(QDateTime::currentDateTime().toString(Qt::ISODate),
                        environment.isEmpty()
                            ? QString() : shellAssignments(environment).join(' ') + ' ',
                        shellQuote(d->command))
                   .toUtf8());
-    for (const QString &line : std::as_const(remade)) {
+    const QStringList notes = remade + problems;
+    for (const QString &line : notes) {
         log.write(("vitrine: " + line + '\n').toUtf8());
     }
     log.close();
