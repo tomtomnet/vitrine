@@ -13,10 +13,17 @@
 #include <QTest>
 #include <QXmlStreamReader>
 
+#include <fcntl.h>
+#include <poll.h>
 #include <pwd.h>
 #include <signal.h>
+#include <spawn.h>
+#include <sys/socket.h>
 #include <sys/stat.h>
+#include <sys/wait.h>
 #include <unistd.h>
+
+extern char **environ;
 
 static const char kFair[] = "/sys/kernel/debug/sched/fair_server";
 static const char kCard[] = "/sys/class/drm/card1/device";
@@ -614,6 +621,58 @@ private slots:
         QCOMPARE(h.answer("rt " + qemu.pidText()),
                  QString("error rt %1: no longer a QEMU of uid %2").arg(qemu.pid()).arg(getuid()));
         QVERIFY(journal().filter("sched ").isEmpty());
+    }
+
+    /* A caller that stops reading the replies: the watch goes on all the same */
+    void callerNotReading()
+    {
+        FakeQemu qemu;
+        int sv[2];
+        QVERIFY(socketpair(AF_UNIX, SOCK_STREAM | SOCK_CLOEXEC, 0, sv) == 0);
+        posix_spawn_file_actions_t actions;
+        posix_spawn_file_actions_init(&actions);
+        posix_spawn_file_actions_adddup2(&actions, sv[1], 0);
+        posix_spawn_file_actions_adddup2(&actions, sv[1], 1);
+        qputenv("VITRINE_HELPER_TEST_ROOT", m_root.toLocal8Bit());
+        char *argv[] = {const_cast<char *>(HELPER_FAKE), nullptr};
+        pid_t pid;
+        QCOMPARE(posix_spawn(&pid, HELPER_FAKE, &actions, nullptr, argv, environ), 0);
+        posix_spawn_file_actions_destroy(&actions);
+        qunsetenv("VITRINE_HELPER_TEST_ROOT");
+        ::close(sv[1]);
+        fcntl(sv[0], F_SETFL, O_NONBLOCK);
+        /* each one answered: far more replies than the socket holds */
+        QByteArray requests = "watch " + qemu.pidText().toLatin1() + "\nfair-server on\n";
+        for (int i = 0; i < 40000; i++) {
+            requests += "watch " + qemu.pidText().toLatin1() + '\n';
+        }
+        QElapsedTimer clock;
+        clock.start();
+        qsizetype sent = 0;
+        while (sent < requests.size() && clock.elapsed() < 20000) {
+            const ssize_t n = ::send(sv[0], requests.constData() + sent,
+                                     size_t(requests.size() - sent), MSG_NOSIGNAL);
+            if (n > 0) {
+                sent += n;
+            } else {
+                struct pollfd out = {sv[0], POLLOUT, 0};
+                poll(&out, 1, 100);
+            }
+        }
+        QCOMPARE(sent, requests.size());
+        QTRY_VERIFY(fairAll("10000000/1000000"));
+        qemu.stop();
+        QTRY_VERIFY_WITH_TIMEOUT(fairAll("1000000000/50000000"), 5000);
+        /* it ends; Qt's own SIGCHLD handling may reap it before this does */
+        int status = 0;
+        pid_t r = 0;
+        QTRY_VERIFY((r = waitpid(pid, &status, WNOHANG)) != 0);
+        if (r == pid) {
+            QVERIFY(WIFEXITED(status) && WEXITSTATUS(status) == 0);
+        } else {
+            QVERIFY(errno == ECHILD && !QFile::exists(QString("/proc/%1").arg(pid)));
+        }
+        ::close(sv[0]);
     }
 
     /* SIGTERM (a shutdown): everything back before the end */

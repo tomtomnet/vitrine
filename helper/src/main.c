@@ -86,8 +86,16 @@ void reply(const char *fmt, ...)
         n = sizeof(buf) - 2;
     }
     buf[n++] = '\n';
-    /* vitrine may be gone (SIGPIPE ignored): the work goes on */
-    if (write(STDOUT_FILENO, buf, (size_t)n) < 0) {
+    /*
+     * Never wait for the reader: a caller that stopped reading would hold
+     * up the watch, and the settings would outlive the VMs.  Writable means
+     * half a socket's buffer free, or a page of a pipe's: the line goes out
+     * whole at once; else it is dropped, as nobody reads it.  vitrine may be
+     * gone (SIGPIPE ignored): the work goes on.
+     */
+    struct pollfd out = {.fd = STDOUT_FILENO, .events = POLLOUT};
+    if (poll(&out, 1, 0) == 1 && (out.revents & POLLOUT) &&
+        write(STDOUT_FILENO, buf, (size_t)n) < 0) {
         return;
     }
 }
