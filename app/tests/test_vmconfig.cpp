@@ -1,6 +1,11 @@
 // SPDX-License-Identifier: GPL-2.0-or-later
 #include <QTest>
 
+#include <arpa/inet.h>
+#include <netinet/in.h>
+#include <sys/socket.h>
+#include <unistd.h>
+
 #include "core/vmconfig.h"
 
 using namespace VmConfig;
@@ -238,6 +243,93 @@ private slots:
         setUsbPassthrough(a, {});
         QCOMPARE(a.toText(), "-device qemu-xhci\n");
         QVERIFY(!hasUsbController(ArgsFile::parse("-m 1G\n")));
+    }
+
+    /* #guest: what runs in the VM, which QEMU never sees */
+    void guestDirective()
+    {
+        ArgsFile a = ArgsFile::parse("# top\n-name Fedora\n-m 1G\n");
+
+        QCOMPARE(guest(a).os, "");
+        setGuest(a, {"linux", "kde"});
+        QCOMPARE(a.toText(), "# top\n-name Fedora\n#guest linux,desktop=kde\n-m 1G\n");
+        QCOMPARE(a.argv(), QStringList({"-name", "Fedora", "-m", "1G"}));
+        QCOMPARE(guest(a).os, "linux");
+        QCOMPARE(guest(a).desktop, "kde");
+
+        /* other keys stay */
+        a = ArgsFile::parse("-m 1G\n#guest Linux,desktop=GNOME,tools=1\n");
+        QCOMPARE(guest(a).os, "linux");
+        QCOMPARE(guest(a).desktop, "gnome");
+        setGuest(a, {"linux", ""});
+        QCOMPARE(a.toText(), "-m 1G\n#guest linux,tools=1\n");
+        setGuest(a, {"", "kde"});
+        QCOMPARE(a.toText(), "-m 1G\n#guest desktop=kde,tools=1\n");
+        QCOMPARE(guest(a).os, "");
+        setGuest(a, {});
+        QCOMPARE(a.toText(), "-m 1G\n");
+
+        /* no -name: first after the comments */
+        a = ArgsFile::parse("# top\n\n-m 1G\n");
+        setGuest(a, {"windows", ""});
+        QCOMPARE(a.toText(), "# top\n\n#guest windows\n-m 1G\n");
+        a = ArgsFile();
+        setGuest(a, {"other", ""});
+        QCOMPARE(a.toText(), "#guest other\n");
+    }
+
+    /* The Processors of the Hardware page: the topology keeps its shape */
+    void cpuCount()
+    {
+        ArgsFile a = ArgsFile::parse("-smp 8,sockets=1,cores=4,threads=2\n-cpu host,+avx\n");
+
+        setCpuCount(a, 4);
+        QCOMPARE(a.toText(), "-smp 4,sockets=1,cores=2,threads=2\n-cpu host,+avx\n");
+        /* odd: one thread per core */
+        setCpuCount(a, 3);
+        QCOMPARE(a.toText(), "-smp 3,sockets=1,cores=3,threads=1\n-cpu host,+avx\n");
+        QCOMPARE(VmConfig::cpus(a).count, 3);
+
+        /* the sockets stay if they divide it */
+        a = ArgsFile::parse("-smp 8,sockets=2,cores=2,threads=2\n");
+        setCpuCount(a, 12);
+        QCOMPARE(a.toText(), "-smp 12,sockets=2,cores=3,threads=2\n");
+        setCpuCount(a, 6);
+        QCOMPARE(a.toText(), "-smp 6,sockets=1,cores=3,threads=2\n");
+
+        /* keys not given stay out */
+        a = ArgsFile::parse("-smp cpus=4,cores=4\n");
+        setCpuCount(a, 6);
+        QCOMPARE(a.toText(), "-smp cpus=6,cores=6\n");
+
+        /* no topology, no -cpu touched */
+        a = ArgsFile::parse("-cpu ,+avx\n-smp 2\n");
+        setCpuCount(a, 6);
+        QCOMPARE(a.toText(), "-cpu ,+avx\n-smp 6\n");
+        a = ArgsFile::parse("-m 1G\n");
+        setCpuCount(a, 2);
+        QCOMPARE(a.toText(), "-m 1G\n-smp 2\n");
+    }
+
+    void freePorts()
+    {
+        const int first = freePort({});
+        QVERIFY(first >= 2222);
+        QVERIFY(freePort({first}) > first);
+        QCOMPARE(freePort({}, 100) >= 1024, true);
+
+        /* one in use here */
+        const int fd = ::socket(AF_INET, SOCK_STREAM, 0);
+        sockaddr_in addr = {};
+        addr.sin_family = AF_INET;
+        addr.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
+        QVERIFY(::bind(fd, reinterpret_cast<sockaddr *>(&addr), sizeof addr) == 0);
+        QVERIFY(::listen(fd, 1) == 0);
+        socklen_t size = sizeof addr;
+        ::getsockname(fd, reinterpret_cast<sockaddr *>(&addr), &size);
+        const int busy = ntohs(addr.sin_port);
+        QVERIFY(freePort({}, busy) != busy);
+        ::close(fd);
     }
 };
 

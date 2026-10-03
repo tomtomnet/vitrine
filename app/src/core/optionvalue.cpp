@@ -122,18 +122,23 @@ QString OptionValue::escape(const QString &text)
     return out.replace(',', ",,");
 }
 
+QString OptionValue::itemText(const Item &item)
+{
+    if (item.key.isEmpty()) {
+        return escape(item.value);
+    }
+    if (item.bare) {
+        return escape(item.key);
+    }
+    return escape(item.key) + '=' + escape(item.value);
+}
+
 QString OptionValue::toString() const
 {
     QStringList parts;
 
     for (const Item &item : m_items) {
-        if (item.key.isEmpty()) {
-            parts << escape(item.value);
-        } else if (item.bare) {
-            parts << escape(item.key);
-        } else {
-            parts << escape(item.key) + '=' + escape(item.value);
-        }
+        parts << itemText(item);
     }
     return parts.join(',');
 }

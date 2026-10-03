@@ -35,6 +35,20 @@ QList<EnvVar> environment(const ArgsFile &args);
 /* Whether @line, the value of an #env directive, is NAME=VALUE */
 bool isEnvAssignment(const QString &line);
 
+/*
+ * What runs in the VM, the #guest directive: "#guest linux,desktop=kde".
+ * QEMU never sees it; vitrine picks devices and timings by it, e.g. the
+ * swap targets of the 3D card at start.  Both are lowercase words, empty
+ * when unknown.
+ */
+struct Guest {
+    QString os;             // linux, windows or other
+    QString desktop;        // e.g. kde, gnome; for Linux
+};
+Guest guest(const ArgsFile &args);
+/* Keeps the directive's other keys; an empty @guest removes it */
+void setGuest(ArgsFile &args, const Guest &guest);
+
 /* QEMU sizes: a number with an optional K/M/G/T suffix */
 qint64 parseSize(const QString &text, qint64 unit);
 QString formatMiB(qint64 mib);
@@ -55,6 +69,12 @@ struct Cpus {
 };
 Cpus cpus(const ArgsFile &args);
 void setCpus(ArgsFile &args, const Cpus &cpus);
+/*
+ * @count processors, in the shape of the topology if one is given: the
+ * threads per core and the sockets stay when @count is a multiple of
+ * them, the cores make up the rest
+ */
+void setCpuCount(ArgsFile &args, int count);
 /* FEATURE=on on the -cpu line, unless the line sets it already, either way */
 void enableCpuFeature(ArgsFile &args, const QString &feature);
 
@@ -113,5 +133,11 @@ QList<UsbId> usbPassthrough(const ArgsFile &args);
 void setUsbPassthrough(ArgsFile &args, const QList<UsbId> &ids);
 /* A USB controller for the devices above, e.g. qemu-xhci */
 bool hasUsbController(const ArgsFile &args);
+
+/*
+ * A TCP port for a forward to a VM, from @from up: none of @taken (those
+ * of the other VMs) and free on 127.0.0.1 now
+ */
+int freePort(const QList<int> &taken, int from = 2222);
 
 }
