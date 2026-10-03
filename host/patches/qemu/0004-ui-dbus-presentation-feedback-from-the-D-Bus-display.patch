@@ -1,0 +1,396 @@
+From 1fdb1c3752101f25fc585d199c3198e796c7bc1f Mon Sep 17 00:00:00 2001
+From: tomtomnet <tompere8000@proton.me>
+Date: Fri, 2 Oct 2026 08:45:57 +0200
+Subject: [PATCH 4/4] ui/dbus: presentation feedback from the D-Bus display
+ client
+
+org.qemu.Display1 gains a Presented call: the client reports when a frame
+reached the screen, which drives the guest's vblank like the SDL window's
+wp_presentation feedback does.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+Claude-Session: https://claude.ai/code/session_01M8iTzFPtyk2Gzbt6CLnRYK
+---
+ include/ui/console.h | 16 +++++++++++
+ ui/console.c         | 24 ++++++++++++++++
+ ui/dbus-console.c    | 68 ++++++++++++++++++++++++++++++++++++++------
+ ui/dbus-display1.xml | 51 +++++++++++++++++++++++++++++++++
+ ui/dbus-listener.c   | 44 ++++++++++++++++++++++++++++
+ ui/dbus.h            |  4 +++
+ 6 files changed, 199 insertions(+), 8 deletions(-)
+
+diff --git a/include/ui/console.h b/include/ui/console.h
+index 58ca8de19..2dcdf9f1f 100644
+--- a/include/ui/console.h
++++ b/include/ui/console.h
+@@ -342,6 +342,18 @@ typedef struct GraphicHwOps {
+     void (*text_update)(void *opaque, uint32_t *text);
+     void (*ui_info)(void *opaque, uint32_t head, QemuUIInfo *info);
+     void (*gl_block)(void *opaque, bool block);
++    /* the display just showed a frame of this head on the screen */
++    void (*gl_presented)(void *opaque, uint32_t head, int64_t when_ns,
++                         int64_t period_ns, int64_t compositor_lead_ns,
++                         int64_t swap_lead_ns);
++    /*
++     * The display put the guest's own buffer on its surface and the
++     * compositor still holds the previous one: the flush is not done until
++     * gl_flush_done says the previous buffer was released (the guest may
++     * not render into it before).
++     */
++    void (*gl_flush_pending)(void *opaque, uint32_t head);
++    void (*gl_flush_done)(void *opaque, uint32_t head);
+ } GraphicHwOps;
+ 
+ QemuConsole *qemu_graphic_console_create(DeviceState *dev, uint32_t head,
+@@ -357,6 +369,10 @@ void qemu_console_hw_update_done(QemuConsole *con);
+ void qemu_console_hw_invalidate(QemuConsole *con);
+ void qemu_console_hw_text_update(QemuConsole *con, uint32_t *chardata);
+ void qemu_console_hw_gl_block(QemuConsole *con, bool block);
++void graphic_hw_gl_presented(QemuConsole *con, int64_t when_ns, int64_t period_ns,
++                             int64_t compositor_lead_ns, int64_t swap_lead_ns);
++void graphic_hw_gl_flush_pending(QemuConsole *con);
++void graphic_hw_gl_flush_done(QemuConsole *con);
+ 
+ void qemu_console_early_init(void);
+ 
+diff --git a/ui/console.c b/ui/console.c
+index 14f148118..f6eb2c4a2 100644
+--- a/ui/console.c
++++ b/ui/console.c
+@@ -209,6 +209,30 @@ void qemu_console_hw_gl_block(QemuConsole *con, bool block)
+     }
+ }
+ 
++void graphic_hw_gl_presented(QemuConsole *con, int64_t when_ns, int64_t period_ns,
++                             int64_t compositor_lead_ns, int64_t swap_lead_ns)
++{
++    if (con && con->hw_ops->gl_presented) {
++        con->hw_ops->gl_presented(con->hw, qemu_console_get_head(con),
++                                  when_ns, period_ns, compositor_lead_ns,
++                                  swap_lead_ns);
++    }
++}
++
++void graphic_hw_gl_flush_pending(QemuConsole *con)
++{
++    if (con && con->hw_ops->gl_flush_pending) {
++        con->hw_ops->gl_flush_pending(con->hw, qemu_console_get_head(con));
++    }
++}
++
++void graphic_hw_gl_flush_done(QemuConsole *con)
++{
++    if (con && con->hw_ops->gl_flush_done) {
++        con->hw_ops->gl_flush_done(con->hw, qemu_console_get_head(con));
++    }
++}
++
+ int qemu_console_get_window_id(QemuConsole *con)
+ {
+     return con->window_id;
+diff --git a/ui/dbus-console.c b/ui/dbus-console.c
+index 947c3b3a5..93f82b4fd 100644
+--- a/ui/dbus-console.c
++++ b/ui/dbus-console.c
+@@ -57,6 +57,7 @@ struct _DBusDisplayConsole {
+     Notifier mouse_mode_notifier;
+ 
+     QemuDBusDisplay1UIInfo *iface_ui_info;
++    QemuDBusDisplay1Presentation *iface_presentation;
+ };
+ 
+ G_DEFINE_TYPE(DBusDisplayConsole,
+@@ -158,6 +159,7 @@ dbus_display_console_dispose(GObject *object)
+     qemu_console_unregister_listener(&ddc->dcl);
+     qemu_remove_mouse_mode_change_notifier(&ddc->mouse_mode_notifier);
+     g_clear_object(&ddc->iface_ui_info);
++    g_clear_object(&ddc->iface_presentation);
+     g_clear_object(&ddc->iface_touch);
+     g_clear_object(&ddc->iface_mouse);
+     g_clear_object(&ddc->iface_kbd);
+@@ -188,6 +190,21 @@ listener_vanished_cb(DBusDisplayListener *listener)
+     qkbd_state_lift_all_keys(ddc->kbd);
+ }
+ 
++static void
++dbus_console_update_refresh_rate(DBusDisplayConsole *ddc)
++{
++    uint32_t refresh_rate = 0;
++    guint i;
++
++    if (qemu_console_ui_info_supported(ddc->dcl.con)) {
++        refresh_rate = qemu_console_get_ui_info(ddc->dcl.con)->refresh_rate;
++    }
++    for (i = 0; i < ddc->listeners->len; i++) {
++        dbus_display_listener_set_refresh_rate(
++            g_ptr_array_index(ddc->listeners, i), refresh_rate);
++    }
++}
++
+ static gboolean
+ dbus_console_set_ui_info(DBusDisplayConsole *ddc,
+                          GDBusMethodInvocation *invocation,
+@@ -198,14 +215,7 @@ dbus_console_set_ui_info(DBusDisplayConsole *ddc,
+                          guint arg_width,
+                          guint arg_height)
+ {
+-    QemuUIInfo info = {
+-        .width_mm = arg_width_mm,
+-        .height_mm = arg_height_mm,
+-        .xoff = arg_xoff,
+-        .yoff = arg_yoff,
+-        .width = arg_width,
+-        .height = arg_height,
+-    };
++    QemuUIInfo info;
+ 
+     if (!qemu_console_ui_info_supported(ddc->dcl.con)) {
+         g_dbus_method_invocation_return_error(invocation,
+@@ -215,6 +225,15 @@ dbus_console_set_ui_info(DBusDisplayConsole *ddc,
+         return DBUS_METHOD_INVOCATION_HANDLED;
+     }
+ 
++    /* keep the refresh rate set through org.qemu.Display1.UIInfo.Apply */
++    info = *qemu_console_get_ui_info(ddc->dcl.con);
++    info.width_mm = arg_width_mm;
++    info.height_mm = arg_height_mm;
++    info.xoff = arg_xoff;
++    info.yoff = arg_yoff;
++    info.width = arg_width;
++    info.height = arg_height;
++
+     qemu_console_set_ui_info(ddc->dcl.con, &info, false);
+     qemu_dbus_display1_console_complete_set_uiinfo(ddc->iface, invocation);
+     return DBUS_METHOD_INVOCATION_HANDLED;
+@@ -336,6 +355,7 @@ dbus_console_register_listener(DBusDisplayConsole *ddc,
+     g_object_connect(listener_conn,
+                      "swapped-signal::closed", listener_vanished_cb, listener,
+                      NULL);
++    dbus_console_update_refresh_rate(ddc);
+ 
+     trace_dbus_registered_listener(sender);
+     return DBUS_METHOD_INVOCATION_HANDLED;
+@@ -531,6 +551,29 @@ dbus_mouse_mode_change(Notifier *notify, void *data)
+     dbus_mouse_update_is_absolute(ddc);
+ }
+ 
++/*
++ * A frame of the console reached the screen of the client: the display
++ * device may pace the guest with it, as with the displays of QEMU's own.
++ */
++static gboolean
++dbus_presentation_presented(DBusDisplayConsole *ddc,
++                            GDBusMethodInvocation *invocation,
++                            gint64 arg_time,
++                            guint arg_period,
++                            gint64 arg_compositor_lead,
++                            gint64 arg_swap_lead)
++{
++    trace_dbus_presented(arg_time, arg_period, arg_compositor_lead,
++                         arg_swap_lead);
++    if (arg_time > 0 && arg_compositor_lead >= 0 && arg_swap_lead >= 0) {
++        graphic_hw_gl_presented(ddc->dcl.con, arg_time, arg_period,
++                                arg_compositor_lead, arg_swap_lead);
++    }
++    qemu_dbus_display1_presentation_complete_presented(
++        ddc->iface_presentation, invocation);
++    return DBUS_METHOD_INVOCATION_HANDLED;
++}
++
+ static gboolean
+ dbus_ui_info_get(DBusDisplayConsole *ddc,
+                  GDBusMethodInvocation *invocation)
+@@ -618,6 +661,7 @@ dbus_ui_info_apply(DBusDisplayConsole *ddc,
+     }
+ 
+     qemu_console_set_ui_info(ddc->dcl.con, &ui_info, false);
++    dbus_console_update_refresh_rate(ddc);
+     qemu_dbus_display1_uiinfo_complete_apply(ddc->iface_ui_info, invocation);
+ 
+     return DBUS_METHOD_INVOCATION_HANDLED;
+@@ -646,6 +690,7 @@ dbus_display_console_new(DBusDisplay *display, QemuConsole *con)
+         "org.qemu.Display1.Mouse",
+         "org.qemu.Display1.MultiTouch",
+         "org.qemu.Display1.UIInfo",
++        "org.qemu.Display1.Presentation",
+         NULL
+     };
+ 
+@@ -732,5 +777,12 @@ dbus_display_console_new(DBusDisplay *display, QemuConsole *con)
+     g_dbus_object_skeleton_add_interface(G_DBUS_OBJECT_SKELETON(ddc),
+         G_DBUS_INTERFACE_SKELETON(ddc->iface_ui_info));
+ 
++    ddc->iface_presentation = qemu_dbus_display1_presentation_skeleton_new();
++    g_object_connect(ddc->iface_presentation,
++        "swapped-signal::handle-presented", dbus_presentation_presented, ddc,
++        NULL);
++    g_dbus_object_skeleton_add_interface(G_DBUS_OBJECT_SKELETON(ddc),
++        G_DBUS_INTERFACE_SKELETON(ddc->iface_presentation));
++
+     return ddc;
+ }
+diff --git a/ui/dbus-display1.xml b/ui/dbus-display1.xml
+index a23ca0b8b..b1d44c649 100644
+--- a/ui/dbus-display1.xml
++++ b/ui/dbus-display1.xml
+@@ -663,6 +663,24 @@
+   </interface>
+   <?endif?>
+ 
++  <!--
++      org.qemu.Display1.Listener.Unix.AsyncUpdate:
++
++      This optional client-side interface has no methods. When a listener
++      lists it in its :dbus:prop:`org.qemu.Display1.Listener.Interfaces`,
++      :dbus:meth:`org.qemu.Display1.Listener.UpdateDMABUF` is sent without
++      expecting a reply, and QEMU no longer holds the guest's display
++      rendering until the client answered. The client must use (or copy)
++      the scanout DMABUF promptly: the guest may render into it again once it
++      has shown another frame. Local clients that draw each update at once,
++      as QEMU's own SDL display does, can use this to stay out of the
++      guest's frame loop.
++  -->
++  <?if $(env.HOST_OS) != windows?>
++  <interface name="org.qemu.Display1.Listener.Unix.AsyncUpdate">
++  </interface>
++  <?endif?>
++
+   <!--
+       org.qemu.Display1.Clipboard:
+ 
+@@ -1214,4 +1232,37 @@
+       <arg name="ui_info" type="a{sv}" direction="in"/>
+     </method>
+   </interface>
++
++  <!--
++      org.qemu.Display1.Presentation:
++
++      This interface is implemented on
++      ``/org/qemu/Display1/Console_$id`` (see
++      :dbus:iface:`~org.qemu.Display1.Console`).
++
++      The client that shows the console tells when its frames reached the
++      screen.  A display device that paces the guest with the display of the
++      host takes its vertical blank from that (virtio-gpu with
++      ``x-host-vblank``), as it does with the displays QEMU shows itself.
++  -->
++  <interface name="org.qemu.Display1.Presentation">
++    <!--
++        Presented:
++        @time: when the frame was on the screen (CLOCK_MONOTONIC, in ns).
++        @period: the refresh period of the display (in ns), 0 if not known.
++        @compositor_lead: how long before @time the compositor let the
++          client draw (its frame callback), in ns; 0 if not known.
++        @swap_lead: how long before @time the client handed the frame to
++          the compositor, in ns; 0 if not known.
++
++        A frame of the console was shown.  The method has no reply worth
++        waiting for: call it with ``NO_REPLY_EXPECTED``.
++    -->
++    <method name="Presented">
++      <arg name="time" type="x" direction="in"/>
++      <arg name="period" type="u" direction="in"/>
++      <arg name="compositor_lead" type="x" direction="in"/>
++      <arg name="swap_lead" type="x" direction="in"/>
++    </method>
++  </interface>
+ </node>
+diff --git a/ui/dbus-listener.c b/ui/dbus-listener.c
+index 257f7cff6..1257f521b 100644
+--- a/ui/dbus-listener.c
++++ b/ui/dbus-listener.c
+@@ -86,6 +86,8 @@ struct _DBusDisplayListener {
+ #else /* !WIN32 */
+     QemuDBusDisplay1ListenerUnixMap *map_proxy;
+     QemuDBusDisplay1ListenerUnixScanoutDMABUF2 *scanout_dmabuf_v2_proxy;
++    /* the listener does not need the guest held until it handled an update */
++    bool async_update;
+ #endif
+ 
+     guint dbus_filter;
+@@ -260,6 +262,18 @@ static void dbus_call_update_gl(DisplayChangeListener *dcl,
+ 
+     glFlush();
+ #ifdef CONFIG_GBM
++    if (ddl->async_update) {
++        /*
++         * No callback: sent with NO_REPLY_EXPECTED, and the guest's GPU queue
++         * keeps running. The client uses the scanout before the guest can
++         * render into it again, as the SDL display does after its blit.
++         */
++        qemu_dbus_display1_listener_call_update_dmabuf(ddl->proxy,
++            x, y, w, h,
++            G_DBUS_CALL_FLAGS_NONE,
++            -1, NULL, NULL, NULL);
++        return;
++    }
+     qemu_console_hw_gl_block(ddl->dcl.con, true);
+     qemu_dbus_display1_listener_call_update_dmabuf(ddl->proxy,
+         x, y, w, h,
+@@ -1035,6 +1049,26 @@ dbus_display_listener_get_console(DBusDisplayListener *ddl)
+     return ddl->console;
+ }
+ 
++/*
++ * Refresh the console at the client's display rate (in millihertz), as the
++ * SDL display does for the host monitor: 2D surface updates and hardware
++ * polling then follow the display instead of the 30 ms default.
++ */
++void
++dbus_display_listener_set_refresh_rate(DBusDisplayListener *ddl,
++                                       uint32_t refresh_rate)
++{
++    uint64_t interval = GUI_REFRESH_INTERVAL_DEFAULT;
++
++    if (refresh_rate) {
++        interval = MAX(1, MIN(1000 * 1000 / refresh_rate,
++                              GUI_REFRESH_INTERVAL_DEFAULT));
++    }
++    if (ddl->dcl.ds && ddl->dcl.update_interval != interval) {
++        qemu_console_listener_set_refresh(&ddl->dcl, interval);
++    }
++}
++
+ static bool
+ dbus_display_listener_implements(DBusDisplayListener *ddl, const char *iface)
+ {
+@@ -1176,6 +1210,15 @@ dbus_display_listener_setup_shared_map(DBusDisplayListener *ddl)
+ #endif
+ }
+ 
++static void dbus_display_listener_setup_async_update(DBusDisplayListener *ddl)
++{
++#ifndef WIN32
++    ddl->async_update = dbus_display_listener_implements(
++        ddl, "org.qemu.Display1.Listener.Unix.AsyncUpdate");
++    trace_dbus_async_update(ddl->async_update);
++#endif
++}
++
+ static void dbus_display_listener_setup_scanout_dmabuf_v2(DBusDisplayListener *ddl)
+ {
+ #ifndef WIN32
+@@ -1301,6 +1344,7 @@ dbus_display_listener_new(const char *bus_name,
+     trace_dbus_can_share_map(ddl->can_share_map);
+     dbus_display_listener_setup_d3d11(ddl);
+     dbus_display_listener_setup_scanout_dmabuf_v2(ddl);
++    dbus_display_listener_setup_async_update(ddl);
+ 
+     con = qemu_console_lookup_by_index(dbus_display_console_get_index(console));
+     assert(con);
+diff --git a/ui/dbus.h b/ui/dbus.h
+index d2cc17664..b77b5b9a4 100644
+--- a/ui/dbus.h
++++ b/ui/dbus.h
+@@ -110,6 +110,10 @@ dbus_display_listener_get_console(DBusDisplayListener *ddl);
+ const char *
+ dbus_display_listener_get_bus_name(DBusDisplayListener *ddl);
+ 
++void
++dbus_display_listener_set_refresh_rate(DBusDisplayListener *ddl,
++                                       uint32_t refresh_rate);
++
+ extern const DisplayChangeListenerOps dbus_gl_dcl_ops;
+ extern const DisplayChangeListenerOps dbus_dcl_ops;
+ 

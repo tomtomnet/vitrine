@@ -11,9 +11,9 @@ class QNetworkAccessManager;
 class QNetworkReply;
 
 /*
- * Whether GitHub has commits newer than those this computer runs: of
- * vitrine, and of the qemu-gui QEMU that the manager builds.  One
- * anonymous request to the compare API of GitHub for each.
+ * Whether GitHub has commits newer than those this computer runs, of
+ * Vitrine: one anonymous request to the compare API of GitHub for each
+ * project.
  */
 class UpdateCheck : public QObject
 {

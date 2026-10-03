@@ -19,6 +19,7 @@
 #include <QStackedWidget>
 #include <QTabWidget>
 #include <QTimer>
+#include <QToolButton>
 #include <QVBoxLayout>
 
 #include "core/vmrunner.h"
@@ -56,7 +57,9 @@ public:
 
 VmPane::VmPane(QWidget *parent)
     : QWidget(parent), m_check(new QTimer(this)), m_tabs(new QTabWidget),
-      m_console(new QWidget), m_details(new VmDetails), m_list(new QListWidget), m_title(new QLabel),
+      m_console(new QWidget), m_details(new VmDetails), m_side(new QWidget),
+      m_list(new QListWidget), m_more(new QToolButton), m_advanced(new QListWidget),
+      m_title(new QLabel),
       m_stack(new QStackedWidget), m_snapshots(new SnapshotView), m_log(new LogView), m_running(new Banner(Banner::Information)),
       /* no mnemonic: the pages use D */
       m_discard(new QPushButton(Icons::themed({"edit-undo"}, QStyle::SP_DialogResetButton),
@@ -82,14 +85,40 @@ VmPane::VmPane(QWidget *parent)
     m_tabs->addTab(m_snapshots, tr("Snapshots"));
     m_tabs->addTab(m_log, tr("Logs"));
 
-    /* the pages down the side, as the settings dialog had them, on the tab */
+    /* the pages down the side, as the settings dialog had them, on the tab:
+       the simple ones, then Advanced, folded */
     m_list->setObjectName("pages");
+    m_advanced->setObjectName("advancedPages");
     m_stack->setObjectName("pageStack");
-    m_list->setIconSize(QSize(22, 22));
-    m_list->setSpacing(1);
-    m_list->setSizePolicy(QSizePolicy::Fixed, QSizePolicy::Expanding);
-    m_list->setFrameShape(QFrame::NoFrame);
-    m_list->viewport()->setAutoFillBackground(false);
+    for (QListWidget *list : {m_list, m_advanced}) {
+        list->setIconSize(QSize(22, 22));
+        list->setSpacing(1);
+        list->setSizePolicy(QSizePolicy::Fixed, QSizePolicy::Fixed);
+        list->setFrameShape(QFrame::NoFrame);
+        list->viewport()->setAutoFillBackground(false);
+        list->setVerticalScrollBarPolicy(Qt::ScrollBarAlwaysOff);
+        list->setHorizontalScrollBarPolicy(Qt::ScrollBarAlwaysOff);
+    }
+    m_more->setObjectName("advanced");
+    m_more->setText(tr("Advanced"));
+    m_more->setToolTip(tr("The machine, its boot, PCI devices, and the QEMU command line "
+                          "itself"));
+    m_more->setCheckable(true);
+    m_more->setAutoRaise(true);
+    m_more->setToolButtonStyle(Qt::ToolButtonTextBesideIcon);
+    m_more->setArrowType(Qt::RightArrow);
+    m_more->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Fixed);
+    m_advanced->hide();
+    {
+        auto *side = new QVBoxLayout(m_side);
+        side->setContentsMargins(0, 0, 0, 0);
+        side->setSpacing(0);
+        side->addWidget(m_list);
+        side->addSpacing(side->spacing() + 6);
+        side->addWidget(m_more);
+        side->addWidget(m_advanced);
+        side->addStretch();
+    }
     line->setFrameShape(QFrame::VLine);
     line->setFrameShadow(QFrame::Sunken);
     /* the name of the page over it, above the titles of its parts */
@@ -114,7 +143,7 @@ VmPane::VmPane(QWidget *parent)
     pageLayout->addLayout(footer);
     settingsLayout->setContentsMargins(0, 0, 0, 0);
     settingsLayout->setSpacing(0);
-    settingsLayout->addWidget(m_list);
+    settingsLayout->addWidget(m_side);
     settingsLayout->addWidget(line);
     settingsLayout->addWidget(page, 1);
 
@@ -126,7 +155,11 @@ VmPane::VmPane(QWidget *parent)
     m_check->setSingleShot(true);
     m_check->setInterval(0);
     connect(m_check, &QTimer::timeout, this, &VmPane::updateFooter);
-    connect(m_list, &QListWidget::currentRowChanged, this, &VmPane::switchTo);
+    connect(m_list, &QListWidget::currentRowChanged, this,
+            [this](int row) { pageChosen(m_list, row); });
+    connect(m_advanced, &QListWidget::currentRowChanged, this,
+            [this](int row) { pageChosen(m_advanced, row); });
+    connect(m_more, &QToolButton::toggled, this, &VmPane::showAdvanced);
     connect(m_apply, &QPushButton::clicked, this, &VmPane::apply);
     connect(m_discard, &QPushButton::clicked, this, &VmPane::discard);
     connect(m_snapshots, &SnapshotView::startRequested, this, &VmPane::startFromSnapshot);
@@ -135,8 +168,9 @@ VmPane::VmPane(QWidget *parent)
 
 VmPane::~VmPane()
 {
-    /* the list goes after the members: no page to load then */
+    /* the lists go after the members: no page to load then */
     disconnect(m_list, nullptr, this, nullptr);
+    disconnect(m_advanced, nullptr, this, nullptr);
 }
 
 Vm *VmPane::vm() const
@@ -165,6 +199,17 @@ void VmPane::setVm(Vm *vm)
     buildPages();
 }
 
+/* A list as tall as its items: the lists of pages do not scroll */
+static void fitHeight(QListWidget *list)
+{
+    int height = 2 * list->frameWidth() + list->spacing();
+
+    for (int i = 0; i < list->count(); i++) {
+        height += list->sizeHintForRow(i) + 2 * list->spacing();
+    }
+    list->setFixedHeight(height);
+}
+
 /* The pages of the VM, new, on the page shown before */
 void VmPane::buildPages()
 {
@@ -174,9 +219,10 @@ void VmPane::buildPages()
     m_current = -1;
     {
         /* the page shown in the end is loaded below, once */
-        const QSignalBlocker blocker(m_list);
+        const QSignalBlocker blocker(m_list), advancedBlocker(m_advanced);
 
         m_list->clear();
+        m_advanced->clear();
         /* the scroll areas, with the pages */
         while (m_stack->count() > 0) {
             QWidget *old = m_stack->widget(0);
@@ -184,10 +230,13 @@ void VmPane::buildPages()
             delete old;
         }
         if (m_vm) {
-            m_pages = {new GeneralPage(m_vm), new SystemPage(m_vm),
-                       new DisplayPage,        new StoragePage(m_vm->dir()),
-                       new SharesPage,         new PciPage,
-                       new UsbPage,            new ArgumentsPage(m_vm->dir())};
+            /* in the order of Page */
+            m_pages = {new GeneralPage(m_vm),  new HardwarePage,
+                       new DisplayPage,         new StoragePage(m_vm->dir()),
+                       new SharesPage,          new UsbPage,
+                       new NetworkPage(m_vm),   new MachinePage,
+                       new BootPage(m_vm),      new PciPage,
+                       new ArgumentsPage(m_vm->dir())};
         }
         /* scrolled, not the window grown, when a page does not fit */
         for (SettingsPage *page : std::as_const(m_pages)) {
@@ -199,18 +248,27 @@ void VmPane::buildPages()
             scroll->setHorizontalScrollBarPolicy(Qt::ScrollBarAlwaysOff);
             scroll->setMinimumWidth(scroll->widget()->minimumSizeHint().width() +
                                     scroll->verticalScrollBar()->sizeHint().width());
-            m_list->addItem(new QListWidgetItem(page->icon(), page->title()));
+            (m_stack->count() < FirstAdvanced ? m_list : m_advanced)
+                ->addItem(new QListWidgetItem(page->icon(), page->title()));
             m_stack->addWidget(scroll);
             watchEdits(page);
         }
         if (!m_pages.isEmpty()) {
-            m_list->setFixedWidth(m_list->sizeHintForColumn(0) + 2 * m_list->frameWidth() + 16);
+            const int width = qMax(m_list->sizeHintForColumn(0),
+                                   m_advanced->sizeHintForColumn(0)) +
+                              2 * m_list->frameWidth() + 16;
+            m_list->setFixedWidth(width);
+            m_advanced->setFixedWidth(width);
+            m_side->setFixedWidth(qMax(width, m_more->sizeHint().width()));
+            fitHeight(m_list);
+            fitHeight(m_advanced);
         }
+        m_more->setVisible(!m_pages.isEmpty());
     }
     m_args = m_vm ? m_vm->args() : ArgsFile();
     m_loaded = m_args.toText();
     if (!m_pages.isEmpty()) {
-        m_list->setCurrentRow(qBound(0, int(page), int(m_pages.size()) - 1));
+        selectPage(qBound(0, int(page), int(m_pages.size()) - 1));
     }
     updateFooter();
 }
@@ -218,6 +276,38 @@ void VmPane::buildPages()
 void VmPane::setConsole(QWidget *console)
 {
     m_console->layout()->addWidget(console);
+}
+
+void VmPane::pageChosen(QListWidget *list, int row)
+{
+    QListWidget *other = list == m_list ? m_advanced : m_list;
+
+    if (row < 0) {
+        return;
+    }
+    {
+        /* one page current in both lists */
+        const QSignalBlocker block(other);
+        other->setCurrentRow(-1);
+        other->clearSelection();
+    }
+    switchTo(list == m_list ? row : FirstAdvanced + row);
+}
+
+void VmPane::selectPage(int page)
+{
+    if (page >= FirstAdvanced) {
+        m_more->setChecked(true);
+        m_advanced->setCurrentRow(page - FirstAdvanced);
+    } else {
+        m_list->setCurrentRow(page);
+    }
+}
+
+void VmPane::showAdvanced(bool on)
+{
+    m_advanced->setVisible(on);
+    m_more->setArrowType(on ? Qt::DownArrow : Qt::RightArrow);
 }
 
 VmPane::Tab VmPane::tab() const
@@ -238,27 +328,27 @@ VmPane::Page VmPane::page() const
 void VmPane::setPage(Page page)
 {
     m_page = Page(qBound(0, int(page), int(Arguments)));
-    if (m_page < m_list->count()) {
-        m_list->setCurrentRow(m_page);
+    if (m_page < m_pages.size()) {
+        selectPage(m_page);
     }
 }
 
-void VmPane::switchTo(int row)
+void VmPane::switchTo(int page)
 {
-    if (row < 0 || row >= m_pages.size()) {
+    if (page < 0 || page >= m_pages.size()) {
         return;
     }
     /* what the page left changed goes to the arguments, for the next page */
     if (m_current >= 0 && m_pages[m_current]->isModified()) {
         m_pages[m_current]->save(m_args);
     }
-    m_current = row;
-    m_page = Page(row);
-    m_pages[row]->load(m_args);
-    m_stack->setCurrentIndex(row);
-    m_title->setText(m_pages[row]->title());
+    m_current = page;
+    m_page = Page(page);
+    m_pages[page]->load(m_args);
+    m_stack->setCurrentIndex(page);
+    m_title->setText(m_pages[page]->title());
     /* in line with the page, which has margins of its own */
-    m_title->setContentsMargins(m_pages[row]->layout()->contentsMargins().left(), 0, 0, 0);
+    m_title->setContentsMargins(m_pages[page]->layout()->contentsMargins().left(), 0, 0, 0);
     updateFooter();
 }
 

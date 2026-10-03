@@ -6,23 +6,22 @@
 #include <QDialogButtonBox>
 #include <QDir>
 #include <QFileInfo>
+#include <QHBoxLayout>
 #include <QLabel>
 #include <QLineEdit>
 #include <QProcess>
+#include <QPushButton>
 #include <QStandardPaths>
 #include <QTimer>
 #include <QUrl>
 #include <QVBoxLayout>
 
 #include "core/paths.h"
+#include "core/stackbuilder.h"
 #include "ui/icons.h"
+#include "ui/qemubuilddialog.h"
 #include "ui/qemudocs.h"
 #include "ui/widgets.h"
-
-static QString autoQemu()
-{
-    return QStandardPaths::findExecutable("qemu-system-x86_64");
-}
 
 static QString autoVirtiofsd()
 {
@@ -33,45 +32,58 @@ static QString autoVirtiofsd()
 }
 
 PreferencesDialog::PreferencesDialog(QWidget *parent)
-    : QDialog(parent), m_qemu(new QLineEdit), m_qemuStatus(Widgets::hint()),
-      m_virtiofsd(new QLineEdit), m_virtiofsdStatus(Widgets::hint()),
+    : QDialog(parent), m_stack(Widgets::note()), m_stackState(Widgets::hint()),
+      m_build(new QPushButton),
+      m_custom(new QCheckBox(tr("Use &another QEMU (advanced):"))), m_qemu(new QLineEdit),
+      m_qemuStatus(Widgets::hint()), m_virtiofsd(new QLineEdit),
+      m_virtiofsdStatus(Widgets::hint()),
       m_updates(new QCheckBox(tr("Check GitHub for &updates once a day"))),
       m_timer(new QTimer(this))
 {
     auto *layout = new QVBoxLayout(this);
     auto *form = Widgets::form();
+    auto *stackRow = new QHBoxLayout;
     auto *buttons = new QDialogButtonBox(QDialogButtonBox::Ok | QDialogButtonBox::Cancel);
     auto *vms = new QLabel(QString("<a href=\"%1\">%2</a>")
                                .arg(QUrl::fromLocalFile(Paths::vmsDir()).toString(),
                                     QDir::toNativeSeparators(Paths::vmsDir()).toHtmlEscaped()));
-    const QString qemu = Paths::qemuBinary();
+    const QString custom = Paths::customQemuBinary();
     const QString virtiofsd = Paths::virtiofsd();
 
     setWindowTitle(tr("Preferences"));
+    m_build->setObjectName("buildQemu");
+    m_custom->setObjectName("customQemu");
     m_qemu->setObjectName("qemu");
     m_virtiofsd->setObjectName("virtiofsd");
-    m_qemu->setPlaceholderText(autoQemu().isEmpty() ? tr("qemu-system-x86_64 from PATH")
-                                                    : autoQemu());
+    m_qemu->setPlaceholderText(tr("Path of qemu-system-x86_64"));
     m_virtiofsd->setPlaceholderText(autoVirtiofsd().isEmpty() ? tr("virtiofsd from PATH")
                                                               : autoVirtiofsd());
+    /* VMs with a #qemu line of their own keep it, whatever is chosen here */
+    m_custom->setToolTip(tr("For the VMs without a QEMU of their own; Vitrine's QEMU has what "
+                            "its VMs need, another one may not."));
+    m_custom->setChecked(!custom.isEmpty());
+    m_qemu->setText(custom);
     /* empty when automatic */
-    m_qemu->setText(qemu == autoQemu() ? QString() : qemu);
     m_virtiofsd->setText(virtiofsd == autoVirtiofsd() ? QString() : virtiofsd);
     vms->setOpenExternalLinks(true);
     m_updates->setObjectName("checkUpdates");
     m_updates->setChecked(QSettings(Paths::settingsPath(), QSettings::IniFormat)
                               .value("updates/check", true).toBool());
 
-    form->addRow(Widgets::label(tr("&QEMU:"), m_qemu),
-                 Widgets::browseRow(m_qemu, tr("QEMU Binary")));
+    stackRow->addWidget(m_stack, 1);
+    stackRow->addWidget(m_build, 0, Qt::AlignTop);
+    form->addRow(tr("QEMU:"), stackRow);
+    form->addRow(QString(), m_stackState);
+    m_qemuRow = Widgets::browseRow(m_qemu, tr("QEMU Binary"));
+    form->addRow(QString(), m_custom);
+    form->addRow(QString(), m_qemuRow);
     form->addRow(QString(), m_qemuStatus);
     form->addRow(Widgets::label(tr("&virtiofsd:"), m_virtiofsd),
                  Widgets::browseRow(m_virtiofsd, tr("virtiofsd Binary")));
     form->addRow(QString(), m_virtiofsdStatus);
     form->addRow(tr("Virtual machines:"), vms);
     form->addRow(QString(), m_updates);
-    form->addRow(QString(), Widgets::hint(tr("Of Vitrine, and of the QEMU that File > "
-                                             "Build QEMU builds: two requests to GitHub.")));
+    form->addRow(QString(), Widgets::hint(tr("Of Vitrine itself: one request to GitHub.")));
     layout->addLayout(form);
     layout->addStretch();
     layout->addWidget(buttons);
@@ -80,19 +92,52 @@ PreferencesDialog::PreferencesDialog(QWidget *parent)
     m_timer->setInterval(400);
     connect(m_timer, &QTimer::timeout, this, &PreferencesDialog::checkQemu);
     connect(m_qemu, &QLineEdit::textChanged, m_timer, qOverload<>(&QTimer::start));
+    connect(m_custom, &QCheckBox::toggled, this, [this](bool on) {
+        m_qemuRow->setEnabled(on);
+        checkQemu();
+        if (on) {
+            m_qemu->setFocus();
+        }
+    });
     connect(m_virtiofsd, &QLineEdit::textChanged, this, &PreferencesDialog::checkVirtiofsd);
+    connect(m_build, &QPushButton::clicked, this, [this]() {
+        /* the build goes on in the background when this window closes */
+        QemuBuildDialog dialog(this);
+        dialog.exec();
+        updateStack();
+    });
+    connect(StackBuilder::instance(), &StackBuilder::finished, this,
+            &PreferencesDialog::updateStack);
     connect(buttons, &QDialogButtonBox::accepted, this, &QDialog::accept);
     connect(buttons, &QDialogButtonBox::rejected, this, &QDialog::reject);
 
+    m_qemuRow->setEnabled(m_custom->isChecked());
+    updateStack();
     checkQemu();
     checkVirtiofsd();
     resize(640, sizeHint().height());
 }
 
+void PreferencesDialog::updateStack()
+{
+    const StackBuilder::State state = StackBuilder::state();
+    const StackBuilder::Build build = StackBuilder::current();
+    const bool running = StackBuilder::instance()->isRunning();
+
+    m_stack->setText(QemuBuildDialog::describe(build).toHtmlEscaped());
+    m_stack->setToolTip(build.isValid() ? build.qemuBinary() : QString());
+    m_stackState->setText(running ? tr("Building…")
+                                  : QemuBuildDialog::explain(state, build).toHtmlEscaped());
+    m_build->setText(running                                    ? tr("Show…")
+                     : state == StackBuilder::State::Outdated  ? tr("Update…")
+                     : state == StackBuilder::State::UpToDate ? tr("Details…")
+                                                               : tr("Build…"));
+    m_build->setEnabled(state != StackBuilder::State::NoSources || running);
+}
+
 void PreferencesDialog::checkQemu()
 {
-    const QString binary = m_qemu->text().trimmed().isEmpty() ? autoQemu()
-                                                               : m_qemu->text().trimmed();
+    const QString binary = m_qemu->text().trimmed();
 
     if (m_version) {
         m_version->disconnect(this);
@@ -100,9 +145,12 @@ void PreferencesDialog::checkQemu()
         m_version->deleteLater();
         m_version = nullptr;
     }
+    m_qemuStatus->setVisible(m_custom->isChecked());
+    if (!m_custom->isChecked()) {
+        return;
+    }
     if (binary.isEmpty()) {
-        m_qemuStatus->setText(tr("qemu-system-x86_64 is not in PATH: choose the QEMU to "
-                                 "use, for example the one you built."));
+        m_qemuStatus->setText(tr("Choose the QEMU binary, for example one you built."));
         return;
     }
     if (!QFileInfo(binary).isExecutable()) {
@@ -115,7 +163,7 @@ void PreferencesDialog::checkQemu()
     m_version->setProcessChannelMode(QProcess::MergedChannels);
     connect(m_version, &QProcess::finished, this, [this]() {
         const QString first = QString::fromLocal8Bit(m_version->readAll()).section('\n', 0, 0);
-        m_qemuStatus->setText(first.contains("version") ? first.trimmed()
+        m_qemuStatus->setText(first.contains("version") ? first.trimmed().toHtmlEscaped()
                                                         : tr("This does not look like QEMU."));
         m_version->deleteLater();
         m_version = nullptr;
@@ -151,7 +199,7 @@ void PreferencesDialog::accept()
 {
     QSettings(Paths::settingsPath(), QSettings::IniFormat)
         .setValue("updates/check", m_updates->isChecked());
-    Paths::setQemuBinary(m_qemu->text().trimmed());
+    Paths::setQemuBinary(m_custom->isChecked() ? m_qemu->text().trimmed() : QString());
     Paths::setVirtiofsd(m_virtiofsd->text().trimmed());
     QemuDocs::reloadPreferred();
     QDialog::accept();

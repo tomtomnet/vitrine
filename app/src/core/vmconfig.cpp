@@ -4,6 +4,11 @@
 #include <QDir>
 #include <QRegularExpression>
 
+#include <arpa/inet.h>
+#include <netinet/in.h>
+#include <sys/socket.h>
+#include <unistd.h>
+
 namespace VmConfig {
 
 QString name(const ArgsFile &args)
@@ -95,6 +100,56 @@ QList<EnvVar> environment(const ArgsFile &args)
         }
     }
     return vars;
+}
+
+Guest guest(const ArgsFile &args)
+{
+    const int i = args.indexOf("guest", ArgsFile::Line::Directive);
+
+    if (i < 0) {
+        return {};
+    }
+    const OptionValue v = args.valueAt(i);
+    return {(v.implied().isEmpty() ? v.get("os") : v.implied()).toLower(),
+            v.get("desktop").toLower()};
+}
+
+void setGuest(ArgsFile &args, const Guest &g)
+{
+    int i = args.indexOf("guest", ArgsFile::Line::Directive);
+    QStringList parts;
+
+    if (g.os.isEmpty() && g.desktop.isEmpty()) {
+        if (i >= 0) {
+            args.removeAt(i);
+        }
+        return;
+    }
+    if (!g.os.isEmpty()) {
+        parts << OptionValue::escape(g.os);
+    }
+    if (!g.desktop.isEmpty()) {
+        parts << "desktop=" + OptionValue::escape(g.desktop);
+    }
+    if (i >= 0) {
+        const OptionValue old = args.valueAt(i);
+        /* keys of a later vitrine, or the user's */
+        for (const OptionValue::Item &item : old.items()) {
+            if (!item.key.isEmpty() && item.key != "os" && item.key != "desktop") {
+                parts << OptionValue::itemText(item);
+            }
+        }
+        args.lines[i].value = parts.join(',');
+        return;
+    }
+    /* after -name, else first after the comments at the top */
+    i = args.indexOf("name");
+    if (i < 0) {
+        for (i = 0; i < args.lines.size() && args.lines[i].kind != ArgsFile::Line::Option; i++) {
+        }
+        i--;
+    }
+    args.lines.insert(i + 1, ArgsFile::Line{ArgsFile::Line::Directive, "guest", parts.join(','), {}});
 }
 
 qint64 parseSize(const QString &text, qint64 unit)
@@ -235,10 +290,10 @@ static void setOrRemove(OptionValue &v, const QString &key, int value)
     }
 }
 
-void setCpus(ArgsFile &args, const Cpus &c)
+/* The -smp line: the count and the topology */
+static void setSmp(ArgsFile &args, const Cpus &c)
 {
     int smp = args.indexOf("smp");
-    int cpu = args.indexOf("cpu");
     OptionValue v;
 
     if (smp < 0) {
@@ -254,7 +309,13 @@ void setCpus(ArgsFile &args, const Cpus &c)
     setOrRemove(v, "cores", c.cores);
     setOrRemove(v, "threads", c.threads);
     args.setValueAt(smp, v);
+}
 
+void setCpus(ArgsFile &args, const Cpus &c)
+{
+    int cpu = args.indexOf("cpu");
+
+    setSmp(args, c);
     if (c.model.isEmpty()) {
         args.removeAll("cpu");
     } else if (cpu < 0) {
@@ -264,6 +325,29 @@ void setCpus(ArgsFile &args, const Cpus &c)
         m.setImplied(c.model);
         args.setValueAt(cpu, m);
     }
+}
+
+void setCpuCount(ArgsFile &args, int count)
+{
+    Cpus c = cpus(args);
+
+    if (c.sockets > 0 || c.cores > 0 || c.threads > 0) {
+        int threads = qMax(c.threads, 1);
+        int sockets = qMax(c.sockets, 1);
+
+        if (count % threads != 0) {
+            threads = 1;
+        }
+        if (count % (sockets * threads) != 0) {
+            sockets = 1;
+        }
+        /* the keys given stay given, the cores always are */
+        c.threads = c.threads > 0 ? threads : 0;
+        c.sockets = c.sockets > 0 ? sockets : 0;
+        c.cores = count / (sockets * threads);
+    }
+    c.count = count;
+    setSmp(args, c);
 }
 
 QList<Share> shares(const ArgsFile &args)
@@ -556,6 +640,34 @@ bool hasUsbController(const ArgsFile &args)
     return args.indexOfDevice([](const QString &driver) {
         return controllers.contains(driver);
     }) >= 0;
+}
+
+/* Nothing listens on 127.0.0.1:@port, nor on all addresses */
+static bool portFree(int port)
+{
+    const int fd = ::socket(AF_INET, SOCK_STREAM | SOCK_CLOEXEC, 0);
+    sockaddr_in addr = {};
+    bool free;
+
+    if (fd < 0) {
+        return false;
+    }
+    addr.sin_family = AF_INET;
+    addr.sin_port = htons(quint16(port));
+    addr.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
+    free = ::bind(fd, reinterpret_cast<sockaddr *>(&addr), sizeof addr) == 0;
+    ::close(fd);
+    return free;
+}
+
+int freePort(const QList<int> &taken, int from)
+{
+    for (int port = qMax(from, 1024); port < 65536; port++) {
+        if (!taken.contains(port) && portFree(port)) {
+            return port;
+        }
+    }
+    return 0;
 }
 
 }

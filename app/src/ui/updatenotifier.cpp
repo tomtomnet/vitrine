@@ -16,7 +16,6 @@
 #include <QToolButton>
 
 #include "core/paths.h"
-#include "core/qemubuilder.h"
 #include "ui/icons.h"
 #include "ui/widgets.h"
 
@@ -37,14 +36,6 @@ static QString newCommits(int count)
 {
     return count == 1 ? UpdateNotifier::tr("1 new commit")
                       : UpdateNotifier::tr("%1 new commits").arg(count);
-}
-
-/* "qemu-gui (zero-copy)" when built from an experiment of the fork */
-static QString shownName(const UpdateCheck::Project &p)
-{
-    return p.name == "qemu-gui" && !p.branch.isEmpty() && p.branch != QemuBuilder::defaultBranch()
-               ? QString("%1 (%2)").arg(p.name, p.branch)
-               : p.name;
 }
 
 static QSettings settings()
@@ -90,23 +81,12 @@ UpdateNotifier::UpdateNotifier(QWidget *window)
 QList<UpdateCheck::Project> UpdateNotifier::projects()
 {
     static const QRegularExpression sha("^[0-9a-f]{40}$");
-    const QString source = QemuBuilder::defaultSourceDir();
-    /* the commit last built, else the one checked out (before the stamp) */
-    const QString built = QemuBuilder::builtCommit(source);
-    const QString qemu = built.isEmpty() ? UpdateCheck::checkoutCommit(source) : built;
     QList<UpdateCheck::Project> list;
 
     /* built from a git checkout */
     if (sha.match(VITRINE_COMMIT).hasMatch()) {
         list << UpdateCheck::Project{"vitrine", "tomtomnet/vitrine", "main",
                                      VITRINE_COMMIT};
-    }
-    /* File > Build QEMU built it, from its branch */
-    if (!qemu.isEmpty()) {
-        const QString branch = QemuBuilder::builtBranch(source);
-        list << UpdateCheck::Project{"qemu-gui", "tomtomnet/qemu-gui",
-                                     branch.isEmpty() ? QemuBuilder::defaultBranch() : branch,
-                                     qemu};
     }
     return list;
 }
@@ -200,7 +180,7 @@ void UpdateNotifier::start(bool asked)
             Widgets::inform(
                 m_window, tr("Updates"),
                 tr("There is nothing to check: this copy of Vitrine was not built from a git "
-                   "checkout, and File > Build QEMU has not built a QEMU yet."));
+                   "checkout."));
         }
         return;
     }
@@ -231,7 +211,7 @@ void UpdateNotifier::updateButton()
 
     for (const UpdateCheck::Result &r : std::as_const(m_results)) {
         if (r.newCommits > 0) {
-            news << shownName(r.project) + ": " + newCommits(r.newCommits);
+            news << r.project.name + ": " + newCommits(r.newCommits);
         }
     }
     m_button->setToolTip(news.join('\n'));
@@ -246,11 +226,10 @@ void UpdateNotifier::showResults()
     auto *layout = new QVBoxLayout(&dialog);
     auto *label = new QLabel;
     auto *buttons = new QDialogButtonBox(QDialogButtonBox::Close);
-    QPushButton *build = nullptr;
     QString text;
 
     for (const UpdateCheck::Result &r : std::as_const(m_results)) {
-        const QString name = "<b>" + shownName(r.project).toHtmlEscaped() + "</b>";
+        const QString name = "<b>" + r.project.name.toHtmlEscaped() + "</b>";
         if (r.newCommits < 0) {
             text += "<p>" + tr("%1: could not check (%2).").arg(name, r.error.toHtmlEscaped()) +
                     "</p>";
@@ -266,19 +245,12 @@ void UpdateNotifier::showResults()
             text += "<li>" + subject.toHtmlEscaped() + "</li>";
         }
         text += "</ul><p>";
-        if (r.project.name == "qemu-gui") {
-            text += tr("File > Build QEMU downloads and builds them.");
-            if (!build) {
-                build = buttons->addButton(tr("&Build QEMU…"), QDialogButtonBox::AcceptRole);
-            }
-        } else {
-            text += tr("To update it: <code>git pull</code> in %1, then build and install it "
-                       "as the first time.")
-                        .arg(QString(VITRINE_SOURCE_DIR).isEmpty()
-                                 ? tr("its folder")
-                                 : "<code>" + QString(VITRINE_SOURCE_DIR).toHtmlEscaped() +
-                                       "</code>");
-        }
+        text += tr("To update it: <code>git pull</code> in %1, then build and install it as the "
+                   "first time. If it pins a new QEMU, Vitrine then offers to update its QEMU.")
+                    .arg(QString(VITRINE_SOURCE_DIR).isEmpty()
+                             ? tr("its folder")
+                             : "<code>" + QString(VITRINE_SOURCE_DIR).toHtmlEscaped() +
+                                   "</code>");
         if (!r.url.isEmpty()) {
             text += QString(" <a href=\"%1\">%2</a>").arg(r.url.toHtmlEscaped(),
                                                            tr("See the changes"));
@@ -299,7 +271,5 @@ void UpdateNotifier::showResults()
     layout->addWidget(buttons);
     connect(buttons, &QDialogButtonBox::accepted, &dialog, &QDialog::accept);
     connect(buttons, &QDialogButtonBox::rejected, &dialog, &QDialog::reject);
-    if (dialog.exec() == QDialog::Accepted && build) {
-        emit buildQemuRequested();
-    }
+    dialog.exec();
 }

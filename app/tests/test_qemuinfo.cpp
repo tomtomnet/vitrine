@@ -1,6 +1,9 @@
 // SPDX-License-Identifier: GPL-2.0-or-later
+#include <QDir>
+#include <QFile>
 #include <QSignalSpy>
 #include <QStandardPaths>
+#include <QTemporaryDir>
 #include <QTest>
 
 #include "core/qemuinfo.h"
@@ -309,6 +312,28 @@ private slots:
         }
         QVERIFY(find(options, "fdb")->details.contains("floppy disk 0/1"));
         QVERIFY(!find(options, "not-in-this-binary"));
+    }
+
+    /* Next to a build tree's binary, or in an installed prefix as Vitrine's QEMU */
+    void findOptionsHx()
+    {
+        QTemporaryDir tmp;
+        const auto touch = [](const QString &path) {
+            QFile f(path);
+            return QDir().mkpath(QFileInfo(path).absolutePath()) && f.open(QIODevice::WriteOnly);
+        };
+
+        QVERIFY(touch(tmp.filePath("src/build/qemu-system-x86_64")));
+        QVERIFY(touch(tmp.filePath("src/qemu-options.hx")));
+        QCOMPARE(QemuInfoLoader::findOptionsHx(tmp.filePath("src/build/qemu-system-x86_64")),
+                 QFileInfo(tmp.filePath("src/qemu-options.hx")).canonicalFilePath());
+
+        QVERIFY(touch(tmp.filePath("prefix/bin/qemu-system-x86_64")));
+        QVERIFY(QemuInfoLoader::findOptionsHx(tmp.filePath("prefix/bin/qemu-system-x86_64"))
+                    .isEmpty());
+        QVERIFY(touch(tmp.filePath("prefix/share/qemu/qemu-options.hx")));
+        QCOMPARE(QemuInfoLoader::findOptionsHx(tmp.filePath("prefix/bin/qemu-system-x86_64")),
+                 QFileInfo(tmp.filePath("prefix/share/qemu/qemu-options.hx")).canonicalFilePath());
     }
 
     void parseDeviceHelp()
