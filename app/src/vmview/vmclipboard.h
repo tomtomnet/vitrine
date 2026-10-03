@@ -2,6 +2,7 @@
 #pragma once
 
 #include <QByteArray>
+#include <QElapsedTimer>
 #include <QObject>
 #include <QPointer>
 #include <QString>
@@ -113,9 +114,17 @@ private:
  * thread for a D-Bus round trip through QEMU to the guest's agent (up to
  * QEMU's 5 s timeout), and Plasma's clipboard history reads every new
  * clipboard at once anyway; QEMU's clipboard only carries text, which is
- * small.  On Wayland, the compositor takes a new clipboard only from the
- * client with the keyboard: text the guest copies while vitrine has not
- * got it waits until it has.
+ * small.
+ *
+ * On Wayland, a client sets the clipboard with the serial of its last input
+ * (Qt: a key or button press, the pointer entering a window), and KWin
+ * refuses it if the clipboard was set after that input
+ * (SeatInterfacePrivate::updateSelection): a copy made in the guest right
+ * after a host copy, with no input in vitrine since, e.g. one a script
+ * made.  The host clipboard then comes back as it was: that text is not
+ * offered to the guest, and the guest's is set again at vitrine's next
+ * input.  A copy made with Ctrl+C or a click in vitrine's window has a
+ * new serial.
  *
  * Calls run on the GUI thread (the default GLib main context).  The
  * object may go at any time: completions of calls still pending find it
@@ -129,6 +138,10 @@ public:
     explicit VmClipboard(GDBusConnection *connection, QObject *parent = nullptr);
     /* Unregisters */
     ~VmClipboard() override;
+
+    /* How long after setting the host clipboard its old text coming back
+       means the compositor refused it */
+    static constexpr int kRefusalMs = 1000;
 
     /* Serves the interface and registers with QEMU (asynchronous) */
     bool start(QString *error);
@@ -147,8 +160,8 @@ private:
     void fetch();
     void fetched(uint32_t serial, GVariant *reply);
     void setHostClipboard(const QString &text);
-    bool canSetHostClipboard() const;
-    void applicationStateChanged();
+    void retryPending();
+    bool eventFilter(QObject *watched, QEvent *event) override;
     void call(const char *method, GVariant *args, const struct _GVariantType *replyType,
               void (*done)(VmClipboard *, GVariant *, const QString &error, uintptr_t tag),
               uintptr_t tag = 0);
@@ -165,6 +178,11 @@ private:
     ClipboardState m_state;
     bool m_fetching = false;            // QEMU takes one Request per selection
     bool m_fetchAgain = false;          // a newer guest grab came meanwhile
-    std::optional<QString> m_pending;   // guest text, waiting for the keyboard
     QPointer<QMimeData> m_ownData;      // what we put in the host clipboard
+    /* the guest's text last put there, and what the host clipboard held before */
+    std::optional<QString> m_attempt;
+    QString m_hostBefore;
+    QElapsedTimer m_attemptTime;
+    /* the guest's text the compositor refused, for vitrine's next input */
+    std::optional<QString> m_pending;
 };

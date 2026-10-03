@@ -13,6 +13,8 @@
 #include <QPointer>
 #include <QSignalSpy>
 #include <QTest>
+#include <QKeyEvent>
+#include <QWindow>
 
 #include <atomic>
 #include <cstring>
@@ -643,6 +645,47 @@ private Q_SLOTS:
         QString reply;
         qemu.toClient("Request", g_variant_new("(u^as)", 0, kTexts), &reply);
         QVERIFY(reply.startsWith("error:"));
+    }
+
+    /*
+     * The compositor refuses the guest's text (KWin: an input serial older
+     * than the clipboard's): the host's text comes back at once.  It is not
+     * offered to the guest, and the guest's is set again at the next input.
+     */
+    void refusedByCompositor()
+    {
+        clipboard()->setMimeData(textData("host before"));
+        FakeQemu qemu;
+        auto bridge = started(qemu);
+        QVERIFY(bridge);
+        QTRY_COMPARE(qemu.callsTo("Grab").size(), 1);   // "host before" offered
+        QSignalSpy set(bridge.get(), &VmClipboard::hostClipboardSet);
+        qemu.setGuestData("guest text");
+        qemu.toClient("Grab", g_variant_new("(uu^as)", 0, 5u, kTexts));
+        QTRY_COMPARE(set.size(), 1);
+        /* what Qt reports when the compositor cancels the selection */
+        clipboard()->setMimeData(textData("host before"));
+        QTest::qWait(100);
+        QCOMPARE(qemu.callsTo("Grab").size(), 1);
+        QCOMPARE(clipboard()->text(), QString("host before"));
+        /* input in a window of vitrine: set again */
+        QWindow window;
+        QKeyEvent press(QEvent::KeyPress, Qt::Key_A, Qt::NoModifier, "a");
+        QCoreApplication::sendEvent(&window, &press);
+        QTRY_COMPARE(clipboard()->text(), QString("guest text"));
+        QCOMPARE(set.size(), 2);
+        /* another text coming then is a host copy: offered, nothing waits */
+        qemu.toClient("Grab", g_variant_new("(uu^as)", 0, 6u, kTexts));
+        QTRY_COMPARE(set.size(), 2);
+        qemu.setGuestData("guest again");
+        qemu.toClient("Grab", g_variant_new("(uu^as)", 0, 7u, kTexts));
+        QTRY_COMPARE(set.size(), 3);
+        clipboard()->setMimeData(textData("new host text"));
+        QTRY_COMPARE(qemu.callsTo("Grab").size(), 2);
+        QVERIFY(qemu.callsTo("Grab").last().startsWith("Grab (0, 8,"));
+        QCoreApplication::sendEvent(&window, &press);
+        QTest::qWait(100);
+        QCOMPARE(clipboard()->text(), QString("new host text"));
     }
 
     /* Two VMs: what one guest copies goes to the other through the host clipboard */

@@ -2,6 +2,7 @@
 #include "vmclipboard.h"
 
 #include <QClipboard>
+#include <QEvent>
 #include <QGuiApplication>
 #include <QLoggingCategory>
 #include <QMimeData>
@@ -263,8 +264,6 @@ bool VmClipboard::start(QString *error)
     }
     QClipboard *clipboard = QGuiApplication::clipboard();
     connect(clipboard, &QClipboard::dataChanged, this, &VmClipboard::hostClipboardChanged);
-    connect(qGuiApp, &QGuiApplication::applicationStateChanged, this,
-            &VmClipboard::applicationStateChanged);
     m_state.hostSeen(ClipboardMime::textOf(clipboard->mimeData(QClipboard::Clipboard)));
     callRegister(true);
     return true;
@@ -305,6 +304,16 @@ void VmClipboard::hostClipboardChanged()
         return;
     }
     const QString text = ClipboardMime::textOf(data);
+    /* the guest's text gone at once, the host's back: refused (see the header) */
+    const bool refused = m_attempt && m_attemptTime.elapsed() < kRefusalMs && text == m_hostBefore;
+    if (refused) {
+        qCDebug(lcClipboard) << "guest text refused by the compositor: again at the next input";
+        m_state.hostSeen(m_hostBefore);
+        m_pending = *std::exchange(m_attempt, std::nullopt);
+        qApp->installEventFilter(this);
+        return;
+    }
+    m_attempt.reset();
     if (!m_registered) {
         m_state.hostSeen(text);
         return;
@@ -312,7 +321,7 @@ void VmClipboard::hostClipboardChanged()
     uint32_t serial = 0;
     switch (m_state.hostChanged(text, false, &serial)) {
     case ClipboardState::HostAction::Grab: {
-        /* newer than what the guest copied while vitrine had not the keyboard */
+        /* newer than the guest's text the compositor refused */
         m_pending.reset();
         qCDebug(lcClipboard) << "host text offered, serial" << serial << "length" << text.size();
         const Strv mimes(ClipboardMime::textMimes());
@@ -392,12 +401,7 @@ void VmClipboard::fetched(uint32_t serial, GVariant *reply)
         qCDebug(lcClipboard) << "guest text of serial" << serial << "unchanged or outdated";
         return;
     }
-    if (canSetHostClipboard()) {
-        setHostClipboard(*text);
-    } else {
-        qCDebug(lcClipboard) << "guest text waits for the keyboard";
-        m_pending = *text;
-    }
+    setHostClipboard(*text);
 }
 
 void VmClipboard::setHostClipboard(const QString &text)
@@ -407,27 +411,44 @@ void VmClipboard::setHostClipboard(const QString &text)
     data->setText(text);
     data->setData(QLatin1String(ClipboardMime::kText), text.toUtf8());
     m_ownData = data;
+    m_pending.reset();
+    m_attempt = text;
+    m_hostBefore = m_state.hostText();
+    m_attemptTime.start();
     m_state.hostSeen(text);
     qCDebug(lcClipboard) << "guest text in the host clipboard, length" << text.size();
     QGuiApplication::clipboard()->setMimeData(data, QClipboard::Clipboard);
     Q_EMIT hostClipboardSet(text);
 }
 
-/*
- * A Wayland compositor takes a new clipboard only from the client that has
- * the keyboard (KWin cancels it otherwise, and Qt does not say so)
- */
-bool VmClipboard::canSetHostClipboard() const
+void VmClipboard::retryPending()
 {
-    return !QGuiApplication::platformName().startsWith(QLatin1String("wayland")) ||
-           QGuiApplication::applicationState() == Qt::ApplicationActive;
+    if (m_pending) {
+        setHostClipboard(*m_pending);
+    }
 }
 
-void VmClipboard::applicationStateChanged()
+/* While the guest's text waits: vitrine's next input, on any of its windows */
+bool VmClipboard::eventFilter(QObject *watched, QEvent *event)
 {
-    if (m_pending && canSetHostClipboard()) {
-        setHostClipboard(*std::exchange(m_pending, std::nullopt));
+    switch (event->type()) {
+    case QEvent::KeyPress:
+    case QEvent::MouseButtonPress:
+    case QEvent::TouchBegin:
+    case QEvent::Enter:
+        /* once per input: each reaches the window, then its widgets */
+        if (watched->isWindowType()) {
+            if (m_pending) {
+                /* after it: Qt took its serial before delivering it */
+                QMetaObject::invokeMethod(this, &VmClipboard::retryPending, Qt::QueuedConnection);
+            }
+            qApp->removeEventFilter(this);
+        }
+        break;
+    default:
+        break;
     }
+    return QObject::eventFilter(watched, event);
 }
 
 namespace {
