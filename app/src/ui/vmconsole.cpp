@@ -42,8 +42,8 @@ VmConsole::VmConsole(Vm *vm, QWidget *parent)
       m_state(new QLabel), m_error(new Banner(Banner::Warning)), m_start(new QPushButton),
       m_summary(new QLabel), m_messageTitle(new QLabel), m_messageText(new QLabel),
       m_messageButton(new QPushButton), m_screen(new QWidget),
-      m_screenLayout(new QVBoxLayout(m_screen)), m_paused(new Banner(Banner::Information)),
-      m_ownWindowText(new QLabel), m_retry(new QTimer(this)), m_statsTimer(new QTimer(this))
+      m_screenLayout(new QVBoxLayout(m_screen)), m_ownWindowText(new QLabel),
+      m_retry(new QTimer(this)), m_statsTimer(new QTimer(this))
 {
     auto *layout = new QVBoxLayout(this);
 
@@ -132,15 +132,8 @@ VmConsole::VmConsole(Vm *vm, QWidget *parent)
         m_pages->addWidget(page);
     }
 
-    /* Screen: the view's widget goes under the banner */
+    /* Screen: the view's widget, alone */
     m_screenLayout->setContentsMargins(0, 0, 0, 0);
-    m_screenLayout->setSpacing(0);
-    m_paused->setText(tr("The VM is paused."));
-    m_paused->button()->setText(tr("&Resume"));
-    m_paused->button()->show();
-    m_paused->hide();
-    connect(m_paused->button(), &QPushButton::clicked, this, &VmConsole::resumeRequested);
-    m_screenLayout->addWidget(m_paused);
     m_pages->addWidget(m_screen);
 
     /* OwnWindow */
@@ -245,7 +238,6 @@ void VmConsole::update()
     const VmRunner::State state = runner ? runner->state() : VmRunner::State::Stopped;
 
     updateHome();
-    m_paused->setVisible(state == VmRunner::State::Paused);
     switch (state) {
     case VmRunner::State::Stopped:
     case VmRunner::State::Stopping:
@@ -259,6 +251,8 @@ void VmConsole::update()
         return;
     case VmRunner::State::Running:
     case VmRunner::State::Paused:
+        /* paused, the screen keeps its last frame: the list and the status
+           bar tell */
         break;
     }
 

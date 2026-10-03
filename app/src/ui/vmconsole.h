@@ -56,7 +56,6 @@ public:
 
 signals:
     void startRequested();
-    void resumeRequested();
     void settingsRequested();
     void showWindowRequested();
     void showLogRequested();
@@ -85,10 +84,9 @@ private:
     QLabel *m_messageTitle;
     QLabel *m_messageText;
     QPushButton *m_messageButton;
-    /* Screen */
+    /* Screen: nothing over it, which would resize the guest */
     QWidget *m_screen;
     QVBoxLayout *m_screenLayout;
-    Banner *m_paused;
     /* OwnWindow */
     QLabel *m_ownWindowText;
 

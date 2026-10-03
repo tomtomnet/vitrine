@@ -708,7 +708,6 @@ VmConsole *MainWindow::consoleOf(Vm *vm)
     m_consoleOf.insert(id, console);
     /* the console shows only for the selected VM, the one the actions act on */
     connect(console, &VmConsole::startRequested, this, &MainWindow::start);
-    connect(console, &VmConsole::resumeRequested, this, &MainWindow::togglePause);
     connect(console, &VmConsole::settingsRequested, this,
             [this]() { openSettings(current()); });
     connect(console, &VmConsole::showWindowRequested, this, &MainWindow::showWindow);
@@ -741,7 +740,9 @@ void MainWindow::updateInput()
         m_input->hide();
         return;
     }
-    if (view->grabbed()) {
+    if (console->vm()->runner()->state() == VmRunner::State::Paused) {
+        m_input->setText(tr("Paused"));
+    } else if (view->grabbed()) {
         m_input->setText(tr("The VM has the keyboard · Ctrl+Alt+G releases"));
     } else if (view->hasKeyboard()) {
         m_input->setText(tr("Keys go to the VM · Ctrl+Alt+G grabs"));
