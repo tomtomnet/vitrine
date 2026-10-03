@@ -1,8 +1,16 @@
 /* SPDX-License-Identifier: GPL-2.0-or-later */
 /* A stand-in for QEMU in the tests: named qemu-system-x86_64, a few idle
-   threads, runs until signalled */
+   threads, runs until signalled; SIGUSR1 makes it exec sleep, a program
+   that is no QEMU */
 #include <pthread.h>
+#include <signal.h>
 #include <unistd.h>
+
+static void become_sleep(int sig)
+{
+    (void)sig;
+    execl("/bin/sleep", "sleep", "300", (char *)NULL);
+}
 
 static void *idle(void *arg)
 {
@@ -17,6 +25,7 @@ int main(void)
 {
     pthread_t t;
 
+    signal(SIGUSR1, become_sleep);
     for (int i = 0; i < 3; i++) {
         pthread_create(&t, NULL, idle, NULL);
     }

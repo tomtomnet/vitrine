@@ -600,6 +600,22 @@ private slots:
         }
     }
 
+    /* A QEMU that has exec'ed another program since watch: no rt for it */
+    void rtAfterExec()
+    {
+        FakeQemu qemu;
+        Helper h(m_root);
+        QVERIFY(h.ready());
+        QCOMPARE(h.answer("watch " + qemu.pidText()), "ok watch " + qemu.pidText());
+        ::kill(pid_t(qemu.pid()), SIGUSR1);
+        QTRY_VERIFY(!QFileInfo(QString("/proc/%1/exe").arg(qemu.pid()))
+                         .symLinkTarget()
+                         .endsWith("/qemu-system-x86_64"));
+        QCOMPARE(h.answer("rt " + qemu.pidText()),
+                 QString("error rt %1: no longer a QEMU of uid %2").arg(qemu.pid()).arg(getuid()));
+        QVERIFY(journal().filter("sched ").isEmpty());
+    }
+
     /* SIGTERM (a shutdown): everything back before the end */
     void terminated()
     {

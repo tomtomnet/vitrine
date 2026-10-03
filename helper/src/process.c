@@ -280,6 +280,17 @@ void rt_on(const char *arg)
         reply("error rt: watch the process first");
         return;
     }
+    /* still the caller's QEMU: it may have exec'ed something else since
+       watch, a setuid program for one */
+    {
+        char exe[PATH_MAX];
+
+        if (!owned_by(w->procfd, caller_uid) || !runs_qemu(w->procfd, exe, sizeof(exe)) ||
+            !pidfd_alive(w->pidfd)) {
+            reply("error rt %d: no longer a QEMU of uid %u", (int)w->pid, (unsigned)caller_uid);
+            return;
+        }
+    }
     passes = each_thread(w, rt_thread, counts);
     if (passes < 0) {
         reply("error rt %d: %s", (int)w->pid, strerror(-passes));
