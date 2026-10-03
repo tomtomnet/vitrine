@@ -66,16 +66,20 @@ public:
     QString agentSocket() const;
     /*
      * The arguments of the current run, or the last: those given to start(),
-     * or to attach() for a QEMU found running.  vm.args may have changed since.
+     * also for a QEMU found running (start() keeps them with the run's
+     * runtime files).  vm.args may have changed since.
      */
     ArgsFile runArgs() const;
 
     /* The state goes Starting, then Running once QMP answers, or back to
        Stopped with failed() */
     void start(const ArgsFile &args);
-    /* Picks up a QEMU started by an earlier run of the manager, if any;
-       @args, those of the VM, tell which shared folders to mount */
-    void attach(const ArgsFile &args = {});
+    /*
+     * Picks up a QEMU started by an earlier run of the manager, if any,
+     * with the arguments it was started with; @args, those of the VM, only
+     * for a QEMU started by a vitrine that did not keep them
+     */
+    void attach(const ArgsFile &args);
     void pause();
     void resume();
     /* Asks the guest to shut down: through the shutdown handler if it takes

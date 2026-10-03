@@ -383,6 +383,7 @@ private slots:
         QVERIFY(runner->qmp() && runner->qmp()->isReady());
         QVERIFY(read(runner->logPath()).startsWith("vitrine: "));
         QVERIFY(qemuPid() > 0);
+        QCOMPARE(read(runDir + "/run.args"), args.toText());
 
         runner->pause();
         QTRY_COMPARE(runner->state(), VmRunner::State::Paused);
@@ -393,11 +394,13 @@ private slots:
         QCOMPARE(runner->state(), VmRunner::State::Running);
         QCOMPARE(failed.size(), 0);
 
-        /* the manager quits, the VM runs on, the next manager finds it */
+        /* the manager quits, the VM runs on, the next manager finds it,
+           with the run's arguments whatever vm.args says by then */
         delete runner;
         runner = new VmRunner(id, tmp.path());
-        runner->attach();
+        runner->attach(ArgsFile::parse("-m 1G\n-display sdl\n"));
         QTRY_COMPARE_WITH_TIMEOUT(runner->state(), VmRunner::State::Running, 10000);
+        QCOMPARE(runner->runArgs().toText(), args.toText());
         delete runner;
         runner = new VmRunner(id, tmp.path());
         QSignalSpy failed2(runner, &VmRunner::failed);
@@ -411,6 +414,7 @@ private slots:
         QVERIFY(!runner->qmp());
         QVERIFY(!QFileInfo::exists(runDir + "/qmp.sock"));
         QVERIFY(!QFileInfo::exists(runDir + "/qemu.pid"));
+        QVERIFY(!QFileInfo::exists(runDir + "/run.args"));
         QVERIFY(gone(pid));
         delete runner;
     }
@@ -469,12 +473,84 @@ private slots:
         QVERIFY(!runner.isSuspended());
     }
 
+    /*
+     * A QEMU found running is what it was started as, not what vm.args says
+     * now: its screen in this window or in QEMU's, its shares.  One started
+     * by a vitrine that did not keep its arguments has vm.args, and its own
+     * command line says whether its screen can show here.  Start finds it
+     * running too.
+     */
+    void foundRunning_data()
+    {
+        QTest::addColumn<QString>("kept");          // run.args; null: none
+        QTest::addColumn<bool>("displayMonitor");   // on QEMU's command line
+        QTest::addColumn<QString>("vmArgs");
+        QTest::addColumn<bool>("viaStart");
+        QTest::addColumn<QString>("expected");      // runArgs()
+        QTest::addColumn<bool>("embedded");         // displaySocket()
+
+        const QString embedded = "-m 1G\n-display dbus,p2p=yes,gl=on\n";
+        const QString sdl = "-m 1G\n-display sdl,gl=on\n";
+        QTest::newRow("embedded, now SDL") << embedded << true << sdl << false << embedded << true;
+        QTest::newRow("SDL, now embedded") << sdl << false << embedded << false << sdl << false;
+        QTest::newRow("by start") << embedded << true << sdl << true << embedded << true;
+        QTest::newRow("older vitrine, embedded")
+            << QString() << true << sdl << false << sdl << true;
+        QTest::newRow("older vitrine, SDL")
+            << QString() << false << embedded << false << embedded << false;
+        QTest::newRow("older vitrine, by start")
+            << QString() << true << embedded << true << embedded << true;
+    }
+    void foundRunning()
+    {
+        QFETCH(QString, kept);
+        QFETCH(bool, displayMonitor);
+        QFETCH(QString, vmArgs);
+        QFETCH(bool, viaStart);
+        QFETCH(QString, expected);
+        QFETCH(bool, embedded);
+        const QStringList command = VmRunner(id, tmp.path()).commandLine({});
+        QStringList arguments{"-qmp", command[command.size() - 3]};
+        if (displayMonitor) {
+            arguments << "-qmp" << "unix:" + runDir + "/display.sock,server=on,wait=off";
+        }
+        FakeMonitor monitor(runDir + "/qmp.sock");
+        QProcess qemu;
+        qemu.start(FAKE_QEMU, arguments);
+        QVERIFY(qemu.waitForStarted());
+        QFile pid(runDir + "/qemu.pid");
+        QVERIFY(pid.open(QIODevice::WriteOnly));
+        pid.write(QByteArray::number(qemu.processId()) + '\n');
+        pid.close();
+        if (!kept.isNull()) {
+            QFile f(runDir + "/run.args");
+            QVERIFY(f.open(QIODevice::WriteOnly));
+            f.write(kept.toUtf8());
+        }
+
+        VmRunner runner(id, tmp.path());
+        if (viaStart) {
+            runner.start(ArgsFile::parse(vmArgs));
+        } else {
+            runner.attach(ArgsFile::parse(vmArgs));
+        }
+        QTRY_COMPARE(runner.state(), VmRunner::State::Running);
+        QCOMPARE(runner.runArgs().toText(), expected);
+        QCOMPARE(runner.displaySocket(), embedded ? runDir + "/display.sock" : QString());
+
+        monitor.close();
+        qemu.kill();
+        qemu.waitForFinished();
+        QTRY_COMPARE_WITH_TIMEOUT(runner.state(), VmRunner::State::Stopped, 10000);
+        QVERIFY(!QFileInfo::exists(runDir + "/run.args"));
+    }
+
     void attachWithoutVm()
     {
         VmRunner runner(id, tmp.path());
         QSignalSpy states(&runner, &VmRunner::stateChanged);
 
-        runner.attach();
+        runner.attach(ArgsFile::parse(kHeadless));
         QTest::qWait(100);
         QCOMPARE(runner.state(), VmRunner::State::Stopped);
         QCOMPARE(states.size(), 0);

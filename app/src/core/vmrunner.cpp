@@ -10,6 +10,7 @@
 #include <QJsonObject>
 #include <QProcess>
 #include <QRegularExpression>
+#include <QSaveFile>
 #include <QTimer>
 
 #include <csignal>
@@ -228,6 +229,7 @@ struct VmRunner::Private
     QTimer *killTimer;
     QElapsedTimer clock;
     ArgsFile args;              // of the run being started
+    bool embedded = false;      // its screen in vitrine's window: displaySocket()
     qint64 pid = 0;             // QEMU
     QList<Helper> helpers;      // virtiofsd started for this run
     GuestAgent *agent = nullptr;    // mounting the shares
@@ -244,7 +246,10 @@ struct VmRunner::Private
     QString agentPath() const { return runDir() + "/qga.sock"; }
     QString toolsAgentPath() const { return runDir() + "/agent.sock"; }
     QString displayPath() const { return runDir() + "/display.sock"; }
+    /* the run's arguments, kept for the next manager's attach() */
+    QString argsPath() const { return runDir() + "/run.args"; }
     QString qmpArg() const;
+    QString displayArg() const;
     QString logPath() const { return dir + "/qemu.log"; }
     QString logTail(bool qemuErrors = true) const;
     qint64 runningPid() const;
@@ -283,6 +288,12 @@ QString VmRunner::Private::runDir() const
 QString VmRunner::Private::qmpArg() const
 {
     return QString("unix:%1,server=on,wait=off").arg(OptionValue::escape(qmpPath()));
+}
+
+/* The display's monitor, which only an embedded screen's run has */
+QString VmRunner::Private::displayArg() const
+{
+    return QString("unix:%1,server=on,wait=off").arg(OptionValue::escape(displayPath()));
 }
 
 /*
@@ -340,7 +351,7 @@ void VmRunner::Private::removeRuntimeFiles() const
     QDir rt(runDir());
 
     for (const QString &name : rt.entryList({"qmp.sock", "qemu.pid", "fs*.sock*", "qga.sock",
-                                             "display.sock", "agent.sock"},
+                                             "display.sock", "agent.sock", "run.args"},
                                             QDir::AllEntries | QDir::System |
                                                 QDir::Hidden)) {
         rt.remove(name);
@@ -747,8 +758,7 @@ QStringList VmRunner::commandLine(const ArgsFile &args) const
     }
     if (VmConfig::screen(args) == VmConfig::Screen::Embedded) {
         /* a second -qmp; -mon is deprecated */
-        command << "-qmp"
-                << QString("unix:%1,server=on,wait=off").arg(OptionValue::escape(d->displayPath()));
+        command << "-qmp" << d->displayArg();
     }
     /* the guest tools' agent, on qemu-ga's controller if there is one */
     if (GuestTools::addsAgentPort(args, qemuFor(args))) {
@@ -854,10 +864,7 @@ QString VmRunner::agentSocket() const
 
 QString VmRunner::displaySocket() const
 {
-    if (!isActive() || VmConfig::screen(d->args) != VmConfig::Screen::Embedded) {
-        return {};
-    }
-    return d->displayPath();
+    return isActive() && d->embedded ? d->displayPath() : QString();
 }
 
 ArgsFile VmRunner::runArgs() const
@@ -874,9 +881,9 @@ void VmRunner::start(const ArgsFile &args)
     if (isActive() || d->phase != Private::Phase::Idle) {
         return;
     }
-    /* left running by an earlier run of the manager */
+    /* left running by an earlier run of the manager: with its own arguments */
     if (d->runningPid() > 0) {
-        attach();
+        attach(args);
         return;
     }
 
@@ -884,6 +891,7 @@ void VmRunner::start(const ArgsFile &args)
     d->stopRequested = false;
     d->killStep = 0;
     d->args = args;
+    d->embedded = VmConfig::screen(args) == VmConfig::Screen::Embedded;
     if (qemu.isEmpty() || !QFileInfo(qemu).isExecutable()) {
         d->fail(VmConfig::qemuBinary(args).isEmpty()
                     ? tr("QEMU was not found: set its path in the preferences")
@@ -928,6 +936,14 @@ void VmRunner::start(const ArgsFile &args)
     }
 
     d->removeRuntimeFiles();
+    /* what this run is, for a manager that finds it running: vm.args may
+       say otherwise by then (the settings apply at the next start) */
+    QSaveFile runArgs(d->argsPath());
+    if (!runArgs.open(QIODevice::WriteOnly) || runArgs.write(args.toText().toUtf8()) < 0 ||
+        !runArgs.commit()) {
+        d->fail(tr("Cannot write %1: %2").arg(d->argsPath(), runArgs.errorString()));
+        return;
+    }
     QFile log(d->logPath());
     if (!log.open(QIODevice::WriteOnly | QIODevice::Truncate)) {
         d->fail(tr("Cannot write %1: %2").arg(d->logPath(), log.errorString()));
@@ -975,11 +991,25 @@ void VmRunner::attach(const ArgsFile &args)
     if (isActive() || d->phase != Private::Phase::Idle) {
         return;
     }
-    d->args = args;
     const qint64 pid = d->runningPid();
     if (pid <= 0) {
+        d->args = args;
         d->removeRuntimeFiles();
         return;
+    }
+    /*
+     * The run's own arguments, not vm.args: the screen (in this window, in
+     * QEMU's, none), the shares to mount, the QEMU of the log.  A QEMU
+     * started by a vitrine that did not keep them has vm.args, and its
+     * command line tells whether its screen can show here.
+     */
+    QFile runArgs(d->argsPath());
+    if (runArgs.open(QIODevice::ReadOnly)) {
+        d->args = ArgsFile::parse(QString::fromUtf8(runArgs.readAll()));
+        d->embedded = VmConfig::screen(d->args) == VmConfig::Screen::Embedded;
+    } else {
+        d->args = args;
+        d->embedded = cmdline(pid).contains(d->displayArg());
     }
     d->pid = pid;
     d->error.clear();
