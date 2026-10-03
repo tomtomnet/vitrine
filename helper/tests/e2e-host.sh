@@ -133,6 +133,13 @@ wait_for() {  # label, regex: lines until one matches (a minute at most)
 }
 # the root helper: sudo's child, or sudo itself if it exec'ed it
 helper_child() { local c; c=$(pgrep -P "$H_PID"); echo "${c:-$H_PID}"; }
+# a process of ours ended: gone, or a zombie (kill -0 still finds those)
+gone() { local st; st=$(ps -o stat= -p "$1" 2> /dev/null); [ -z "$st" ] || [ "${st#Z}" != "$st" ]; }
+wait_gone() {   # pid, seconds: whether it ended in time
+	local _
+	for _ in $(seq "$2"); do gone "$1" && return 0; sleep 1; done
+	gone "$1"
+}
 
 threads_rt() {   # pid: "rt total" counts of the threads' policies (stat field 41: 1 = FIFO, 2 = RR)
 	local t rt=0 all=0 pol
@@ -191,26 +198,48 @@ check "the journal has the record" 'sudo journalctl -q --since "-2min" -t vitrin
 
 echo "  waiting for the guest (ssh on $port)..."
 for _ in $(seq 60); do ssh_vm true 2> /dev/null && break; sleep 3; done
-check "guest up" 'ssh_vm true'
-threads_before=$(ls /proc/$vm/task | sort)
-# disk work: QEMU starts worker threads now, from threads already real-time
-ssh_vm 'dd if=/dev/zero of=/var/tmp/e2e bs=1M count=200 oflag=direct status=none; sync; rm -f /var/tmp/e2e' 2> /dev/null
-threads_after=$(ls /proc/$vm/task | sort)
-new=$(comm -13 <(echo "$threads_before") <(echo "$threads_after") | wc -l)
-read -r rt all <<< "$(threads_rt $vm)"
-check "after guest disk work ($new threads started since rt): $rt of $all real-time" '[ "$rt" = "$all" ]'
-
-echo "  powering the guest off"
-ssh_vm 'sudo systemctl poweroff' 2> /dev/null
+if ssh_vm true 2> /dev/null; then
+	ok "guest up"
+	threads_before=$(ls /proc/$vm/task | sort)
+	# disk work: QEMU starts worker threads now, from threads already real-time
+	ssh_vm 'dd if=/dev/zero of=/var/tmp/e2e bs=1M count=200 oflag=direct status=none; sync; rm -f /var/tmp/e2e' 2> /dev/null
+	threads_after=$(ls /proc/$vm/task | sort)
+	new=$(comm -13 <(echo "$threads_before") <(echo "$threads_after") | wc -l)
+	read -r rt all <<< "$(threads_rt $vm)"
+	check "after guest disk work ($new threads started since rt): $rt of $all real-time" '[ "$rt" = "$all" ]'
+	echo "  powering the guest off"
+	ssh_vm 'sudo systemctl poweroff' 2> /dev/null
+	wait_gone $vm 120
+else
+	bad "guest up (no ssh): stopping the VM through QMP"
+	printf '{"execute":"qmp_capabilities"}\n{"execute":"system_powerdown"}\n' |
+		socat -t 2 - UNIX-CONNECT:"$dev/qmp.sock" > /dev/null 2>&1
+	wait_gone $vm 30
+fi
+# the helper restores only once QEMU is gone: never wait for it unbounded,
+# with the host tuned meanwhile
+if ! gone $vm; then
+	bad "the guest did not power off: QEMU killed"
+	kill -TERM $vm 2> /dev/null
+	wait_gone $vm 10 || kill -KILL $vm 2> /dev/null
+	wait_gone $vm 10
+fi
 wait_for "QEMU exit seen" "exited $vm"
 wait_for "fair server restored" "restored fair-server: $ncpu cpus back to [0-9]+ ms / [0-9]+ ms"
 [ -n "$card" ] && wait_for "gpu restored" "restored gpu-floor $card: level auto"
 wait_for "helper ends" "bye"
-wait "$H_PID" 2> /dev/null
+if ! wait_gone "$H_PID" 15; then
+	# SIGTERM: it puts everything back before it ends
+	bad "the helper did not end: terminated"
+	exec {H_IN}>&-
+	sudo kill -TERM "$(helper_child)" 2> /dev/null
+	wait_gone "$H_PID" 10
+fi
+gone "$H_PID" && wait "$H_PID" 2> /dev/null
 check "fair server as found" '[ "$(fair_now)" = "$fair_before" ]'
 check "gpu as found" '[ "$(gpu_now)" = "$gpu_before" ]'
 check "nothing left in /run/vitrine-helper but its lock" '[ "$(sudo ls /run/vitrine-helper)" = lock ]'
-wait $vm 2> /dev/null
+gone $vm && wait $vm 2> /dev/null
 
 # ======================================================================
 echo "== 2. vitrine gone while the VM runs, then a helper killed holding the settings"
