@@ -561,6 +561,10 @@ private slots:
         QTest::newRow("embedded, now SDL") << embedded << true << sdl << false << embedded << true;
         QTest::newRow("SDL, now embedded") << sdl << false << embedded << false << sdl << false;
         QTest::newRow("by start") << embedded << true << sdl << true << embedded << true;
+        /* p2p=true, which an older vitrine's rules did not take for on: no display -qmp */
+        const QString older = "-m 1G\n-display dbus,p2p=true,gl=on\n";
+        QTest::newRow("kept, not embedded when started")
+            << older << false << embedded << false << older << false;
         QTest::newRow("older vitrine, embedded")
             << QString() << true << sdl << false << sdl << true;
         QTest::newRow("older vitrine, SDL")

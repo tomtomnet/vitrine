@@ -1022,20 +1022,20 @@ void VmRunner::attach(const ArgsFile &args)
         return;
     }
     /*
-     * The run's own arguments, not vm.args: the screen (in this window, in
-     * QEMU's, none), the shares to mount.  A QEMU started by a vitrine that
-     * did not keep them has vm.args, and its command line tells whether its
-     * screen can show here.
+     * The run's own arguments, not vm.args: the shares to mount, what the
+     * window offers.  A QEMU started by a vitrine that did not keep them has
+     * vm.args.  Whether its screen can show here is what its command line
+     * says, the display's -qmp: reading the arguments again with this
+     * vitrine's rules may not give the answer the one that started it had.
      */
     const QStringList running = cmdline(pid);
     QFile runArgs(d->argsPath());
     if (runArgs.open(QIODevice::ReadOnly)) {
         d->args = ArgsFile::parse(QString::fromUtf8(runArgs.readAll()));
-        d->embedded = VmConfig::screen(d->args) == VmConfig::Screen::Embedded;
     } else {
         d->args = args;
-        d->embedded = running.contains(d->displayArg());
     }
+    d->embedded = running.contains(d->displayArg());
     d->pid = pid;
     /* the binary it runs, not the one the preferences may name now */
     d->qemu = running.value(0);
