@@ -284,7 +284,7 @@ QString details(const Snapshot &s)
                     .arg(s.displayType);
     } else {
         html += QObject::tr("<b>Display</b>: this QEMU does not measure its frames; "
-                            "a current qemu-gui build does.<br>");
+                            "Vitrine's QEMU does.<br>");
     }
 
     return html + hostDetails(s);
