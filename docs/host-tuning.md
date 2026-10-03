@@ -51,7 +51,7 @@ for them. It does only this, for the user who started it:
 | `watch PID` | Watches a QEMU until it exits | The process belongs to the caller (all its uids) and runs a `qemu-system-*` (or `qemu-kvm`) executable; held through a pidfd, so a reused pid cannot slip in |
 | `fair-server on` | 10 ms / 1 ms on every CPU | Fixed values; only `cpuN` folders; nothing to choose |
 | `gpu-floor CARD MHZ\|auto` | An AMD GPU's lowest gfx clock | `cardN` of vendor 0x1002 driven by amdgpu; the clock within the GPU's own overdrive range; only when its performance level is `auto` |
-| `rt PID` | SCHED_FIFO 1 on every thread of a watched QEMU | Watched first; RT threads it finds are left as they are |
+| `rt PID` | SCHED_FIFO 1 on every thread of a watched QEMU | Watched first, and checked again to be the caller's QEMU (it may have run another program since); real-time threads it finds are left as they are |
 | `setcap PATH` | `cap_sys_nice=ep` on vitrine's QEMU build | See below |
 
 The settings need a watched QEMU, and each value is put back only if it
