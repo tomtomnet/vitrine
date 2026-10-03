@@ -98,6 +98,8 @@ struct Snapshot {
 QString summary(const Snapshot &s);
 /* The details, as rich text */
 QString details(const Snapshot &s);
+/* Those of QEMU's threads and KVM: details() without the display */
+QString hostDetails(const Snapshot &s);
 
 /* Milliseconds, to two significant digits or so: "0.35 ms", "6.1 ms", "21 ms" */
 QString formatMs(double ms);

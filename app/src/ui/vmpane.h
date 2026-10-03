@@ -21,9 +21,10 @@ class Vm;
 class VmDetails;
 
 /*
- * The VM selected in the list, beside it, in tabs: its details, its
- * settings, with their pages listed down the side as in a dialog, its
- * snapshots and its log.  The pages all edit a copy of the VM's arguments, which keeps their
+ * The VM selected in the list, beside it, in tabs: its console (its screen,
+ * or a page to start it), its details, its settings, with their pages
+ * listed down the side as in a dialog, its snapshots and its log.  The
+ * pages all edit a copy of the VM's arguments, which keeps their
  * changes from page to page until Apply saves them.
  */
 class VmPane : public QWidget
@@ -31,7 +32,7 @@ class VmPane : public QWidget
     Q_OBJECT
 
 public:
-    enum Tab { Details, Settings, Snapshots, Logs };
+    enum Tab { Console, Details, Settings, Snapshots, Logs };
     enum Page {
         General, System, Display, Storage, SharedFolders, PciDevices, UsbDevices, Arguments,
     };
@@ -43,6 +44,11 @@ public:
     /* Another VM gets new pages: the changes not applied to this one are lost */
     void setVm(Vm *vm);
     VmDetails *details() const { return m_details; }
+    /*
+     * What the Console tab shows: MainWindow's consoles, which outlive the
+     * pages, as the screens in them must not be moved
+     */
+    void setConsole(QWidget *console);
 
     Tab tab() const;
     void setTab(Tab tab);
@@ -81,6 +87,7 @@ private:
     Page m_page = General;
     QTimer *m_check;
     QTabWidget *m_tabs;
+    QWidget *m_console;
     VmDetails *m_details;
     QListWidget *m_list;
     QLabel *m_title;

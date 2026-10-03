@@ -171,6 +171,8 @@ qt_add_executable(vitrine
     src/ui/updatenotifier.h
     src/ui/usbaccess.cpp
     src/ui/usbaccess.h
+    src/ui/vmconsole.cpp
+    src/ui/vmconsole.h
     src/ui/vmdetails.cpp
     src/ui/vmdetails.h
     src/ui/vmpane.cpp

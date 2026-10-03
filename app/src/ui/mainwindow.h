@@ -18,11 +18,15 @@ class QSplitter;
 class UpdateNotifier;
 class QStackedWidget;
 class Vm;
+class VmConsole;
 class VmDetails;
 class VmPane;
 class VmStore;
 
-/* The VMs on the left, the selected one on the right, VirtualBox style */
+/*
+ * The VMs on the left, the selected one on the right, in tabs: its console
+ * first, where its screen shows while it runs, VMware style
+ */
 class MainWindow : public QMainWindow
 {
     Q_OBJECT
@@ -42,6 +46,8 @@ public:
 
 protected:
     void closeEvent(QCloseEvent *event) override;
+    /* Dialogs, from anywhere: they come out of full screen first */
+    bool eventFilter(QObject *watched, QEvent *event) override;
 
 private:
     void createActions();
@@ -56,6 +62,15 @@ private:
     void currentChanged();
     void showCurrent();
     void leaveVm();
+    /* The console of @vm, made the first time */
+    VmConsole *consoleOf(Vm *vm);
+    /* That of the selected VM, if made */
+    VmConsole *currentConsole() const;
+    void consoleChanged(VmConsole *console);
+    /* Who has the keyboard, in the status bar */
+    void updateInput();
+    /* No screen in full screen, none grabbing: before a dialog */
+    void leaveScreens();
 
     void start();
     void togglePause();
@@ -69,6 +84,9 @@ private:
     void showLog();
     void showWindow();
     void showCommandLine();
+    void toggleFullScreen();
+    void sendCtrlAltDel();
+    void releaseInput();
 
     VmStore *m_store;
     QListWidget *m_list;
@@ -77,6 +95,12 @@ private:
     VmDetails *m_details;
     QSplitter *m_splitter;
     QLabel *m_qemuStatus;
+    /* The consoles, by VM id, in the stack the Console tab shows */
+    QStackedWidget *m_consoles;
+    QWidget *m_noConsole;
+    QHash<QString, VmConsole *> m_consoleOf;
+    /* Whether the keys go to the VM */
+    QLabel *m_input;
     /* How smoothly the selected VM runs */
     PerfMonitor *m_perf;
     /* Why the last run of a VM ended with an error, by id */
@@ -110,6 +134,10 @@ private:
     QAction *m_log;
     QAction *m_folder;
     QAction *m_command;
+    QAction *m_fullScreen;
+    QAction *m_library;
+    QAction *m_ctrlAltDel;
+    QAction *m_releaseInput;
     QAction *m_preferences;
     QAction *m_reference;
     QAction *m_quit;

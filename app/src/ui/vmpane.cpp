@@ -56,7 +56,7 @@ public:
 
 VmPane::VmPane(QWidget *parent)
     : QWidget(parent), m_check(new QTimer(this)), m_tabs(new QTabWidget),
-      m_details(new VmDetails), m_list(new QListWidget), m_title(new QLabel),
+      m_console(new QWidget), m_details(new VmDetails), m_list(new QListWidget), m_title(new QLabel),
       m_stack(new QStackedWidget), m_snapshots(new SnapshotView), m_log(new LogView), m_running(new Banner(Banner::Information)),
       /* no mnemonic: the pages use D */
       m_discard(new QPushButton(Icons::themed({"edit-undo"}, QStyle::SP_DialogResetButton),
@@ -76,6 +76,7 @@ VmPane::VmPane(QWidget *parent)
     /* no frame around the tabs: the pages have frames enough */
     m_tabs->setObjectName("vmTabs");
     m_tabs->setDocumentMode(true);
+    m_tabs->addTab(m_console, tr("Console"));
     m_tabs->addTab(m_details, tr("Details"));
     m_tabs->addTab(settings, tr("Settings"));
     m_tabs->addTab(m_snapshots, tr("Snapshots"));
@@ -119,6 +120,7 @@ VmPane::VmPane(QWidget *parent)
 
     layout->setContentsMargins(0, 0, 0, 0);
     layout->addWidget(m_tabs);
+    (new QVBoxLayout(m_console))->setContentsMargins(0, 0, 0, 0);
 
     /* Apply is for when there is something to apply */
     m_check->setSingleShot(true);
@@ -211,6 +213,11 @@ void VmPane::buildPages()
         m_list->setCurrentRow(qBound(0, int(page), int(m_pages.size()) - 1));
     }
     updateFooter();
+}
+
+void VmPane::setConsole(QWidget *console)
+{
+    m_console->layout()->addWidget(console);
 }
 
 VmPane::Tab VmPane::tab() const

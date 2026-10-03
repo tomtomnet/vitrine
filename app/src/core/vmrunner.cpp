@@ -729,6 +729,11 @@ QString VmRunner::displaySocket() const
     return d->displayPath();
 }
 
+ArgsFile VmRunner::runArgs() const
+{
+    return d->args;
+}
+
 void VmRunner::start(const ArgsFile &args)
 {
     const QString qemu = qemuFor(args);

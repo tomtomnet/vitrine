@@ -287,6 +287,13 @@ QString details(const Snapshot &s)
                             "a current qemu-gui build does.<br>");
     }
 
+    return html + hostDetails(s);
+}
+
+QString hostDetails(const Snapshot &s)
+{
+    QString html;
+
     if (s.threads) {
         html += QObject::tr("<b>QEMU on the host</b>") + "<table>";
         html += row(QObject::tr("Main loop"), QObject::tr("%1 CPU").arg(percent(s.mainLoop.cpu)),

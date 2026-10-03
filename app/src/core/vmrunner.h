@@ -45,6 +45,11 @@ public:
      * main one.  Empty unless the running VM shows in vitrine's window.
      */
     QString displaySocket() const;
+    /*
+     * The arguments of the current run, or the last: those given to start(),
+     * or to attach() for a QEMU found running.  vm.args may have changed since.
+     */
+    ArgsFile runArgs() const;
 
     /* The state goes Starting, then Running once QMP answers, or back to
        Stopped with failed() */
