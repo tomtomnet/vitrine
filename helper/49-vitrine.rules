@@ -1,0 +1,12 @@
+// SPDX-License-Identifier: GPL-2.0-or-later
+// vitrine-helper without a password for members of the vitrine group, from
+// their local active session (not over ssh, not from a session switched
+// away).  Everyone else gets the policy's default: an administrator's
+// password, which vitrine never asks for at a VM start - it runs the VM
+// without the host settings instead.  See docs/host-tuning.md.
+polkit.addRule(function(action, subject) {
+    if (action.id == "org.vitrine.helper" &&
+        subject.local && subject.active && subject.isInGroup("vitrine")) {
+        return polkit.Result.YES;
+    }
+});

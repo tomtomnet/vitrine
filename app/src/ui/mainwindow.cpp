@@ -29,6 +29,7 @@
 #include <algorithm>
 #include <memory>
 
+#include "core/hostsettings.h"
 #include "core/paths.h"
 #include "core/qemuinfo.h"
 #include "core/vmconfig.h"
@@ -244,6 +245,9 @@ MainWindow::MainWindow(VmStore *store, QWidget *parent)
     statusBar()->addPermanentWidget(m_updates->button());
     statusBar()->addPermanentWidget(new MemoryMonitor(store, this));
     statusBar()->addPermanentWidget(m_qemuStatus);
+    /* the host's settings while VMs run (vitrine-helper): why not, once */
+    connect(new HostSettings(store, this), &HostSettings::notice, this,
+            [this](const QString &text) { statusBar()->showMessage(text, 15000); });
 
     connect(create, &QPushButton::clicked, m_new, &QAction::trigger);
     connect(m_list, &QListWidget::currentItemChanged, this, &MainWindow::currentChanged);
