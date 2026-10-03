@@ -38,6 +38,7 @@
 #include "core/vmhardware.h"
 #include "core/vmrunner.h"
 #include "core/vmstore.h"
+#include "core/vmtemplate.h"
 #include "ui/argseditor.h"
 #include "ui/banner.h"
 #include "ui/firmwarerepair.h"
@@ -49,7 +50,37 @@
 
 /* General */
 
-GeneralPage::GeneralPage(Vm *vm, QWidget *parent) : SettingsPage(parent), m_name(new QLineEdit)
+/* The systems and desktops of #guest, by the names the page gives them */
+static const char *const kSystems[][2] = {
+    {"linux", QT_TRANSLATE_NOOP("GeneralPage", "Linux")},
+    {"windows", QT_TRANSLATE_NOOP("GeneralPage", "Windows")},
+    {"other", QT_TRANSLATE_NOOP("GeneralPage", "Another system")},
+};
+static const char *const kDesktops[][2] = {
+    {"kde", QT_TRANSLATE_NOOP("GeneralPage", "KDE Plasma")},
+    {"gnome", QT_TRANSLATE_NOOP("GeneralPage", "GNOME")},
+    {"other", QT_TRANSLATE_NOOP("GeneralPage", "Another desktop, or none")},
+};
+
+/* @combo with @choices and "Not known", and @value as written if it is none of them */
+template<size_t N>
+static void fillChoices(QComboBox *combo, const char *const (&choices)[N][2], const QString &value)
+{
+    const QSignalBlocker block(combo);
+
+    combo->clear();
+    for (const auto &c : choices) {
+        combo->addItem(QCoreApplication::translate("GeneralPage", c[1]), QString(c[0]));
+    }
+    combo->addItem(QCoreApplication::translate("GeneralPage", "Not known"), QString());
+    if (combo->findData(value) < 0) {
+        combo->addItem(value, value);
+    }
+    combo->setCurrentIndex(combo->findData(value));
+}
+
+GeneralPage::GeneralPage(Vm *vm, QWidget *parent)
+    : SettingsPage(parent), m_name(new QLineEdit), m_os(new QComboBox), m_desktop(new QComboBox)
 {
     auto *layout = new QVBoxLayout(this);
     auto *form = Widgets::form();
@@ -59,12 +90,19 @@ GeneralPage::GeneralPage(Vm *vm, QWidget *parent) : SettingsPage(parent), m_name
 
     m_name->setObjectName("name");
     m_name->setMaximumWidth(Widgets::em(this) * 20);
+    m_os->setObjectName("os");
+    m_desktop->setObjectName("desktop");
     form->addRow(tr("&Name:"), m_name);
+    form->addRow(tr("&System:"), m_os);
+    form->addRow(tr("&Desktop:"), m_desktop);
+    form->addRow(QString(), Widgets::hint(tr("The timing of the VM's frames depends on its "
+                                             "desktop.")));
     form->addRow(tr("Folder:"), folder);
     form->addRow(QString(), Widgets::hint(tr("The folder holds the arguments (vm.args), the disks the "
                                     "VM creates and its log.")));
     layout->addLayout(form);
     layout->addStretch();
+    connect(m_os, &QComboBox::currentIndexChanged, this, &GeneralPage::updateDesktop);
 }
 
 QIcon GeneralPage::icon() const
@@ -72,42 +110,61 @@ QIcon GeneralPage::icon() const
     return Icons::themed({"preferences-system", "configure"}, QStyle::SP_ComputerIcon);
 }
 
+void GeneralPage::updateDesktop()
+{
+    const QString os = m_os->currentData().toString();
+    m_desktop->setEnabled(os == "linux" || os.isEmpty());
+}
+
+VmConfig::Guest GeneralPage::shown() const
+{
+    const QString os = m_os->currentData().toString();
+    /* a desktop for Linux, or a system not known */
+    return {os, m_desktop->isEnabled() ? m_desktop->currentData().toString() : QString()};
+}
+
 void GeneralPage::load(const ArgsFile &args)
 {
+    const VmConfig::Guest guest = VmConfig::guest(args);
+
     m_loaded = VmConfig::name(args);
     m_name->setText(m_loaded);
+    fillChoices(m_os, kSystems, guest.os);
+    fillChoices(m_desktop, kDesktops, guest.desktop);
+    updateDesktop();
+    /* as the page shows it, so that an untouched page writes nothing */
+    m_loadedGuest = shown();
 }
 
 void GeneralPage::save(ArgsFile &args)
 {
     const QString name = m_name->text().trimmed();
+    const VmConfig::Guest guest = shown();
 
     if (!name.isEmpty() && name != m_loaded) {
         VmConfig::setName(args, name);
         m_loaded = name;
+    }
+    if (guest.os != m_loadedGuest.os || guest.desktop != m_loadedGuest.desktop) {
+        VmConfig::setGuest(args, guest);
+        m_loadedGuest = guest;
     }
 }
 
 bool GeneralPage::isModified() const
 {
     const QString name = m_name->text().trimmed();
-    return !name.isEmpty() && name != m_loaded;
+    const VmConfig::Guest guest = shown();
+
+    return (!name.isEmpty() && name != m_loaded) || guest.os != m_loadedGuest.os ||
+           guest.desktop != m_loadedGuest.desktop;
 }
 
-/* System */
+/* Hardware */
 
-SystemPage::SystemPage(Vm *vm, QWidget *parent)
+HardwarePage::HardwarePage(QWidget *parent)
     : SettingsPage(parent), m_memorySlider(new QSlider(Qt::Horizontal)), m_memory(new QSpinBox),
-      m_cpuSlider(new QSlider(Qt::Horizontal)), m_cpus(new QSpinBox),
-      m_topology(new QCheckBox(tr("Set the &topology"))), m_sockets(new QSpinBox),
-      m_cores(new QSpinBox), m_threads(new QSpinBox), m_model(new QComboBox),
-      m_modelInfo(Widgets::hint()), m_machine(new QComboBox), m_machineInfo(Widgets::hint()),
-      m_accel(new QComboBox), m_defaultQemu(new QRadioButton),
-      m_ownQemu(new QRadioButton(tr("This &build:"))), m_qemuPath(new QLineEdit),
-      m_qemuInfo(Widgets::hint()), m_vm(vm), m_firmware(new QComboBox),
-      m_firmwareInfo(Widgets::hint()), m_resetVars(new QPushButton(tr("&Reset UEFI Variables…"))),
-      m_bootMenu(new QCheckBox(tr("Show the boot men&u when the VM starts"))),
-      m_bootDevice(new QComboBox)
+      m_cpuSlider(new QSlider(Qt::Horizontal)), m_cpus(new QSpinBox), m_topology(Widgets::hint())
 {
     auto *layout = new QVBoxLayout(this);
     auto *form = Widgets::form();
@@ -140,598 +197,91 @@ SystemPage::SystemPage(Vm *vm, QWidget *parent)
     cpuRow->addWidget(m_cpus);
     cpuRow->addStretch();
 
-    for (QSpinBox *spin : {m_sockets, m_cores, m_threads}) {
-        spin->setRange(1, 1024);
-        spin->setEnabled(false);
-        connect(spin, &QSpinBox::valueChanged, this, &SystemPage::updateTopology);
-    }
-    connect(m_topology, &QCheckBox::toggled, this, [this](bool on) {
-        for (QSpinBox *spin : {m_sockets, m_cores, m_threads}) {
-            spin->setEnabled(on);
-        }
-        if (on && m_sockets->value() * m_cores->value() * m_threads->value() !=
-                      m_cpus->value()) {
-            /* one socket of cores */
-            const QSignalBlocker a(m_sockets), b(m_cores), c(m_threads);
-            m_sockets->setValue(1);
-            m_cores->setValue(m_cpus->value());
-            m_threads->setValue(1);
-        }
-        updateTopology();
-    });
-
-    m_model->setObjectName("cpuModel");
-    m_model->setEditable(true);
-    m_model->setInsertPolicy(QComboBox::NoInsert);
-    m_model->lineEdit()->setPlaceholderText(tr("QEMU default"));
-    m_machine->setObjectName("machine");
-    m_machine->setEditable(true);
-    m_machine->setInsertPolicy(QComboBox::NoInsert);
-    m_accel->setObjectName("accel");
-    connect(m_model, &QComboBox::currentTextChanged, this, &SystemPage::describe);
-    connect(m_machine, &QComboBox::currentTextChanged, this, &SystemPage::describe);
-
     form->addRow(Widgets::label(tr("M&emory:"), m_memory), memoryRow);
     form->addRow(QString(), Widgets::hint(tr("This computer has %1 GiB.")
                                      .arg(QString::number(hostMiB / 1024.0, 'f', 1))));
     form->addRow(Widgets::label(tr("&Processors:"), m_cpus), cpuRow);
+    form->addRow(QString(), Widgets::hint(tr("This computer has %n.", nullptr, hostCpus)));
     form->addRow(QString(), m_topology);
-    form->addRow(tr("Sockets:"), m_sockets);
-    form->addRow(tr("Cores:"), m_cores);
-    form->addRow(tr("Threads:"), m_threads);
-    form->addRow(tr("Processor mode&l:"), m_model);
-    form->addRow(QString(), m_modelInfo);
-    form->addRow(tr("Ma&chine:"), m_machine);
-    form->addRow(QString(), m_machineInfo);
-    form->addRow(tr("&Acceleration:"), m_accel);
-
-    /* the QEMU of this VM: #qemu */
-    auto *qemu = new QVBoxLayout;
-    auto *ownRow = new QHBoxLayout;
-    auto *qemuGroup = new QButtonGroup(this);
-    m_defaultQemu->setObjectName("defaultQemu");
-    m_ownQemu->setObjectName("ownQemu");
-    m_qemuPath->setObjectName("qemuPath");
-    m_qemuPath->setPlaceholderText(tr("A qemu-system-x86_64, e.g. of a build with a patch"));
-    qemuGroup->addButton(m_defaultQemu);
-    qemuGroup->addButton(m_ownQemu);
-    ownRow->addWidget(m_ownQemu);
-    ownRow->addWidget(Widgets::browseRow(m_qemuPath, tr("QEMU Binary")), 1);
-    m_qemuPath->parentWidget()->setMaximumWidth(Widgets::em(this) * 30);
-    qemu->addWidget(m_defaultQemu);
-    qemu->addLayout(ownRow);
-    form->addRow(Widgets::label(tr("&QEMU:"), m_defaultQemu), qemu);
-    form->addRow(QString(), m_qemuInfo);
-
-    /* boot */
-    m_firmware->setObjectName("firmware");
-    m_bootDevice->setObjectName("bootDevice");
-    m_bootMenu->setObjectName("bootMenu");
-    m_bootDevice->addItem(tr("The first bootable device, the firmware's default"),
-                          int(VmConfig::BootDevice::Default));
-    m_bootDevice->addItem(tr("The hard disk"), int(VmConfig::BootDevice::Disk));
-    m_bootDevice->addItem(tr("The CD/DVD drive"), int(VmConfig::BootDevice::Cdrom));
-    m_bootDevice->addItem(tr("The network (PXE)"), int(VmConfig::BootDevice::Network));
-    m_bootDevice->setToolTip(tr("Sets bootindex=1 on its device, which both SeaBIOS and "
-                                "UEFI follow"));
-    /* for a system that no longer starts, its variables damaged */
-    auto *resetRow = new QHBoxLayout;
-    m_resetVars->setObjectName("resetVars");
-    resetRow->addWidget(m_resetVars);
-    resetRow->addStretch();
-    connect(m_resetVars, &QPushButton::clicked, this, &SystemPage::resetVars);
-    if (m_vm) {
-        connect(m_vm->runner(), &VmRunner::stateChanged, this, &SystemPage::updateResetVars);
-    }
-
-    form->addSection(tr("Boot"));
-    form->addRow(tr("F&irmware:"), m_firmware);
-    form->addRow(QString(), m_firmwareInfo);
-    form->addRow(QString(), resetRow);
-    form->addRow(tr("&Start from:"), m_bootDevice);
-    form->addRow(QString(), m_bootMenu);
     layout->addLayout(form);
     layout->addStretch();
-    connect(m_firmware, &QComboBox::currentIndexChanged, this, &SystemPage::describeFirmware);
-
-    connect(qemuGroup, &QButtonGroup::buttonToggled, this, &SystemPage::updateQemu);
-    connect(m_qemuPath, &QLineEdit::textChanged, this, &SystemPage::updateQemu);
-    updateQemu();
 }
 
-QString SystemPage::chosenQemu() const
-{
-    return m_ownQemu->isChecked() ? m_qemuPath->text().trimmed() : QString();
-}
-
-void SystemPage::updateQemu()
-{
-    const QString preferred = Paths::qemuBinary();
-    QemuDocs *docs = QemuDocs::of(chosenQemu());
-
-    /* the path in a tool tip: a long one would widen the page */
-    m_defaultQemu->setText(preferred.isEmpty()
-                               ? tr("The &default QEMU, from the preferences: not found")
-                               : tr("The &default QEMU, from the preferences"));
-    m_defaultQemu->setToolTip(preferred);
-    m_qemuPath->parentWidget()->setEnabled(m_ownQemu->isChecked());
-    if (docs != m_docs) {
-        if (m_docs) {
-            m_docs->disconnect(this);
-        }
-        m_docs = docs;
-        connect(docs, &QemuDocs::changed, this, &SystemPage::fillLists);
-    }
-    fillLists();
-}
-
-QIcon SystemPage::icon() const
+QIcon HardwarePage::icon() const
 {
     return Icons::themed({"cpu", "computer"}, QStyle::SP_ComputerIcon);
 }
 
-void SystemPage::fillLists()
+void HardwarePage::load(const ArgsFile &args)
 {
-    const QemuInfo *info = m_docs->info();
-    const QString model = m_model->currentText();
-    const QString machine = m_machine->currentText();
-    const QSignalBlocker a(m_model), b(m_machine);
-    QStringList models = {"host", "max"};
-    QStringList machines = {"q35", "pc"};
+    const qint64 memory = VmConfig::memoryMiB(args);
+    const VmConfig::Cpus cpus = VmConfig::cpus(args);
 
-    if (info) {
-        for (const QemuNamedDoc &c : info->cpus) {
-            if (!models.contains(c.name)) {
-                models << c.name;
-            }
-        }
-        for (const QemuNamedDoc &m : info->machines) {
-            if (!machines.contains(m.name)) {
-                machines << m.name;
-            }
-        }
-    }
-    m_model->clear();
-    m_model->addItems(models);
-    m_model->setCurrentText(model);
-    m_machine->clear();
-    m_machine->addItems(machines);
-    m_machine->setCurrentText(machine);
-    describe();
-
-    if (m_ownQemu->isChecked() && chosenQemu().isEmpty()) {
-        m_qemuInfo->setText(tr("Choose the QEMU binary of this VM."));
-    } else if (info) {
-        m_qemuInfo->setText(tr("QEMU %1").arg(info->version));
-    } else {
-        m_qemuInfo->setText(m_docs->status());
-    }
-}
-
-void SystemPage::describe()
-{
-    const QemuInfo *info = m_docs->info();
-    /* host,topoext=on: the model and its flags */
-    const QString model = m_model->currentText().section(',', 0, 0).trimmed();
-    const QString machine = m_machine->currentText().trimmed();
-    QString modelText, machineText;
-
-    if (model.isEmpty()) {
-        modelText = tr("QEMU's basic processor, for compatibility.");
-    } else if (model == "host") {
-        modelText = tr("The processor of this computer with all its features: the fastest. "
-                       "Needs KVM.");
-    } else if (model == "max") {
-        modelText = tr("Every feature QEMU can offer.");
-    } else if (info) {
-        for (const QemuNamedDoc &c : info->cpus) {
-            if (c.name == model) {
-                modelText = c.desc;
-            }
-        }
-    }
-    if (machine == "q35") {
-        machineText = tr("A modern PC with PCI Express. The best choice for most systems.");
-    } else if (machine == "pc") {
-        machineText = tr("An older PC (i440FX), for old systems.");
-    } else if (info) {
-        for (const QemuNamedDoc &m : info->machines) {
-            if (m.name == machine) {
-                machineText = m.desc;
-            }
-        }
-    }
-    m_modelInfo->setText(modelText);
-    m_machineInfo->setText(machineText);
-}
-
-void SystemPage::updateTopology()
-{
-    if (m_topology->isChecked()) {
-        m_cpus->setValue(m_sockets->value() * m_cores->value() * m_threads->value());
-    }
-    m_cpus->setEnabled(!m_topology->isChecked());
-    m_cpuSlider->setEnabled(!m_topology->isChecked());
-}
-
-void SystemPage::load(const ArgsFile &args)
-{
-    const QString accel = VmConfig::accel(args);
-
-    m_loadedMemory = VmConfig::memoryMiB(args);
-    m_loadedCpus = VmConfig::cpus(args);
-    m_loadedMachine = VmConfig::machineType(args);
-    m_loadedAccel = accel;
-
-    m_memory->setMaximum(int(qMax<qint64>(m_memory->maximum(), m_loadedMemory)));
+    m_memory->setMaximum(int(qMax<qint64>(m_memory->maximum(), memory)));
     m_memorySlider->setMaximum(m_memory->maximum() / 256);
-    m_memory->setValue(int(m_loadedMemory > 0 ? m_loadedMemory : 128));
-    m_cpus->setMaximum(qMax(m_cpus->maximum(), m_loadedCpus.count));
+    m_memory->setValue(int(memory > 0 ? memory : 128));
+    m_cpus->setMaximum(qMax(m_cpus->maximum(), cpus.count));
     m_cpuSlider->setMaximum(m_cpus->maximum());
-    m_cpus->setValue(m_loadedCpus.count);
-    {
-        const QSignalBlocker a(m_sockets), b(m_cores), c(m_threads), d(m_topology);
-        const bool given = m_loadedCpus.sockets > 0 || m_loadedCpus.cores > 0 ||
-                           m_loadedCpus.threads > 0;
-        m_sockets->setValue(qMax(m_loadedCpus.sockets, 1));
-        m_cores->setValue(qMax(m_loadedCpus.cores, 1));
-        m_threads->setValue(qMax(m_loadedCpus.threads, 1));
-        m_topology->setChecked(given);
-        for (QSpinBox *spin : {m_sockets, m_cores, m_threads}) {
-            spin->setEnabled(given);
-        }
-    }
-    m_cpus->setEnabled(!m_topology->isChecked());
-    m_cpuSlider->setEnabled(!m_topology->isChecked());
+    m_cpus->setValue(cpus.count);
     /* compare with what the page shows, e.g. 128 MiB for no -m, so that
        an untouched page writes nothing */
     m_loadedMemory = m_memory->value();
-    m_loadedCpus.count = m_cpus->value();
-    if (m_topology->isChecked()) {
-        m_loadedCpus.sockets = m_sockets->value();
-        m_loadedCpus.cores = m_cores->value();
-        m_loadedCpus.threads = m_threads->value();
-    }
-    m_model->setCurrentText(m_loadedCpus.model);
-    m_machine->setCurrentText(m_loadedMachine);
-
-    m_loadedQemu = VmConfig::qemuBinary(args);
-    {
-        const QSignalBlocker a(m_defaultQemu), b(m_ownQemu), c(m_qemuPath);
-        m_qemuPath->setText(m_loadedQemu);
-        (m_loadedQemu.isEmpty() ? m_defaultQemu : m_ownQemu)->setChecked(true);
-    }
-    updateQemu();
-
-    m_accel->clear();
-    m_accel->addItem(tr("KVM: hardware virtualization, fast"), "kvm");
-    m_accel->addItem(tr("TCG: software emulation, slow"), "tcg");
-    if (accel.isEmpty()) {
-        m_accel->addItem(tr("Not set: QEMU's default, TCG"), QString());
-    } else if (accel != "kvm" && accel != "tcg") {
-        m_accel->addItem(accel, accel);
-    }
-    m_accel->setCurrentIndex(m_accel->findData(accel));
-    describe();
-    loadBoot(args);
+    m_loadedCpus = m_cpus->value();
+    m_topology->setText(cpus.threads > 1
+                            ? tr("%n threads per core, as far as the number allows: the "
+                                 "Machine page sets the topology.",
+                                 nullptr, cpus.threads)
+                            : QString());
+    m_topology->setVisible(cpus.threads > 1);
 }
 
-void SystemPage::save(ArgsFile &args)
+void HardwarePage::save(ArgsFile &args)
 {
-    VmConfig::Cpus cpus;
-    const QString machine = m_machine->currentText().trimmed();
-    const QString accel = m_accel->currentData().toString();
-
     if (m_memory->value() != m_loadedMemory) {
         VmConfig::setMemoryMiB(args, m_memory->value());
         m_loadedMemory = m_memory->value();
     }
-
-    cpus.count = m_cpus->value();
-    if (m_topology->isChecked()) {
-        cpus.sockets = m_sockets->value();
-        cpus.cores = m_cores->value();
-        cpus.threads = m_threads->value();
-    }
-    /* "host,topoext=on": the model, then flags for the -cpu line */
-    const QString model = m_model->currentText().trimmed();
-    const OptionValue flags(model.section(',', 1));
-    cpus.model = model.section(',', 0, 0).trimmed();
-    if (cpus.count != m_loadedCpus.count || cpus.sockets != m_loadedCpus.sockets ||
-        cpus.cores != m_loadedCpus.cores || cpus.threads != m_loadedCpus.threads ||
-        cpus.model != m_loadedCpus.model) {
-        VmConfig::setCpus(args, cpus);
-        m_loadedCpus = cpus;
-        /* AMD: the guest sees the threads of its cores only with topoext */
-        if (cpus.threads > 1 && (cpus.model == "host" || cpus.model == "max") &&
-            HostDevices::cpuHasFlag("topoext")) {
-            VmConfig::enableCpuFeature(args, "topoext");
-        }
-    }
-    if (!cpus.model.isEmpty() && !flags.isEmpty()) {
-        const int cpu = args.indexOf("cpu");
-        OptionValue v = args.valueAt(cpu);
-        QString extra;
-
-        for (const OptionValue::Item &item : flags.items()) {
-            if (item.key.isEmpty() || item.bare) {
-                /* +avx, or a flag written without a value */
-                const QString word = item.key.isEmpty() ? item.value : item.key;
-                if (!v.has(word) && !word.isEmpty()) {
-                    extra += ',' + OptionValue::escape(word);
-                }
-            } else {
-                v.set(item.key, item.value);
-            }
-        }
-        args.setValueAt(cpu, v.toString() + extra);
-        m_model->setCurrentText(cpus.model);
-    }
-    if (!machine.isEmpty() && machine != m_loadedMachine) {
-        VmConfig::setMachineType(args, machine);
-        m_loadedMachine = machine;
-    }
-    if (accel != m_loadedAccel) {
-        VmConfig::setAccel(args, accel);
-        m_loadedAccel = accel;
-    }
-    if (chosenQemu() != m_loadedQemu) {
-        VmConfig::setQemuBinary(args, chosenQemu());
-        m_loadedQemu = chosenQemu();
-    }
-    saveBoot(args);
-}
-
-bool SystemPage::isModified() const
-{
-    const QString machine = m_machine->currentText().trimmed();
-
-    if (bootModified()) {
-        return true;
-    }
-    if (m_memory->value() != m_loadedMemory || m_cpus->value() != m_loadedCpus.count ||
-        m_model->currentText().trimmed() != m_loadedCpus.model ||
-        (!machine.isEmpty() && machine != m_loadedMachine) ||
-        m_accel->currentData().toString() != m_loadedAccel || chosenQemu() != m_loadedQemu) {
-        return true;
-    }
-    if (!m_topology->isChecked()) {
-        return m_loadedCpus.sockets || m_loadedCpus.cores || m_loadedCpus.threads;
-    }
-    return m_sockets->value() != m_loadedCpus.sockets ||
-           m_cores->value() != m_loadedCpus.cores || m_threads->value() != m_loadedCpus.threads;
-}
-
-void SystemPage::loadBoot(const ArgsFile &args)
-{
-    using VmConfig::FirmwareKind;
-    const bool virt = m_loadedMachine.startsWith("virt");
-    const QList<VmConfig::Disk> disks = VmConfig::disks(args);
-    bool disk = false, cdrom = false, nic = false;
-
-    m_loadedFirmware = VmConfig::firmwareKind(args);
-    {
-        const QSignalBlocker block(m_firmware);
-        m_firmware->clear();
-        /* ARM's virt boots with UEFI only */
-        if (!virt) {
-            m_firmware->addItem(tr("BIOS (SeaBIOS), for old systems"), int(FirmwareKind::Bios));
-        } else if (m_loadedFirmware == FirmwareKind::Bios) {
-            m_firmware->addItem(tr("None"), int(FirmwareKind::Bios));
-        }
-        m_firmware->addItem(tr("UEFI"), int(FirmwareKind::Uefi));
-        if (!virt || FirmwareDb::find(true, m_loadedMachine)) {
-            m_firmware->addItem(tr("UEFI with Secure Boot"), int(FirmwareKind::UefiSecureBoot));
-        }
-        if (m_loadedFirmware == FirmwareKind::Custom) {
-            m_firmware->addItem(tr("Set by hand"), int(FirmwareKind::Custom));
-        }
-        m_firmware->setCurrentIndex(m_firmware->findData(int(m_loadedFirmware)));
-        m_firmware->setEnabled(m_loadedFirmware != FirmwareKind::Custom);
-    }
-
-    m_loadedBootMenu = VmConfig::bootMenu(args);
-    m_bootMenu->setChecked(m_loadedBootMenu);
-
-    for (const VmConfig::Disk &d : disks) {
-        (d.cdrom ? cdrom : disk) |= d.editable;
-    }
-    for (int i : args.indexesOf("device")) {
-        nic |= args.valueAt(i).has("netdev");
-    }
-    m_loadedBootDevice = VmConfig::firstBootDevice(args);
-    if (auto *model = qobject_cast<QStandardItemModel *>(m_bootDevice->model())) {
-        const bool present[] = {true, disk, cdrom, nic};
-        for (int i = 0; i < model->rowCount(); i++) {
-            model->item(i)->setEnabled(present[i] || i == int(m_loadedBootDevice));
-        }
-    }
-    m_bootDevice->setCurrentIndex(m_bootDevice->findData(int(m_loadedBootDevice)));
-    describeFirmware();
-    updateResetVars();
-}
-
-/* The variable store in the VM folder, by the saved arguments, if it can be made again */
-static FirmwareFiles::File resettableVars(const Vm *vm)
-{
-    for (const FirmwareFiles::File &f : vm ? FirmwareRepair::files(vm)
-                                           : QList<FirmwareFiles::File>()) {
-        if (f.role == FirmwareFiles::File::Role::Vars && !f.templatePath.isEmpty()) {
-            return f;
-        }
-    }
-    return {};
-}
-
-void SystemPage::updateResetVars()
-{
-    const bool running = m_vm && m_vm->runner()->isActive();
-
-    m_resetVars->setVisible(!resettableVars(m_vm).path.isEmpty());
-    m_resetVars->setEnabled(!running);
-    m_resetVars->setToolTip(running ? tr("Shut the VM down first.")
-                                    : tr("For a system that no longer starts: the boot "
-                                         "entries and keys go back to those of a new VM."));
-}
-
-void SystemPage::resetVars()
-{
-    const FirmwareFiles::File vars = resettableVars(m_vm);
-
-    if (!vars.path.isEmpty() && FirmwareRepair::reset(this, m_vm, {vars}, tr("&Reset"))) {
-        m_firmwareInfo->setText(tr("The UEFI variables are those of a new VM again. The old "
-                                   "ones are kept in the VM folder, in a .bak file."));
+    if (m_cpus->value() != m_loadedCpus) {
+        VmConfig::setCpuCount(args, m_cpus->value());
+        m_loadedCpus = m_cpus->value();
     }
 }
 
-void SystemPage::saveBoot(ArgsFile &args)
+bool HardwarePage::isModified() const
 {
-    using VmConfig::FirmwareKind;
-    const auto kind = FirmwareKind(m_firmware->currentData().toInt());
-    const auto device = VmConfig::BootDevice(m_bootDevice->currentData().toInt());
-
-    if (kind != m_loadedFirmware && kind != FirmwareKind::Custom) {
-        if (kind == FirmwareKind::Bios) {
-            VmConfig::useBios(args);
-        } else if (const std::optional<Firmware> fw = FirmwareDb::find(
-                       kind == FirmwareKind::UefiSecureBoot, m_machine->currentText().trimmed())) {
-            /* copied into the VM folder when the dialog applies */
-            FirmwareDb::apply(args, *fw, m_staging.path());
-        }
-        m_loadedFirmware = kind;
-    }
-    if (m_bootMenu->isChecked() != m_loadedBootMenu) {
-        VmConfig::setBootMenu(args, m_bootMenu->isChecked());
-        m_loadedBootMenu = m_bootMenu->isChecked();
-    }
-    if (device != m_loadedBootDevice) {
-        VmConfig::setFirstBootDevice(args, device);
-        m_loadedBootDevice = device;
-    }
-}
-
-bool SystemPage::bootModified() const
-{
-    return m_firmware->currentData().toInt() != int(m_loadedFirmware) ||
-           m_bootMenu->isChecked() != m_loadedBootMenu ||
-           m_bootDevice->currentData().toInt() != int(m_loadedBootDevice);
-}
-
-void SystemPage::describeFirmware()
-{
-    using VmConfig::FirmwareKind;
-    const auto kind = FirmwareKind(m_firmware->currentData().toInt());
-
-    if (kind == FirmwareKind::Custom) {
-        m_firmwareInfo->setText(tr("The firmware is set by hand: change it on the Arguments "
-                                   "page."));
-    } else if ((kind == FirmwareKind::Uefi || kind == FirmwareKind::UefiSecureBoot) &&
-               !FirmwareDb::find(kind == FirmwareKind::UefiSecureBoot,
-                                 m_machine->currentText().trimmed())) {
-        m_firmwareInfo->setText(tr("No such UEFI firmware was found: install edk2-ovmf "
-                                   "(edk2-aarch64 on ARM)."));
-    } else if (kind != m_loadedFirmware) {
-        m_firmwareInfo->setText(tr("A system installed with UEFI needs UEFI, one installed "
-                                   "with BIOS needs BIOS: changing it may keep the installed "
-                                   "system from starting."));
-    } else if (kind == FirmwareKind::Bios) {
-        m_firmwareInfo->setText(QString());
-    } else {
-        m_firmwareInfo->setText(tr("The firmware and its variables are kept in the VM "
-                                   "folder."));
-    }
-}
-
-bool SystemPage::commit(const ArgsFile &args, const QString &vmDir, QString *error)
-{
-    const QDir staging(m_staging.path());
-
-    /* the firmware copies the arguments use; the VM's own variables stay */
-    for (const VmConfig::FileRef &ref : VmConfig::files(args)) {
-        const QString source = staging.filePath(ref.path);
-        const QString target = QDir(vmDir).filePath(ref.path);
-
-        if (QDir::isAbsolutePath(ref.path) || !QFileInfo::exists(source) ||
-            QFileInfo::exists(target)) {
-            continue;
-        }
-        if (!QFile::copy(source, target)) {
-            *error = tr("Cannot copy %1 into %2").arg(ref.path, vmDir);
-            return false;
-        }
-        QFile::setPermissions(target, QFile::permissions(target) | QFile::ReadOwner |
-                                          QFile::WriteOwner);
-    }
-    return true;
+    return m_memory->value() != m_loadedMemory || m_cpus->value() != m_loadedCpus;
 }
 
 /* Display */
 
 DisplayPage::DisplayPage(QWidget *parent)
-    : SettingsPage(parent), m_custom(new Banner(Banner::Information)), m_kind(new QComboBox),
-      m_device(new QComboBox),
-      m_nativeContext(new QCheckBox(tr("DRM &native context"))),
-      m_venus(new QCheckBox(tr("&Vulkan through Venus"))),
-      m_venusUnused(new Banner(Banner::Warning)), m_hostmem(new QSpinBox),
-      m_window(new QComboBox)
+    : SettingsPage(parent), m_custom(new Banner(Banner::Information)),
+      m_embedded(new QRadioButton(tr("In &vitrine's window"))),
+      m_ownWindow(new QRadioButton(tr("In a &window of its own (SDL)")))
 {
     auto *layout = new QVBoxLayout(this);
     auto *form = Widgets::form();
+    auto *choices = new QVBoxLayout;
+    auto *group = new QButtonGroup(this);
 
-    m_kind->setObjectName("graphics");
-    m_device->setObjectName("gpuDevice");
-    /* its cards change with the kind: it gets as wide as they need, then */
-    m_device->setSizeAdjustPolicy(QComboBox::AdjustToContents);
-    m_nativeContext->setObjectName("nativeContext");
-    m_venus->setObjectName("venus");
-    m_hostmem->setObjectName("hostmem");
-    m_window->setObjectName("window");
-    m_hostmem->setRange(1, 256);
-    m_hostmem->setSuffix(tr(" GiB"));
-
-    form->addRow(tr("&Graphics:"), m_kind);
-    form->addRow(tr("&Card:"), m_device);
-    form->addRow(QString(), Widgets::hint(tr("A card with VGA shows the firmware and the boot "
-                                             "screens; a PCI-only card shows the system once "
-                                             "its driver starts.")));
-    form->addRow(tr("&Window:"), m_window);
-
-    form->addSection(tr("3D acceleration"));
-    form->addRow(QString(), m_nativeContext);
-    form->addRow(QString(), Widgets::hint(
-        tr("The guest uses the GPU through its own driver: much faster than virgl. It needs a "
-           "virglrenderer built with native context for the GPU of this computer, whose renderer depends on the GPU: Intel (Xe or i915), "
-           "AMD, Qualcomm, Apple (Asahi) or Arm Mali. File > Build QEMU builds one. The guest "
-           "needs native context support in Mesa too. With KVM, the accelerator gets "
-           "honor-guest-pat=on, which Intel GPUs need.")));
-    form->addRow(QString(), m_venus);
-    form->addRow(QString(), Widgets::hint(
-        tr("Vulkan in the guest through the Vulkan driver of this computer; it needs a "
-           "virglrenderer built with Venus.")));
-    /* both on: native context does Vulkan too */
-    m_venusUnused->setObjectName("venusUnused");
-    m_venusUnused->setText(tr("Venus goes unused with DRM native context: the guest's own GPU "
-                              "driver does Vulkan as well."));
-    m_venusUnused->button()->setText(tr("Turn Venus &Off"));
-    m_venusUnused->button()->show();
-    m_venusUnused->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Preferred);
-    connect(m_venusUnused->button(), &QPushButton::clicked, this,
-            [this]() { m_venus->setChecked(false); });
-    form->addRow(QString(), m_venusUnused);
-    form->addRow(tr("GPU m&emory window:"), m_hostmem);
-    form->addRow(QString(), Widgets::hint(
-        tr("The host memory the guest maps its GPU buffers into (hostmem, with blob=on).")));
-
+    m_custom->setObjectName("customDisplay");
+    m_embedded->setObjectName("embedded");
+    m_ownWindow->setObjectName("ownWindow");
+    group->addButton(m_embedded);
+    group->addButton(m_ownWindow);
+    choices->addWidget(m_embedded);
+    choices->addWidget(Widgets::hint(tr("The screen is part of vitrine's window, and can go "
+                                        "full screen.")));
+    choices->addWidget(m_ownWindow);
+    choices->addWidget(Widgets::hint(tr("QEMU shows the screen in a window of its own, which "
+                                        "stays open when vitrine closes.")));
+    form->addRow(Widgets::label(tr("Show the VM:"), m_embedded), choices);
+    form->addRow(QString(), Widgets::hint(tr("vitrine chooses the graphics card and its 3D "
+                                             "acceleration; the Arguments page can change "
+                                             "them.")));
     layout->addWidget(m_custom);
     layout->addLayout(form);
     layout->addStretch();
-
-    connect(m_kind, &QComboBox::currentIndexChanged, this, [this]() {
-        fillDevices();
-        update();
-    });
-    connect(m_nativeContext, &QCheckBox::toggled, this, &DisplayPage::update);
-    connect(m_venus, &QCheckBox::toggled, this, &DisplayPage::update);
 }
 
 QIcon DisplayPage::icon() const
@@ -740,132 +290,57 @@ QIcon DisplayPage::icon() const
                          QStyle::SP_DesktopIcon);
 }
 
-/* The cards of @kind, VGA first but on ARM's virt */
-static QStringList cardsOf(VmConfig::Graphics::Kind kind, bool virt)
+VmConfig::Screen DisplayPage::chosen() const
 {
-    if (kind == VmConfig::Graphics::Accelerated) {
-        return virt ? QStringList{"virtio-gpu-gl-pci"}
-                    : QStringList{"virtio-vga-gl", "virtio-gpu-gl-pci"};
-    }
-    if (kind == VmConfig::Graphics::Virtio) {
-        return virt ? QStringList{"virtio-gpu-pci"} : QStringList{"virtio-vga", "virtio-gpu-pci"};
-    }
-    return {};
-}
-
-void DisplayPage::fillDevices()
-{
-    const auto kind = VmConfig::Graphics::Kind(m_kind->currentData().toInt());
-    QStringList cards = cardsOf(kind, m_virt);
-    const QSignalBlocker block(m_device);
-    /* the card as written, or its twin with or without OpenGL */
-    const QString preferred = cards.isEmpty()           ? QString()
-                              : kind == m_loaded.kind ? m_loaded.device
-                                                      : VmConfig::glCounterpart(m_loaded.device);
-
-    /* e.g. virtio-gpu-gl, as written */
-    if (!preferred.isEmpty() && !cards.contains(preferred)) {
-        cards.prepend(preferred);
-    }
-    m_device->clear();
-    for (const QString &card : std::as_const(cards)) {
-        m_device->addItem(VmConfig::isVgaDevice(card) ? tr("%1, with VGA").arg(card)
-                                                      : tr("%1, PCI only").arg(card),
-                          card);
-    }
-    if (!preferred.isEmpty()) {
-        m_device->setCurrentIndex(m_device->findData(preferred));
-    }
-}
-
-void DisplayPage::update()
-{
-    const auto kind = VmConfig::Graphics::Kind(m_kind->currentData().toInt());
-    const bool custom = m_loaded.kind == VmConfig::Graphics::Custom;
-    const bool accelerated = kind == VmConfig::Graphics::Accelerated;
-
-    m_kind->setEnabled(!custom);
-    m_device->setEnabled(!custom && m_device->count() > 1);
-    m_nativeContext->setEnabled(accelerated);
-    m_venus->setEnabled(accelerated);
-    m_hostmem->setEnabled(accelerated && (m_nativeContext->isChecked() || m_venus->isChecked()));
-    m_venusUnused->setVisible(accelerated && m_nativeContext->isChecked() && m_venus->isChecked());
+    return m_embedded->isChecked()    ? VmConfig::Screen::Embedded
+           : m_ownWindow->isChecked() ? VmConfig::Screen::OwnWindow
+                                      : VmConfig::Screen::None;
 }
 
 void DisplayPage::load(const ArgsFile &args)
 {
-    using Kind = VmConfig::Graphics::Kind;
-    const QSignalBlocker a(m_kind), b(m_nativeContext), c(m_venus), d(m_window);
+    const VmConfig::Screen screen = VmConfig::screen(args);
+    const QString display = VmConfig::graphics(args).display;
+    QString custom;
 
-    m_loaded = VmConfig::graphics(args);
-    m_virt = VmConfig::machineType(args).startsWith("virt");
-
-    m_kind->clear();
-    m_kind->addItem(tr("3D accelerated: virtio-gpu with OpenGL"), int(Kind::Accelerated));
-    m_kind->addItem(tr("2D: virtio-gpu"), int(Kind::Virtio));
-    if (!m_virt) {
-        m_kind->addItem(tr("Standard VGA, for compatibility"), int(Kind::Standard));
+    m_loaded = screen;
+    /* none checked for a VM that shows nowhere */
+    for (QRadioButton *b : {m_embedded, m_ownWindow}) {
+        b->setAutoExclusive(false);
+        b->setChecked(false);
+        b->setAutoExclusive(true);
     }
-    m_kind->addItem(tr("None"), int(Kind::None));
-    if (m_loaded.kind == Kind::Custom) {
-        m_kind->addItem(tr("Set by hand: %1").arg(m_loaded.custom), int(Kind::Custom));
+    m_embedded->setChecked(screen == VmConfig::Screen::Embedded);
+    m_ownWindow->setChecked(screen == VmConfig::Screen::OwnWindow);
+
+    if (args.indexOf("nographic") >= 0) {
+        custom = tr("This VM has no screen (-nographic): change it on the Arguments page.");
+    } else if (screen == VmConfig::Screen::None) {
+        custom = tr("This VM shows its screen nowhere vitrine can (-display %1). Choosing "
+                    "below replaces it.")
+                     .arg(display.toHtmlEscaped());
+    } else if (screen == VmConfig::Screen::OwnWindow && display != "sdl") {
+        custom = display.isEmpty() ? tr("The screen shows in QEMU's default window.")
+                                   : tr("The screen shows in QEMU's %1 window.")
+                                         .arg(display.toUpper().toHtmlEscaped());
     }
-    m_kind->setCurrentIndex(m_kind->findData(int(m_loaded.kind)));
-    fillDevices();
-
-    m_nativeContext->setChecked(m_loaded.nativeContext);
-    m_venus->setChecked(m_loaded.venus);
-    m_loadedHostmemGiB = int(qMax<qint64>((m_loaded.hostmemMiB + 1023) / 1024, 4));
-    m_hostmem->setValue(m_loadedHostmemGiB);
-
-    m_window->clear();
-    m_window->addItem(tr("SDL"), "sdl");
-    m_window->addItem(tr("GTK"), "gtk");
-    m_window->addItem(tr("None: no window"), "none");
-    if (m_loaded.display.isEmpty()) {
-        m_window->addItem(tr("QEMU's default"), QString());
-    } else if (m_window->findData(m_loaded.display) < 0) {
-        m_window->addItem(m_loaded.display, m_loaded.display);
-    }
-    m_window->setCurrentIndex(m_window->findData(m_loaded.display));
-
-    m_custom->setText(tr("The graphics of this VM are set by hand (%1): change them on the "
-                         "Arguments page. The window can change here.")
-                          .arg(m_loaded.custom.toHtmlEscaped()));
-    m_custom->setVisible(m_loaded.kind == Kind::Custom);
-    update();
-}
-
-VmConfig::Graphics DisplayPage::shown() const
-{
-    VmConfig::Graphics g = m_loaded;
-
-    g.kind = VmConfig::Graphics::Kind(m_kind->currentData().toInt());
-    g.device = m_device->count() > 0 ? m_device->currentData().toString() : QString();
-    g.nativeContext = g.kind == VmConfig::Graphics::Accelerated && m_nativeContext->isChecked();
-    g.venus = g.kind == VmConfig::Graphics::Accelerated && m_venus->isChecked();
-    /* as written, unless changed */
-    if (m_hostmem->value() != m_loadedHostmemGiB) {
-        g.hostmemMiB = qint64(m_hostmem->value()) * 1024;
-    }
-    g.display = m_window->currentData().toString();
-    return g;
+    m_custom->setText(custom);
+    m_custom->setVisible(!custom.isEmpty());
+    m_embedded->setEnabled(args.indexOf("nographic") < 0);
+    m_ownWindow->setEnabled(args.indexOf("nographic") < 0);
 }
 
 void DisplayPage::save(ArgsFile &args)
 {
-    VmConfig::setGraphics(args, shown());
-    load(args);
+    if (chosen() != m_loaded && chosen() != VmConfig::Screen::None) {
+        VmConfig::setScreen(args, chosen());
+        load(args);
+    }
 }
 
 bool DisplayPage::isModified() const
 {
-    const VmConfig::Graphics g = shown();
-
-    return g.kind != m_loaded.kind || (!g.device.isEmpty() && g.device != m_loaded.device) ||
-           g.nativeContext != m_loaded.nativeContext || g.venus != m_loaded.venus ||
-           ((g.nativeContext || g.venus) && m_hostmem->value() != m_loadedHostmemGiB) ||
-           g.display != m_loaded.display;
+    return chosen() != m_loaded;
 }
 
 /* Storage */
@@ -1619,6 +1094,776 @@ void ShareDialog::validate()
     m_ok->setEnabled(error.isEmpty());
 }
 
+/* USB */
+
+UsbPage::UsbPage(QWidget *parent)
+    : SettingsPage(parent), m_controller(new Banner(Banner::Warning)), m_tree(new QTreeWidget)
+{
+    auto *layout = new QVBoxLayout(this);
+
+    m_tree->setObjectName("usb");
+    m_tree->setHeaderLabels({tr("Device"), tr("ID"), tr("Status")});
+    m_tree->setRootIsDecorated(false);
+    m_tree->setUniformRowHeights(true);
+    m_tree->header()->setStretchLastSection(true);
+
+    m_controller->button()->setText(tr("&Add a USB Controller"));
+    connect(m_controller->button(), &QPushButton::clicked, this, [this]() {
+        m_addController = true;
+        m_controller->button()->hide();
+        m_controller->setText(tr("A USB 3 controller (qemu-xhci) will be added."));
+    });
+
+    layout->addWidget(m_controller);
+    layout->addWidget(Widgets::note(tr("The checked devices are given to the VM when it starts, by "
+                              "their vendor and product ID: this computer cannot use them "
+                              "while the VM runs. The menu of the VM window can attach "
+                              "devices while it runs too.")));
+    layout->addWidget(m_tree, 1);
+}
+
+QIcon UsbPage::icon() const
+{
+    return Icons::themed({"drive-removable-media-usb", "media-removable"},
+                         QStyle::SP_DriveFDIcon);
+}
+
+void UsbPage::load(const ArgsFile &args)
+{
+    const QList<UsbDevice> devices = HostDevices::usbDevices();
+    QList<VmConfig::UsbId> missing;
+
+    m_loaded = VmConfig::usbPassthrough(args);
+    missing = m_loaded;
+    m_addController = false;
+    m_tree->clear();
+
+    if (VmConfig::hasUsbController(args)) {
+        m_controller->hide();
+    } else {
+        m_controller->setText(tr("This VM has no USB controller, so it cannot use USB "
+                                 "devices."));
+        m_controller->button()->show();
+        m_controller->show();
+    }
+
+    for (const UsbDevice &dev : devices) {
+        const VmConfig::UsbId id{dev.vendorId, dev.productId};
+        const bool access = QFileInfo(dev.devNode()).isWritable();
+        QString name = QString("%1 %2").arg(dev.manufacturer, dev.product).simplified();
+
+        if (dev.isHub) {
+            continue;
+        }
+        if (name.isEmpty()) {
+            name = tr("Unknown device");
+        }
+        auto *item = new QTreeWidgetItem(
+            m_tree, {name,
+                     QString("%1:%2")
+                         .arg(dev.vendorId, 4, 16, QChar('0'))
+                         .arg(dev.productId, 4, 16, QChar('0')),
+                     access ? tr("Ready") : tr("No access")});
+        item->setData(0, Qt::UserRole, dev.vendorId);
+        item->setData(0, Qt::UserRole + 1, dev.productId);
+        item->setFlags(Qt::ItemIsEnabled | Qt::ItemIsSelectable | Qt::ItemIsUserCheckable);
+        item->setCheckState(0, m_loaded.contains(id) ? Qt::Checked : Qt::Unchecked);
+        item->setToolTip(0, tr("Bus %1, port %2").arg(dev.bus).arg(dev.port));
+        if (!access) {
+            item->setToolTip(
+                2, tr("QEMU cannot open %1. Give your user access with a udev rule, e.g. in "
+                      "/etc/udev/rules.d/70-qemu-usb.rules:\n"
+                      "SUBSYSTEM==\"usb\", ATTR{idVendor}==\"%2\", ATTR{idProduct}==\"%3\", "
+                      "TAG+=\"uaccess\"")
+                       .arg(dev.devNode())
+                       .arg(dev.vendorId, 4, 16, QChar('0'))
+                       .arg(dev.productId, 4, 16, QChar('0')));
+        }
+        missing.removeAll(id);
+    }
+    for (const VmConfig::UsbId &id : std::as_const(missing)) {
+        auto *item = new QTreeWidgetItem(
+            m_tree, {tr("Not connected"),
+                     QString("%1:%2")
+                         .arg(id.vendor, 4, 16, QChar('0'))
+                         .arg(id.product, 4, 16, QChar('0')),
+                     tr("Attached when connected before the VM starts")});
+        item->setData(0, Qt::UserRole, id.vendor);
+        item->setData(0, Qt::UserRole + 1, id.product);
+        item->setFlags(Qt::ItemIsEnabled | Qt::ItemIsSelectable | Qt::ItemIsUserCheckable);
+        item->setCheckState(0, Qt::Checked);
+    }
+    if (m_tree->topLevelItemCount() == 0) {
+        auto *empty = new QTreeWidgetItem(m_tree, {tr("No USB devices found")});
+        empty->setFlags(Qt::NoItemFlags);
+    }
+    m_tree->resizeColumnToContents(0);
+    m_tree->resizeColumnToContents(1);
+}
+
+QList<VmConfig::UsbId> UsbPage::checked() const
+{
+    QList<VmConfig::UsbId> list;
+
+    for (int i = 0; i < m_tree->topLevelItemCount(); i++) {
+        const QTreeWidgetItem *item = m_tree->topLevelItem(i);
+        if (item->flags() & Qt::ItemIsUserCheckable && item->checkState(0) == Qt::Checked) {
+            list << VmConfig::UsbId{quint16(item->data(0, Qt::UserRole).toUInt()),
+                                    quint16(item->data(0, Qt::UserRole + 1).toUInt())};
+        }
+    }
+    return list;
+}
+
+void UsbPage::save(ArgsFile &args)
+{
+    const QList<VmConfig::UsbId> list = checked();
+
+    if (list != m_loaded) {
+        VmConfig::setUsbPassthrough(args, list);
+        m_loaded = list;
+    }
+    if (m_addController && !VmConfig::hasUsbController(args)) {
+        args.add("device", "qemu-xhci");
+    }
+    m_addController = false;
+}
+
+bool UsbPage::isModified() const
+{
+    return checked() != m_loaded || m_addController;
+}
+
+/* Network */
+
+NetworkPage::NetworkPage(Vm *vm, QWidget *parent)
+    : SettingsPage(parent), m_vm(vm), m_custom(new Banner(Banner::Information)),
+      m_nat(new QCheckBox(tr("&Connect the VM to the network"))),
+      m_ssh(new QCheckBox(tr("&Forward a port of this computer to the guest's SSH server:"))),
+      m_port(new QSpinBox), m_sshInfo(Widgets::hint())
+{
+    auto *layout = new QVBoxLayout(this);
+    auto *form = Widgets::form();
+    auto *sshRow = new QHBoxLayout;
+
+    m_custom->setObjectName("customNetwork");
+    m_nat->setObjectName("nat");
+    m_ssh->setObjectName("ssh");
+    m_port->setObjectName("sshPort");
+    m_port->setRange(1024, 65535);
+    m_sshInfo->setTextInteractionFlags(Qt::TextSelectableByMouse);
+    sshRow->addWidget(m_ssh);
+    sshRow->addWidget(m_port);
+    sshRow->addStretch();
+
+    form->addRow(QString(), m_nat);
+    form->addRow(QString(), Widgets::hint(tr("Through this computer's connection (NAT): the VM "
+                                             "reaches the network and the internet, other "
+                                             "computers do not reach the VM.")));
+    form->addRow(QString(), sshRow);
+    form->addRow(QString(), m_sshInfo);
+    layout->addWidget(m_custom);
+    layout->addLayout(form);
+    layout->addStretch();
+
+    connect(m_nat, &QCheckBox::toggled, this, &NetworkPage::update);
+    connect(m_ssh, &QCheckBox::toggled, this, [this](bool on) {
+        if (on && m_loaded.sshPort == 0 && m_port->value() == m_port->minimum()) {
+            /* a port no other VM uses, free now */
+            QList<int> taken;
+            if (auto *store = m_vm ? qobject_cast<VmStore *>(m_vm->parent()) : nullptr) {
+                for (const Vm *other : store->vms()) {
+                    if (other != m_vm && VmConfig::network(other->args()).sshPort > 0) {
+                        taken << VmConfig::network(other->args()).sshPort;
+                    }
+                }
+            }
+            m_port->setValue(qMax(VmConfig::freePort(taken), m_port->minimum()));
+        }
+        update();
+    });
+    connect(m_port, &QSpinBox::valueChanged, this, &NetworkPage::update);
+}
+
+QIcon NetworkPage::icon() const
+{
+    return Icons::themed({"network-wired", "preferences-system-network"},
+                         QStyle::SP_DriveNetIcon);
+}
+
+void NetworkPage::update()
+{
+    const bool custom = m_loaded.kind == VmConfig::Network::Custom;
+
+    m_nat->setEnabled(!custom);
+    m_ssh->setEnabled(!custom && m_nat->isChecked());
+    m_port->setEnabled(!custom && m_nat->isChecked() && m_ssh->isChecked());
+    m_sshInfo->setVisible(!custom && m_nat->isChecked() && m_ssh->isChecked());
+    m_sshInfo->setText(tr("From this computer only: ssh -p %1 USER@127.0.0.1")
+                           .arg(m_port->value()));
+}
+
+void NetworkPage::load(const ArgsFile &args)
+{
+    const QSignalBlocker a(m_nat), b(m_ssh), c(m_port);
+
+    m_loaded = VmConfig::network(args);
+    /* where the VM had none: passt, if at hand */
+    m_backend = VmTemplate::hasPasst(QemuDocs::forArgs(args)->info()) ? "passt" : "user";
+    m_nat->setChecked(m_loaded.kind == VmConfig::Network::Nat);
+    m_ssh->setChecked(m_loaded.sshPort > 0);
+    m_port->setMinimum(qMin(1024, m_loaded.sshPort > 0 ? m_loaded.sshPort : 1024));
+    m_port->setValue(m_loaded.sshPort > 0 ? m_loaded.sshPort : m_port->minimum());
+    m_custom->setText(tr("The network of this VM is set up by hand (%1): change it on the "
+                         "Arguments page.")
+                          .arg(m_loaded.custom.toHtmlEscaped()));
+    m_custom->setVisible(m_loaded.kind == VmConfig::Network::Custom);
+    update();
+}
+
+VmConfig::Network NetworkPage::shown() const
+{
+    VmConfig::Network n = m_loaded;
+
+    n.kind = m_nat->isChecked() ? VmConfig::Network::Nat : VmConfig::Network::Off;
+    n.sshPort = m_nat->isChecked() && m_ssh->isChecked() ? m_port->value() : 0;
+    if (n.backend.isEmpty()) {
+        n.backend = m_backend;
+    }
+    return n;
+}
+
+void NetworkPage::save(ArgsFile &args)
+{
+    if (isModified()) {
+        VmConfig::setNetwork(args, shown());
+        load(args);
+    }
+}
+
+bool NetworkPage::isModified() const
+{
+    const VmConfig::Network n = shown();
+
+    if (m_loaded.kind == VmConfig::Network::Custom) {
+        return false;
+    }
+    return n.kind != m_loaded.kind || (n.kind == VmConfig::Network::Nat &&
+                                       n.sshPort != m_loaded.sshPort);
+}
+
+/* Machine */
+
+MachinePage::MachinePage(QWidget *parent)
+    : SettingsPage(parent), m_topology(new QCheckBox(tr("Set the &topology"))),
+      m_sockets(new QSpinBox), m_cores(new QSpinBox), m_threads(new QSpinBox),
+      m_count(Widgets::hint()), m_model(new QComboBox), m_modelInfo(Widgets::hint()),
+      m_machine(new QComboBox), m_machineInfo(Widgets::hint()),
+      m_defaultQemu(new QRadioButton), m_ownQemu(new QRadioButton(tr("This &build:"))),
+      m_qemuPath(new QLineEdit), m_qemuInfo(Widgets::hint())
+{
+    auto *layout = new QVBoxLayout(this);
+    auto *form = Widgets::form();
+
+    m_topology->setObjectName("topology");
+    for (QSpinBox *spin : {m_sockets, m_cores, m_threads}) {
+        spin->setRange(1, 1024);
+        spin->setEnabled(false);
+        connect(spin, &QSpinBox::valueChanged, this, &MachinePage::updateTopology);
+    }
+    connect(m_topology, &QCheckBox::toggled, this, [this](bool on) {
+        for (QSpinBox *spin : {m_sockets, m_cores, m_threads}) {
+            spin->setEnabled(on);
+        }
+        if (on && m_sockets->value() * m_cores->value() * m_threads->value() !=
+                      m_loadedCpus.count) {
+            /* one socket of cores */
+            const QSignalBlocker a(m_sockets), b(m_cores), c(m_threads);
+            m_sockets->setValue(1);
+            m_cores->setValue(m_loadedCpus.count);
+            m_threads->setValue(1);
+        }
+        updateTopology();
+    });
+
+    m_model->setObjectName("cpuModel");
+    m_model->setEditable(true);
+    m_model->setInsertPolicy(QComboBox::NoInsert);
+    m_model->lineEdit()->setPlaceholderText(tr("QEMU default"));
+    m_machine->setObjectName("machine");
+    m_machine->setEditable(true);
+    m_machine->setInsertPolicy(QComboBox::NoInsert);
+    connect(m_model, &QComboBox::currentTextChanged, this, &MachinePage::describe);
+    connect(m_machine, &QComboBox::currentTextChanged, this, &MachinePage::describe);
+
+    form->addRow(tr("Processor mode&l:"), m_model);
+    form->addRow(QString(), m_modelInfo);
+    form->addRow(QString(), m_topology);
+    form->addRow(tr("Sockets:"), m_sockets);
+    form->addRow(tr("Cores:"), m_cores);
+    form->addRow(tr("Threads:"), m_threads);
+    form->addRow(QString(), m_count);
+    form->addRow(tr("Ma&chine:"), m_machine);
+    form->addRow(QString(), m_machineInfo);
+
+    /* the QEMU of this VM: #qemu */
+    auto *qemu = new QVBoxLayout;
+    auto *ownRow = new QHBoxLayout;
+    auto *qemuGroup = new QButtonGroup(this);
+    m_defaultQemu->setObjectName("defaultQemu");
+    m_ownQemu->setObjectName("ownQemu");
+    m_qemuPath->setObjectName("qemuPath");
+    m_qemuPath->setPlaceholderText(tr("A qemu-system-x86_64, e.g. of a build with a patch"));
+    qemuGroup->addButton(m_defaultQemu);
+    qemuGroup->addButton(m_ownQemu);
+    ownRow->addWidget(m_ownQemu);
+    ownRow->addWidget(Widgets::browseRow(m_qemuPath, tr("QEMU Binary")), 1);
+    m_qemuPath->parentWidget()->setMaximumWidth(Widgets::em(this) * 30);
+    qemu->addWidget(m_defaultQemu);
+    qemu->addLayout(ownRow);
+    form->addRow(Widgets::label(tr("&QEMU:"), m_defaultQemu), qemu);
+    form->addRow(QString(), m_qemuInfo);
+    layout->addLayout(form);
+    layout->addStretch();
+
+    connect(qemuGroup, &QButtonGroup::buttonToggled, this, &MachinePage::updateQemu);
+    connect(m_qemuPath, &QLineEdit::textChanged, this, &MachinePage::updateQemu);
+    updateQemu();
+}
+
+QIcon MachinePage::icon() const
+{
+    return Icons::themed({"computer", "cpu"}, QStyle::SP_ComputerIcon);
+}
+
+QString MachinePage::chosenQemu() const
+{
+    return m_ownQemu->isChecked() ? m_qemuPath->text().trimmed() : QString();
+}
+
+void MachinePage::updateQemu()
+{
+    const QString preferred = Paths::qemuBinary();
+    QemuDocs *docs = QemuDocs::of(chosenQemu());
+
+    /* the path in a tool tip: a long one would widen the page */
+    m_defaultQemu->setText(preferred.isEmpty()
+                               ? tr("The &default QEMU, from the preferences: not found")
+                               : tr("The &default QEMU, from the preferences"));
+    m_defaultQemu->setToolTip(preferred);
+    m_qemuPath->parentWidget()->setEnabled(m_ownQemu->isChecked());
+    if (docs != m_docs) {
+        if (m_docs) {
+            m_docs->disconnect(this);
+        }
+        m_docs = docs;
+        connect(docs, &QemuDocs::changed, this, &MachinePage::fillLists);
+    }
+    fillLists();
+}
+
+void MachinePage::fillLists()
+{
+    const QemuInfo *info = m_docs->info();
+    const QString model = m_model->currentText();
+    const QString machine = m_machine->currentText();
+    const QSignalBlocker a(m_model), b(m_machine);
+    QStringList models = {"host", "max"};
+    QStringList machines = {"q35", "pc"};
+
+    if (info) {
+        for (const QemuNamedDoc &c : info->cpus) {
+            if (!models.contains(c.name)) {
+                models << c.name;
+            }
+        }
+        for (const QemuNamedDoc &m : info->machines) {
+            if (!machines.contains(m.name)) {
+                machines << m.name;
+            }
+        }
+    }
+    m_model->clear();
+    m_model->addItems(models);
+    m_model->setCurrentText(model);
+    m_machine->clear();
+    m_machine->addItems(machines);
+    m_machine->setCurrentText(machine);
+    describe();
+
+    if (m_ownQemu->isChecked() && chosenQemu().isEmpty()) {
+        m_qemuInfo->setText(tr("Choose the QEMU binary of this VM."));
+    } else if (info) {
+        m_qemuInfo->setText(tr("QEMU %1").arg(info->version));
+    } else {
+        m_qemuInfo->setText(m_docs->status());
+    }
+}
+
+void MachinePage::describe()
+{
+    const QemuInfo *info = m_docs->info();
+    /* host,topoext=on: the model and its flags */
+    const QString model = m_model->currentText().section(',', 0, 0).trimmed();
+    const QString machine = m_machine->currentText().trimmed();
+    QString modelText, machineText;
+
+    if (model.isEmpty()) {
+        modelText = tr("QEMU's basic processor, for compatibility.");
+    } else if (model == "host") {
+        modelText = tr("The processor of this computer with all its features: the fastest. "
+                       "Needs KVM.");
+    } else if (model == "max") {
+        modelText = tr("Every feature QEMU can offer.");
+    } else if (info) {
+        for (const QemuNamedDoc &c : info->cpus) {
+            if (c.name == model) {
+                modelText = c.desc;
+            }
+        }
+    }
+    if (machine == "q35") {
+        machineText = tr("A modern PC with PCI Express. The best choice for most systems.");
+    } else if (machine == "pc") {
+        machineText = tr("An older PC (i440FX), for old systems.");
+    } else if (info) {
+        for (const QemuNamedDoc &m : info->machines) {
+            if (m.name == machine) {
+                machineText = m.desc;
+            }
+        }
+    }
+    m_modelInfo->setText(modelText);
+    m_machineInfo->setText(machineText);
+}
+
+void MachinePage::updateTopology()
+{
+    const int count = m_topology->isChecked()
+                          ? m_sockets->value() * m_cores->value() * m_threads->value()
+                          : m_loadedCpus.count;
+    m_count->setText(tr("%n processors in all.", nullptr, count));
+}
+
+void MachinePage::load(const ArgsFile &args)
+{
+    m_loadedCpus = VmConfig::cpus(args);
+    m_loadedMachine = VmConfig::machineType(args);
+    {
+        const QSignalBlocker a(m_sockets), b(m_cores), c(m_threads), d(m_topology);
+        const bool given = m_loadedCpus.sockets > 0 || m_loadedCpus.cores > 0 ||
+                           m_loadedCpus.threads > 0;
+        m_sockets->setValue(qMax(m_loadedCpus.sockets, 1));
+        m_cores->setValue(qMax(m_loadedCpus.cores, 1));
+        m_threads->setValue(qMax(m_loadedCpus.threads, 1));
+        m_topology->setChecked(given);
+        for (QSpinBox *spin : {m_sockets, m_cores, m_threads}) {
+            spin->setEnabled(given);
+        }
+        /* compare with what the page shows */
+        if (given) {
+            m_loadedCpus.sockets = m_sockets->value();
+            m_loadedCpus.cores = m_cores->value();
+            m_loadedCpus.threads = m_threads->value();
+        }
+    }
+    updateTopology();
+    m_model->setCurrentText(m_loadedCpus.model);
+    m_machine->setCurrentText(m_loadedMachine);
+
+    m_loadedQemu = VmConfig::qemuBinary(args);
+    {
+        const QSignalBlocker a(m_defaultQemu), b(m_ownQemu), c(m_qemuPath);
+        m_qemuPath->setText(m_loadedQemu);
+        (m_loadedQemu.isEmpty() ? m_defaultQemu : m_ownQemu)->setChecked(true);
+    }
+    updateQemu();
+    describe();
+}
+
+void MachinePage::save(ArgsFile &args)
+{
+    VmConfig::Cpus cpus;
+    const QString machine = m_machine->currentText().trimmed();
+
+    cpus.count = m_loadedCpus.count;
+    if (m_topology->isChecked()) {
+        cpus.sockets = m_sockets->value();
+        cpus.cores = m_cores->value();
+        cpus.threads = m_threads->value();
+        cpus.count = cpus.sockets * cpus.cores * cpus.threads;
+    }
+    /* "host,topoext=on": the model, then flags for the -cpu line */
+    const QString model = m_model->currentText().trimmed();
+    const OptionValue flags(model.section(',', 1));
+    cpus.model = model.section(',', 0, 0).trimmed();
+    if (cpus.count != m_loadedCpus.count || cpus.sockets != m_loadedCpus.sockets ||
+        cpus.cores != m_loadedCpus.cores || cpus.threads != m_loadedCpus.threads ||
+        cpus.model != m_loadedCpus.model) {
+        VmConfig::setCpus(args, cpus);
+        m_loadedCpus = cpus;
+        /* AMD: the guest sees the threads of its cores only with topoext */
+        if (cpus.threads > 1 && (cpus.model == "host" || cpus.model == "max") &&
+            HostDevices::cpuHasFlag("topoext")) {
+            VmConfig::enableCpuFeature(args, "topoext");
+        }
+    }
+    if (!cpus.model.isEmpty() && !flags.isEmpty()) {
+        const int cpu = args.indexOf("cpu");
+        OptionValue v = args.valueAt(cpu);
+        QString extra;
+
+        for (const OptionValue::Item &item : flags.items()) {
+            if (item.key.isEmpty() || item.bare) {
+                /* +avx, or a flag written without a value */
+                const QString word = item.key.isEmpty() ? item.value : item.key;
+                if (!v.has(word) && !word.isEmpty()) {
+                    extra += ',' + OptionValue::escape(word);
+                }
+            } else {
+                v.set(item.key, item.value);
+            }
+        }
+        args.setValueAt(cpu, v.toString() + extra);
+        m_model->setCurrentText(cpus.model);
+    }
+    if (!machine.isEmpty() && machine != m_loadedMachine) {
+        VmConfig::setMachineType(args, machine);
+        m_loadedMachine = machine;
+    }
+    if (chosenQemu() != m_loadedQemu) {
+        VmConfig::setQemuBinary(args, chosenQemu());
+        m_loadedQemu = chosenQemu();
+    }
+}
+
+bool MachinePage::isModified() const
+{
+    const QString machine = m_machine->currentText().trimmed();
+
+    if (m_model->currentText().trimmed() != m_loadedCpus.model ||
+        (!machine.isEmpty() && machine != m_loadedMachine) || chosenQemu() != m_loadedQemu) {
+        return true;
+    }
+    if (!m_topology->isChecked()) {
+        return m_loadedCpus.sockets || m_loadedCpus.cores || m_loadedCpus.threads;
+    }
+    return m_sockets->value() != m_loadedCpus.sockets ||
+           m_cores->value() != m_loadedCpus.cores || m_threads->value() != m_loadedCpus.threads;
+}
+
+/* Boot */
+
+BootPage::BootPage(Vm *vm, QWidget *parent)
+    : SettingsPage(parent), m_vm(vm), m_firmware(new QComboBox),
+      m_firmwareInfo(Widgets::hint()), m_resetVars(new QPushButton(tr("&Reset UEFI Variables…"))),
+      m_bootMenu(new QCheckBox(tr("Show the boot men&u when the VM starts"))),
+      m_bootDevice(new QComboBox)
+{
+    auto *layout = new QVBoxLayout(this);
+    auto *form = Widgets::form();
+    auto *resetRow = new QHBoxLayout;
+
+    m_firmware->setObjectName("firmware");
+    m_bootDevice->setObjectName("bootDevice");
+    m_bootMenu->setObjectName("bootMenu");
+    m_bootDevice->addItem(tr("The first bootable device, the firmware's default"),
+                          int(VmConfig::BootDevice::Default));
+    m_bootDevice->addItem(tr("The hard disk"), int(VmConfig::BootDevice::Disk));
+    m_bootDevice->addItem(tr("The CD/DVD drive"), int(VmConfig::BootDevice::Cdrom));
+    m_bootDevice->addItem(tr("The network (PXE)"), int(VmConfig::BootDevice::Network));
+    m_bootDevice->setToolTip(tr("Sets bootindex=1 on its device, which both SeaBIOS and "
+                                "UEFI follow"));
+    /* for a system that no longer starts, its variables damaged */
+    m_resetVars->setObjectName("resetVars");
+    resetRow->addWidget(m_resetVars);
+    resetRow->addStretch();
+    connect(m_resetVars, &QPushButton::clicked, this, &BootPage::resetVars);
+    if (m_vm) {
+        connect(m_vm->runner(), &VmRunner::stateChanged, this, &BootPage::updateResetVars);
+    }
+
+    form->addRow(tr("F&irmware:"), m_firmware);
+    form->addRow(QString(), m_firmwareInfo);
+    form->addRow(QString(), resetRow);
+    form->addRow(tr("&Start from:"), m_bootDevice);
+    form->addRow(QString(), m_bootMenu);
+    layout->addLayout(form);
+    layout->addStretch();
+    connect(m_firmware, &QComboBox::currentIndexChanged, this, &BootPage::describeFirmware);
+}
+
+QIcon BootPage::icon() const
+{
+    return Icons::themed({"system-reboot", "media-playback-start"}, QStyle::SP_MediaPlay);
+}
+
+void BootPage::load(const ArgsFile &args)
+{
+    using VmConfig::FirmwareKind;
+    const QList<VmConfig::Disk> disks = VmConfig::disks(args);
+    bool disk = false, cdrom = false, nic = false;
+
+    m_machine = VmConfig::machineType(args);
+    const bool virt = m_machine.startsWith("virt");
+    m_loadedFirmware = VmConfig::firmwareKind(args);
+    {
+        const QSignalBlocker block(m_firmware);
+        m_firmware->clear();
+        /* ARM's virt boots with UEFI only */
+        if (!virt) {
+            m_firmware->addItem(tr("BIOS (SeaBIOS), for old systems"), int(FirmwareKind::Bios));
+        } else if (m_loadedFirmware == FirmwareKind::Bios) {
+            m_firmware->addItem(tr("None"), int(FirmwareKind::Bios));
+        }
+        m_firmware->addItem(tr("UEFI"), int(FirmwareKind::Uefi));
+        if (!virt || FirmwareDb::find(true, m_machine)) {
+            m_firmware->addItem(tr("UEFI with Secure Boot"), int(FirmwareKind::UefiSecureBoot));
+        }
+        if (m_loadedFirmware == FirmwareKind::Custom) {
+            m_firmware->addItem(tr("Set by hand"), int(FirmwareKind::Custom));
+        }
+        m_firmware->setCurrentIndex(m_firmware->findData(int(m_loadedFirmware)));
+        m_firmware->setEnabled(m_loadedFirmware != FirmwareKind::Custom);
+    }
+
+    m_loadedBootMenu = VmConfig::bootMenu(args);
+    m_bootMenu->setChecked(m_loadedBootMenu);
+
+    for (const VmConfig::Disk &d : disks) {
+        (d.cdrom ? cdrom : disk) |= d.editable;
+    }
+    for (int i : args.indexesOf("device")) {
+        nic |= args.valueAt(i).has("netdev");
+    }
+    m_loadedBootDevice = VmConfig::firstBootDevice(args);
+    if (auto *model = qobject_cast<QStandardItemModel *>(m_bootDevice->model())) {
+        const bool present[] = {true, disk, cdrom, nic};
+        for (int i = 0; i < model->rowCount(); i++) {
+            model->item(i)->setEnabled(present[i] || i == int(m_loadedBootDevice));
+        }
+    }
+    m_bootDevice->setCurrentIndex(m_bootDevice->findData(int(m_loadedBootDevice)));
+    describeFirmware();
+    updateResetVars();
+}
+
+/* The variable store in the VM folder, by the saved arguments, if it can be made again */
+static FirmwareFiles::File resettableVars(const Vm *vm)
+{
+    for (const FirmwareFiles::File &f : vm ? FirmwareRepair::files(vm)
+                                           : QList<FirmwareFiles::File>()) {
+        if (f.role == FirmwareFiles::File::Role::Vars && !f.templatePath.isEmpty()) {
+            return f;
+        }
+    }
+    return {};
+}
+
+void BootPage::updateResetVars()
+{
+    const bool running = m_vm && m_vm->runner()->isActive();
+
+    m_resetVars->setVisible(!resettableVars(m_vm).path.isEmpty());
+    m_resetVars->setEnabled(!running);
+    m_resetVars->setToolTip(running ? tr("Shut the VM down first.")
+                                    : tr("For a system that no longer starts: the boot "
+                                         "entries and keys go back to those of a new VM."));
+}
+
+void BootPage::resetVars()
+{
+    const FirmwareFiles::File vars = resettableVars(m_vm);
+
+    if (!vars.path.isEmpty() && FirmwareRepair::reset(this, m_vm, {vars}, tr("&Reset"))) {
+        m_firmwareInfo->setText(tr("The UEFI variables are those of a new VM again. The old "
+                                   "ones are kept in the VM folder, in a .bak file."));
+    }
+}
+
+void BootPage::save(ArgsFile &args)
+{
+    using VmConfig::FirmwareKind;
+    const auto kind = FirmwareKind(m_firmware->currentData().toInt());
+    const auto device = VmConfig::BootDevice(m_bootDevice->currentData().toInt());
+
+    if (kind != m_loadedFirmware && kind != FirmwareKind::Custom) {
+        if (kind == FirmwareKind::Bios) {
+            VmConfig::useBios(args);
+        } else if (const std::optional<Firmware> fw = FirmwareDb::find(
+                       kind == FirmwareKind::UefiSecureBoot, m_machine)) {
+            /* copied into the VM folder when the dialog applies */
+            FirmwareDb::apply(args, *fw, m_staging.path());
+        }
+        m_loadedFirmware = kind;
+    }
+    if (m_bootMenu->isChecked() != m_loadedBootMenu) {
+        VmConfig::setBootMenu(args, m_bootMenu->isChecked());
+        m_loadedBootMenu = m_bootMenu->isChecked();
+    }
+    if (device != m_loadedBootDevice) {
+        VmConfig::setFirstBootDevice(args, device);
+        m_loadedBootDevice = device;
+    }
+}
+
+bool BootPage::isModified() const
+{
+    return m_firmware->currentData().toInt() != int(m_loadedFirmware) ||
+           m_bootMenu->isChecked() != m_loadedBootMenu ||
+           m_bootDevice->currentData().toInt() != int(m_loadedBootDevice);
+}
+
+void BootPage::describeFirmware()
+{
+    using VmConfig::FirmwareKind;
+    const auto kind = FirmwareKind(m_firmware->currentData().toInt());
+
+    if (kind == FirmwareKind::Custom) {
+        m_firmwareInfo->setText(tr("The firmware is set by hand: change it on the Arguments "
+                                   "page."));
+    } else if ((kind == FirmwareKind::Uefi || kind == FirmwareKind::UefiSecureBoot) &&
+               !FirmwareDb::find(kind == FirmwareKind::UefiSecureBoot, m_machine)) {
+        m_firmwareInfo->setText(tr("No such UEFI firmware was found: install edk2-ovmf "
+                                   "(edk2-aarch64 on ARM)."));
+    } else if (kind != m_loadedFirmware) {
+        m_firmwareInfo->setText(tr("A system installed with UEFI needs UEFI, one installed "
+                                   "with BIOS needs BIOS: changing it may keep the installed "
+                                   "system from starting."));
+    } else if (kind == FirmwareKind::UefiSecureBoot) {
+        m_firmwareInfo->setText(tr("Secure Boot starts only signed kernels and modules: the "
+                                   "guest tools' graphics driver is not signed."));
+    } else if (kind == FirmwareKind::Bios) {
+        m_firmwareInfo->setText(QString());
+    } else {
+        m_firmwareInfo->setText(tr("The firmware and its variables are kept in the VM "
+                                   "folder."));
+    }
+}
+
+bool BootPage::commit(const ArgsFile &args, const QString &vmDir, QString *error)
+{
+    const QDir staging(m_staging.path());
+
+    /* the firmware copies the arguments use; the VM's own variables stay */
+    for (const VmConfig::FileRef &ref : VmConfig::files(args)) {
+        const QString source = staging.filePath(ref.path);
+        const QString target = QDir(vmDir).filePath(ref.path);
+
+        if (QDir::isAbsolutePath(ref.path) || !QFileInfo::exists(source) ||
+            QFileInfo::exists(target)) {
+            continue;
+        }
+        if (!QFile::copy(source, target)) {
+            *error = tr("Cannot copy %1 into %2").arg(ref.path, vmDir);
+            return false;
+        }
+        QFile::setPermissions(target, QFile::permissions(target) | QFile::ReadOwner |
+                                          QFile::WriteOwner);
+    }
+    return true;
+}
+
 /* PCI */
 
 PciPage::PciPage(QWidget *parent)
@@ -1769,146 +2014,6 @@ void PciPage::save(ArgsFile &args)
 bool PciPage::isModified() const
 {
     return checked() != m_loaded;
-}
-
-/* USB */
-
-UsbPage::UsbPage(QWidget *parent)
-    : SettingsPage(parent), m_controller(new Banner(Banner::Warning)), m_tree(new QTreeWidget)
-{
-    auto *layout = new QVBoxLayout(this);
-
-    m_tree->setObjectName("usb");
-    m_tree->setHeaderLabels({tr("Device"), tr("ID"), tr("Status")});
-    m_tree->setRootIsDecorated(false);
-    m_tree->setUniformRowHeights(true);
-    m_tree->header()->setStretchLastSection(true);
-
-    m_controller->button()->setText(tr("&Add a USB Controller"));
-    connect(m_controller->button(), &QPushButton::clicked, this, [this]() {
-        m_addController = true;
-        m_controller->button()->hide();
-        m_controller->setText(tr("A USB 3 controller (qemu-xhci) will be added."));
-    });
-
-    layout->addWidget(m_controller);
-    layout->addWidget(Widgets::note(tr("The checked devices are given to the VM when it starts, by "
-                              "their vendor and product ID: this computer cannot use them "
-                              "while the VM runs. The menu of the VM window can attach "
-                              "devices while it runs too.")));
-    layout->addWidget(m_tree, 1);
-}
-
-QIcon UsbPage::icon() const
-{
-    return Icons::themed({"drive-removable-media-usb", "media-removable"},
-                         QStyle::SP_DriveFDIcon);
-}
-
-void UsbPage::load(const ArgsFile &args)
-{
-    const QList<UsbDevice> devices = HostDevices::usbDevices();
-    QList<VmConfig::UsbId> missing;
-
-    m_loaded = VmConfig::usbPassthrough(args);
-    missing = m_loaded;
-    m_addController = false;
-    m_tree->clear();
-
-    if (VmConfig::hasUsbController(args)) {
-        m_controller->hide();
-    } else {
-        m_controller->setText(tr("This VM has no USB controller, so it cannot use USB "
-                                 "devices."));
-        m_controller->button()->show();
-        m_controller->show();
-    }
-
-    for (const UsbDevice &dev : devices) {
-        const VmConfig::UsbId id{dev.vendorId, dev.productId};
-        const bool access = QFileInfo(dev.devNode()).isWritable();
-        QString name = QString("%1 %2").arg(dev.manufacturer, dev.product).simplified();
-
-        if (dev.isHub) {
-            continue;
-        }
-        if (name.isEmpty()) {
-            name = tr("Unknown device");
-        }
-        auto *item = new QTreeWidgetItem(
-            m_tree, {name,
-                     QString("%1:%2")
-                         .arg(dev.vendorId, 4, 16, QChar('0'))
-                         .arg(dev.productId, 4, 16, QChar('0')),
-                     access ? tr("Ready") : tr("No access")});
-        item->setData(0, Qt::UserRole, dev.vendorId);
-        item->setData(0, Qt::UserRole + 1, dev.productId);
-        item->setFlags(Qt::ItemIsEnabled | Qt::ItemIsSelectable | Qt::ItemIsUserCheckable);
-        item->setCheckState(0, m_loaded.contains(id) ? Qt::Checked : Qt::Unchecked);
-        item->setToolTip(0, tr("Bus %1, port %2").arg(dev.bus).arg(dev.port));
-        if (!access) {
-            item->setToolTip(
-                2, tr("QEMU cannot open %1. Give your user access with a udev rule, e.g. in "
-                      "/etc/udev/rules.d/70-qemu-usb.rules:\n"
-                      "SUBSYSTEM==\"usb\", ATTR{idVendor}==\"%2\", ATTR{idProduct}==\"%3\", "
-                      "TAG+=\"uaccess\"")
-                       .arg(dev.devNode())
-                       .arg(dev.vendorId, 4, 16, QChar('0'))
-                       .arg(dev.productId, 4, 16, QChar('0')));
-        }
-        missing.removeAll(id);
-    }
-    for (const VmConfig::UsbId &id : std::as_const(missing)) {
-        auto *item = new QTreeWidgetItem(
-            m_tree, {tr("Not connected"),
-                     QString("%1:%2")
-                         .arg(id.vendor, 4, 16, QChar('0'))
-                         .arg(id.product, 4, 16, QChar('0')),
-                     tr("Attached when connected before the VM starts")});
-        item->setData(0, Qt::UserRole, id.vendor);
-        item->setData(0, Qt::UserRole + 1, id.product);
-        item->setFlags(Qt::ItemIsEnabled | Qt::ItemIsSelectable | Qt::ItemIsUserCheckable);
-        item->setCheckState(0, Qt::Checked);
-    }
-    if (m_tree->topLevelItemCount() == 0) {
-        auto *empty = new QTreeWidgetItem(m_tree, {tr("No USB devices found")});
-        empty->setFlags(Qt::NoItemFlags);
-    }
-    m_tree->resizeColumnToContents(0);
-    m_tree->resizeColumnToContents(1);
-}
-
-QList<VmConfig::UsbId> UsbPage::checked() const
-{
-    QList<VmConfig::UsbId> list;
-
-    for (int i = 0; i < m_tree->topLevelItemCount(); i++) {
-        const QTreeWidgetItem *item = m_tree->topLevelItem(i);
-        if (item->flags() & Qt::ItemIsUserCheckable && item->checkState(0) == Qt::Checked) {
-            list << VmConfig::UsbId{quint16(item->data(0, Qt::UserRole).toUInt()),
-                                    quint16(item->data(0, Qt::UserRole + 1).toUInt())};
-        }
-    }
-    return list;
-}
-
-void UsbPage::save(ArgsFile &args)
-{
-    const QList<VmConfig::UsbId> list = checked();
-
-    if (list != m_loaded) {
-        VmConfig::setUsbPassthrough(args, list);
-        m_loaded = list;
-    }
-    if (m_addController && !VmConfig::hasUsbController(args)) {
-        args.add("device", "qemu-xhci");
-    }
-    m_addController = false;
-}
-
-bool UsbPage::isModified() const
-{
-    return checked() != m_loaded || m_addController;
 }
 
 /* Arguments */

@@ -1,5 +1,8 @@
 // SPDX-License-Identifier: GPL-2.0-or-later
+#include <QStandardPaths>
 #include <QTest>
+
+#include "core/qemuinfo.h"
 
 #include "core/vmconfig.h"
 #include "core/vmhardware.h"
@@ -171,6 +174,25 @@ private slots:
         o.gpuProperties << "drm_native_context" << "x-host-vblank" << "x-vblank-lead"
                         << "x-vblank-lead-auto" << "x-vblank-swap-target";
         QCOMPARE(build(o).toText(), build(fedora("x86_64")).toText());
+    }
+
+    /* What the VM's QEMU tells the template and the Network page */
+    void fromQemuInfo()
+    {
+        QemuInfo info;
+        const bool installed = !QStandardPaths::findExecutable("passt").isEmpty();
+
+        QCOMPARE(gpuProperties(nullptr), QStringList());
+        QCOMPARE(gpuProperties(&info), QStringList());
+        info.properties["virtio-gpu-gl-pci"] = {{"blob", "bool", {}, "off"},
+                                                {"x-host-vblank", "bool", {}, "on"}};
+        QCOMPARE(gpuProperties(&info), QStringList({"blob", "x-host-vblank"}));
+
+        QCOMPARE(hasPasst(nullptr), installed);
+        info.netdevs = {{"user", {}}, {"tap", {}}};
+        QVERIFY(!hasPasst(&info));
+        info.netdevs << QemuNamedDoc{"passt", {}};
+        QCOMPARE(hasPasst(&info), installed);
     }
 
     void windows()

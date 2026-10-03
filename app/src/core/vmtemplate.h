@@ -8,6 +8,8 @@
 
 #include "core/argsfile.h"
 
+struct QemuInfo;
+
 /*
  * The arguments of a new VM: a modern machine with KVM, virtio devices for
  * Linux and devices Windows has drivers for, shared memory for virtiofs,
@@ -70,6 +72,14 @@ Defaults defaults(Os os);
 /* What the machine of @arch (empty for the host's) offers */
 bool hasBios(const QString &arch = {});
 bool hasVga(const QString &arch = {});
+
+/*
+ * NAT through passt: installed on this computer, and in the QEMU of @info
+ * (null when not known yet), which has it if built with it
+ */
+bool hasPasst(const QemuInfo *info);
+/* The properties of virtio-gpu-gl-pci in the QEMU of @info, empty when not known */
+QStringList gpuProperties(const QemuInfo *info);
 
 /*
  * The arguments, in sections.  @addFirmware is called where the firmware

@@ -2,8 +2,10 @@
 #include "vmtemplate.h"
 
 #include <QFile>
+#include <QStandardPaths>
 
 #include "core/paths.h"
+#include "core/qemuinfo.h"
 #include "core/vmconfig.h"
 #include "core/vmhardware.h"
 
@@ -38,6 +40,34 @@ bool hasBios(const QString &arch)
 bool hasVga(const QString &arch)
 {
     return !isArm(arch);
+}
+
+bool hasPasst(const QemuInfo *info)
+{
+    if (QStandardPaths::findExecutable("passt").isEmpty()) {
+        return false;
+    }
+    if (!info) {
+        return true;
+    }
+    for (const QemuNamedDoc &netdev : info->netdevs) {
+        if (netdev.name == "passt") {
+            return true;
+        }
+    }
+    return false;
+}
+
+QStringList gpuProperties(const QemuInfo *info)
+{
+    QStringList names;
+
+    if (info) {
+        for (const QemuPropertyDoc &p : info->properties.value("virtio-gpu-gl-pci")) {
+            names << p.name;
+        }
+    }
+    return names;
 }
 
 /* With SMT on, two threads per core */

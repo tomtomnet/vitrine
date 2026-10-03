@@ -33,6 +33,12 @@ class Vm;
  * page shows them when it is entered and writes back what the user changed
  * when it is left, so that the other pages, the Arguments page above all,
  * see the changes.
+ *
+ * The simple pages come first: General, Hardware, Display, Storage, Shared
+ * Folders, USB, Network.  Then the Advanced group: Machine, Boot, PCI
+ * Devices and Arguments, which edits the whole command line.  What vitrine
+ * decides itself, the graphics card and its 3D features, the accelerator,
+ * has no page but Arguments.
  */
 class SettingsPage : public QWidget
 {
@@ -62,6 +68,8 @@ public:
     }
 };
 
+/* Simple pages */
+
 class GeneralPage : public SettingsPage
 {
     Q_OBJECT
@@ -76,77 +84,43 @@ public:
     bool isModified() const override;
 
 private:
+    /* The guest the page shows */
+    VmConfig::Guest shown() const;
+    void updateDesktop();
+
     QLineEdit *m_name;
+    QComboBox *m_os;
+    QComboBox *m_desktop;
     QString m_loaded;
+    VmConfig::Guest m_loadedGuest;
 };
 
-class SystemPage : public SettingsPage
+/* Memory and processors */
+class HardwarePage : public SettingsPage
 {
     Q_OBJECT
 
 public:
-    explicit SystemPage(Vm *vm, QWidget *parent = nullptr);
+    explicit HardwarePage(QWidget *parent = nullptr);
 
-    QString title() const override { return tr("System"); }
+    QString title() const override { return tr("Hardware"); }
     QIcon icon() const override;
     void load(const ArgsFile &args) override;
     void save(ArgsFile &args) override;
     bool isModified() const override;
-    bool commit(const ArgsFile &args, const QString &vmDir, QString *error) override;
 
 private:
-    void loadBoot(const ArgsFile &args);
-    void saveBoot(ArgsFile &args);
-    bool bootModified() const;
-    void describeFirmware();
-    /* Reset UEFI Variables: for the variable store the saved arguments name */
-    void updateResetVars();
-    void resetVars();
-
-    /* The QEMU chosen, empty for the default one */
-    QString chosenQemu() const;
-    void updateQemu();
-    void fillLists();
-    void updateTopology();
-    void describe();
-
-    QemuDocs *m_docs = nullptr;
     QSlider *m_memorySlider;
     QSpinBox *m_memory;
     QSlider *m_cpuSlider;
     QSpinBox *m_cpus;
-    QCheckBox *m_topology;
-    QSpinBox *m_sockets;
-    QSpinBox *m_cores;
-    QSpinBox *m_threads;
-    QComboBox *m_model;
-    QLabel *m_modelInfo;
-    QComboBox *m_machine;
-    QLabel *m_machineInfo;
-    QComboBox *m_accel;
-    QRadioButton *m_defaultQemu;
-    QRadioButton *m_ownQemu;
-    QLineEdit *m_qemuPath;
-    QLabel *m_qemuInfo;
-    Vm *m_vm;
-    QComboBox *m_firmware;
-    QLabel *m_firmwareInfo;
-    QPushButton *m_resetVars;
-    QCheckBox *m_bootMenu;
-    QComboBox *m_bootDevice;
-    /* The firmware files apply() copies, until the dialog applies */
-    QTemporaryDir m_staging;
+    QLabel *m_topology;
 
     qint64 m_loadedMemory = 0;
-    VmConfig::Cpus m_loadedCpus;
-    QString m_loadedMachine;
-    QString m_loadedAccel;
-    QString m_loadedQemu;
-    VmConfig::FirmwareKind m_loadedFirmware = VmConfig::FirmwareKind::Bios;
-    bool m_loadedBootMenu = false;
-    VmConfig::BootDevice m_loadedBootDevice = VmConfig::BootDevice::Default;
+    int m_loadedCpus = 0;
 };
 
+/* Where the screen shows: vitrine's window or QEMU's SDL window */
 class DisplayPage : public SettingsPage
 {
     Q_OBJECT
@@ -161,24 +135,13 @@ public:
     bool isModified() const override;
 
 private:
-    /* The graphics the page shows */
-    VmConfig::Graphics shown() const;
-    void fillDevices();
-    void update();
+    /* The screen chosen, None when neither is */
+    VmConfig::Screen chosen() const;
 
     Banner *m_custom;
-    QComboBox *m_kind;
-    QComboBox *m_device;
-    QCheckBox *m_nativeContext;
-    QCheckBox *m_venus;
-    Banner *m_venusUnused;
-    QSpinBox *m_hostmem;
-    QComboBox *m_window;
-
-    VmConfig::Graphics m_loaded;
-    int m_loadedHostmemGiB = 0;
-    /* ARM's virt: no VGA */
-    bool m_virt = false;
+    QRadioButton *m_embedded;
+    QRadioButton *m_ownWindow;
+    VmConfig::Screen m_loaded = VmConfig::Screen::None;
 };
 
 class StoragePage : public SettingsPage
@@ -283,27 +246,6 @@ private:
     bool m_mountEdited = false;
 };
 
-class PciPage : public SettingsPage
-{
-    Q_OBJECT
-
-public:
-    explicit PciPage(QWidget *parent = nullptr);
-
-    QString title() const override { return tr("PCI Devices"); }
-    QIcon icon() const override;
-    void load(const ArgsFile &args) override;
-    void save(ArgsFile &args) override;
-    bool isModified() const override;
-
-private:
-    QStringList checked() const;
-
-    Banner *m_banner;
-    QTreeWidget *m_tree;
-    QStringList m_loaded;
-};
-
 class UsbPage : public SettingsPage
 {
     Q_OBJECT
@@ -324,6 +266,137 @@ private:
     QTreeWidget *m_tree;
     QList<VmConfig::UsbId> m_loaded;
     bool m_addController = false;
+};
+
+/* NAT and the forward to the guest's SSH */
+class NetworkPage : public SettingsPage
+{
+    Q_OBJECT
+
+public:
+    explicit NetworkPage(Vm *vm, QWidget *parent = nullptr);
+
+    QString title() const override { return tr("Network"); }
+    QIcon icon() const override;
+    void load(const ArgsFile &args) override;
+    void save(ArgsFile &args) override;
+    bool isModified() const override;
+
+private:
+    /* What the page shows */
+    VmConfig::Network shown() const;
+    void update();
+
+    Vm *m_vm;
+    Banner *m_custom;
+    QCheckBox *m_nat;
+    QCheckBox *m_ssh;
+    QSpinBox *m_port;
+    QLabel *m_sshInfo;
+    VmConfig::Network m_loaded;
+    /* passt, if this computer and the VM's QEMU have it */
+    QString m_backend;
+};
+
+/* Advanced pages */
+
+/* The processor model and topology, the machine, the QEMU of the VM */
+class MachinePage : public SettingsPage
+{
+    Q_OBJECT
+
+public:
+    explicit MachinePage(QWidget *parent = nullptr);
+
+    QString title() const override { return tr("Machine"); }
+    QIcon icon() const override;
+    void load(const ArgsFile &args) override;
+    void save(ArgsFile &args) override;
+    bool isModified() const override;
+
+private:
+    /* The QEMU chosen, empty for the default one */
+    QString chosenQemu() const;
+    void updateQemu();
+    void fillLists();
+    void updateTopology();
+    void describe();
+
+    QemuDocs *m_docs = nullptr;
+    QCheckBox *m_topology;
+    QSpinBox *m_sockets;
+    QSpinBox *m_cores;
+    QSpinBox *m_threads;
+    QLabel *m_count;
+    QComboBox *m_model;
+    QLabel *m_modelInfo;
+    QComboBox *m_machine;
+    QLabel *m_machineInfo;
+    QRadioButton *m_defaultQemu;
+    QRadioButton *m_ownQemu;
+    QLineEdit *m_qemuPath;
+    QLabel *m_qemuInfo;
+
+    VmConfig::Cpus m_loadedCpus;
+    QString m_loadedMachine;
+    QString m_loadedQemu;
+};
+
+/* Firmware and boot */
+class BootPage : public SettingsPage
+{
+    Q_OBJECT
+
+public:
+    explicit BootPage(Vm *vm, QWidget *parent = nullptr);
+
+    QString title() const override { return tr("Boot"); }
+    QIcon icon() const override;
+    void load(const ArgsFile &args) override;
+    void save(ArgsFile &args) override;
+    bool isModified() const override;
+    bool commit(const ArgsFile &args, const QString &vmDir, QString *error) override;
+
+private:
+    void describeFirmware();
+    /* Reset UEFI Variables: for the variable store the saved arguments name */
+    void updateResetVars();
+    void resetVars();
+
+    Vm *m_vm;
+    QComboBox *m_firmware;
+    QLabel *m_firmwareInfo;
+    QPushButton *m_resetVars;
+    QCheckBox *m_bootMenu;
+    QComboBox *m_bootDevice;
+    /* The firmware files apply() copies, until the dialog applies */
+    QTemporaryDir m_staging;
+
+    QString m_machine;
+    VmConfig::FirmwareKind m_loadedFirmware = VmConfig::FirmwareKind::Bios;
+    bool m_loadedBootMenu = false;
+    VmConfig::BootDevice m_loadedBootDevice = VmConfig::BootDevice::Default;
+};
+
+class PciPage : public SettingsPage
+{
+    Q_OBJECT
+
+public:
+    explicit PciPage(QWidget *parent = nullptr);
+
+    QString title() const override { return tr("PCI Devices"); }
+    QIcon icon() const override;
+    void load(const ArgsFile &args) override;
+    void save(ArgsFile &args) override;
+    bool isModified() const override;
+
+private:
+    QStringList checked() const;
+
+    Banner *m_banner;
+    QTreeWidget *m_tree;
+    QStringList m_loaded;
 };
 
 class ArgumentsPage : public SettingsPage
