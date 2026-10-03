@@ -7,8 +7,8 @@ install(FILES versions.conf DESTINATION ${VITRINE_HOST_DESTINATION})
 # build.sh applies every *.patch it finds, and installing never removes a
 # file: a patch a newer Vitrine dropped would stay in an installation made
 # over an older one, and fail to apply.  The folder goes first, under the
-# prefix of the install itself (cmake --install --prefix, DESTDIR), which
-# the generated script tells, not the one configured.
+# install's DESTDIR (the prefix is the configured one: the top-level guard
+# refuses another).
 if(IS_ABSOLUTE "${VITRINE_HOST_DESTINATION}")
     set(vitrine_patches "${VITRINE_HOST_DESTINATION}/patches")
 else()
