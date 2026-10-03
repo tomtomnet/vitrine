@@ -153,6 +153,14 @@ bool VmView::attach(const QString &monitorSocket, QString *error)
             if (m_window) {
                 m_window->setGuestSize(w, h);
             }
+            /* A new listener gets the scanout QEMU shows, but not the update
+               that draws it (console.c, displaychangelistener_display_console):
+               attached to a guest that does not repaint, the screen would stay
+               black.  The renderer draws only on an update or a dirty view, so
+               the first scanout, and any of a new size, makes the view dirty. */
+            if (m_renderer) {
+                m_renderer->requestRedraw();
+            }
         }, Qt::QueuedConnection);
     };
     m_listener = std::make_unique<Listener>(&m_mailbox, &m_stats, m_opts, cb);
@@ -217,6 +225,8 @@ void VmView::createWindow(bool fullScreen)
         if (m_host && m_host->screen()) {
             m_window->setScreen(m_host->screen());
         }
+        /* closed by the desktop, e.g. from the task bar: back to the widget */
+        m_window->installEventFilter(this);
         m_placeholder->show();
     } else {
         m_container = QWidget::createWindowContainer(m_window, m_host);
@@ -285,6 +295,7 @@ void VmView::setFullScreen(bool on)
     if (!on) {
         focus();
     }
+    updateHostActive();
     Q_EMIT fullScreenChanged(on);
     Q_EMIT grabChanged();
 }
@@ -304,6 +315,11 @@ void VmView::setGrab(bool on)
     if (m_window) {
         m_window->setGrab(on);
     }
+}
+
+bool VmView::hasKeyboard() const
+{
+    return m_hasKeyboard;
 }
 
 void VmView::focus()
@@ -345,6 +361,13 @@ QString VmView::vmName() const
 
 bool VmView::eventFilter(QObject *watched, QEvent *event)
 {
+    if (watched == m_window && m_fullScreen && event->type() == QEvent::Close) {
+        event->ignore();
+        /* not from the window's own event handler, which the switch deletes */
+        QMetaObject::invokeMethod(this, [this]() { setFullScreen(false); },
+                                  Qt::QueuedConnection);
+        return true;
+    }
     if (watched == m_container && m_window) {
         switch (event->type()) {
         case QEvent::ShortcutOverride:
@@ -370,8 +393,16 @@ bool VmView::eventFilter(QObject *watched, QEvent *event)
    in the active window; in full screen the window tells itself */
 void VmView::updateHostActive()
 {
+    bool active = false;
+
     if (m_window && m_container) {
-        m_window->setHostActive(m_container->hasFocus() &&
-                                m_container->window()->isActiveWindow());
+        active = m_container->hasFocus() && m_container->window()->isActiveWindow();
+        m_window->setHostActive(active);
+    } else if (m_window) {
+        active = m_window->isActive();
+    }
+    if (active != m_hasKeyboard) {
+        m_hasKeyboard = active;
+        Q_EMIT grabChanged();
     }
 }

@@ -57,6 +57,9 @@ public:
     bool grabbed() const;
     QString grabState() const;
     void setGrab(bool on);
+    /* Whether the keys go to the guest: the screen has the focus in the
+       active window */
+    bool hasKeyboard() const;
     /* Gives the keyboard to the guest */
     void focus();
     void sendCtrlAltDel();
@@ -67,6 +70,7 @@ public:
     QString vmName() const;
 
 Q_SIGNALS:
+    /* grabbed(), grabState() or hasKeyboard() changed */
     void grabChanged();
     void fullScreenChanged(bool on);
 
@@ -91,6 +95,7 @@ private:
     QWidget *m_container = nullptr;     // embeds m_window, in m_host
     QLabel *m_placeholder = nullptr;    // in m_host while full screen
     bool m_fullScreen = false;
+    bool m_hasKeyboard = false;
     /* what the guest said last, for a new window */
     QSize m_guestSize;
     QImage m_cursor;
