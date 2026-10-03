@@ -3,7 +3,7 @@
 
 #include <QRegularExpression>
 
-static const QStringList kDirectives = {"share", "qemu"};
+static const QStringList kDirectives = {"share", "qemu", "env"};
 
 QString ArgsFile::canonicalName(const QString &option)
 {

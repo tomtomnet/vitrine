@@ -236,11 +236,15 @@ QString shellQuote(const QString &arg)
     return '\'' + quoted.replace('\'', "'\\''") + '\'';
 }
 
-QString commandText(const QStringList &command, const QString &dir)
+QString commandText(const QStringList &command, const QString &dir,
+                    const QStringList &environment)
 {
     QStringList lines;
     QString current;
 
+    for (const QString &var : environment) {
+        lines << shellQuote(var);
+    }
     for (qsizetype i = 0; i < command.size(); i++) {
         const QString &arg = command[i];
         if (i == 0) {

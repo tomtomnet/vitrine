@@ -113,6 +113,8 @@ qt_add_library(vitrine_vmview STATIC
     src/vmview/stats.h
     src/vmview/swapchain.cpp
     src/vmview/swapchain.h
+    src/vmview/vmview.cpp
+    src/vmview/vmview.h
     src/vmview/waylandextras.cpp
     src/vmview/waylandextras.h
     ${VMVIEW_PROTOCOL_SOURCES}

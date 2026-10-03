@@ -203,13 +203,14 @@ struct VmRunner::Private
     QString pidPath() const { return runDir() + "/qemu.pid"; }
     QString sharePath(qsizetype i) const { return runDir() + QString("/fs%1.sock").arg(i); }
     QString agentPath() const { return runDir() + "/qga.sock"; }
+    QString displayPath() const { return runDir() + "/display.sock"; }
     QString qmpArg() const;
     QString logPath() const { return dir + "/qemu.log"; }
     QString logTail(bool qemuErrors = true) const;
     qint64 runningPid() const;
     void removeRuntimeFiles() const;
     bool launch(const QString &program, const QStringList &arguments, qint64 *pid,
-                QString *error) const;
+                QString *error, const QStringList &environment = {}) const;
 
     void setState(State s);
     void fail(const QString &message);
@@ -297,7 +298,8 @@ void VmRunner::Private::removeRuntimeFiles() const
 {
     QDir rt(runDir());
 
-    for (const QString &name : rt.entryList({"qmp.sock", "qemu.pid", "fs*.sock*", "qga.sock"},
+    for (const QString &name : rt.entryList({"qmp.sock", "qemu.pid", "fs*.sock*", "qga.sock",
+                                             "display.sock"},
                                             QDir::AllEntries | QDir::System |
                                                 QDir::Hidden)) {
         rt.remove(name);
@@ -306,10 +308,19 @@ void VmRunner::Private::removeRuntimeFiles() const
 }
 
 bool VmRunner::Private::launch(const QString &program, const QStringList &arguments,
-                               qint64 *pid, QString *error) const
+                               qint64 *pid, QString *error,
+                               const QStringList &environment) const
 {
     QProcess p;
 
+    if (!environment.isEmpty()) {
+        QProcessEnvironment env = QProcessEnvironment::systemEnvironment();
+        for (const QString &var : environment) {
+            const qsizetype eq = var.indexOf('=');
+            env.insert(var.left(eq), var.mid(eq + 1));
+        }
+        p.setProcessEnvironment(env);
+    }
     p.setProgram(program);
     p.setArguments(arguments);
     p.setWorkingDirectory(dir);
@@ -364,7 +375,8 @@ void VmRunner::Private::launchQemu()
     const QStringList command = q->commandLine(args);
     QString launchError;
 
-    if (!launch(command.first(), command.mid(1), &pid, &launchError)) {
+    if (!launch(command.first(), command.mid(1), &pid, &launchError,
+                VmRunner::environment(args))) {
         fail(launchError);
         return;
     }
@@ -672,8 +684,49 @@ QStringList VmRunner::commandLine(const ArgsFile &args) const
                 << QString("virtserialport,bus=vitrine-serial.0,chardev=vitrine-ga,"
                            "name=org.qemu.guest_agent.0,id=%1").arg(kAgentPort);
     }
+    if (VmConfig::screen(args) == VmConfig::Screen::Embedded) {
+        command << "-chardev"
+                << QString("socket,id=vitrine-display,path=%1,server=on,wait=off")
+                       .arg(OptionValue::escape(d->displayPath()))
+                << "-mon" << "chardev=vitrine-display,mode=control";
+    }
     command << "-qmp" << d->qmpArg() << "-pidfile" << d->pidPath();
     return command;
+}
+
+/*
+ * QEMU's SDL window as the research launcher runs it: input read at the
+ * refresh rate while it has the focus, and in full screen the guest's
+ * buffers go to the screen as they are (the guest's driver must hold them,
+ * else QEMU copies them, as other QEMUs ignore the variables)
+ */
+static const QStringList kSdlEnvironment = {
+    "QEMU_SDL_POLL_FOCUSED=1",
+    "QEMU_SDL_ZERO_COPY=1",
+    "QEMU_SDL_ZC_TILED=explicit",
+};
+
+QStringList VmRunner::environment(const ArgsFile &args)
+{
+    QStringList env;
+
+    if (VmConfig::screen(args) == VmConfig::Screen::OwnWindow &&
+        VmConfig::graphics(args).display != "gtk") {
+        env = kSdlEnvironment;
+    }
+    for (const VmConfig::EnvVar &var : VmConfig::environment(args)) {
+        env.removeIf([&var](const QString &s) { return s.startsWith(var.name + '='); });
+        env << var.name + '=' + var.value;
+    }
+    return env;
+}
+
+QString VmRunner::displaySocket() const
+{
+    if (!isActive() || VmConfig::screen(d->args) != VmConfig::Screen::Embedded) {
+        return {};
+    }
+    return d->displayPath();
 }
 
 void VmRunner::start(const ArgsFile &args)
@@ -744,8 +797,10 @@ void VmRunner::start(const ArgsFile &args)
         d->fail(tr("Cannot write %1: %2").arg(d->logPath(), log.errorString()));
         return;
     }
-    log.write(QString("vitrine: %1 %2\n")
+    const QStringList environment = VmRunner::environment(args);
+    log.write(QString("vitrine: %1 %2%3\n")
                   .arg(QDateTime::currentDateTime().toString(Qt::ISODate),
+                       environment.isEmpty() ? QString() : shellQuote(environment) + ' ',
                        shellQuote(commandLine(args)))
                   .toUtf8());
     for (const QString &line : std::as_const(remade)) {

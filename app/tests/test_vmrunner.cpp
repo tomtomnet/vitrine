@@ -111,6 +111,40 @@ private slots:
         QVERIFY(runDir.toLocal8Bit().size() < 90);
     }
 
+    /* the view attaches to the D-Bus display through a monitor of its own */
+    void displayMonitor()
+    {
+        const VmRunner runner(id, tmp.path());
+        const QStringList embedded =
+            runner.commandLine(ArgsFile::parse("-m 1G\n-display dbus,p2p=yes,gl=on\n"));
+        const QStringList sdl = runner.commandLine(ArgsFile::parse("-m 1G\n-display sdl,gl=on\n"));
+        const QStringList bus = runner.commandLine(ArgsFile::parse("-m 1G\n-display dbus\n"));
+        const QString chardev =
+            "socket,id=vitrine-display,path=" + runDir + "/display.sock,server=on,wait=off";
+
+        QCOMPARE(embedded.mid(5, 4), QStringList({"-chardev", chardev, "-mon",
+                                                  "chardev=vitrine-display,mode=control"}));
+        QVERIFY(!sdl.contains(chardev));
+        QVERIFY(!bus.contains(chardev));
+        QCOMPARE(runner.displaySocket(), "");   // not running
+    }
+
+    /* QEMU's environment: the SDL window's settings, then #env */
+    void environment()
+    {
+        QCOMPARE(VmRunner::environment(ArgsFile::parse("-display sdl,gl=on\n")),
+                 QStringList({"QEMU_SDL_POLL_FOCUSED=1", "QEMU_SDL_ZERO_COPY=1",
+                              "QEMU_SDL_ZC_TILED=explicit"}));
+        QCOMPARE(VmRunner::environment(ArgsFile::parse(
+                     "-display sdl,gl=on\n#env QEMU_SDL_ZERO_COPY=0\n#env A=b\n")),
+                 QStringList({"QEMU_SDL_POLL_FOCUSED=1", "QEMU_SDL_ZC_TILED=explicit",
+                              "QEMU_SDL_ZERO_COPY=0", "A=b"}));
+        QCOMPARE(VmRunner::environment(ArgsFile::parse("-display dbus,p2p=yes,gl=on\n")),
+                 QStringList());
+        QCOMPARE(VmRunner::environment(ArgsFile::parse("-display gtk\n#env A=b\n")),
+                 QStringList({"A=b"}));
+    }
+
     /* a share to mount: the port of the guest agent, unless the VM has its own */
     void agentPort()
     {

@@ -23,6 +23,18 @@ void setName(ArgsFile &args, const QString &name);
 QString qemuBinary(const ArgsFile &args);
 void setQemuBinary(ArgsFile &args, const QString &path);
 
+/*
+ * Environment variables for QEMU, the #env NAME=VALUE directives, in their
+ * order; lines without a valid NAME= are left out
+ */
+struct EnvVar {
+    QString name;
+    QString value;
+};
+QList<EnvVar> environment(const ArgsFile &args);
+/* Whether @line, the value of an #env directive, is NAME=VALUE */
+bool isEnvAssignment(const QString &line);
+
 /* QEMU sizes: a number with an optional K/M/G/T suffix */
 qint64 parseSize(const QString &text, qint64 unit);
 QString formatMiB(qint64 mib);

@@ -201,6 +201,26 @@ private slots:
         QCOMPARE(a.lines[1].value, "/other/disk.qcow2");
     }
 
+    void environment()
+    {
+        const ArgsFile a = ArgsFile::parse(
+            "#env QEMU_SDL_ZERO_COPY=0\n-m 1G\n#env EMPTY=\n#env not an assignment\n"
+            "#env WITH_EQUALS=a=b\n# env COMMENT=1\n");
+        const QList<EnvVar> vars = VmConfig::environment(a);
+
+        QCOMPARE(a.argv(), QStringList({"-m", "1G"}));
+        QCOMPARE(vars.size(), 3);
+        QCOMPARE(vars[0].name, "QEMU_SDL_ZERO_COPY");
+        QCOMPARE(vars[0].value, "0");
+        QCOMPARE(vars[1].name, "EMPTY");
+        QCOMPARE(vars[1].value, "");
+        QCOMPARE(vars[2].name, "WITH_EQUALS");
+        QCOMPARE(vars[2].value, "a=b");
+        QVERIFY(isEnvAssignment("A_1=x"));
+        QVERIFY(!isEnvAssignment("1A=x"));
+        QVERIFY(!isEnvAssignment("A"));
+    }
+
     void usb()
     {
         ArgsFile a = ArgsFile::parse(

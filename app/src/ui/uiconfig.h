@@ -33,6 +33,7 @@ QString audioSummary(const ArgsFile &args, const QemuInfo *info);
 /* For a shell */
 QString shellQuote(const QString &arg);
 /* cd DIR, then the command with one option per line */
-QString commandText(const QStringList &command, const QString &dir);
+QString commandText(const QStringList &command, const QString &dir,
+                    const QStringList &environment = {});
 
 }

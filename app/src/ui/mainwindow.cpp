@@ -909,7 +909,8 @@ void MainWindow::showCommandLine()
     if (Vm *vm = current()) {
         TextDialog::showText(this, tr("%1 — Command Line").arg(vm->name()),
                              UiConfig::commandText(vm->runner()->commandLine(vm->args()),
-                                                   vm->dir()));
+                                                   vm->dir(),
+                                                   VmRunner::environment(vm->args())));
     }
 }
 

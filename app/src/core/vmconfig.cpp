@@ -76,6 +76,27 @@ void setQemuBinary(ArgsFile &args, const QString &path)
     args.lines[i].value = path;
 }
 
+bool isEnvAssignment(const QString &line)
+{
+    static const QRegularExpression assignment("^[A-Za-z_][A-Za-z0-9_]*=");
+
+    return assignment.match(line).hasMatch();
+}
+
+QList<EnvVar> environment(const ArgsFile &args)
+{
+    QList<EnvVar> vars;
+
+    for (int i : args.indexesOf("env", ArgsFile::Line::Directive)) {
+        const QString &line = args.lines[i].value;
+        if (isEnvAssignment(line)) {
+            const qsizetype eq = line.indexOf('=');
+            vars << EnvVar{line.left(eq), line.mid(eq + 1)};
+        }
+    }
+    return vars;
+}
+
 qint64 parseSize(const QString &text, qint64 unit)
 {
     static const QRegularExpression re("^\\s*(\\d+(?:\\.\\d+)?)\\s*([kKmMgGtT]?)[bB]?\\s*$");

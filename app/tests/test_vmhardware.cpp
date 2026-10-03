@@ -94,6 +94,45 @@ private slots:
         }
     }
 
+    /* vitrine's window: the D-Bus display on a socket of its own, with OpenGL */
+    void dbusDisplay()
+    {
+        ArgsFile a = ArgsFile::parse("-device virtio-vga-gl\n-display sdl,gl=on,grab-mod=rctrl\n");
+        Graphics g = graphics(a);
+
+        QVERIFY(screen(a) == Screen::OwnWindow);
+        g.display = "dbus";
+        setGraphics(a, g);
+        QCOMPARE(text(a), "-device virtio-vga-gl\n-display dbus,gl=on,p2p=yes\n");
+        QVERIFY(screen(a) == Screen::Embedded);
+        QCOMPARE(graphics(a).display, "dbus");
+
+        g = graphics(a);
+        g.display = "sdl";
+        setGraphics(a, g);
+        QCOMPARE(text(a), "-device virtio-vga-gl\n-display sdl,gl=on\n");
+
+        /* a new display line */
+        a = ArgsFile::parse("-device virtio-vga-gl\n");
+        g = graphics(a);
+        g.display = "dbus";
+        setGraphics(a, g);
+        QCOMPARE(text(a), "-device virtio-vga-gl\n-display dbus,p2p=yes,gl=on\n");
+
+        const std::pair<const char *, Screen> cases[] = {
+            {"-m 1G\n", Screen::OwnWindow},
+            {"-display gtk\n", Screen::OwnWindow},
+            {"-display dbus,p2p=on\n", Screen::Embedded},
+            {"-display dbus\n", Screen::None},
+            {"-display none\n", Screen::None},
+            {"-display egl-headless\n", Screen::None},
+            {"-display sdl\n-nographic\n", Screen::None},
+        };
+        for (const auto &[args, expected] : cases) {
+            QVERIFY2(screen(ArgsFile::parse(args)) == expected, args);
+        }
+    }
+
     void nativeContext()
     {
         ArgsFile a = ArgsFile::parse(kTemplate);

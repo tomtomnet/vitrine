@@ -54,6 +54,10 @@ QList<ArgsProblem> checkArgs(const QString &text, const QemuInfo *info, const QS
                 } else if (!QFileInfo(qemu).isExecutable()) {
                     problems << ArgsProblem{n, tr("%1 is not an executable").arg(qemu)};
                 }
+            } else if (line.startsWith("#env ") || line == "#env") {
+                if (!VmConfig::isEnvAssignment(line.mid(5).trimmed())) {
+                    problems << ArgsProblem{n, tr("#env needs NAME=VALUE")};
+                }
             } else if (line.startsWith("#share ") || line == "#share") {
                 const OptionValue v(line.mid(7).trimmed());
                 if (v.get("tag").isEmpty() || v.get("path").isEmpty()) {
@@ -197,6 +201,8 @@ void ArgsHighlighter::highlightBlock(const QString &text)
             highlightKeys(text, start + 7);
         } else if (isDirective(u"#qemu")) {
             setFormat(start, 5, m_directive);
+        } else if (isDirective(u"#env")) {
+            setFormat(start, 4, m_directive);
         } else {
             setFormat(start, int(text.size()) - start, m_comment);
         }

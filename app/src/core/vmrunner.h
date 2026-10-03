@@ -34,6 +34,17 @@ public:
     QString logPath() const;
     /* The full QEMU command line for @args, as start() would run it */
     QStringList commandLine(const ArgsFile &args) const;
+    /*
+     * The environment variables QEMU gets on top of the manager's, as
+     * NAME=VALUE: those of the display, then the #env directives
+     */
+    static QStringList environment(const ArgsFile &args);
+    /*
+     * The QMP socket of the VM's display, for the view to attach with
+     * getfd + add_client: a monitor of its own, since the runner keeps the
+     * main one.  Empty unless the running VM shows in vitrine's window.
+     */
+    QString displaySocket() const;
 
     /* The state goes Starting, then Running once QMP answers, or back to
        Stopped with failed() */

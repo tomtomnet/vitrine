@@ -238,7 +238,30 @@ static const QHash<QString, QStringList> kDisplayKeys = {
      {"gl", "full-screen", "grab-on-hover", "show-tabs", "show-cursor", "window-close",
       "show-menubar", "zoom-to-fit", "clipboard"}},
     {"egl-headless", {"rendernode"}},
+    {"dbus", {"p2p", "gl", "addr", "rendernode", "audiodev"}},
 };
+
+Screen screen(const ArgsFile &args)
+{
+    const int line = lastIndex(args, "display");
+
+    if (args.indexOf("nographic") >= 0) {
+        return Screen::None;
+    }
+    if (line < 0) {
+        return Screen::OwnWindow;
+    }
+    const OptionValue v = args.valueAt(line);
+    const QString type = v.implied();
+    if (type == "dbus") {
+        const QString p2p = v.get("p2p", "off");
+        return p2p == "yes" || p2p == "on" ? Screen::Embedded : Screen::None;
+    }
+    if (type == "sdl" || type == "gtk" || type == "cocoa" || type == "default") {
+        return Screen::OwnWindow;
+    }
+    return Screen::None;
+}
 
 bool isVgaDevice(const QString &device)
 {
@@ -474,7 +497,11 @@ static void setWindow(ArgsFile &args, const QString &display, int gl, bool accel
             return;
         }
         QString value = display;
-        if ((gl == 1 || (gl == -1 && accelerated)) && (display == "sdl" || display == "gtk")) {
+        if (display == "dbus") {
+            value += ",p2p=yes";
+        }
+        if ((gl == 1 || (gl == -1 && accelerated)) &&
+            (display == "sdl" || display == "gtk" || display == "dbus")) {
             value += ",gl=on";
         }
         const QList<int> cards = cardLines(args);
@@ -500,7 +527,14 @@ static void setWindow(ArgsFile &args, const QString &display, int gl, bool accel
         v = fresh;
     }
     const QString type = v.implied();
-    if (type == "sdl" || type == "gtk") {
+    if (type == "dbus") {
+        /* vitrine attaches to the display over a socket of its own */
+        v.set("p2p", "yes");
+        if (gl == -1 && accelerated && v.get("gl", "off") == "off") {
+            v.set("gl", "on");
+        }
+    }
+    if (type == "sdl" || type == "gtk" || type == "dbus") {
         if (gl == 1 && v.get("gl", "off") == "off") {
             v.set("gl", "on");
         } else if (gl == 0) {
