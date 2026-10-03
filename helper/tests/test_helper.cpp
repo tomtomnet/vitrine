@@ -215,6 +215,11 @@ private:
     }
     QString level() const { return value(QString(kCard) + "/power_dpm_force_performance_level"); }
     QByteArray odTable() const { return readFile(path(QString(kCard) + "/pp_od_clk_voltage")); }
+    /* what the helpers leave in their state folder */
+    QStringList stateFiles() const
+    {
+        return QDir(path("/run/vitrine-helper")).entryList(QDir::Files | QDir::System);
+    }
     bool stateExists(const QString &key) const
     {
         return QFile::exists(path("/run/vitrine-helper/" + key + ".state"));
@@ -275,7 +280,7 @@ private slots:
         QVERIFY(h.finished());
         QCOMPARE(h.exitCode(), 0);
         QVERIFY(fairAll("1000000000/50000000"));
-        QVERIFY(!stateExists("fair-server"));
+        QCOMPARE(stateFiles(), QStringList({"lock"}));
         const QStringList back = writes();
         QCOMPARE(back.size(), 8);
         for (int i = 0; i < m_cpus; i++) {
@@ -466,6 +471,7 @@ private slots:
         QVERIFY(fairAll("1000000000/50000000"));
         QCOMPARE(level(), QString("auto"));
         QCOMPARE(odTable(), od(800, 2700));
+        QCOMPARE(stateFiles(), QStringList({"lock"}));
     }
 
     /* A helper killed holding the settings: the next one restores them */
@@ -489,6 +495,7 @@ private slots:
         QVERIFY(b.ready());
         QVERIFY(fairAll("1000000000/50000000"));
         QCOMPARE(level(), QString("auto"));
+        QCOMPARE(stateFiles(), QStringList({"lock"}));
         b.closeInput();
         QVERIFY(b.finished());
     }

@@ -237,8 +237,22 @@ static void hold_share(struct hold *h)
     flock(h->fd, LOCK_SH);
 }
 
-static void hold_close(struct hold *h)
+/* Under the lock, by a helper holding <key>.hold with LOCK_EX: no other
+   helper has it open, they open it under the lock only */
+static void hold_remove(const char *key)
 {
+    char name[48];
+
+    snprintf(name, sizeof(name), "%s.hold", key);
+    unlinkat(state_fd, name, 0);
+}
+
+/* @last: this helper held it alone (LOCK_EX), the file goes too */
+static void hold_close(struct hold *h, bool last)
+{
+    if (last) {
+        hold_remove(h->key);
+    }
     close(h->fd);
     h->fd = -1;
     h->key[0] = '\0';
@@ -247,12 +261,14 @@ static void hold_close(struct hold *h)
 /* Lets go of @h, restoring the setting when this helper was its last holder */
 static void hold_drop(struct hold *h)
 {
+    bool last;
+
     lock_all();
     /* LOCK_EX only when no other helper holds a LOCK_SH: the last one */
-    if (flock(h->fd, LOCK_EX | LOCK_NB) == 0) {
+    if ((last = flock(h->fd, LOCK_EX | LOCK_NB) == 0)) {
         restore_key(h->key);
     }
-    hold_close(h);
+    hold_close(h, last);
     unlock_all();
 }
 
@@ -539,7 +555,7 @@ void fair_server_on(void)
     return;
 fail:
     state_remove("fair-server");
-    hold_close(h);
+    hold_close(h, true);
     unlock_all();
     reply("error fair-server: %s", strerror(err ? err : EIO));
     free(ids);
@@ -808,7 +824,7 @@ void gpu_floor(const char *card, const char *value)
         why = text;
     }
     if (why) {
-        hold_close(h);
+        hold_close(h, true);
         unlock_all();
         reply("skip gpu-floor %s: %s", card, why);
         return;
@@ -816,7 +832,7 @@ void gpu_floor(const char *card, const char *value)
     snprintf(text, sizeof(text), "level %s\nmin %u\nmax %u\n", level, mhz, od.range_hi);
     if (!state_write(key, text)) {
         err = errno;
-        hold_close(h);
+        hold_close(h, true);
         unlock_all();
         reply("error gpu-floor %s: %s", card, strerror(err));
         return;
@@ -841,7 +857,7 @@ void gpu_floor(const char *card, const char *value)
         snprintf(cmd, sizeof(cmd), "%s\n", level);
         card_write(card, "power_dpm_force_performance_level", cmd);
         state_remove(key);
-        hold_close(h);
+        hold_close(h, true);
         unlock_all();
         reply("error gpu-floor %s: %s", card, strerror(-err));
         return;
@@ -892,6 +908,7 @@ static void recover(void)
         hfd = openat(state_fd, name, O_RDWR | O_CREAT | O_CLOEXEC | O_NOFOLLOW, 0600);
         if (hfd >= 0 && flock(hfd, LOCK_EX | LOCK_NB) == 0) {
             restore_key(key);
+            hold_remove(key);
         }
         if (hfd >= 0) {
             close(hfd);

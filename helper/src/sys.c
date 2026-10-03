@@ -5,6 +5,7 @@
  * file with tests/fakesys.c.
  */
 #define _GNU_SOURCE
+#include <endian.h>
 #include <errno.h>
 #include <fcntl.h>
 #include <linux/capability.h>
@@ -94,10 +95,11 @@ int sys_setsched(pid_t tid, int policy, int priority)
 
 int sys_set_file_cap(int fd, const char *path)
 {
-    /* what setcap cap_sys_nice=ep writes: revision 2, effective, permitted */
+    /* what setcap cap_sys_nice=ep writes: revision 2, effective, permitted
+       (little-endian on disk) */
     struct vfs_cap_data cap = {
-        .magic_etc = VFS_CAP_REVISION_2 | VFS_CAP_FLAGS_EFFECTIVE,
-        .data = {{.permitted = 1u << CAP_SYS_NICE, .inheritable = 0}, {0, 0}},
+        .magic_etc = htole32(VFS_CAP_REVISION_2 | VFS_CAP_FLAGS_EFFECTIVE),
+        .data = {{.permitted = htole32(1u << CAP_SYS_NICE), .inheritable = 0}, {0, 0}},
     };
     struct vfs_cap_data back;
     ssize_t n;
