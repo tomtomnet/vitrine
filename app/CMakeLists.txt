@@ -277,4 +277,14 @@ if(BUILD_TESTING)
         FAKE_QEMU="$<TARGET_FILE:fake-qemu>"
         TEST_WORK_DIR="${CMAKE_CURRENT_BINARY_DIR}/test-work")
     add_dependencies(test_hostsettings vitrine-helper-fake fake-qemu)
+
+    # VmView against a stand-in for QEMU's display (QMP and D-Bus), offscreen
+    qt_add_executable(test_vmview tests/test_vmview.cpp)
+    target_link_libraries(test_vmview PRIVATE vitrine_vmview PkgConfig::GIO Qt6::Test Qt6::Widgets)
+    target_compile_definitions(test_vmview PRIVATE QT_NO_KEYWORDS)
+    target_compile_options(test_vmview PRIVATE -Wall -Wextra)
+    add_test(NAME vmview COMMAND test_vmview)
+    # freed memory filled and not cached per thread: a use after free shows
+    set_tests_properties(vmview PROPERTIES ENVIRONMENT
+        "GLIBC_TUNABLES=glibc.malloc.tcache_count=0:glibc.malloc.perturb=165")
 endif()

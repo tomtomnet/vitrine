@@ -9,6 +9,8 @@
 #include <QTimer>
 #include <QVBoxLayout>
 
+#include <utility>
+
 #include "core/vmconfig.h"
 #include "core/vmhardware.h"
 #include "core/vmrunner.h"
@@ -186,7 +188,7 @@ VmConsole::VmConsole(Vm *vm, QWidget *parent)
 VmConsole::~VmConsole()
 {
     /* before the widgets, its window among them */
-    delete m_view;
+    delete std::exchange(m_view, nullptr);
 }
 
 Vm *VmConsole::vm() const
@@ -364,8 +366,9 @@ void VmConsole::detach()
     }
     m_statsTimer->stop();
     m_stats = {};
-    delete m_view;
-    m_view = nullptr;
+    /* view() is null while it goes: what it signals on its way out must
+       not lead back to it */
+    delete std::exchange(m_view, nullptr);
     emit statsChanged();
     emit changed();
 }

@@ -19,6 +19,7 @@
 
 #include <cerrno>
 #include <cstring>
+#include <utility>
 #include <sys/socket.h>
 #include <sys/un.h>
 #include <unistd.h>
@@ -282,13 +283,24 @@ void VmView::destroyWindow()
         delete m_renderer;
         m_renderer = nullptr;
     }
-    if (m_container) {
-        delete m_container;     // and the window it holds
-        m_container = nullptr;
-    } else {
-        delete m_window;
+    /*
+     * Out of reach before they go: ~QWindowContainer deletes the window
+     * first, then ~QWidget clears the focus, which sends the container
+     * FocusOut through eventFilter() - with the members still set, that
+     * would reach the deleted window (updateHostActive) and signal
+     * grabChanged() for a view half torn down.  The keyboard went with
+     * setHostActive(false) above; setFullScreen() tells the new state.
+     */
+    QWidget *container = std::exchange(m_container, nullptr);
+    DisplayWindow *window = std::exchange(m_window, nullptr);
+    m_hasKeyboard = false;
+    if (container) {
+        container->removeEventFilter(this);
+        delete container;       // and the window it holds
+    } else if (window) {
+        window->removeEventFilter(this);
+        delete window;
     }
-    m_window = nullptr;
 }
 
 void VmView::setFullScreen(bool on)
