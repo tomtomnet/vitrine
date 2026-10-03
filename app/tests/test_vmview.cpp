@@ -9,6 +9,7 @@
  * input, focus, full screen and taking it all down.
  */
 #include <QApplication>
+#include <QDir>
 #include <QKeyEvent>
 #include <QSignalSpy>
 #include <QTemporaryDir>
@@ -406,7 +407,8 @@ class TestVmView : public QObject
     Q_OBJECT
 
 private:
-    QTemporaryDir m_dir{QCoreApplication::applicationDirPath() + "/vmview-XXXXXX"};
+    /* out of the build tree: the socket's path fits in sun_path wherever that is */
+    QTemporaryDir m_dir{QDir::tempPath() + "/vitrine-vmview-XXXXXX"};
     QString socketPath() const { return m_dir.filePath("qmp"); }
 
     /* The DisplayWindow the view made */
