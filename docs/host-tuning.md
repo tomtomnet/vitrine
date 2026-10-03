@@ -99,6 +99,10 @@ by its installed path.
 ## When something looks wrong
 
 - `journalctl -t vitrine-helper` lists what the helper changed and put back.
+- "polkit wants a password here" for a member of the group: the rule
+  applies only in a local, active desktop session (not over ssh or
+  waypipe, not from a session switched away from), and only once
+  `49-vitrine.rules` is where polkit reads rules (see Installing).
 - Its state is in `/run/vitrine-helper` (root only; gone at the next boot).
   A helper that died while holding settings leaves its state there: the next
   helper puts them back when it starts. To do it now:

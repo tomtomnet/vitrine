@@ -382,8 +382,12 @@ private slots:
         writeFile(m_root + "/answer", "2\n");
         hs.tune(q1.pid());
         QTRY_COMPARE(notices.size(), 1);
+        /* a member is told what else it takes (this user may be one) */
         QCOMPARE(notices[0][0].toString(),
-                 QString("Host tuning is off: it needs membership of the vitrine group."));
+                 HostSettings::inVitrineGroup()
+                     ? QString("Host tuning is off: polkit wants a password here: the vitrine "
+                               "group's rule applies in a local, active desktop session only.")
+                     : QString("Host tuning is off: it needs membership of the vitrine group."));
         QVERIFY(!hs.helperRunning());
         QVERIFY(polkitLog("pkexec").isEmpty());
 

@@ -192,8 +192,13 @@ static void checkAccess(QObject *context, const std::function<void(const QString
         if (status == QProcess::NormalExit && code == 0) {
             done(QString());
         } else if (status == QProcess::NormalExit && (code == 2 || code == 3)) {
-            /* a password would be needed */
-            done(HostSettings::tr("it needs membership of the vitrine group"));
+            /* a password would be needed: the group's rule wants a member
+               at a local, active session (49-vitrine.rules), and polkit to
+               read it - which the app cannot see: the folder is root's */
+            done(HostSettings::inVitrineGroup()
+                     ? HostSettings::tr("polkit wants a password here: the vitrine group's rule "
+                                        "applies in a local, active desktop session only")
+                     : HostSettings::tr("it needs membership of the vitrine group"));
         } else if (err.contains("not registered")) {
             done(HostSettings::tr("the helper's polkit policy is not installed"));
         } else {
