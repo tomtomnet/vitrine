@@ -2,6 +2,7 @@
 #pragma once
 
 #include <QString>
+#include <QStringList>
 
 #include <functional>
 
@@ -13,6 +14,13 @@
  * and the clipboard channel of spice-vdagent.  On x86-64 a q35 PC, on
  * aarch64 (Asahi Linux on Apple silicon) the virt machine, which has no
  * VGA, IDE or PS/2: PCI graphics, virtio and SCSI disks, USB input.
+ *
+ * Linux on a PC gets the research launcher's machine (host/run-vm.sh):
+ * the 3D card with DRM native context and the guest's vblank locked to
+ * the host's, shown in vitrine's window; the disk on an iothread; virtio
+ * input, sound and random numbers; NAT through passt with the guest's SSH
+ * on a port of this computer; UEFI without Secure Boot, as the guest
+ * tools' kernel module is not signed.
  */
 namespace VmTemplate {
 
@@ -23,16 +31,31 @@ enum class Graphics { Accelerated, Standard, Compatible };
 struct Options {
     QString name;
     Os os = Os::Linux;
+    /* Of a Linux guest, e.g. kde or gnome: the #guest directive */
+    QString desktop;
     qint64 memoryMiB = 4096;
     int cpus = 4;
+    /* Of the topology on a PC; 0: 2 when this computer's cores have two */
+    int threadsPerCore = 0;
     /* Relative to the VM folder or absolute; empty for none */
     QString disk;
     QString iso;
+    /* But for Linux on a PC, which gets the 3D card */
     Graphics graphics = Graphics::Accelerated;
     /* DRM native context, for Accelerated */
     bool nativeContext = false;
     /* QEMU's name of the guest architecture; empty for the host's */
     QString arch;
+    /* Linux on a PC: the port of this computer forwarded to the guest's
+       SSH, 0 for none; NAT through passt rather than QEMU's own */
+    int sshPort = 0;
+    bool passt = false;
+    /*
+     * The properties of virtio-gpu-gl-pci in the QEMU the VM runs with,
+     * from QemuInfo, to leave out those of vitrine's QEMU it lacks; empty
+     * when not known: vitrine's QEMU, which has them all
+     */
+    QStringList gpuProperties;
 };
 
 struct Defaults {
