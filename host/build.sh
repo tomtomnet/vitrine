@@ -190,13 +190,16 @@ fi
 
 # A stamp folder without its manifest is what a build that failed or was
 # stopped left: it starts again from nothing.  A prefix given is the
-# caller's: installed over, never removed.
+# caller's: installed over, never removed, but without its manifest from
+# the first file installed until the build is complete, so that one that
+# failed or was stopped half-way is never taken for complete.
 partial=
 if [ -n "$name" ]; then
 	rm -rf "${prefix:?}"
 	mkdir -p "$prefix"
 	partial=$prefix
 fi
+rm -f "$manifest"
 step=
 on_exit() {
 	local rc=$?
@@ -277,7 +280,8 @@ vbuild=$work/virglrenderer-build
 vargs=(--prefix="$prefix" --libdir=lib64 --buildtype=debugoptimized
 	-Ddrm-renderers=amdgpu-experimental,i915-experimental,xe-experimental -Dvideo=true -Dvenus=false)
 vline="$src/virglrenderer ${vargs[*]}"
-# configured afresh when the options change: the prefix does with each new stamp
+# configured afresh when the options change, as the prefix does with each new
+# stamp; otherwise meson configures again what its own files change
 if [ ! -f "$vbuild/build.ninja" ] || ! configured "$vbuild" "$vline"; then
 	rm -rf "$vbuild"
 	meson setup "$vbuild" "$src/virglrenderer" "${vargs[@]}"
@@ -303,7 +307,10 @@ qargs=(--prefix="$prefix" --target-list=x86_64-softmmu --without-default-feature
 	"--extra-ldflags=-Wl,-rpath,$prefix/lib64")
 # (no containers: configure would otherwise run podman to see if it works, which
 # sets up podman's storage in the user's home, for cross-builds we never do)
-qline="$src/qemu ${qargs[*]} PKG_CONFIG_PATH=$prefix/lib64/pkgconfig"
+# and the virglrenderer it is built against: configure probes what it offers
+# (virgl_renderer_resource_set_guest_dmabuf, its version), and meson keeps
+# what it found until configured afresh, as with --prefix nothing else would
+qline="$src/qemu ${qargs[*]} PKG_CONFIG_PATH=$prefix/lib64/pkgconfig virglrenderer=$(cat "$src/virglrenderer.stamp")"
 if [ -f "$qbuild/build.ninja" ] && configured "$qbuild" "$qline"; then
 	echo "configured already"
 else

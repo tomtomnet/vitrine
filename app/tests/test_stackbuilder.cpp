@@ -672,6 +672,34 @@ sh -c 'echo $$ > %1; exec sleep 300'
         QVERIFY(!QFileInfo::exists(stack + '/' + StackBuilder::inputStamp(host).left(16)));
         QCOMPARE(StackBuilder::state(host, stack), StackBuilder::State::Outdated);
         QCOMPARE(built.size(), 3);
+
+        /* 5. into a prefix of the caller's, which is installed over */
+        QVERIFY(QFile::remove(host + "/patches/qemu/0002-broken.patch"));
+        const QString prefix = m_tmp.filePath("e2e/prefix");
+        const QString manifest = prefix + "/share/vitrine/stack.conf";
+        const auto buildInto = [&]() {
+            return run("bash", {host + "/build.sh", "--prefix", prefix, "--work", work, "-j", "4"},
+                       {}, &status);
+        };
+        QString out = buildInto();
+        QVERIFY2(status == 0 && out.contains("vitrine-build: built: " + prefix), qPrintable(out));
+        QVERIFY(StackBuilder::Build::read(prefix).isValid());
+        /* virglrenderer changed: QEMU's configure probes it again */
+        QVERIFY(write(host + "/patches/virglrenderer/0001-mark.patch",
+                      QString(newFile).arg("MARK", "virgl two").toUtf8()));
+        out = buildInto();
+        QVERIFY2(status == 0 && !out.contains("configured already"), qPrintable(out));
+        const QString built2 = StackBuilder::Build::read(prefix).stamp;
+        /* failed half-way: no manifest, nothing taken for complete */
+        QVERIFY(write(host + "/patches/qemu/0002-broken.patch",
+                      "--- a/nothing\n+++ b/nothing\n@@ -1 +1 @@\n-a\n+b\n"));
+        out = buildInto();
+        QVERIFY2(status != 0 && out.contains("does not apply"), qPrintable(out));
+        QVERIFY(!QFileInfo::exists(manifest));
+        QVERIFY(QFile::remove(host + "/patches/qemu/0002-broken.patch"));
+        out = buildInto();
+        QVERIFY2(status == 0 && !out.contains("up to date"), qPrintable(out));
+        QCOMPARE(StackBuilder::Build::read(prefix).stamp, built2);
     }
 };
 
