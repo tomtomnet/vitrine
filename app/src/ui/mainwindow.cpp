@@ -5,6 +5,7 @@
 #include <QApplication>
 #include <QCloseEvent>
 #include <QDesktopServices>
+#include <QDialog>
 #include <QFileInfo>
 #include <QLabel>
 #include <QListWidget>
@@ -26,7 +27,9 @@
 #include <QVBoxLayout>
 
 #include <algorithm>
+#include <memory>
 
+#include "core/hostsettings.h"
 #include "core/paths.h"
 #include "core/qemuinfo.h"
 #include "core/vmconfig.h"
@@ -50,10 +53,12 @@
 #include "ui/uiconfig.h"
 #include "ui/updatenotifier.h"
 #include "ui/usbaccess.h"
+#include "ui/vmconsole.h"
 #include "ui/vmdetails.h"
 #include "ui/vmpane.h"
 #include "ui/vmwindow.h"
 #include "ui/widgets.h"
+#include "vmview/vmview.h"
 
 enum { IdRole = Qt::UserRole, StateRole, StateColorRole };
 
@@ -113,16 +118,13 @@ static QIcon vmIcon(VmRunner::State state)
     return icon;
 }
 
-/* The name in bold, the state under it */
-/* QEMU shows the VM in a window of its own: SDL or GTK, its default being one of them */
+/* QEMU shows the running VM in a window of its own: SDL or GTK, its default being one of them */
 static bool hasWindow(const Vm *vm)
 {
-    const VmConfig::Graphics g = VmConfig::graphics(vm->args());
-
-    return g.custom != "-nographic" &&
-           (g.display.isEmpty() || g.display == "sdl" || g.display == "gtk");
+    return VmConfig::screen(vm->runner()->runArgs()) == VmConfig::Screen::OwnWindow;
 }
 
+/* The name in bold, the state under it */
 class VmItemDelegate : public QStyledItemDelegate
 {
 public:
@@ -190,7 +192,8 @@ public:
 MainWindow::MainWindow(VmStore *store, QWidget *parent)
     : QMainWindow(parent), m_store(store), m_list(new QListWidget),
       m_right(new QStackedWidget), m_pane(new VmPane), m_details(m_pane->details()),
-      m_splitter(new QSplitter), m_qemuStatus(new QLabel), m_perf(new PerfMonitor)
+      m_splitter(new QSplitter), m_qemuStatus(new QLabel), m_consoles(new QStackedWidget),
+      m_noConsole(new QWidget), m_input(new QLabel), m_perf(new PerfMonitor)
 {
     auto *welcome = new QWidget;
     auto *welcomeLayout = new QVBoxLayout(welcome);
@@ -219,6 +222,10 @@ MainWindow::MainWindow(VmStore *store, QWidget *parent)
     welcomeLayout->addStretch();
     m_right->addWidget(welcome);
     m_right->addWidget(m_pane);
+    /* each VM's console stays in the stack: its screen must not move */
+    m_consoles->setObjectName("consoles");
+    m_consoles->addWidget(m_noConsole);
+    m_pane->setConsole(m_consoles);
 
     m_splitter->addWidget(m_list);
     m_splitter->addWidget(m_right);
@@ -232,17 +239,29 @@ MainWindow::MainWindow(VmStore *store, QWidget *parent)
 
     m_qemuStatus->setObjectName("qemuStatus");
     m_updates = new UpdateNotifier(this);
+    m_input->setObjectName("input");
+    m_input->setContentsMargins(0, 0, fontMetrics().averageCharWidth() * 3, 0);
+    m_input->hide();
+    statusBar()->addPermanentWidget(m_input);
     statusBar()->addPermanentWidget(m_perf);
     statusBar()->addPermanentWidget(m_updates->button());
     statusBar()->addPermanentWidget(new MemoryMonitor(store, this));
     statusBar()->addPermanentWidget(m_qemuStatus);
+    /* the host's settings while VMs run (vitrine-helper): why not, once */
+    connect(new HostSettings(store, this), &HostSettings::notice, this,
+            [this](const QString &text) { statusBar()->showMessage(text, 15000); });
 
     connect(create, &QPushButton::clicked, m_new, &QAction::trigger);
     connect(m_list, &QListWidget::currentItemChanged, this, &MainWindow::currentChanged);
-    /* a double click starts the VM, or brings its window up */
+    /* a double click starts the VM, or brings its screen or window up */
     connect(m_list, &QListWidget::itemActivated, this, [this]() {
+        VmConsole *console = currentConsole();
+
         if (m_start->isEnabled()) {
             start();
+        } else if (console && console->view()) {
+            m_pane->setTab(VmPane::Console);
+            console->focusScreen();
         } else if (m_showWindow->isEnabled()) {
             showWindow();
         }
@@ -274,6 +293,8 @@ MainWindow::MainWindow(VmStore *store, QWidget *parent)
     }
     restoreState(settings.value("mainwindow/state").toByteArray());
     m_splitter->restoreState(settings.value("mainwindow/splitter").toByteArray());
+    m_library->setChecked(settings.value("mainwindow/library", true).toBool());
+    m_list->setVisible(m_library->isChecked());
     select(settings.value("mainwindow/current").toString());
     if (!m_list->currentItem() && m_list->count() > 0) {
         m_list->setCurrentRow(0);
@@ -282,6 +303,8 @@ MainWindow::MainWindow(VmStore *store, QWidget *parent)
     m_pane->setPage(VmPane::Page(settings.value("settings/page").toInt()));
     m_pane->setTab(VmPane::Tab(settings.value("mainwindow/tab").toInt()));
     updateStatus();
+    /* the dialogs of the whole app */
+    qApp->installEventFilter(this);
 }
 
 void MainWindow::createActions()
@@ -354,6 +377,27 @@ void MainWindow::createActions()
                               tr("QEMU &Reference"), this);
     m_reference->setShortcut(QKeySequence::HelpContents);
     connect(m_reference, &QAction::triggered, this, [this]() { ReferenceWindow::open(this); });
+    /* as QEMU's SDL and GTK displays, and the screen itself */
+    m_fullScreen = action(tr("&Full Screen"), {"view-fullscreen"}, QStyle::SP_TitleBarMaxButton,
+                          QKeySequence(Qt::CTRL | Qt::ALT | Qt::Key_F),
+                          &MainWindow::toggleFullScreen);
+    m_fullScreen->setToolTip(tr("The VM's screen alone, on the whole monitor (Ctrl+Alt+F)"));
+    m_library = new QAction(tr("Show &Library"), this);
+    m_library->setCheckable(true);
+    m_library->setChecked(true);
+    m_library->setShortcut(QKeySequence(Qt::Key_F9));
+    m_library->setToolTip(tr("The list of VMs, or more room for the console"));
+    connect(m_library, &QAction::toggled, m_list, &QWidget::setVisible);
+    /* the desktop takes the keys themselves */
+    m_ctrlAltDel = action(tr("Send Ctrl+Alt+&Del"),
+                          {"input-keyboard", "preferences-desktop-keyboard"},
+                          QStyle::SP_ComputerIcon, {}, &MainWindow::sendCtrlAltDel);
+    m_ctrlAltDel->setIconText(tr("Ctrl+Alt+Del"));
+    m_ctrlAltDel->setToolTip(tr("Press Ctrl+Alt+Del in the VM"));
+    m_releaseInput = action(tr("Release &Input"), {"input-mouse", "transform-move"},
+                            QStyle::SP_ArrowBack, {}, &MainWindow::releaseInput);
+    m_releaseInput->setToolTip(tr("Give the keyboard and mouse back to the desktop "
+                                  "(Ctrl+Alt+G releases the grab from the VM)"));
     m_quit = new QAction(Icons::themed({"application-exit"}, QStyle::SP_DialogCloseButton),
                          tr("&Quit"), this);
     m_quit->setShortcut(QKeySequence::Quit);
@@ -369,10 +413,16 @@ void MainWindow::createActions()
     file->addSeparator();
     file->addAction(m_quit);
 
+    QMenu *view = menuBar()->addMenu(tr("&View"));
+    view->addAction(m_fullScreen);
+    view->addAction(m_library);
+
     QMenu *machine = menuBar()->addMenu(tr("&Machine"));
     machine->addAction(m_settings);
     machine->addSeparator();
     machine->addActions({m_start, m_showWindow, m_pause, m_shutDown, m_reset, m_forceOff});
+    machine->addSeparator();
+    machine->addActions({m_ctrlAltDel, m_releaseInput});
     machine->addSeparator();
     machine->addActions({m_log, m_folder, m_command});
     machine->addAction(tr("Install &Guest Tools…"), this,
@@ -403,6 +453,8 @@ void MainWindow::createActions()
     toolbar->addAction(m_new);
     toolbar->addSeparator();
     toolbar->addActions({m_start, m_pause, m_shutDown, m_forceOff});
+    toolbar->addSeparator();
+    toolbar->addActions({m_fullScreen, m_ctrlAltDel});
 }
 
 Vm *MainWindow::current() const
@@ -477,6 +529,10 @@ void MainWindow::stateChanged(Vm *vm, VmRunner::State state)
     if (state == VmRunner::State::Stopped) {
         /* for failed(), which follows */
         m_endedFrom[id] = m_states.value(id);
+        /* the last of those the closing window waited for */
+        if (m_closeAfter.remove(id) && m_closeAfter.isEmpty()) {
+            QTimer::singleShot(0, this, &QWidget::close);
+        }
     } else {
         /* a new run, started here or found running (attach) */
         m_errors.remove(id);
@@ -486,10 +542,18 @@ void MainWindow::stateChanged(Vm *vm, VmRunner::State state)
     }
     m_states[id] = state;
     updateItem(vm);
+    /* its screen comes up, selected or not: the console attaches to it */
+    if (state != VmRunner::State::Stopped) {
+        consoleOf(vm);
+    }
+    if (VmConsole *console = m_consoleOf.value(id)) {
+        console->setError(m_errors.value(id));
+    }
     if (vm == current()) {
         m_details->setError(m_errors.value(id));
         m_details->refresh();
         updateActions();
+        updateInput();
     }
 }
 
@@ -509,6 +573,9 @@ void MainWindow::failed(Vm *vm, const QString &error)
 
         m_errors[id] = error;
         updateItem(vm);
+        if (VmConsole *console = m_consoleOf.value(id)) {
+            console->setError(error);
+        }
         if (vm == current()) {
             m_details->setError(error);
             updateActions();
@@ -565,6 +632,7 @@ void MainWindow::removeItem(const QString &id)
     m_states.remove(id);
     m_endedFrom.remove(id);
     m_starting.remove(id);
+    delete m_consoleOf.take(id);
     delete itemOf(id);
     currentChanged();
 }
@@ -630,11 +698,133 @@ void MainWindow::showCurrent()
 {
     Vm *vm = current();
 
+    VmConsole *console = vm ? consoleOf(vm) : nullptr;
+
     m_right->setCurrentIndex(m_list->count() == 0 ? 0 : 1);
     m_pane->setVm(vm);
-    m_perf->setVm(vm);
+    m_consoles->setCurrentWidget(console ? static_cast<QWidget *>(console) : m_noConsole);
+    m_perf->setVm(vm, console);
     m_details->setError(vm ? m_errors.value(vm->id()) : QString());
     updateActions();
+    updateInput();
+}
+
+VmConsole *MainWindow::consoleOf(Vm *vm)
+{
+    const QString id = vm->id();
+
+    if (VmConsole *console = m_consoleOf.value(id)) {
+        return console;
+    }
+    auto *console = new VmConsole(vm);
+    console->setError(m_errors.value(id));
+    m_consoles->addWidget(console);
+    m_consoleOf.insert(id, console);
+    /* the console shows only for the selected VM, the one the actions act on */
+    connect(console, &VmConsole::startRequested, this, &MainWindow::start);
+    connect(console, &VmConsole::settingsRequested, this,
+            [this]() { openSettings(current()); });
+    connect(console, &VmConsole::showWindowRequested, this, &MainWindow::showWindow);
+    connect(console, &VmConsole::showLogRequested, this, &MainWindow::showLog);
+    connect(console, &VmConsole::changed, this, [this, console]() { consoleChanged(console); });
+    return console;
+}
+
+VmConsole *MainWindow::currentConsole() const
+{
+    const Vm *vm = current();
+
+    return vm ? m_consoleOf.value(vm->id()) : nullptr;
+}
+
+void MainWindow::consoleChanged(VmConsole *console)
+{
+    if (console == currentConsole()) {
+        updateActions();
+        updateInput();
+    }
+}
+
+void MainWindow::updateInput()
+{
+    const VmConsole *console = currentConsole();
+    VmView *view = console ? console->view() : nullptr;
+
+    if (!view) {
+        m_input->hide();
+        return;
+    }
+    if (console->vm()->runner()->state() == VmRunner::State::Paused) {
+        m_input->setText(tr("Paused"));
+    } else if (view->grabbed()) {
+        m_input->setText(tr("The VM has the keyboard · Ctrl+Alt+G releases"));
+    } else if (view->hasKeyboard()) {
+        m_input->setText(tr("Keys go to the VM · Ctrl+Alt+G grabs"));
+    } else {
+        m_input->setText(tr("Click the screen to type in the VM"));
+    }
+    /* the desktop's shortcuts, as Alt+Tab, go to the VM while grabbed */
+    m_input->setToolTip(tr("Keyboard: %1").arg(view->grabState()));
+    m_input->show();
+}
+
+void MainWindow::leaveScreens()
+{
+    for (VmConsole *console : std::as_const(m_consoleOf)) {
+        if (VmView *view = console->view()) {
+            view->setFullScreen(false);
+            view->setGrab(false);
+        }
+    }
+}
+
+bool MainWindow::eventFilter(QObject *watched, QEvent *event)
+{
+    /* a dialog behind a full-screen VM, or under a grab, would wait unseen */
+    if (event->type() == QEvent::Show && watched->isWidgetType()) {
+        const auto *widget = static_cast<QWidget *>(watched);
+        if (widget->isWindow() && (widget->isModal() || qobject_cast<const QDialog *>(widget))) {
+            leaveScreens();
+        }
+    }
+    return QMainWindow::eventFilter(watched, event);
+}
+
+void MainWindow::toggleFullScreen()
+{
+    VmConsole *console = currentConsole();
+
+    if (!console || !console->view()) {
+        return;
+    }
+    /* back from full screen, the screen is where the console shows */
+    m_pane->setTab(VmPane::Console);
+    console->setFullScreen(!console->isFullScreen());
+}
+
+void MainWindow::sendCtrlAltDel()
+{
+    const VmConsole *console = currentConsole();
+
+    if (console && console->view()) {
+        console->view()->sendCtrlAltDel();
+    }
+}
+
+void MainWindow::releaseInput()
+{
+    const VmConsole *console = currentConsole();
+
+    if (!console || !console->view()) {
+        return;
+    }
+    console->view()->setGrab(false);
+    /* the keys to the window again, its shortcuts with them */
+    if (m_list->isVisible()) {
+        m_list->setFocus(Qt::OtherFocusReason);
+    } else {
+        m_pane->setFocus(Qt::OtherFocusReason);
+    }
 }
 
 void MainWindow::updateActions()
@@ -659,6 +849,12 @@ void MainWindow::updateActions()
     m_log->setEnabled(vm);
     m_folder->setEnabled(vm);
     m_command->setEnabled(vm);
+
+    const VmConsole *console = currentConsole();
+    VmView *view = console ? console->view() : nullptr;
+    m_fullScreen->setEnabled(view);
+    m_ctrlAltDel->setEnabled(view && state == VmRunner::State::Running);
+    m_releaseInput->setEnabled(view && (view->grabbed() || view->hasKeyboard()));
 }
 
 void MainWindow::updateStatus()
@@ -676,6 +872,18 @@ void MainWindow::updateStatus()
     } else {
         m_qemuStatus->setText(docs->status());
         m_qemuStatus->setToolTip(QString());
+    }
+    if (!m_closeAfter.isEmpty()) {
+        QStringList names;
+        for (const QString &id : std::as_const(m_closeAfter)) {
+            if (const Vm *vm = m_store->find(id)) {
+                names << vm->name();
+            }
+        }
+        names.sort();
+        statusBar()->showMessage(tr("Waiting for %1 to shut down, then closing")
+                                     .arg(names.join(", ")));
+        return;
     }
     statusBar()->showMessage(running == 0 ? QString()
                                           : tr("%n running", nullptr, running));
@@ -779,6 +987,9 @@ void MainWindow::start()
     }
     m_errors.remove(vm->id());
     m_details->setError({});
+    if (VmConsole *console = m_consoleOf.value(vm->id())) {
+        console->setError({});
+    }
 
     /* the VM gets its USB devices only if it can open them from the start */
     const QString id = vm->id();
@@ -798,6 +1009,10 @@ void MainWindow::start()
             args.add("loadvm", snapshot);
         }
         vm->runner()->start(args);
+        /* its screen comes up on the Console tab */
+        if (vm == current() && VmConfig::screen(args) == VmConfig::Screen::Embedded) {
+            m_pane->setTab(VmPane::Console);
+        }
         if (!warning.isEmpty()) {
             auto *box = Widgets::messageBox(QMessageBox::Warning, tr("USB Passthrough"), warning,
                                             QMessageBox::Ok, this);
@@ -925,13 +1140,71 @@ void MainWindow::closeEvent(QCloseEvent *event)
     QSettings settings(Paths::settingsPath(), QSettings::IniFormat);
     const Vm *vm = current();
 
+    /* asked again: what the user answers now goes */
+    m_closeAfter.clear();
+    updateStatus();
     if (!m_pane->confirmChanges(tr("Apply them before closing?"))) {
         event->ignore();
         return;
     }
+    /* VMs outlive the window, but those shown in it go on without a screen */
+    QList<Vm *> shown;
+    QStringList names;
+    for (Vm *each : m_store->vms()) {
+        if (!each->runner()->displaySocket().isEmpty()) {
+            shown << each;
+            names << each->name();
+        }
+    }
+    if (!shown.isEmpty()) {
+        std::unique_ptr<QMessageBox> box(Widgets::messageBox(
+            QMessageBox::Question, tr("Close Vitrine"),
+            shown.size() == 1
+                ? tr("%1 is running.").arg(names.first())
+                : tr("%n VMs are running: %1.", nullptr, int(shown.size())).arg(names.join(", ")),
+            QMessageBox::NoButton, this));
+        QPushButton *keep = box->addButton(tr("&Keep Running in the Background"),
+                                           QMessageBox::AcceptRole);
+        QPushButton *shutDown = box->addButton(tr("&Shut Down"), QMessageBox::DestructiveRole);
+
+        box->addButton(QMessageBox::Cancel);
+        box->setDefaultButton(keep);
+        box->setInformativeText(
+            shown.size() == 1
+                ? tr("In the background, it has no screen until vitrine starts again. "
+                     "Shut Down asks the guest to shut down, as the power button does, "
+                     "and closes the window once it is off.")
+                : tr("In the background, they have no screen until vitrine starts again. "
+                     "Shut Down asks the guests to shut down, as the power button does, "
+                     "and closes the window once they are off."));
+        box->exec();
+        if (box->clickedButton() == shutDown) {
+            for (Vm *each : std::as_const(shown)) {
+                /* a paused guest would not see the button */
+                if (each->runner()->state() == VmRunner::State::Paused) {
+                    each->runner()->resume();
+                }
+                each->runner()->powerdown();
+                m_closeAfter.insert(each->id());
+            }
+            /* the guest may ask first, on its screen (KDE does): the window
+               stays until they are off */
+            select(shown.first()->id());
+            m_pane->setTab(VmPane::Console);
+            updateStatus();
+            event->ignore();
+            return;
+        }
+        if (box->clickedButton() != keep) {
+            event->ignore();
+            return;
+        }
+    }
+    leaveScreens();
     settings.setValue("mainwindow/geometry", saveGeometry());
     settings.setValue("mainwindow/state", saveState());
     settings.setValue("mainwindow/splitter", m_splitter->saveState());
+    settings.setValue("mainwindow/library", m_library->isChecked());
     settings.setValue("mainwindow/current", vm ? vm->id() : QString());
     settings.setValue("mainwindow/tab", int(m_pane->tab()));
     settings.setValue("settings/page", int(m_pane->page()));

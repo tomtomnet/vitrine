@@ -58,6 +58,11 @@ public:
     QString displaySocket() const;
     /* The socket of the vitrine agent's port (guest tools), while active */
     QString agentSocket() const;
+    /*
+     * The arguments of the current run, or the last: those given to start(),
+     * or to attach() for a QEMU found running.  vm.args may have changed since.
+     */
+    ArgsFile runArgs() const;
 
     /* The state goes Starting, then Running once QMP answers, or back to
        Stopped with failed() */

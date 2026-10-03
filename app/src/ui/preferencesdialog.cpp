@@ -18,6 +18,7 @@
 
 #include "core/paths.h"
 #include "core/stackbuilder.h"
+#include "ui/hosttuningprefs.h"
 #include "ui/icons.h"
 #include "ui/qemubuilddialog.h"
 #include "ui/qemudocs.h"
@@ -84,6 +85,8 @@ PreferencesDialog::PreferencesDialog(QWidget *parent)
     form->addRow(tr("Virtual machines:"), vms);
     form->addRow(QString(), m_updates);
     form->addRow(QString(), Widgets::hint(tr("Of Vitrine itself: one request to GitHub.")));
+    /* the host's settings while VMs run: HostSettings' entries */
+    connect(this, &QDialog::accepted, new HostTuningPrefs(form, this), &HostTuningPrefs::save);
     layout->addLayout(form);
     layout->addStretch();
     layout->addWidget(buttons);

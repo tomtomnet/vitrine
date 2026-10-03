@@ -153,6 +153,18 @@ bool VmView::attach(const QString &monitorSocket, QString *error)
             if (m_window) {
                 m_window->setGuestSize(w, h);
             }
+            /* A new listener gets the scanout QEMU shows, but not the update
+               that draws it (console.c, displaychangelistener_display_console),
+               and the renderer draws only on an update or a dirty view.  The
+               window's first expose makes the view dirty: if the scanout came
+               first, as it does on KWin (2026-10-03, re-attached to an idle
+               guest, QEMU's trace: scanout, then the frame presented, the
+               guest's next update 7 s later), that draws it; if it comes
+               after, an idle guest would stay black until it repaints.  So
+               the first scanout, and any of a new size, makes it dirty too. */
+            if (m_renderer) {
+                m_renderer->requestRedraw();
+            }
         }, Qt::QueuedConnection);
     };
     m_listener = std::make_unique<Listener>(&m_mailbox, &m_stats, m_opts, cb);
@@ -206,7 +218,9 @@ void VmView::createWindow(bool fullScreen)
         m_window->setGuestCursor(m_cursor, m_cursorHotX, m_cursorHotY);
     }
     m_window->setGuestCursorVisible(m_cursorVisible);
-    connect(m_window, &DisplayWindow::grabChanged, this, &VmView::grabChanged);
+    connect(m_window, &DisplayWindow::grabChanged, this, &VmView::checkGrab);
+    /* the grab its keys and clicks take, and in full screen its closing */
+    m_window->installEventFilter(this);
     /* queued: Ctrl+Alt+F comes from the window's own key handler, and the
        switch deletes the window */
     connect(m_window, &DisplayWindow::fullScreenToggled, this,
@@ -228,6 +242,9 @@ void VmView::createWindow(bool fullScreen)
                 [this]() { m_container->setFocus(Qt::MouseFocusReason); });
         m_placeholder->hide();
         m_host->layout()->addWidget(m_container);
+        /* now, not when the layout gets to it: focus() needs it shown, as
+           the window gets the focus back when it is active again */
+        m_container->show();
     }
 
     m_renderer = new Renderer(m_window, &m_mailbox, &m_stats, m_opts);
@@ -285,8 +302,9 @@ void VmView::setFullScreen(bool on)
     if (!on) {
         focus();
     }
+    updateHostActive();
     Q_EMIT fullScreenChanged(on);
-    Q_EMIT grabChanged();
+    checkGrab();
 }
 
 bool VmView::grabbed() const
@@ -304,6 +322,20 @@ void VmView::setGrab(bool on)
     if (m_window) {
         m_window->setGrab(on);
     }
+    checkGrab();
+}
+
+void VmView::checkGrab()
+{
+    if (grabState() != m_grabState) {
+        m_grabState = grabState();
+        Q_EMIT grabChanged();
+    }
+}
+
+bool VmView::hasKeyboard() const
+{
+    return m_hasKeyboard;
 }
 
 void VmView::focus()
@@ -345,6 +377,27 @@ QString VmView::vmName() const
 
 bool VmView::eventFilter(QObject *watched, QEvent *event)
 {
+    if (watched == m_window) {
+        switch (event->type()) {
+        case QEvent::Close:
+            if (!m_fullScreen) {
+                break;
+            }
+            /* closed by the desktop, e.g. from the task bar: back to the widget,
+               not from the window's own event handler, which the switch deletes */
+            event->ignore();
+            QMetaObject::invokeMethod(this, [this]() { setFullScreen(false); },
+                                      Qt::QueuedConnection);
+            return true;
+        case QEvent::KeyPress:
+        case QEvent::MouseButtonPress:
+            /* once the window has handled it */
+            QMetaObject::invokeMethod(this, &VmView::checkGrab, Qt::QueuedConnection);
+            break;
+        default:
+            break;
+        }
+    }
     if (watched == m_container && m_window) {
         switch (event->type()) {
         case QEvent::ShortcutOverride:
@@ -354,6 +407,7 @@ bool VmView::eventFilter(QObject *watched, QEvent *event)
         case QEvent::KeyRelease:
             m_window->handleKey(static_cast<QKeyEvent *>(event),
                                 event->type() == QEvent::KeyPress);
+            checkGrab();
             return true;
         case QEvent::FocusIn:
         case QEvent::FocusOut:
@@ -370,8 +424,20 @@ bool VmView::eventFilter(QObject *watched, QEvent *event)
    in the active window; in full screen the window tells itself */
 void VmView::updateHostActive()
 {
+    bool active = false;
+
     if (m_window && m_container) {
-        m_window->setHostActive(m_container->hasFocus() &&
-                                m_container->window()->isActiveWindow());
+        active = m_container->hasFocus() && m_container->window()->isActiveWindow();
+        m_window->setHostActive(active);
+    } else if (m_window) {
+        active = m_window->isActive();
+    }
+    if (active != m_hasKeyboard) {
+        m_hasKeyboard = active;
+        m_grabState = grabState();
+        Q_EMIT grabChanged();
+    } else {
+        /* losing the keyboard releases the grab */
+        checkGrab();
     }
 }

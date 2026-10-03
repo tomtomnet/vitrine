@@ -22,6 +22,8 @@ qt_add_library(vitrine_core STATIC
     src/core/hostdevices.h
     src/core/hostmemory.cpp
     src/core/hostmemory.h
+    src/core/hostsettings.cpp
+    src/core/hostsettings.h
     src/core/importer.cpp
     src/core/importer.h
     src/core/optionvalue.cpp
@@ -56,7 +58,9 @@ qt_add_library(vitrine_core STATIC
 target_include_directories(vitrine_core PUBLIC src)
 # host/ of the source tree: what a build tree's app builds its QEMU with
 target_compile_definitions(vitrine_core PRIVATE
-    VITRINE_HOST_SOURCE_DIR="${PROJECT_SOURCE_DIR}/host")
+    VITRINE_HOST_SOURCE_DIR="${PROJECT_SOURCE_DIR}/host"
+    # the root helper the host settings go through (helper/)
+    VITRINE_HELPER_PATH="${VITRINE_HELPER_PATH}")
 # what the runner passes a guest to install the guest tools at boot
 qt_add_resources(vitrine_core guestbootstrap PREFIX /guest BASE ../guest
     FILES ../guest/bootstrap/vitrine-tools-bootstrap.service
@@ -145,6 +149,8 @@ qt_add_executable(vitrine
     src/ui/firmwarerepair.h
     src/ui/guesttoolsdialog.cpp
     src/ui/guesttoolsdialog.h
+    src/ui/hosttuningprefs.cpp
+    src/ui/hosttuningprefs.h
     src/ui/icons.cpp
     src/ui/icons.h
     src/ui/importdialog.cpp
@@ -181,6 +187,8 @@ qt_add_executable(vitrine
     src/ui/updatenotifier.h
     src/ui/usbaccess.cpp
     src/ui/usbaccess.h
+    src/ui/vmconsole.cpp
+    src/ui/vmconsole.h
     src/ui/vmdetails.cpp
     src/ui/vmdetails.h
     src/ui/vmpane.cpp
@@ -238,6 +246,7 @@ if(BUILD_TESTING)
             guesttools
             hostdevices
             hostmemory
+            hostsettings
             importer
             optionvalue
             perfstats
@@ -256,4 +265,10 @@ if(BUILD_TESTING)
         target_link_libraries(test_${name} PRIVATE vitrine_core Qt6::Test)
         add_test(NAME ${name} COMMAND test_${name})
     endforeach()
+    # the helper's test build on a fake tree, and its QEMU stand-in (helper/)
+    target_compile_definitions(test_hostsettings PRIVATE
+        HELPER_FAKE="$<TARGET_FILE:vitrine-helper-fake>"
+        FAKE_QEMU="$<TARGET_FILE:fake-qemu>"
+        TEST_WORK_DIR="${CMAKE_CURRENT_BINARY_DIR}/test-work")
+    add_dependencies(test_hostsettings vitrine-helper-fake fake-qemu)
 endif()
