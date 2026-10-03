@@ -322,11 +322,16 @@ void VmView::createWindow(bool fullScreen)
     m_renderer = new Renderer(m_window, &m_mailbox, m_stats.get(), m_opts);
     m_renderer->setObjectName(QStringLiteral("render"));   // the thread's name in /proc
     m_renderer->setPresentationSink(m_dbus->connection(), m_dbus->consolePath().toUtf8());
-    connect(m_renderer, &Renderer::failed, this, [this](const QString &message) {
+    connect(m_renderer, &Renderer::failed, this,
+            [this, renderer = m_renderer](const QString &message) {
         qWarning("vitrine: display: %s", qPrintable(message));
-        /* it has ended: nothing else gives the guest's buffers back */
-        m_renderFailed = true;
-        m_undrawn->start();
+        /* it has ended: nothing else gives the guest's buffers back - if it
+           is still this window's (queued: a full-screen switch may have
+           replaced it, and the new one draws) */
+        if (renderer == m_renderer) {
+            m_renderFailed = true;
+            m_undrawn->start();
+        }
     });
     m_window->setRenderer(m_renderer);
     {
