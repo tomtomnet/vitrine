@@ -59,6 +59,72 @@ target_link_libraries(vitrine_core PUBLIC
     Qt6::Core Qt6::Concurrent Qt6::Gui Qt6::Network)
 target_compile_options(vitrine_core PRIVATE -Wall -Wextra)
 
+# The VM display: QEMU's D-Bus display in a native Wayland surface. The
+# client files in src/vmview come unchanged from the research side's D-Bus
+# display client (embed-poc); see src/vmview/README.md.
+set(QT_NO_PRIVATE_MODULE_WARNING ON)
+find_package(Qt6 6.5 REQUIRED COMPONENTS Gui GuiPrivate Widgets)
+find_package(PkgConfig REQUIRED)
+pkg_check_modules(GIO REQUIRED IMPORTED_TARGET gio-2.0 gio-unix-2.0)
+pkg_check_modules(EGL REQUIRED IMPORTED_TARGET egl)
+pkg_check_modules(WAYLAND REQUIRED IMPORTED_TARGET wayland-client)
+pkg_check_modules(GBM REQUIRED IMPORTED_TARGET gbm libdrm)
+pkg_get_variable(WAYLAND_PROTOCOLS_DIR wayland-protocols pkgdatadir)
+find_program(WAYLAND_SCANNER wayland-scanner REQUIRED)
+
+# Wayland protocols Qt does not expose: presentation feedback, dma-buf
+# feedback, shortcut inhibition (keyboard grab), pointer lock and relative
+# motion (mouse grab for guests without a tablet).
+set(VMVIEW_PROTOCOLS
+    stable/presentation-time/presentation-time.xml
+    stable/linux-dmabuf/linux-dmabuf-v1.xml
+    unstable/keyboard-shortcuts-inhibit/keyboard-shortcuts-inhibit-unstable-v1.xml
+    unstable/pointer-constraints/pointer-constraints-unstable-v1.xml
+    unstable/relative-pointer/relative-pointer-unstable-v1.xml)
+set(VMVIEW_PROTOCOL_DIR ${CMAKE_CURRENT_BINARY_DIR}/vmview-protocols)
+set(VMVIEW_PROTOCOL_SOURCES)
+foreach(xml ${VMVIEW_PROTOCOLS})
+    get_filename_component(name ${xml} NAME_WE)
+    set(hdr ${VMVIEW_PROTOCOL_DIR}/${name}-client-protocol.h)
+    set(src ${VMVIEW_PROTOCOL_DIR}/${name}-protocol.c)
+    add_custom_command(OUTPUT ${hdr} ${src}
+        COMMAND ${CMAKE_COMMAND} -E make_directory ${VMVIEW_PROTOCOL_DIR}
+        COMMAND ${WAYLAND_SCANNER} client-header ${WAYLAND_PROTOCOLS_DIR}/${xml} ${hdr}
+        COMMAND ${WAYLAND_SCANNER} private-code ${WAYLAND_PROTOCOLS_DIR}/${xml} ${src}
+        DEPENDS ${WAYLAND_PROTOCOLS_DIR}/${xml})
+    list(APPEND VMVIEW_PROTOCOL_SOURCES ${hdr} ${src})
+endforeach()
+
+qt_add_library(vitrine_vmview STATIC
+    src/vmview/common.h
+    src/vmview/dbusdisplay.cpp
+    src/vmview/dbusdisplay.h
+    src/vmview/displaywindow.cpp
+    src/vmview/displaywindow.h
+    src/vmview/framemailbox.h
+    src/vmview/keymap_linux_to_qnum.h
+    src/vmview/listener.cpp
+    src/vmview/listener.h
+    src/vmview/qmp.cpp
+    src/vmview/qmp.h
+    src/vmview/renderer.cpp
+    src/vmview/renderer.h
+    src/vmview/stats.cpp
+    src/vmview/stats.h
+    src/vmview/swapchain.cpp
+    src/vmview/swapchain.h
+    src/vmview/waylandextras.cpp
+    src/vmview/waylandextras.h
+    ${VMVIEW_PROTOCOL_SOURCES}
+)
+target_include_directories(vitrine_vmview PUBLIC src PRIVATE src/vmview ${VMVIEW_PROTOCOL_DIR})
+target_link_libraries(vitrine_vmview
+    PUBLIC Qt6::Gui Qt6::Widgets
+    PRIVATE Qt6::GuiPrivate PkgConfig::GIO PkgConfig::EGL PkgConfig::WAYLAND PkgConfig::GBM)
+# GLib's headers use the names of Qt's signals/slots keywords; Qt's GL headers
+# come with Qt6::Gui and GL entry points are resolved at run time
+target_compile_definitions(vitrine_vmview PRIVATE QT_NO_KEYWORDS)
+
 qt_add_executable(vitrine
     src/main.cpp
     src/ui/argseditor.cpp
@@ -114,7 +180,7 @@ qt_add_executable(vitrine
 )
 qt_add_resources(vitrine icons PREFIX /icons BASE data
     FILES data/vitrine.svg)
-target_link_libraries(vitrine PRIVATE vitrine_core Qt6::DBus Qt6::Widgets)
+target_link_libraries(vitrine PRIVATE vitrine_core vitrine_vmview Qt6::DBus Qt6::Widgets)
 target_compile_definitions(vitrine PRIVATE VITRINE_VERSION="${PROJECT_VERSION}")
 
 # The commit it is built from, for the update check; none outside a git checkout
