@@ -10,6 +10,7 @@
 #include <QLocalServer>
 #include <QLocalSocket>
 #include <QProcess>
+#include <QSettings>
 #include <QSignalSpy>
 #include <QStandardPaths>
 #include <QTemporaryDir>
@@ -161,8 +162,9 @@ private slots:
 
     void init()
     {
-        QFile::remove(QStandardPaths::writableLocation(QStandardPaths::GenericConfigLocation) +
-                      "/vitrine/settings.conf");
+        /* its own keys only: the file is the app's (and, run by hand, may
+           be another test's) */
+        QSettings(Paths::settingsPath(), QSettings::IniFormat).remove("host");
         qunsetenv("VITRINE_HELPER");
         m_root = QString(TEST_WORK_DIR) + "/hostsettings-" + QTest::currentTestFunction();
         QDir(m_root).removeRecursively();

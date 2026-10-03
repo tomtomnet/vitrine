@@ -264,6 +264,12 @@ if(BUILD_TESTING)
         qt_add_executable(test_${name} tests/test_${name}.cpp)
         target_link_libraries(test_${name} PRIVATE vitrine_core Qt6::Test)
         add_test(NAME ${name} COMMAND test_${name})
+        # a home of its own: Qt's test mode puts the settings in ~/.qttest,
+        # one file for every test, which ctest -j runs side by side (one
+        # test's reset or qemu/binary would be another's mid-run)
+        set(home ${CMAKE_CURRENT_BINARY_DIR}/test-home/${name})
+        file(MAKE_DIRECTORY ${home})
+        set_tests_properties(${name} PROPERTIES ENVIRONMENT "HOME=${home}")
     endforeach()
     # the helper's test build on a fake tree, and its QEMU stand-in (helper/)
     target_compile_definitions(test_hostsettings PRIVATE
