@@ -149,8 +149,9 @@ struct Writer {
 /*
  * The research launcher's card: DRM native context, blob resources in a
  * 4 GiB window, and the guest's vblank ticked 3 ms before the host's,
- * following what the host's compositor needs.  Those of vitrine's QEMU
- * that @known lacks stay out, as QEMU refuses unknown properties.
+ * following what the host's compositor needs.  No Venus, which is off by
+ * default.  Those of vitrine's QEMU that @known lacks stay out, as QEMU
+ * refuses unknown properties.
  */
 static QString gpuDevice(const std::optional<QStringList> &known)
 {
@@ -158,7 +159,6 @@ static QString gpuDevice(const std::optional<QStringList> &known)
         {"hostmem", "4G"},
         {"blob", "on"},
         {"drm_native_context", "on"},
-        {"venus", "off"},
         {"x-host-vblank", "on"},
         {"x-vblank-lead", "3000"},
         {"x-vblank-lead-auto", "on"},

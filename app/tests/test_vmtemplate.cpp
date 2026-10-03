@@ -70,7 +70,7 @@ private slots:
                  "\n"
                  "# Display\n"
                  "-vga none\n"
-                 "-device virtio-gpu-gl-pci,hostmem=4G,blob=on,drm_native_context=on,venus=off,"
+                 "-device virtio-gpu-gl-pci,hostmem=4G,blob=on,drm_native_context=on,"
                  "x-host-vblank=on,x-vblank-lead=3000,x-vblank-lead-auto=on\n"
                  "-display dbus,p2p=yes,gl=on\n"
                  "\n"
@@ -182,11 +182,13 @@ private slots:
         const ArgsFile args = build(o);
         const QString text = args.toText();
 
-        QVERIFY(text.contains("-device virtio-gpu-gl-pci,hostmem=4G,blob=on,venus=off\n"));
+        QVERIFY(text.contains("-device virtio-gpu-gl-pci,hostmem=4G,blob=on\n"));
         QVERIFY(text.contains("-accel kvm\n"));
         QVERIFY(!text.contains("x-"));
         QVERIFY(!text.contains("honor-guest-pat"));
         QVERIFY(!VmConfig::graphics(args).nativeContext);
+        /* Venus, which it has, stays off as by default */
+        QVERIFY(!text.contains("venus"));
 
         /* vitrine's */
         *o.gpuProperties << "drm_native_context" << "x-host-vblank" << "x-vblank-lead"
@@ -241,7 +243,8 @@ private slots:
         o.gpuProperties = gpuProperties(nullptr, plain);
         const QString text = build(o).toText();
         QVERIFY(text.contains("-accel kvm\n"));
-        QVERIFY(text.contains("-device virtio-gpu-gl-pci,blob=on,venus=off\n"));
+        QVERIFY(text.contains("-device virtio-gpu-gl-pci,blob=on\n"));
+        QVERIFY(!text.contains("venus"));
 
         /* loaded: a QEMU without the card has none, else as it says */
         QCOMPARE(gpuProperties(&info, plain), QStringList());
