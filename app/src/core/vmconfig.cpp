@@ -3,6 +3,7 @@
 
 #include <QDir>
 #include <QRegularExpression>
+#include <QSet>
 
 #include <arpa/inet.h>
 #include <netinet/in.h>
@@ -711,8 +712,11 @@ static bool portFree(int port)
 
 int freePort(const QList<int> &taken, int from)
 {
+    /* passt's ranges can make it long */
+    const QSet<int> used(taken.cbegin(), taken.cend());
+
     for (int port = qMax(from, 1024); port < 65536; port++) {
-        if (!taken.contains(port) && portFree(port)) {
+        if (!used.contains(port) && portFree(port)) {
             return port;
         }
     }

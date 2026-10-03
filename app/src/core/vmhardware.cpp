@@ -4,6 +4,9 @@
 #include <QCoreApplication>
 #include <QFileInfo>
 #include <QHash>
+#include <QJsonArray>
+#include <QJsonDocument>
+#include <QJsonObject>
 #include <QRegularExpression>
 #include <QSet>
 
@@ -1081,6 +1084,77 @@ static Network readNetwork(const ArgsFile &args, NetLines *lines)
 Network network(const ArgsFile &args)
 {
     return readNetwork(args, nullptr);
+}
+
+/* The host ports of a hostfwd= rule of QEMU's user network, if over TCP */
+static QList<int> hostfwdPorts(const QString &rule)
+{
+    /* [tcp|udp]:[HOSTADDR]:HOSTPORT-..., the address maybe in brackets */
+    static const QRegularExpression hostfwd("^(tcp|udp)?:(\\[[^\\]]*\\]|[^:]*):(\\d+)-");
+    const QRegularExpressionMatch m = hostfwd.match(rule.trimmed());
+
+    if (!m.hasMatch() || m.captured(1) == "udp") {
+        return {};
+    }
+    return {m.captured(3).toInt()};
+}
+
+/*
+ * The host ports of a passt tcp-ports= spec: [ADDR[%IF]/]PORTS, PORTS a
+ * list of [~]FIRST[-LAST][:GUEST...], or all, auto or none, which name no
+ * port of their own
+ */
+static QList<int> passtPorts(const QString &spec)
+{
+    static const QRegularExpression range("^(\\d+)(?:-(\\d+))?(?::.*)?$");
+    const QString ports = spec.section('/', -1);
+    QList<int> list;
+
+    for (const QString &item : ports.split(',', Qt::SkipEmptyParts)) {
+        /* an exclusion from a range: counting the port anyway is safe */
+        const QRegularExpressionMatch m = range.match(item.trimmed().remove('~'));
+        if (!m.hasMatch()) {
+            continue;
+        }
+        const int first = m.captured(1).toInt();
+        const int last = m.captured(2).isEmpty() ? first : m.captured(2).toInt();
+        for (int port = first; port <= qMin(last, 65535); port++) {
+            list << port;
+        }
+    }
+    return list;
+}
+
+QList<int> forwardedPorts(const ArgsFile &args)
+{
+    QList<int> lines = args.indexesOf("netdev");
+    QList<int> ports;
+
+    lines << args.indexesOf("nic") << args.indexesOf("net");
+    for (int line : std::as_const(lines)) {
+        const QString text = args.lines[line].value.trimmed();
+
+        if (text.startsWith('{')) {
+            /* QAPI: lists of String, {"str": "..."} */
+            const QJsonObject netdev = QJsonDocument::fromJson(text.toUtf8()).object();
+            for (const QJsonValue rule : netdev.value("hostfwd").toArray()) {
+                ports << hostfwdPorts(rule.isObject() ? rule["str"].toString() : rule.toString());
+            }
+            for (const QJsonValue spec : netdev.value("tcp-ports").toArray()) {
+                ports << passtPorts(spec.isObject() ? spec["str"].toString() : spec.toString());
+            }
+            continue;
+        }
+        const OptionValue v(text);
+        for (const OptionValue::Item &item : v.items()) {
+            if (item.key == "hostfwd" && !item.bare) {
+                ports << hostfwdPorts(item.value);
+            } else if (item.key == "tcp-ports" && !item.bare) {
+                ports << passtPorts(item.value);
+            }
+        }
+    }
+    return ports;
 }
 
 void setNetwork(ArgsFile &args, const Network &n)

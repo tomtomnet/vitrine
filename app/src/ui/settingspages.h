@@ -294,6 +294,8 @@ private:
     QSpinBox *m_port;
     QLabel *m_sshInfo;
     VmConfig::Network m_loaded;
+    /* The host ports of the VM's forwards but the SSH one, which stay */
+    QList<int> m_otherForwards;
     /* passt, if this computer and the VM's QEMU have it */
     QString m_backend;
 };

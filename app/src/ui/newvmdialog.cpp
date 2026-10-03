@@ -245,11 +245,11 @@ bool NewVmDialog::create(Vm *vm, QString *error)
     o.passt = VmTemplate::hasPasst(info);
     o.gpuProperties = VmTemplate::gpuProperties(info);
     if (o.os == Os::Linux) {
-        /* the guest's SSH, on a port no other VM forwards */
+        /* the guest's SSH, on a port no other VM forwards, whatever for */
         QList<int> taken;
         for (const Vm *other : m_store->vms()) {
-            if (other != vm && VmConfig::network(other->args()).sshPort > 0) {
-                taken << VmConfig::network(other->args()).sshPort;
+            if (other != vm) {
+                taken << VmConfig::forwardedPorts(other->args());
             }
         }
         o.sshPort = VmConfig::freePort(taken);

@@ -1286,12 +1286,13 @@ NetworkPage::NetworkPage(Vm *vm, QWidget *parent)
     connect(m_nat, &QCheckBox::toggled, this, &NetworkPage::update);
     connect(m_ssh, &QCheckBox::toggled, this, [this](bool on) {
         if (on && m_loaded.sshPort == 0 && m_port->value() == m_port->minimum()) {
-            /* a port no other VM uses, free now */
-            QList<int> taken;
+            /* a port no other VM forwards, whatever for, nor this one's
+               other forwards, which stay; and free now */
+            QList<int> taken = m_otherForwards;
             if (auto *store = m_vm ? qobject_cast<VmStore *>(m_vm->parent()) : nullptr) {
                 for (const Vm *other : store->vms()) {
-                    if (other != m_vm && VmConfig::network(other->args()).sshPort > 0) {
-                        taken << VmConfig::network(other->args()).sshPort;
+                    if (other != m_vm) {
+                        taken << VmConfig::forwardedPorts(other->args());
                     }
                 }
             }
@@ -1325,6 +1326,8 @@ void NetworkPage::load(const ArgsFile &args)
     const QSignalBlocker a(m_nat), b(m_ssh), c(m_port);
 
     m_loaded = VmConfig::network(args);
+    m_otherForwards = VmConfig::forwardedPorts(args);
+    m_otherForwards.removeOne(m_loaded.sshPort);
     /* where the VM had none: passt, if at hand */
     m_backend = VmTemplate::hasPasst(QemuDocs::forArgs(args)->info()) ? "passt" : "user";
     m_nat->setChecked(m_loaded.kind == VmConfig::Network::Nat);

@@ -131,6 +131,13 @@ struct Network {
 };
 Network network(const ArgsFile &args);
 /*
+ * The ports of this computer the VM forwards to it over TCP: hostfwd= and
+ * passt's tcp-ports=, on every -netdev, -nic and -net, JSON ones too,
+ * whatever the Network page makes of them.  A port for another VM's
+ * forward must be none of them, even while this VM is stopped.
+ */
+QList<int> forwardedPorts(const ArgsFile &args);
+/*
  * Nat or Off; a Custom network is left alone.  Off puts -nic none where
  * the card was.  Turning NAT on adds a -netdev of @network.backend (user
  * when empty) and a card (@network.card, else virtio-net-pci, or e1000e

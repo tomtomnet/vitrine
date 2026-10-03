@@ -152,6 +152,25 @@ private slots:
         QCOMPARE(text(args), "-cpu max\n-smp 8,sockets=1,dies=2,cores=4,threads=1\n");
     }
 
+    /* A new SSH forward takes none of the ports the VM forwards already */
+    void networkPagePortIsFree()
+    {
+        NetworkPage page(nullptr);
+        auto *ssh = page.findChild<QCheckBox *>("ssh");
+        auto *port = page.findChild<QSpinBox *>("sshPort");
+        QVERIFY(ssh && port);
+
+        ArgsFile args = ArgsFile::parse("-nic user,model=virtio-net-pci,hostfwd=tcp::10022-:80\n");
+        page.load(args);
+        QVERIFY(!ssh->isChecked());
+        ssh->setChecked(true);
+        QVERIFY(port->value() > 10022);
+        page.save(args);
+        QCOMPARE(text(args), QString("-nic user,model=virtio-net-pci,hostfwd=tcp::10022-:80,"
+                                     "hostfwd=tcp:127.0.0.1:%1-:22\n")
+                                 .arg(port->value()));
+    }
+
     void hardwarePageLeavesCustomCpus()
     {
         HardwarePage page;

@@ -246,6 +246,36 @@ private slots:
         }
     }
 
+    /* The ports to keep clear of for another VM's forward */
+    void forwardedHostPorts()
+    {
+        const auto ports = [](const char *args) {
+            return forwardedPorts(ArgsFile::parse(args));
+        };
+
+        QCOMPARE(ports("-m 1G\n"), QList<int>());
+        /* the forward the Network page follows, and the others */
+        QCOMPARE(ports("-netdev user,id=n0,hostfwd=tcp:127.0.0.1:2222-:22,hostfwd=::8080-:80,"
+                       "hostfwd=udp::5353-:53,hostfwd=tcp:[::1]:2223-:22\n"
+                       "-device e1000e,netdev=n0\n"),
+                 QList<int>({2222, 8080, 2223}));
+        /* two networks, which the page leaves to the Arguments page */
+        QCOMPARE(ports("-netdev passt,id=n0,tcp-ports=127.0.0.1/10022:22\n"
+                       "-device virtio-net-pci,netdev=n0\n"
+                       "-netdev user,id=n1\n-device e1000e,netdev=n1\n"),
+                 QList<int>({10022}));
+        /* passt's lists and ranges, as QemuOpts escapes commas */
+        QCOMPARE(ports("-nic passt,tcp-ports=%eth0/10030-10032:30-32,,~10031,,all,udp-ports=10040\n"),
+                 QList<int>({10030, 10031, 10032, 10031}));
+        /* in JSON, and the legacy -net */
+        QCOMPARE(ports("-netdev {\"type\":\"passt\",\"id\":\"n0\","
+                       "\"tcp-ports\":[{\"str\":\"127.0.0.1/10050:22\"}]}\n"
+                       "-netdev {\"type\":\"user\",\"id\":\"n1\","
+                       "\"hostfwd\":[{\"str\":\"tcp::10051-:80\"}]}\n"
+                       "-net user,hostfwd=tcp::10052-:22\n"),
+                 QList<int>({10050, 10051, 10052}));
+    }
+
     void setNetworks()
     {
         const QString passt = "-m 1G\n"
