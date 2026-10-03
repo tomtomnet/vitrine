@@ -129,6 +129,7 @@ class TestHostSettings : public QObject
 
 private:
     QString m_root;
+    QByteArray m_path = qgetenv("PATH");
 
     QString fair(int cpu) const
     {
@@ -166,6 +167,7 @@ private slots:
            be another test's) */
         QSettings(Paths::settingsPath(), QSettings::IniFormat).remove("host");
         qunsetenv("VITRINE_HELPER");
+        qputenv("PATH", m_path);
         m_root = QString(TEST_WORK_DIR) + "/hostsettings-" + QTest::currentTestFunction();
         QDir(m_root).removeRecursively();
         QDir().mkpath(m_root + "/run");
@@ -336,6 +338,78 @@ private slots:
         QVERIFY(!hs.helperRunning());
     }
 
+private:
+    /*
+     * polkit (pkcheck, then pkexec) on PATH, as stand-ins: pkcheck answers
+     * what <root>/answer says, pkexec runs the helper's test build; both
+     * write their arguments to <root>/pkcheck.log and pkexec.log
+     */
+    void fakePolkit() const
+    {
+        const QString bin = m_root + "/bin";
+        writeFile(bin + "/pkcheck", QString("#!/bin/sh\necho \"$*\" >> %1/pkcheck.log\n"
+                                            "exit $(cat %1/answer)\n").arg(m_root).toUtf8());
+        writeFile(bin + "/pkexec", QString("#!/bin/sh\necho \"$*\" >> %1/pkexec.log\nexec %2\n")
+                                       .arg(m_root, HELPER_FAKE).toUtf8());
+        for (const QString &name : {"pkcheck", "pkexec"}) {
+            QFile::setPermissions(bin + "/" + name, QFileDevice::ReadOwner | QFileDevice::ExeOwner);
+        }
+        qputenv("PATH", bin.toLocal8Bit() + ':' + m_path);
+        /* installed, as far as HostSettings looks */
+        qputenv("VITRINE_HELPER", HELPER_FAKE);
+    }
+    QStringList polkitLog(const QString &name) const
+    {
+        return QString::fromUtf8(readFile(m_root + "/" + name + ".log")).split('\n', Qt::SkipEmptyParts);
+    }
+
+private slots:
+    /*
+     * polkit is asked before each start of the helper, its answer never
+     * kept: the group joined while vitrine runs counts at the next VM
+     * start, and left again means no pkexec - which would bring the
+     * desktop's password dialog at a VM start
+     */
+    void polkitEachTime()
+    {
+        fakePolkit();
+        FakeQemu q1, q2, q3;
+        HostSettings hs(nullptr);
+        QSignalSpy lines(&hs, &HostSettings::helperLine), notices(&hs, &HostSettings::notice),
+            finished(&hs, &HostSettings::helperFinished);
+        hs.setSysRoot(m_root + "/sys");
+
+        writeFile(m_root + "/answer", "2\n");
+        hs.tune(q1.pid());
+        QTRY_COMPARE(notices.size(), 1);
+        QCOMPARE(notices[0][0].toString(),
+                 QString("Host tuning is off: it needs membership of the vitrine group."));
+        QVERIFY(!hs.helperRunning());
+        QVERIFY(polkitLog("pkexec").isEmpty());
+
+        /* joined the group */
+        writeFile(m_root + "/answer", "0\n");
+        hs.tune(q2.pid());
+        QTRY_VERIFY(saw(lines, QString("ok rt %1").arg(q2.pid())));
+        QCOMPARE(polkitLog("pkcheck").size(), 2);
+        QCOMPARE(polkitLog("pkexec").size(), 1);
+        /* the installed helper, the one the action names */
+        QVERIFY(polkitLog("pkexec").first().startsWith("--disable-internal-agent /"));
+        QVERIFY(!polkitLog("pkexec").first().contains(HELPER_FAKE));
+        q2.stop();
+        QTRY_COMPARE(finished.size(), 1);
+
+        /* left it again: asked again, no pkexec, and said again */
+        writeFile(m_root + "/answer", "2\n");
+        hs.tune(q3.pid());
+        QTRY_COMPARE(polkitLog("pkcheck").size(), 3);
+        QTRY_COMPARE(notices.size(), 2);
+        QTest::qWait(200);
+        QVERIFY(!hs.helperRunning());
+        QCOMPARE(polkitLog("pkexec").size(), 1);
+        QCOMPARE(fair(0), QString("1000000000/50000000"));
+    }
+
     /* pkexec refusing (as without the group): said once, never asked again */
     void refused()
     {
@@ -345,7 +419,7 @@ private slots:
         hs.setSysRoot(m_root + "/sys");
         hs.setHelperCommand({"/bin/sh", "-c",
                              "echo 'Error executing command as another user: Not authorized'; "
-                             "exit 127"});
+                             "echo; echo 'This incident has been reported.'; exit 127"});
         hs.tune(qemu.pid());
         QTRY_COMPARE(finished.size(), 1);
         QCOMPARE(notices.size(), 1);

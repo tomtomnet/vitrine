@@ -248,7 +248,7 @@ void HostSettings::grantCapability(const QString &qemu, QObject *context,
                 done(tr("pkexec is not installed"));
             }
         });
-        run->start("pkexec", {"--disable-internal-agent", helperPath(), "setcap", path});
+        run->start("pkexec", {"--disable-internal-agent", VITRINE_HELPER_PATH, "setcap", path});
     });
 }
 
@@ -397,19 +397,29 @@ void HostSettings::start()
         deny(tr("vitrine-helper is not installed"));
         return;
     }
-    if (m_access == Access::Granted) {
-        spawn({"pkexec", "--disable-internal-agent", helperPath()});
-        return;
-    }
+    /*
+     * polkit, asked before each start of the helper and never remembered:
+     * a membership of the vitrine group given since counts (no restart of
+     * vitrine), and one taken back too - pkexec would hand a request polkit
+     * wants a password for to the desktop's agent, a dialog at a VM start
+     * (--disable-internal-agent only turns off its own).  A membership
+     * taken between the check and pkexec is the window left.  pkexec runs
+     * the installed helper only, the one the action names.
+     */
     m_access = Access::Checking;
     checkAccess(this, [this](const QString &why) {
+        m_access = Access::Unknown;
         if (!why.isEmpty()) {
             deny(why);
             return;
         }
-        m_access = Access::Granted;
+        /* granted: a refusal said earlier is news again if it comes back */
+        for (const QString &text : std::as_const(m_refusals)) {
+            m_said.remove(text);
+        }
+        m_refusals.clear();
         if (!m_out.isEmpty()) {
-            spawn({"pkexec", "--disable-internal-agent", helperPath()});
+            spawn({"pkexec", "--disable-internal-agent", VITRINE_HELPER_PATH});
         }
     });
 }
@@ -517,7 +527,9 @@ void HostSettings::handleLine(const QString &line)
     emit helperLine(line);
     if (!protocol.contains(word)) {
         /* pkexec's, before the helper runs: why it did not */
-        m_foreign << line;
+        if (!line.isEmpty()) {
+            m_foreign << line;
+        }
     } else if (word == "ready") {
         m_ready = true;
         flush();
@@ -571,15 +583,24 @@ void HostSettings::reap()
     /* what it said last */
     readHelper();
     const bool ran = m_ready;
-    const QString why = m_foreign.isEmpty() ? tr("vitrine-helper did not start") : m_foreign.last();
+    /* pkexec's own line, not what follows it ("This incident has been
+       reported.") */
+    QString why = m_foreign.isEmpty() ? tr("vitrine-helper did not start") : m_foreign.first();
+    for (const QString &line : std::as_const(m_foreign)) {
+        if (line.startsWith("Error executing command")) {
+            why = line;
+            break;
+        }
+    }
     m_pid = 0;
     closeHelper();
     m_out.clear();
     m_expected.clear();
     emit helperFinished();
     if (!ran) {
-        /* pkexec refused it, or it could not start */
-        deny(why);
+        /* pkexec refused it, though polkit said yes, or it could not start:
+           not again in this run */
+        deny(why, true);
         return;
     }
     /* it ends after the last VM it watched: a VM running now started
@@ -615,11 +636,17 @@ void HostSettings::closeHelper()
     m_ready = false;
 }
 
-void HostSettings::deny(const QString &why)
+void HostSettings::deny(const QString &why, bool always)
 {
-    m_access = Access::Denied;
+    if (always) {
+        m_access = Access::Denied;
+    }
+    /* the VMs asked for go untuned: none of them is waited for */
     m_out.clear();
-    say(tr("Host tuning is off: %1.").arg(why));
+    m_expected.clear();
+    const QString text = tr("Host tuning is off: %1.").arg(why);
+    m_refusals.insert(text);
+    say(text);
 }
 
 void HostSettings::say(const QString &text)

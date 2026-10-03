@@ -20,7 +20,8 @@ class VmStore;
  * kernel's fair server at 10 ms / 1 ms, a GPU clock floor on AMD APUs and
  * real-time QEMU threads.  They need root: vitrine-helper applies them,
  * started with pkexec when a VM starts.  Members of the vitrine group need
- * no password; polkit is asked first, without interaction, so that
+ * no password; polkit is asked first, without interaction, each time the
+ * helper starts (a membership given or taken meanwhile counts), so that
  * everyone else gets their VMs untuned and a word in the status bar once,
  * never a password dialog at each start.  The helper watches the QEMU
  * processes and puts everything back after the last one, crash included,
@@ -44,7 +45,8 @@ public:
     static QString gpuFloor();
     static void setGpuFloor(const QString &floor);
 
-    /* The installed helper; $VITRINE_HELPER names another one (tests) */
+    /* The installed helper, the one polkit's action names and the only one
+       pkexec runs; $VITRINE_HELPER names another for helperInstalled() (tests) */
     static QString helperPath();
     static bool helperInstalled();
     /* The calling user is in the vitrine group (the user database's view,
@@ -98,7 +100,8 @@ signals:
     void helperFinished();
 
 private:
-    enum class Access { Unknown, Checking, Granted, Denied };
+    /* polkit's answer is not kept: Denied only when pkexec itself refused */
+    enum class Access { Unknown, Checking, Denied };
 
     void watchVm(Vm *vm);
     void vmStateChanged(Vm *vm);
@@ -109,7 +112,9 @@ private:
     void flush();
     void reap();
     void closeHelper();
-    void deny(const QString &why);
+    /* No helper for the VMs asked for: for this start only, or (@always)
+       for the rest of the run */
+    void deny(const QString &why, bool always = false);
     void say(const QString &text);
 
     VmStore *m_store;
@@ -120,6 +125,7 @@ private:
     QSet<qint64> m_expected;            // QEMUs asked to be watched, not ended
     Access m_access = Access::Unknown;
     QSet<QString> m_said;
+    QSet<QString> m_refusals;           // said by deny()
     int m_restarts = 0;
 
     /* the helper: its stdin, stdout and stderr are one end of a socket pair */

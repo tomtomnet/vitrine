@@ -34,12 +34,15 @@ sudo groupadd --system vitrine
 sudo usermod -aG vitrine "$USER"
 ```
 
-polkit sees the new membership at the next VM start (`id` lists it once
-you log in again). Preferences > Tune the host while VMs run turns it off
-again for you.
+vitrine asks polkit again before each start of the helper: the new
+membership counts from the next VM start, without restarting vitrine
+(`id` lists it once you log in again). Preferences > Tune the host while
+VMs run turns it off again for you.
 
 To take it back: `sudo gpasswd -d "$USER" vitrine` (and
-`sudo groupdel vitrine` when nobody is left in it).
+`sudo groupdel vitrine` when nobody is left in it). From the next VM start
+on, vitrine runs the VMs without these settings, without asking for a
+password.
 
 ## What the group allows
 
