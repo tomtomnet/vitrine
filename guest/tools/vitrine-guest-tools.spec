@@ -2,7 +2,7 @@
 # exact version, and dnf takes an installed one of the same version as done.
 Name:           vitrine-guest-tools
 Version:        0.1.0
-Release:        6%{?dist}
+Release:        8%{?dist}
 Summary:        vitrine guest tools: patched virtio-gpu driver, settings and agent
 
 # the driver's sources (dkms/vendor, dkms/patches) are the kernel's: MIT
@@ -124,6 +124,13 @@ fi
 %dir %{_sharedstatedir}/%{name}
 
 %changelog
+* Sat Oct 03 2026 vitrine <noreply@anthropic.com> - 0.1.0-8
+- blob_flush_fence set at boot by the driver check: dracut does not copy
+  /etc/modprobe.d into the initramfs, where the driver loads
+* Sat Oct 03 2026 vitrine <noreply@anthropic.com> - 0.1.0-7
+- the newest kernel's headers by name, in a step of their own (dnf took
+  kernel-devel as installed with an older version); the agent reports the
+  state of the install vitrine asked for at boot
 * Sat Oct 03 2026 vitrine <noreply@anthropic.com> - 0.1.0-6
 - the installer brings the newest kernel's headers (a guest with an older
   kernel-devel-matched got the new kernel without them), says when the

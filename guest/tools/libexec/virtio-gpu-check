@@ -3,9 +3,8 @@
 #
 # modinfo only says what modprobe would load; the driver in use comes from
 # the initramfs.  The taint field is the honest answer: O (out of tree) is
-# ours.  Then blob_flush_fence=3 is kept only with the KWin the installer
-# put in (KWIN_SWAPCHAIN_WAIT_READERS): with another one, the host would
-# turn zero copy off.  Runs at boot, before the display manager; the
+# ours.  Then it sets blob_flush_fence for the KWin installed (below).
+# Runs at boot, before the display manager; the
 # journal has its findings (journalctl -b -u vitrine-virtio-gpu-check).
 set -u
 state=/var/lib/vitrine-guest-tools
@@ -40,13 +39,24 @@ case "$taint" in
 	;;
 esac
 
+# blob_flush_fence: 3 with the KWin the installer put in (it waits for the
+# fence the driver puts on the buffers, KWIN_SWAPCHAIN_WAIT_READERS), else 1:
+# with another KWin, 3 makes the host turn zero copy off.  Set here, at run
+# time, as the driver reads it at each flush: the driver loads from the
+# initramfs, and dracut does not copy /etc/modprobe.d there, so the
+# installer's /etc/modprobe.d/vitrine-virtio-gpu.conf does not reach it.
 fence=/sys/module/virtio_gpu/parameters/blob_flush_fence
-if [ -w "$fence" ] && [ "$(cat "$fence")" = 3 ]; then
+if [ -w "$fence" ]; then
 	want=$(cat "$state/kwin" 2> /dev/null || true)
 	have=$(rpm -q kwin 2> /dev/null || true)
-	if [ -z "$want" ] || [ "$have" != "$want" ]; then
-		echo 1 > "$fence"
-		echo "<4>blob_flush_fence 3 -> 1: KWin is ${have:-not installed}, not the one of the guest tools (${want:-none}); install the guest tools again"
+	if [ -n "$want" ] && [ "$have" = "$want" ]; then
+		value=3
+	else
+		value=1
+		[ -n "$want" ] && echo "<4>KWin is ${have:-not installed}, not the one of the guest tools ($want): blob_flush_fence 1; install the guest tools again"
+	fi
+	if [ "$(cat "$fence")" != "$value" ]; then
+		echo "$value" > "$fence" && echo "blob_flush_fence $value"
 	fi
 fi
 exit $rc

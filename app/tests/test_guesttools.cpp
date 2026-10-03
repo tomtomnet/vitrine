@@ -390,6 +390,22 @@ private slots:
         in.report.lastMedium = medium.mediumId;
         in.report.lastOk = true;
         QCOMPARE(evaluate(in), State::Installed);
+
+        /* the bootstrap of this run, which the agent of the tools in the
+           guest answers before (the unit waits for the network) */
+        in.report.bootstrap = "waiting";
+        QCOMPARE(evaluate(in), State::Installing);
+        in.report.bootstrap = "running";
+        QCOMPARE(evaluate(in), State::Installing);
+        in.report.bootstrap = "done";
+        QCOMPARE(evaluate(in), State::Installed);
+        /* an older agent does not say: this medium not installed yet is the sign */
+        in.report.bootstrap.clear();
+        in.bootstrapRun = true;
+        in.report.lastMedium = "an older medium";
+        QCOMPARE(evaluate(in), State::Installing);
+        in.bootstrapExpired = true;
+        QCOMPARE(evaluate(in), State::Installed);
     }
 
     void failures()
@@ -402,6 +418,11 @@ private slots:
         QCOMPARE(r.lastOk, std::optional<bool>(false));
         QCOMPARE(r.lastError, "Secure Boot is on");
         QVERIFY(!parseReport({}).lastOk.has_value());
+        QCOMPARE(parseReport(QJsonDocument::fromJson(R"({"bootstrap": "running"})").object())
+                     .bootstrap,
+                 "running");
+        QVERIFY(parseReport(QJsonDocument::fromJson(R"({"bootstrap": null})").object())
+                    .bootstrap.isEmpty());
 
         QCOMPARE(failureReason("== [3/6] Installing\nNo match\nERROR: not installed: a b\n"),
                  "not installed: a b");

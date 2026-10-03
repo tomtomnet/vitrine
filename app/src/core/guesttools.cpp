@@ -221,6 +221,7 @@ Report parseReport(const QJsonObject &s)
     r.rebootNeeded = s["rebootNeeded"].toBool();
     r.installing = s["installing"].toBool();
     r.installedMedium = s["installed"].toObject()["medium"].toString();
+    r.bootstrap = s["bootstrap"].toString();
     if (const QJsonObject last = s["lastInstall"].toObject(); last["ok"].isBool()) {
         r.lastMedium = last["medium"].toString();
         r.lastOk = last["ok"].toBool();
@@ -304,6 +305,16 @@ State evaluate(const Inputs &in)
     }
     if (in.agentSeen) {
         const Report &r = in.report;
+
+        /* the agent of the tools in the guest answers before the install
+           this run brought starts (it waits for the network) */
+        if (r.bootstrap == "waiting" || r.bootstrap == "running") {
+            return State::Installing;
+        }
+        if (r.bootstrap.isEmpty() && in.bootstrapRun && !in.bootstrapExpired &&
+            in.medium.isValid() && r.lastMedium != in.medium.mediumId) {
+            return State::Installing;
+        }
 
         /* the installer of this medium failed, at boot or by hand */
         if (!r.lastOk.value_or(true) && in.medium.isValid() &&
@@ -389,7 +400,7 @@ GuestToolsMonitor *GuestToolsMonitor::of(Vm *vm)
 GuestToolsMonitor::GuestToolsMonitor(Vm *vm)
     : QObject(vm), m_vm(vm), m_socket(new QLocalSocket(this)), m_retry(new QTimer(this)),
       m_grace(new QTimer(this)), m_contexts(new GpuContexts(this)), m_poll(new QTimer(this)),
-      m_shutdownFallback(new QTimer(this))
+      m_shutdownFallback(new QTimer(this)), m_bootstrapTimer(new QTimer(this))
 {
     /* "not-installed", or "installed" and the version, as the last run left it */
     const QString last = QSettings(Paths::settingsPath(), QSettings::IniFormat)
@@ -441,6 +452,12 @@ GuestToolsMonitor::GuestToolsMonitor(Vm *vm)
     });
     connect(vm->runner(), &VmRunner::stateChanged, this, &GuestToolsMonitor::runnerChanged);
     connect(this, &GuestToolsMonitor::changed, this, &GuestToolsMonitor::remember);
+    m_bootstrapTimer->setSingleShot(true);
+    m_bootstrapTimer->setInterval(20 * 60 * 1000);
+    connect(m_bootstrapTimer, &QTimer::timeout, this, [this]() {
+        m_in.bootstrapExpired = true;
+        emit changed();
+    });
 
     /* Shut Down goes through the agent while there is one: Plasma answers
        the power button with its logout screen, which waits for a click */
@@ -541,6 +558,9 @@ void GuestToolsMonitor::runnerChanged()
         m_contexts->reset();
         m_grace->start();
         m_poll->start();
+        if (m_in.bootstrapRun) {
+            m_bootstrapTimer->start();
+        }
         if (QmpClient *qmp = m_vm->runner()->qmp()) {
             connect(qmp, &QmpClient::qmpEvent, this, &GuestToolsMonitor::qmpEvent,
                     Qt::UniqueConnection);
@@ -557,6 +577,7 @@ void GuestToolsMonitor::runnerChanged()
         m_grace->stop();
         m_poll->stop();
         m_shutdownFallback->stop();
+        m_bootstrapTimer->stop();
         m_socket->abort();
         m_buffer.clear();
     }

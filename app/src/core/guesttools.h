@@ -114,6 +114,9 @@ struct Report {
     QString lastMedium;
     std::optional<bool> lastOk;
     QString lastError;
+    /* The install vitrine asked for at this boot: waiting, running, done,
+       failed; empty when none was asked for (or an older agent) */
+    QString bootstrap;
 };
 Report parseReport(const QJsonObject &status);
 
@@ -155,6 +158,7 @@ struct Inputs {
     bool running = false;
     Pending pending = Pending::None;
     bool bootstrapRun = false;      // this run started with the bootstrap
+    bool bootstrapExpired = false;  // ... long ago: an older agent did not say
     bool agentSeen = false;         // a hello since the guest booted
     bool waited = false;            // long enough without one
     bool installing = false;
@@ -248,4 +252,6 @@ private:
     int m_polls = 0;
     /* the power button, if the agent does not answer the shutdown */
     QTimer *m_shutdownFallback;
+    /* how long an older agent's report is taken as before the bootstrap */
+    QTimer *m_bootstrapTimer;
 };

@@ -283,12 +283,12 @@ before=$(rpm -qa | sort | sha256sum)
 old_override=$(cat "$override" 2> /dev/null || true)
 
 step "Installing the packages (Fedora's repositories are needed for dkms and the kernel headers)"
-# The newest kernel and its headers (kernel and kernel-devel are installed
-# side by side: these add the newest when it is not there yet), which the
-# guest boots next; dkms's own kernel-devel-matched does not do it when an
-# older one is installed.  The running kernel's headers too, if Fedora still
-# has them, so that it gets the driver too.
-extra=(dkms kernel kernel-devel "kernel-devel-$(uname -r)")
+# The newest kernel, which the guest boots next (kernels are installed side
+# by side: this adds the newest when it is not there yet), and the running
+# kernel's headers, if Fedora still has them, so that it gets the driver too.
+# The newest kernel's headers come next, by name: dnf takes kernel-devel, or
+# dkms's kernel-devel-matched, as there with any version installed.
+extra=(dkms kernel "kernel-devel-$(uname -r)")
 "${dnf_medium[@]}" install --skip-unavailable "${want[@]}" "${extra[@]}" ||
 	die "dnf failed: see above (no network? the guest needs Fedora's repositories)"
 missing=()
@@ -297,6 +297,12 @@ for p in "${want[@]}"; do
 done
 [ ${#missing[@]} -eq 0 ] || die "not installed: ${missing[*]}"
 installed dkms || die "dkms is not installed"
+newest=$(rpm -q --qf '%{VERSION}-%{RELEASE}.%{ARCH}\n' kernel-core | sort -V | tail -1)
+if [ -n "$newest" ] && ! rpm -q "kernel-devel-$newest" > /dev/null 2>&1; then
+	say "the headers of the newest kernel, $newest"
+	dnf -y install --skip-unavailable "kernel-devel-$newest" ||
+		say "WARNING: kernel-devel-$newest could not be installed"
+fi
 # the driver's options: blob_flush_fence=3 with vitrine's KWin (it waits for
 # the fence the driver puts on the buffers), else the package's =1
 if [ "$use_kwin" = 1 ]; then
@@ -309,7 +315,6 @@ fi
 step "Building the graphics driver for each kernel with headers"
 /usr/libexec/vitrine-guest-tools/dkms-sync --no-initramfs || driver_failed=1
 # the kernel the guest boots next: the newest
-newest=$(rpm -q --qf '%{VERSION}-%{RELEASE}.%{ARCH}\n' kernel-core | sort -V | tail -1)
 if [ -n "$newest" ] && ! dkms status -m vitrine-virtio-gpu -k "$newest" 2> /dev/null | grep -q ': installed'; then
 	say "WARNING: the newest kernel, $newest, has no patched driver (no headers: kernel-devel-$newest);"
 	say "WARNING: the guest boots it with the stock driver"

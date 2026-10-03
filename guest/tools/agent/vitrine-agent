@@ -202,6 +202,27 @@ def sessions():
     return found
 
 
+def bootstrap():
+    """The install vitrine asked for at this boot (its SMBIOS credential):
+    waiting, running, done, failed; None when vitrine asked for none"""
+    if not os.path.exists("/run/credentials/@system/"
+                          "systemd.extra-unit.vitrine-tools-bootstrap.service"):
+        return None
+    props = {}
+    for line in run(["systemctl", "show", "-p", "ActiveState", "-p",
+                     "ExecMainExitTimestampMonotonic",
+                     "vitrine-tools-bootstrap.service"]).splitlines():
+        if "=" in line:
+            key, value = line.split("=", 1)
+            props[key] = value
+    state = props.get("ActiveState", "")
+    if state == "activating":
+        return "running"
+    if state == "failed":
+        return "failed"
+    return "done" if props.get("ExecMainExitTimestampMonotonic", "0") != "0" else "waiting"
+
+
 def preempt():
     """The kernel's preemption model: the one in parentheses"""
     text = read("/sys/kernel/debug/sched/preempt")
@@ -243,6 +264,7 @@ def status(installing=False):
         # how the last run of the installer went: vitrine does not see the
         # bootstrap's when this agent holds the port
         "lastInstall": load("last-install.json"),
+        "bootstrap": bootstrap(),
         # this agent's install, or one run by hand or by the bootstrap
         "installing": installing or os.path.exists(f"{RUN_DIR}/installer-active"),
     }
