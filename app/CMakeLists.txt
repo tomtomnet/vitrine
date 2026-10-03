@@ -262,6 +262,14 @@ if(BUILD_TESTING)
         target_link_libraries(test_${name} PRIVATE vitrine_core Qt6::Test)
         add_test(NAME ${name} COMMAND test_${name})
     endforeach()
+    # the windows': widgets that are never shown, so no screen either
+    foreach(name
+            settingspages)
+        qt_add_executable(test_${name} tests/test_${name}.cpp)
+        target_link_libraries(test_${name} PRIVATE vitrine_ui Qt6::Test)
+        add_test(NAME ${name} COMMAND test_${name})
+        set_tests_properties(${name} PROPERTIES ENVIRONMENT QT_QPA_PLATFORM=offscreen)
+    endforeach()
     # the helper's test build on a fake tree, and its QEMU stand-in (helper/)
     target_compile_definitions(test_hostsettings PRIVATE
         HELPER_FAKE="$<TARGET_FILE:vitrine-helper-fake>"

@@ -304,14 +304,16 @@ void DisplayPage::load(const ArgsFile &args)
     QString custom;
 
     m_loaded = screen;
-    /* none checked for a VM that shows nowhere */
-    for (QRadioButton *b : {m_embedded, m_ownWindow}) {
-        b->setAutoExclusive(false);
-        b->setChecked(false);
-        b->setAutoExclusive(true);
-    }
+    /*
+     * None checked for a VM that shows nowhere.  The buttons' group keeps
+     * one checked while it is exclusive, whatever their autoExclusive says,
+     * and a button left checked would make an untouched page modified
+     */
+    QButtonGroup *group = m_embedded->group();
+    group->setExclusive(false);
     m_embedded->setChecked(screen == VmConfig::Screen::Embedded);
     m_ownWindow->setChecked(screen == VmConfig::Screen::OwnWindow);
+    group->setExclusive(true);
 
     if (args.indexOf("nographic") >= 0) {
         custom = tr("This VM has no screen (-nographic): change it on the Arguments page.");
