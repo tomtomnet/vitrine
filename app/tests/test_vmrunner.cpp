@@ -8,6 +8,7 @@
 #include <QTemporaryDir>
 #include <QTest>
 
+#include <cerrno>
 #include <csignal>
 
 #include "core/paths.h"
@@ -27,6 +28,21 @@ static QString read(const QString &path)
 {
     QFile f(path);
     return f.open(QIODevice::ReadOnly) ? QString::fromUtf8(f.readAll()) : QString();
+}
+
+/*
+ * Dead and waiting to be reaped, or reaped: once true it stays true.  The
+ * stat first, then kill: the kernel unhashes the pid before it drops
+ * /proc/PID, so a stat that no longer reads means kill fails too, while
+ * the other way round a zombie reaped between the two looked alive.
+ */
+static bool gone(qint64 pid)
+{
+    const QString stat = read(QString("/proc/%1/stat").arg(pid));
+    if (stat.contains(") Z") || stat.contains(") X")) {
+        return true;
+    }
+    return ::kill(pid_t(pid), 0) != 0 && errno == ESRCH;
 }
 
 class TestVmRunner : public QObject
@@ -257,8 +273,7 @@ private slots:
         QVERIFY(!runner->qmp());
         QVERIFY(!QFileInfo::exists(runDir + "/qmp.sock"));
         QVERIFY(!QFileInfo::exists(runDir + "/qemu.pid"));
-        QVERIFY(!QFileInfo::exists(QString("/proc/%1").arg(pid)) ||
-                read(QString("/proc/%1/stat").arg(pid)).contains(") Z"));
+        QVERIFY(gone(pid));
         delete runner;
     }
 
@@ -405,8 +420,7 @@ private slots:
         runner.forceOff();
         QCOMPARE(runner.state(), VmRunner::State::Stopped);
         QCOMPARE(failed.size(), 0);
-        QTRY_VERIFY(!QFileInfo::exists(QString("/proc/%1").arg(helper)) ||
-                    read(QString("/proc/%1/stat").arg(helper)).contains(") Z"));
+        QTRY_VERIFY2(gone(helper), qPrintable(read(QString("/proc/%1/stat").arg(helper))));
     }
 
     void sharedFolder()
