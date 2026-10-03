@@ -8,6 +8,7 @@
 #include <QDir>
 #include <QElapsedTimer>
 #include <QFile>
+#include <QMap>
 #include <QProcess>
 #include <QRegularExpression>
 #include <QScopeGuard>
@@ -934,6 +935,105 @@ private slots:
         QDir(work).removeRecursively();
     }
 
+    /*
+     * setup-group: the caller (and only the caller) in the vitrine group,
+     * created if need be; nothing changed when done already; no argument
+     */
+    void setupGroup()
+    {
+        struct passwd *pw = getpwuid(getuid());
+        QVERIFY(pw);
+        const QString me = QString::fromLocal8Bit(pw->pw_name);
+        const QString groupFile = path("/etc/group");
+        auto run = [this](const QStringList &args, const QString &uid = {}, QString *out = nullptr) {
+            QProcess p;
+            QProcessEnvironment env = QProcessEnvironment::systemEnvironment();
+            env.insert("VITRINE_HELPER_TEST_ROOT", m_root);
+            env.remove("SUDO_UID");
+            if (uid.isEmpty()) {
+                env.remove("PKEXEC_UID");
+            } else {
+                env.insert("PKEXEC_UID", uid);
+            }
+            p.setProcessEnvironment(env);
+            p.start(HELPER_FAKE, args);
+            p.waitForFinished();
+            if (out) {
+                *out = QString::fromUtf8(p.readAllStandardOutput() + p.readAllStandardError()).trimmed();
+            }
+            return p.exitCode();
+        };
+        const QString uid = QString::number(getuid());
+        QVERIFY(writeFile(groupFile, "root:x:0:\nwheel:x:10:" + me.toLocal8Bit() + "\n"));
+        QString out;
+
+        /* no group yet: created, the caller added */
+        QCOMPARE(run({"setup-group"}, uid, &out), 0);
+        QCOMPARE(out, "ok setup-group: " + me + " added to vitrine, group created");
+        QCOMPARE(readFile(groupFile), "root:x:0:\nwheel:x:10:" + me.toLocal8Bit() +
+                                          "\nvitrine:x:977:" + me.toLocal8Bit() + "\n");
+        QCOMPARE(journal().filter(QRegularExpression("^(groupadd|gpasswd) ")),
+                 QStringList({"groupadd --system vitrine", "gpasswd -a " + me + " vitrine"}));
+        QVERIFY(journal().contains(QString("log uid %1: %2 added to the group vitrine").arg(uid, me)));
+
+        /* again: nothing to do, nothing done */
+        clearJournal();
+        QCOMPARE(run({"setup-group"}, uid, &out), 0);
+        QCOMPARE(out, "ok setup-group: " + me + " is in vitrine already");
+        QVERIFY(journal().isEmpty());
+        /* without PKEXEC_UID, unprivileged (the test build): the real uid */
+        QCOMPARE(run({"setup-group"}, {}, &out), 0);
+        QCOMPARE(out, "ok setup-group: " + me + " is in vitrine already");
+
+        /* a group with other members: the caller added after them, they stay */
+        QVERIFY(writeFile(groupFile, "vitrine:x:977:alice,bob\n"));
+        QCOMPARE(run({"setup-group"}, uid, &out), 0);
+        QCOMPARE(out, "ok setup-group: " + me + " added to vitrine");
+        QCOMPARE(readFile(groupFile), "vitrine:x:977:alice,bob," + me.toLocal8Bit() + "\n");
+        /* a member through the primary group is one */
+        QVERIFY(writeFile(groupFile, QString("vitrine:x:%1:\n").arg(pw->pw_gid).toLocal8Bit()));
+        QCOMPARE(run({"setup-group"}, uid, &out), 0);
+        QCOMPARE(out, "ok setup-group: " + me + " is in vitrine already");
+
+        /* nobody else, no other group: no argument names one */
+        QVERIFY(writeFile(groupFile, "vitrine:x:977:\n"));
+        clearJournal();
+        for (const QStringList &args : {QStringList{"setup-group", "alice"},
+                                        QStringList{"setup-group", "vitrine", "alice"},
+                                        QStringList{"setup-group", "--user=alice"},
+                                        QStringList{"setup-group", "wheel"},
+                                        QStringList{"setup-group", ""}}) {
+            QCOMPARE(run(args, uid, &out), 2);
+            QVERIFY2(out.startsWith("usage: "), qPrintable(out));
+        }
+        /* root, a uid nobody has, no uid that parses */
+        QCOMPARE(run({"setup-group"}, "0", &out), 1);
+        QCOMPARE(out, QString("error setup-group: root needs no group"));
+        QCOMPARE(run({"setup-group"}, "3999999999", &out), 1);
+        QCOMPARE(out, QString("error setup-group: uid 3999999999 is not in the user database"));
+        QCOMPARE(run({"setup-group"}, uid + "x", &out), 1);
+        QVERIFY(out.contains("no PKEXEC_UID"));
+        QCOMPARE(readFile(groupFile), QByteArray("vitrine:x:977:\n"));
+        QVERIFY(journal().filter(QRegularExpression("^(groupadd|gpasswd) ")).isEmpty());
+
+        /* a group with id 0 under the name: not joined */
+        QVERIFY(writeFile(groupFile, "vitrine:x:0:\n"));
+        QCOMPARE(run({"setup-group"}, uid, &out), 1);
+        QCOMPARE(out, QString("error setup-group: the group vitrine has the id 0"));
+        /* the database cannot be written: said, nothing half done */
+        QVERIFY(writeFile(groupFile, "vitrine:x:977:\n"));
+        chmod(qPrintable(groupFile), 0444);
+        QCOMPARE(run({"setup-group"}, uid, &out), 1);
+        QCOMPARE(out, QString("error setup-group: cannot add the user to the group: "
+                              "Permission denied"));
+        chmod(qPrintable(groupFile), 0644);
+        QFile::remove(groupFile);
+        QDir().rmdir(path("/etc"));
+        QCOMPARE(run({"setup-group"}, uid, &out), 1);
+        QCOMPARE(out, QString("error setup-group: cannot create the group: "
+                              "No such file or directory"));
+    }
+
     /* The test build needs its fake tree */
     void fakeNeedsRoot()
     {
@@ -967,22 +1067,35 @@ private slots:
         QFile policy(HELPER_POLICY);
         QVERIFY(policy.open(QIODevice::ReadOnly));
         QXmlStreamReader xml(&policy);
-        QString action, execPath, active;
+        /* action -> its annotations and defaults */
+        QMap<QString, QMap<QString, QString>> actions;
+        QString action;
         while (!xml.atEnd()) {
             xml.readNext();
-            if (xml.isStartElement() && xml.name() == u"action") {
+            if (!xml.isStartElement()) {
+                continue;
+            }
+            if (xml.name() == u"action") {
                 action = xml.attributes().value("id").toString();
-            } else if (xml.isStartElement() && xml.name() == u"annotate" &&
-                       xml.attributes().value("key") == u"org.freedesktop.policykit.exec.path") {
-                execPath = xml.readElementText();
-            } else if (xml.isStartElement() && xml.name() == u"allow_active") {
-                active = xml.readElementText();
+                actions[action];
+            } else if (xml.name() == u"annotate") {
+                const QString key = xml.attributes().value("key").toString();
+                actions[action][key] = xml.readElementText();
+            } else if (xml.name().startsWith(u"allow_")) {
+                const QString key = xml.name().toString();
+                actions[action][key] = xml.readElementText();
             }
         }
         QVERIFY2(!xml.hasError(), qPrintable(xml.errorString()));
-        QCOMPARE(action, QString("org.vitrine.helper"));
-        QCOMPARE(execPath, QString(HELPER_PATH));
-        QCOMPARE(active, QString("auth_admin"));
+        /* one action: pkexec takes the first whose path matches, in no fixed
+           order, so a second one for a verb (exec.argv1) is not reliably used */
+        QCOMPARE(actions.keys(), QStringList({"org.vitrine.helper"}));
+        const auto a = actions["org.vitrine.helper"];
+        QCOMPARE(a.value("org.freedesktop.policykit.exec.path"), QString(HELPER_PATH));
+        QVERIFY(!a.contains("org.freedesktop.policykit.exec.argv1"));
+        for (const char *when : {"allow_any", "allow_inactive", "allow_active"}) {
+            QCOMPARE(a.value(when), QString("auth_admin"));
+        }
         const QByteArray rules = readFile(HELPER_RULES);
         QVERIFY(rules.contains("action.id == \"org.vitrine.helper\""));
         QVERIFY(rules.contains("subject.isInGroup(\"vitrine\")"));

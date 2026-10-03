@@ -2,6 +2,7 @@
 
 # C only, no Qt: small enough to read through
 add_executable(vitrine-helper
+    src/group.c
     src/helper.h
     src/main.c
     src/process.c
@@ -36,6 +37,7 @@ install(FILES 49-vitrine.rules DESTINATION ${VITRINE_POLKIT_RULES_DIR})
 if(BUILD_TESTING)
     # The same helper on a fake tree that plays the kernel's part; never installed
     add_executable(vitrine-helper-fake
+        src/group.c
         src/helper.h
         src/main.c
         src/process.c

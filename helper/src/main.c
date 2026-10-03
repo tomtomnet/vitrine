@@ -9,6 +9,9 @@
  *
  *   vitrine-helper                one session: requests on stdin, one per line
  *   vitrine-helper setcap PATH    cap_sys_nice=ep on vitrine's QEMU build, then exit
+ *   vitrine-helper setup-group    the caller in the vitrine group (created if
+ *                                 need be), then exit: an administrator's
+ *                                 password for non-members
  *
  * Session requests, each answered by one line or more:
  *   watch PID              a QEMU of the caller's (same uids, qemu-system-*
@@ -308,8 +311,12 @@ int main(int argc, char **argv)
     if (argc == 3 && strcmp(argv[1], "setcap") == 0) {
         return setcap(argv[2]);
     }
+    /* no argument: the group and the user are not the caller's to choose */
+    if (argc == 2 && strcmp(argv[1], "setup-group") == 0) {
+        return setup_group();
+    }
     if (argc != 1) {
-        fprintf(stderr, "usage: vitrine-helper [setcap PATH]\n");
+        fprintf(stderr, "usage: vitrine-helper [setcap PATH | setup-group]\n");
         return 2;
     }
     return session();

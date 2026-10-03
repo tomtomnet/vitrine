@@ -5,16 +5,24 @@
 <!--
   vitrine-helper, run as root by pkexec while vitrine's VMs run: the kernel's
   fair server, an AMD GPU's clock floor, real-time threads for the caller's
-  QEMU (all put back after the last VM), and cap_sys_nice on vitrine's own
-  QEMU build.  An administrator's password by default; 49-vitrine.rules lets
-  members of the vitrine group use it without one.
+  QEMU (all put back after the last VM), cap_sys_nice on vitrine's own QEMU
+  build, and the caller in the vitrine group (setup-group).  An
+  administrator's password by default; 49-vitrine.rules lets members of the
+  vitrine group use it without one - for whom setup-group changes nothing.
+
+  One action for every verb: pkexec takes the first action whose exec.path
+  matches, in no fixed order, and one without exec.argv1 matches any
+  argument, so a setup-group action beside this one would not reliably be
+  the one asked.  vitrine runs the helper without a password only after
+  pkcheck said yes, so this action's dialog is in practice the one of
+  setup-group: its message says what the password is for.
 -->
 <policyconfig>
   <vendor>vitrine</vendor>
   <vendor_url>https://github.com/tomtomnet/vitrine</vendor_url>
   <action id="org.vitrine.helper">
     <description>Tune the host while virtual machines run</description>
-    <message>Authentication is required to change the host's scheduler and GPU settings for virtual machines</message>
+    <message>Authentication is required to let you tune the host's scheduler and GPU settings while your virtual machines run</message>
     <defaults>
       <allow_any>auth_admin</allow_any>
       <allow_inactive>auth_admin</allow_inactive>
