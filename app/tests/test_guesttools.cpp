@@ -3,6 +3,7 @@
 #include <QFile>
 #include <QFileInfo>
 #include <QJsonArray>
+#include <QJsonDocument>
 #include <QSignalSpy>
 #include <QStandardPaths>
 #include <QTemporaryDir>
@@ -363,6 +364,36 @@ private slots:
         QCOMPARE(evaluate(in), State::Unsupported);
         in.running = false;
         QCOMPARE(evaluate(in), State::Unknown);
+
+        /* the installer of this medium failed where the host did not see it */
+        in.running = true;
+        in.report.osVersion = "44";
+        in.report.lastMedium = medium.mediumId;
+        in.report.lastOk = false;
+        QCOMPARE(evaluate(in), State::Failed);
+        in.report.lastMedium = "another medium";
+        QCOMPARE(evaluate(in), State::Installed);
+        in.report.lastMedium = medium.mediumId;
+        in.report.lastOk = true;
+        QCOMPARE(evaluate(in), State::Installed);
+    }
+
+    void failures()
+    {
+        const Report r = parseReport(QJsonDocument::fromJson(
+            R"({"tools": "0.1.0-1.fc44", "lastInstall": {"medium": "c3b739935785acc2",
+                "tools": "0.1.0-3.fc44", "ok": false, "code": 3, "error": "Secure Boot is on"}})")
+            .object());
+        QCOMPARE(r.lastMedium, "c3b739935785acc2");
+        QCOMPARE(r.lastOk, std::optional<bool>(false));
+        QCOMPARE(r.lastError, "Secure Boot is on");
+        QVERIFY(!parseReport({}).lastOk.has_value());
+
+        QCOMPARE(failureReason("== [3/6] Installing\nNo match\nERROR: not installed: a b\n"),
+                 "not installed: a b");
+        QCOMPARE(failureReason("Secure Boot is on in this VM.\nTurn it off."),
+                 "Secure Boot is on in this VM. Turn it off.");
+        QCOMPARE(failureReason(""), "");
     }
 
     void driverProblems()

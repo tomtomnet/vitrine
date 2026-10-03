@@ -2,4 +2,4 @@
 enable vitrine-agent.service
 enable vitrine-mtrr-hostmem-wb.service
 enable vitrine-virtio-gpu-check.service
-enable vitrine-preempt-full.service
+enable vitrine-kernel-settings.service

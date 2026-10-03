@@ -109,6 +109,11 @@ struct Report {
     bool rebootNeeded = false;
     bool installing = false;
     QString installedMedium;            // the medium id of the last install
+    /* The installer's last run, recorded in the guest: the host does not hear
+       the bootstrap's when the installed agent holds the port */
+    QString lastMedium;
+    std::optional<bool> lastOk;
+    QString lastError;
 };
 Report parseReport(const QJsonObject &status);
 
@@ -160,6 +165,8 @@ struct Inputs {
 State evaluate(const Inputs &in);
 /* Why the stock driver runs, from the report */
 QString driverProblem(const Report &report);
+/* The installer's error from its output (the agent's result) or its record */
+QString failureReason(const QString &output);
 
 }
 

@@ -218,12 +218,12 @@ def status(installing=False):
         desktops["gnome"] = pkgs["gnome-shell"].split("-")[0]
     installed_kwin = run(["rpm", "-q", "kwin"]).strip()
     tools_kwin = read(f"{STATE_DIR}/kwin")
-    state = None
-    try:
-        with open(f"{STATE_DIR}/state.json", encoding="utf-8") as f:
-            state = json.load(f)
-    except (OSError, ValueError):
-        pass
+    def load(name):
+        try:
+            with open(f"{STATE_DIR}/{name}", encoding="utf-8") as f:
+                return json.load(f)
+        except (OSError, ValueError):
+            return None
     return {
         "tools": pkgs.get("vitrine-guest-tools"),
         "agent": AGENT_VERSION,
@@ -239,7 +239,10 @@ def status(installing=False):
         "kwinPatched": bool(tools_kwin) and installed_kwin == tools_kwin,
         "preempt": preempt(),
         "rebootNeeded": os.path.exists(f"{RUN_DIR}/reboot-needed"),
-        "installed": state,
+        "installed": load("state.json"),
+        # how the last run of the installer went: vitrine does not see the
+        # bootstrap's when this agent holds the port
+        "lastInstall": load("last-install.json"),
         # this agent's install, or one run by hand or by the bootstrap
         "installing": installing or os.path.exists(f"{RUN_DIR}/installer-active"),
     }

@@ -216,6 +216,11 @@ Report parseReport(const QJsonObject &s)
     r.rebootNeeded = s["rebootNeeded"].toBool();
     r.installing = s["installing"].toBool();
     r.installedMedium = s["installed"].toObject()["medium"].toString();
+    if (const QJsonObject last = s["lastInstall"].toObject(); last["ok"].isBool()) {
+        r.lastMedium = last["medium"].toString();
+        r.lastOk = last["ok"].toBool();
+        r.lastError = last["error"].toString();
+    }
     return r;
 }
 
@@ -284,6 +289,11 @@ State evaluate(const Inputs &in)
     if (in.agentSeen) {
         const Report &r = in.report;
 
+        /* the installer of this medium failed, at boot or by hand */
+        if (!r.lastOk.value_or(true) && in.medium.isValid() &&
+            r.lastMedium == in.medium.mediumId) {
+            return State::Failed;
+        }
         if (r.tools.isEmpty()) {
             return State::NotInstalled;
         }
@@ -312,6 +322,15 @@ State evaluate(const Inputs &in)
         return State::Installing;
     }
     return in.waited ? State::NotInstalled : State::Unknown;
+}
+
+QString failureReason(const QString &output)
+{
+    /* the installer's message: what follows "ERROR: ", to the end */
+    const qsizetype at = output.indexOf("ERROR: ");
+    const QString message = at >= 0 ? output.mid(at + 7) : output;
+
+    return message.simplified();
 }
 
 QString driverProblem(const Report &r)
@@ -629,15 +648,10 @@ QString GuestToolsMonitor::text() const
                                  .arg(m_total)
                            : tr("Installing the guest tools: %1…").arg(m_step.toHtmlEscaped());
     case State::Failed: {
-        const QStringList lines = m_error.split('\n', Qt::SkipEmptyParts);
-        QString why = lines.isEmpty() ? tr("see the guest's journal") : lines.last();
-        for (const QString &line : lines) {
-            if (line.startsWith("ERROR: ")) {
-                why = line.mid(7);
-                break;
-            }
-        }
-        return tr("The guest tools could not be installed: %1").arg(why.toHtmlEscaped());
+        const QString why = failureReason(m_error.isEmpty() ? r.lastError : m_error);
+        return tr("The guest tools could not be installed: %1")
+            .arg(why.isEmpty() ? tr("see the guest's journal (journalctl -t vitrine-guest-tools)")
+                               : why.toHtmlEscaped());
     }
     case State::RebootNeeded:
         return tr("Restart the guest to finish installing the guest tools.");

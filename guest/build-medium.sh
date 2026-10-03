@@ -86,8 +86,9 @@ What they install:
 - vitrine-guest-tools: the virtio-gpu driver with vitrine's patches as a DKMS
   module (rebuilt for each new kernel), its options in
   /usr/lib/modprobe.d/vitrine-virtio-gpu.conf, the KWin settings in
-  /usr/lib/environment.d/60-vitrine-kwin.conf, boot-time fix-ups (cacheable
-  GPU memory, full preemption, a check of the driver) and the vitrine agent
+  /usr/lib/environment.d/60-vitrine-kwin.conf, boot-time settings (cacheable
+  GPU memory, full preemption, vblank interrupts kept on, a check of the
+  driver) and the vitrine agent
 - Mesa ${mesa_evr:-(none on this medium)} with native context, in place of the Mesa installed
 - KWin ${kwin_evr:-(none on this medium)}, only on Plasma ${kwin_evr%%-*} guests
 Mesa and KWin are kept at those versions (dnf versionlock, 64-bit only).

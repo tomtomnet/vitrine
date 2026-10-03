@@ -1,6 +1,8 @@
+# Bump Release for any change in guest/tools: the installer installs this
+# exact version, and dnf takes an installed one of the same version as done.
 Name:           vitrine-guest-tools
 Version:        0.1.0
-Release:        1%{?dist}
+Release:        3%{?dist}
 Summary:        vitrine guest tools: patched virtio-gpu driver, settings and agent
 
 # the driver's sources (dkms/vendor, dkms/patches) are the kernel's: MIT
@@ -61,19 +63,26 @@ install -d %{buildroot}%{_sharedstatedir}/%{name}
 install -d %{buildroot}%{_sysconfdir}/modprobe.d
 touch %{buildroot}%{_sysconfdir}/modprobe.d/vitrine-virtio-gpu.conf
 
+%global units vitrine-agent.service vitrine-mtrr-hostmem-wb.service vitrine-virtio-gpu-check.service vitrine-kernel-settings.service
+
 %post
-%systemd_post vitrine-agent.service vitrine-mtrr-hostmem-wb.service vitrine-virtio-gpu-check.service vitrine-preempt-full.service
+%systemd_post %{units}
+# %%systemd_post applies the presets on the first install only: a unit an
+# update brings would stay off
+if [ $1 -gt 1 ]; then
+	systemctl --no-reload preset %{units} > /dev/null 2>&1 || :
+fi
 %udev_rules_update
 
 %preun
-%systemd_preun vitrine-agent.service vitrine-mtrr-hostmem-wb.service vitrine-virtio-gpu-check.service vitrine-preempt-full.service
+%systemd_preun %{units}
 # this version's driver out of every kernel (an update builds its own after)
 dkms remove -m %{dkms_name} -v %{version} --all > /dev/null 2>&1 || :
 
 %postun
 # no restart on update: the agent runs the installer that updates it, and
 # takes the new version over by itself once done
-%systemd_postun vitrine-agent.service vitrine-mtrr-hostmem-wb.service vitrine-virtio-gpu-check.service vitrine-preempt-full.service
+%systemd_postun %{units}
 %udev_rules_update
 if [ $1 -eq 0 ]; then
 	# the stock driver, without the options, from every kernel's initramfs
@@ -99,11 +108,17 @@ fi
 %{_unitdir}/vitrine-agent.service
 %{_unitdir}/vitrine-mtrr-hostmem-wb.service
 %{_unitdir}/vitrine-virtio-gpu-check.service
-%{_unitdir}/vitrine-preempt-full.service
+%{_unitdir}/vitrine-kernel-settings.service
 %{_presetdir}/80-vitrine-guest-tools.preset
 %{libexec}
 %dir %{_sharedstatedir}/%{name}
 
 %changelog
+* Sat Oct 03 2026 vitrine <noreply@anthropic.com> - 0.1.0-3
+- the installer: a repository id per medium (dnf kept the metadata of the
+  previous one), its last result in /var/lib/vitrine-guest-tools for the agent
+* Sat Oct 03 2026 vitrine <noreply@anthropic.com> - 0.1.0-2
+- drm.vblankoffdelay=0 at run time (drm is built in), with full preemption
+  in vitrine-kernel-settings.service; the agent's shutdown command
 * Sat Oct 03 2026 vitrine <noreply@anthropic.com> - 0.1.0-1
 - First version: the research guest setup as a package

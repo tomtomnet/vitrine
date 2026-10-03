@@ -1,0 +1,23 @@
+#!/bin/sh
+# vitrine guest tools: the kernel settings of a guest in vitrine, at boot.
+#
+# preempt=full: with Fedora's default (lazy) a woken task waits for the next
+# timer tick before it takes the CPU from a busy one, and a frame crosses
+# several such wake-ups.  PREEMPT_DYNAMIC kernels switch at run time.
+#
+# drm.vblankoffdelay=0: the vblank interrupt stays on between frames, so
+# the next frame's vblank is not a re-enable late.  drm is built into
+# Fedora's kernels, where the module option cannot reach it; the parameter
+# is read at each vblank release, so setting it now is enough.
+set -u
+preempt=/sys/kernel/debug/sched/preempt
+if [ -w "$preempt" ]; then
+	echo full > "$preempt" && echo "preemption: $(cat "$preempt")"
+else
+	echo "preemption: $preempt is not there (no PREEMPT_DYNAMIC, or no debugfs), left as is"
+fi
+delay=/sys/module/drm/parameters/vblankoffdelay
+if [ -w "$delay" ]; then
+	echo 0 > "$delay" && echo "drm vblankoffdelay: $(cat "$delay")"
+fi
+exit 0

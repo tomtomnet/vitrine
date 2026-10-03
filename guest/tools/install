@@ -56,7 +56,8 @@ fi
 n=0 total=6
 step() { n=$((n + 1)); echo "== [$n/$total] $*"; }
 say() { echo "   $*"; }
-die() { echo "ERROR: $*" >&2; exit "${2:-1}"; }
+error=""
+die() { error=$*; echo "ERROR: $*" >&2; exit "${2:-1}"; }
 
 [ "$(id -u)" = 0 ] || die "run it as root: sudo bash $0"
 # NAME EVR ARCH FILE, one package of repo/ per line
@@ -143,9 +144,6 @@ migrate_research() {
 	fi
 }
 
-dnf_medium=(dnf -y --setopt=install_weak_deps=False
-            "--repofrompath=vitrine-tools,$medium/repo" --setopt=vitrine-tools.gpgcheck=0)
-
 if [ "$uninstall" = 1 ]; then
 	total=3
 	step "Removing the version locks of Mesa and KWin"
@@ -170,6 +168,29 @@ fi
 # TOOLS_VERSION, TOOLS_EVR, FEDORA_RELEASE, MEDIUM_ID, KWIN_VERSION
 # shellcheck source=/dev/null
 . "$medium/medium.env"
+# a repository id of its own per medium: dnf would take the metadata it
+# keeps of an earlier medium at the same path for this one's
+repo=vitrine-tools-$MEDIUM_ID
+dnf_medium=(dnf -y --setopt=install_weak_deps=False
+            "--repofrompath=$repo,$medium/repo" "--setopt=$repo.gpgcheck=0")
+
+# How this install went, for the agent to tell vitrine: at boot the agent
+# that is installed already holds the port, and vitrine does not hear the
+# installer itself
+record() {
+	rc=$?
+	rm -f "$run/installer-active"
+	mkdir -p "$state" 2> /dev/null
+	python3 - "$state/last-install.json" "$MEDIUM_ID" "$TOOLS_EVR" "$rc" "$error" <<'PY' 2> /dev/null || true
+import datetime, json, os, sys
+path, medium, tools, rc, error = sys.argv[1:6]
+with open(path + ".new", "w") as f:
+    json.dump({"medium": medium, "tools": tools, "ok": rc == "0", "code": int(rc), "error": error,
+               "date": datetime.datetime.now().astimezone().isoformat(timespec="seconds")}, f)
+os.replace(path + ".new", path)
+PY
+}
+trap record EXIT
 
 step "Checking the guest"
 # shellcheck source=/dev/null
@@ -246,7 +267,6 @@ step "Preparing"
 mkdir -p "$run" "$state"
 # the RPM's scriptlets leave the initramfs to this script (once, at the end)
 touch "$run/installer-active"
-trap 'rm -f "$run/installer-active"' EXIT
 migrate_research
 # the tools' own locks would keep the medium's new builds out
 versionlock || die "cannot edit $lockfile"
