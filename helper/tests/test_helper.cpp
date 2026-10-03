@@ -10,6 +10,7 @@
 #include <QFile>
 #include <QProcess>
 #include <QRegularExpression>
+#include <QScopeGuard>
 #include <QTest>
 #include <QXmlStreamReader>
 
@@ -640,6 +641,16 @@ private slots:
         posix_spawn_file_actions_destroy(&actions);
         qunsetenv("VITRINE_HELPER_TEST_ROOT");
         ::close(sv[1]);
+        /* a check that fails returns at once: the helper goes too, not left
+           holding the fake tree for the tests after this one */
+        bool reaped = false;
+        const auto cleanup = qScopeGuard([&]() {
+            if (!reaped) {
+                ::kill(pid, SIGKILL);
+                waitpid(pid, nullptr, 0);
+            }
+            ::close(sv[0]);
+        });
         fcntl(sv[0], F_SETFL, O_NONBLOCK);
         /* each one answered: far more replies than the socket holds */
         QByteArray requests = "watch " + qemu.pidText().toLatin1() + "\nfair-server on\n";
@@ -663,16 +674,23 @@ private slots:
         QTRY_VERIFY(fairAll("10000000/1000000"));
         qemu.stop();
         QTRY_VERIFY_WITH_TIMEOUT(fairAll("1000000000/50000000"), 5000);
-        /* it ends; Qt's own SIGCHLD handling may reap it before this does */
+        /*
+         * It ends, with status 0.  Reaped here, once - posix_spawn's child
+         * is not Qt's to reap - and not in QTRY_VERIFY, which evaluates its
+         * condition again after it holds: the waitpid() after the one that
+         * reaped it got ECHILD, and the status was never looked at.
+         */
         int status = 0;
         pid_t r = 0;
-        QTRY_VERIFY((r = waitpid(pid, &status, WNOHANG)) != 0);
-        if (r == pid) {
-            QVERIFY(WIFEXITED(status) && WEXITSTATUS(status) == 0);
-        } else {
-            QVERIFY(errno == ECHILD && !QFile::exists(QString("/proc/%1").arg(pid)));
+        QElapsedTimer waited;
+        waited.start();
+        while ((r = waitpid(pid, &status, WNOHANG)) == 0 && waited.elapsed() < 5000) {
+            QTest::qWait(20);
         }
-        ::close(sv[0]);
+        reaped = r == pid;
+        QCOMPARE(r, pid);
+        QVERIFY(WIFEXITED(status));
+        QCOMPARE(WEXITSTATUS(status), 0);
     }
 
     /* SIGTERM (a shutdown): everything back before the end */
