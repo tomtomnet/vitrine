@@ -9,12 +9,15 @@
 #include <QPointer>
 #include <QProcess>
 #include <QRegularExpression>
+#include <QSet>
 #include <QStandardPaths>
 #include <QThread>
 #include <QTimer>
 
 #include <algorithm>
 #include <csignal>
+#include <fcntl.h>
+#include <sys/file.h>
 #include <sys/types.h>
 #include <unistd.h>
 
@@ -267,6 +270,58 @@ StackBuilder::State StackBuilder::state(const QString &hostDir, const QString &s
 StackBuilder::State StackBuilder::state()
 {
     return state(hostDir(), Paths::stackDir());
+}
+
+QStringList StackBuilder::prune(const QString &stackDir, const QStringList &keep)
+{
+    static const QRegularExpression stampFolder("^[0-9a-f]{16}$");
+    const QString stack = QFileInfo(stackDir).canonicalFilePath();
+    QSet<QString> needed;
+    QStringList removed;
+
+    if (stack.isEmpty()) {
+        return {};
+    }
+    /* build.sh's: no build makes a prefix meanwhile, nor switches `current` */
+    const int lock = ::open(QFile::encodeName(stack + "/.lock").constData(),
+                            O_WRONLY | O_CREAT | O_CLOEXEC, 0644);
+    if (lock < 0) {
+        return {};
+    }
+    if (::flock(lock, LOCK_EX | LOCK_NB) != 0) {
+        ::close(lock);
+        return {};
+    }
+    /* the folder of the stack @path is in, if any */
+    const auto folderOf = [&stack](const QString &path) {
+        const QString canonical = QFileInfo(path).canonicalFilePath();
+        return canonical.startsWith(stack + '/')
+                   ? canonical.mid(stack.size() + 1).section('/', 0, 0) : QString();
+    };
+    needed << folderOf(stack + "/current");
+    for (const QString &binary : keep) {
+        needed << folderOf(binary);
+    }
+    /*
+     * What runs, by argv[0]: VmRunner starts QEMU by the path of its build,
+     * and /proc/PID/exe of a QEMU with file capabilities is not readable;
+     * a QEMU keeps loading modules and firmware from its prefix
+     */
+    for (const QString &pid : QDir("/proc").entryList(QDir::Dirs | QDir::NoDotAndDotDot)) {
+        QFile cmdline("/proc/" + pid + "/cmdline");
+        if (pid.front().isDigit() && cmdline.open(QIODevice::ReadOnly)) {
+            needed << folderOf(QString::fromLocal8Bit(cmdline.readAll().split('\0').value(0)));
+        }
+    }
+    for (const QString &name : QDir(stack).entryList(QDir::Dirs | QDir::NoDotAndDotDot)) {
+        if (stampFolder.match(name).hasMatch() && !needed.contains(name) &&
+            QDir(stack + '/' + name).removeRecursively()) {
+            removed << stack + '/' + name;
+        }
+    }
+    ::flock(lock, LOCK_UN);
+    ::close(lock);
+    return removed;
 }
 
 int StackBuilder::defaultJobs()

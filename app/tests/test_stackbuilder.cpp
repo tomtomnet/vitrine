@@ -10,6 +10,7 @@
 
 #include <cerrno>
 #include <csignal>
+#include <sys/file.h>
 
 #include "core/paths.h"
 #include "core/stackbuilder.h"
@@ -497,6 +498,55 @@ echo "vitrine-build: built: /nowhere"
         QVERIFY(b.wasStopped());
         /* gone, and reaped by whoever adopted it */
         QTRY_VERIFY_WITH_TIMEOUT(::kill(sleeper, 0) != 0 && errno == ESRCH, 10000);
+    }
+
+    /* The builds nothing runs or names any more go */
+    void prunesOldBuilds()
+    {
+        const QString stack = m_tmp.filePath("prune-stack");
+        const auto prefix = [&stack](const char *name, bool complete = true) {
+            const QString dir = stack + '/' + name;
+            const QString binary = dir + "/bin/qemu-system-x86_64";
+            if (!write(binary, "x\n", true) ||
+                (complete && !write(dir + "/share/vitrine/stack.conf", "STAMP=x\n"))) {
+                return QString();
+            }
+            return binary;
+        };
+        QVERIFY(!prefix("aaaaaaaaaaaaaaaa").isEmpty());
+        QVERIFY(!prefix("bbbbbbbbbbbbbbbb").isEmpty());
+        const QString named = prefix("cccccccccccccccc");
+        const QString running = prefix("dddddddddddddddd");
+        QVERIFY(!prefix("eeeeeeeeeeeeeeee", false).isEmpty());
+        QVERIFY(QDir().mkpath(stack + "/other"));
+        QVERIFY(QFile::link("aaaaaaaaaaaaaaaa", stack + "/current"));
+        /* a QEMU of an older build, still running */
+        QVERIFY(QFile::remove(running));
+        QVERIFY(QFile::copy(QStandardPaths::findExecutable("sleep"), running));
+        QVERIFY(QFile::setPermissions(running, QFileDevice::ReadOwner | QFileDevice::ExeOwner));
+        QProcess vm;
+        vm.start(running, {"60"});
+        QVERIFY(vm.waitForStarted());
+
+        /* not while a build holds the stack */
+        QFile lock(stack + "/.lock");
+        QVERIFY(lock.open(QIODevice::WriteOnly));
+        QVERIFY(::flock(lock.handle(), LOCK_EX | LOCK_NB) == 0);
+        QVERIFY(StackBuilder::prune(stack, {}).isEmpty());
+        ::flock(lock.handle(), LOCK_UN);
+        lock.close();
+
+        const QStringList removed = StackBuilder::prune(stack, {named});
+        vm.kill();
+        vm.waitForFinished();
+        const QString canonical = QFileInfo(stack).canonicalFilePath();
+        QCOMPARE(removed, QStringList({canonical + "/bbbbbbbbbbbbbbbb",
+                                       canonical + "/eeeeeeeeeeeeeeee"}));
+        for (const char *kept : {"aaaaaaaaaaaaaaaa", "cccccccccccccccc", "dddddddddddddddd",
+                                 "other"}) {
+            QVERIFY2(QFileInfo::exists(stack + '/' + kept), kept);
+        }
+        QVERIFY(StackBuilder::current(stack).isValid());
     }
 
     /* A Stop that came once `current` switched: the build is done all the same */
