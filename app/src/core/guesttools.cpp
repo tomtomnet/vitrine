@@ -366,7 +366,13 @@ GuestToolsMonitor::GuestToolsMonitor(Vm *vm)
         m_in.waited = true;
         emit changed();
     });
-    connect(m_poll, &QTimer::timeout, this, [this]() { m_contexts->update(m_vm->runner()->qmp()); });
+    connect(m_poll, &QTimer::timeout, this, [this]() {
+        m_contexts->update(m_vm->runner()->qmp());
+        /* an install the agent did not start (by hand, the bootstrap) shows there */
+        if (m_in.agentSeen && ++m_polls % 3 == 0) {
+            requestStatus();
+        }
+    });
     connect(m_contexts, &GpuContexts::changed, this, [this]() {
         /* the guest draws: its desktop is up, the agent had its chance */
         const GpuContexts::Status s = m_contexts->status();

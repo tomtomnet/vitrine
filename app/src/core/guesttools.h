@@ -228,4 +228,5 @@ private:
     int m_total = 0;
     QString m_error;
     qint64 m_nextId = 1;
+    int m_polls = 0;
 };

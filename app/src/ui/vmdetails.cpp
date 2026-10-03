@@ -24,6 +24,7 @@
 #include "core/vmrunner.h"
 #include "core/vmstore.h"
 #include "ui/banner.h"
+#include "ui/guesttoolsdialog.h"
 #include "ui/icons.h"
 #include "ui/qemudocs.h"
 #include "ui/uiconfig.h"
@@ -120,6 +121,7 @@ VmDetails::VmDetails(QWidget *parent)
     layout->addWidget(m_note);
     layout->addWidget(m_error);
     layout->addWidget(m_contextsNote);
+    layout->addWidget(new GuestToolsBanner(this));
     layout->addWidget(m_text, 1);
 
     connect(m_error->button(), &QPushButton::clicked, this, &VmDetails::showLog);
@@ -146,6 +148,7 @@ void VmDetails::setVm(Vm *vm)
         m_contexts->reset();
     }
     m_vm = vm;
+    findChild<GuestToolsBanner *>()->setVm(vm);
     refresh();
 }
 

@@ -258,7 +258,7 @@ step "Installing the packages (Fedora's repositories are needed for dkms and the
 # brings that kernel's modules too.  The running kernel's headers, if
 # Fedora still has them, give the driver at once to that kernel too.
 extra=(dkms kernel "kernel-devel-$(uname -r)")
-"${dnf_medium[@]}" --skip-unavailable install "${want[@]}" "${extra[@]}" ||
+"${dnf_medium[@]}" install --skip-unavailable "${want[@]}" "${extra[@]}" ||
 	die "dnf failed: see above (no network? the guest needs Fedora's repositories)"
 missing=()
 for p in "${want[@]}"; do

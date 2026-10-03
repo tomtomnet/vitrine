@@ -143,6 +143,8 @@ qt_add_executable(vitrine
     src/ui/clonedialog.h
     src/ui/firmwarerepair.cpp
     src/ui/firmwarerepair.h
+    src/ui/guesttoolsdialog.cpp
+    src/ui/guesttoolsdialog.h
     src/ui/icons.cpp
     src/ui/icons.h
     src/ui/importdialog.cpp

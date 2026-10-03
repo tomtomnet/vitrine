@@ -237,7 +237,8 @@ def status(installing=False):
         "preempt": preempt(),
         "rebootNeeded": os.path.exists(f"{RUN_DIR}/reboot-needed"),
         "installed": state,
-        "installing": installing,
+        # this agent's install, or one run by hand or by the bootstrap
+        "installing": installing or os.path.exists(f"{RUN_DIR}/installer-active"),
     }
 
 

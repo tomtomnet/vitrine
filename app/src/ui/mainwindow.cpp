@@ -35,6 +35,7 @@
 #include "core/vmstore.h"
 #include "ui/clonedialog.h"
 #include "ui/firmwarerepair.h"
+#include "ui/guesttoolsdialog.h"
 #include "ui/icons.h"
 #include "ui/importdialog.h"
 #include "ui/memorymonitor.h"
@@ -198,6 +199,7 @@ MainWindow::MainWindow(VmStore *store, QWidget *parent)
     const QSettings settings(Paths::settingsPath(), QSettings::IniFormat);
 
     createActions();
+    GuestToolsDialog::setStarter([this](Vm *vm) { select(vm->id()); start(); });
 
     m_list->setObjectName("vms");
     m_list->setIconSize(QSize(32, 32));
@@ -371,6 +373,8 @@ void MainWindow::createActions()
     machine->addActions({m_start, m_showWindow, m_pause, m_shutDown, m_reset, m_forceOff});
     machine->addSeparator();
     machine->addActions({m_log, m_folder, m_command});
+    machine->addAction(tr("Install &Guest Tools…"), this,
+                       [this]() { GuestToolsDialog::run(this, current()); });
     machine->addSeparator();
     machine->addActions({m_clone, m_remove});
 
