@@ -1,0 +1,420 @@
+// SPDX-License-Identifier: GPL-2.0-or-later
+#include <QDir>
+#include <QFile>
+#include <QFileInfo>
+#include <QJsonArray>
+#include <QSignalSpy>
+#include <QStandardPaths>
+#include <QTemporaryDir>
+#include <QTest>
+
+#include "core/guesttools.h"
+#include "core/paths.h"
+#include "core/qmpclient.h"
+#include "core/vmrunner.h"
+
+using namespace GuestTools;
+
+static QString testQemu()
+{
+    const QString env = qEnvironmentVariable("VITRINE_TEST_QEMU");
+    return env.isEmpty() ? QStandardPaths::findExecutable("qemu-system-x86_64") : env;
+}
+
+/* The values of the options @name in @command */
+static QStringList valuesOf(const QStringList &command, const QString &name)
+{
+    QStringList values;
+
+    for (qsizetype i = 1; i < command.size(); i++) {
+        if (command[i - 1] == name) {
+            values << command[i];
+        }
+    }
+    return values;
+}
+
+/* A status as the guest's agent writes it (guest/tools/agent/vitrine-agent) */
+static const char kHello[] =
+    R"j({"type":"hello","protocol":1,"agent":"0.1.0","status":{"tools":"0.1.0-1.fc44",)j"
+    R"j("agent":"0.1.0","os":{"id":"fedora","version":"44","name":"Fedora Linux 44 (KDE Plasma)"},)j"
+    R"j("kernel":"7.2.7-200.fc44.x86_64","kernels":[{"version":"7.2.7-200.fc44.x86_64",)j"
+    R"j("headers":true,"driver":"installed"},{"version":"7.2.5-200.fc44.x86_64","headers":false,)j"
+    R"j("driver":"no-headers"}],"secureBoot":false,"desktops":{"kde":"6.7.5"},)j"
+    R"j("sessions":[{"desktop":"KDE","type":"wayland","active":true}],)j"
+    R"j("driver":{"loaded":true,"patched":true,"taint":"OE","params":{"blob_flush_fence":"3",)j"
+    R"j("tiled_scanout":"1"},"vblankoffdelay":"0"},"gpu":{"capsets":["virgl","virgl2","drm"],)j"
+    R"j("contextInit":true},"packages":{"vitrine-guest-tools":"0.1.0-1.fc44",)j"
+    R"j("mesa-dri-drivers":"26.2.3-1.xe.fc44","kwin":"6.7.5-1.21.fc44"},"kwinPatched":true,)j"
+    R"j("preempt":"full","rebootNeeded":false,"installed":{"medium":"32fe6c83b34e87e8",)j"
+    R"j("tools":"0.1.0-1.fc44"},"installing":false}})j";
+
+class TestGuestTools : public QObject
+{
+    Q_OBJECT
+
+private:
+    QString writeMedium(const QString &release = "44")
+    {
+        QDir().mkpath(dataDir());
+        const QString image = QString("%1/vitrine-guest-tools-fc%2.img").arg(dataDir(), release);
+        QFile img(image), json(QString(image).replace(".img", ".json"));
+        if (img.open(QIODevice::WriteOnly)) {
+            img.write(QByteArray(1 << 20, '\0'));
+        }
+        if (json.open(QIODevice::WriteOnly)) {
+            json.write(R"({"label": "VITRINETOOL", "mediumId": "32fe6c83b34e87e8", "fedora": "44",
+                          "tools": "0.1.0-1.fc44", "mesa": "26.2.3-1.xe.fc44",
+                          "kwin": "6.7.5-1.21.fc44", "packages": [
+                          {"name": "kwin", "evr": "6.7.5-1.21.fc44", "arch": "x86_64"},
+                          {"name": "vitrine-guest-tools", "evr": "0.1.0-1.fc44", "arch": "noarch"}]})");
+        }
+        return image;
+    }
+
+private slots:
+    void initTestCase()
+    {
+        QStandardPaths::setTestModeEnabled(true);
+        QDir(dataDir()).removeRecursively();
+    }
+
+    void cleanupTestCase()
+    {
+        QDir(dataDir()).removeRecursively();
+        setPending("vitrine-test-vm", Pending::None);
+    }
+
+    void agentPort()
+    {
+        QCOMPARE(agentPortArgs("/run/user/1000/vitrine/a,b/agent.sock"),
+                 QStringList({"-chardev",
+                              "socket,id=vitrine-agent,path=/run/user/1000/vitrine/a,,b/agent.sock,"
+                              "server=on,wait=off",
+                              "-device",
+                              "virtserialport,bus=vitrine-serial.0,chardev=vitrine-agent,"
+                              "name=org.vitrine.agent.0,id=vitrine-agent-port"}));
+
+        const QString x86 = "/usr/bin/qemu-system-x86_64";
+        QVERIFY(addsAgentPort(ArgsFile::parse("-machine q35\n"), x86));
+        QVERIFY(addsAgentPort(ArgsFile::parse("-m 1G\n"), x86));
+        QVERIFY(addsAgentPort(ArgsFile::parse("-machine virt\n"), "/opt/qemu-system-aarch64"));
+        QVERIFY(!addsAgentPort(ArgsFile::parse("-machine isapc\n"), x86));
+        QVERIFY(!addsAgentPort(ArgsFile::parse("-machine microvm\n"), x86));
+        QVERIFY(!addsAgentPort(ArgsFile::parse(""), "/opt/qemu-system-ppc64"));
+        /* its own */
+        QVERIFY(!addsAgentPort(
+            ArgsFile::parse("-device virtserialport,chardev=a,name=org.vitrine.agent.0\n"), x86));
+    }
+
+    void medium()
+    {
+        QCOMPARE(mediumArgs("/home/me/tools,1.img"),
+                 QStringList({"-drive",
+                              "if=none,id=vitrine-tools,format=raw,readonly=on,"
+                              "file=/home/me/tools,,1.img",
+                              "-device", "virtio-blk-pci,drive=vitrine-tools,id=vitrine-tools-disk"}));
+
+        QVERIFY(!GuestTools::medium().isValid());
+        const QString image = writeMedium();
+        const Medium m = GuestTools::medium();
+        QVERIFY(m.isValid());
+        QCOMPARE(m.image, image);
+        QCOMPARE(m.mediumId, "32fe6c83b34e87e8");
+        QCOMPARE(m.fedora, "44");
+        QCOMPARE(m.tools, "0.1.0-1.fc44");
+        QCOMPARE(m.kwin, "6.7.5-1.21.fc44");
+        QCOMPARE(m.packages, QStringList({"kwin-6.7.5-1.21.fc44.x86_64",
+                                          "vitrine-guest-tools-0.1.0-1.fc44.noarch"}));
+        QVERIFY(!parseManifest("{}", image).isValid());
+        QVERIFY(!parseManifest("not json", image).isValid());
+    }
+
+    /* the unit the guest's systemd gets through SMBIOS, and how it is started */
+    void bootstrapCredentials()
+    {
+        const QStringList args = bootstrapArgs();
+        const QString unitPrefix = "type=11,value=io.systemd.credential.binary:"
+                                   "systemd.extra-unit.vitrine-tools-bootstrap.service=";
+        const QString dropInPrefix = "type=11,value=io.systemd.credential.binary:"
+                                     "systemd.unit-dropin.multi-user.target~vitrine-tools=";
+
+        QCOMPARE(args.size(), 4);
+        QCOMPARE(args[0], "-smbios");
+        QCOMPARE(args[2], "-smbios");
+        QVERIFY(args[1].startsWith(unitPrefix));
+        QVERIFY(args[3].startsWith(dropInPrefix));
+        /* QEMU's option syntax: no comma in the values (base64 has none) */
+        QCOMPARE(args[1].count(','), 1);
+        QCOMPARE(args[3].count(','), 1);
+
+        const QByteArray unit = QByteArray::fromBase64(args[1].mid(unitPrefix.size()).toLatin1());
+        const QByteArray dropIn = QByteArray::fromBase64(args[3].mid(dropInPrefix.size()).toLatin1());
+        QCOMPARE(unit, bootstrapUnit());
+        QCOMPARE(dropIn, bootstrapDropIn());
+        /* the unit: not in the initrd, mounts the medium by its label, runs its bootstrap */
+        QVERIFY(unit.contains("\nConditionPathExists=!/etc/initrd-release\n"));
+        QVERIFY(unit.contains("\nRequires=dev-disk-by\\x2dlabel-VITRINETOOL.device\n"));
+        QVERIFY(unit.contains("/usr/bin/mount -o ro /dev/disk/by-label/VITRINETOOL "));
+        QVERIFY(unit.contains("\nExecStart=/bin/sh /run/vitrine-tools-medium/bootstrap\n"));
+        QVERIFY(unit.contains("\nType=oneshot\n"));
+        QVERIFY(unit.contains("Before=display-manager.service"));
+        QVERIFY(dropIn.contains("[Unit]\nWants=vitrine-tools-bootstrap.service\n"));
+        QCOMPARE(QString(kLabel).size(), 11);    // FAT's limit
+
+        QVERIFY(canBootstrap(ArgsFile::parse("-machine q35\n"), "qemu-system-x86_64"));
+        QVERIFY(!canBootstrap(ArgsFile::parse("-machine virt\n"), "qemu-system-aarch64"));
+        QVERIFY(!canBootstrap(ArgsFile::parse("-machine isapc\n"), "qemu-system-x86_64"));
+    }
+
+    void pendingSetting()
+    {
+        setPending("vitrine-test-vm", Pending::Bootstrap);
+        QCOMPARE(pending("vitrine-test-vm"), Pending::Bootstrap);
+        setPending("vitrine-test-vm", Pending::Medium);
+        QCOMPARE(pending("vitrine-test-vm"), Pending::Medium);
+        setPending("vitrine-test-vm", Pending::None);
+        QCOMPARE(pending("vitrine-test-vm"), Pending::None);
+        QCOMPARE(pending("other"), Pending::None);
+    }
+
+    /* the runner's command line: the agent's port always, the medium and the
+       credentials while the tools are pending */
+    void runnerCommandLine()
+    {
+        QTemporaryDir tmp;
+        const QString id = "vitrine-test-vm";
+        const VmRunner runner(id, tmp.path());
+        const QString qemu = "#qemu /opt/q/bin/qemu-system-x86_64\n";
+        auto command = [&](const QString &text) {
+            return runner.commandLine(ArgsFile::parse(qemu + text));
+        };
+
+        QDir(dataDir()).removeRecursively();
+        setPending(id, Pending::None);
+        QStringList c = command("-machine q35\n");
+        const QString socket = QFileInfo(c.last()).absolutePath() + "/agent.sock";
+        QCOMPARE(valuesOf(c, "-device"),
+                 QStringList({"virtio-serial-pci,id=vitrine-serial",
+                              "virtserialport,bus=vitrine-serial.0,chardev=vitrine-agent,"
+                              "name=org.vitrine.agent.0,id=vitrine-agent-port"}));
+        QCOMPARE(valuesOf(c, "-chardev"),
+                 QStringList({"socket,id=vitrine-agent,path=" + socket + ",server=on,wait=off"}));
+        QVERIFY(valuesOf(c, "-smbios").isEmpty());
+
+        /* with qemu-ga's port too: one controller */
+        c = command("-machine q35,memory-backend=m\n#share tag=t,path=/x,mount=/mnt/x\n");
+        QCOMPARE(valuesOf(c, "-device").filter("virtio-serial-pci").size(), 1);
+        QCOMPARE(valuesOf(c, "-device").filter("virtserialport,bus=vitrine-serial.0").size(), 2);
+
+        /* pending, but no medium built: nothing to attach */
+        setPending(id, Pending::Bootstrap);
+        QVERIFY(valuesOf(command("-machine q35\n"), "-smbios").isEmpty());
+
+        const QString image = writeMedium();
+        c = command("-machine q35\n");
+        QCOMPARE(valuesOf(c, "-drive"),
+                 QStringList({"if=none,id=vitrine-tools,format=raw,readonly=on,file=" + image}));
+        QCOMPARE(valuesOf(c, "-smbios"), valuesOf(bootstrapArgs(), "-smbios"));
+        /* the medium only */
+        setPending(id, Pending::Medium);
+        c = command("-machine q35\n");
+        QCOMPARE(valuesOf(c, "-drive").size(), 1);
+        QVERIFY(valuesOf(c, "-smbios").isEmpty());
+        /* not for an ARM guest */
+        setPending(id, Pending::Bootstrap);
+        c = runner.commandLine(ArgsFile::parse("#qemu /opt/qemu-system-aarch64\n-machine virt\n"));
+        QVERIFY(valuesOf(c, "-drive").isEmpty());
+        QVERIFY(valuesOf(c, "-smbios").isEmpty());
+        QCOMPARE(valuesOf(c, "-device").size(), 2);     // the agent's port still
+        setPending(id, Pending::None);
+        QDir(dataDir()).removeRecursively();
+    }
+
+    void messages()
+    {
+        Message m = parseMessage(kHello);
+        QCOMPARE(m.type, Message::Type::Hello);
+        QCOMPARE(m.protocol, 1);
+        QCOMPARE(m.id, -1);
+        const Report &r = m.report;
+        QCOMPARE(r.tools, "0.1.0-1.fc44");
+        QCOMPARE(r.agent, "0.1.0");
+        QCOMPARE(r.osId, "fedora");
+        QCOMPARE(r.osVersion, "44");
+        QCOMPARE(r.osName, "Fedora Linux 44 (KDE Plasma)");
+        QCOMPARE(r.kernel, "7.2.7-200.fc44.x86_64");
+        QCOMPARE(r.kernels.size(), 2);
+        QCOMPARE(r.kernels[0].driver, "installed");
+        QVERIFY(r.kernels[0].headers);
+        QCOMPARE(r.kernels[1].driver, "no-headers");
+        QCOMPARE(r.secureBoot, std::optional<bool>(false));
+        QCOMPARE(r.desktops.value("kde"), "6.7.5");
+        QVERIFY(r.driverLoaded);
+        QVERIFY(r.driverPatched);
+        QCOMPARE(r.taint, "OE");
+        QCOMPARE(r.driverParams.value("blob_flush_fence"), "3");
+        QCOMPARE(r.capsets, QStringList({"virgl", "virgl2", "drm"}));
+        QCOMPARE(r.packages.value("mesa-dri-drivers"), "26.2.3-1.xe.fc44");
+        QVERIFY(r.kwinPatched);
+        QCOMPARE(r.preempt, "full");
+        QVERIFY(!r.rebootNeeded);
+        QVERIFY(!r.installing);
+        QCOMPARE(r.installedMedium, "32fe6c83b34e87e8");
+
+        m = parseMessage(R"({"type":"status","id":7,"status":{"tools":null,"secureBoot":null}})");
+        QCOMPARE(m.type, Message::Type::Status);
+        QCOMPARE(m.id, 7);
+        QVERIFY(m.report.tools.isEmpty());
+        QVERIFY(!m.report.secureBoot.has_value());
+
+        m = parseMessage(R"({"type":"progress","id":null,"step":"Installing the packages","current":3,"total":6})");
+        QCOMPARE(m.type, Message::Type::Progress);
+        QCOMPARE(m.id, -1);
+        QCOMPARE(m.step, "Installing the packages");
+        QCOMPARE(m.current, 3);
+        QCOMPARE(m.total, 6);
+
+        m = parseMessage(R"({"type":"result","id":2,"cmd":"install-from-medium","ok":false,)"
+                         R"("error":"ERROR: dnf failed","rebootNeeded":false})");
+        QCOMPARE(m.type, Message::Type::Result);
+        QCOMPARE(m.command, "install-from-medium");
+        QVERIFY(!m.ok);
+        QCOMPARE(m.error, "ERROR: dnf failed");
+
+        m = parseMessage(R"({"type":"error","id":3,"error":"unknown command 'x'"})");
+        QCOMPARE(m.type, Message::Type::Error);
+        QCOMPARE(m.error, "unknown command 'x'");
+
+        QCOMPARE(parseMessage("{\"type\":\"other\"}").type, Message::Type::Invalid);
+        QCOMPARE(parseMessage("[1]").type, Message::Type::Invalid);
+        QCOMPARE(parseMessage("not json").type, Message::Type::Invalid);
+        QCOMPARE(parseMessage("").type, Message::Type::Invalid);
+
+        QCOMPARE(commandLine("status", 3), QByteArray("{\"cmd\":\"status\",\"id\":3}\n"));
+        QCOMPARE(commandLine("install-from-medium", 4),
+                 QByteArray("{\"cmd\":\"install-from-medium\",\"id\":4}\n"));
+    }
+
+    void states()
+    {
+        const Medium medium = parseManifest(
+            R"({"mediumId": "32fe6c83b34e87e8", "fedora": "44", "tools": "0.1.0-1.fc44"})",
+            "/x.img");
+        Inputs in;
+
+        QCOMPARE(evaluate(in), State::Unknown);
+        in.pending = Pending::Bootstrap;
+        QCOMPARE(evaluate(in), State::Pending);
+
+        /* running, waiting for an agent */
+        in = Inputs{};
+        in.running = true;
+        in.medium = medium;
+        QCOMPARE(evaluate(in), State::Unknown);
+        in.waited = true;
+        QCOMPARE(evaluate(in), State::NotInstalled);
+        in.pending = Pending::Bootstrap;            // asked for, the VM not restarted yet
+        QCOMPARE(evaluate(in), State::Pending);
+        in.pending = Pending::None;
+        in.bootstrapRun = true;
+        in.waited = false;
+        QCOMPARE(evaluate(in), State::Installing);  // the guest installs before its desktop
+        in.waited = true;
+        QCOMPARE(evaluate(in), State::NotInstalled);    // it did not (no systemd 256...)
+        in.installing = true;
+        QCOMPARE(evaluate(in), State::Installing);
+        in.installing = false;
+        in.failed = true;
+        QCOMPARE(evaluate(in), State::Failed);
+
+        /* the agent answered */
+        in = Inputs{};
+        in.running = true;
+        in.medium = medium;
+        in.agentSeen = true;
+        in.report = parseMessage(kHello).report;
+        QCOMPARE(evaluate(in), State::Installed);
+        in.report.rebootNeeded = true;
+        QCOMPARE(evaluate(in), State::RebootNeeded);
+        in.report.rebootNeeded = false;
+        in.report.driverPatched = false;
+        QCOMPARE(evaluate(in), State::DriverNotActive);
+        in.report.driverPatched = true;
+        in.report.installedMedium = "0000000000000000";
+        QCOMPARE(evaluate(in), State::UpdateAvailable);
+        in.report.installedMedium = medium.mediumId;
+        in.report.tools = "0.0.9-1.fc44";
+        QCOMPARE(evaluate(in), State::UpdateAvailable);
+        in.medium = {};                             // no medium built: nothing to compare
+        QCOMPARE(evaluate(in), State::Installed);
+        in.medium = medium;
+        in.report.tools.clear();
+        QCOMPARE(evaluate(in), State::NotInstalled);
+        in.report.tools = medium.tools;
+        in.report.osVersion = "45";
+        QCOMPARE(evaluate(in), State::Unsupported);
+        in.running = false;
+        QCOMPARE(evaluate(in), State::Unknown);
+    }
+
+    void driverProblems()
+    {
+        Report r = parseMessage(kHello).report;
+
+        r.secureBoot = true;
+        QVERIFY(driverProblem(r).contains("Secure Boot"));
+        r.secureBoot = false;
+        QVERIFY(driverProblem(r).contains("restart the guest"));
+        r.kernel = "7.2.5-200.fc44.x86_64";
+        QVERIFY(driverProblem(r).contains("no headers"));
+        r.kernels[1].driver = "missing";
+        QVERIFY(driverProblem(r).contains("did not build"));
+        r.kernel = "7.3.0-100.fc44.x86_64";
+        QCOMPARE(driverProblem(r), "the driver is not loaded");
+    }
+
+    /* QEMU takes the agent's port, the medium and the credentials */
+    void realQemu()
+    {
+        if (!QFileInfo(testQemu()).isExecutable()) {
+            QSKIP("no QEMU build, set VITRINE_TEST_QEMU");
+        }
+        QTemporaryDir tmp;
+        const QString id = QString("vitrine-gt-test-%1").arg(QCoreApplication::applicationPid());
+        Paths::setQemuBinary(testQemu());
+        writeMedium();
+        setPending(id, Pending::Bootstrap);
+        VmRunner runner(id, tmp.path());
+        QSignalSpy failed(&runner, &VmRunner::failed);
+
+        runner.start(ArgsFile::parse("-machine q35\n-m 128\n-nodefaults\n-display none\n"));
+        QTRY_COMPARE_WITH_TIMEOUT(runner.state(), VmRunner::State::Running, 20000);
+        QVERIFY2(failed.isEmpty(), qPrintable(failed.isEmpty() ? QString() : failed[0][0].toString()));
+        const QString socket = runner.agentSocket();
+        QVERIFY(QFileInfo::exists(socket));
+
+        /* the medium, read-only */
+        bool readOnly = false, found = false;
+        runner.qmp()->execute("query-block", {}, [&](const QJsonValue &result, const QString &) {
+            for (const QJsonValue &b : result.toArray()) {
+                if (b["device"].toString() == "vitrine-tools") {
+                    readOnly = b["inserted"]["ro"].toBool();
+                }
+            }
+            found = true;
+        });
+        QTRY_VERIFY(found);
+        QVERIFY(readOnly);
+
+        runner.forceOff();
+        QTRY_COMPARE_WITH_TIMEOUT(runner.state(), VmRunner::State::Stopped, 15000);
+        QVERIFY(!QFileInfo::exists(socket));
+        setPending(id, Pending::None);
+        Paths::setQemuBinary({});
+        QDir(dataDir()).removeRecursively();
+    }
+};
+
+QTEST_GUILESS_MAIN(TestGuestTools)
+#include "test_guesttools.moc"

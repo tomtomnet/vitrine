@@ -113,17 +113,19 @@ private slots:
         const QStringList command = runner.commandLine(
             ArgsFile::parse("-m 1G\n#share tag=pub,path=/home/x\n# note\n"));
 
-        QCOMPARE(command.size(), 11);
+        QCOMPARE(command.size(), 17);
         QCOMPARE(command[0], testQemu());
         QCOMPARE(command.mid(1, 2), QStringList({"-m", "1G"}));
         QCOMPARE(command[3], "-chardev");
         QCOMPARE(command[4], "socket,id=vitrine-fs0,path=" + runDir + "/fs0.sock");
         QCOMPARE(command[5], "-device");
         QCOMPARE(command[6], "vhost-user-fs-pci,queue-size=1024,chardev=vitrine-fs0,tag=pub");
-        QCOMPARE(command[7], "-qmp");
-        QCOMPARE(command[8], "unix:" + runDir + "/qmp.sock,server=on,wait=off");
-        QCOMPARE(command[9], "-pidfile");
-        QCOMPARE(command[10], runDir + "/qemu.pid");
+        /* the guest tools' agent (test_guesttools) */
+        QCOMPARE(command.mid(7, 2), QStringList({"-device", "virtio-serial-pci,id=vitrine-serial"}));
+        QCOMPARE(command[13], "-qmp");
+        QCOMPARE(command[14], "unix:" + runDir + "/qmp.sock,server=on,wait=off");
+        QCOMPARE(command[15], "-pidfile");
+        QCOMPARE(command[16], runDir + "/qemu.pid");
         QVERIFY(runDir.toLocal8Bit().size() < 90);
     }
 
@@ -176,7 +178,8 @@ private slots:
         QVERIFY(mount.contains("socket,id=vitrine-ga,path=" + runDir + "/qga.sock,server=on,wait=off"));
         QVERIFY(mount.contains("virtserialport,bus=vitrine-serial.0,chardev=vitrine-ga,"
                                "name=org.qemu.guest_agent.0,id=vitrine-ga-port"));
-        QCOMPARE(mount.size(), noMount.size() + 6 + 2);     // and -smbios
+        /* and -smbios; the guest tools' agent shares the controller */
+        QCOMPARE(mount.size(), noMount.size() + 6 + 2 - 2);
         QVERIFY(!own.join(' ').contains("vitrine-ga"));
     }
 
@@ -224,7 +227,8 @@ private slots:
     void longIdsKeepShortSockets()
     {
         const VmRunner runner(QString(100, 'x'), tmp.path());
-        const QString socket = runner.commandLine({}).at(2).mid(5).section(',', 0, 0);
+        const QStringList command = runner.commandLine({});
+        const QString socket = command.at(command.indexOf("-qmp") + 1).mid(5).section(',', 0, 0);
 
         QVERIFY(socket.endsWith("/qmp.sock"));
         QVERIFY(socket.toLocal8Bit().size() < 100);

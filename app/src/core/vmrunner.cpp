@@ -16,6 +16,7 @@
 
 #include "core/firmwarefiles.h"
 #include "core/guestagent.h"
+#include "core/guesttools.h"
 #include "core/paths.h"
 #include "core/qmpclient.h"
 #include "core/vmconfig.h"
@@ -203,6 +204,7 @@ struct VmRunner::Private
     QString pidPath() const { return runDir() + "/qemu.pid"; }
     QString sharePath(qsizetype i) const { return runDir() + QString("/fs%1.sock").arg(i); }
     QString agentPath() const { return runDir() + "/qga.sock"; }
+    QString toolsAgentPath() const { return runDir() + "/agent.sock"; }
     QString displayPath() const { return runDir() + "/display.sock"; }
     QString qmpArg() const;
     QString logPath() const { return dir + "/qemu.log"; }
@@ -299,7 +301,7 @@ void VmRunner::Private::removeRuntimeFiles() const
     QDir rt(runDir());
 
     for (const QString &name : rt.entryList({"qmp.sock", "qemu.pid", "fs*.sock*", "qga.sock",
-                                             "display.sock"},
+                                             "display.sock", "agent.sock"},
                                             QDir::AllEntries | QDir::System |
                                                 QDir::Hidden)) {
         rt.remove(name);
@@ -690,6 +692,23 @@ QStringList VmRunner::commandLine(const ArgsFile &args) const
                        .arg(OptionValue::escape(d->displayPath()))
                 << "-mon" << "chardev=vitrine-display,mode=control";
     }
+    /* the guest tools' agent, on qemu-ga's controller if there is one */
+    if (GuestTools::addsAgentPort(args, qemuFor(args))) {
+        if (!addsAgent(args)) {
+            command << "-device" << "virtio-serial-pci,id=vitrine-serial";
+        }
+        command += GuestTools::agentPortArgs(d->toolsAgentPath());
+    }
+    /* the guest tools asked for: the medium, and the unit that installs them at boot */
+    const GuestTools::Pending tools = GuestTools::pending(d->id);
+    const GuestTools::Medium medium = GuestTools::medium();
+    if (tools != GuestTools::Pending::None && medium.isValid() &&
+        GuestTools::canBootstrap(args, qemuFor(args))) {
+        command += GuestTools::mediumArgs(medium.image);
+        if (tools == GuestTools::Pending::Bootstrap) {
+            command += GuestTools::bootstrapArgs();
+        }
+    }
     command << "-qmp" << d->qmpArg() << "-pidfile" << d->pidPath();
     return command;
 }
@@ -719,6 +738,11 @@ QStringList VmRunner::environment(const ArgsFile &args)
         env << var.name + '=' + var.value;
     }
     return env;
+}
+
+QString VmRunner::agentSocket() const
+{
+    return isActive() ? d->toolsAgentPath() : QString();
 }
 
 QString VmRunner::displaySocket() const

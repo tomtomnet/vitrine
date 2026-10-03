@@ -16,6 +16,8 @@ qt_add_library(vitrine_core STATIC
     src/core/gpucontexts.h
     src/core/guestagent.cpp
     src/core/guestagent.h
+    src/core/guesttools.cpp
+    src/core/guesttools.h
     src/core/hostdevices.cpp
     src/core/hostdevices.h
     src/core/hostmemory.cpp
@@ -55,6 +57,10 @@ target_include_directories(vitrine_core PUBLIC src)
 # the virglrenderer patches File > Build QEMU applies
 qt_add_resources(vitrine_core virglpatches PREFIX / BASE data
     FILES data/patches/virglrenderer-amdgpu-force-wc.patch)
+# what the runner passes a guest to install the guest tools at boot
+qt_add_resources(vitrine_core guestbootstrap PREFIX /guest BASE ../guest
+    FILES ../guest/bootstrap/vitrine-tools-bootstrap.service
+          ../guest/bootstrap/multi-user.target.conf)
 target_link_libraries(vitrine_core PUBLIC
     Qt6::Core Qt6::Concurrent Qt6::Gui Qt6::Network)
 target_compile_options(vitrine_core PRIVATE -Wall -Wextra)
@@ -225,6 +231,7 @@ if(BUILD_TESTING)
             firmwarefiles
             gpucontexts
             guestagent
+            guesttools
             hostdevices
             hostmemory
             importer

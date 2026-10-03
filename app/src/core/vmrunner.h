@@ -45,6 +45,8 @@ public:
      * main one.  Empty unless the running VM shows in vitrine's window.
      */
     QString displaySocket() const;
+    /* The socket of the vitrine agent's port (guest tools), while active */
+    QString agentSocket() const;
 
     /* The state goes Starting, then Running once QMP answers, or back to
        Stopped with failed() */
