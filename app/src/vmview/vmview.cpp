@@ -8,6 +8,10 @@
 #include "renderer.h"
 #include "waylandextras.h"
 
+#include "keyboard-shortcuts-inhibit-unstable-v1-client-protocol.h"
+#include "pointer-constraints-unstable-v1-client-protocol.h"
+#include "relative-pointer-unstable-v1-client-protocol.h"
+
 #include <QGuiApplication>
 #include <QJsonObject>
 #include <QKeyEvent>
@@ -234,8 +238,29 @@ void VmView::detach()
     if (m_dbus) {
         retire(std::exchange(m_dbus, nullptr), std::move(m_stats));
     }
-    delete m_wayland;
-    m_wayland = nullptr;
+    if (m_wayland) {
+        /*
+         * ~WaylandExtras destroys the inhibitor and pointer lock it made,
+         * not the three globals init() bound: each attach left them bound,
+         * in the compositor too, for as long as vitrine ran.  Until the
+         * research side's destructor does it, they go here, taken out
+         * first (so that one doing it then finds none), after the objects
+         * made from them.
+         */
+        auto *inhibit = std::exchange(m_wayland->m_inhibitManager, nullptr);
+        auto *constraints = std::exchange(m_wayland->m_constraints, nullptr);
+        auto *relative = std::exchange(m_wayland->m_relativeManager, nullptr);
+        delete std::exchange(m_wayland, nullptr);
+        if (relative) {
+            zwp_relative_pointer_manager_v1_destroy(relative);
+        }
+        if (constraints) {
+            zwp_pointer_constraints_v1_destroy(constraints);
+        }
+        if (inhibit) {
+            zwp_keyboard_shortcuts_inhibit_manager_v1_destroy(inhibit);
+        }
+    }
 }
 
 bool VmView::isAttached() const
