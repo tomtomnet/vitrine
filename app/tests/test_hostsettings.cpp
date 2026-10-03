@@ -20,6 +20,7 @@
 #include <memory>
 
 #include <pwd.h>
+#include <sys/prctl.h>
 #include <unistd.h>
 
 #include "core/hostsettings.h"
@@ -597,6 +598,9 @@ private slots:
         QVERIFY(!fairBefore.startsWith('/'));
 
         QProcess qemu;
+        /* gone with the test, crash included: the root helper then sees it
+           exit and puts the host back */
+        qemu.setChildProcessModifier([]() { prctl(PR_SET_PDEATHSIG, SIGKILL); });
         qemu.start(qemuBinary, {"-machine", "none", "-display", "none", "-S"});
         QVERIFY(qemu.waitForStarted());
         HostSettings hs(nullptr);

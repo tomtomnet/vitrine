@@ -809,6 +809,20 @@ private slots:
         QCOMPARE(WEXITSTATUS(status), 0);
     }
 
+    /* The stand-in QEMU ends with its stdin, as when the test that started
+       it dies: a crashed test leaves no stand-ins behind, nor helpers
+       watching them */
+    void fakeQemuEndsWithTheTest()
+    {
+        QProcess qemu;
+        qemu.start(FAKE_QEMU, {});
+        QVERIFY(qemu.waitForStarted());
+        QVERIFY(!qemu.waitForFinished(200));
+        qemu.closeWriteChannel();
+        QVERIFY(qemu.waitForFinished(2000));
+        QCOMPARE(qemu.exitStatus(), QProcess::NormalExit);
+    }
+
     /* SIGTERM (a shutdown): everything back before the end */
     void terminated()
     {
