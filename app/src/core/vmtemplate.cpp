@@ -4,6 +4,7 @@
 #include <QFile>
 #include <QStandardPaths>
 
+#include "core/hostdevices.h"
 #include "core/paths.h"
 #include "core/qemuinfo.h"
 #include "core/vmconfig.h"
@@ -164,7 +165,9 @@ static void linuxPc(Writer &w, const Options &o,
     w.option("machine", "q35,memory-backend=mem,dump-guest-core=off");
     /* the guest's caching of its GPU mappings, which Intel GPUs need */
     w.option("accel", nativeContext ? "kvm,honor-guest-pat=on" : "kvm");
-    w.option("cpu", "host");
+    /* AMD: the guest sees the threads of a core, and the caches they share, with topoext */
+    w.option("cpu", threads > 1 && HostDevices::cpuHasFlag("topoext") ? "host,topoext=on"
+                                                                      : "host");
     w.option("smp", QString("%1,sockets=1,cores=%2,threads=%3")
                         .arg(o.cpus).arg(o.cpus / threads).arg(threads));
     /* memfd RAM, which virtiofsd and passt can map */

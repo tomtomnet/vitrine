@@ -2,6 +2,7 @@
 #include <QStandardPaths>
 #include <QTest>
 
+#include "core/hostdevices.h"
 #include "core/qemuinfo.h"
 
 #include "core/vmconfig.h"
@@ -45,9 +46,12 @@ private slots:
         o.sshPort = 2222;
         o.passt = true;
         const ArgsFile args = build(o, pflash);
+        /* AMD */
+        const QString cpu = HostDevices::cpuHasFlag("topoext") ? "-cpu host,topoext=on\n"
+                                                               : "-cpu host\n";
 
         QCOMPARE(args.toText(),
-                 "# The QEMU command line of this VM, one option per line.\n"
+                 QString("# The QEMU command line of this VM, one option per line.\n"
                  "# Lines starting with # are comments; #share lines are shared folders.\n"
                  "\n"
                  "-name Fedora,debug-threads=on\n"
@@ -55,8 +59,7 @@ private slots:
                  "\n"
                  "# System\n"
                  "-machine q35,memory-backend=mem,dump-guest-core=off\n"
-                 "-accel kvm,honor-guest-pat=on\n"
-                 "-cpu host\n"
+                 "-accel kvm,honor-guest-pat=on\n") + cpu +
                  "-smp 4,sockets=1,cores=2,threads=2\n"
                  "-object memory-backend-memfd,id=mem,size=8G,share=on\n"
                  "\n"
@@ -138,6 +141,8 @@ private slots:
         const QString text = build(o).toText();
 
         QVERIFY(text.contains("-smp 3,sockets=1,cores=3,threads=1\n"));
+        /* one thread per core: no topoext */
+        QVERIFY(text.contains("-cpu host\n"));
         QVERIFY(text.contains("# Network\n-netdev user,id=net0\n-device virtio-net-pci,netdev=net0\n"));
         QVERIFY(!text.contains("# Storage"));
         QVERIFY(!text.contains("iothread"));
