@@ -160,6 +160,17 @@ private slots:
         a = ArgsFile::parse("-device qxl-vga\n-device virtio-gpu-pci\n-display gtk\n");
         setScreen(a, Screen::Embedded);
         QCOMPARE(text(a), "-device qxl-vga\n-device virtio-gpu-pci\n-display dbus,p2p=yes\n");
+
+        /* a D-Bus display on a bus of its own: QEMU refuses addr= with p2p= */
+        a = ArgsFile::parse("-display dbus,addr=unix:path=/run/user/1000/qemu.bus\n");
+        QVERIFY(screen(a) == Screen::None);
+        setScreen(a, Screen::Embedded);
+        QCOMPARE(text(a), "-display dbus,p2p=yes\n");
+        QVERIFY(screen(a) == Screen::Embedded);
+        a = ArgsFile::parse("-device virtio-vga-gl\n-display dbus,addr=unix:path=/x,p2p=yes\n");
+        QVERIFY(screen(a) == Screen::None);
+        setScreen(a, Screen::Embedded);
+        QCOMPARE(text(a), "-device virtio-vga-gl\n-display dbus,p2p=yes,gl=on\n");
     }
 
     void readNetwork()

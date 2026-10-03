@@ -256,7 +256,9 @@ Screen screen(const ArgsFile &args)
     const QString type = v.implied();
     if (type == "dbus") {
         const QString p2p = v.get("p2p", "off");
-        return p2p == "yes" || p2p == "on" ? Screen::Embedded : Screen::None;
+        /* with addr=, on a bus of its own, which QEMU refuses with p2p= */
+        return (p2p == "yes" || p2p == "on") && !v.has("addr") ? Screen::Embedded
+                                                               : Screen::None;
     }
     if (type == "sdl" || type == "gtk" || type == "cocoa" || type == "default") {
         return Screen::OwnWindow;
@@ -529,8 +531,10 @@ static void setWindow(ArgsFile &args, const QString &display, int gl, bool accel
     }
     const QString type = v.implied();
     if (type == "dbus") {
-        /* vitrine attaches to the display over a socket of its own */
+        /* vitrine attaches to the display over a socket of its own, not
+           the bus of addr=, which QEMU refuses with p2p= */
         v.set("p2p", "yes");
+        v.remove("addr");
         if (gl == -1 && accelerated && v.get("gl", "off") == "off") {
             v.set("gl", "on");
         }

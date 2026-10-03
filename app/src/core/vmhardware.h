@@ -65,7 +65,8 @@ void setGraphics(ArgsFile &args, const Graphics &graphics);
  * Where the VM's screen shows: in vitrine's window, through QEMU's D-Bus
  * display (-display dbus,p2p=yes); in a window of QEMU's own (sdl, gtk, or
  * QEMU's default); or nowhere (none, egl-headless, -nographic, or a D-Bus
- * display on the session bus, which vitrine cannot attach to)
+ * display on the session bus or the bus of addr=, which vitrine cannot
+ * attach to)
  */
 enum class Screen { Embedded, OwnWindow, None };
 Screen screen(const ArgsFile &args);
