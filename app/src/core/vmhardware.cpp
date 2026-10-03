@@ -242,25 +242,57 @@ static const QHash<QString, QStringList> kDisplayKeys = {
     {"dbus", {"p2p", "gl", "addr", "rendernode", "audiodev"}},
 };
 
+/* -display vnc=...: a VNC server, as -vnc, which leaves the window as it is */
+static bool isVncDisplay(const ArgsFile &args, int line)
+{
+    return args.lines[line].value.trimmed().startsWith("vnc");
+}
+
+/* The -display line of the window: the last one, but for -display vnc= */
+static int windowLine(const ArgsFile &args)
+{
+    const QList<int> lines = args.indexesOf("display");
+
+    for (auto it = lines.crbegin(); it != lines.crend(); ++it) {
+        if (!isVncDisplay(args, *it)) {
+            return *it;
+        }
+    }
+    return -1;
+}
+
+/* A display over the network: -vnc, -spice or -display vnc= */
+static bool hasRemoteDisplay(const ArgsFile &args)
+{
+    if (args.indexOf("vnc") >= 0 || args.indexOf("spice") >= 0) {
+        return true;
+    }
+    for (int line : args.indexesOf("display")) {
+        if (isVncDisplay(args, line)) {
+            return true;
+        }
+    }
+    return false;
+}
+
 Screen screen(const ArgsFile &args)
 {
-    const int line = lastIndex(args, "display");
+    const int line = windowLine(args);
 
     if (args.indexOf("nographic") >= 0) {
         return Screen::None;
     }
-    if (line < 0) {
-        return Screen::OwnWindow;
-    }
-    const OptionValue v = args.valueAt(line);
+    const OptionValue v = line < 0 ? OptionValue() : args.valueAt(line);
     const QString type = v.implied();
-    if (type == "dbus") {
-        const QString p2p = v.get("p2p", "off");
-        /* with addr=, on a bus of its own, which QEMU refuses with p2p= */
-        return (p2p == "yes" || p2p == "on") && !v.has("addr") ? Screen::Embedded
-                                                               : Screen::None;
+    if (line < 0 || type == "default") {
+        /* QEMU's default window, which it opens only without a remote display */
+        return hasRemoteDisplay(args) ? Screen::None : Screen::OwnWindow;
     }
-    if (type == "sdl" || type == "gtk" || type == "cocoa" || type == "default") {
+    if (type == "dbus") {
+        /* with addr=, on a bus of its own, which QEMU refuses with p2p= */
+        return v.flag("p2p") && !v.has("addr") ? Screen::Embedded : Screen::None;
+    }
+    if (type == "sdl" || type == "gtk" || type == "cocoa") {
         return Screen::OwnWindow;
     }
     return Screen::None;
@@ -301,7 +333,7 @@ Graphics graphics(const ArgsFile &args)
     const QList<int> cards = cardLines(args);
     const int vgaLine = lastIndex(args, "vga");
     const QString vga = vgaLine < 0 ? QString() : args.lines[vgaLine].value.trimmed();
-    const int displayLine = lastIndex(args, "display");
+    const int displayLine = windowLine(args);
     Graphics g;
 
     if (displayLine >= 0) {
@@ -493,7 +525,8 @@ static void setCard(ArgsFile &args, const Graphics &now, const Graphics &g)
 /* @gl: 1 on, 0 off, -1 as it is; a new window has it on for @accelerated */
 static void setWindow(ArgsFile &args, const QString &display, int gl, bool accelerated)
 {
-    const int line = lastIndex(args, "display");
+    /* a -display vnc= stays, as -vnc would */
+    const int line = windowLine(args);
 
     if (line < 0) {
         if (display.isEmpty()) {
@@ -575,7 +608,7 @@ void setScreen(ArgsFile &args, Screen screen)
     g.display = screen == Screen::Embedded ? "dbus" : screen == Screen::OwnWindow ? "sdl" : "none";
     setGraphics(args, g);
     /* virgl needs OpenGL in the window, whichever it is */
-    const int line = lastIndex(args, "display");
+    const int line = windowLine(args);
     if (g.kind == Graphics::Accelerated && screen != Screen::None && line >= 0) {
         OptionValue v = args.valueAt(line);
         if (v.get("gl", "off") == "off") {

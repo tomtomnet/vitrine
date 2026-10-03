@@ -73,6 +73,15 @@ private slots:
         page.save(args);
         QCOMPARE(text(args), "-display dbus,p2p=yes\n");
         QVERIFY(!page.isModified());
+
+        /* VNC alone: QEMU opens no window, which SDL adds */
+        args = ArgsFile::parse("-vnc :0\n");
+        page.load(args);
+        QVERIFY(!embedded->isChecked());
+        QVERIFY(!ownWindow->isChecked());
+        ownWindow->click();
+        page.save(args);
+        QCOMPARE(text(args), "-vnc :0\n-display sdl\n");
     }
 
     /* The count is the Hardware page's: edits elsewhere on the page keep -smp */

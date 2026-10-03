@@ -327,14 +327,19 @@ void DisplayPage::load(const ArgsFile &args)
 
     if (args.indexOf("nographic") >= 0) {
         custom = tr("This VM has no screen (-nographic): change it on the Arguments page.");
+    } else if (screen == VmConfig::Screen::None &&
+               (display.isEmpty() || display == "default")) {
+        custom = tr("This VM shows its screen over VNC or SPICE only. Choosing below adds a "
+                    "window.");
     } else if (screen == VmConfig::Screen::None) {
         custom = tr("This VM shows its screen nowhere Vitrine can (-display %1). Choosing "
                     "below replaces it.")
                      .arg(display.toHtmlEscaped());
     } else if (screen == VmConfig::Screen::OwnWindow && display != "sdl") {
-        custom = display.isEmpty() ? tr("The screen shows in QEMU's default window.")
-                                   : tr("The screen shows in QEMU's %1 window.")
-                                         .arg(display.toUpper().toHtmlEscaped());
+        custom = display.isEmpty() || display == "default"
+                     ? tr("The screen shows in QEMU's default window.")
+                     : tr("The screen shows in QEMU's %1 window.")
+                           .arg(display.toUpper().toHtmlEscaped());
     }
     m_custom->setText(custom);
     m_custom->setVisible(!custom.isEmpty());

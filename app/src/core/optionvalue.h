@@ -30,7 +30,7 @@ public:
 
     bool has(const QString &key) const;
     QString get(const QString &key, const QString &fallback = {}) const;
-    /* on/off, yes/no, true/false; @fallback when absent or unknown */
+    /* on/off, yes/no, true/false, y/n; @fallback when absent or unknown */
     bool flag(const QString &key, bool fallback = false) const;
     void set(const QString &key, const QString &value);
     void setFlag(const QString &key, bool on);

@@ -127,6 +127,19 @@ private slots:
             {"-display none\n", Screen::None},
             {"-display egl-headless\n", Screen::None},
             {"-display sdl\n-nographic\n", Screen::None},
+            /* p2p as QEMU reads booleans */
+            {"-display dbus,p2p=true\n", Screen::Embedded},
+            {"-display dbus,p2p=y\n", Screen::Embedded},
+            {"-display dbus,p2p=n\n", Screen::None},
+            /* QEMU opens no window of its own beside a remote display */
+            {"-vnc :0\n", Screen::None},
+            {"-spice port=5900\n", Screen::None},
+            {"-display vnc=:0\n", Screen::None},
+            {"-display default\n-vnc :0\n", Screen::None},
+            {"-display sdl\n-vnc :0\n", Screen::OwnWindow},
+            {"-display sdl\n-display vnc=:0\n", Screen::OwnWindow},
+            {"-display default\n", Screen::OwnWindow},
+            {"-daemonize\n", Screen::OwnWindow},
         };
         for (const auto &[args, expected] : cases) {
             QVERIFY2(screen(ArgsFile::parse(args)) == expected, args);
@@ -160,6 +173,15 @@ private slots:
         a = ArgsFile::parse("-device qxl-vga\n-device virtio-gpu-pci\n-display gtk\n");
         setScreen(a, Screen::Embedded);
         QCOMPARE(text(a), "-device qxl-vga\n-device virtio-gpu-pci\n-display dbus,p2p=yes\n");
+
+        /* VNC alone: a window beside it; a -display vnc= stays as it is */
+        a = ArgsFile::parse("-vnc :0\n");
+        setScreen(a, Screen::OwnWindow);
+        QCOMPARE(text(a), "-vnc :0\n-display sdl\n");
+        QVERIFY(screen(a) == Screen::OwnWindow);
+        a = ArgsFile::parse("-display sdl\n-display vnc=:0\n");
+        setScreen(a, Screen::Embedded);
+        QCOMPARE(text(a), "-display dbus,p2p=yes\n-display vnc=:0\n");
 
         /* a D-Bus display on a bus of its own: QEMU refuses addr= with p2p= */
         a = ArgsFile::parse("-display dbus,addr=unix:path=/run/user/1000/qemu.bus\n");

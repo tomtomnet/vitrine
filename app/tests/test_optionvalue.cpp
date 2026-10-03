@@ -74,13 +74,15 @@ private slots:
 
     void flags()
     {
-        OptionValue v("x,a=on,b=off,c=yes,d=junk");
+        OptionValue v("x,a=on,b=off,c=yes,d=junk,e=y,f=n");
 
         QVERIFY(v.flag("a"));
         QVERIFY(!v.flag("b", true));
         QVERIFY(v.flag("c"));
         QVERIFY(v.flag("d", true));
         QVERIFY(!v.flag("missing"));
+        QVERIFY(v.flag("e"));
+        QVERIFY(!v.flag("f", true));
         v.setFlag("b", true);
         QCOMPARE(v.get("b"), "on");
     }

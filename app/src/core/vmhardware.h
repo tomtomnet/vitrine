@@ -49,7 +49,8 @@ struct Graphics {
     bool venus = false;
     /* hostmem=, the memory window of blob resources; 0 when not given */
     qint64 hostmemMiB = 0;
-    /* -display: sdl, gtk, none...; empty for QEMU's default */
+    /* -display: sdl, gtk, none...; empty for QEMU's default (-display
+       vnc= is a VNC server, not the window) */
     QString display;
     /* Why it is Custom */
     QString custom;
@@ -64,7 +65,8 @@ void setGraphics(ArgsFile &args, const Graphics &graphics);
 /*
  * Where the VM's screen shows: in vitrine's window, through QEMU's D-Bus
  * display (-display dbus,p2p=yes); in a window of QEMU's own (sdl, gtk, or
- * QEMU's default); or nowhere (none, egl-headless, -nographic, or a D-Bus
+ * QEMU's default, which it opens only without -vnc and -spice); or nowhere
+ * (none, egl-headless, -nographic, VNC or SPICE alone, or a D-Bus
  * display on the session bus or the bus of addr=, which vitrine cannot
  * attach to)
  */
