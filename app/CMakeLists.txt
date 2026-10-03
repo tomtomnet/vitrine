@@ -131,8 +131,8 @@ target_link_libraries(vitrine_vmview
 # come with Qt6::Gui and GL entry points are resolved at run time
 target_compile_definitions(vitrine_vmview PRIVATE QT_NO_KEYWORDS)
 
-qt_add_executable(vitrine
-    src/main.cpp
+# The windows, a library of their own so that tests can use them
+qt_add_library(vitrine_ui STATIC
     src/ui/argseditor.cpp
     src/ui/argseditor.h
     src/ui/banner.cpp
@@ -190,9 +190,15 @@ qt_add_executable(vitrine
     src/ui/widgets.cpp
     src/ui/widgets.h
 )
+target_link_libraries(vitrine_ui PUBLIC vitrine_core vitrine_vmview Qt6::DBus Qt6::Widgets)
+target_compile_options(vitrine_ui PRIVATE -Wall -Wextra)
+
+qt_add_executable(vitrine
+    src/main.cpp
+)
 qt_add_resources(vitrine icons PREFIX /icons BASE data
     FILES data/vitrine.svg)
-target_link_libraries(vitrine PRIVATE vitrine_core vitrine_vmview Qt6::DBus Qt6::Widgets)
+target_link_libraries(vitrine PRIVATE vitrine_ui)
 target_compile_definitions(vitrine PRIVATE VITRINE_VERSION="${PROJECT_VERSION}")
 
 # The commit it is built from, for the update check; none outside a git checkout
@@ -216,7 +222,7 @@ if(GIT_FOUND AND IS_DIRECTORY "${CMAKE_SOURCE_DIR}/.git")
 endif()
 # rewritten only when it changes: only what includes it builds again
 configure_file(src/buildinfo.h.in buildinfo.h @ONLY)
-target_include_directories(vitrine PRIVATE "${CMAKE_CURRENT_BINARY_DIR}")
+target_include_directories(vitrine_ui PRIVATE "${CMAKE_CURRENT_BINARY_DIR}")
 target_compile_options(vitrine PRIVATE -Wall -Wextra)
 
 include(GNUInstallDirs)
