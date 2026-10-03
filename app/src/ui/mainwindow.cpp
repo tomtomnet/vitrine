@@ -1117,6 +1117,48 @@ void MainWindow::closeEvent(QCloseEvent *event)
         event->ignore();
         return;
     }
+    /* VMs outlive the window, but those shown in it go on without a screen */
+    QList<Vm *> shown;
+    QStringList names;
+    for (Vm *each : m_store->vms()) {
+        if (!each->runner()->displaySocket().isEmpty()) {
+            shown << each;
+            names << each->name();
+        }
+    }
+    if (!shown.isEmpty()) {
+        std::unique_ptr<QMessageBox> box(Widgets::messageBox(
+            QMessageBox::Question, tr("Close Vitrine"),
+            shown.size() == 1
+                ? tr("%1 is running.").arg(names.first())
+                : tr("%n VMs are running: %1.", nullptr, int(shown.size())).arg(names.join(", ")),
+            QMessageBox::NoButton, this));
+        QPushButton *keep = box->addButton(tr("&Keep Running in the Background"),
+                                           QMessageBox::AcceptRole);
+        QPushButton *shutDown = box->addButton(tr("&Shut Down"), QMessageBox::DestructiveRole);
+
+        box->addButton(QMessageBox::Cancel);
+        box->setDefaultButton(keep);
+        box->setInformativeText(
+            shown.size() == 1
+                ? tr("In the background, it has no screen until vitrine starts again. "
+                     "Shut Down asks the guest to shut down, as the power button does.")
+                : tr("In the background, they have no screen until vitrine starts again. "
+                     "Shut Down asks the guests to shut down, as the power button does."));
+        box->exec();
+        if (box->clickedButton() == shutDown) {
+            for (Vm *each : std::as_const(shown)) {
+                /* a paused guest would not see the button */
+                if (each->runner()->state() == VmRunner::State::Paused) {
+                    each->runner()->resume();
+                }
+                each->runner()->powerdown();
+            }
+        } else if (box->clickedButton() != keep) {
+            event->ignore();
+            return;
+        }
+    }
     leaveScreens();
     settings.setValue("mainwindow/geometry", saveGeometry());
     settings.setValue("mainwindow/state", saveState());
