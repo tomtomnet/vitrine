@@ -15,6 +15,7 @@ class QPushButton;
 class QStackedWidget;
 class QTabWidget;
 class QTimer;
+class QToolButton;
 class SettingsPage;
 class SnapshotView;
 class Vm;
@@ -25,6 +26,9 @@ class VmDetails;
  * settings, with their pages listed down the side as in a dialog, its
  * snapshots and its log.  The pages all edit a copy of the VM's arguments, which keeps their
  * changes from page to page until Apply saves them.
+ *
+ * The simple pages are listed first; the advanced ones, down to the
+ * command line itself, under Advanced, folded until opened.
  */
 class VmPane : public QWidget
 {
@@ -33,8 +37,11 @@ class VmPane : public QWidget
 public:
     enum Tab { Details, Settings, Snapshots, Logs };
     enum Page {
-        General, System, Display, Storage, SharedFolders, PciDevices, UsbDevices, Arguments,
+        General, Hardware, Display, Storage, SharedFolders, UsbDevices, Network,
+        /* under Advanced */
+        Machine, Boot, PciDevices, Arguments,
     };
+    static constexpr Page FirstAdvanced = Machine;
 
     explicit VmPane(QWidget *parent = nullptr);
     ~VmPane() override;
@@ -67,7 +74,12 @@ signals:
 
 private:
     void buildPages();
-    void switchTo(int row);
+    /* A row of a list of pages became current */
+    void pageChosen(QListWidget *list, int row);
+    /* Makes @page current in its list, opening Advanced for it */
+    void selectPage(int page);
+    void showAdvanced(bool on);
+    void switchTo(int page);
     void vmChanged();
     void updateFooter();
     void watchEdits(SettingsPage *page);
@@ -82,7 +94,10 @@ private:
     QTimer *m_check;
     QTabWidget *m_tabs;
     VmDetails *m_details;
+    QWidget *m_side;
     QListWidget *m_list;
+    QToolButton *m_more;
+    QListWidget *m_advanced;
     QLabel *m_title;
     QStackedWidget *m_stack;
     SnapshotView *m_snapshots;

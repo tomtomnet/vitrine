@@ -17,6 +17,7 @@
 #include "core/firmwarefiles.h"
 #include "core/guestagent.h"
 #include "core/paths.h"
+#include "core/qemuinfo.h"
 #include "core/qmpclient.h"
 #include "core/vmconfig.h"
 #include "core/vmhardware.h"
@@ -152,6 +153,41 @@ static QString fstabExtra(const ArgsFile &args)
         lines += fstabLine(s) + '\n';
     }
     return lines;
+}
+
+/*
+ * The properties of a device in @binary, from its help, which takes a few
+ * milliseconds; kept for as long as the binary stays the same.  Empty
+ * when they cannot be read.
+ */
+static QStringList deviceProperties(const QString &binary, const QString &driver)
+{
+    static QHash<QString, QStringList> cache;
+    const QFileInfo fi(binary);
+    const QString key = QString("%1|%2|%3|%4").arg(fi.canonicalFilePath(),
+                                                   QString::number(fi.lastModified().toMSecsSinceEpoch()),
+                                                   QString::number(fi.size()), driver);
+    QProcess p;
+    QStringList names;
+
+    if (auto it = cache.constFind(key); it != cache.constEnd()) {
+        return *it;
+    }
+    if (!fi.isExecutable()) {
+        return {};
+    }
+    p.start(binary, {"-device", driver + ",help"});
+    if (p.waitForFinished(5000) && p.exitStatus() == QProcess::NormalExit) {
+        for (const QemuPropertyDoc &prop :
+             QemuInfo::parsePropertyHelp(QString::fromUtf8(p.readAllStandardOutput()))) {
+            names << prop.name;
+        }
+    } else {
+        p.kill();
+        p.waitForFinished(1000);
+    }
+    cache.insert(key, names);
+    return names;
 }
 
 static QString shellQuote(const QStringList &args)
@@ -659,7 +695,9 @@ QStringList VmRunner::commandLine(const ArgsFile &args) const
     const QList<VmConfig::Share> shares = VmConfig::shares(args);
     QStringList command{qemuFor(args)};
 
-    command += args.argv();
+    command += withComputedProperties(args, [&args](const QString &driver) {
+                   return deviceProperties(qemuFor(args), driver);
+               }).argv();
     for (qsizetype i = 0; i < shares.size(); i++) {
         command << "-chardev"
                 << QString("socket,id=vitrine-fs%1,path=%2")
@@ -685,13 +723,61 @@ QStringList VmRunner::commandLine(const ArgsFile &args) const
                            "name=org.qemu.guest_agent.0,id=%1").arg(kAgentPort);
     }
     if (VmConfig::screen(args) == VmConfig::Screen::Embedded) {
-        command << "-chardev"
-                << QString("socket,id=vitrine-display,path=%1,server=on,wait=off")
-                       .arg(OptionValue::escape(d->displayPath()))
-                << "-mon" << "chardev=vitrine-display,mode=control";
+        /* a second -qmp; -mon is deprecated */
+        command << "-qmp"
+                << QString("unix:%1,server=on,wait=off").arg(OptionValue::escape(d->displayPath()));
     }
     command << "-qmp" << d->qmpArg() << "-pidfile" << d->pidPath();
     return command;
+}
+
+ArgsFile VmRunner::withComputedProperties(
+    const ArgsFile &args, const std::function<QStringList(const QString &driver)> &propertiesOf)
+{
+    static const QStringList cards = {
+        "virtio-vga-gl", "virtio-gpu-gl-pci", "virtio-gpu-gl", "virtio-gpu-gl-device",
+    };
+    const bool kde = VmConfig::guest(args).desktop == "kde";
+    const bool embedded = VmConfig::screen(args) == VmConfig::Screen::Embedded;
+    const std::pair<QString, QString> computed[] = {
+        /*
+         * The frames of a burst are swapped this long before the vblank
+         * that shows them: the host's KWin takes a frame ~3.9 ms before
+         * its vblank at 240 Hz; KDE's commits in the guest are steady
+         * enough for 4.5 ms, other desktops keep a margin of 6 ms
+         */
+        {"x-vblank-swap-target", kde ? "4500" : "6000"},
+        /*
+         * Those that go to the screen as they are (zero copy) need no
+         * copy before the host takes them, but must come before the
+         * host compositor's frame start (3.5 ms had the fewest late
+         * frames); the D-Bus display's frames take one hop more, the
+         * client's commit, worth 1 ms
+         */
+        {"x-vblank-swap-target-zc", embedded ? "4500" : "3500"},
+    };
+    ArgsFile out = args;
+
+    for (int i : out.indexesOf("device")) {
+        OptionValue v = out.valueAt(i);
+        QStringList known;
+        bool changed = false;
+
+        if (!cards.contains(v.implied())) {
+            continue;
+        }
+        known = propertiesOf(v.implied());
+        for (const auto &[key, value] : computed) {
+            if (!v.has(key) && known.contains(key)) {
+                v.set(key, value);
+                changed = true;
+            }
+        }
+        if (changed) {
+            out.setValueAt(i, v);
+        }
+    }
+    return out;
 }
 
 /*

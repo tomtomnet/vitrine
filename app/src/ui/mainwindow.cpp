@@ -687,7 +687,7 @@ void MainWindow::newVm()
         Widgets::inform(this, tr("VM Created"), dialog.warnings().join("\n\n"));
     }
     if (dialog.openSettings()) {
-        openSettings(dialog.vm(), VmPane::Arguments);
+        openSettings(dialog.vm(), VmPane::General);
     }
 }
 

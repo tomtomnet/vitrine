@@ -133,6 +133,182 @@ private slots:
         }
     }
 
+    /* The Display page: vitrine's window or SDL, the card as it is */
+    void setScreens()
+    {
+        ArgsFile a = ArgsFile::parse("-vga none\n-device virtio-gpu-gl-pci,blob=on\n"
+                                     "-display sdl,gl=on,window-close=off\n");
+
+        setScreen(a, Screen::Embedded);
+        QCOMPARE(text(a), "-vga none\n-device virtio-gpu-gl-pci,blob=on\n"
+                          "-display dbus,gl=on,p2p=yes\n");
+        QVERIFY(screen(a) == Screen::Embedded);
+        setScreen(a, Screen::OwnWindow);
+        QCOMPARE(text(a), "-vga none\n-device virtio-gpu-gl-pci,blob=on\n-display sdl,gl=on\n");
+
+        /* OpenGL for the 3D card, even if the D-Bus display had none */
+        a = ArgsFile::parse("-device virtio-vga-gl\n-display dbus,p2p=yes\n");
+        setScreen(a, Screen::OwnWindow);
+        QCOMPARE(text(a), "-device virtio-vga-gl\n-display sdl,gl=on\n");
+
+        /* none for a 2D card */
+        a = ArgsFile::parse("-device virtio-vga\n");
+        setScreen(a, Screen::Embedded);
+        QCOMPARE(text(a), "-device virtio-vga\n-display dbus,p2p=yes\n");
+
+        /* a card set by hand stays */
+        a = ArgsFile::parse("-device qxl-vga\n-device virtio-gpu-pci\n-display gtk\n");
+        setScreen(a, Screen::Embedded);
+        QCOMPARE(text(a), "-device qxl-vga\n-device virtio-gpu-pci\n-display dbus,p2p=yes\n");
+    }
+
+    void readNetwork()
+    {
+        struct Case {
+            const char *args;
+            Network::Kind kind;
+            const char *backend;
+            const char *card;
+            int ssh;
+        };
+        const Case cases[] = {
+            {"-netdev user,id=n0,hostfwd=tcp:127.0.0.1:2222-:22\n-device virtio-net-pci,netdev=n0\n",
+             Network::Nat, "user", "virtio-net-pci", 2222},
+            {"-netdev user,id=n0,hostfwd=udp::2000-:22,hostfwd=::8080-:80,hostfwd=::2200-:22\n"
+             "-device e1000e,netdev=n0\n",
+             Network::Nat, "user", "e1000e", 2200},
+            {"-netdev user,id=n0\n-device virtio-net-pci,netdev=n0\n", Network::Nat, "user",
+             "virtio-net-pci", 0},
+            {"-netdev passt,id=n0,vhost-user=on,tcp-ports=127.0.0.1/2232:22\n"
+             "-device virtio-net-pci,netdev=n0\n",
+             Network::Nat, "passt", "virtio-net-pci", 2232},
+            {"-netdev passt,id=n0,tcp-ports=2022\n-device virtio-net-pci,netdev=n0\n",
+             Network::Nat, "passt", "virtio-net-pci", 0},
+            {"-netdev passt,id=n0,tcp-ports=22\n-device virtio-net-pci,netdev=n0\n",
+             Network::Nat, "passt", "virtio-net-pci", 22},
+            {"-nic user,model=virtio-net-pci,hostfwd=tcp::2022-:22\n", Network::Nat, "user",
+             "virtio-net-pci", 2022},
+            {"-m 1G\n", Network::Nat, "", "", 0},
+            {"-nic none\n", Network::Off, "", "", 0},
+            {"-nodefaults\n", Network::Off, "", "", 0},
+            {"-netdev tap,id=n0\n-device virtio-net-pci,netdev=n0\n", Network::Custom, "", "", 0},
+            {"-netdev {\"type\":\"passt\",\"id\":\"n0\"}\n-device virtio-net-pci,netdev=n0\n",
+             Network::Custom, "", "", 0},
+            {"-netdev user,id=a\n-netdev user,id=b\n", Network::Custom, "", "", 0},
+            {"-netdev user,id=a\n", Network::Custom, "", "", 0},
+            {"-netdev user,id=a\n-device e1000,netdev=a\n-device e1000,netdev=a\n",
+             Network::Custom, "", "", 0},
+            {"-net nic\n-net user\n", Network::Custom, "", "", 0},
+        };
+        for (const Case &c : cases) {
+            const Network n = network(ArgsFile::parse(c.args));
+            QVERIFY2(n.kind == c.kind, c.args);
+            if (n.kind == Network::Custom) {
+                QVERIFY2(!n.custom.isEmpty(), c.args);
+                continue;
+            }
+            QCOMPARE(n.backend, QString(c.backend));
+            QCOMPARE(n.card, QString(c.card));
+            QCOMPARE(n.sshPort, c.ssh);
+        }
+    }
+
+    void setNetworks()
+    {
+        const QString passt = "-m 1G\n"
+                              "-netdev passt,id=net0,vhost-user=on,tcp-ports=127.0.0.1/2222:22\n"
+                              "-device virtio-net-pci,netdev=net0,mac=52:54:00:12:34:56\n"
+                              "-device virtio-rng-pci\n";
+        ArgsFile a = ArgsFile::parse(passt);
+        Network n = network(a);
+
+        /* the forward only */
+        n.sshPort = 2232;
+        setNetwork(a, n);
+        QCOMPARE(text(a), QString(passt).replace("/2222:", "/2232:"));
+        n.sshPort = 0;
+        setNetwork(a, n);
+        QCOMPARE(text(a), QString(passt).replace(",tcp-ports=127.0.0.1/2222:22", ""));
+
+        /* off and on again, in the same place */
+        n.kind = Network::Off;
+        setNetwork(a, n);
+        QCOMPARE(text(a), "-m 1G\n-nic none\n-device virtio-rng-pci\n");
+        QVERIFY(network(a).kind == Network::Off);
+        n = network(a);
+        n.kind = Network::Nat;
+        n.backend = "passt";
+        n.sshPort = 2222;
+        setNetwork(a, n);
+        /* no shared memory: no vhost-user */
+        QCOMPARE(text(a), "-m 1G\n-netdev passt,id=net0,tcp-ports=127.0.0.1/2222:22\n"
+                          "-device virtio-net-pci,netdev=net0\n-device virtio-rng-pci\n");
+        QCOMPARE(network(a).sshPort, 2222);
+
+        /* user: the other forwards stay */
+        a = ArgsFile::parse("-netdev user,id=n0,hostfwd=tcp::2022-:22,hostfwd=tcp::8080-:80\n"
+                            "-device e1000e,netdev=n0\n");
+        n = network(a);
+        n.sshPort = 2300;
+        setNetwork(a, n);
+        QCOMPARE(text(a), "-netdev user,id=n0,hostfwd=tcp::8080-:80,"
+                          "hostfwd=tcp:127.0.0.1:2300-:22\n-device e1000e,netdev=n0\n");
+
+        /* the card goes before its -netdev too */
+        a = ArgsFile::parse("-device e1000e,netdev=n0\n-netdev user,id=n0\n-m 1G\n");
+        n = network(a);
+        n.kind = Network::Off;
+        setNetwork(a, n);
+        QCOMPARE(text(a), "-nic none\n-m 1G\n");
+
+        /* with shared memory, passt maps it; a Windows guest gets e1000e */
+        a = ArgsFile::parse("#guest windows\n-machine q35,memory-backend=mem\n"
+                            "-object memory-backend-memfd,id=mem,size=4G,share=on\n-nic none\n");
+        n = network(a);
+        n.kind = Network::Nat;
+        n.backend = "passt";
+        setNetwork(a, n);
+        QCOMPARE(text(a), "#guest windows\n-machine q35,memory-backend=mem\n"
+                          "-object memory-backend-memfd,id=mem,size=4G,share=on\n"
+                          "-netdev passt,id=net0,vhost-user=on\n-device e1000e,netdev=net0\n");
+
+        /* QEMU's default card: off, or a card of our own for a forward */
+        a = ArgsFile::parse("-m 1G\n");
+        n = network(a);
+        setNetwork(a, n);
+        QCOMPARE(text(a), "-m 1G\n");
+        n.sshPort = 2222;
+        setNetwork(a, n);
+        QCOMPARE(text(a), "-m 1G\n-netdev user,id=net0,hostfwd=tcp:127.0.0.1:2222-:22\n"
+                          "-device virtio-net-pci,netdev=net0\n");
+        a = ArgsFile::parse("-m 1G\n");
+        n.kind = Network::Off;
+        setNetwork(a, n);
+        QCOMPARE(text(a), "-m 1G\n-nic none\n");
+
+        /* -nodefaults: at the end */
+        a = ArgsFile::parse("-nodefaults\n-m 1G\n");
+        n = network(a);
+        n.kind = Network::Nat;
+        setNetwork(a, n);
+        QCOMPARE(text(a), "-nodefaults\n-m 1G\n-netdev user,id=net0\n"
+                          "-device virtio-net-pci,netdev=net0\n");
+
+        /* -nic user */
+        a = ArgsFile::parse("-nic user,model=virtio-net-pci\n");
+        n = network(a);
+        n.sshPort = 2222;
+        setNetwork(a, n);
+        QCOMPARE(text(a), "-nic user,model=virtio-net-pci,hostfwd=tcp:127.0.0.1:2222-:22\n");
+
+        /* set by hand: left alone */
+        const QString tap = "-netdev tap,id=n0\n-device virtio-net-pci,netdev=n0\n";
+        a = ArgsFile::parse(tap);
+        n.kind = Network::Off;
+        setNetwork(a, n);
+        QCOMPARE(text(a), tap);
+    }
+
     void nativeContext()
     {
         ArgsFile a = ArgsFile::parse(kTemplate);

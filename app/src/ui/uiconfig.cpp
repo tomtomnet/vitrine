@@ -133,6 +133,9 @@ QString displaySummary(const ArgsFile &args, const QemuInfo *info)
         const QString gl = v.get("gl", "off");
 
         output = outputs.contains(type) ? tr(outputs.value(type)) : type;
+        if (type == "dbus" && (v.get("p2p") == "yes" || v.get("p2p") == "on")) {
+            output = tr("Vitrine's window");
+        }
         if (gl != "off") {
             output = tr("%1 with OpenGL").arg(output);
         }

@@ -16,7 +16,12 @@ class QSpinBox;
 class Vm;
 class VmStore;
 
-/* Creates a VM: a folder, a disk, the firmware variables and vm.args */
+/*
+ * Creates a VM: a folder, a disk, the firmware variables and vm.args.  It
+ * asks only what vitrine cannot choose: the system, the memory and
+ * processors, the disk and the disc to install from; the rest comes from
+ * the template, the settings change it afterwards.
+ */
 class NewVmDialog : public QDialog
 {
     Q_OBJECT
@@ -47,11 +52,7 @@ private:
     QSpinBox *m_diskSize;
     QRadioButton *m_existingDisk;
     QLineEdit *m_diskPath;
-    QRadioButton *m_noDisk;
     QLineEdit *m_iso;
-    QComboBox *m_firmware;
-    QComboBox *m_graphics;
-    QCheckBox *m_nativeContext;
     QLabel *m_note;
     QCheckBox *m_settings;
     Vm *m_vm = nullptr;
