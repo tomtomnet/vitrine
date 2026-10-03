@@ -1,0 +1,895 @@
+Subject: [PATCH] ui/sdl2, virtio-gpu: zero copy that holds - layout check, held flush fences, verify mode
+
+Zero copy (QEMU_SDL_ZERO_COPY=1) attaches the guest's scanout buffer to the
+host compositor's surface as it is.  Made correct on 2026-10-02 (three
+corruptions found on a 4K 240 Hz screen, see docs/RESULTS.md):
+
+- The guest buffer goes to the compositor as linear (virtio-gpu carries no
+  modifier), so it must be: each new guest buffer's amdgpu tiling is read
+  (GEM metadata, on a render-node fd of its own) and anything tiled or
+  compressed is copied instead (trace sdl2_swapchain_guest_refused); other
+  drivers copy unless QEMU_SDL_ZERO_COPY=force.  The guest makes its
+  scanout buffers linear with the virtio-gpu module option linear_scanout=1.
+- The flush fence of each zero-copy frame is held until the compositor
+  released the buffer shown before it (the display names that buffer with
+  a token); up to eight are held at a time and they go out in order - a
+  flush that waits for nothing but is behind held ones waits for them -
+  because fences of a timeline complete in order on both sides.  Held
+  fences were completed early by any later fence: virgl_write_fence() and
+  the asynchronous path virtio_gpu_virgl_async_fence_bh() completed every
+  command with a lower fence id, a context fence of the guest's rendering
+  included.  Both skip fence_deferred commands now; each response is
+  traced with its own fence id.  The oldest held fence goes out after 8
+  refreshes at most, and the reason is traced (virtio_gpu_flush_fence_out:
+  released, in order, timeout, full, now).
+- After a release the flush also waits for the compositor's GPU reads of
+  the buffer still running (DMA_BUF_IOCTL_EXPORT_SYNC_FILE): the guest's
+  writes skip implicit sync.
+- Zero-copy presents report the whole buffer as damaged: the compositor may
+  not have shown the guest's previous frame.
+- QEMU_SDL_ZC_VERIFY=1 (diagnosis): rows of each guest buffer are read when
+  it goes to the compositor (twice, 3 ms apart) and when it comes back; a
+  difference is traced (sdl2_swapchain_zc_changed / _zc_unsettled).
+- sdl2_swapchain_guest_present tells when the guest presented a buffer the
+  compositor still held.
+
+Not committed in the fork yet; generated with git diff on top of 0001-0004.
+
+diff --git a/hw/display/trace-events b/hw/display/trace-events
+index 34f0a819b..8eec02382 100644
+--- a/hw/display/trace-events
++++ b/hw/display/trace-events
+@@ -32,6 +32,7 @@ virtio_gpu_vblank_lead(uint32_t head, int64_t lead, int64_t median, int64_t off)
+ virtio_gpu_vblank_behind(uint32_t head, int64_t median) "head %d: frames in a row are shown %" PRId64 " ns after their swap (median), a refresh later than their swap allows: the host's compositor runs a frame ahead"
+ virtio_gpu_flush_fence_deferred(uint32_t head, uint32_t fence) "head %d: flush fence %u waits for the compositor to release the previous buffer"
+ virtio_gpu_flush_fence_timeout(uint32_t head) "head %d: the compositor did not release the previous buffer in time, flush fence goes out"
++virtio_gpu_flush_fence_out(uint32_t head, uint32_t fence, const char *why) "head %d: held flush fence %u goes out (%s)"
+ 
+ # virtio-gpu-3d.c
+ # virtio-gpu.c
+diff --git a/hw/display/virtio-gpu-base.c b/hw/display/virtio-gpu-base.c
+index 8295e611c..e0f513ce9 100644
+--- a/hw/display/virtio-gpu-base.c
++++ b/hw/display/virtio-gpu-base.c
+@@ -412,76 +412,149 @@ virtio_gpu_get_flags(void *opaque)
+     return flags;
+ }
+ 
+-/* Zero copy: the display's word on the previous buffer (see console.h) */
+-static void virtio_gpu_gl_flush_pending(void *opaque, uint32_t head)
++/*
++ * Zero copy: the display put the guest's buffer on its surface, and the flush
++ * of each frame is only complete once the compositor released the buffer
++ * shown before (the guest may not render into it before).  Up to
++ * VIRTIO_GPU_HELD_FENCES flushes are held at a time, each waiting for its own
++ * buffer's release (a token the display chose), and they go out in order:
++ * fences of a timeline complete in order on both sides, a later one would
++ * complete the earlier ones with it.  A flush that waits for nothing but is
++ * behind held ones waits for them.
++ */
++static void virtio_gpu_gl_flush_pending(void *opaque, uint32_t head,
++                                        uint64_t token)
+ {
+     VirtIOGPUBase *g = opaque;
+ 
+     if (head < g->conf.max_outputs) {
+         g->scanout[head].flush_pending = true;
++        g->scanout[head].pending_token = token;
+     }
+ }
+ 
+-void virtio_gpu_flush_fence_now(VirtIOGPUBase *g, uint32_t head)
++static void virtio_gpu_held_arm(VirtIOGPUBase *g, uint32_t head)
+ {
+     struct virtio_gpu_scanout *s = &g->scanout[head];
+-    VirtIOGPUBaseClass *vgc = VIRTIO_GPU_BASE_GET_CLASS(g);
++    int64_t period = s->vblank_period_ns ? s->vblank_period_ns : 16666667;
+ 
+-    if (!s->fence_deferred) {
++    if (!s->deferred_fence_timer) {
+         return;
+     }
+-    s->fence_deferred = false;
+-    if (s->deferred_fence_timer) {
++    if (!s->nheld) {
+         timer_del(s->deferred_fence_timer);
++        return;
+     }
++    /*
++     * Eight refreshes for the oldest: a frame the host shows a refresh late,
++     * and its release after that flip, take up to about three, and a guest
++     * whose flips do not wait for the fences (blob_flush_fence=3) can be
++     * several frames ahead of a host that runs late; letting a fence go
++     * early lets the guest render into a buffer the host may still show
++     */
++    timer_mod_ns(s->deferred_fence_timer, s->held[0].since + 8 * period);
++}
++
++/* the oldest held flush goes out */
++static void virtio_gpu_held_pop(VirtIOGPUBase *g, uint32_t head, const char *why)
++{
++    struct virtio_gpu_scanout *s = &g->scanout[head];
++    VirtIOGPUBaseClass *vgc = VIRTIO_GPU_BASE_GET_CLASS(g);
++    uint32_t fence = s->held[0].fence;
++
++    trace_virtio_gpu_flush_fence_out(head, fence, why);
++    s->nheld--;
++    memmove(&s->held[0], &s->held[1], s->nheld * sizeof(s->held[0]));
+     if (vgc->flush_fence) {
+-        vgc->flush_fence(g, head);
++        vgc->flush_fence(g, head, fence);
++    }
++}
++
++/* the held flushes that may go out, in order */
++static void virtio_gpu_held_process(VirtIOGPUBase *g, uint32_t head)
++{
++    struct virtio_gpu_scanout *s = &g->scanout[head];
++
++    while (s->nheld && s->held[0].done) {
++        virtio_gpu_held_pop(g, head, s->held[0].token ? "released" : "in order");
++    }
++    virtio_gpu_held_arm(g, head);
++}
++
++/* every held flush of @head goes out (the display has gone, a reset) */
++void virtio_gpu_flush_fence_now(VirtIOGPUBase *g, uint32_t head)
++{
++    struct virtio_gpu_scanout *s = &g->scanout[head];
++
++    while (s->nheld) {
++        virtio_gpu_held_pop(g, head, "now");
+     }
++    virtio_gpu_held_arm(g, head);
+ }
+ 
+-static void virtio_gpu_gl_flush_done(void *opaque, uint32_t head)
++/* the compositor released the buffer @token */
++static void virtio_gpu_gl_flush_done(void *opaque, uint32_t head, uint64_t token)
+ {
+     VirtIOGPUBase *g = opaque;
++    struct virtio_gpu_scanout *s;
++    int i;
+ 
+-    if (head < g->conf.max_outputs) {
+-        virtio_gpu_flush_fence_now(g, head);
++    if (head >= g->conf.max_outputs) {
++        return;
+     }
++    s = &g->scanout[head];
++    for (i = 0; i < s->nheld; i++) {
++        if (s->held[i].token == token) {
++            s->held[i].done = true;
++        }
++    }
++    virtio_gpu_held_process(g, head);
+ }
+ 
+ static void virtio_gpu_deferred_fence_timeout(void *opaque)
+ {
+     struct virtio_gpu_scanout *s = opaque;
+     VirtIOGPUBase *g = s->deferred_fence_g;
++    uint32_t head = s - g->scanout;
+ 
+-    trace_virtio_gpu_flush_fence_timeout(s - g->scanout);
+-    virtio_gpu_flush_fence_now(g, s - g->scanout);
++    if (!s->nheld) {
++        return;
++    }
++    trace_virtio_gpu_flush_fence_timeout(head);
++    virtio_gpu_held_pop(g, head, "timeout");
++    virtio_gpu_held_process(g, head);
+ }
+ 
+ /*
+- * A flush of @head with fence @fence_id: hold the fence while the display
+- * waits for the compositor to release the previous buffer.  True when held.
++ * A flush of @head with fence @fence_id: held while the display waits for the
++ * compositor to release the buffer before it, or while earlier ones are held.
++ * True when held.
+  */
+ bool virtio_gpu_defer_flush_fence(VirtIOGPUBase *g, uint32_t head,
+                                   uint32_t fence_id)
+ {
+     struct virtio_gpu_scanout *s = &g->scanout[head];
+-    int64_t period = s->vblank_period_ns ? s->vblank_period_ns : 16666667;
++    bool pending = s->flush_pending;
+ 
+-    if (!s->flush_pending) {
++    if (!pending && !s->nheld) {
+         return false;
+     }
+     s->flush_pending = false;
+-    /* one is at most held: the older one goes out first (fences are in order) */
+-    virtio_gpu_flush_fence_now(g, head);
+-    s->fence_deferred = true;
+-    s->deferred_fence = fence_id;
++    if (s->nheld == VIRTIO_GPU_HELD_FENCES) {
++        virtio_gpu_held_pop(g, head, "full");
++    }
++    s->held[s->nheld].fence = fence_id;
++    s->held[s->nheld].token = pending ? s->pending_token : 0;
++    s->held[s->nheld].done = !pending;
++    s->held[s->nheld].since = get_clock();
++    s->nheld++;
+     if (!s->deferred_fence_timer) {
+         s->deferred_fence_g = g;
+         s->deferred_fence_timer = timer_new_ns(QEMU_CLOCK_REALTIME,
+                                                virtio_gpu_deferred_fence_timeout, s);
+     }
+-    timer_mod_ns(s->deferred_fence_timer, get_clock() + 2 * period);
+     trace_virtio_gpu_flush_fence_deferred(head, fence_id);
++    virtio_gpu_held_process(g, head);
+     return true;
+ }
+ 
+diff --git a/hw/display/virtio-gpu-virgl.c b/hw/display/virtio-gpu-virgl.c
+index 9e0dd332d..285aacc41 100644
+--- a/hw/display/virtio-gpu-virgl.c
++++ b/hw/display/virtio-gpu-virgl.c
+@@ -600,14 +600,21 @@ static void virgl_cmd_resource_flush(VirtIOGPU *g,
+     }
+ }
+ 
+-/* The deferred flush fence of @head may go out now (VirtIOGPUBaseClass) */
+-void virtio_gpu_virgl_flush_fence(VirtIOGPUBase *b, uint32_t head)
++/* The held flush fence @fence of @head may go out now (VirtIOGPUBaseClass) */
++void virtio_gpu_virgl_flush_fence(VirtIOGPUBase *b, uint32_t head, uint32_t fence)
+ {
+-    struct virtio_gpu_scanout *s = &b->scanout[head];
++    VirtIOGPU *g = VIRTIO_GPU(b);
++    struct virtio_gpu_ctrl_command *cmd;
+     int ret;
+ 
++    /* the flush is no longer held: its fence, created now, completes it */
++    QTAILQ_FOREACH(cmd, &g->fenceq, next) {
++        if (cmd->fence_deferred && cmd->cmd_hdr.fence_id == fence) {
++            cmd->fence_deferred = false;
++        }
++    }
+     virgl_renderer_force_ctx_0();
+-    ret = virgl_renderer_create_fence(s->deferred_fence, 0);
++    ret = virgl_renderer_create_fence(fence, 0);
+     if (ret) {
+         qemu_log_mask(LOG_GUEST_ERROR,
+                       "%s: virgl_renderer_create_fence error: %s",
+@@ -1315,6 +1322,15 @@ static void virgl_write_fence(void *opaque, uint32_t fence)
+         if (cmd->cmd_hdr.fence_id > fence) {
+             continue;
+         }
++        /*
++         * A flush held for the compositor's release (zero copy): a later
++         * fence of context 0 must not complete it - the guest would render
++         * into a buffer still on the screen.  Its own fence comes with the
++         * release.
++         */
++        if (cmd->fence_deferred) {
++            continue;
++        }
+         trace_virtio_gpu_fence_resp(cmd->cmd_hdr.fence_id);
+         virtio_gpu_ctrl_response_nodata(g, cmd, VIRTIO_GPU_RESP_OK_NODATA);
+         QTAILQ_REMOVE(&g->fenceq, cmd, next);
+@@ -1398,7 +1414,15 @@ static void virtio_gpu_virgl_async_fence_bh(void *opaque)
+                 if (cmd->cmd_hdr.ctx_id != f->ctx_id) {
+                     continue;
+                 }
++            } else if (cmd->fence_deferred) {
++                /*
++                 * A flush held for the compositor's release (zero copy):
++                 * no other fence completes it, not even a context's - the
++                 * guest would render into a buffer still on the screen
++                 */
++                continue;
+             }
++            trace_virtio_gpu_fence_resp(cmd->cmd_hdr.fence_id);
+             virtio_gpu_ctrl_response_nodata(g, cmd, VIRTIO_GPU_RESP_OK_NODATA);
+             QTAILQ_REMOVE(&g->fenceq, cmd, next);
+             g_free(cmd);
+diff --git a/include/hw/virtio/virtio-gpu.h b/include/hw/virtio/virtio-gpu.h
+index f333fe495..382b1f20f 100644
+--- a/include/hw/virtio/virtio-gpu.h
++++ b/include/hw/virtio/virtio-gpu.h
+@@ -81,6 +81,8 @@ struct virtio_gpu_framebuffer {
+     uint32_t offset;
+ };
+ 
++#define VIRTIO_GPU_HELD_FENCES 8
++
+ struct virtio_gpu_scanout {
+     QemuConsole *con;
+     DisplaySurface *ds;
+@@ -111,11 +113,18 @@ struct virtio_gpu_scanout {
+     /*
+      * Zero copy: the display attached the guest's buffer as it is and the
+      * compositor still holds the previous one; the flush's fence waits for
+-     * its release (a timer bounds the wait)
++     * its release - several flushes at a time, in order (a timer bounds the
++     * wait of the oldest)
+      */
+     bool flush_pending;
+-    bool fence_deferred;
+-    uint32_t deferred_fence;
++    uint64_t pending_token;     /* the buffer whose release completes the next flush */
++    struct {
++        uint32_t fence;
++        uint64_t token;         /* the buffer it waits for; 0: only the ones before */
++        bool done;
++        int64_t since;
++    } held[VIRTIO_GPU_HELD_FENCES];
++    int nheld;
+     QEMUTimer *deferred_fence_timer;
+     VirtIOGPUBase *deferred_fence_g;
+ };
+@@ -220,7 +229,7 @@ struct VirtIOGPUBaseClass {
+ 
+     void (*gl_flushed)(VirtIOGPUBase *g);
+     /* the deferred flush fence of a head may be created now (zero copy) */
+-    void (*flush_fence)(VirtIOGPUBase *g, uint32_t head);
++    void (*flush_fence)(VirtIOGPUBase *g, uint32_t head, uint32_t fence);
+ };
+ 
+ #define VIRTIO_GPU_BASE_PROPERTIES(_state, _conf)                       \
+@@ -463,7 +472,7 @@ void virtio_gpu_disable_scanout_for_resource(VirtIOGPU *g,
+                                              uint32_t resource_id);
+ 
+ /* virtio-gpu-3d.c */
+-void virtio_gpu_virgl_flush_fence(VirtIOGPUBase *b, uint32_t head);
++void virtio_gpu_virgl_flush_fence(VirtIOGPUBase *b, uint32_t head, uint32_t fence);
+ void virtio_gpu_virgl_process_cmd(VirtIOGPU *g,
+                                   struct virtio_gpu_ctrl_command *cmd);
+ void virtio_gpu_virgl_fence_poll(VirtIOGPU *g);
+diff --git a/include/ui/console.h b/include/ui/console.h
+index 2dcdf9f1f..9c89179dd 100644
+--- a/include/ui/console.h
++++ b/include/ui/console.h
+@@ -348,12 +348,12 @@ typedef struct GraphicHwOps {
+                          int64_t swap_lead_ns);
+     /*
+      * The display put the guest's own buffer on its surface and the
+-     * compositor still holds the previous one: the flush is not done until
+-     * gl_flush_done says the previous buffer was released (the guest may
+-     * not render into it before).
++     * compositor still holds the previous one, @token: the flush is not done
++     * until gl_flush_done says that buffer was released (the guest may not
++     * render into it before).  Several flushes may wait at a time.
+      */
+-    void (*gl_flush_pending)(void *opaque, uint32_t head);
+-    void (*gl_flush_done)(void *opaque, uint32_t head);
++    void (*gl_flush_pending)(void *opaque, uint32_t head, uint64_t token);
++    void (*gl_flush_done)(void *opaque, uint32_t head, uint64_t token);
+ } GraphicHwOps;
+ 
+ QemuConsole *qemu_graphic_console_create(DeviceState *dev, uint32_t head,
+@@ -371,8 +371,8 @@ void qemu_console_hw_text_update(QemuConsole *con, uint32_t *chardata);
+ void qemu_console_hw_gl_block(QemuConsole *con, bool block);
+ void graphic_hw_gl_presented(QemuConsole *con, int64_t when_ns, int64_t period_ns,
+                              int64_t compositor_lead_ns, int64_t swap_lead_ns);
+-void graphic_hw_gl_flush_pending(QemuConsole *con);
+-void graphic_hw_gl_flush_done(QemuConsole *con);
++void graphic_hw_gl_flush_pending(QemuConsole *con, uint64_t token);
++void graphic_hw_gl_flush_done(QemuConsole *con, uint64_t token);
+ 
+ void qemu_console_early_init(void);
+ 
+diff --git a/ui/console.c b/ui/console.c
+index f6eb2c4a2..741ef4507 100644
+--- a/ui/console.c
++++ b/ui/console.c
+@@ -219,17 +219,17 @@ void graphic_hw_gl_presented(QemuConsole *con, int64_t when_ns, int64_t period_n
+     }
+ }
+ 
+-void graphic_hw_gl_flush_pending(QemuConsole *con)
++void graphic_hw_gl_flush_pending(QemuConsole *con, uint64_t token)
+ {
+     if (con && con->hw_ops->gl_flush_pending) {
+-        con->hw_ops->gl_flush_pending(con->hw, qemu_console_get_head(con));
++        con->hw_ops->gl_flush_pending(con->hw, qemu_console_get_head(con), token);
+     }
+ }
+ 
+-void graphic_hw_gl_flush_done(QemuConsole *con)
++void graphic_hw_gl_flush_done(QemuConsole *con, uint64_t token)
+ {
+     if (con && con->hw_ops->gl_flush_done) {
+-        con->hw_ops->gl_flush_done(con->hw, qemu_console_get_head(con));
++        con->hw_ops->gl_flush_done(con->hw, qemu_console_get_head(con), token);
+     }
+ }
+ 
+diff --git a/ui/sdl2-swapchain.c b/ui/sdl2-swapchain.c
+index 186c37e32..b2355315b 100644
+--- a/ui/sdl2-swapchain.c
++++ b/ui/sdl2-swapchain.c
+@@ -40,13 +40,18 @@
+ #include "ui/console.h"
+ #include "ui/sdl2.h"
+ #include "ui/egl-helpers.h"
++#include "qemu/main-loop.h"
+ #include "trace.h"
+ 
+ #include <fcntl.h>
+ #include <poll.h>
+ #include <sys/mman.h>
+ #include <sys/stat.h>
++#include <sys/ioctl.h>
++#include <linux/dma-buf.h>
++#include <drm.h>
+ #include <drm_fourcc.h>
++#include <amdgpu_drm.h>
+ #include <gbm.h>
+ #include <wayland-client.h>
+ #include <SDL_syswm.h>
+@@ -103,6 +108,7 @@ struct sdl2_swapchain {
+     bool feedback_changed;
+     struct gbm_device *gbm;
+     int drm_fd;
++    int query_fd;               /* a handle space of its own, for the guest buffers' layout */
+     SwapBuffer bufs[SWAPCHAIN_BUFFERS];
+     int width, height;
+     int presents;
+@@ -115,7 +121,6 @@ struct sdl2_swapchain {
+     bool layout_flip;
+     uint64_t guest_presents;    /* zero-copy presents, for the buffers' age */
+     GuestBuffer *guest_current; /* the guest buffer on the surface */
+-    GuestBuffer *guest_awaited; /* the one whose release completes the flush */
+     /* direct scanout or not: how many buffers the compositor keeps */
+     int64_t committed_ns;   /* the last commit */
+     int in_a_row;           /* commits within a refresh and a half of the last */
+@@ -430,6 +435,7 @@ static bool swapchain_init(struct sdl2_swapchain *sc)
+         error_report("sdl2 swapchain: no GBM device on %s", node);
+         return false;
+     }
++    sc->query_fd = open(node, O_RDWR | O_CLOEXEC);
+ 
+     sc->queue = wl_display_create_queue(sc->display);
+     wrapper = wl_proxy_create_wrapper(sc->display);
+@@ -524,6 +530,12 @@ struct GuestBuffer {
+     uint64_t used;              /* the present that last used it */
+     bool busy;                  /* with the compositor */
+     bool dropped;               /* replaced: freed once the compositor released it */
++    uint32_t offset0, stride0, fourcc;
++    int reads_fd;               /* released, the compositor's GPU reads of it still running */
++    /* QEMU_SDL_ZC_VERIFY: its rows sampled when it went to the compositor */
++    GLuint vtex, vfbo;
++    bool vsampled;
++    uint64_t vsum[48];
+ };
+ 
+ static GuestBuffer guest_bufs[GUEST_BUFFERS];
+@@ -538,20 +550,94 @@ static bool zero_copy_wanted(void)
+     return wanted;
+ }
+ 
++/*
++ * The guest's buffer goes to the compositor as linear - virtio-gpu tells
++ * nothing of a scanout's layout - so it has to be: the guest's compositor
++ * allocates linear scanout buffers when the guest's virtio-gpu driver
++ * advertises the linear modifier (linear_scanout=1 of the fork's module);
++ * otherwise Mesa tiles them, and compresses them, and the screen shows
++ * noise.  amdgpu keeps a buffer's tiling in its metadata: 1 linear, 0 not,
++ * -1 when the driver cannot tell (anything but amdgpu).  On a handle space
++ * of its own (query_fd), so that closing the handle closes nobody else's.
++ */
++static int dmabuf_linear(int fd, int dmabuf_fd)
++{
++    char name[16] = "";
++    struct drm_version ver = { .name_len = sizeof(name) - 1, .name = name };
++    struct drm_prime_handle prime = { .fd = dmabuf_fd };
++    struct drm_amdgpu_gem_metadata md = { 0 };
++    struct drm_gem_close gem_close = { 0 };
++    int ret;
++
++    if (fd < 0 || ioctl(fd, DRM_IOCTL_VERSION, &ver) || strcmp(name, "amdgpu")) {
++        return -1;
++    }
++    if (ioctl(fd, DRM_IOCTL_PRIME_FD_TO_HANDLE, &prime)) {
++        return -1;
++    }
++    md.handle = prime.handle;
++    md.op = AMDGPU_GEM_METADATA_OP_GET_METADATA;
++    ret = ioctl(fd, DRM_IOCTL_AMDGPU_GEM_METADATA, &md);
++    gem_close.handle = prime.handle;
++    ioctl(fd, DRM_IOCTL_GEM_CLOSE, &gem_close);
++    if (ret) {
++        return -1;
++    }
++    return AMDGPU_TILING_GET(md.data.tiling_info, SWIZZLE_MODE) == 0 &&
++           AMDGPU_TILING_GET(md.data.tiling_info, DCC_OFFSET_256B) == 0;
++}
++
++/* The buffers found not linear, so that each is checked once */
++#define REFUSED_BUFFERS 16
++static ino_t refused_bufs[REFUSED_BUFFERS];
++static int n_refused;
++
++/* Whether this guest buffer may go to the compositor as linear */
++static bool guest_buffer_attachable(struct sdl2_swapchain *sc, int dmabuf_fd,
++                                    ino_t ino)
++{
++    static bool warned;
++    int i, linear;
++
++    for (i = 0; i < REFUSED_BUFFERS; i++) {
++        if (refused_bufs[i] == ino) {
++            return false;
++        }
++    }
++    linear = dmabuf_linear(sc->query_fd, dmabuf_fd);
++    if (linear == 1 || (linear < 0 && !g_strcmp0(getenv("QEMU_SDL_ZERO_COPY"), "force"))) {
++        return true;
++    }
++    refused_bufs[n_refused++ % REFUSED_BUFFERS] = ino;
++    trace_sdl2_swapchain_guest_refused(sc->scon->idx, (uint64_t)ino, linear);
++    if (!warned) {
++        warned = true;
++        warn_report("sdl2: zero copy needs linear guest scanout buffers%s; "
++                    "copying instead", linear < 0 ? " (the host driver cannot tell the layout; "
++                    "QEMU_SDL_ZERO_COPY=force attaches anyway)" :
++                    " (guest: virtio_gpu linear_scanout=1)");
++    }
++    return false;
++}
++
++static void guest_buffer_released(GuestBuffer *gb);
++
+ static void guest_buffer_free(GuestBuffer *gb)
+ {
+     struct sdl2_swapchain *sc = gb->sc;
+     int i;
+ 
+     if (sc) {
+-        if (sc->guest_awaited == gb) {
+-            sc->guest_awaited = NULL;
+-            graphic_hw_gl_flush_done(sc->scon->dcl.con);
+-        }
++        /* a flush waiting for it goes out: it is gone */
++        guest_buffer_released(gb);
+         if (sc->guest_current == gb) {
+             sc->guest_current = NULL;
+         }
+     }
++    if (gb->vfbo) {
++        glDeleteFramebuffers(1, &gb->vfbo);
++        glDeleteTextures(1, &gb->vtex);
++    }
+     if (gb->buffer) {
+         wl_buffer_destroy(gb->buffer);
+     }
+@@ -563,16 +649,214 @@ static void guest_buffer_free(GuestBuffer *gb)
+     memset(gb, 0, sizeof(*gb));
+ }
+ 
++/*
++ * QEMU_SDL_ZC_VERIFY=1 (diagnosis): rows of each guest buffer are read when it
++ * goes to the compositor and again when the compositor releases it.  A
++ * difference means the buffer changed while the host had it - the guest wrote
++ * into a buffer on the screen, or its rendering was not done when it came.
++ * The readbacks stall the GPU: for finding the cause, not for use.
++ */
++#define VERIFY_ROWS 48
++
++static bool zc_verify_wanted(void)
++{
++    static int wanted = -1;
++
++    if (wanted < 0) {
++        wanted = !!getenv("QEMU_SDL_ZC_VERIFY");
++    }
++    return wanted;
++}
++
++static uint64_t zc_verify_changed, zc_verify_checked;
++
++static bool guest_buffer_sample(GuestBuffer *gb, uint64_t *sums)
++{
++    static uint64_t *row;
++    static size_t row_size;
++    size_t words = (size_t)gb->width * 4 / 8;
++    int i;
++
++    if (!gb->vfbo) {
++        EGLint attrs[] = {
++            EGL_WIDTH, gb->width, EGL_HEIGHT, gb->height,
++            EGL_LINUX_DRM_FOURCC_EXT, gb->fourcc,
++            EGL_DMA_BUF_PLANE0_FD_EXT, gb->fds[0],
++            EGL_DMA_BUF_PLANE0_OFFSET_EXT, gb->offset0,
++            EGL_DMA_BUF_PLANE0_PITCH_EXT, gb->stride0,
++            EGL_DMA_BUF_PLANE0_MODIFIER_LO_EXT, 0,
++            EGL_DMA_BUF_PLANE0_MODIFIER_HI_EXT, 0,
++            EGL_NONE,
++        };
++        EGLImageKHR image = eglCreateImageKHR(qemu_egl_display, EGL_NO_CONTEXT,
++                                              EGL_LINUX_DMA_BUF_EXT, NULL, attrs);
++
++        if (image == EGL_NO_IMAGE_KHR) {
++            return false;
++        }
++        glGenTextures(1, &gb->vtex);
++        glBindTexture(GL_TEXTURE_2D, gb->vtex);
++        glEGLImageTargetTexture2DOES(GL_TEXTURE_2D, (GLeglImageOES)image);
++        eglDestroyImageKHR(qemu_egl_display, image);
++        glGenFramebuffers(1, &gb->vfbo);
++        glBindFramebuffer(GL_FRAMEBUFFER, gb->vfbo);
++        glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0,
++                               GL_TEXTURE_2D, gb->vtex, 0);
++    }
++    if (row_size < words) {
++        row = g_renew(uint64_t, row, words);
++        row_size = words;
++    }
++    glBindFramebuffer(GL_READ_FRAMEBUFFER, gb->vfbo);
++    for (i = 0; i < VERIFY_ROWS; i++) {
++        int y = (2 * i + 1) * (int)gb->height / (2 * VERIFY_ROWS);
++        uint64_t h = 0x9e3779b97f4a7c15ull;
++        size_t k;
++
++        glReadPixels(0, y, gb->width, 1, GL_BGRA, GL_UNSIGNED_BYTE, row);
++        for (k = 0; k < words; k++) {
++            h = (h ^ row[k]) * 0x100000001b3ull;
++            h ^= h >> 29;
++        }
++        sums[i] = h;
++    }
++    glBindFramebuffer(GL_READ_FRAMEBUFFER, 0);
++    return true;
++}
++
++static uint64_t zc_verify_unsettled, zc_verify_attached;
++
++/*
++ * @gb goes to the compositor: remember its rows - sampled twice, 3 ms apart:
++ * rows that still change then were not rendered yet when the guest flushed
++ */
++static void guest_buffer_verify_attach(struct sdl2_swapchain *sc, GuestBuffer *gb)
++{
++    uint64_t later[VERIFY_ROWS];
++    int i, changed = 0, first = -1;
++
++    if (!zc_verify_wanted()) {
++        return;
++    }
++    gb->vsampled = guest_buffer_sample(gb, gb->vsum);
++    if (!gb->vsampled) {
++        return;
++    }
++    g_usleep(3000);
++    if (!guest_buffer_sample(gb, later)) {
++        return;
++    }
++    for (i = 0; i < VERIFY_ROWS; i++) {
++        if (later[i] != gb->vsum[i]) {
++            changed++;
++            if (first < 0) {
++                first = i;
++            }
++        }
++    }
++    zc_verify_attached++;
++    if (changed) {
++        zc_verify_unsettled++;
++        trace_sdl2_swapchain_zc_unsettled(sc->scon->idx, (uint64_t)gb->ino, changed,
++                                          (2 * first + 1) * (int)gb->height / (2 * VERIFY_ROWS),
++                                          zc_verify_unsettled, zc_verify_attached);
++    }
++    memcpy(gb->vsum, later, sizeof(later));
++}
++
++/* the compositor gave @gb back: are its rows those it got? */
++static void guest_buffer_verify_release(struct sdl2_swapchain *sc, GuestBuffer *gb)
++{
++    uint64_t now[VERIFY_ROWS];
++    int i, changed = 0, first = -1;
++
++    if (!zc_verify_wanted() || !gb->vsampled) {
++        return;
++    }
++    gb->vsampled = false;
++    SDL_GL_MakeCurrent(sc->scon->real_window, sc->scon->winctx);
++    if (!guest_buffer_sample(gb, now)) {
++        return;
++    }
++    for (i = 0; i < VERIFY_ROWS; i++) {
++        if (now[i] != gb->vsum[i]) {
++            changed++;
++            if (first < 0) {
++                first = i;
++            }
++        }
++    }
++    zc_verify_checked++;
++    if (changed) {
++        zc_verify_changed++;
++        trace_sdl2_swapchain_zc_changed(sc->scon->idx, (uint64_t)gb->ino, changed,
++                                        first < 0 ? -1 : (2 * first + 1) * (int)gb->height / (2 * VERIFY_ROWS),
++                                        zc_verify_changed, zc_verify_checked);
++    }
++}
++
++/* @gb is free for the guest: the flush that waits for it completes */
++static void guest_buffer_released(GuestBuffer *gb)
++{
++    if (gb->reads_fd >= 0) {
++        qemu_set_fd_handler(gb->reads_fd, NULL, NULL, NULL);
++        close(gb->reads_fd);
++        gb->reads_fd = -1;
++    }
++    if (gb->sc) {
++        graphic_hw_gl_flush_done(gb->sc->scon->dcl.con, (uint64_t)gb->ino);
++    }
++}
++
++static void guest_reads_done(void *opaque)
++{
++    guest_buffer_released(opaque);
++}
++
++/*
++ * The fences of the GPU work still reading a buffer: a compositor may
++ * release a buffer while its composite of it runs, counting on implicit
++ * sync to hold the client's next write - which the guest's writes skip
++ * (a native context submits without a buffer list).  -1: nothing to wait for.
++ */
++static int dmabuf_readers(int dmabuf_fd)
++{
++    struct dma_buf_export_sync_file arg = { .flags = DMA_BUF_SYNC_WRITE, .fd = -1 };
++    struct pollfd pfd;
++
++    if (ioctl(dmabuf_fd, DMA_BUF_IOCTL_EXPORT_SYNC_FILE, &arg) || arg.fd < 0) {
++        return -1;
++    }
++    pfd.fd = arg.fd;
++    pfd.events = POLLIN;
++    if (poll(&pfd, 1, 0) == 1) {
++        close(arg.fd);
++        return -1;          /* signalled already */
++    }
++    return arg.fd;
++}
++
+ static void guest_buffer_release(void *data, struct wl_buffer *buffer)
+ {
+     GuestBuffer *gb = data;
+     struct sdl2_swapchain *sc = gb->sc;
+ 
++    if (sc) {
++        guest_buffer_verify_release(sc, gb);
++    }
+     gb->busy = false;
+-    if (sc && sc->guest_awaited == gb) {
+-        /* the guest's flush is complete: it may render into this one again */
+-        sc->guest_awaited = NULL;
+-        graphic_hw_gl_flush_done(sc->scon->dcl.con);
++    if (sc && gb->reads_fd < 0) {
++        /*
++         * The flush that waits for this buffer completes, and the guest may
++         * render into it again, once the compositor's reads of it are done too
++         */
++        gb->reads_fd = dmabuf_readers(gb->fds[0]);
++        if (gb->reads_fd >= 0) {
++            trace_sdl2_swapchain_guest_reads(sc->scon->idx, (uint64_t)gb->ino);
++            qemu_set_fd_handler(gb->reads_fd, guest_reads_done, NULL, gb);
++        } else {
++            guest_buffer_released(gb);
++        }
+     }
+     if (gb->dropped) {
+         guest_buffer_free(gb);
+@@ -608,6 +892,9 @@ static GuestBuffer *guest_buffer_get(struct sdl2_swapchain *sc, QemuDmaBuf *dmab
+             return &guest_bufs[i];
+         }
+     }
++    if (planes != 1 || !guest_buffer_attachable(sc, fds[0], st.st_ino)) {
++        return NULL;
++    }
+     /* a free slot, else the one used longest ago that the compositor does not hold */
+     for (i = 0; i < GUEST_BUFFERS; i++) {
+         if (!guest_bufs[i].buffer) {
+@@ -625,6 +912,7 @@ static GuestBuffer *guest_buffer_get(struct sdl2_swapchain *sc, QemuDmaBuf *dmab
+         guest_buffer_free(gb);
+     }
+     memset(gb, 0, sizeof(*gb));
++    gb->reads_fd = -1;
+     gb->ino = st.st_ino;
+     gb->sc = sc;
+     /*
+@@ -653,6 +941,9 @@ static GuestBuffer *guest_buffer_get(struct sdl2_swapchain *sc, QemuDmaBuf *dmab
+                                        modifier & 0xffffffff);
+     }
+     gb->planes = planes;
++    gb->offset0 = offsets[0];
++    gb->stride0 = strides[0];
++    gb->fourcc = qemu_dmabuf_get_fourcc(dmabuf);
+     gb->width = qemu_dmabuf_get_backing_width(dmabuf);
+     gb->height = qemu_dmabuf_get_backing_height(dmabuf);
+     gb->buffer = zwp_linux_buffer_params_v1_create_immed(params, gb->width,
+@@ -672,6 +963,7 @@ bool sdl2_swapchain_present_guest(struct sdl2_console *scon, int width,
+ {
+     struct sdl2_swapchain *sc;
+     GuestBuffer *gb;
++    bool held, awaited;
+ 
+     if (!zero_copy_wanted() || !dmabuf) {
+         return false;
+@@ -691,9 +983,21 @@ bool sdl2_swapchain_present_guest(struct sdl2_console *scon, int width,
+     if (!gb) {
+         return false;
+     }
++    /*
++     * A buffer the compositor has not released yet, other than the one it
++     * shows: the guest rendered into it while the host still had it
++     */
++    held = gb->busy && gb != sc->guest_current;
++    guest_buffer_verify_attach(sc, gb);
+     sdl2_stats_present_begin(scon);
+     wl_surface_attach(sc->surface, gb->buffer, 0, 0);
+-    wl_surface_damage_buffer(sc->surface, x, y, w, h);
++    /*
++     * The whole buffer: the guest's damage is against its previous frame,
++     * which the compositor may not have shown (a frame it discarded, or a
++     * copy of ours in between), and a compositor that composites the window
++     * repaints only the damage
++     */
++    wl_surface_damage_buffer(sc->surface, 0, 0, INT32_MAX, INT32_MAX);
+     wl_surface_commit(sc->surface);
+     wl_display_flush(sc->display);
+     gb->busy = true;
+@@ -701,17 +1005,16 @@ bool sdl2_swapchain_present_guest(struct sdl2_console *scon, int width,
+     /*
+      * The buffer shown before this one is with the compositor until it
+      * flipped to this one: the guest's flush completes with its release
++     * (several flushes may wait at a time, virtio-gpu keeps their order)
+      */
+-    if (sc->guest_current && sc->guest_current != gb &&
+-        sc->guest_current->busy) {
+-        sc->guest_awaited = sc->guest_current;
+-        graphic_hw_gl_flush_pending(scon->dcl.con);
+-    } else {
+-        sc->guest_awaited = NULL;
++    awaited = sc->guest_current && sc->guest_current != gb &&
++              sc->guest_current->busy;
++    if (awaited) {
++        graphic_hw_gl_flush_pending(scon->dcl.con, (uint64_t)sc->guest_current->ino);
+     }
+     sc->guest_current = gb;
+     trace_sdl2_swapchain_guest_present(scon->idx, (uint64_t)gb->ino,
+-                                       sc->guest_awaited != NULL);
++                                       awaited, held);
+     sdl2_stats_present_end(scon);
+     return true;
+ }
+@@ -776,6 +1079,9 @@ void sdl2_swapchain_destroy(struct sdl2_console *scon)
+     if (sc->drm_fd >= 0) {
+         close(sc->drm_fd);
+     }
++    if (sc->query_fd >= 0) {
++        close(sc->query_fd);
++    }
+     g_free(sc);
+ }
+ 
+@@ -789,6 +1095,7 @@ static struct sdl2_swapchain *swapchain_get(struct sdl2_console *scon)
+     sc = g_new0(struct sdl2_swapchain, 1);
+     sc->scon = scon;
+     sc->drm_fd = -1;
++    sc->query_fd = -1;
+     scon->swapchain = sc;
+     if (getenv("QEMU_SDL_NO_SWAPCHAIN") || !swapchain_init(sc)) {
+         sc->failed = true;
+diff --git a/ui/trace-events b/ui/trace-events
+index 68851e147..b4ad84a00 100644
+--- a/ui/trace-events
++++ b/ui/trace-events
+@@ -153,7 +153,11 @@ sdl2_swapchain_verify(int con, long stale, int x, int y, int w, int h) "con %d p
+ sdl2_swapchain_copy(int con, bool full, int x, int y, int w, int h, int dw, int dh, int gw, int gh) "con %d copied full %d, %d,%d %dx%d (guest damage %dx%d, menu %dx%d)"
+ sdl2_poll_nested(int con, int depth) "con %d event poll entered from within itself, depth %d"
+ sdl2_swapchain_guest_buffer(int con, uint32_t w, uint32_t h, uint32_t fourcc, uint64_t modifier) "con %d guest buffer %ux%u fourcc 0x%x modifier 0x%" PRIx64 " attached as it is"
+-sdl2_swapchain_guest_present(int con, uint64_t ino, bool awaited) "con %d guest buffer (inode %" PRIu64 ") on the surface, previous awaited %d"
++sdl2_swapchain_guest_present(int con, uint64_t ino, bool awaited, bool held) "con %d guest buffer (inode %" PRIu64 ") on the surface, previous awaited %d, still held by the compositor %d"
++sdl2_swapchain_guest_refused(int con, uint64_t ino, int linear) "con %d guest buffer (inode %" PRIu64 ") not attached: linear %d (-1: unknown)"
++sdl2_swapchain_guest_reads(int con, uint64_t ino) "con %d guest buffer (inode %" PRIu64 ") released, its flush waits for the compositor's GPU reads of it"
++sdl2_swapchain_zc_changed(int con, uint64_t ino, int rows, int first_y, uint64_t changed, uint64_t checked) "con %d guest buffer (inode %" PRIu64 ") changed while the compositor had it: %d sampled rows, first at y %d (%" PRIu64 " of %" PRIu64 " buffers so far)"
++sdl2_swapchain_zc_unsettled(int con, uint64_t ino, int rows, int first_y, uint64_t unsettled, uint64_t attached) "con %d guest buffer (inode %" PRIu64 ") still changing 3 ms after its flush: %d sampled rows, first at y %d (%" PRIu64 " of %" PRIu64 " so far)"
+ 
+ # sdl2-input.c
+ sdl2_process_key(int sdl_scancode, unsigned int lnx, const char *action) "translated SDL scancode %d to Linux scancode %u (%s)"

@@ -11,11 +11,12 @@ class QToolButton;
 class QWidget;
 
 /*
- * Tells when vitrine, or the qemu-gui QEMU it builds, has new
- * commits on GitHub: by itself once a day at most, and when asked.  GitHub
- * lets 60 requests an hour through without an account; this makes two a
- * day, keeps the answer across restarts, and waits as long as GitHub asks
- * when it says there were too many.
+ * Tells when Vitrine has new commits on GitHub: by itself once a day at
+ * most, and when asked.  GitHub lets 60 requests an hour through without
+ * an account; this makes one a day, keeps the answer across restarts, and
+ * waits as long as GitHub asks when it says there were too many.  Vitrine's
+ * QEMU is pinned by Vitrine itself: an update of Vitrine updates it (see
+ * StackBanner).
  */
 class UpdateNotifier : public QObject
 {
@@ -28,14 +29,11 @@ public:
     QToolButton *button() const { return m_button; }
     /* Help > Check for Updates */
     void checkNow();
-    /* What runs changed, e.g. File > Build QEMU built: the answers kept follow */
+    /* What runs changed: the answers kept follow */
     void revalidate();
 
     /* What this computer runs, as far as it can tell */
     static QList<UpdateCheck::Project> projects();
-
-signals:
-    void buildQemuRequested();
 
 private:
     void maybeCheck();

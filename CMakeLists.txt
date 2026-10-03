@@ -19,3 +19,4 @@ set(VITRINE_HELPER_PATH "${CMAKE_INSTALL_FULL_LIBEXECDIR}/vitrine-helper")
 
 add_subdirectory(helper)
 add_subdirectory(app)
+add_subdirectory(host)

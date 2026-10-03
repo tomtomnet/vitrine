@@ -611,10 +611,13 @@ QemuInfoLoader::QemuInfoLoader(const QString &binary, QObject *parent)
 
 QString QemuInfoLoader::findOptionsHx(const QString &binary)
 {
-    /* build/qemu-system-x86_64 -> qemu-options.hx of the source tree */
+    /* build/qemu-system-x86_64 -> qemu-options.hx of the source tree;
+       <prefix>/bin/qemu-system-x86_64 -> <prefix>/share/qemu/qemu-options.hx,
+       which Vitrine's QEMU installs (host/build.sh) */
     const QDir dir = QFileInfo(binary).absoluteDir();
     for (const QString &candidate : {dir.filePath("../qemu-options.hx"),
-                                     dir.filePath("qemu-options.hx")}) {
+                                     dir.filePath("qemu-options.hx"),
+                                     dir.filePath("../share/qemu/qemu-options.hx")}) {
         if (QFileInfo::exists(candidate)) {
             return QFileInfo(candidate).canonicalFilePath();
         }

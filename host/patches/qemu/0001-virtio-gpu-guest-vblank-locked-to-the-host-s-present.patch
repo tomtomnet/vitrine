@@ -1,0 +1,724 @@
+From 3ff729c2efae77888f12f52e907f9a860d566fbe Mon Sep 17 00:00:00 2001
+From: tomtomnet <tompere8000@proton.me>
+Date: Fri, 2 Oct 2026 08:45:57 +0200
+Subject: [PATCH 1/4] virtio-gpu: guest vblank locked to the host's
+ presentation, flush fences, blob leak fix
+
+- x-host-vblank / x-vblank-lead / x-vblank-lead-auto / x-vblank-swap-target: the
+  guest's vblank ticks follow the host compositor's presentation feedback, a lead
+  before each host vblank, regulated on the median swap-to-screen time
+- the resource flush of a blob scanout completes with a fence once the host has it
+- virtio_gpu_virgl_resource_unref(): free res->base.addrs (the guest-memory
+  blob's page array leaked on every resource unref: +45 MB/min during window
+  resizes; upstream has the same bug)
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+Claude-Session: https://claude.ai/code/session_01M8iTzFPtyk2Gzbt6CLnRYK
+---
+ hw/display/trace-events          |   4 +
+ hw/display/virtio-gpu-base.c     | 321 ++++++++++++++++++++++++++++++-
+ hw/display/virtio-gpu-gl.c       |   2 +
+ hw/display/virtio-gpu-rutabaga.c |   1 +
+ hw/display/virtio-gpu-udmabuf.c  |   5 +-
+ hw/display/virtio-gpu-virgl.c    |  63 +++++-
+ hw/display/virtio-gpu.c          |  27 ++-
+ include/hw/virtio/virtio-gpu.h   |  46 +++++
+ 8 files changed, 460 insertions(+), 9 deletions(-)
+
+diff --git a/hw/display/trace-events b/hw/display/trace-events
+index c5e7e42af..34f0a819b 100644
+--- a/hw/display/trace-events
++++ b/hw/display/trace-events
+@@ -28,6 +28,10 @@ vmware_update_rect_delayed_flush(void) "display update FIFO full - forcing flush
+ 
+ # virtio-gpu-base.c
+ virtio_gpu_features(bool virgl) "virgl %d"
++virtio_gpu_vblank_lead(uint32_t head, int64_t lead, int64_t median, int64_t off) "head %d lead %" PRId64 " ns: frames in a row are shown %" PRId64 " ns after their swap (median), %" PRId64 " from the target"
++virtio_gpu_vblank_behind(uint32_t head, int64_t median) "head %d: frames in a row are shown %" PRId64 " ns after their swap (median), a refresh later than their swap allows: the host's compositor runs a frame ahead"
++virtio_gpu_flush_fence_deferred(uint32_t head, uint32_t fence) "head %d: flush fence %u waits for the compositor to release the previous buffer"
++virtio_gpu_flush_fence_timeout(uint32_t head) "head %d: the compositor did not release the previous buffer in time, flush fence goes out"
+ 
+ # virtio-gpu-3d.c
+ # virtio-gpu.c
+diff --git a/hw/display/virtio-gpu-base.c b/hw/display/virtio-gpu-base.c
+index 270fbaae1..8295e611c 100644
+--- a/hw/display/virtio-gpu-base.c
++++ b/hw/display/virtio-gpu-base.c
+@@ -152,6 +152,249 @@ virtio_gpu_gl_block(void *opaque, bool block)
+     }
+ }
+ 
++/*
++ * Out-of-tree extension: config event bits 16 and up, one per scanout, tell
++ * the guest that the host has just shown a frame of that scanout.  A guest
++ * driver that knows the bits ticks its vblank on them instead of on its
++ * free-running timer, so it paces itself on the real display.
++ */
++/* the most the tick moves earlier at once: the guest's compositor planned on the old one */
++#define VBLANK_LEAD_LONGER_NS   (400 * SCALE_US)
++
++static int64_t vblank_mod(int64_t a, int64_t period)
++{
++    a %= period;
++    return a < 0 ? a + period : a;
++}
++
++/*
++ * The lead of the next tick: the configured one, or the one that
++ * x-vblank-lead-auto regulates.  One lead for every frame: a second one for
++ * frames by themselves (2.3 ms suits a key's frame a little better, 12.7 ms
++ * key to screen against 13.2) makes the tick jump at the start of every
++ * burst of frames, and the launcher's animation then repeats 4-5 frames a
++ * second instead of one.
++ */
++static void virtio_gpu_vblank_next_lead(VirtIOGPUBase *g,
++                                        struct virtio_gpu_scanout *s,
++                                        int64_t now)
++{
++    int64_t base = (int64_t)g->vblank_lead_us * SCALE_US;
++    int64_t period = s->vblank_period_ns;
++    int64_t wanted = base, earlier;
++
++    if (g->vblank_lead_auto && s->vblank_auto_set) {
++        wanted = s->vblank_lead_auto_ns;
++    }
++    if (!s->vblank_lead_ns || !period) {
++        s->vblank_lead_ns = wanted;
++        return;
++    }
++    earlier = vblank_mod(wanted - s->vblank_lead_ns, period);
++    if (!earlier) {
++        return;
++    }
++    if (earlier < period / 2) {
++        /* earlier, in steps that the guest's compositor can follow */
++        s->vblank_lead_ns = vblank_mod(s->vblank_lead_ns +
++                                       MIN(earlier, VBLANK_LEAD_LONGER_NS),
++                                       period);
++        s->vblank_moved_ns = now;
++    } else {
++        s->vblank_lead_ns = wanted;
++    }
++}
++
++static void virtio_gpu_vblank_tick(void *opaque)
++{
++    struct virtio_gpu_scanout *s = opaque;
++    VirtIOGPUBase *g = s->vblank_g;
++    int64_t now = qemu_clock_get_ns(QEMU_CLOCK_REALTIME);
++    int64_t next;
++
++    /* this tick's time on the grid (the timer may run a little late) */
++    g->vblank_config[s->vblank_head] = cpu_to_le64(s->vblank_next_ns ? s->vblank_next_ns : now);
++    virtio_gpu_notify_event(g, 1u << (16 + s->vblank_head));
++    /* the next tick, one period on, on the presentation grid minus the lead */
++    virtio_gpu_vblank_next_lead(g, s, get_clock());
++    next = s->vblank_phase_ns - s->vblank_lead_ns;
++    while (next <= now) {
++        next += s->vblank_period_ns;
++    }
++    s->vblank_next_ns = next;
++    timer_mod_ns(s->vblank_timer, next);
++}
++
++/* x-vblank-lead-auto */
++/* frames in a row looked at before the lead may move: 0.6 s at 240 Hz */
++#define VBLANK_WINDOW           144
++/* frames of a burst before those looked at: an idle compositor takes them at once */
++#define VBLANK_BURST_START      4
++/*
++ * What the frames should take from their swap to the screen.  The host's
++ * compositor (KWin, 4K) takes a frame for a vblank if it is swapped 3.9 ms
++ * before it, 5 ms for a while after any late flip; with a millisecond of
++ * margin the frame's place is 6 ms before the vblank that shows it.  (At
++ * 5.5 ms a key's frame, which an idle compositor tries to show at once,
++ * raced that: key to screen p90 19 ms instead of 15-16.)
++ */
++/*
++ * How long before the vblank that shows them the frames of a burst are to
++ * be swapped: the host compositor's need (~3.9 ms at 240 Hz with a copy it
++ * must wait for, ~1.8 ms when the guest's own buffer is on its surface)
++ * plus room for its late moments.  Property x-vblank-swap-target (us).
++ */
++#define VBLANK_SWAP_TARGET_NS   ((int64_t)g->vblank_swap_target_us * SCALE_US)
++/* no move while the frames are that close to it */
++#define VBLANK_SWAP_SLACK_NS    (350 * SCALE_US)
++/* the most the lead moves after a window */
++#define VBLANK_STEP_NS          (350 * SCALE_US)
++
++static int vblank_cmp(const void *a, const void *b)
++{
++    int64_t x = *(const int64_t *)a, y = *(const int64_t *)b;
++
++    return x < y ? -1 : x > y;
++}
++
++/*
++ * x-vblank-lead-auto: tick the guest so that its frames reach the host's
++ * compositor when it needs them.
++ *
++ * A compositor makes its frame for a vblank some time before it, at a time
++ * of its own choosing that changes (KWin's follows its estimate of its
++ * render time, which one slow frame raises for seconds).  A frame of the
++ * guest that arrives before that is shown at that vblank; one that arrives
++ * after it waits for the next, and so does every frame after it for as
++ * long as they keep coming if the compositor had something else to show.
++ *
++ * Measured with fixed leads on a 4K 240 Hz host (KWin guest, which commits
++ * 0.9 ms before its tick; desktop-bench/lead_sweep.sh): the frame is shown
++ * at the vblank following its swap if it is swapped 3.9 ms before it, and
++ * of a 4.17 ms refresh that leaves a place 0.3 ms wide that drifts - frames
++ * put there land on either side (leads of 2.4-3.1 ms: 4-7 frames repeated
++ * per second in an animation).  Swapped 5.4-6.1 ms before the vblank that
++ * shows them, a refresh later than the ideal, none is passed by (leads of
++ * 0.3-1 ms: 1 per second).  At 144 Hz the same 5.5 ms are within one
++ * refresh.
++ *
++ * So the lead is regulated, slowly, to have the frames swapped about that long
++ * before they are shown: over a window of frames in a row the median time
++ * from swap to presentation is compared with the target, and the tick
++ * moves a step if it is off by more than a step.  The median, not the
++ * quickest: an idle compositor takes a frame at once, and the bursts of
++ * frames one behind that the host has whatever the place must not move
++ * the tick either.  This places a guest that commits after its tick
++ * (Hyprland, niri: render on the page flip) as well as one that commits
++ * before it, at any refresh rate, and once there it does not move.
++ *
++ * Tried and dropped (2026-09-30): reading the wait for the compositor's
++ * frame callback (an idle compositor answers within a millisecond whenever
++ * the frame comes; at 240 Hz the tick went round and round the period),
++ * counting frames passed by and trying neighbouring places (the host's
++ * bursts look the same as a bad place, the tick kept walking), a second
++ * lead for frames by themselves (see virtio_gpu_vblank_next_lead).
++ */
++static void
++virtio_gpu_vblank_lead_auto(VirtIOGPUBase *g, struct virtio_gpu_scanout *s,
++                            uint32_t head, int64_t when_ns,
++                            int64_t compositor_lead_ns, int64_t swap_lead_ns)
++{
++    int64_t period = s->vblank_period_ns;
++    int64_t lead = s->vblank_lead_auto_ns;
++    int64_t median, off;
++
++    if (!s->vblank_auto_set) {
++        /* a guest that commits a millisecond before its tick lands on the target */
++        lead = vblank_mod(VBLANK_SWAP_TARGET_NS - SCALE_MS, period);
++        s->vblank_auto_set = true;
++    }
++    if (s->vblank_shown_ns && when_ns - s->vblank_shown_ns < period + period / 2) {
++        s->vblank_in_a_row++;
++    } else {
++        s->vblank_in_a_row = 0;
++    }
++    s->vblank_shown_ns = when_ns;
++    /*
++     * Frames made before the tick moved say nothing about where it is now,
++     * and neither do frames made while it is on its way
++     */
++    if (s->vblank_in_a_row < VBLANK_BURST_START ||
++        swap_lead_ns <= 0 || swap_lead_ns > 4 * period ||
++        when_ns - s->vblank_moved_ns < 4 * period ||
++        s->vblank_lead_ns != lead) {
++        goto out;
++    }
++    s->vblank_swap_ns[s->vblank_window++] = swap_lead_ns;
++    if (s->vblank_window < VBLANK_WINDOW) {
++        goto out;
++    }
++    s->vblank_window = 0;
++    qsort(s->vblank_swap_ns, VBLANK_WINDOW, sizeof(s->vblank_swap_ns[0]), vblank_cmp);
++    median = s->vblank_swap_ns[VBLANK_WINDOW / 2];
++    /*
++     * The same place a whole refresh earlier or later is no better: only
++     * the part of a refresh counts.  A median more than half a refresh
++     * beyond the target means the host shows the frames a refresh later
++     * than their swap allows (its own compositor running a frame ahead):
++     * nothing here changes that, but it is said.
++     */
++    if (median > VBLANK_SWAP_TARGET_NS + period / 2) {
++        trace_virtio_gpu_vblank_behind(head, median);
++    }
++    off = vblank_mod(median - VBLANK_SWAP_TARGET_NS + period / 2, period) - period / 2;
++    if (off > VBLANK_SWAP_SLACK_NS) {
++        /* swapped too early: a later tick */
++        lead = vblank_mod(lead - MIN(off, VBLANK_STEP_NS), period);
++    } else if (off < -VBLANK_SWAP_SLACK_NS) {
++        lead = vblank_mod(lead + MIN(-off, VBLANK_STEP_NS), period);
++    } else {
++        goto out;
++    }
++    trace_virtio_gpu_vblank_lead(head, lead, median, off);
++out:
++    s->vblank_lead_auto_ns = lead;
++}
++
++/*
++ * A frame of this scanout was just shown: anchor the vblank phase.  With a
++ * lead, a timer on the presentation grid ticks the guest before each vblank
++ * so its compositor commits early enough for the host's own pipeline;
++ * without one, the guest is ticked at the presentation itself.
++ */
++static void
++virtio_gpu_gl_presented(void *opaque, uint32_t head, int64_t when_ns,
++                        int64_t period_ns, int64_t compositor_lead_ns,
++                        int64_t swap_lead_ns)
++{
++    VirtIOGPUBase *g = opaque;
++    struct virtio_gpu_scanout *s;
++
++    if (!g->host_vblank || head >= 16 || head >= VIRTIO_GPU_MAX_SCANOUTS) {
++        return;
++    }
++    s = &g->scanout[head];
++    s->vblank_phase_ns = when_ns;
++    if (period_ns > 0) {
++        s->vblank_period_ns = period_ns;
++    }
++    if (g->vblank_lead_auto && g->vblank_lead_us && s->vblank_period_ns) {
++        virtio_gpu_vblank_lead_auto(g, s, head, when_ns, compositor_lead_ns,
++                                    swap_lead_ns);
++    }
++    if (!g->vblank_lead_us || !s->vblank_period_ns) {
++        g->vblank_config[head] = cpu_to_le64(when_ns);
++        virtio_gpu_notify_event(g, 1u << (16 + head));
++        return;
++    }
++    if (!s->vblank_timer) {
++        s->vblank_g = g;
++        s->vblank_head = head;
++        s->vblank_timer = timer_new_ns(QEMU_CLOCK_REALTIME, virtio_gpu_vblank_tick, s);
++        virtio_gpu_vblank_tick(s);
++    }
++}
++
+ static int
+ virtio_gpu_get_flags(void *opaque)
+ {
+@@ -169,6 +412,79 @@ virtio_gpu_get_flags(void *opaque)
+     return flags;
+ }
+ 
++/* Zero copy: the display's word on the previous buffer (see console.h) */
++static void virtio_gpu_gl_flush_pending(void *opaque, uint32_t head)
++{
++    VirtIOGPUBase *g = opaque;
++
++    if (head < g->conf.max_outputs) {
++        g->scanout[head].flush_pending = true;
++    }
++}
++
++void virtio_gpu_flush_fence_now(VirtIOGPUBase *g, uint32_t head)
++{
++    struct virtio_gpu_scanout *s = &g->scanout[head];
++    VirtIOGPUBaseClass *vgc = VIRTIO_GPU_BASE_GET_CLASS(g);
++
++    if (!s->fence_deferred) {
++        return;
++    }
++    s->fence_deferred = false;
++    if (s->deferred_fence_timer) {
++        timer_del(s->deferred_fence_timer);
++    }
++    if (vgc->flush_fence) {
++        vgc->flush_fence(g, head);
++    }
++}
++
++static void virtio_gpu_gl_flush_done(void *opaque, uint32_t head)
++{
++    VirtIOGPUBase *g = opaque;
++
++    if (head < g->conf.max_outputs) {
++        virtio_gpu_flush_fence_now(g, head);
++    }
++}
++
++static void virtio_gpu_deferred_fence_timeout(void *opaque)
++{
++    struct virtio_gpu_scanout *s = opaque;
++    VirtIOGPUBase *g = s->deferred_fence_g;
++
++    trace_virtio_gpu_flush_fence_timeout(s - g->scanout);
++    virtio_gpu_flush_fence_now(g, s - g->scanout);
++}
++
++/*
++ * A flush of @head with fence @fence_id: hold the fence while the display
++ * waits for the compositor to release the previous buffer.  True when held.
++ */
++bool virtio_gpu_defer_flush_fence(VirtIOGPUBase *g, uint32_t head,
++                                  uint32_t fence_id)
++{
++    struct virtio_gpu_scanout *s = &g->scanout[head];
++    int64_t period = s->vblank_period_ns ? s->vblank_period_ns : 16666667;
++
++    if (!s->flush_pending) {
++        return false;
++    }
++    s->flush_pending = false;
++    /* one is at most held: the older one goes out first (fences are in order) */
++    virtio_gpu_flush_fence_now(g, head);
++    s->fence_deferred = true;
++    s->deferred_fence = fence_id;
++    if (!s->deferred_fence_timer) {
++        s->deferred_fence_g = g;
++        s->deferred_fence_timer = timer_new_ns(QEMU_CLOCK_REALTIME,
++                                               virtio_gpu_deferred_fence_timeout, s);
++    }
++    timer_mod_ns(s->deferred_fence_timer, get_clock() + 2 * period);
++    trace_virtio_gpu_flush_fence_deferred(head, fence_id);
++    return true;
++}
++
+ static const GraphicHwOps virtio_gpu_ops = {
+     .get_flags = virtio_gpu_get_flags,
+     .invalidate = virtio_gpu_invalidate_display,
+@@ -176,6 +492,9 @@ static const GraphicHwOps virtio_gpu_ops = {
+     .text_update = virtio_gpu_text_update,
+     .ui_info = virtio_gpu_ui_info,
+     .gl_block = virtio_gpu_gl_block,
++    .gl_presented = virtio_gpu_gl_presented,
++    .gl_flush_pending = virtio_gpu_gl_flush_pending,
++    .gl_flush_done = virtio_gpu_gl_flush_done,
+ };
+ 
+ bool
+@@ -234,7 +553,7 @@ virtio_gpu_base_device_realize(DeviceState *qdev,
+ 
+     g->virtio_config.num_scanouts = cpu_to_le32(g->conf.max_outputs);
+     virtio_init(VIRTIO_DEVICE(g), VIRTIO_ID_GPU,
+-                sizeof(struct virtio_gpu_config));
++                sizeof(struct virtio_gpu_config) + sizeof(g->vblank_config));
+ 
+     if (virtio_gpu_virgl_enabled(g->conf)) {
+         /* use larger control queue in 3d mode */
+diff --git a/hw/display/virtio-gpu-gl.c b/hw/display/virtio-gpu-gl.c
+index b68b4e8e1..33196ef4e 100644
+--- a/hw/display/virtio-gpu-gl.c
++++ b/hw/display/virtio-gpu-gl.c
+@@ -80,6 +80,7 @@ static void virtio_gpu_gl_handle_ctrl(VirtIODevice *vdev, VirtQueue *vq)
+         cmd->vq = vq;
+         cmd->error = 0;
+         cmd->finished = false;
++        cmd->fence_deferred = false;
+         QTAILQ_INSERT_TAIL(&g->cmdq, cmd, next);
+         cmd = virtqueue_pop(vq, sizeof(struct virtio_gpu_ctrl_command));
+     }
+@@ -256,6 +257,7 @@ static void virtio_gpu_gl_class_init(ObjectClass *klass, const void *data)
+     VirtIOGPUClass *vgc = VIRTIO_GPU_CLASS(klass);
+ 
+     vbc->gl_flushed = virtio_gpu_gl_flushed;
++    vbc->flush_fence = virtio_gpu_virgl_flush_fence;
+     vgc->handle_ctrl = virtio_gpu_gl_handle_ctrl;
+     vgc->process_cmd = virtio_gpu_virgl_process_cmd;
+     vgc->update_cursor_data = virtio_gpu_gl_update_cursor_data;
+diff --git a/hw/display/virtio-gpu-rutabaga.c b/hw/display/virtio-gpu-rutabaga.c
+index 3aafa4dc6..3c66596ce 100644
+--- a/hw/display/virtio-gpu-rutabaga.c
++++ b/hw/display/virtio-gpu-rutabaga.c
+@@ -1084,6 +1084,7 @@ static void virtio_gpu_rutabaga_handle_ctrl(VirtIODevice *vdev, VirtQueue *vq)
+         cmd->vq = vq;
+         cmd->error = 0;
+         cmd->finished = false;
++        cmd->fence_deferred = false;
+         QTAILQ_INSERT_TAIL(&g->cmdq, cmd, next);
+         cmd = virtqueue_pop(vq, sizeof(struct virtio_gpu_ctrl_command));
+     }
+diff --git a/hw/display/virtio-gpu-udmabuf.c b/hw/display/virtio-gpu-udmabuf.c
+index d823332d9..a24006917 100644
+--- a/hw/display/virtio-gpu-udmabuf.c
++++ b/hw/display/virtio-gpu-udmabuf.c
+@@ -107,8 +107,9 @@ int virtio_gpu_create_udmabuf_fd(struct virtio_gpu_simple_resource *res)
+ 
+     fd = virtio_gpu_udmabuf_create_list(res, &err);
+     if (err) {
+-        warn_report_once("%s: UDMABUF_CREATE_LIST: %s", __func__,
+-                         strerror(err));
++        warn_report("%s: UDMABUF_CREATE_LIST: %s (%u entries, %zu bytes)",
++                    __func__, strerror(err), res->iov_cnt,
++                    iov_size(res->iov, res->iov_cnt));
+     }
+ 
+     return fd;
+diff --git a/hw/display/virtio-gpu-virgl.c b/hw/display/virtio-gpu-virgl.c
+index cfa7da47e..9e0dd332d 100644
+--- a/hw/display/virtio-gpu-virgl.c
++++ b/hw/display/virtio-gpu-virgl.c
+@@ -458,6 +458,14 @@ virtio_gpu_virgl_resource_unref(VirtIOGPU *g,
+ 
+     QTAILQ_REMOVE(&g->reslist, &res->base, next);
+ 
++    /*
++     * The guest addresses virtio_gpu_create_mapping_iov() recorded for a
++     * guest-memory blob: virgl_renderer_resource_detach_iov() hands back
++     * only the iovecs, so nothing else frees them (a 4K buffer in 4 KiB
++     * pages is a 64 KiB array, and a guest resizing windows makes and
++     * drops such buffers all the time: ~45 MB of heap a minute).
++     */
++    g_free(res->base.addrs);
+     g_free(res);
+ 
+     return 0;
+@@ -579,6 +587,31 @@ static void virgl_cmd_resource_flush(VirtIOGPU *g,
+             continue;
+         }
+         virtio_gpu_rect_update(g, i, rf.r.x, rf.r.y, rf.r.width, rf.r.height);
++        /*
++         * Zero copy: the display attached the buffer as it is and holds
++         * the flush's fence until the compositor released the previous one
++         */
++        if ((cmd->cmd_hdr.flags & VIRTIO_GPU_FLAG_FENCE) &&
++            !(cmd->cmd_hdr.flags & VIRTIO_GPU_FLAG_INFO_RING_IDX) &&
++            virtio_gpu_defer_flush_fence(&g->parent_obj, i,
++                                         cmd->cmd_hdr.fence_id)) {
++            cmd->fence_deferred = true;
++        }
++    }
++}
++
++/* The deferred flush fence of @head may go out now (VirtIOGPUBaseClass) */
++void virtio_gpu_virgl_flush_fence(VirtIOGPUBase *b, uint32_t head)
++{
++    struct virtio_gpu_scanout *s = &b->scanout[head];
++    int ret;
++
++    virgl_renderer_force_ctx_0();
++    ret = virgl_renderer_create_fence(s->deferred_fence, 0);
++    if (ret) {
++        qemu_log_mask(LOG_GUEST_ERROR,
++                      "%s: virgl_renderer_create_fence error: %s",
++                      __func__, strerror(ret));
+     }
+ }
+ 
+@@ -871,7 +904,7 @@ static void virgl_cmd_get_capset(VirtIOGPU *g,
+  * virtio-gpu driver, a udmabuf aliasing their pages so that native contexts
+  * can use them instead of rejecting them.
+  */
+-static void
++static bool
+ virgl_resource_set_guest_dmabuf(VirtIOGPU *g,
+                                 struct virtio_gpu_virgl_resource *res)
+ {
+@@ -879,17 +912,19 @@ virgl_resource_set_guest_dmabuf(VirtIOGPU *g,
+     int fd;
+ 
+     if (!gl->have_udmabuf) {
+-        return;
++        return false;
+     }
+ 
+     fd = virtio_gpu_create_udmabuf_fd(&res->base);
+     if (fd < 0) {
+-        return;
++        return false;
+     }
+ 
+     if (virgl_renderer_resource_set_guest_dmabuf(res->base.resource_id, fd)) {
+         close(fd);
++        return false;
+     }
++    return true;
+ }
+ #endif
+ 
+@@ -957,8 +992,23 @@ static void virgl_cmd_resource_create_blob(VirtIOGPU *g,
+ 
+ #ifdef HAVE_VIRGL_RESOURCE_SET_GUEST_DMABUF
+     if (cblob.blob_mem == VIRTIO_GPU_BLOB_MEM_GUEST &&
+-        (cblob.blob_flags & VIRTIO_GPU_BLOB_FLAG_USE_SHAREABLE)) {
+-        virgl_resource_set_guest_dmabuf(g, res);
++        (cblob.blob_flags & VIRTIO_GPU_BLOB_FLAG_USE_SHAREABLE) &&
++        !virgl_resource_set_guest_dmabuf(g, res) &&
++        virtio_gpu_drm_enabled(g->parent_obj.conf)) {
++        /*
++         * A native context can only use the resource through a dma-buf.
++         * Without one (the udmabuf limits, for instance) every later use
++         * of the id would fail and a submission waiting on it would never
++         * complete: refuse the resource now, the guest falls back to a
++         * copy.
++         */
++        qemu_log_mask(LOG_GUEST_ERROR,
++                      "%s: no dma-buf for guest blob %d, refusing it\n",
++                      __func__, cblob.resource_id);
++        cmd->error = VIRTIO_GPU_RESP_ERR_OUT_OF_MEMORY;
++        virgl_renderer_resource_unref(cblob.resource_id);
++        virtio_gpu_cleanup_mapping(g, &res->base);
++        return;
+     }
+ #endif
+ 
+@@ -1216,6 +1266,9 @@ void virtio_gpu_virgl_process_cmd(VirtIOGPU *g,
+     }
+ 
+     trace_virtio_gpu_fence_ctrl(cmd->cmd_hdr.fence_id, cmd->cmd_hdr.type);
++    if (cmd->fence_deferred) {
++        return;     /* created when the compositor releases the previous buffer */
++    }
+ #if VIRGL_VERSION_MAJOR >= 1
+     if (cmd->cmd_hdr.flags & VIRTIO_GPU_FLAG_INFO_RING_IDX) {
+         const uint32_t flags = VIRGL_RENDERER_FENCE_FLAG_MERGEABLE;
+diff --git a/hw/display/virtio-gpu.c b/hw/display/virtio-gpu.c
+index bb0f41bb1..df7a2a93c 100644
+--- a/hw/display/virtio-gpu.c
++++ b/hw/display/virtio-gpu.c
+@@ -135,8 +135,16 @@ static void update_cursor(VirtIOGPU *g, struct virtio_gpu_update_cursor *cursor)
+                                    cursor->resource_id);
+ 
+     if (!move) {
++        g_autofree uint32_t *before = NULL;
++        size_t bytes = 64 * 64 * sizeof(uint32_t);
++        bool same = false;
++
+         if (!s->current_cursor) {
+             s->current_cursor = cursor_alloc(64, 64);
++        } else if (cursor->resource_id > 0 && s->cursor.resource_id > 0 &&
++                   s->current_cursor->hot_x == cursor->hot_x &&
++                   s->current_cursor->hot_y == cursor->hot_y) {
++            before = g_memdup2(s->current_cursor->data, bytes);
+         }
+ 
+         s->current_cursor->hot_x = cursor->hot_x;
+@@ -145,7 +153,17 @@ static void update_cursor(VirtIOGPU *g, struct virtio_gpu_update_cursor *cursor)
+         if (cursor->resource_id > 0) {
+             vgc->update_cursor_data(g, s, cursor->resource_id);
+         }
+-        qemu_console_set_cursor(s->con, s->current_cursor);
++        /*
++         * A compositor that redraws its cursor plane with every frame (KWin
++         * does during full-screen effects) sends the same image in another
++         * resource each time.  Defining the cursor again makes the display
++         * build a new host cursor, and the host compositor draw it, at
++         * every frame of the guest: only do it when the image has changed.
++         */
++        same = before && !memcmp(before, s->current_cursor->data, bytes);
++        if (!same) {
++            qemu_console_set_cursor(s->con, s->current_cursor);
++        }
+ 
+         s->cursor = *cursor;
+     } else {
+@@ -1302,6 +1320,7 @@ static void virtio_gpu_handle_ctrl(VirtIODevice *vdev, VirtQueue *vq)
+         cmd->vq = vq;
+         cmd->error = 0;
+         cmd->finished = false;
++        cmd->fence_deferred = false;
+         QTAILQ_INSERT_TAIL(&g->cmdq, cmd, next);
+         cmd = virtqueue_pop(vq, sizeof(struct virtio_gpu_ctrl_command));
+     }
+@@ -1852,6 +1871,8 @@ virtio_gpu_get_config(VirtIODevice *vdev, uint8_t *config)
+     VirtIOGPUBase *g = VIRTIO_GPU_BASE(vdev);
+ 
+     memcpy(config, &g->virtio_config, sizeof(g->virtio_config));
++    memcpy(config + sizeof(g->virtio_config), g->vblank_config,
++           sizeof(g->vblank_config));
+ }
+ 
+ static void
+@@ -1932,6 +1953,10 @@ static const Property virtio_gpu_properties[] = {
+                     VIRTIO_GPU_FLAG_BLOB_ENABLED, false),
+     DEFINE_PROP_SIZE("hostmem", VirtIOGPU, parent_obj.conf.hostmem, 0),
+     DEFINE_PROP_UINT8("x-scanout-vmstate-version", VirtIOGPU, scanout_vmstate_version, 2),
++    DEFINE_PROP_BOOL("x-host-vblank", VirtIOGPU, parent_obj.host_vblank, true),
++    DEFINE_PROP_UINT32("x-vblank-lead", VirtIOGPU, parent_obj.vblank_lead_us, 0),
++    DEFINE_PROP_BOOL("x-vblank-lead-auto", VirtIOGPU, parent_obj.vblank_lead_auto, false),
++    DEFINE_PROP_UINT32("x-vblank-swap-target", VirtIOGPU, parent_obj.vblank_swap_target_us, 6000),
+ };
+ 
+ static void virtio_gpu_class_init(ObjectClass *klass, const void *data)
+diff --git a/include/hw/virtio/virtio-gpu.h b/include/hw/virtio/virtio-gpu.h
+index 5c9a6021a..f333fe495 100644
+--- a/include/hw/virtio/virtio-gpu.h
++++ b/include/hw/virtio/virtio-gpu.h
+@@ -92,6 +92,32 @@ struct virtio_gpu_scanout {
+     struct virtio_gpu_update_cursor cursor;
+     QEMUCursor *current_cursor;
+     struct virtio_gpu_framebuffer fb;
++    /* host-locked vblank: last presentation, period, and the lead timer */
++    int64_t vblank_phase_ns;
++    int64_t vblank_period_ns;
++    QEMUTimer *vblank_timer;
++    struct VirtIOGPUBase *vblank_g;
++    uint32_t vblank_head;
++    int64_t vblank_lead_ns;     /* the lead in use */
++    int64_t vblank_next_ns;     /* the scheduled time of the next tick */
++    /* x-vblank-lead-auto */
++    bool vblank_auto_set;
++    int64_t vblank_lead_auto_ns;    /* the lead it regulates */
++    int64_t vblank_moved_ns;    /* when the tick last moved earlier */
++    int64_t vblank_shown_ns;    /* the last presentation */
++    unsigned vblank_in_a_row;   /* presentations one refresh after the other so far */
++    unsigned vblank_window;     /* frames counted in this window */
++    int64_t vblank_swap_ns[144];    /* their swap to presentation */
++    /*
++     * Zero copy: the display attached the guest's buffer as it is and the
++     * compositor still holds the previous one; the flush's fence waits for
++     * its release (a timer bounds the wait)
++     */
++    bool flush_pending;
++    bool fence_deferred;
++    uint32_t deferred_fence;
++    QEMUTimer *deferred_fence_timer;
++    VirtIOGPUBase *deferred_fence_g;
+ };
+ 
+ struct virtio_gpu_requested_state {
+@@ -153,6 +179,7 @@ struct virtio_gpu_ctrl_command {
+     uint32_t error;
+     bool finished;
+     QTAILQ_ENTRY(virtio_gpu_ctrl_command) next;
++    bool fence_deferred;    /* its fence waits for the compositor (zero copy) */
+ };
+ 
+ struct VirtIOGPUBase {
+@@ -162,9 +189,22 @@ struct VirtIOGPUBase {
+ 
+     struct virtio_gpu_base_conf conf;
+     struct virtio_gpu_config virtio_config;
++    /* out-of-tree config extension, right after virtio_gpu_config: the host
++     * CLOCK_MONOTONIC time of the last vblank tick, per scanout */
++    uint64_t vblank_config[16];
+     const GraphicHwOps *hw_ops;
+ 
+     int renderer_blocked;
++    /* x-host-vblank: announce presentations through the config space */
++    bool host_vblank;
++    /* x-vblank-lead: tick the guest this many us before each vblank (0 = at presentation) */
++    uint32_t vblank_lead_us;
++    /*
++     * x-vblank-lead-auto: regulate the lead so that the guest's frames are
++     * swapped 6 ms before the vblank that shows them
++     */
++    bool vblank_lead_auto;
++    uint32_t vblank_swap_target_us;  /* frames of a burst swapped this long before their vblank */
+     int enable;
+ 
+     MemoryRegion hostmem;
+@@ -179,6 +219,8 @@ struct VirtIOGPUBaseClass {
+     VirtioDeviceClass parent;
+ 
+     void (*gl_flushed)(VirtIOGPUBase *g);
++    /* the deferred flush fence of a head may be created now (zero copy) */
++    void (*flush_fence)(VirtIOGPUBase *g, uint32_t head);
+ };
+ 
+ #define VIRTIO_GPU_BASE_PROPERTIES(_state, _conf)                       \
+@@ -332,6 +374,9 @@ struct VirtIOGPURutabaga {
+     } while (0)
+ 
+ /* virtio-gpu-base.c */
++bool virtio_gpu_defer_flush_fence(VirtIOGPUBase *g, uint32_t head,
++                                  uint32_t fence_id);
++void virtio_gpu_flush_fence_now(VirtIOGPUBase *g, uint32_t head);
+ bool virtio_gpu_base_device_realize(DeviceState *qdev,
+                                     VirtIOHandleOutput ctrl_cb,
+                                     VirtIOHandleOutput cursor_cb,
+@@ -418,6 +463,7 @@ void virtio_gpu_disable_scanout_for_resource(VirtIOGPU *g,
+                                              uint32_t resource_id);
+ 
+ /* virtio-gpu-3d.c */
++void virtio_gpu_virgl_flush_fence(VirtIOGPUBase *b, uint32_t head);
+ void virtio_gpu_virgl_process_cmd(VirtIOGPU *g,
+                                   struct virtio_gpu_ctrl_command *cmd);
+ void virtio_gpu_virgl_fence_poll(VirtIOGPU *g);
