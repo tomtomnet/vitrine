@@ -48,7 +48,8 @@ StackBanner::StackBanner(QWidget *parent)
         m_error = builder->wasStopped() ? QString() : error;
         refresh();
     });
-    /* the preferences chose another QEMU, or the default again */
+    /* the preferences chose another QEMU, or the default again, even if
+       that is the same binary: reloadPreferred() tells either way */
     connect(QemuDocs::preferred(), &QemuDocs::changed, this, &StackBanner::refresh);
     refresh();
 }

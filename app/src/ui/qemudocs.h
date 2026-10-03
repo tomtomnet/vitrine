@@ -22,7 +22,7 @@ public:
     static QemuDocs *of(const QString &binary);
     /* Of the QEMU a VM with @args runs with: its #qemu, else the preferred */
     static QemuDocs *forArgs(const ArgsFile &args);
-    /* After the preferences changed the QEMU */
+    /* After the preferences changed the QEMU: changed(), even for the same binary */
     static void reloadPreferred();
 
     /* Null until loaded */

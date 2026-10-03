@@ -264,7 +264,8 @@ if(BUILD_TESTING)
     endforeach()
     # the windows': widgets that are never shown, so no screen either
     foreach(name
-            settingspages)
+            settingspages
+            stackbanner)
         qt_add_executable(test_${name} tests/test_${name}.cpp)
         target_link_libraries(test_${name} PRIVATE vitrine_ui Qt6::Test)
         add_test(NAME ${name} COMMAND test_${name})
