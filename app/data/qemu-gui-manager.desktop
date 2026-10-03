@@ -1,0 +1,11 @@
+[Desktop Entry]
+Type=Application
+Name=QEMU GUI Manager
+GenericName=Virtual Machine Manager
+Comment=Create and run QEMU virtual machines
+Exec=qemu-gui-manager
+Icon=qemu-gui-manager
+Terminal=false
+Categories=System;Emulator;Qt;
+Keywords=VM;virtual machine;QEMU;KVM;emulator;virtualization;
+StartupWMClass=qemu-gui-manager

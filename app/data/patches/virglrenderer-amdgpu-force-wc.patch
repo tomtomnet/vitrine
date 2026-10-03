@@ -1,0 +1,43 @@
+Origin: a local fix of the qemu-gui-manager author, not upstream.
+qemu-gui-manager ships it, and File > Build QEMU applies it to the
+virglrenderer it builds with DRM native context.
+
+amdgpu: force write-combining for host-visible blob mappings
+
+Report write-combining for all mappable host-visible blobs in the AMDGPU
+native context. Write-back caching of host blobs causes severe CPU-write
+stalls over virtio-gpu native context: radeonsi/RADV upload & staging
+buffers (GTT, allocated without AMDGPU_GEM_CREATE_CPU_GTT_USWC) are used
+by the compositor to texture-upload client backing stores, and streaming
+CPU writes into a WB-cached mapping of a host blob stall badly. Visible
+symptom: Qt/QWidget apps stutter, lag grows with window size.
+
+In practice this only changes GTT buffers that were previously CACHED;
+VRAM and USWC-tagged buffers already mapped WC.
+
+Requires QEMU '-accel kvm,honor-guest-pat=on' so the guest's WC PAT is
+honored by KVM. Trade-off: slower CPU reads / weak ordering, so
+read-back-heavy paths may regress. Local pragmatic override, not intended
+as-is for upstream (the clean fix is to tag these buffers USWC in the
+guest radeonsi driver so the existing propagation below yields WC).
+
+--- a/src/drm/amdgpu/amdgpu_renderer.c
++++ b/src/drm/amdgpu/amdgpu_renderer.c
+@@ -415,10 +415,13 @@
+       return -ENOENT;
+    }
+ 
+-   if (obj->enable_cache_wc)
+-      blob->map_info = VIRGL_RENDERER_MAP_CACHE_WC;
+-   else
+-      blob->map_info = VIRGL_RENDERER_MAP_CACHE_CACHED;
++   /* Force write-combining for all host-visible blob mappings: write-back
++    * caching of host blobs causes severe CPU-write stalls over the virtio
++    * native context (radeonsi/RADV upload & staging buffers used by the
++    * compositor for texture uploads). Requires QEMU
++    * -accel kvm,honor-guest-pat=on. Trade-off: slower CPU reads.
++    */
++   blob->map_info = VIRGL_RENDERER_MAP_CACHE_WC;
+ 
+    /* a memory can only be exported once; we don't want two resources to point
+     * to the same storage.
