@@ -1,6 +1,5 @@
 // SPDX-License-Identifier: GPL-2.0-or-later
 #include <QFile>
-#include <QStandardPaths>
 #include <QTemporaryDir>
 #include <QTest>
 
@@ -24,19 +23,20 @@ private slots:
     void initTestCase()
     {
         QVERIFY(m_tmp.isValid());
-        /* settings and data of their own: no stack built there */
-        QStandardPaths::setTestModeEnabled(true);
+        /*
+         * Settings and data of their own, no stack built there; not
+         * QtTest's test mode, whose folders the other tests share while
+         * ctest runs them side by side
+         */
+        for (const char *dir : {"XDG_CONFIG_HOME", "XDG_DATA_HOME", "XDG_CACHE_HOME"}) {
+            qputenv(dir, m_tmp.filePath(dir).toUtf8());
+        }
         /* the QEMU found by default, a stand-in that tells nothing */
         QFile qemu(m_tmp.filePath(Paths::qemuSystemName()));
         QVERIFY(qemu.open(QIODevice::WriteOnly) && qemu.write("#!/bin/sh\nexit 1\n") > 0);
         qemu.close();
         QVERIFY(qemu.setPermissions(QFileDevice::ReadOwner | QFileDevice::ExeOwner));
         qputenv("PATH", m_tmp.path().toUtf8());
-        Paths::setQemuBinary({});
-    }
-
-    void cleanupTestCase()
-    {
         Paths::setQemuBinary({});
     }
 

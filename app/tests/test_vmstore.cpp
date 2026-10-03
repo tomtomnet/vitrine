@@ -28,10 +28,20 @@ class TestVmStore : public QObject
 {
     Q_OBJECT
 
+    QTemporaryDir m_home;
+
 private slots:
     void initTestCase()
     {
-        QStandardPaths::setTestModeEnabled(true);
+        /*
+         * Settings of its own: diskImage() sets the QEMU of the preferences,
+         * which test_vmrunner, running beside it under ctest -j, reads from
+         * QtTest's test-mode folders
+         */
+        QVERIFY(m_home.isValid());
+        for (const char *dir : {"XDG_CONFIG_HOME", "XDG_DATA_HOME", "XDG_CACHE_HOME"}) {
+            qputenv(dir, m_home.filePath(dir).toUtf8());
+        }
     }
 
     void create()

@@ -7,7 +7,6 @@
 #include <QListWidget>
 #include <QRadioButton>
 #include <QSpinBox>
-#include <QStandardPaths>
 #include <QTemporaryDir>
 #include <QTest>
 
@@ -27,19 +26,23 @@ class TestSettingsPages : public QObject
 {
     Q_OBJECT
 
+    QTemporaryDir m_tmp;
+
     static QString text(const ArgsFile &args) { return args.toText(); }
 
 private slots:
     void initTestCase()
     {
-        /* settings of their own, and no QEMU to read the documentation of */
-        QStandardPaths::setTestModeEnabled(true);
+        /*
+         * Settings of their own, not QtTest's test mode, whose folders the
+         * other tests share while ctest runs them side by side; and no
+         * QEMU to read the documentation of
+         */
+        QVERIFY(m_tmp.isValid());
+        for (const char *dir : {"XDG_CONFIG_HOME", "XDG_DATA_HOME", "XDG_CACHE_HOME"}) {
+            qputenv(dir, m_tmp.filePath(dir).toUtf8());
+        }
         Paths::setQemuBinary("/nonexistent/qemu-system-x86_64");
-    }
-
-    void cleanupTestCase()
-    {
-        Paths::setQemuBinary({});
     }
 
     /* A VM that shows nowhere has neither radio checked, whatever was before */
