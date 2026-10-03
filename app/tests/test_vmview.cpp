@@ -78,6 +78,16 @@ const char kConsoleXml[] = R"XML(
   </interface>
 </node>)XML";
 
+/* The client's side registers with it: Grab, Release and Request come from the client
+   only once the guest's clipboard is involved */
+const char kClipboardXml[] = R"XML(
+<node>
+  <interface name="org.qemu.Display1.Clipboard">
+    <method name="Register"/>
+    <method name="Unregister"/>
+  </interface>
+</node>)XML";
+
 const char kRoot[] = "/org/qemu/Display1";
 
 } // namespace
@@ -150,7 +160,7 @@ public:
         std::lock_guard g(m_lock);
         m_calls.clear();
     }
-    /* Keyboard and UIInfo calls wait for an answer until let go */
+    /* Keyboard, UIInfo and Clipboard calls wait for an answer until let go */
     void hold(bool on) { m_hold = on; }
     void letGo()
     {
@@ -300,7 +310,8 @@ private:
     {
         static const GDBusInterfaceVTable vtable = {methodCall, getProperty, nullptr, {}};
         for (const auto &[path, xml] : {std::pair{QByteArray(kRoot) + "/VM", kVmXml},
-                                        std::pair{QByteArray(kRoot) + "/Console_0", kConsoleXml}}) {
+                                        std::pair{QByteArray(kRoot) + "/Console_0", kConsoleXml},
+                                        std::pair{QByteArray(kRoot) + "/Clipboard", kClipboardXml}}) {
             GDBusNodeInfo *node = g_dbus_node_info_new_for_xml(xml, nullptr);
             for (int i = 0; node->interfaces[i]; i++) {
                 g_dbus_connection_register_object(m_conn, path.constData(), node->interfaces[i],
@@ -379,7 +390,8 @@ private:
             }
             return;
         }
-        if (d->m_hold && (shortIface == "Keyboard" || shortIface == "UIInfo")) {
+        if (d->m_hold &&
+            (shortIface == "Keyboard" || shortIface == "UIInfo" || shortIface == "Clipboard")) {
             d->m_held.push_back(inv);
             return;
         }
@@ -645,6 +657,22 @@ private Q_SLOTS:
         key(screen, QEvent::KeyRelease);
         QTRY_COMPARE(qemu.callsTo("Keyboard.").size(), 4);
         delete view;
+    }
+
+    /* The view shares the clipboard on its connection; it may go before
+       QEMU answers its Register */
+    void clipboard()
+    {
+        FakeDisplay qemu(socketPath());
+        auto *view = new VmView;
+        QString error;
+        qemu.hold(true);
+        QVERIFY2(view->attach(socketPath(), &error), qPrintable(error));
+        QTRY_COMPARE(qemu.callsTo("Clipboard."), QStringList({"Clipboard.Register ()"}));
+        delete view;
+        qemu.hold(false);
+        qemu.letGo();
+        QTest::qWait(100);
     }
 
     void attachFails()

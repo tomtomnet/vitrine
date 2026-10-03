@@ -6,6 +6,7 @@
 #include "listener.h"
 #include "qmp.h"
 #include "renderer.h"
+#include "vmclipboard.h"
 #include "waylandextras.h"
 
 #include "keyboard-shortcuts-inhibit-unstable-v1-client-protocol.h"
@@ -225,6 +226,17 @@ bool VmView::attach(const QString &monitorSocket, QString *error)
         return false;
     }
     m_window->sendUiInfo();
+    /*
+     * Last: QEMU reads the clipboard object's properties as it takes the
+     * Register, with its main loop stopped until this thread answers them,
+     * so no synchronous call to QEMU may follow on this thread before it
+     * gets back to its event loop.  Without it, the screen still works.
+     */
+    m_clipboard = new VmClipboard(m_dbus->connection(), this);
+    if (QString message; !m_clipboard->start(&message)) {
+        qWarning("vitrine: %s", qPrintable(message));
+        delete std::exchange(m_clipboard, nullptr);
+    }
     return true;
 }
 
@@ -235,6 +247,8 @@ void VmView::detach()
         m_listener->stop();
         m_listener.reset();
     }
+    /* before the connection closes: QEMU's calls to it end here */
+    delete std::exchange(m_clipboard, nullptr);
     if (m_dbus) {
         retire(std::exchange(m_dbus, nullptr), std::move(m_stats));
     }
