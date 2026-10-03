@@ -766,8 +766,10 @@ private slots:
         QDir(vms.path()).mkpath("other");
         writeFile(vms.path() + "/other/vm.args", "-name other\n");
         const QString run = Paths::vmRuntimeDir("other");
-        /* no QEMU: a shell, with the runner's -qmp among its arguments */
+        /* no QEMU: a shell, with the runner's -qmp among its arguments; in a
+           process group of its own, so that its sleep ends with it */
         QProcess other;
+        other.setChildProcessModifier([]() { setpgid(0, 0); });
         other.start("/bin/sh", {"-c", "sleep 300; :", "sh", "-qmp",
                                 QString("unix:%1/qmp.sock,server=on,wait=off").arg(run)});
         QVERIFY(other.waitForStarted());
@@ -791,7 +793,7 @@ private slots:
         QCOMPARE(hs.untunedStatus().why(),
                  QString("vitrine-helper does not take other: not a QEMU (qemu-system-*, qemu-kvm)"));
         /* its end ends that */
-        other.kill();
+        ::kill(-pid_t(other.processId()), SIGKILL);
         other.waitForFinished();
         QTRY_VERIFY(!hs.untuned());
     }
