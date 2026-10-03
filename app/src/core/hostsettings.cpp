@@ -864,12 +864,14 @@ void HostSettings::deny(const Status &status, QSet<qint64> pids, bool always)
 
 void HostSettings::setUntuned(qint64 pid, const Status &status)
 {
-    const auto it = std::find_if(m_untuned.begin(), m_untuned.end(),
-                                 [pid](const auto &entry) { return entry.first == pid; });
-
     if (pid <= 0) {
         return;
     }
+    /* the gone ones count no more, and their pids may come back as others */
+    m_untuned.removeIf([pid](const auto &entry) { return entry.first != pid && !alive(entry.first); });
+    const auto it = std::find_if(m_untuned.begin(), m_untuned.end(),
+                                 [pid](const auto &entry) { return entry.first == pid; });
+
     if (status.active()) {
         if (it == m_untuned.end()) {
             return;

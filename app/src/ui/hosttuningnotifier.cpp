@@ -167,6 +167,9 @@ void HostTuningNotifier::setUp(QWidget *parent, const std::function<void()> &don
     QPointer<QWidget> guard(parent);
 
     if (!host) {
+        if (done) {
+            done();
+        }
         return;
     }
     host->setUpGroup([guard, done](HostSettings::Setup result, const QString &error,
