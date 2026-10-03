@@ -517,6 +517,44 @@ private slots:
         QTRY_VERIFY2(gone(helper), qPrintable(read(QString("/proc/%1/stat").arg(helper))));
     }
 
+    /* The QEMU of a start is the one it began with, even if the preferences
+       or `current` change while virtiofsd starts */
+    void oneQemuPerStart()
+    {
+        VmRunner runner(id, tmp.path());
+        QSignalSpy failed(&runner, &VmRunner::failed);
+        const QByteArray go = tmp.filePath("go").toUtf8();
+        const QByteArray ran = tmp.filePath("ran").toUtf8();
+        const QString first = script("qemu-first", "echo first > " + ran);
+        const QString second = script("qemu-second", "echo second > " + ran);
+
+        QFile::remove(QString::fromUtf8(go));
+        QFile::remove(QString::fromUtf8(ran));
+        /* opens its "socket" when told to */
+        Paths::setVirtiofsd(script("waiting-virtiofsd",
+                                   "while [ ! -e " + go + " ]; do sleep 0.05; done\n"
+                                   ": >\"${1#--socket-path=}\"\n"
+                                   "while :; do sleep 0.1; done"));
+        Paths::setQemuBinary(first);
+        runner.start(ArgsFile::parse("-machine q35,memory-backend=mem\n"
+                                     "-object memory-backend-memfd,id=mem,size=128M\n"
+                                     "#share tag=t,path=" + tmp.path() + "\n"));
+        QCOMPARE(runner.state(), VmRunner::State::Starting);
+        Paths::setQemuBinary(second);
+        QFile f(QString::fromUtf8(go));
+        QVERIFY(f.open(QIODevice::WriteOnly));
+        f.close();
+
+        /* the stand-in ends at once: QEMU stopped */
+        QTRY_COMPARE_WITH_TIMEOUT(failed.size(), 1, 10000);
+        QCOMPARE(read(QString::fromUtf8(ran)).trimmed(), "first");
+        const QString log = read(runner.logPath());
+        QVERIFY2(log.section('\n', 0, 0).contains(first), qPrintable(log));
+        QVERIFY(!log.contains(second));
+        Paths::setQemuBinary(testQemu());
+        Paths::setVirtiofsd({});
+    }
+
     void sharedFolder()
     {
         if (Paths::virtiofsd().isEmpty()) {

@@ -136,12 +136,12 @@ static QString qemuFor(const ArgsFile &args)
  * -smbios get them; a QEMU named otherwise, like qemu-kvm, is taken for
  * one of the host's architecture.
  */
-static QString fstabExtra(const ArgsFile &args)
+static QString fstabExtra(const ArgsFile &args, const QString &qemu)
 {
     static const QRegularExpression target("^qemu-system-([a-z0-9_]+)");
     static const QStringList smbios{"x86_64", "i386",    "aarch64",    "arm",
                                     "riscv64", "riscv32", "loongarch64"};
-    const QRegularExpressionMatch m = target.match(QFileInfo(qemuFor(args)).fileName());
+    const QRegularExpressionMatch m = target.match(QFileInfo(qemu).fileName());
     QString lines;
 
     /* a credential of its own; isapc refuses type 11, and has no PCI for virtiofs */
@@ -227,6 +227,13 @@ struct VmRunner::Private
     QTimer *killTimer;
     QElapsedTimer clock;
     ArgsFile args;              // of the run being started
+    /*
+     * The QEMU of the run and its command line, made once at start: the
+     * preferences or `current` may change while virtiofsd starts, and the
+     * log must tell what runs
+     */
+    QString qemu;
+    QStringList command;
     qint64 pid = 0;             // QEMU
     QList<Helper> helpers;      // virtiofsd started for this run
     GuestAgent *agent = nullptr;    // mounting the shares
@@ -241,6 +248,7 @@ struct VmRunner::Private
     QString agentPath() const { return runDir() + "/qga.sock"; }
     QString displayPath() const { return runDir() + "/display.sock"; }
     QString qmpArg() const;
+    QStringList commandLine(const ArgsFile &args, const QString &qemu) const;
     QString logPath() const { return dir + "/qemu.log"; }
     QString logTail(bool qemuErrors = true) const;
     qint64 runningPid() const;
@@ -297,7 +305,7 @@ QString VmRunner::Private::logTail(bool qemuErrors) const
     if (f.size() > 16384) {
         f.seek(f.size() - 16384);
     }
-    const QString prefix = QFileInfo(qemuFor(args)).fileName() + ':';
+    const QString prefix = QFileInfo(qemu.isEmpty() ? qemuFor(args) : qemu).fileName() + ':';
     for (const QString &line : QString::fromUtf8(f.readAll()).split('\n')) {
         const QString t = line.trimmed();
         if (t.isEmpty() || t.startsWith("vitrine:")) {
@@ -408,7 +416,6 @@ void VmRunner::Private::cleanup()
 
 void VmRunner::Private::launchQemu()
 {
-    const QStringList command = q->commandLine(args);
     QString launchError;
 
     if (!launch(command.first(), command.mid(1), &pid, &launchError,
@@ -692,22 +699,28 @@ QString VmRunner::logPath() const
 
 QStringList VmRunner::commandLine(const ArgsFile &args) const
 {
-    const QList<VmConfig::Share> shares = VmConfig::shares(args);
-    QStringList command{qemuFor(args)};
+    /* the QEMU resolved once: `current` may switch to a new build meanwhile */
+    return d->commandLine(args, qemuFor(args));
+}
 
-    command += withComputedProperties(args, [&args](const QString &driver) {
-                   return deviceProperties(qemuFor(args), driver);
+QStringList VmRunner::Private::commandLine(const ArgsFile &args, const QString &qemu) const
+{
+    const QList<VmConfig::Share> shares = VmConfig::shares(args);
+    QStringList command{qemu};
+
+    command += withComputedProperties(args, [&qemu](const QString &driver) {
+                   return deviceProperties(qemu, driver);
                }).argv();
     for (qsizetype i = 0; i < shares.size(); i++) {
         command << "-chardev"
                 << QString("socket,id=vitrine-fs%1,path=%2")
-                       .arg(QString::number(i), OptionValue::escape(d->sharePath(i)))
+                       .arg(QString::number(i), OptionValue::escape(sharePath(i)))
                 << "-device"
                 << QString("vhost-user-fs-pci,queue-size=1024,chardev=vitrine-fs%1,tag=%2")
                        .arg(QString::number(i), OptionValue::escape(shares[i].tag));
     }
     /* systemd in the guest mounts the shares at boot, else qemu-ga does */
-    const QString fstab = fstabExtra(args);
+    const QString fstab = fstabExtra(args, qemu);
     if (!fstab.isEmpty()) {
         command << "-smbios"
                 << "type=11,value=io.systemd.credential.binary:fstab.extra=" +
@@ -716,7 +729,7 @@ QStringList VmRunner::commandLine(const ArgsFile &args) const
     if (addsAgent(args)) {
         command << "-chardev"
                 << QString("socket,id=vitrine-ga,path=%1,server=on,wait=off")
-                       .arg(OptionValue::escape(d->agentPath()))
+                       .arg(OptionValue::escape(agentPath()))
                 << "-device" << "virtio-serial-pci,id=vitrine-serial"
                 << "-device"
                 << QString("virtserialport,bus=vitrine-serial.0,chardev=vitrine-ga,"
@@ -725,9 +738,9 @@ QStringList VmRunner::commandLine(const ArgsFile &args) const
     if (VmConfig::screen(args) == VmConfig::Screen::Embedded) {
         /* a second -qmp; -mon is deprecated */
         command << "-qmp"
-                << QString("unix:%1,server=on,wait=off").arg(OptionValue::escape(d->displayPath()));
+                << QString("unix:%1,server=on,wait=off").arg(OptionValue::escape(displayPath()));
     }
-    command << "-qmp" << d->qmpArg() << "-pidfile" << d->pidPath();
+    command << "-qmp" << qmpArg() << "-pidfile" << pidPath();
     return command;
 }
 
@@ -850,6 +863,8 @@ void VmRunner::start(const ArgsFile &args)
     d->stopRequested = false;
     d->killStep = 0;
     d->args = args;
+    d->qemu = qemu;
+    d->command.clear();
     if (qemu.isEmpty() || !QFileInfo(qemu).isExecutable()) {
         d->fail(VmConfig::qemuBinary(args).isEmpty()
                     ? tr("QEMU was not found: set its path in the preferences")
@@ -900,11 +915,13 @@ void VmRunner::start(const ArgsFile &args)
         return;
     }
     const QStringList environment = VmRunner::environment(args);
+    /* what launchQemu() runs, after virtiofsd if any */
+    d->command = d->commandLine(args, qemu);
     log.write(QString("vitrine: %1 %2%3\n")
                   .arg(QDateTime::currentDateTime().toString(Qt::ISODate),
                        environment.isEmpty()
                            ? QString() : shellAssignments(environment).join(' ') + ' ',
-                       shellQuote(commandLine(args)))
+                       shellQuote(d->command))
                   .toUtf8());
     for (const QString &line : std::as_const(remade)) {
         log.write(("vitrine: " + line + '\n').toUtf8());
@@ -949,6 +966,9 @@ void VmRunner::attach(const ArgsFile &args)
         return;
     }
     d->pid = pid;
+    /* the binary it runs, not the one the preferences may name now */
+    d->qemu = cmdline(pid).value(0);
+    d->command.clear();
     d->error.clear();
     d->stopRequested = false;
     d->killStep = 0;
