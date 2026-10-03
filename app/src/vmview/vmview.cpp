@@ -154,10 +154,14 @@ bool VmView::attach(const QString &monitorSocket, QString *error)
                 m_window->setGuestSize(w, h);
             }
             /* A new listener gets the scanout QEMU shows, but not the update
-               that draws it (console.c, displaychangelistener_display_console):
-               attached to a guest that does not repaint, the screen would stay
-               black.  The renderer draws only on an update or a dirty view, so
-               the first scanout, and any of a new size, makes the view dirty. */
+               that draws it (console.c, displaychangelistener_display_console),
+               and the renderer draws only on an update or a dirty view.  The
+               window's first expose makes the view dirty: if the scanout came
+               first, as it does on KWin (2026-10-03, re-attached to an idle
+               guest, QEMU's trace: scanout, then the frame presented, the
+               guest's next update 7 s later), that draws it; if it comes
+               after, an idle guest would stay black until it repaints.  So
+               the first scanout, and any of a new size, makes it dirty too. */
             if (m_renderer) {
                 m_renderer->requestRedraw();
             }
