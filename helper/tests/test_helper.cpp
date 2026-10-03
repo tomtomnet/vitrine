@@ -543,7 +543,7 @@ private slots:
         QCOMPARE(h.answer("watch 0123"), QString("error watch: give a process id"));
         QCOMPARE(h.answer("watch 99999999"), QString("error watch: give a process id"));
         QCOMPARE(h.answer("watch " + QString::number(sleeper.processId())),
-                 QString("error watch %1: not a QEMU (qemu-system-*)").arg(sleeper.processId()));
+                 QString("error watch %1: not a QEMU (qemu-system-*, qemu-kvm)").arg(sleeper.processId()));
         /* a pid no process has: pid_max is 4194304 */
         QVERIFY(h.answer("watch 4194303").startsWith("error watch 4194303: "));
         QCOMPARE(h.answer("watch " + qemu.pidText()), "ok watch " + qemu.pidText());

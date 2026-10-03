@@ -34,8 +34,9 @@ sudo groupadd --system vitrine
 sudo usermod -aG vitrine "$USER"
 ```
 
-then log out and back in (`id` should list `vitrine`). Preferences > Tune
-the host while VMs run turns it off again for you.
+polkit sees the new membership at the next VM start (`id` lists it once
+you log in again). Preferences > Tune the host while VMs run turns it off
+again for you.
 
 To take it back: `sudo gpasswd -d "$USER" vitrine` (and
 `sudo groupdel vitrine` when nobody is left in it).
@@ -47,7 +48,7 @@ for them. It does only this, for the user who started it:
 
 | Request | What it does | Checks |
 | --- | --- | --- |
-| `watch PID` | Watches a QEMU until it exits | The process belongs to the caller (all its uids) and runs a `qemu-system-*` executable; held through a pidfd, so a reused pid cannot slip in |
+| `watch PID` | Watches a QEMU until it exits | The process belongs to the caller (all its uids) and runs a `qemu-system-*` (or `qemu-kvm`) executable; held through a pidfd, so a reused pid cannot slip in |
 | `fair-server on` | 10 ms / 1 ms on every CPU | Fixed values; only `cpuN` folders; nothing to choose |
 | `gpu-floor CARD MHZ\|auto` | An AMD GPU's lowest gfx clock | `cardN` of vendor 0x1002 driven by amdgpu; the clock within the GPU's own overdrive range; only when its performance level is `auto` |
 | `rt PID` | SCHED_FIFO 1 on every thread of a watched QEMU | Watched first; RT threads it finds are left as they are |

@@ -1,0 +1,374 @@
+// SPDX-License-Identifier: GPL-2.0-or-later
+/*
+ * HostSettings with the helper's test build (vitrine-helper-fake) on a fake
+ * sysfs/debugfs tree, a stand-in QEMU, and the preferences.
+ */
+#include <QDir>
+#include <QFile>
+#include <QProcess>
+#include <QSignalSpy>
+#include <QStandardPaths>
+#include <QTest>
+
+#include <csignal>
+
+#include "core/hostsettings.h"
+
+static const char kFair[] = "/sys/kernel/debug/sched/fair_server";
+static const char kCard[] = "/sys/class/drm/card1/device";
+
+static bool writeFile(const QString &path, const QByteArray &data)
+{
+    QDir().mkpath(QFileInfo(path).path());
+    QFile f(path);
+    return f.open(QIODevice::WriteOnly | QIODevice::Truncate) && f.write(data) == data.size();
+}
+
+static QByteArray readFile(const QString &path)
+{
+    QFile f(path);
+    return f.open(QIODevice::ReadOnly) ? f.readAll().trimmed() : QByteArray();
+}
+
+static QByteArray od(int min, int max)
+{
+    return QString("OD_SCLK:\n0:        %1Mhz\n1:       %2Mhz\nOD_RANGE:\n"
+                   "SCLK:     800Mhz       2700Mhz\n")
+        .arg(min).arg(max).toLatin1();
+}
+
+/* An AMD card under @sys: its gpu_metrics format revision (2: APU, 1: discrete) */
+static void amdCard(const QString &sys, const QString &card, char format, bool overdrive = true)
+{
+    const QString device = sys + "/class/drm/" + card + "/device";
+    writeFile(device + "/vendor", "0x1002\n");
+    writeFile(device + "/power_dpm_force_performance_level", "auto\n");
+    writeFile(device + "/gpu_metrics", QByteArray("\x78\x00", 2) + format + QByteArray("\x01", 1));
+    if (overdrive) {
+        writeFile(device + "/pp_od_clk_voltage", od(800, 2700));
+    }
+    QFile::link("../../../../bus/pci/drivers/amdgpu", device + "/driver");
+}
+
+class FakeQemu
+{
+public:
+    FakeQemu()
+    {
+        m_process.start(FAKE_QEMU, {});
+        m_process.waitForStarted();
+        m_pid = m_process.processId();
+    }
+    ~FakeQemu() { stop(); }
+    qint64 pid() const { return m_pid; }
+    void stop()
+    {
+        if (m_process.state() != QProcess::NotRunning) {
+            m_process.kill();
+            m_process.waitForFinished();
+        }
+    }
+
+private:
+    QProcess m_process;
+    qint64 m_pid = 0;
+};
+
+class TestHostSettings : public QObject
+{
+    Q_OBJECT
+
+private:
+    QString m_root;
+
+    QString fair(int cpu) const
+    {
+        return QString("%1/%2").arg(
+            readFile(QString("%1%2/cpu%3/period").arg(m_root, kFair).arg(cpu)),
+            readFile(QString("%1%2/cpu%3/runtime").arg(m_root, kFair).arg(cpu)));
+    }
+    QString level() const
+    {
+        return readFile(m_root + kCard + "/power_dpm_force_performance_level");
+    }
+    QByteArray odTable() const { return readFile(m_root + kCard + "/pp_od_clk_voltage"); }
+    /* A HostSettings on the fake tree, through the helper's test build */
+    void fake(HostSettings &hs) const
+    {
+        hs.setHelperCommand({HELPER_FAKE});
+        hs.setSysRoot(m_root + "/sys");
+    }
+    static bool saw(const QSignalSpy &spy, const QString &start)
+    {
+        for (const QList<QVariant> &args : spy) {
+            if (args.value(0).toString().startsWith(start)) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+private slots:
+    void initTestCase() { QStandardPaths::setTestModeEnabled(true); }
+
+    void init()
+    {
+        QFile::remove(QStandardPaths::writableLocation(QStandardPaths::GenericConfigLocation) +
+                      "/vitrine/settings.conf");
+        qunsetenv("VITRINE_HELPER");
+        m_root = QString(TEST_WORK_DIR) + "/hostsettings-" + QTest::currentTestFunction();
+        QDir(m_root).removeRecursively();
+        QDir().mkpath(m_root + "/run");
+        writeFile(m_root + "/sys/kernel/security/lockdown", "[none] integrity confidentiality\n");
+        for (int cpu = 0; cpu < 2; cpu++) {
+            writeFile(QString("%1%2/cpu%3/period").arg(m_root, kFair).arg(cpu), "1000000000\n");
+            writeFile(QString("%1%2/cpu%3/runtime").arg(m_root, kFair).arg(cpu), "50000000\n");
+        }
+        amdCard(m_root + "/sys", "card1", 2);
+        writeFile(m_root + "/sys/class/drm/card0/device/vendor", "0x8086\n");
+        qputenv("VITRINE_HELPER_TEST_ROOT", m_root.toLocal8Bit());
+    }
+
+    void preferences()
+    {
+        QVERIFY(HostSettings::enabled());
+        QCOMPARE(HostSettings::gpuFloor(), QString("auto"));
+        HostSettings::setGpuFloor("1500");
+        QCOMPARE(HostSettings::gpuFloor(), QString("1500"));
+        HostSettings::setGpuFloor("off");
+        QCOMPARE(HostSettings::gpuFloor(), QString("off"));
+        /* anything else is the default */
+        HostSettings::setGpuFloor("1500; rm -rf");
+        QCOMPARE(HostSettings::gpuFloor(), QString("auto"));
+        HostSettings::setGpuFloor("0800");
+        QCOMPARE(HostSettings::gpuFloor(), QString("auto"));
+        HostSettings::setEnabled(false);
+        QVERIFY(!HostSettings::enabled());
+    }
+
+    void amdCards()
+    {
+        const QString sys = m_root + "/sys";
+        amdCard(sys, "card2", 1);                    // discrete
+        amdCard(sys, "card3", 2, false);             // no overdrive table
+        QDir().mkpath(sys + "/class/drm/card1-eDP-1");
+        QCOMPARE(HostSettings::amdCards(sys, false), QStringList({"card1", "card2"}));
+        QCOMPARE(HostSettings::amdCards(sys, true), QStringList({"card1"}));
+        QVERIFY(HostSettings::amdCards(m_root + "/nothing", false).isEmpty());
+    }
+
+    /* A VM start: watched, tuned; its end: everything back, the helper gone */
+    void tuneAndRevert()
+    {
+        FakeQemu qemu;
+        HostSettings hs(nullptr);
+        QSignalSpy lines(&hs, &HostSettings::helperLine), notices(&hs, &HostSettings::notice),
+            finished(&hs, &HostSettings::helperFinished);
+        fake(hs);
+        hs.tune(qemu.pid());
+        QTRY_VERIFY(saw(lines, QString("ok rt %1").arg(qemu.pid())));
+        QVERIFY(saw(lines, "ok fair-server on: 2 cpus"));
+        QVERIFY(saw(lines, "ok gpu-floor card1 1800 MHz"));
+        QCOMPARE(fair(0), QString("10000000/1000000"));
+        QCOMPARE(level(), QString("manual"));
+        QCOMPARE(odTable(), od(1800, 2700).trimmed());
+        QVERIFY(notices.isEmpty());
+        QVERIFY(hs.helperRunning());
+
+        qemu.stop();
+        QTRY_COMPARE(finished.size(), 1);
+        QVERIFY(!hs.helperRunning());
+        QCOMPARE(fair(0), QString("1000000000/50000000"));
+        QCOMPARE(level(), QString("auto"));
+        QCOMPARE(odTable(), od(800, 2700).trimmed());
+        QVERIFY(notices.isEmpty());
+    }
+
+    /* A second VM joins the same helper; the settings go with the last one */
+    void twoVms()
+    {
+        FakeQemu q1, q2;
+        HostSettings hs(nullptr);
+        QSignalSpy lines(&hs, &HostSettings::helperLine), finished(&hs, &HostSettings::helperFinished);
+        fake(hs);
+        hs.tune(q1.pid());
+        QTRY_VERIFY(saw(lines, QString("ok rt %1").arg(q1.pid())));
+        hs.tune(q2.pid());
+        QTRY_VERIFY(saw(lines, QString("ok rt %1").arg(q2.pid())));
+        QVERIFY(saw(lines, "ok fair-server on: already"));
+        QVERIFY(saw(lines, "ok gpu-floor card1 auto: already"));
+        q1.stop();
+        QTRY_VERIFY(saw(lines, QString("exited %1").arg(q1.pid())));
+        QTest::qWait(200);
+        QVERIFY(hs.helperRunning());
+        QCOMPARE(fair(1), QString("10000000/1000000"));
+        q2.stop();
+        QTRY_COMPARE(finished.size(), 1);
+        QCOMPARE(fair(1), QString("1000000000/50000000"));
+        QCOMPARE(level(), QString("auto"));
+    }
+
+    void floorOff()
+    {
+        HostSettings::setGpuFloor("off");
+        FakeQemu qemu;
+        HostSettings hs(nullptr);
+        QSignalSpy lines(&hs, &HostSettings::helperLine);
+        fake(hs);
+        hs.tune(qemu.pid());
+        QTRY_VERIFY(saw(lines, QString("ok rt %1").arg(qemu.pid())));
+        QVERIFY(saw(lines, "ok gpu-floor card1 off"));
+        QCOMPARE(level(), QString("auto"));
+        QCOMPARE(fair(0), QString("10000000/1000000"));
+    }
+
+    void floorFixed()
+    {
+        HostSettings::setGpuFloor("2000");
+        FakeQemu qemu;
+        HostSettings hs(nullptr);
+        QSignalSpy lines(&hs, &HostSettings::helperLine);
+        fake(hs);
+        hs.tune(qemu.pid());
+        QTRY_VERIFY(saw(lines, QString("ok rt %1").arg(qemu.pid())));
+        QVERIFY(saw(lines, "ok gpu-floor card1 2000 MHz"));
+        QCOMPARE(odTable(), od(2000, 2700).trimmed());
+    }
+
+    void disabled()
+    {
+        HostSettings::setEnabled(false);
+        FakeQemu qemu;
+        HostSettings hs(nullptr);
+        QSignalSpy lines(&hs, &HostSettings::helperLine), notices(&hs, &HostSettings::notice);
+        fake(hs);
+        hs.tune(qemu.pid());
+        QTest::qWait(300);
+        QVERIFY(!hs.helperRunning());
+        QVERIFY(lines.isEmpty());
+        QVERIFY(notices.isEmpty());
+        QCOMPARE(fair(0), QString("1000000000/50000000"));
+    }
+
+    /* Turned off while VMs run: the next start lets everything go */
+    void disabledWhileRunning()
+    {
+        FakeQemu q1, q2;
+        HostSettings hs(nullptr);
+        QSignalSpy lines(&hs, &HostSettings::helperLine), finished(&hs, &HostSettings::helperFinished);
+        fake(hs);
+        hs.tune(q1.pid());
+        QTRY_VERIFY(saw(lines, QString("ok rt %1").arg(q1.pid())));
+        HostSettings::setEnabled(false);
+        hs.tune(q2.pid());
+        QTRY_COMPARE(finished.size(), 1);
+        QCOMPARE(fair(0), QString("1000000000/50000000"));
+        QCOMPARE(level(), QString("auto"));
+        QVERIFY(saw(lines, QString("restored rt %1").arg(q1.pid())));
+    }
+
+    /* Not installed: said once, the VMs run untuned */
+    void notInstalled()
+    {
+        qputenv("VITRINE_HELPER", "/nonexistent/vitrine-helper");
+        FakeQemu qemu;
+        HostSettings hs(nullptr);
+        QSignalSpy notices(&hs, &HostSettings::notice);
+        hs.setSysRoot(m_root + "/sys");
+        QVERIFY(!HostSettings::helperInstalled());
+        hs.tune(qemu.pid());
+        hs.tune(qemu.pid() + 1);
+        QTRY_COMPARE(notices.size(), 1);
+        QCOMPARE(notices.first().first().toString(),
+                 QString("Host tuning is off: vitrine-helper is not installed."));
+        QTest::qWait(200);
+        QCOMPARE(notices.size(), 1);
+        QVERIFY(!hs.helperRunning());
+    }
+
+    /* pkexec refusing (as without the group): said once, never asked again */
+    void refused()
+    {
+        FakeQemu qemu;
+        HostSettings hs(nullptr);
+        QSignalSpy notices(&hs, &HostSettings::notice), finished(&hs, &HostSettings::helperFinished);
+        hs.setSysRoot(m_root + "/sys");
+        hs.setHelperCommand({"/bin/sh", "-c",
+                             "echo 'Error executing command as another user: Not authorized'; "
+                             "exit 127"});
+        hs.tune(qemu.pid());
+        QTRY_COMPARE(finished.size(), 1);
+        QCOMPARE(notices.size(), 1);
+        QCOMPARE(notices.first().first().toString(),
+                 QString("Host tuning is off: Error executing command as another user: Not authorized."));
+        hs.tune(qemu.pid());
+        QTest::qWait(300);
+        QCOMPARE(finished.size(), 1);
+        QCOMPARE(notices.size(), 1);
+    }
+
+    /* What cannot apply here is said, once */
+    void skipSaid()
+    {
+        writeFile(m_root + "/sys/kernel/security/lockdown", "none [integrity] confidentiality\n");
+        FakeQemu q1, q2;
+        HostSettings hs(nullptr);
+        QSignalSpy lines(&hs, &HostSettings::helperLine), notices(&hs, &HostSettings::notice);
+        fake(hs);
+        hs.tune(q1.pid());
+        QTRY_VERIFY(saw(lines, QString("ok rt %1").arg(q1.pid())));
+        hs.tune(q2.pid());
+        QTRY_VERIFY(saw(lines, QString("ok rt %1").arg(q2.pid())));
+        QCOMPARE(notices.size(), 1);
+        QCOMPARE(notices.first().first().toString(),
+                 QString("Host tuning: fair-server: kernel lockdown (integrity)"));
+    }
+
+    /* A VM gone before the helper could watch it: no news, and the helper ends */
+    void vmGoneAtOnce()
+    {
+        qint64 pid;
+        {
+            FakeQemu qemu;
+            pid = qemu.pid();
+        }
+        HostSettings hs(nullptr);
+        QSignalSpy notices(&hs, &HostSettings::notice), finished(&hs, &HostSettings::helperFinished),
+            lines(&hs, &HostSettings::helperLine);
+        fake(hs);
+        hs.tune(pid);
+        QTRY_COMPARE(finished.size(), 1);
+        QVERIFY(saw(lines, QString("error watch %1").arg(pid)));
+        QVERIFY(notices.isEmpty());
+        QCOMPARE(fair(0), QString("1000000000/50000000"));
+    }
+
+    /* vitrine quits while its VMs run: the helper goes on and reverts after them */
+    void outlivesTheApp()
+    {
+        FakeQemu qemu;
+        {
+            HostSettings hs(nullptr);
+            QSignalSpy lines(&hs, &HostSettings::helperLine);
+            fake(hs);
+            hs.tune(qemu.pid());
+            QTRY_VERIFY(saw(lines, QString("ok rt %1").arg(qemu.pid())));
+        }
+        QTest::qWait(300);
+        QCOMPARE(fair(0), QString("10000000/1000000"));
+        qemu.stop();
+        QTRY_COMPARE(fair(0), QString("1000000000/50000000"));
+        QTRY_COMPARE(level(), QString("auto"));
+    }
+
+    void capabilityWithoutHelper()
+    {
+        qputenv("VITRINE_HELPER", "/nonexistent/vitrine-helper");
+        QString error = "unset";
+        HostSettings::grantCapability(FAKE_QEMU, this, [&](const QString &e) { error = e; });
+        QCOMPARE(error, QString("vitrine-helper is not installed"));
+    }
+};
+
+QTEST_GUILESS_MAIN(TestHostSettings)
+#include "test_hostsettings.moc"

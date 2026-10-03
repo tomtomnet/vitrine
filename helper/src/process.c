@@ -63,7 +63,8 @@ static bool owned_by(int procfd, uid_t uid)
            e == uid && s == uid && f == uid;
 }
 
-/* The basename is qemu-system-<arch>; @exe gets the executable's path */
+/* The basename is qemu-system-<arch> (or RHEL's qemu-kvm); @exe gets the
+   executable's path */
 static bool runs_qemu(int procfd, char *exe, size_t size)
 {
     static const char deleted[] = " (deleted)";
@@ -81,6 +82,9 @@ static bool runs_qemu(int procfd, char *exe, size_t size)
         exe[len - (sizeof(deleted) - 1)] = '\0';
     }
     base = strrchr(exe, '/') ? strrchr(exe, '/') + 1 : exe;
+    if (strcmp(base, "qemu-kvm") == 0) {
+        return true;
+    }
     if (strncmp(base, "qemu-system-", 12) != 0 || !base[12]) {
         return false;
     }
@@ -143,7 +147,7 @@ bool watch(const char *arg)
     if (!owned_by(procfd, caller_uid)) {
         reply("error watch %d: not a process of uid %u", (int)pid, (unsigned)caller_uid);
     } else if (!runs_qemu(procfd, exe, sizeof(exe))) {
-        reply("error watch %d: not a QEMU (qemu-system-*)", (int)pid);
+        reply("error watch %d: not a QEMU (qemu-system-*, qemu-kvm)", (int)pid);
     } else if (!pidfd_alive(pidfd)) {
         reply("error watch %d: it has exited", (int)pid);
     } else {

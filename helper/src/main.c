@@ -12,7 +12,7 @@
  *
  * Session requests, each answered by one line or more:
  *   watch PID              a QEMU of the caller's (same uids, qemu-system-*
- *                          executable), watched through a pidfd
+ *                          or qemu-kvm executable), watched through a pidfd
  *   fair-server on|off     the kernel's fair server at 10 ms / 1 ms on every CPU
  *   gpu-floor CARD MHZ|auto|off
  *                          an amdgpu card's lowest gfx clock (auto: 1800 MHz on
