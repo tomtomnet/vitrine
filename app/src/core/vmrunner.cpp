@@ -791,7 +791,8 @@ ArgsFile VmRunner::withComputedProperties(
  * QEMU's SDL window as the research launcher runs it: input read at the
  * refresh rate while it has the focus, and in full screen the guest's
  * buffers go to the screen as they are (the guest's driver must hold them,
- * else QEMU copies them, as other QEMUs ignore the variables)
+ * else QEMU copies them, as other QEMUs ignore the variables).  A VM's
+ * "#env NAME=0" turns each off in Vitrine's QEMU.
  */
 static const QStringList kSdlEnvironment = {
     "QEMU_SDL_POLL_FOCUSED=1",

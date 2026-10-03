@@ -1,0 +1,27 @@
+From: Vitrine
+Subject: [PATCH] ui/sdl2: QEMU_SDL_POLL_FOCUSED=0 turns the focused polling off
+
+QEMU_SDL_POLL_FOCUSED turned the polling at the refresh rate on whenever
+it was set, whatever its value, where QEMU_SDL_ZERO_COPY and
+QEMU_SDL_ZC_TILED take 0 for off. Vitrine sets it to 1 for the SDL
+window, and a VM's "#env QEMU_SDL_POLL_FOCUSED=0", which the command line
+it shows and logs then holds, left the polling on: no #env line can unset
+a variable. Vitrine's own patch, for the qemu-gui series to take over.
+---
+ ui/sdl2.c | 4 +++-
+ 1 file changed, 3 insertions(+), 1 deletion(-)
+
+diff --git a/ui/sdl2.c b/ui/sdl2.c
+--- a/ui/sdl2.c
++++ b/ui/sdl2.c
+@@ -1562,7 +1562,9 @@ static void sdl2_set_hint_x11_force_egl(void)
+
+ static void sdl2_display_init(DisplayState *ds, DisplayOptions *o)
+ {
+-    sdl2_poll_focused = getenv("QEMU_SDL_POLL_FOCUSED") != NULL;
++    /* 0 is off, as for QEMU_SDL_ZERO_COPY */
++    sdl2_poll_focused = getenv("QEMU_SDL_POLL_FOCUSED") &&
++                        strcmp(getenv("QEMU_SDL_POLL_FOCUSED"), "0");
+     uint8_t data = 0;
+     int i;
+     SDL_SysWMinfo info;

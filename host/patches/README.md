@@ -23,6 +23,12 @@ in the fork, so these files are the only copy.
 | `b720bb1a5400594737462850853c00a2df148a170ccef9ebce94d1f79d55d683` | `0006-zero-copy-default-full-screen-tiled.patch`: zero copy by default in full screen, tiled buffers with explicit modifiers, `x-vblank-swap-target-zc` |
 | `ca271b7d73b18402c826de59b28125c518e2ec574881a9370b1b70c956d4ee8e` | `0007-ui-dbus-zero-copy.patch`: zero copy for the D-Bus display (`Listener.Unix.ZeroCopy`, `ScanoutDMABUF2`) |
 
+Vitrine's own, on top, for the research side to take over:
+
+| sha256 | patch |
+|---|---|
+| `c477e012d64d05e0652e366bebc597e919af6ec64a02e794d471cd5188b0aafd` | `1001-vitrine-ui-sdl2-QEMU_SDL_POLL_FOCUSED-0-is-off.patch`: `QEMU_SDL_POLL_FOCUSED=0` is off, as `QEMU_SDL_ZERO_COPY=0` is |
+
 ## virglrenderer (upstream at `cf6c62da`)
 
 | sha256 | patch |
