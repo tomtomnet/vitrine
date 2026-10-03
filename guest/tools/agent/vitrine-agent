@@ -5,7 +5,8 @@ tools, and runs its few commands, over the virtio-serial port
 org.vitrine.agent.0 that vitrine gives every VM.
 
 Protocol: one JSON object per line, both ways.
-  host -> guest  {"cmd": "status" | "install-from-medium" | "request-reboot", "id": N}
+  host -> guest  {"cmd": "status" | "install-from-medium" | "request-reboot" | "shutdown",
+                  "id": N}
   guest -> host  {"type": "hello", "protocol": 1, "agent": VERSION, "status": {...}}
                  {"type": "status", "id": N, "status": {...}}
                  {"type": "progress", "id": N, "step": TEXT, "current": I, "total": T}
@@ -13,7 +14,9 @@ Protocol: one JSON object per line, both ways.
                   "rebootNeeded": BOOL}
                  {"type": "error", "id": N, "error": TEXT}
 The hello goes out each time the host side opens the port.  The commands are
-fixed actions: the host cannot make the guest run anything else.
+fixed actions: the host cannot make the guest run anything else.  shutdown
+powers the guest off at once, as root: Plasma answers the ACPI power button
+with its logout screen, which waits for someone to confirm.
 
   vitrine-agent                 the service (vitrine-agent.service)
   vitrine-agent --status        prints the status and exits
@@ -471,11 +474,12 @@ def command(message, port, install):
             return None
         log("installing from the tools medium, as the host asked")
         return Install(mnt, rid, port, mounted=mnt)
-    elif cmd == "request-reboot":
-        port.send({"type": "result", "id": rid, "cmd": cmd, "ok": True, "error": "",
-                   "rebootNeeded": False})
-        log("rebooting, as the host asked")
-        subprocess.run(["systemctl", "--no-block", "reboot"], check=False)
+    elif cmd in ("request-reboot", "shutdown"):
+        verb = "reboot" if cmd == "request-reboot" else "poweroff"
+        log(f"{verb}, as the host asked")
+        r = subprocess.run(["systemctl", "--no-block", verb], capture_output=True, text=True)
+        port.send({"type": "result", "id": rid, "cmd": cmd, "ok": r.returncode == 0,
+                   "error": r.stderr.strip(), "rebootNeeded": False})
     else:
         port.send({"type": "error", "id": rid, "error": f"unknown command {cmd!r}"})
     return install

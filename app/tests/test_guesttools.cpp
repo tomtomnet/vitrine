@@ -294,6 +294,13 @@ private slots:
         QCOMPARE(commandLine("status", 3), QByteArray("{\"cmd\":\"status\",\"id\":3}\n"));
         QCOMPARE(commandLine("install-from-medium", 4),
                  QByteArray("{\"cmd\":\"install-from-medium\",\"id\":4}\n"));
+
+        /* systemctl's refusal comes back as the error */
+        m = parseMessage(R"({"type":"result","id":5,"cmd":"shutdown","ok":false,)"
+                         R"("error":"Operation inhibited","rebootNeeded":false})");
+        QCOMPARE(m.command, "shutdown");
+        QVERIFY(!m.ok);
+        QCOMPARE(m.error, "Operation inhibited");
     }
 
     void states()

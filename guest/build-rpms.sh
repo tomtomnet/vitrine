@@ -21,7 +21,9 @@
 # Downloads (dnf's cache, source tarballs): $CACHE_DIR
 #   [~/.cache/vitrine/guest-build/fcRELEASE], kept for the next run.
 # Environment: FEDORA_RELEASE [44], FEDORA_IMAGE [registry.fedoraproject.org/
-#   fedora:RELEASE], JOBS [nproc], DEBUGINFO [0; 1 keeps debuginfo packages].
+#   fedora:RELEASE], JOBS [nproc, at most 8], MEMORY [10g: the container's
+#   memory cap; KWin's LTO link and Mesa's parallel compiles take several
+#   GiB], DEBUGINFO [0; 1 keeps debuginfo packages].
 set -eu
 here=$(cd -- "$(dirname -- "$(readlink -f "${BASH_SOURCE[0]}")")" && pwd)
 release=${FEDORA_RELEASE:-44}
@@ -35,7 +37,7 @@ for a in "$@"; do
 	case "$a" in
 	tools|mesa|kwin) targets+=("$a") ;;
 	--force) force=1 ;;
-	-h|--help) sed -n '3,25p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
+	-h|--help) sed -n '3,27p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
 	*) echo "unknown argument $a (tools, mesa, kwin, --force)" >&2; exit 2 ;;
 	esac
 done
@@ -64,10 +66,11 @@ for t in "${targets[@]}"; do
 	name=vitrine-rpm-$t-fc$release
 	podman container exists "$name" 2> /dev/null && podman rm -f "$name" > /dev/null
 	# label=disable: no SELinux relabelling of the source tree
-	if podman run --rm --name "$name" --security-opt label=disable \
+	# the container gets a cgroup of its own, outside the caller's: capped here
+	if podman run --rm --name "$name" --security-opt label=disable --memory="${MEMORY:-10g}" \
 		-v "$here:/src:ro" -v "$new:/out" -v "$cache/dnf:/var/cache/libdnf5" \
 		-v "$cache/sources:/sources" \
-		-e JOBS="${JOBS:-$(nproc)}" -e DEBUGINFO="${DEBUGINFO:-0}" \
+		-e JOBS="${JOBS:-$(( $(nproc) < 8 ? $(nproc) : 8 ))}" -e DEBUGINFO="${DEBUGINFO:-0}" \
 		"$image" bash /src/rpm-build-inside.sh "$t" > "$out/$t.log" 2>&1; then
 		echo "$hash" > "$new/.inputs"
 		rm -rf "$out/$t.old"

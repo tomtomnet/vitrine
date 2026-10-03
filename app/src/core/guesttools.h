@@ -128,7 +128,7 @@ struct Message {
     bool rebootNeeded = false;
 };
 Message parseMessage(const QByteArray &line);
-/* A command line for the agent: status, install-from-medium, request-reboot */
+/* A command line for the agent: status, install-from-medium, request-reboot, shutdown */
 QByteArray commandLine(const QString &command, qint64 id);
 
 /* How the guest is doing, for the banner (MesaNotActive comes from QEMU,
@@ -194,12 +194,17 @@ public:
     void installFromMedium();
     /* The agent restarts the guest */
     void requestReboot();
+    /* The agent powers the guest off at once: Plasma answers the ACPI power
+       button with its logout screen, which waits for someone to confirm */
+    void requestShutdown();
     /* The next start brings the medium and the bootstrap, or the medium only */
     void setPending(GuestTools::Pending pending);
 
 signals:
     void changed();
     void installFinished(bool ok, const QString &error, bool rebootNeeded);
+    /* The agent's answer to a command: install-from-medium, request-reboot, shutdown */
+    void commandFinished(const QString &command, bool ok, const QString &error);
 
 private:
     explicit GuestToolsMonitor(Vm *vm);

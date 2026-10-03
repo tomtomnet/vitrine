@@ -58,6 +58,9 @@ static QString obstacle(Vm *vm, const GuestTools::Medium &medium)
             "The guest tools are not built yet. Build them in vitrine's sources with "
             "guest/build-rpms.sh, then guest/build-medium.sh (about 35 minutes).");
     }
+    if (const QString os = VmConfig::guest(args).os; !os.isEmpty() && os != "linux") {
+        return GuestToolsDialog::tr("The guest tools are for Fedora Linux guests.");
+    }
     if (!GuestTools::canBootstrap(args, qemu.isEmpty() ? "qemu-system-x86_64" : qemu)) {
         return GuestToolsDialog::tr("The guest tools are for x86-64 Fedora guests, on a "
                                     "machine with PCI.");
@@ -102,7 +105,8 @@ GuestToolsDialog::GuestToolsDialog(Vm *vm, QWidget *parent)
         what += tr("<li>Mesa %1 with native context, in place of the guest's</li>")
                     .arg(medium.mesa.toHtmlEscaped());
     }
-    if (!medium.kwin.isEmpty()) {
+    const QString desktop = VmConfig::guest(vm->args()).desktop;
+    if (!medium.kwin.isEmpty() && (desktop.isEmpty() || desktop == "kde")) {
         what += tr("<li>KWin %1, if the guest's Plasma is %2</li>")
                     .arg(medium.kwin.toHtmlEscaped(), medium.kwin.section('-', 0, 0));
     }
@@ -188,7 +192,20 @@ void GuestToolsDialog::go(bool medium)
                 next();
             }
         });
-        m_vm->runner()->powerdown();
+        /* the agent powers the guest off at once; Plasma would answer the
+           power button with its logout screen and wait */
+        GuestToolsMonitor *monitor = GuestToolsMonitor::of(m_vm);
+        if (monitor->hasAgent()) {
+            connect(monitor, &GuestToolsMonitor::commandFinished, this,
+                    [this](const QString &command, bool ok) {
+                if (command == "shutdown" && !ok && m_vm && m_step == Step::ShuttingDown) {
+                    m_vm->runner()->powerdown();
+                }
+            });
+            monitor->requestShutdown();
+        } else {
+            m_vm->runner()->powerdown();
+        }
         m_timeout->start(kShutdownMs);
         return;
     }
@@ -285,13 +302,19 @@ void GuestToolsBanner::setVm(Vm *vm)
     update();
 }
 
-/* A guest the tools are for, as far as its settings tell: one with an
-   accelerated virtio GPU, not Windows (Hyper-V enlightenments) */
+/* A guest the tools are for, as far as its settings tell: Linux (the
+   #guest directive) with an accelerated virtio GPU; without the directive,
+   not Windows (Hyper-V enlightenments) */
 static bool toolsGuest(const ArgsFile &args)
 {
+    const QString os = VmConfig::guest(args).os;
     const QString text = args.toText();
-    return VmConfig::graphics(args).kind == VmConfig::Graphics::Accelerated &&
-           !text.contains("hv-relaxed") && !text.contains("hv_relaxed");
+
+    if (VmConfig::graphics(args).kind != VmConfig::Graphics::Accelerated) {
+        return false;
+    }
+    return os.isEmpty() ? !text.contains("hv-relaxed") && !text.contains("hv_relaxed")
+                        : os == "linux";
 }
 
 void GuestToolsBanner::update()

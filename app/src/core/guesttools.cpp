@@ -514,6 +514,7 @@ void GuestToolsMonitor::handle(const Message &m)
         m_total = m.total;
         break;
     case Message::Type::Result:
+        emit commandFinished(m.command, m.ok, m.error);
         if (m.command == "install-from-medium") {
             m_in.installing = false;
             m_in.failed = !m.ok;
@@ -578,6 +579,11 @@ void GuestToolsMonitor::installFromMedium()
 void GuestToolsMonitor::requestReboot()
 {
     send("request-reboot");
+}
+
+void GuestToolsMonitor::requestShutdown()
+{
+    send("shutdown");
 }
 
 void GuestToolsMonitor::setPending(Pending pending)
