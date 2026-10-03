@@ -807,6 +807,17 @@ QStringList VmRunner::environment(const ArgsFile &args)
     return env;
 }
 
+QStringList VmRunner::shellAssignments(const QStringList &environment)
+{
+    QStringList out;
+
+    for (const QString &var : environment) {
+        const qsizetype eq = var.indexOf('=');
+        out << (eq < 0 ? shellQuote({var}) : var.left(eq + 1) + shellQuote({var.mid(eq + 1)}));
+    }
+    return out;
+}
+
 QString VmRunner::displaySocket() const
 {
     if (!isActive() || VmConfig::screen(d->args) != VmConfig::Screen::Embedded) {
@@ -891,7 +902,8 @@ void VmRunner::start(const ArgsFile &args)
     const QStringList environment = VmRunner::environment(args);
     log.write(QString("vitrine: %1 %2%3\n")
                   .arg(QDateTime::currentDateTime().toString(Qt::ISODate),
-                       environment.isEmpty() ? QString() : shellQuote(environment) + ' ',
+                       environment.isEmpty()
+                           ? QString() : shellAssignments(environment).join(' ') + ' ',
                        shellQuote(commandLine(args)))
                   .toUtf8());
     for (const QString &line : std::as_const(remade)) {

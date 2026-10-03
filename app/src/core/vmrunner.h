@@ -51,6 +51,12 @@ public:
      */
     static QStringList environment(const ArgsFile &args);
     /*
+     * @environment (NAME=VALUE) as shell assignments before a command: the
+     * values quoted where needed, never the names, since a shell takes a
+     * quoted 'NAME=VALUE' for the name of the command
+     */
+    static QStringList shellAssignments(const QStringList &environment);
+    /*
      * The QMP socket of the VM's display, for the view to attach with
      * getfd + add_client: a monitor of its own, since the runner keeps the
      * main one.  Empty unless the running VM shows in vitrine's window.

@@ -3,6 +3,7 @@
 #include <QDir>
 #include <QFile>
 #include <QFileInfo>
+#include <QProcess>
 #include <QSignalSpy>
 #include <QStandardPaths>
 #include <QTemporaryDir>
@@ -231,6 +232,27 @@ private slots:
                  QStringList());
         QCOMPARE(VmRunner::environment(ArgsFile::parse("-display gtk\n#env A=b\n")),
                  QStringList({"A=b"}));
+    }
+
+    /* The environment as the log and Show Command Line print it: a shell
+       must take it as assignments, with the values QEMU gets */
+    void environmentForAShell()
+    {
+        const QStringList env = VmRunner::environment(ArgsFile::parse(
+            "-display gtk\n#env PULSE_PROP=media.role=game application.name=vm\n"
+            "#env EMPTY=\n#env TILDE=~/x\n#env QUOTE=it's $HOME\n#env PLAIN=1\n"));
+        const QStringList assignments = VmRunner::shellAssignments(env);
+
+        QCOMPARE(assignments,
+                 QStringList({"PULSE_PROP='media.role=game application.name=vm'", "EMPTY=''",
+                              "TILDE='~/x'", "QUOTE='it'\\''s $HOME'", "PLAIN=1"}));
+        QProcess sh;
+        sh.start("/bin/sh", {"-c", assignments.join(' ') +
+                                       " printenv PULSE_PROP EMPTY TILDE QUOTE PLAIN"});
+        QVERIFY(sh.waitForFinished(10000));
+        QCOMPARE(sh.exitCode(), 0);
+        QCOMPARE(QString::fromUtf8(sh.readAllStandardOutput()),
+                 "media.role=game application.name=vm\n\n~/x\nit's $HOME\n1\n");
     }
 
     /* a share to mount: the port of the guest agent, unless the VM has its own */
