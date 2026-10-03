@@ -12,6 +12,7 @@
 #include <QSocketNotifier>
 #include <QTimer>
 
+#include <algorithm>
 #include <cerrno>
 #include <csignal>
 #include <cstring>
@@ -86,9 +87,21 @@ bool HostSettings::helperInstalled()
     return QFileInfo(helperPath()).isExecutable();
 }
 
+/* The group polkit's rule names; $VITRINE_GROUP for tests */
+static QByteArray groupName()
+{
+    const QByteArray env = qgetenv("VITRINE_GROUP");
+    return env.isEmpty() ? QByteArray("vitrine") : env;
+}
+
+bool HostSettings::vitrineGroupExists()
+{
+    return getgrnam(groupName().constData()) != nullptr;
+}
+
 bool HostSettings::inVitrineGroup()
 {
-    const struct group *gr = getgrnam("vitrine");
+    const struct group *gr = getgrnam(groupName().constData());
     const struct passwd *pw = getpwuid(getuid());
 
     if (!gr || !pw) {
@@ -179,39 +192,84 @@ static QString subject()
     return QString("%1,%2,%3").arg(getpid()).arg(fields.value(19)).arg(getuid());
 }
 
+QString HostSettings::Status::why() const
+{
+    switch (problem) {
+    case Problem::None:
+        return QString();
+    case Problem::NotInstalled:
+        return tr("vitrine-helper is not installed");
+    case Problem::NoPolkit:
+        return tr("polkit's pkcheck is not installed");
+    case Problem::NoPolicy:
+        return tr("the helper's polkit policy is not installed");
+    case Problem::NoGroup:
+        return tr("you are not in the vitrine group, which does not exist yet");
+    case Problem::NotMember:
+        return tr("you are not in the vitrine group");
+    case Problem::NotLocal:
+        return tr("polkit wants a password here: the vitrine group's rule applies in a local, "
+                  "active desktop session only");
+    case Problem::Failed:
+        break;
+    }
+    return detail;
+}
+
+HostSettings::Status HostSettings::classify(bool installed, int pkcheckStatus,
+                                            const QString &pkcheckError, bool groupExists,
+                                            bool member)
+{
+    const QString error = pkcheckError.trimmed().section('\n', 0, 0);
+
+    if (!installed) {
+        return {Problem::NotInstalled, {}};
+    }
+    switch (pkcheckStatus) {
+    case -1:
+        return {Problem::NoPolkit, {}};
+    case 0:
+        return {};
+    case 2:
+    case 3:
+        /* a password would be needed: the group's rule wants a member at a
+           local, active session (49-vitrine.rules) */
+        return {!groupExists ? Problem::NoGroup : !member ? Problem::NotMember : Problem::NotLocal,
+                {}};
+    case 1:
+        /* polkit says no, as an administrator's rule may */
+        return {Problem::Failed, error.isEmpty() ? tr("polkit does not allow it here") : error};
+    }
+    if (error.contains("not registered")) {
+        return {Problem::NoPolicy, {}};
+    }
+    return {Problem::Failed, error.isEmpty() ? tr("polkit did not answer") : error};
+}
+
 /*
  * Asks polkit whether this process may run the helper without anyone
- * typing a password; @done gets "" if so, else why not
+ * typing a password, and with the user database says why not
  */
-static void checkAccess(QObject *context, const std::function<void(const QString &why)> &done)
+void HostSettings::check(QObject *context, const std::function<void(const Status &)> &done)
 {
+    if (!helperInstalled()) {
+        done({Problem::NotInstalled, {}});
+        return;
+    }
     auto *check = new QProcess(context);
 
     QObject::connect(check, &QProcess::finished, context,
                      [check, done](int code, QProcess::ExitStatus status) {
-        const QString err = QString::fromLocal8Bit(check->readAllStandardError()).trimmed();
+        const QString err = QString::fromLocal8Bit(check->readAllStandardError());
         check->deleteLater();
-        if (status == QProcess::NormalExit && code == 0) {
-            done(QString());
-        } else if (status == QProcess::NormalExit && (code == 2 || code == 3)) {
-            /* a password would be needed: the group's rule wants a member
-               at a local, active session (49-vitrine.rules), and polkit to
-               read it - which the app cannot see: the folder is root's */
-            done(HostSettings::inVitrineGroup()
-                     ? HostSettings::tr("polkit wants a password here: the vitrine group's rule "
-                                        "applies in a local, active desktop session only")
-                     : HostSettings::tr("it needs membership of the vitrine group"));
-        } else if (err.contains("not registered")) {
-            done(HostSettings::tr("the helper's polkit policy is not installed"));
-        } else {
-            done(err.isEmpty() ? HostSettings::tr("polkit did not answer") : err.section('\n', 0, 0));
-        }
+        done(classify(true, status == QProcess::NormalExit ? code : 127, err, vitrineGroupExists(),
+                      inVitrineGroup()));
     });
     QObject::connect(check, &QProcess::errorOccurred, context,
                      [check, done](QProcess::ProcessError error) {
         if (error == QProcess::FailedToStart) {
             check->deleteLater();
-            done(HostSettings::tr("polkit's pkcheck is not installed"));
+            done(classify(true, -1, QString(), false, false));
         }
     });
     /* no --allow-user-interaction: never a dialog from here */
@@ -257,9 +315,9 @@ void HostSettings::grantCapability(const QString &qemu, QObject *context,
         done(tr("%1 does not exist").arg(qemu));
         return;
     }
-    checkAccess(context, [path, context, done](const QString &why) {
-        if (!why.isEmpty()) {
-            done(why);
+    check(context, [path, context, done](const Status &status) {
+        if (!status.active()) {
+            done(status.why());
             return;
         }
         setcap(path, context, done);
@@ -290,9 +348,9 @@ void HostSettings::ensureCapability(bool granted)
         grant();
         return;
     }
-    /* polkit's no is said at a VM start, not here */
-    checkAccess(this, [grant](const QString &why) {
-        if (why.isEmpty()) {
+    /* polkit's no is shown at a VM start, not here */
+    check(this, [grant](const Status &status) {
+        if (status.active()) {
             grant();
         }
     });
@@ -314,7 +372,8 @@ HostSettings::HostSettings(VmStore *store, QObject *parent)
             watchVm(vm);
         }
         connect(store, &VmStore::added, this, &HostSettings::watchVm);
-        connect(store, &VmStore::removed, this, [this](const QString &id) { m_tuned.remove(id); });
+        connect(store, &VmStore::removed, this,
+                [this](const QString &id) { setUntuned(m_tuned.take(id), {}); });
     }
     /*
      * Each build is a new file, without the capability of the one before:
@@ -358,7 +417,8 @@ void HostSettings::vmStateChanged(Vm *vm)
     const qint64 pid = vm->runner()->pid();
 
     if (state == VmRunner::State::Stopped) {
-        m_tuned.remove(vm->id());
+        /* no longer untuned either */
+        setUntuned(m_tuned.take(vm->id()), {});
         if (m_front == vm->id()) {
             m_front.clear();
         }
@@ -384,6 +444,9 @@ void HostSettings::tune(qint64 pid)
         return;
     }
     if (m_access == Access::Denied) {
+        if (alive(pid)) {
+            setUntuned(pid, m_denied);
+        }
         return;
     }
     m_expected.insert(pid);
@@ -420,6 +483,11 @@ void HostSettings::preferencesChanged()
             }
         }
         m_front.clear();
+        /* and nothing to show: off is the user's choice */
+        if (!m_untuned.isEmpty()) {
+            m_untuned.clear();
+            emit untunedChanged();
+        }
         return;
     }
     /* on, or another floor: each running VM tuned again - a run that
@@ -495,7 +563,7 @@ void HostSettings::start()
         return;
     }
     if (!helperInstalled()) {
-        deny(tr("vitrine-helper is not installed"));
+        deny({Problem::NotInstalled, {}}, m_expected);
         return;
     }
     /*
@@ -508,17 +576,12 @@ void HostSettings::start()
      * the installed helper only, the one the action names.
      */
     m_access = Access::Checking;
-    checkAccess(this, [this](const QString &why) {
+    check(this, [this](const Status &status) {
         m_access = Access::Unknown;
-        if (!why.isEmpty()) {
-            deny(why);
+        if (!status.active()) {
+            deny(status, m_expected);
             return;
         }
-        /* granted: a refusal said earlier is news again if it comes back */
-        for (const QString &text : std::as_const(m_refusals)) {
-            m_said.remove(text);
-        }
-        m_refusals.clear();
         /* the group joined since vitrine started, say */
         ensureCapability(true);
         if (!m_out.isEmpty()) {
@@ -540,7 +603,7 @@ void HostSettings::spawn(const QStringList &command)
     /* a socket, not a pipe: writing to a helper that has gone away gives
        EPIPE (MSG_NOSIGNAL), not a SIGPIPE that would end vitrine */
     if (socketpair(AF_UNIX, SOCK_STREAM | SOCK_CLOEXEC, 0, sv) < 0) {
-        deny(QString::fromLocal8Bit(strerror(errno)));
+        deny({Problem::Failed, QString::fromLocal8Bit(strerror(errno))}, m_expected);
         return;
     }
     for (const QString &arg : command) {
@@ -569,7 +632,9 @@ void HostSettings::spawn(const QStringList &command)
     ::close(sv[1]);
     if (err) {
         ::close(sv[0]);
-        deny(tr("cannot run %1: %2").arg(command.first(), QString::fromLocal8Bit(strerror(err))));
+        deny({Problem::Failed,
+              tr("cannot run %1: %2").arg(command.first(), QString::fromLocal8Bit(strerror(err)))},
+             m_expected);
         return;
     }
     m_pid = pid;
@@ -636,12 +701,24 @@ void HostSettings::handleLine(const QString &line)
     } else if (word == "ready") {
         m_ready = true;
         flush();
+    } else if (line.startsWith("ok watch ")) {
+        /* "ok watch PID", "ok watch PID: already": tuned, at last */
+        setUntuned(line.section(' ', 2, 2).section(':', 0, 0).toLongLong(), {});
     } else if (word == "exited" || line.startsWith("error watch ")) {
         /* "exited PID", "error watch PID: why" */
         const qint64 pid = line.section(' ', word == "exited" ? 1 : 2).section(':', 0, 0).toLongLong();
-        /* a VM that ended at once is no news */
+        /* a VM that ended at once is no news; one the helper would not take
+           (another program than QEMU) runs untuned */
         if (word == "error" && alive(pid)) {
-            say(tr("Host tuning: %1").arg(line.section(' ', 1)));
+            QString name = tr("process %1").arg(pid);
+            for (Vm *vm : m_store ? m_store->vms() : QList<Vm *>()) {
+                if (m_tuned.value(vm->id()) == pid) {
+                    name = vm->name();
+                }
+            }
+            setUntuned(pid, {Problem::Failed,
+                             tr("vitrine-helper does not take %1: %2")
+                                 .arg(name, line.section(':', 1).trimmed())});
         }
         m_expected.remove(pid);
         if (m_expected.isEmpty() && m_out.isEmpty() && m_fd >= 0) {
@@ -721,7 +798,7 @@ void HostSettings::reap()
     if (!ran) {
         /* pkexec refused it, though polkit said yes, or it could not start:
            not again in this run */
-        deny(why, true);
+        deny({Problem::Failed, why}, pending, true);
         return;
     }
     /*
@@ -761,17 +838,166 @@ void HostSettings::closeHelper()
     m_ready = false;
 }
 
-void HostSettings::deny(const QString &why, bool always)
+void HostSettings::deny(const Status &status, QSet<qint64> pids, bool always)
 {
     if (always) {
         m_access = Access::Denied;
+        m_denied = status;
     }
-    /* the VMs asked for go untuned: none of them is waited for */
+    /* the VMs asked for go untuned: none of them is waited for (a VM that
+       ended at once is no news) */
     m_out.clear();
     m_expected.clear();
-    const QString text = tr("Host tuning is off: %1.").arg(why);
-    m_refusals.insert(text);
-    say(text);
+    for (qint64 pid : std::as_const(pids)) {
+        if (alive(pid)) {
+            setUntuned(pid, status);
+        }
+    }
+    /* the group would do: offered at the first VM start of the run that
+       lacks it, and only then - several VMs starting at once share the check
+       that got here (start() waits for it), later ones do not ask again */
+    if (status.needsGroup() && !m_groupSuggested && enabled() && untuned()) {
+        m_groupSuggested = true;
+        emit groupSetupSuggested(status);
+    }
+}
+
+void HostSettings::setUntuned(qint64 pid, const Status &status)
+{
+    const auto it = std::find_if(m_untuned.begin(), m_untuned.end(),
+                                 [pid](const auto &entry) { return entry.first == pid; });
+
+    if (pid <= 0) {
+        return;
+    }
+    if (status.active()) {
+        if (it == m_untuned.end()) {
+            return;
+        }
+        m_untuned.erase(it);
+    } else if (it != m_untuned.end()) {
+        if (it->second == status) {
+            return;
+        }
+        it->second = status;
+    } else {
+        m_untuned.append({pid, status});
+    }
+    emit untunedChanged();
+}
+
+bool HostSettings::untuned() const
+{
+    return untunedCount() > 0;
+}
+
+int HostSettings::untunedCount() const
+{
+    if (!enabled()) {
+        return 0;
+    }
+    return int(std::count_if(m_untuned.begin(), m_untuned.end(),
+                             [](const auto &entry) { return alive(entry.first); }));
+}
+
+HostSettings::Status HostSettings::untunedStatus() const
+{
+    for (const auto &[pid, status] : m_untuned) {
+        if (alive(pid)) {
+            return status;
+        }
+    }
+    return {};
+}
+
+void HostSettings::retune()
+{
+    if (!enabled()) {
+        return;
+    }
+    /* pkexec refused earlier in the run: worth another try now */
+    if (m_access == Access::Denied) {
+        m_access = Access::Unknown;
+    }
+    const auto untuned = m_untuned;
+    for (const auto &[pid, status] : untuned) {
+        if (alive(pid)) {
+            tune(pid);
+        }
+    }
+}
+
+void HostSettings::setUpGroup(const std::function<void(Setup, const QString &, const Status &)> &done)
+{
+    if (m_settingUp) {
+        done(Setup::Failed, tr("the vitrine group is being set up already"), {});
+        return;
+    }
+    if (!helperInstalled()) {
+        done(Setup::Failed, tr("vitrine-helper is not installed"), {});
+        return;
+    }
+    m_settingUp = true;
+    auto *run = new QProcess(this);
+    run->setProcessChannelMode(QProcess::MergedChannels);
+    connect(run, &QProcess::finished, this, [this, run, done](int code, QProcess::ExitStatus exit) {
+        const QStringList lines = QString::fromUtf8(run->readAll()).split('\n', Qt::SkipEmptyParts);
+        bool ok = false;
+        QString error;
+
+        run->deleteLater();
+        for (const QString &line : lines) {
+            ok |= line.startsWith("ok setup-group: ");
+            if (line.startsWith("error setup-group: ")) {
+                error = line.section(':', 1).trimmed();
+            } else if (error.isEmpty() && line.startsWith("Error executing command")) {
+                /* pkexec's: not authorized, no polkit agent... */
+                error = line.trimmed();
+            }
+        }
+        if (exit == QProcess::NormalExit && code == 0 && ok) {
+            /* polkit reads the group from the user database at each check */
+            check(this, [this, done](const Status &now) {
+                m_settingUp = false;
+                if (now.active()) {
+                    retune();
+                } else {
+                    /* what the VMs wait for now */
+                    for (const auto &[pid, status] : QList(m_untuned)) {
+                        if (status.needsGroup()) {
+                            setUntuned(pid, now);
+                        }
+                    }
+                }
+                done(Setup::Done, QString(), now);
+            });
+            return;
+        }
+        m_settingUp = false;
+        /* pkexec: 126 when the password dialog was dismissed, says its
+           manual; KDE's agent gives "Not authorized" (127) for Cancel, as
+           for a password that did not do */
+        if (exit == QProcess::NormalExit &&
+            ((error.isEmpty() && code == 126) ||
+             (code == 127 && error.endsWith(": Not authorized")))) {
+            done(Setup::Cancelled, QString(), {});
+            return;
+        }
+        if (error.isEmpty()) {
+            error = lines.isEmpty() ? tr("vitrine-helper failed") : lines.first().trimmed();
+        }
+        done(Setup::Failed, error, {});
+    });
+    connect(run, &QProcess::errorOccurred, this, [this, run, done](QProcess::ProcessError error) {
+        if (error == QProcess::FailedToStart) {
+            run->deleteLater();
+            m_settingUp = false;
+            done(Setup::Failed, tr("pkexec is not installed"), {});
+        }
+    });
+    /* the installed helper, the one the action names; the desktop's polkit
+       agent asks for the password, never a terminal */
+    run->start("pkexec", {"--disable-internal-agent", VITRINE_HELPER_PATH, "setup-group"});
 }
 
 void HostSettings::say(const QString &text)
