@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: GPL-2.0-or-later
 #include <QCheckBox>
 #include <QComboBox>
+#include <QLabel>
 #include <QRadioButton>
 #include <QSpinBox>
 #include <QStandardPaths>
@@ -169,6 +170,34 @@ private slots:
         QCOMPARE(text(args), QString("-nic user,model=virtio-net-pci,hostfwd=tcp::10022-:80,"
                                      "hostfwd=tcp:127.0.0.1:%1-:22\n")
                                  .arg(port->value()));
+    }
+
+    /* The page says who reaches the guest's SSH, as the forward is written */
+    void networkPageTellsWhoReachesSsh()
+    {
+        NetworkPage page(nullptr);
+        auto *port = page.findChild<QSpinBox *>("sshPort");
+        QLabel *info = nullptr;
+        const auto load = [&page](const char *args) { page.load(ArgsFile::parse(args)); };
+
+        load("-nic user,hostfwd=tcp:127.0.0.1:2222-:22\n");
+        for (QLabel *label : page.findChildren<QLabel *>()) {
+            if (label->text().contains("ssh -p")) {
+                info = label;
+            }
+        }
+        QVERIFY(info && port);
+        QCOMPARE(info->text(), "From this computer only: ssh -p 2222 USER@127.0.0.1");
+        load("-nic user,hostfwd=tcp::2222-:22\n");
+        QVERIFY(info->text().contains("from other computers too"));
+        load("-nic passt,tcp-ports=192.168.1.5/2222:22\n");
+        QCOMPARE(info->text(),
+                 "On 192.168.1.5 only, which other computers may reach: "
+                 "ssh -p 2222 USER@192.168.1.5");
+        /* another port is written on 127.0.0.1 */
+        load("-nic user,hostfwd=tcp::2222-:22\n");
+        port->setValue(2223);
+        QCOMPARE(info->text(), "From this computer only: ssh -p 2223 USER@127.0.0.1");
     }
 
     void hardwarePageLeavesCustomCpus()

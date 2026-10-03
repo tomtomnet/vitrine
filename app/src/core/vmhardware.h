@@ -126,10 +126,19 @@ struct Network {
     QString card;
     /* The host port forwarded to the guest's port 22, 0 for none */
     int sshPort = 0;
+    /*
+     * The address of this computer that forward listens on, as written:
+     * empty (or 0.0.0.0) for all, which other computers reach too, a
+     * loopback one, or another; passt's may name an interface (%eth0).
+     * setNetwork() writes 127.0.0.1 when it writes the forward.
+     */
+    QString sshAddress;
     /* Why it is Custom */
     QString custom;
 };
 Network network(const ArgsFile &args);
+/* An address of this computer only, e.g. 127.0.0.1 or [::1] */
+bool isLoopback(const QString &address);
 /*
  * The ports of this computer the VM forwards to it over TCP: hostfwd= and
  * passt's tcp-ports=, on every -netdev, -nic and -net, JSON ones too,

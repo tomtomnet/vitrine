@@ -955,27 +955,49 @@ static QList<int> nicLines(const ArgsFile &args)
 /*
  * The host port of a forward to the guest's @guestPort over TCP, or 0:
  * hostfwd=[tcp|udp]:[HOSTADDR]:HOSTPORT-[GUESTADDR]:GUESTPORT for user,
- * tcp-ports=[ADDR/]PORT[:GUESTPORT] for passt (ranges are not followed)
+ * tcp-ports=[ADDR[%IF]/]PORT[:GUESTPORT] for passt (ranges are not
+ * followed); @address, the host address it listens on, empty for all
  */
-static int forwardPort(const QString &backend, const QString &rule, int guestPort)
+static int forwardPort(const QString &backend, const QString &rule, int guestPort,
+                       QString *address = nullptr)
 {
-    static const QRegularExpression hostfwd("^(tcp|udp)?:([^:]*):(\\d+)-([^:]*):(\\d+)$");
-    static const QRegularExpression passt("^(?:[^/]*/)?(\\d+)(?::(\\d+))?$");
+    static const QRegularExpression hostfwd(
+        "^(tcp|udp)?:(\\[[^\\]]*\\]|[^:]*):(\\d+)-([^:]*):(\\d+)$");
+    static const QRegularExpression passt("^(?:([^/]*)/)?(\\d+)(?::(\\d+))?$");
+    int port = 0;
+    QString addr;
 
     if (backend == "passt") {
         const QRegularExpressionMatch m = passt.match(rule);
         if (!m.hasMatch()) {
             return 0;
         }
-        const int host = m.captured(1).toInt();
-        const int guest = m.captured(2).isEmpty() ? host : m.captured(2).toInt();
-        return guest == guestPort ? host : 0;
+        const int host = m.captured(2).toInt();
+        const int guest = m.captured(3).isEmpty() ? host : m.captured(3).toInt();
+        port = guest == guestPort ? host : 0;
+        addr = m.captured(1);
+    } else {
+        const QRegularExpressionMatch m = hostfwd.match(rule);
+        if (!m.hasMatch() || m.captured(1) == "udp" || m.captured(5).toInt() != guestPort) {
+            return 0;
+        }
+        port = m.captured(3).toInt();
+        addr = m.captured(2);
     }
-    const QRegularExpressionMatch m = hostfwd.match(rule);
-    if (!m.hasMatch() || m.captured(1) == "udp" || m.captured(5).toInt() != guestPort) {
-        return 0;
+    if (address && port > 0) {
+        *address = addr;
     }
-    return m.captured(3).toInt();
+    return port;
+}
+
+bool isLoopback(const QString &address)
+{
+    /* 127.0.0.2%lo, [::1] */
+    QString host = address.section('%', 0, 0);
+    if (host.startsWith('[') && host.endsWith(']')) {
+        host = host.mid(1, host.size() - 2);
+    }
+    return host.startsWith("127.") || host == "::1" || host == "localhost";
 }
 
 static QString forwardKey(const QString &backend)
@@ -983,11 +1005,11 @@ static QString forwardKey(const QString &backend)
     return backend == "passt" ? "tcp-ports" : "hostfwd";
 }
 
-static int sshForward(const OptionValue &v, const QString &backend)
+static int sshForward(const OptionValue &v, const QString &backend, QString *address)
 {
     for (const OptionValue::Item &item : v.items()) {
         if (item.key == forwardKey(backend) && !item.bare) {
-            if (const int port = forwardPort(backend, item.value, 22); port > 0) {
+            if (const int port = forwardPort(backend, item.value, 22, address); port > 0) {
                 return port;
             }
         }
@@ -1057,7 +1079,7 @@ static Network readNetwork(const ArgsFile &args, NetLines *lines)
     } else if (netdevs.isEmpty()) {
         n.backend = type;
         n.card = v.get("model");
-        n.sshPort = sshForward(v, type);
+        n.sshPort = sshForward(v, type, &n.sshAddress);
     } else {
         const QString id = v.get("id");
         QList<int> cards;
@@ -1073,7 +1095,7 @@ static Network readNetwork(const ArgsFile &args, NetLines *lines)
         l.card = cards.first();
         n.backend = type;
         n.card = args.valueAt(l.card).implied();
-        n.sshPort = sshForward(v, type);
+        n.sshPort = sshForward(v, type, &n.sshAddress);
     }
     if (lines) {
         *lines = l;

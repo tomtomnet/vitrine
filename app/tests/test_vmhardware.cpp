@@ -246,6 +246,32 @@ private slots:
         }
     }
 
+    /* Where the SSH forward listens */
+    void sshAddresses()
+    {
+        const auto address = [](const char *args) {
+            return network(ArgsFile::parse(args)).sshAddress;
+        };
+
+        QCOMPARE(address("-nic user,hostfwd=tcp::2222-:22\n"), "");
+        QCOMPARE(address("-nic user,hostfwd=tcp:127.0.0.1:2222-:22\n"), "127.0.0.1");
+        QCOMPARE(address("-nic user,hostfwd=tcp:192.168.1.5:2222-:22\n"), "192.168.1.5");
+        QCOMPARE(address("-nic user,hostfwd=tcp:[::1]:2222-:22\n"), "[::1]");
+        QCOMPARE(network(ArgsFile::parse("-nic user,hostfwd=tcp:[::1]:2222-:22\n")).sshPort, 2222);
+        QCOMPARE(address("-nic passt,tcp-ports=10022:22\n"), "");
+        QCOMPARE(address("-nic passt,tcp-ports=127.0.0.1/10022:22\n"), "127.0.0.1");
+        QCOMPARE(address("-nic passt,tcp-ports=%eth0/10022:22\n"), "%eth0");
+
+        QVERIFY(isLoopback("127.0.0.1"));
+        QVERIFY(isLoopback("127.0.0.2%lo"));
+        QVERIFY(isLoopback("[::1]"));
+        QVERIFY(isLoopback("::1"));
+        QVERIFY(!isLoopback(""));
+        QVERIFY(!isLoopback("0.0.0.0"));
+        QVERIFY(!isLoopback("192.168.1.5"));
+        QVERIFY(!isLoopback("%eth0"));
+    }
+
     /* The ports to keep clear of for another VM's forward */
     void forwardedHostPorts()
     {

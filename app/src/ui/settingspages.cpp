@@ -1269,14 +1269,17 @@ NetworkPage::NetworkPage(Vm *vm, QWidget *parent)
     m_port->setObjectName("sshPort");
     m_port->setRange(1024, 65535);
     m_sshInfo->setTextInteractionFlags(Qt::TextSelectableByMouse);
+    /* it shows an address as written in vm.args */
+    m_sshInfo->setTextFormat(Qt::PlainText);
     sshRow->addWidget(m_ssh);
     sshRow->addWidget(m_port);
     sshRow->addStretch();
 
     form->addRow(QString(), m_nat);
     form->addRow(QString(), Widgets::hint(tr("Through this computer's connection (NAT): the VM "
-                                             "reaches the network and the internet, other "
-                                             "computers do not reach the VM.")));
+                                             "reaches the network and the internet; other "
+                                             "computers reach the VM only through the ports "
+                                             "forwarded to it.")));
     form->addRow(QString(), sshRow);
     form->addRow(QString(), m_sshInfo);
     layout->addWidget(m_custom);
@@ -1317,8 +1320,29 @@ void NetworkPage::update()
     m_ssh->setEnabled(!custom && m_nat->isChecked());
     m_port->setEnabled(!custom && m_nat->isChecked() && m_ssh->isChecked());
     m_sshInfo->setVisible(!custom && m_nat->isChecked() && m_ssh->isChecked());
-    m_sshInfo->setText(tr("From this computer only: ssh -p %1 USER@127.0.0.1")
-                           .arg(m_port->value()));
+
+    /* where the forward listens: as written, unless saving writes it anew, on 127.0.0.1 */
+    const bool kept = m_loaded.sshPort > 0 && m_port->value() == m_loaded.sshPort;
+    const QString address = kept ? m_loaded.sshAddress : QString("127.0.0.1");
+    const QString host = address.section('%', 0, 0);
+    const QString port = QString::number(m_port->value());
+    QString text;
+
+    if (VmConfig::isLoopback(address)) {
+        text = tr("From this computer only: ssh -p %1 USER@%2").arg(port, host);
+    } else if (host.isEmpty() || host == "0.0.0.0" || host == "::" || host == "[::]") {
+        text = address.contains('%')
+                   ? tr("From other computers, through %2: ssh -p %1 USER@ADDRESS, with an "
+                        "address of this computer there.")
+                         .arg(port, address.section('%', 1))
+                   : tr("From this computer, ssh -p %1 USER@127.0.0.1, and from other "
+                        "computers too: it listens on all the addresses of this computer.")
+                         .arg(port);
+    } else {
+        text = tr("On %2 only, which other computers may reach: ssh -p %1 USER@%2")
+                   .arg(port, host);
+    }
+    m_sshInfo->setText(text);
 }
 
 void NetworkPage::load(const ArgsFile &args)
