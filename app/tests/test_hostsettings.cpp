@@ -361,6 +361,68 @@ private slots:
         QTRY_COMPARE(level(), QString("auto"));
     }
 
+    /*
+     * The app's side on the real host: the installed-form helper through
+     * sudo instead of pkexec, real sysfs and debugfs.  helper/tests/
+     * e2e-host.sh runs it (VITRINE_HELPER_E2E: the helper, VITRINE_TEST_QEMU:
+     * a QEMU); skipped otherwise.
+     */
+    void realHost()
+    {
+        const QString helper = qEnvironmentVariable("VITRINE_HELPER_E2E");
+        const QString qemuBinary = qEnvironmentVariable("VITRINE_TEST_QEMU");
+        if (helper.isEmpty() || qemuBinary.isEmpty()) {
+            QSKIP("for helper/tests/e2e-host.sh");
+        }
+        qunsetenv("VITRINE_HELPER_TEST_ROOT");
+        auto root = [](const QString &file) {
+            QProcess cat;
+            cat.start("sudo", {"-n", "cat", file});
+            cat.waitForFinished();
+            return QString::fromLatin1(cat.readAllStandardOutput()).trimmed();
+        };
+        const QString fairDir = "/sys/kernel/debug/sched/fair_server/cpu0/";
+        const QString fairBefore = root(fairDir + "period") + '/' + root(fairDir + "runtime");
+        const QStringList apus = HostSettings::amdCards("/sys", true);
+        const QString levelFile = apus.isEmpty() ? QString()
+            : "/sys/class/drm/" + apus.first() + "/device/power_dpm_force_performance_level";
+        const QByteArray levelBefore = readFile(levelFile);
+        QVERIFY(!fairBefore.startsWith('/'));
+
+        QProcess qemu;
+        qemu.start(qemuBinary, {"-machine", "none", "-display", "none", "-S"});
+        QVERIFY(qemu.waitForStarted());
+        HostSettings hs(nullptr);
+        QSignalSpy lines(&hs, &HostSettings::helperLine), notices(&hs, &HostSettings::notice),
+            finished(&hs, &HostSettings::helperFinished);
+        hs.setHelperCommand({"sudo", "-n", helper});
+        hs.tune(qemu.processId());
+        QTRY_VERIFY_WITH_TIMEOUT(saw(lines, QString("ok rt %1").arg(qemu.processId())), 10000);
+        for (const QList<QVariant> &line : lines) {
+            qInfo("helper: %s", qPrintable(line.first().toString()));
+        }
+        QVERIFY(notices.isEmpty());
+        QCOMPARE(root(fairDir + "period") + '/' + root(fairDir + "runtime"),
+                 QString("10000000/1000000"));
+        if (!levelFile.isEmpty() && levelBefore == "auto") {
+            QCOMPARE(readFile(levelFile), QByteArray("manual"));
+        }
+        /* every thread SCHED_FIFO (/proc/PID/task/TID/stat field 41: 1) */
+        const QDir tasks(QString("/proc/%1/task").arg(qemu.processId()));
+        for (const QString &tid : tasks.entryList(QDir::Dirs | QDir::NoDotAndDotDot)) {
+            const QString stat = QString::fromLatin1(readFile(tasks.filePath(tid) + "/stat"));
+            QCOMPARE(stat.mid(stat.lastIndexOf(')') + 2).split(' ').value(38), QString("1"));
+        }
+
+        qemu.kill();
+        qemu.waitForFinished();
+        QTRY_COMPARE_WITH_TIMEOUT(finished.size(), 1, 10000);
+        QCOMPARE(root(fairDir + "period") + '/' + root(fairDir + "runtime"), fairBefore);
+        if (!levelFile.isEmpty()) {
+            QCOMPARE(readFile(levelFile), levelBefore);
+        }
+    }
+
     void capabilityWithoutHelper()
     {
         qputenv("VITRINE_HELPER", "/nonexistent/vitrine-helper");

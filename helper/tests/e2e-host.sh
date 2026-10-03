@@ -7,7 +7,8 @@
 # real-time threads; the VM powers off and everything must be back as it
 # was.  Then: a helper killed while holding the settings (the next one
 # restores them), vitrine gone while the VM runs (stdin closed), and the
-# file capability on a copy of QEMU, with x-vcpu-priority through it.
+# file capability on a copy of QEMU, with x-vcpu-priority through it, and
+# the app's HostSettings driving this helper.
 #
 #   helper/tests/e2e-host.sh [BUILD_DIR]
 #
@@ -38,6 +39,10 @@ check() { if eval "$2"; then ok "$1"; else bad "$1"; fi; }
 
 [ -x "$helper" ] || { echo "no $helper: build first" >&2; exit 2; }
 sudo -n true 2> /dev/null || { echo "needs password-less sudo" >&2; exit 2; }
+# a 2 GiB VM: the host keeps 10 GiB free first (notes/agents/COMMON.md);
+# run the script in a capped scope, e.g. systemd-run --user --scope -p MemoryMax=6G
+avail=$(awk '/^MemAvailable:/ {print int($2 / 1048576)}' /proc/meminfo)
+[ "$avail" -ge 10 ] || { echo "only $avail GiB available: wait and retry" >&2; exit 3; }
 mkdir -p "$dev"
 
 # --- the host as found: what must be back at the end ---
@@ -289,6 +294,18 @@ kill $q4; wait $q4 2> /dev/null
 cat "$qemu" > "$stackbin/qemu-system-x86_64"
 check "rewritten: the capability is gone" '[ -z "$(getcap "$stackbin/qemu-system-x86_64")" ]'
 rm -rf "$dev/data"
+
+# ======================================================================
+echo "== 5. the app's side: HostSettings with this helper through sudo"
+if [ -x "$build/app/test_hostsettings" ]; then
+	out=$(VITRINE_HELPER_E2E=$helper VITRINE_TEST_QEMU=$qemu "$build/app/test_hostsettings" realHost 2>&1)
+	echo "$out" | grep -E "helper:|FAIL|Loc:|Actual|Expected" | sed 's/^/       /'
+	check "HostSettings applied and reverted on the real host" 'echo "$out" | grep -q "^PASS   : TestHostSettings::realHost()"'
+	check "fair server as found" '[ "$(fair_now)" = "$fair_before" ]'
+	check "gpu as found" '[ "$(gpu_now)" = "$gpu_before" ]'
+else
+	echo "  (no $build/app/test_hostsettings: skipped)"
+fi
 
 echo
 if [ "$fails" = 0 ]; then echo "PASS"; else echo "$fails FAILED"; fi
