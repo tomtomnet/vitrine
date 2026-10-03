@@ -1368,6 +1368,9 @@ MachinePage::MachinePage(QWidget *parent)
     auto *form = Widgets::form();
 
     m_topology->setObjectName("topology");
+    m_sockets->setObjectName("sockets");
+    m_cores->setObjectName("cores");
+    m_threads->setObjectName("threads");
     for (QSpinBox *spin : {m_sockets, m_cores, m_threads}) {
         spin->setRange(1, 1024);
         spin->setEnabled(false);
@@ -1553,21 +1556,22 @@ void MachinePage::load(const ArgsFile &args)
     m_loadedMachine = VmConfig::machineType(args);
     {
         const QSignalBlocker a(m_sockets), b(m_cores), c(m_threads), d(m_topology);
-        const bool given = m_loadedCpus.sockets > 0 || m_loadedCpus.cores > 0 ||
+        /* what -smp leaves out, as QEMU works it out, e.g. 2 sockets for "8,cores=4" */
+        const VmConfig::Cpus shown = VmConfig::derivedTopology(m_loadedCpus);
+
+        m_loadedTopology = m_loadedCpus.sockets > 0 || m_loadedCpus.cores > 0 ||
                            m_loadedCpus.threads > 0;
-        m_sockets->setValue(qMax(m_loadedCpus.sockets, 1));
-        m_cores->setValue(qMax(m_loadedCpus.cores, 1));
-        m_threads->setValue(qMax(m_loadedCpus.threads, 1));
-        m_topology->setChecked(given);
+        m_sockets->setValue(shown.sockets);
+        m_cores->setValue(shown.cores);
+        m_threads->setValue(shown.threads);
+        m_topology->setChecked(m_loadedTopology);
         for (QSpinBox *spin : {m_sockets, m_cores, m_threads}) {
-            spin->setEnabled(given);
+            spin->setEnabled(m_loadedTopology);
         }
         /* compare with what the page shows */
-        if (given) {
-            m_loadedCpus.sockets = m_sockets->value();
-            m_loadedCpus.cores = m_cores->value();
-            m_loadedCpus.threads = m_threads->value();
-        }
+        m_shownCpus.sockets = m_sockets->value();
+        m_shownCpus.cores = m_cores->value();
+        m_shownCpus.threads = m_threads->value();
     }
     updateTopology();
     m_model->setCurrentText(m_loadedCpus.model);
@@ -1583,34 +1587,58 @@ void MachinePage::load(const ArgsFile &args)
     describe();
 }
 
+bool MachinePage::topologyChanged() const
+{
+    if (m_topology->isChecked() != m_loadedTopology) {
+        return true;
+    }
+    return m_topology->isChecked() && (m_sockets->value() != m_shownCpus.sockets ||
+                                       m_cores->value() != m_shownCpus.cores ||
+                                       m_threads->value() != m_shownCpus.threads);
+}
+
 void MachinePage::save(ArgsFile &args)
 {
-    VmConfig::Cpus cpus;
     const QString machine = m_machine->currentText().trimmed();
-
-    cpus.count = m_loadedCpus.count;
-    if (m_topology->isChecked()) {
-        cpus.sockets = m_sockets->value();
-        cpus.cores = m_cores->value();
-        cpus.threads = m_threads->value();
-        cpus.count = cpus.sockets * cpus.cores * cpus.threads;
-    }
     /* "host,topoext=on": the model, then flags for the -cpu line */
     const QString model = m_model->currentText().trimmed();
     const OptionValue flags(model.section(',', 1));
-    cpus.model = model.section(',', 0, 0).trimmed();
-    if (cpus.count != m_loadedCpus.count || cpus.sockets != m_loadedCpus.sockets ||
-        cpus.cores != m_loadedCpus.cores || cpus.threads != m_loadedCpus.threads ||
-        cpus.model != m_loadedCpus.model) {
+    const QString modelName = model.section(',', 0, 0).trimmed();
+    const bool topology = topologyChanged();
+
+    /*
+     * -smp only when the topology was edited: the count is the Hardware
+     * page's, and numbers the page made up must not change it
+     */
+    if (topology) {
+        VmConfig::Cpus cpus = m_loadedCpus;
+
+        cpus.sockets = cpus.cores = cpus.threads = 0;
+        if (m_topology->isChecked()) {
+            cpus.sockets = m_sockets->value();
+            cpus.cores = m_cores->value();
+            cpus.threads = m_threads->value();
+            cpus.count = cpus.sockets * cpus.cores * cpus.threads;
+        }
+        cpus.model = modelName;
         VmConfig::setCpus(args, cpus);
-        m_loadedCpus = cpus;
+    } else if (modelName != m_loadedCpus.model) {
+        VmConfig::setCpuModel(args, modelName);
+    }
+    if (topology || modelName != m_loadedCpus.model) {
         /* AMD: the guest sees the threads of its cores only with topoext */
-        if (cpus.threads > 1 && (cpus.model == "host" || cpus.model == "max") &&
+        const int threads = VmConfig::derivedTopology(VmConfig::cpus(args)).threads;
+        if (threads > 1 && (modelName == "host" || modelName == "max") &&
             HostDevices::cpuHasFlag("topoext")) {
             VmConfig::enableCpuFeature(args, "topoext");
         }
     }
-    if (!cpus.model.isEmpty() && !flags.isEmpty()) {
+    m_loadedCpus = VmConfig::cpus(args);
+    m_loadedTopology = m_topology->isChecked();
+    m_shownCpus.sockets = m_sockets->value();
+    m_shownCpus.cores = m_cores->value();
+    m_shownCpus.threads = m_threads->value();
+    if (!modelName.isEmpty() && !flags.isEmpty()) {
         const int cpu = args.indexOf("cpu");
         OptionValue v = args.valueAt(cpu);
         QString extra;
@@ -1627,7 +1655,7 @@ void MachinePage::save(ArgsFile &args)
             }
         }
         args.setValueAt(cpu, v.toString() + extra);
-        m_model->setCurrentText(cpus.model);
+        m_model->setCurrentText(modelName);
     }
     if (!machine.isEmpty() && machine != m_loadedMachine) {
         VmConfig::setMachineType(args, machine);
@@ -1643,15 +1671,9 @@ bool MachinePage::isModified() const
 {
     const QString machine = m_machine->currentText().trimmed();
 
-    if (m_model->currentText().trimmed() != m_loadedCpus.model ||
-        (!machine.isEmpty() && machine != m_loadedMachine) || chosenQemu() != m_loadedQemu) {
-        return true;
-    }
-    if (!m_topology->isChecked()) {
-        return m_loadedCpus.sockets || m_loadedCpus.cores || m_loadedCpus.threads;
-    }
-    return m_sockets->value() != m_loadedCpus.sockets ||
-           m_cores->value() != m_loadedCpus.cores || m_threads->value() != m_loadedCpus.threads;
+    return m_model->currentText().trimmed() != m_loadedCpus.model ||
+           (!machine.isEmpty() && machine != m_loadedMachine) || chosenQemu() != m_loadedQemu ||
+           topologyChanged();
 }
 
 /* Boot */

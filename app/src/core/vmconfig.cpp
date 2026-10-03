@@ -311,20 +311,52 @@ static void setSmp(ArgsFile &args, const Cpus &c)
     args.setValueAt(smp, v);
 }
 
-void setCpus(ArgsFile &args, const Cpus &c)
+Cpus derivedTopology(const Cpus &c)
 {
-    int cpu = args.indexOf("cpu");
+    /* hw/core/machine-smp.c, machine_parse_smp_config(), prefer_sockets off */
+    Cpus d = c;
+    const int n = c.count;
 
-    setSmp(args, c);
-    if (c.model.isEmpty()) {
+    if (d.cores <= 0) {
+        d.sockets = qMax(d.sockets, 1);
+        d.threads = qMax(d.threads, 1);
+        d.cores = n / (d.sockets * d.threads);
+    } else if (d.sockets <= 0) {
+        d.threads = qMax(d.threads, 1);
+        d.sockets = n / (d.cores * d.threads);
+    }
+    if (d.threads <= 0) {
+        d.threads = n / (d.sockets * d.cores);
+    }
+    if (d.sockets <= 0 || d.cores <= 0 || d.threads <= 0 ||
+        d.sockets * d.cores * d.threads != n) {
+        /* QEMU refuses such a line: what it says, at least */
+        d.sockets = qMax(c.sockets, 1);
+        d.cores = qMax(c.cores, 1);
+        d.threads = qMax(c.threads, 1);
+    }
+    return d;
+}
+
+void setCpuModel(ArgsFile &args, const QString &model)
+{
+    const int cpu = args.indexOf("cpu");
+
+    if (model.isEmpty()) {
         args.removeAll("cpu");
     } else if (cpu < 0) {
-        args.add("cpu", c.model);
+        args.add("cpu", model);
     } else {
         OptionValue m = args.valueAt(cpu);
-        m.setImplied(c.model);
+        m.setImplied(model);
         args.setValueAt(cpu, m);
     }
+}
+
+void setCpus(ArgsFile &args, const Cpus &c)
+{
+    setSmp(args, c);
+    setCpuModel(args, c.model);
 }
 
 void setCpuCount(ArgsFile &args, int count)

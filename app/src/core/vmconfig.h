@@ -68,7 +68,18 @@ struct Cpus {
     QString model;          // -cpu model, e.g. host; empty for the default
 };
 Cpus cpus(const ArgsFile &args);
+/*
+ * @cpus with the sockets, cores and threads it leaves out worked out as
+ * QEMU does for its machine types since 6.2: the threads and sockets
+ * default to 1 and the cores take the rest, or the sockets do when the
+ * cores are given, the threads last.  Their product is then the count; if
+ * the count does not divide, the given ones and 1 for the others.
+ */
+Cpus derivedTopology(const Cpus &cpus);
+/* Writes the -smp line and the -cpu model */
 void setCpus(ArgsFile &args, const Cpus &cpus);
+/* The model alone (empty: QEMU's default), keeping the flags of -cpu */
+void setCpuModel(ArgsFile &args, const QString &model);
 /*
  * @count processors, in the shape of the topology if one is given: the
  * threads per core and the sockets stay when @count is a multiple of

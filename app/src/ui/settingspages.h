@@ -320,6 +320,8 @@ private:
     void updateQemu();
     void fillLists();
     void updateTopology();
+    /* The topology box or its numbers differ from what load() showed */
+    bool topologyChanged() const;
     void describe();
 
     QemuDocs *m_docs = nullptr;
@@ -337,7 +339,11 @@ private:
     QLineEdit *m_qemuPath;
     QLabel *m_qemuInfo;
 
+    /* As -smp and -cpu say */
     VmConfig::Cpus m_loadedCpus;
+    /* The topology load() showed: the box, and QEMU's numbers */
+    bool m_loadedTopology = false;
+    VmConfig::Cpus m_shownCpus;
     QString m_loadedMachine;
     QString m_loadedQemu;
 };

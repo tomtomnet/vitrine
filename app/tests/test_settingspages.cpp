@@ -1,8 +1,13 @@
 // SPDX-License-Identifier: GPL-2.0-or-later
+#include <QCheckBox>
+#include <QComboBox>
 #include <QRadioButton>
+#include <QSpinBox>
+#include <QStandardPaths>
 #include <QTest>
 
 #include "core/argsfile.h"
+#include "core/paths.h"
 #include "ui/settingspages.h"
 
 /*
@@ -18,6 +23,18 @@ class TestSettingsPages : public QObject
     static QString text(const ArgsFile &args) { return args.toText(); }
 
 private slots:
+    void initTestCase()
+    {
+        /* settings of their own, and no QEMU to read the documentation of */
+        QStandardPaths::setTestModeEnabled(true);
+        Paths::setQemuBinary("/nonexistent/qemu-system-x86_64");
+    }
+
+    void cleanupTestCase()
+    {
+        Paths::setQemuBinary({});
+    }
+
     /* A VM that shows nowhere has neither radio checked, whatever was before */
     void displayPageClearsItsChoice()
     {
@@ -56,6 +73,64 @@ private slots:
         page.save(args);
         QCOMPARE(text(args), "-display dbus,p2p=yes\n");
         QVERIFY(!page.isModified());
+    }
+
+    /* The count is the Hardware page's: edits elsewhere on the page keep -smp */
+    void machinePageKeepsTheCount()
+    {
+        MachinePage page;
+        auto *topology = page.findChild<QCheckBox *>("topology");
+        auto *machine = page.findChild<QComboBox *>("machine");
+        auto *model = page.findChild<QComboBox *>("cpuModel");
+        auto *sockets = page.findChild<QSpinBox *>("sockets");
+        auto *cores = page.findChild<QSpinBox *>("cores");
+        auto *threads = page.findChild<QSpinBox *>("threads");
+        QVERIFY(topology && machine && model && sockets && cores && threads);
+
+        /* QEMU makes 2 sockets of it: the page shows what QEMU runs */
+        ArgsFile args = ArgsFile::parse("-machine pc\n-cpu host\n-smp 8,cores=4\n");
+        page.load(args);
+        QVERIFY(topology->isChecked());
+        QCOMPARE(sockets->value(), 2);
+        QCOMPARE(cores->value(), 4);
+        QCOMPARE(threads->value(), 1);
+        QVERIFY(!page.isModified());
+
+        machine->setCurrentText("q35");
+        QVERIFY(page.isModified());
+        page.save(args);
+        QCOMPARE(text(args), "-machine q35\n-cpu host\n-smp 8,cores=4\n");
+        QVERIFY(!page.isModified());
+
+        /* the model alone */
+        args = ArgsFile::parse("-cpu host\n-smp 8,threads=2\n");
+        page.load(args);
+        QCOMPARE(QString("%1x%2x%3").arg(sockets->value()).arg(cores->value()).arg(threads->value()),
+                 "1x4x2");
+        model->setCurrentText("qemu64");
+        page.save(args);
+        QCOMPARE(text(args), "-cpu qemu64\n-smp 8,threads=2\n");
+
+        /* the topology edited: -smp from the numbers */
+        args = ArgsFile::parse("-smp cpus=16,cores=4,threads=2\n");
+        page.load(args);
+        QCOMPARE(sockets->value(), 2);
+        sockets->setValue(1);
+        QVERIFY(page.isModified());
+        page.save(args);
+        QCOMPARE(text(args), "-smp cpus=8,cores=4,threads=2,sockets=1\n");
+
+        /* and the box: on writes the numbers shown, off leaves the count */
+        args = ArgsFile::parse("-smp 8\n");
+        page.load(args);
+        QVERIFY(!topology->isChecked());
+        topology->setChecked(true);
+        page.save(args);
+        QCOMPARE(text(args), "-smp 8,sockets=1,cores=8,threads=1\n");
+        page.load(args);
+        topology->setChecked(false);
+        page.save(args);
+        QCOMPARE(text(args), "-smp 8\n");
     }
 };
 

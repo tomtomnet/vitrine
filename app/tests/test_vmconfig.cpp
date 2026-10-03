@@ -110,6 +110,41 @@ private slots:
 
         a = ArgsFile::parse("-smp cores=4,threads=2\n");
         QCOMPARE(VmConfig::cpus(a).count, 8);
+
+        /* the model alone: -smp and the flags of -cpu stay */
+        a = ArgsFile::parse("-smp 8,cores=4\n-cpu host,+avx\n");
+        setCpuModel(a, "max");
+        QCOMPARE(a.toText(), "-smp 8,cores=4\n-cpu max,+avx\n");
+        setCpuModel(a, {});
+        QCOMPARE(a.toText(), "-smp 8,cores=4\n");
+        setCpuModel(a, "host");
+        QCOMPARE(a.toText(), "-smp 8,cores=4\n-cpu host\n");
+    }
+
+    /* What QEMU makes of the topology keys -smp leaves out */
+    void derivedTopologies()
+    {
+        const auto derived = [](const char *smp) {
+            const Cpus d = derivedTopology(VmConfig::cpus(ArgsFile::parse(QString("-smp %1\n").arg(smp))));
+            return QString("%1x%2x%3").arg(d.sockets).arg(d.cores).arg(d.threads);
+        };
+
+        /* the cores take what the others leave */
+        QCOMPARE(derived("8"), "1x8x1");
+        QCOMPARE(derived("8,threads=2"), "1x4x2");
+        QCOMPARE(derived("8,sockets=2"), "2x4x1");
+        /* then the sockets */
+        QCOMPARE(derived("8,cores=4"), "2x4x1");
+        QCOMPARE(derived("cpus=16,cores=4,threads=2"), "2x4x2");
+        /* then the threads */
+        QCOMPARE(derived("8,sockets=1,cores=4"), "1x4x2");
+        QCOMPARE(derived("8,sockets=2,cores=2"), "2x2x2");
+        /* all given, or none with no count */
+        QCOMPARE(derived("16,sockets=1,cores=8,threads=2"), "1x8x2");
+        QCOMPARE(derived("cores=4,threads=2"), "1x4x2");
+        /* a count that does not divide, which QEMU refuses: as given */
+        QCOMPARE(derived("6,cores=4"), "1x4x1");
+        QCOMPARE(derived("3,sockets=2,threads=2"), "2x1x2");
     }
 
     void cpuFeature()
