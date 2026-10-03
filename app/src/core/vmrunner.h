@@ -4,6 +4,8 @@
 #include <QObject>
 #include <QStringList>
 
+#include <functional>
+
 #include "core/argsfile.h"
 
 class QmpClient;
@@ -34,6 +36,15 @@ public:
     QString logPath() const;
     /* The full QEMU command line for @args, as start() would run it */
     QStringList commandLine(const ArgsFile &args) const;
+    /*
+     * @args with the properties vitrine computes for the 3D card, those
+     * that @args leaves out and the card has in the VM's QEMU
+     * (@propertiesOf a driver; empty when not known, and then none):
+     * x-vblank-swap-target by the guest's desktop, 4500 us for KDE, 6000
+     * otherwise; x-vblank-swap-target-zc 3500 us, 4500 in vitrine's window
+     */
+    static ArgsFile withComputedProperties(
+        const ArgsFile &args, const std::function<QStringList(const QString &driver)> &propertiesOf);
     /*
      * The environment variables QEMU gets on top of the manager's, as
      * NAME=VALUE: those of the display, then the #env directives

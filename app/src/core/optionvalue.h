@@ -41,6 +41,8 @@ public:
     bool isEmpty() const { return m_items.isEmpty(); }
 
     static QString escape(const QString &text);
+    /* One item as written in the value, e.g. key=value */
+    static QString itemText(const Item &item);
 
 private:
     QList<Item> m_items;

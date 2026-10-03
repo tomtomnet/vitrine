@@ -69,6 +69,11 @@ void setGraphics(ArgsFile &args, const Graphics &graphics);
  */
 enum class Screen { Embedded, OwnWindow, None };
 Screen screen(const ArgsFile &args);
+/*
+ * Shows the screen in vitrine's window (-display dbus,p2p=yes) or in
+ * QEMU's SDL window, with OpenGL for a 3D card; the card stays as it is
+ */
+void setScreen(ArgsFile &args, Screen screen);
 /* With a VGA mode, which shows the firmware and boot screens */
 bool isVgaDevice(const QString &device);
 /* The same virtio card with OpenGL, or without: virtio-vga for virtio-vga-gl */
@@ -98,6 +103,39 @@ void removeDisk(ArgsFile &args, const Disk &disk);
 void setDisc(ArgsFile &args, const Disk &drive, const QString &iso);
 /* The disk format of a file name, e.g. qcow2; empty when unknown */
 QString diskFormat(const QString &path);
+
+/*
+ * The network as the Network page shows it: one card behind NAT, through
+ * passt or QEMU's user-mode network, with a port of this computer
+ * forwarded to the guest's SSH server.  Other setups (a bridge, a tap,
+ * several cards, a -netdev in JSON) are Custom, left as written.
+ */
+struct Network {
+    enum Kind {
+        Nat,
+        Off,            // no card: -nic none, or -nodefaults
+        Custom,
+    };
+    Kind kind = Nat;
+    /* passt or user; empty for QEMU's default card, when nothing is set */
+    QString backend;
+    /* The card, e.g. virtio-net-pci; empty for QEMU's default */
+    QString card;
+    /* The host port forwarded to the guest's port 22, 0 for none */
+    int sshPort = 0;
+    /* Why it is Custom */
+    QString custom;
+};
+Network network(const ArgsFile &args);
+/*
+ * Nat or Off; a Custom network is left alone.  Off puts -nic none where
+ * the card was.  Turning NAT on adds a -netdev of @network.backend (user
+ * when empty) and a card (@network.card, else virtio-net-pci, or e1000e
+ * for Windows on a PC); passt goes over vhost-user when guest RAM is
+ * shared.  Otherwise only the forward changes, on 127.0.0.1, keeping the
+ * other keys of the -netdev.
+ */
+void setNetwork(ArgsFile &args, const Network &network);
 
 /* Boot */
 enum class FirmwareKind { Bios, Uefi, UefiSecureBoot, Custom };
