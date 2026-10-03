@@ -2,7 +2,7 @@
 # exact version, and dnf takes an installed one of the same version as done.
 Name:           vitrine-guest-tools
 Version:        0.1.0
-Release:        4%{?dist}
+Release:        5%{?dist}
 Summary:        vitrine guest tools: patched virtio-gpu driver, settings and agent
 
 # the driver's sources (dkms/vendor, dkms/patches) are the kernel's: MIT
@@ -124,6 +124,8 @@ fi
 %dir %{_sharedstatedir}/%{name}
 
 %changelog
+* Sat Oct 03 2026 vitrine <noreply@anthropic.com> - 0.1.0-5
+- the driver's source cache readable by all, as the other caches
 * Sat Oct 03 2026 vitrine <noreply@anthropic.com> - 0.1.0-4
 - an update builds the driver over the one in place and keeps it if the
   build fails, instead of removing it first; the source cache is written
