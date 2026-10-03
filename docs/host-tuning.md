@@ -94,10 +94,18 @@ Give the group to the people you would give real-time priority to.
 `cmake --install` puts the helper in `<prefix>/libexec/vitrine-helper`,
 the polkit action in `<prefix>/share/polkit-1/actions` and the rule for the
 group in `<prefix>/share/polkit-1/rules.d`. polkit reads only
-`/usr/share/polkit-1` (and `/etc/polkit-1/rules.d`), so install with
-`-DCMAKE_INSTALL_PREFIX=/usr`, or set `VITRINE_POLKIT_ACTIONS_DIR` and
-`VITRINE_POLKIT_RULES_DIR` to those folders. The action names the helper
-by its installed path.
+`/usr/share/polkit-1` (and `/etc/polkit-1/rules.d`), so configure with
+that prefix, or set `VITRINE_POLKIT_ACTIONS_DIR` and
+`VITRINE_POLKIT_RULES_DIR` to those folders:
+
+```
+cmake -B build -DCMAKE_INSTALL_PREFIX=/usr
+cmake --build build
+sudo cmake --install build
+```
+
+The action and the app name the helper by its installed path, fixed when
+configuring: `cmake --install --prefix` with another prefix is refused.
 
 ## When something looks wrong
 
