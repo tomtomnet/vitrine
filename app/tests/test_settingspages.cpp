@@ -1,15 +1,21 @@
 // SPDX-License-Identifier: GPL-2.0-or-later
 #include <QCheckBox>
 #include <QComboBox>
+#include <QFile>
+#include <QFocusEvent>
 #include <QLabel>
+#include <QListWidget>
 #include <QRadioButton>
 #include <QSpinBox>
 #include <QStandardPaths>
+#include <QTemporaryDir>
 #include <QTest>
 
 #include "core/argsfile.h"
 #include "core/paths.h"
+#include "core/vmstore.h"
 #include "ui/settingspages.h"
+#include "ui/vmpane.h"
 
 /*
  * The pages as VmPane drives them, without a screen: load() when a page is
@@ -218,6 +224,42 @@ private slots:
         cpus->setValue(2);
         page.save(args);
         QCOMPARE(text(args), "-m 1G\n-smp 2\n");
+    }
+
+    /* Keyboard focus crossing the lists of pages chooses none */
+    void paneKeepsItsPageOnFocus()
+    {
+        QTemporaryDir dir;
+        QFile args(dir.filePath("vm.args"));
+        QVERIFY(args.open(QIODevice::WriteOnly) && args.write("-m 1G\n") > 0);
+        args.close();
+        Vm vm(dir.path());
+        VmPane pane;
+        auto *pages = pane.findChild<QListWidget *>("pages");
+        auto *advanced = pane.findChild<QListWidget *>("advancedPages");
+        QVERIFY(pages && advanced);
+
+        pane.setVm(&vm);
+        pane.setTab(VmPane::Settings);
+        pane.setPage(VmPane::Machine);
+        QCOMPARE(pane.page(), VmPane::Machine);
+        /* Shift+Tab from the Advanced button into the simple pages */
+        QFocusEvent backtab(QEvent::FocusIn, Qt::BacktabFocusReason);
+        QCoreApplication::sendEvent(pages, &backtab);
+        QCOMPARE(pane.page(), VmPane::Machine);
+
+        /* Tab into the advanced ones from a simple page */
+        pane.setPage(VmPane::Network);
+        QCOMPARE(pane.page(), VmPane::Network);
+        QFocusEvent tab(QEvent::FocusIn, Qt::TabFocusReason);
+        QCoreApplication::sendEvent(advanced, &tab);
+        QCOMPARE(pane.page(), VmPane::Network);
+
+        /* the keys and the mouse still choose */
+        QTest::keyClick(advanced, Qt::Key_Down);
+        QCOMPARE(pane.page(), VmPane::Machine);
+        pages->setCurrentRow(VmPane::Display);
+        QCOMPARE(pane.page(), VmPane::Display);
     }
 };
 

@@ -80,7 +80,7 @@ signals:
 
 private:
     void buildPages();
-    /* A row of a list of pages became current */
+    /* A row of a list of pages was selected */
     void pageChosen(QListWidget *list, int row);
     /* Makes @page current in its list, opening Advanced for it */
     void selectPage(int page);

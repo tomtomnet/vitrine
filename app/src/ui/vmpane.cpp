@@ -155,10 +155,19 @@ VmPane::VmPane(QWidget *parent)
     m_check->setSingleShot(true);
     m_check->setInterval(0);
     connect(m_check, &QTimer::timeout, this, &VmPane::updateFooter);
-    connect(m_list, &QListWidget::currentRowChanged, this,
-            [this](int row) { pageChosen(m_list, row); });
-    connect(m_advanced, &QListWidget::currentRowChanged, this,
-            [this](int row) { pageChosen(m_advanced, row); });
+    /*
+     * A page is chosen by selecting its row, with the mouse or the keys,
+     * not by the row becoming current: keyboard focus coming into a list
+     * makes its first row current, without selecting it
+     */
+    for (QListWidget *list : {m_list, m_advanced}) {
+        connect(list, &QListWidget::itemSelectionChanged, this, [this, list]() {
+            const QList<QListWidgetItem *> items = list->selectedItems();
+            if (!items.isEmpty()) {
+                pageChosen(list, list->row(items.first()));
+            }
+        });
+    }
     connect(m_more, &QToolButton::toggled, this, &VmPane::showAdvanced);
     connect(m_apply, &QPushButton::clicked, this, &VmPane::apply);
     connect(m_discard, &QPushButton::clicked, this, &VmPane::discard);
@@ -286,9 +295,10 @@ void VmPane::pageChosen(QListWidget *list, int row)
         return;
     }
     {
-        /* one page current in both lists */
+        /* one page current in both lists; set through the view, so that
+           focus coming in leaves it so rather than making row 0 current */
         const QSignalBlocker block(other);
-        other->setCurrentRow(-1);
+        other->setCurrentIndex(QModelIndex());
         other->clearSelection();
     }
     switchTo(list == m_list ? row : FirstAdvanced + row);
