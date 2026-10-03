@@ -162,7 +162,7 @@ void NewVmDialog::applyDefaults()
         } else if (os == Os::Windows11) {
             m_note->setText(tr("Windows uses a SATA disk and an Intel network card, which need "
                                "no extra drivers, and UEFI with Secure Boot. Windows 11 also "
-                               "checks for a TPM, which vitrine does not provide yet."));
+                               "checks for a TPM, which Vitrine does not provide yet."));
         } else {
             m_note->setText(tr("Windows uses a SATA disk and an Intel network card, which need "
                                "no extra drivers."));

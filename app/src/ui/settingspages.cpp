@@ -256,7 +256,7 @@ bool HardwarePage::isModified() const
 
 DisplayPage::DisplayPage(QWidget *parent)
     : SettingsPage(parent), m_custom(new Banner(Banner::Information)),
-      m_embedded(new QRadioButton(tr("In &vitrine's window"))),
+      m_embedded(new QRadioButton(tr("In &Vitrine's window"))),
       m_ownWindow(new QRadioButton(tr("In a &window of its own (SDL)")))
 {
     auto *layout = new QVBoxLayout(this);
@@ -270,13 +270,13 @@ DisplayPage::DisplayPage(QWidget *parent)
     group->addButton(m_embedded);
     group->addButton(m_ownWindow);
     choices->addWidget(m_embedded);
-    choices->addWidget(Widgets::hint(tr("The screen is part of vitrine's window, and can go "
+    choices->addWidget(Widgets::hint(tr("The screen is part of Vitrine's window, and can go "
                                         "full screen.")));
     choices->addWidget(m_ownWindow);
     choices->addWidget(Widgets::hint(tr("QEMU shows the screen in a window of its own, which "
-                                        "stays open when vitrine closes.")));
+                                        "stays open when Vitrine closes.")));
     form->addRow(Widgets::label(tr("Show the VM:"), m_embedded), choices);
-    form->addRow(QString(), Widgets::hint(tr("vitrine chooses the graphics card and its 3D "
+    form->addRow(QString(), Widgets::hint(tr("Vitrine chooses the graphics card and its 3D "
                                              "acceleration; the Arguments page can change "
                                              "them.")));
     layout->addWidget(m_custom);
@@ -316,7 +316,7 @@ void DisplayPage::load(const ArgsFile &args)
     if (args.indexOf("nographic") >= 0) {
         custom = tr("This VM has no screen (-nographic): change it on the Arguments page.");
     } else if (screen == VmConfig::Screen::None) {
-        custom = tr("This VM shows its screen nowhere vitrine can (-display %1). Choosing "
+        custom = tr("This VM shows its screen nowhere Vitrine can (-display %1). Choosing "
                     "below replaces it.")
                      .arg(display.toHtmlEscaped());
     } else if (screen == VmConfig::Screen::OwnWindow && display != "sdl") {
