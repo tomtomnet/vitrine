@@ -14,12 +14,14 @@
 #include <QLabel>
 #include <QMetaObject>
 #include <QScreen>
+#include <QTimer>
 #include <QVBoxLayout>
 #include <QWidget>
 
 #include <cerrno>
 #include <cstring>
 #include <utility>
+#include <vector>
 #include <gio/gio.h>
 #include <sys/socket.h>
 #include <sys/un.h>
@@ -107,6 +109,10 @@ VmView::VmView(QObject *parent) : QObject(parent)
     layout->addWidget(m_placeholder);
     /* the window around the screen gaining or losing the keyboard */
     connect(qGuiApp, &QGuiApplication::focusWindowChanged, this, &VmView::updateHostActive);
+    /* as often as the render thread looks while it does not draw */
+    m_undrawn = new QTimer(this);
+    m_undrawn->setInterval(50);
+    connect(m_undrawn, &QTimer::timeout, this, &VmView::releaseUndrawn);
 }
 
 VmView::~VmView()
@@ -291,8 +297,11 @@ void VmView::createWindow(bool fullScreen)
     m_renderer = new Renderer(m_window, &m_mailbox, m_stats.get(), m_opts);
     m_renderer->setObjectName(QStringLiteral("render"));   // the thread's name in /proc
     m_renderer->setPresentationSink(m_dbus->connection(), m_dbus->consolePath().toUtf8());
-    connect(m_renderer, &Renderer::failed, this, [](const QString &message) {
+    connect(m_renderer, &Renderer::failed, this, [this](const QString &message) {
         qWarning("vitrine: display: %s", qPrintable(message));
+        /* it has ended: nothing else gives the guest's buffers back */
+        m_renderFailed = true;
+        m_undrawn->start();
     });
     m_window->setRenderer(m_renderer);
     {
@@ -300,6 +309,9 @@ void VmView::createWindow(bool fullScreen)
         std::lock_guard g(m_mailbox.lock);
         m_mailbox.quit = false;
     }
+    m_exposedOnce = false;
+    m_renderFailed = false;
+    m_undrawn->start();
     m_renderer->start();
     if (m_window->isExposed()) {
         m_renderer->setExposed(true);
@@ -313,6 +325,7 @@ void VmView::createWindow(bool fullScreen)
 
 void VmView::destroyWindow()
 {
+    m_undrawn->stop();
     if (m_window) {
         /* key releases to the guest, and the desktop's shortcuts back */
         m_window->setHostActive(false);
@@ -349,6 +362,19 @@ void VmView::setFullScreen(bool on)
         return;
     }
     destroyWindow();
+    if (!on && m_dbus->connection()) {
+        /*
+         * The full-screen renderer may have told QEMU the guest's buffers
+         * went to the screen as they are (Presentation.ZeroCopy), and it
+         * does not take it back as it ends; the embedded one does at its
+         * first frame, which a console not shown never draws.
+         */
+        g_dbus_connection_call(m_dbus->connection(), nullptr,
+                               m_dbus->consolePath().toUtf8().constData(),
+                               "org.qemu.Display1.Presentation", "ZeroCopy",
+                               g_variant_new("(b)", FALSE), nullptr,
+                               G_DBUS_CALL_FLAGS_NO_AUTO_START, -1, nullptr, nullptr, nullptr);
+    }
     m_fullScreen = on;
     createWindow(on);
     if (!on) {
@@ -431,6 +457,15 @@ bool VmView::eventFilter(QObject *watched, QEvent *event)
 {
     if (watched == m_window) {
         switch (event->type()) {
+        case QEvent::Expose:
+            /* the render thread takes it from here (it has the same event) */
+            if (m_window->isExposed()) {
+                m_exposedOnce = true;
+                if (!m_renderFailed) {
+                    m_undrawn->stop();
+                }
+            }
+            break;
         case QEvent::Close:
             if (!m_fullScreen) {
                 break;
@@ -470,6 +505,48 @@ bool VmView::eventFilter(QObject *watched, QEvent *event)
         }
     }
     return QObject::eventFilter(watched, event);
+}
+
+/*
+ * Until its window is first exposed, the render thread waits before its
+ * loop (renderer.cpp), and nothing gives the guest's buffers back: with zero
+ * copy, QEMU holds the buffer of each UpdateDMABUF until Presentation.
+ * Released, and a guest whose flushes wait for that ran at 1/8 of the
+ * refresh rate (QEMU's timeout) for as long as its console was not shown -
+ * every running VM's but the selected one's, after vitrine starts again or
+ * when full screen ends on another VM.  So the view does what the loop does
+ * while it does not draw: each buffer released, each deferred reply sent.
+ * Not the buffer the first frame will show, which QEMU then no longer
+ * holds: the loop's not-exposed path has the same gap, until the guest's
+ * next frame.
+ */
+void VmView::releaseUndrawn()
+{
+    std::vector<uint64_t> updated;
+    std::vector<std::pair<GDBusMethodInvocation *, int64_t>> deferred;
+
+    if (!m_dbus || (m_exposedOnce && !m_renderFailed)) {
+        m_undrawn->stop();
+        return;
+    }
+    {
+        std::lock_guard g(m_mailbox.lock);
+        updated.swap(m_mailbox.updated);
+        deferred.swap(m_mailbox.deferredReplies);
+    }
+    const QByteArray path = m_dbus->consolePath().toUtf8();
+    for (uint64_t inode : updated) {
+        if (inode && m_dbus->connection()) {
+            /* one-way, as the renderer sends it */
+            g_dbus_connection_call(m_dbus->connection(), nullptr, path.constData(),
+                                   "org.qemu.Display1.Presentation", "Released",
+                                   g_variant_new("(t)", guint64(inode)), nullptr,
+                                   G_DBUS_CALL_FLAGS_NO_AUTO_START, -1, nullptr, nullptr, nullptr);
+        }
+    }
+    for (const auto &[invocation, received] : deferred) {
+        g_dbus_method_invocation_return_value(invocation, nullptr);
+    }
 }
 
 /* Embedded, the screen has the keyboard while its container has the focus

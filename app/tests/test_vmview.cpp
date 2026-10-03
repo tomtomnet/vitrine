@@ -546,6 +546,50 @@ private Q_SLOTS:
         QTest::qWait(50);
     }
 
+    /*
+     * A view never shown - another VM's console is - gives the guest's
+     * buffers back all the same: QEMU holds each until it is released
+     */
+    void unshownViewReleases()
+    {
+        FakeDisplay qemu(socketPath());
+        VmView view;
+        QString error;
+        QVERIFY2(view.attach(socketPath(), &error), qPrintable(error));
+        QTRY_VERIFY(qemu.listening());
+        const int buffer = memfd_create("guest", MFD_CLOEXEC);
+        struct stat st{};
+        QVERIFY(buffer >= 0 && ftruncate(buffer, 64 * 64 * 4) == 0 && fstat(buffer, &st) == 0);
+        qemu.scanout(buffer, 64, 64);
+        close(buffer);
+        for (int i = 0; i < 3; i++) {
+            qemu.update(64, 64);
+        }
+        QTRY_COMPARE(qemu.callsTo("Presentation.Released").size(), 3);
+        for (const QString &call : qemu.callsTo("Presentation.Released")) {
+            QCOMPARE(call, QString("Presentation.Released (%1,)").arg(st.st_ino));
+        }
+    }
+
+    /* Back from full screen: QEMU no longer counts on the screen taking the
+       guest's buffers as they are, even if the console is not shown */
+    void fullScreenEnds()
+    {
+        FakeDisplay qemu(socketPath());
+        VmView view;
+        QString error;
+        QVERIFY2(view.attach(socketPath(), &error), qPrintable(error));
+        QTRY_VERIFY(qemu.listening());
+        QSignalSpy changed(&view, &VmView::fullScreenChanged);
+        view.setFullScreen(true);
+        QVERIFY(view.isFullScreen());
+        QVERIFY(qemu.callsTo("Presentation.ZeroCopy").isEmpty());
+        view.setFullScreen(false);
+        QVERIFY(!view.isFullScreen());
+        QCOMPARE(changed.size(), 2);
+        QTRY_COMPARE(qemu.callsTo("Presentation.ZeroCopy"), QStringList({"Presentation.ZeroCopy (false,)"}));
+    }
+
     void attachFails()
     {
         VmView view;

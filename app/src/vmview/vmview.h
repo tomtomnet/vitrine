@@ -15,6 +15,7 @@
 #include "vmview/stats.h"
 
 class QLabel;
+class QTimer;
 class QWidget;
 class DBusDisplay;
 class DisplayWindow;
@@ -82,6 +83,8 @@ private:
     void createWindow(bool fullScreen);
     void destroyWindow();
     void updateHostActive();
+    /* What the render thread does with the guest's buffers while it does not draw */
+    void releaseUndrawn();
     /* grabChanged() if the grab changed: DisplayWindow does not signal the
        grab it takes or leaves itself (Ctrl+Alt+G, a click with a relative mouse) */
     void checkGrab();
@@ -100,6 +103,11 @@ private:
     QLabel *m_placeholder = nullptr;    // in m_host while full screen
     bool m_fullScreen = false;
     bool m_hasKeyboard = false;
+    /* releaseUndrawn() until the window is first exposed, or for good if
+       its render thread failed */
+    QTimer *m_undrawn = nullptr;
+    bool m_exposedOnce = false;
+    bool m_renderFailed = false;
     QString m_grabState;    // as last signalled
     /* what the guest said last, for a new window */
     QSize m_guestSize;
