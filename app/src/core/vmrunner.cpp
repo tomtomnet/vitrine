@@ -799,7 +799,23 @@ ArgsFile VmRunner::withComputedProperties(
         {"x-vblank-swap-target-zc", embedded ? "4500" : "3500"},
     };
     ArgsFile out = args;
+    QStringList global;
 
+    /*
+     * Those the user sets with -global: QEMU applies them when it creates
+     * the card, and the -device line's own after, which would win.  Any
+     * driver counts, as the card's inner device and parent types take them
+     * too, and only vitrine's virtio-gpu has these properties.
+     */
+    for (int i : args.indexesOf("global")) {
+        const OptionValue g = args.valueAt(i);
+        if (g.has("property")) {
+            global << g.get("property");
+        } else if (!g.items().isEmpty()) {
+            /* DRIVER.PROPERTY=VALUE, split at the first dot as QEMU does */
+            global << g.items().first().key.section('.', 1);
+        }
+    }
     for (int i : out.indexesOf("device")) {
         OptionValue v = out.valueAt(i);
         QStringList known;
@@ -810,7 +826,7 @@ ArgsFile VmRunner::withComputedProperties(
         }
         known = propertiesOf(v.implied());
         for (const auto &[key, value] : computed) {
-            if (!v.has(key) && known.contains(key)) {
+            if (!v.has(key) && !global.contains(key) && known.contains(key)) {
                 v.set(key, value);
                 changed = true;
             }

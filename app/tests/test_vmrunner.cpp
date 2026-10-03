@@ -180,6 +180,15 @@ private slots:
                           "-device virtio-gpu-gl-pci,x-vblank-swap-target-zc=0\n"),
                  "#guest linux,desktop=kde\n-device virtio-gpu-gl-pci,"
                  "x-vblank-swap-target-zc=0,x-vblank-swap-target=4500\n");
+        /* and those of -global, in either form, which QEMU would apply first */
+        QCOMPARE(computed("-device virtio-gpu-gl-pci\n"
+                          "-global virtio-gpu-gl-pci.x-vblank-swap-target=5000\n"),
+                 "-device virtio-gpu-gl-pci,x-vblank-swap-target-zc=3500\n"
+                 "-global virtio-gpu-gl-pci.x-vblank-swap-target=5000\n");
+        QCOMPARE(computed("-global driver=virtio-gpu-gl-device,property=x-vblank-swap-target-zc,"
+                          "value=0\n-device virtio-vga-gl\n"),
+                 "-global driver=virtio-gpu-gl-device,property=x-vblank-swap-target-zc,"
+                 "value=0\n-device virtio-vga-gl,x-vblank-swap-target=6000\n");
         /* a QEMU without them, or one whose properties are not known */
         QCOMPARE(computed("-device virtio-gpu-gl-pci,blob=on\n", {"blob"}),
                  "-device virtio-gpu-gl-pci,blob=on\n");

@@ -38,7 +38,8 @@ public:
     QStringList commandLine(const ArgsFile &args) const;
     /*
      * @args with the properties vitrine computes for the 3D card, those
-     * that @args leaves out and the card has in the VM's QEMU
+     * that @args leaves out (on the card's line, and with -global) and the
+     * card has in the VM's QEMU
      * (@propertiesOf a driver; empty when not known, and then none):
      * x-vblank-swap-target by the guest's desktop, 4500 us for KDE, 6000
      * otherwise; x-vblank-swap-target-zc 3500 us, 4500 in vitrine's window
