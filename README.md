@@ -33,8 +33,8 @@ sudo dnf install cmake ninja-build gcc gcc-c++ pkgconf-pkg-config git \
     mesa-libgbm-devel libdrm-devel wayland-devel wayland-protocols-devel
 ```
 
-Building vitrine's QEMU (the list in `host/build.sh` plus bzip2, which it does
-not check for; `host/build.sh --print-deps` prints what else is missing):
+Building vitrine's QEMU (the list in `host/build.sh`; `host/build.sh
+--print-deps` prints what is missing, `--deps` installs it):
 
 ```
 sudo dnf install git gcc gcc-c++ make meson ninja-build pkgconf-pkg-config python3 \
