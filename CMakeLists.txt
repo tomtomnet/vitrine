@@ -13,4 +13,9 @@ if(BUILD_TESTING)
     enable_testing()
 endif()
 
+include(GNUInstallDirs)
+# where the root helper is installed: the polkit action and the app need it
+set(VITRINE_HELPER_PATH "${CMAKE_INSTALL_FULL_LIBEXECDIR}/vitrine-helper")
+
+add_subdirectory(helper)
 add_subdirectory(app)
