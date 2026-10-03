@@ -248,7 +248,9 @@ if(BUILD_TESTING)
     # a runtime folder of its own, short and out of the build tree, which
     # Qt creates (0700): the sockets of the VMs the tests start go there, and
     # must fit in sun_path (107 bytes) wherever the build tree is; one per
-    # build tree, as builds in several worktrees may test at once.
+    # build tree, as builds in several worktrees may test at once.  ctest
+    # gives both: a test binary run by hand has the caller's home and runtime
+    # folder (ctest -V shows each test's environment).
     execute_process(COMMAND id -u OUTPUT_VARIABLE uid OUTPUT_STRIP_TRAILING_WHITESPACE)
     string(SHA1 tree "${CMAKE_BINARY_DIR}")
     string(SUBSTRING "${tree}" 0 8 tree)
