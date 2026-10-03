@@ -378,12 +378,13 @@ void MainWindow::createActions()
     help->addAction(m_reference);
     help->addAction(tr("Check for &Updates…"), this, [this]() { m_updates->checkNow(); });
     help->addSeparator();
-    help->addAction(tr("&About QEMU GUI Manager"), this, [this]() {
+    help->addAction(tr("&About Vitrine"), this, [this]() {
         QMessageBox::about(
-            this, tr("About QEMU GUI Manager"),
-            tr("<h3>QEMU GUI Manager %1</h3>"
+            this, tr("About Vitrine"),
+            tr("<h3>Vitrine %1</h3>"
                "<p>Creates and runs QEMU virtual machines. Each VM is its QEMU command "
                "line, which the settings edit and you can edit as text.</p>"
+               "<p>Written by AI: Anthropic's Claude, through Claude Code.</p>"
                "<p>License: GPL-2.0-or-later</p>")
                 .arg(QApplication::applicationVersion()));
     });

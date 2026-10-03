@@ -70,7 +70,7 @@ PreferencesDialog::PreferencesDialog(QWidget *parent)
     form->addRow(QString(), m_virtiofsdStatus);
     form->addRow(tr("Virtual machines:"), vms);
     form->addRow(QString(), m_updates);
-    form->addRow(QString(), Widgets::hint(tr("Of qemu-gui-manager, and of the QEMU that File > "
+    form->addRow(QString(), Widgets::hint(tr("Of Vitrine, and of the QEMU that File > "
                                              "Build QEMU builds: two requests to GitHub.")));
     layout->addLayout(form);
     layout->addStretch();

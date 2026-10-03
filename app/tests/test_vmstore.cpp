@@ -146,7 +146,7 @@ private slots:
 
     void diskImage()
     {
-        QString qemu = qEnvironmentVariable("QGM_TEST_QEMU");
+        QString qemu = qEnvironmentVariable("VITRINE_TEST_QEMU");
         QTemporaryDir tmp;
         QString error;
 
@@ -154,7 +154,7 @@ private slots:
             qemu = QStandardPaths::findExecutable("qemu-system-x86_64");
         }
         if (qemu.isEmpty()) {
-            QSKIP("no QEMU binary, set QGM_TEST_QEMU");
+            QSKIP("no QEMU binary, set VITRINE_TEST_QEMU");
         }
         Paths::setQemuBinary(qemu);
         if (QFileInfo(QFileInfo(qemu).dir(), "qemu-img").isExecutable()) {

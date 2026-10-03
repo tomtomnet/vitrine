@@ -21,7 +21,7 @@ UpdateCheck::UpdateCheck(QObject *parent)
 void UpdateCheck::check(const QList<Project> &projects)
 {
     /* another server for the tests */
-    const QString api = qEnvironmentVariable("QGM_GITHUB_API", "https://api.github.com");
+    const QString api = qEnvironmentVariable("VITRINE_GITHUB_API", "https://api.github.com");
 
     if (m_pending > 0) {
         return;
@@ -35,7 +35,7 @@ void UpdateCheck::check(const QList<Project> &projects)
                                          .arg(api, project.repository, project.commit,
                                               project.branch)));
         request.setRawHeader("Accept", "application/vnd.github+json");
-        request.setHeader(QNetworkRequest::UserAgentHeader, "qemu-gui-manager");
+        request.setHeader(QNetworkRequest::UserAgentHeader, "vitrine");
         request.setTransferTimeout(15000);
         QNetworkReply *reply = m_network->get(request);
         m_pending++;

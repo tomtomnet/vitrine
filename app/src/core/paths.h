@@ -4,9 +4,9 @@
 #include <QString>
 
 /*
- * Where things live: the VMs in ~/.local/share/qemu-gui-manager/vms/<id>/,
- * the sockets of running VMs in $XDG_RUNTIME_DIR/qemu-gui-manager/<id>/,
- * the settings in ~/.config/qemu-gui-manager/settings.conf, and the tools
+ * Where things live: the VMs in ~/.local/share/vitrine/vms/<id>/,
+ * the sockets of running VMs in $XDG_RUNTIME_DIR/vitrine/<id>/,
+ * the settings in ~/.config/vitrine/settings.conf, and the tools
  * wherever the settings or PATH say.
  */
 namespace Paths {

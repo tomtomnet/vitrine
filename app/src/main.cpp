@@ -69,10 +69,10 @@ int main(int argc, char **argv)
 {
     QApplication app(argc, argv);
 
-    QApplication::setApplicationName("qemu-gui-manager");
-    QApplication::setApplicationDisplayName(QObject::tr("QEMU GUI Manager"));
-    QApplication::setApplicationVersion(QGM_VERSION);
-    QApplication::setDesktopFileName("qemu-gui-manager");
+    QApplication::setApplicationName("vitrine");
+    QApplication::setApplicationDisplayName(QObject::tr("Vitrine"));
+    QApplication::setApplicationVersion(VITRINE_VERSION);
+    QApplication::setDesktopFileName("vitrine");
     QApplication::setWindowIcon(Icons::app());
 
     const QString socketPath = Paths::runtimeDir() + "/manager.sock";
@@ -85,7 +85,7 @@ int main(int argc, char **argv)
             }
             QThread::msleep(100);
         }
-        fprintf(stderr, "qemu-gui-manager: another instance is running but does not "
+        fprintf(stderr, "vitrine: another instance is running but does not "
                         "answer on %s\n", qPrintable(socketPath));
         return 1;
     }

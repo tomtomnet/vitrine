@@ -13,7 +13,7 @@
 #include "core/updatecheck.h"
 
 /* The options the build tree was configured with, to know when to redo it */
-static const char kStamp[] = "/qgm-configure-args";
+static const char kStamp[] = "/vitrine-configure-args";
 
 /*
  * sh -c SCRIPT sh DIR REF EXTRA PATCH...: checks out REF, or else the newest
@@ -82,7 +82,7 @@ fi
 /*
  * sh -c SCRIPT sh SRC BUILD PREFIX VENUS RENDERER... -- MESON-ARG...:
  * configures virglrenderer with the renderers and Venus it can build.
- * BUILD/qgm-options records them: the same options need no configuring,
+ * BUILD/vitrine-options records them: the same options need no configuring,
  * other ones a new build folder, since reconfiguring checks them against
  * the choices of the first configuration.
  */
@@ -104,14 +104,14 @@ if [ "$venus" = true ] && ! pkg-config --exists vulkan; then
 fi
 echo "Native context renderers: ${renderers:-none}; Venus: $venus"
 options="$prefix $renderers $venus $*"
-if [ -f "$build/build.ninja" ] && [ "$(cat "$build/qgm-options" 2>/dev/null)" = "$options" ]; then
+if [ -f "$build/build.ninja" ] && [ "$(cat "$build/vitrine-options" 2>/dev/null)" = "$options" ]; then
     echo "Configured already"
     exit 0
 fi
 rm -rf "$build"
 meson setup "$build" "$src" --prefix="$prefix" --libdir=lib --buildtype=release \
     -Ddrm-renderers="$renderers" -Dvenus="$venus" "$@" || exit 1
-echo "$options" > "$build/qgm-options"
+echo "$options" > "$build/vitrine-options"
 )sh";
 
 /* Writes the resource @resource to @file; the error, if any */
@@ -154,12 +154,12 @@ QStringList QemuBuilder::defaultConfigureArgs()
 
 QString QemuBuilder::buildDir(const QString &sourceDir)
 {
-    return sourceDir + "/build-qgm";
+    return sourceDir + "/build-vitrine";
 }
 
 QString QemuBuilder::builtBranch(const QString &sourceDir)
 {
-    QFile stamp(buildDir(sourceDir) + "/qgm-built-branch");
+    QFile stamp(buildDir(sourceDir) + "/vitrine-built-branch");
 
     return stamp.open(QIODevice::ReadOnly) ? QString::fromUtf8(stamp.readAll()).trimmed()
                                            : QString();
@@ -185,7 +185,7 @@ QStringList QemuBuilder::parseHeads(const QByteArray &lsRemote)
 
 QString QemuBuilder::builtCommit(const QString &sourceDir)
 {
-    QFile stamp(buildDir(sourceDir) + "/qgm-built-commit");
+    QFile stamp(buildDir(sourceDir) + "/vitrine-built-commit");
 
     return stamp.open(QIODevice::ReadOnly) ? QString::fromLatin1(stamp.readAll()).trimmed()
                                            : QString();
@@ -439,11 +439,11 @@ void QemuBuilder::runNext()
 {
     if (m_steps.isEmpty()) {
         /* for the update check: what the binary is built from */
-        QFile stamp(buildDir(m_options.sourceDir) + "/qgm-built-commit");
+        QFile stamp(buildDir(m_options.sourceDir) + "/vitrine-built-commit");
         if (stamp.open(QIODevice::WriteOnly | QIODevice::Truncate)) {
             stamp.write(UpdateCheck::checkoutCommit(m_options.sourceDir).toLatin1() + '\n');
         }
-        QFile branch(buildDir(m_options.sourceDir) + "/qgm-built-branch");
+        QFile branch(buildDir(m_options.sourceDir) + "/vitrine-built-branch");
         if (branch.open(QIODevice::WriteOnly | QIODevice::Truncate)) {
             branch.write(m_options.branch.toUtf8() + '\n');
         }

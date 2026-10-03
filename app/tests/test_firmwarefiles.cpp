@@ -17,10 +17,10 @@
 
 using FirmwareFiles::File;
 
-/* qemu-img next to $QGM_TEST_QEMU, else in PATH */
+/* qemu-img next to $VITRINE_TEST_QEMU, else in PATH */
 static QString testQemuImg()
 {
-    const QString qemu = qEnvironmentVariable("QGM_TEST_QEMU");
+    const QString qemu = qEnvironmentVariable("VITRINE_TEST_QEMU");
     const QFileInfo sibling(QFileInfo(qemu).dir(), "qemu-img");
 
     return !qemu.isEmpty() && sibling.isExecutable() ? sibling.filePath()
@@ -273,7 +273,7 @@ private slots:
     void findsQcow2Damage()
     {
         if (qemuImg.isEmpty()) {
-            QSKIP("no qemu-img, set QGM_TEST_QEMU");
+            QSKIP("no qemu-img, set VITRINE_TEST_QEMU");
         }
         ArgsFile args;
         const QString dir = vm("qcow2", &args);
@@ -406,7 +406,7 @@ private slots:
     void resetKeepsSnapshots()
     {
         if (qemuImg.isEmpty()) {
-            QSKIP("no qemu-img, set QGM_TEST_QEMU");
+            QSKIP("no qemu-img, set VITRINE_TEST_QEMU");
         }
         ArgsFile args;
         const QString dir = vm("snapshots", &args);
@@ -448,7 +448,7 @@ private slots:
     void resetReplacesAnUnreadableFile()
     {
         if (qemuImg.isEmpty()) {
-            QSKIP("no qemu-img, set QGM_TEST_QEMU");
+            QSKIP("no qemu-img, set VITRINE_TEST_QEMU");
         }
         ArgsFile args;
         const QString dir = vm("unreadable", &args);

@@ -9,7 +9,7 @@
 
 namespace Paths {
 
-static const char kApp[] = "/qemu-gui-manager";
+static const char kApp[] = "/vitrine";
 
 static QString privateDir(const QString &path)
 {

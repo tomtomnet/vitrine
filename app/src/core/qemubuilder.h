@@ -63,7 +63,7 @@ public:
     static QString defaultUrl();
     static QString defaultBranch();
     static QStringList defaultConfigureArgs();
-    /* build-qgm in @sourceDir */
+    /* build-vitrine in @sourceDir */
     static QString buildDir(const QString &sourceDir);
     static QString binary(const QString &sourceDir);
     /* The commit of @sourceDir the last build that ended well built; empty if none */

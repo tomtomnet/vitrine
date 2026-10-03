@@ -1,0 +1,15 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- SPDX-License-Identifier: GPL-2.0-or-later -->
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" width="64" height="64">
+  <defs>
+    <linearGradient id="screen" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#5aa0e6"/>
+      <stop offset="1" stop-color="#2f6db3"/>
+    </linearGradient>
+  </defs>
+  <rect x="4" y="8" width="56" height="40" rx="5" fill="#2b313a"/>
+  <rect x="8" y="12" width="48" height="32" rx="2" fill="url(#screen)"/>
+  <path d="M8 36 L30 12 H40 L14 44 H10 A2 2 0 0 1 8 42 Z" fill="#ffffff" fill-opacity="0.18"/>
+  <rect x="27" y="48" width="10" height="6" fill="#2b313a"/>
+  <rect x="18" y="54" width="28" height="4" rx="2" fill="#2b313a"/>
+</svg>

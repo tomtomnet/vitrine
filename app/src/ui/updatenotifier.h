@@ -11,7 +11,7 @@ class QToolButton;
 class QWidget;
 
 /*
- * Tells when qemu-gui-manager, or the qemu-gui QEMU it builds, has new
+ * Tells when vitrine, or the qemu-gui QEMU it builds, has new
  * commits on GitHub: by itself once a day at most, and when asked.  GitHub
  * lets 60 requests an hour through without an account; this makes two a
  * day, keeps the answer across restarts, and waits as long as GitHub asks

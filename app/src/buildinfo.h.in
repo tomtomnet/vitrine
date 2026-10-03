@@ -2,5 +2,5 @@
 #pragma once
 
 /* What this build is made of, for the update check; configured by CMake */
-#define QGM_COMMIT "@QGM_COMMIT@"
-#define QGM_SOURCE_DIR "@CMAKE_CURRENT_SOURCE_DIR@"
+#define VITRINE_COMMIT "@VITRINE_COMMIT@"
+#define VITRINE_SOURCE_DIR "@CMAKE_SOURCE_DIR@"

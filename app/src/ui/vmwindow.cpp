@@ -11,7 +11,7 @@
 #include "core/paths.h"
 
 static const char kService[] = "org.kde.KWin";
-static const char kPlugin[] = "qemu-gui-manager-raise";
+static const char kPlugin[] = "vitrine-raise";
 static const int kTimeoutMs = 2000;
 
 /* Plasma 6 has windowList() and activeWindow; Plasma 5 clientList() and activeClient */

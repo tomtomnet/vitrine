@@ -14,10 +14,10 @@
 #include "core/snapshots.h"
 #include "core/vmrunner.h"
 
-/* Runs $QGM_TEST_QEMU, else the qemu-system-x86_64 in PATH, headless */
+/* Runs $VITRINE_TEST_QEMU, else the qemu-system-x86_64 in PATH, headless */
 static QString testQemu()
 {
-    const QString env = qEnvironmentVariable("QGM_TEST_QEMU");
+    const QString env = qEnvironmentVariable("VITRINE_TEST_QEMU");
     return env.isEmpty() ? QStandardPaths::findExecutable("qemu-system-x86_64") : env;
 }
 
@@ -202,14 +202,14 @@ private slots:
     void stopped()
     {
         if (!QFileInfo(qemuImg()).isExecutable()) {
-            QSKIP("no qemu-img, set QGM_TEST_QEMU");
+            QSKIP("no qemu-img, set VITRINE_TEST_QEMU");
         }
         const QString dir = tmp.filePath("stopped");
         QDir().mkpath(dir);
         create(dir + "/disk.qcow2");
         create(dir + "/data.qcow2");
         create(dir + "/raw.img", "raw");
-        VmRunner runner("qgm-snap-stopped", dir);
+        VmRunner runner("vitrine-snap-stopped", dir);
         VmSnapshots snapshots(&runner);
         snapshots.setVm(ArgsFile::parse("#qemu " + testQemu() + "\n"
                                         "-drive file=disk.qcow2,format=qcow2,if=virtio\n"
@@ -245,7 +245,7 @@ private slots:
     void running()
     {
         if (!QFileInfo(testQemu()).isExecutable() || !QFileInfo(qemuImg()).isExecutable()) {
-            QSKIP("no QEMU build, set QGM_TEST_QEMU");
+            QSKIP("no QEMU build, set VITRINE_TEST_QEMU");
         }
         const QString dir = tmp.filePath("running");
         QDir().mkpath(dir);
@@ -257,7 +257,7 @@ private slots:
                                               "-machine q35\n-m 64\n-nodefaults\n-display none\n"
                                               "-drive file=disk.qcow2,format=qcow2,if=virtio\n"
                                               "-drive file=data.qcow2,format=qcow2,if=virtio\n");
-        VmRunner runner(QString("qgm-snap-%1-%2").arg(QCoreApplication::applicationPid()).arg(++count), dir);
+        VmRunner runner(QString("vitrine-snap-%1-%2").arg(QCoreApplication::applicationPid()).arg(++count), dir);
         VmSnapshots snapshots(&runner);
         snapshots.setVm(args, dir);
 
@@ -295,7 +295,7 @@ private slots:
     void virgl()
     {
         if (!QFileInfo(testQemu()).isExecutable() || !QFileInfo(qemuImg()).isExecutable()) {
-            QSKIP("no QEMU build, set QGM_TEST_QEMU");
+            QSKIP("no QEMU build, set VITRINE_TEST_QEMU");
         }
         const QString dir = tmp.filePath("virgl");
         QDir().mkpath(dir);
@@ -307,7 +307,7 @@ private slots:
                                               "-device virtio-vga-gl,blob=on,hostmem=64M\n"
                                               "-drive file=disk.qcow2,format=qcow2,if=virtio\n"
                                               "-drive file=data.qcow2,format=qcow2,if=virtio\n");
-        VmRunner runner(QString("qgm-snap-%1-%2").arg(QCoreApplication::applicationPid()).arg(++count), dir);
+        VmRunner runner(QString("vitrine-snap-%1-%2").arg(QCoreApplication::applicationPid()).arg(++count), dir);
         VmSnapshots snapshots(&runner);
         QSignalSpy notice(&snapshots, &VmSnapshots::notice);
         snapshots.setVm(args, dir);
@@ -337,7 +337,7 @@ private slots:
     void rawFiles()
     {
         if (!QFileInfo(testQemu()).isExecutable() || !QFileInfo(qemuImg()).isExecutable()) {
-            QSKIP("no QEMU build, set QGM_TEST_QEMU");
+            QSKIP("no QEMU build, set VITRINE_TEST_QEMU");
         }
         const QString dir = tmp.filePath("raw");
         QDir().mkpath(dir);
@@ -347,7 +347,7 @@ private slots:
                                               "-machine q35\n-m 64\n-nodefaults\n-display none\n"
                                               "-drive file=disk.qcow2,format=qcow2,if=virtio\n"
                                               "-drive file=raw.img,format=raw,if=virtio\n");
-        VmRunner runner(QString("qgm-snap-%1-%2").arg(QCoreApplication::applicationPid()).arg(++count), dir);
+        VmRunner runner(QString("vitrine-snap-%1-%2").arg(QCoreApplication::applicationPid()).arg(++count), dir);
         VmSnapshots snapshots(&runner);
         snapshots.setVm(args, dir);
 

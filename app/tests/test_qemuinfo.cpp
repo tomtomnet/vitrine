@@ -458,15 +458,15 @@ private slots:
                                "the guide."), qPrintable(html));
     }
 
-    /* Against a real binary: $QGM_TEST_QEMU, else qemu-system-x86_64 in PATH */
+    /* Against a real binary: $VITRINE_TEST_QEMU, else qemu-system-x86_64 in PATH */
     void loader()
     {
-        QString qemu = qEnvironmentVariable("QGM_TEST_QEMU");
+        QString qemu = qEnvironmentVariable("VITRINE_TEST_QEMU");
         if (qemu.isEmpty()) {
             qemu = QStandardPaths::findExecutable("qemu-system-x86_64");
         }
         if (qemu.isEmpty()) {
-            QSKIP("no QEMU binary, set QGM_TEST_QEMU");
+            QSKIP("no QEMU binary, set VITRINE_TEST_QEMU");
         }
         QStandardPaths::setTestModeEnabled(true);
 

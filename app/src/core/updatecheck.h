@@ -12,7 +12,7 @@ class QNetworkReply;
 
 /*
  * Whether GitHub has commits newer than those this computer runs: of
- * qemu-gui-manager, and of the qemu-gui QEMU that the manager builds.  One
+ * vitrine, and of the qemu-gui QEMU that the manager builds.  One
  * anonymous request to the compare API of GitHub for each.
  */
 class UpdateCheck : public QObject
@@ -21,8 +21,8 @@ class UpdateCheck : public QObject
 
 public:
     struct Project {
-        QString name;           // e.g. qemu-gui-manager
-        QString repository;     // e.g. tomtomnet/qemu-gui-manager
+        QString name;           // e.g. vitrine
+        QString repository;     // e.g. tomtomnet/vitrine
         QString branch;         // e.g. main
         QString commit;         // the one running
     };

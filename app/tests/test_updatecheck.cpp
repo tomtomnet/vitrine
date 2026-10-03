@@ -11,7 +11,7 @@
 
 /* What GitHub answers to a compare, cut down: the branch is 3 commits ahead */
 static const char kAhead[] = "{\n"
-    "    \"html_url\": \"https://github.com/tomtomnet/qemu-gui-manager/compare/abc...main\",\n"
+    "    \"html_url\": \"https://github.com/tomtomnet/vitrine/compare/abc...main\",\n"
     "    \"status\": \"ahead\", \"ahead_by\": 3, \"behind_by\": 0, \"total_commits\": 3,\n"
     "    \"commits\": [\n"
     "        {\"sha\": \"1\", \"commit\": {\"message\": \"First change\\n\\nWith a body\"}},\n"
@@ -35,7 +35,7 @@ class TestUpdateCheck : public QObject
 private slots:
     void parse()
     {
-        const UpdateCheck::Project project{"qemu-gui-manager", "tomtomnet/qemu-gui-manager",
+        const UpdateCheck::Project project{"vitrine", "tomtomnet/vitrine",
                                            "main", "abc"};
         UpdateCheck::Result r = UpdateCheck::parse(project, kAhead);
 
@@ -101,7 +101,7 @@ private slots:
             connect(socket, &QTcpSocket::readyRead, socket, [&requests, socket]() {
                 const QByteArray request = socket->readAll();
                 const QByteArray line = request.left(request.indexOf('\r'));
-                const bool known = line.contains("/qemu-gui-manager/");
+                const bool known = line.contains("/vitrine/");
                 const QByteArray body = known ? QByteArray(kAhead)
                                               : QByteArray("{\"message\": \"Not Found\"}");
 
@@ -113,24 +113,24 @@ private slots:
                 socket->disconnectFromHost();
             });
         });
-        qputenv("QGM_GITHUB_API", QString("http://127.0.0.1:%1").arg(server.serverPort()).toLatin1());
+        qputenv("VITRINE_GITHUB_API", QString("http://127.0.0.1:%1").arg(server.serverPort()).toLatin1());
 
         UpdateCheck check;
         QSignalSpy finished(&check, &UpdateCheck::finished);
-        check.check({{"qemu-gui-manager", "tomtomnet/qemu-gui-manager", "main", "abc"},
+        check.check({{"vitrine", "tomtomnet/vitrine", "main", "abc"},
                      {"qemu-gui", "tomtomnet/qemu-gui", "master", "def"},
                      {"unknown", "x/y", "main", {}}});
         QVERIFY(finished.wait(10000));
-        qunsetenv("QGM_GITHUB_API");
+        qunsetenv("VITRINE_GITHUB_API");
 
         requests.sort();
-        QCOMPARE(requests, QStringList({"GET /repos/tomtomnet/qemu-gui-manager/compare/abc...main HTTP/1.1",
-                                        "GET /repos/tomtomnet/qemu-gui/compare/def...master HTTP/1.1"}));
+        QCOMPARE(requests, QStringList({"GET /repos/tomtomnet/qemu-gui/compare/def...master HTTP/1.1",
+                                        "GET /repos/tomtomnet/vitrine/compare/abc...main HTTP/1.1"}));
         auto results = finished[0][0].value<QList<UpdateCheck::Result>>();
         QCOMPARE(results.size(), 2);
         std::sort(results.begin(), results.end(),
                   [](const auto &a, const auto &b) { return a.project.name > b.project.name; });
-        QCOMPARE(results[0].project.name, "qemu-gui-manager");
+        QCOMPARE(results[0].project.name, "vitrine");
         QCOMPARE(results[0].newCommits, 3);
         QCOMPARE(results[1].newCommits, -1);
         QVERIFY2(results[1].error.contains("def"), qPrintable(results[1].error));

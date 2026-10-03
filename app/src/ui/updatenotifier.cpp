@@ -24,8 +24,8 @@
 #if __has_include("buildinfo.h")
 #include "buildinfo.h"
 #else
-#define QGM_COMMIT ""
-#define QGM_SOURCE_DIR ""
+#define VITRINE_COMMIT ""
+#define VITRINE_SOURCE_DIR ""
 #endif
 
 static const qint64 kDaySecs = 24 * 3600;
@@ -97,9 +97,9 @@ QList<UpdateCheck::Project> UpdateNotifier::projects()
     QList<UpdateCheck::Project> list;
 
     /* built from a git checkout */
-    if (sha.match(QGM_COMMIT).hasMatch()) {
-        list << UpdateCheck::Project{"qemu-gui-manager", "tomtomnet/qemu-gui-manager", "main",
-                                     QGM_COMMIT};
+    if (sha.match(VITRINE_COMMIT).hasMatch()) {
+        list << UpdateCheck::Project{"vitrine", "tomtomnet/vitrine", "main",
+                                     VITRINE_COMMIT};
     }
     /* File > Build QEMU built it, from its branch */
     if (!qemu.isEmpty()) {
@@ -199,7 +199,7 @@ void UpdateNotifier::start(bool asked)
         if (asked) {
             Widgets::inform(
                 m_window, tr("Updates"),
-                tr("There is nothing to check: this qemu-gui-manager was not built from a git "
+                tr("There is nothing to check: this copy of Vitrine was not built from a git "
                    "checkout, and File > Build QEMU has not built a QEMU yet."));
         }
         return;
@@ -274,9 +274,9 @@ void UpdateNotifier::showResults()
         } else {
             text += tr("To update it: <code>git pull</code> in %1, then build and install it "
                        "as the first time.")
-                        .arg(QString(QGM_SOURCE_DIR).isEmpty()
+                        .arg(QString(VITRINE_SOURCE_DIR).isEmpty()
                                  ? tr("its folder")
-                                 : "<code>" + QString(QGM_SOURCE_DIR).toHtmlEscaped() +
+                                 : "<code>" + QString(VITRINE_SOURCE_DIR).toHtmlEscaped() +
                                        "</code>");
         }
         if (!r.url.isEmpty()) {

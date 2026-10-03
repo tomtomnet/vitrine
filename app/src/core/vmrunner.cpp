@@ -70,7 +70,7 @@ static void signalIfOurs(qint64 pid, const QString &marker, int sig)
 }
 
 /* The port of the guest agent the manager adds, for mounting the shares */
-static const char kAgentPort[] = "qgm-ga-port";
+static const char kAgentPort[] = "vitrine-ga-port";
 
 /*
  * sh -c SCRIPT TAG DIR OPTIONS TAG-AS-IN-MOUNTINFO, as root in the guest:
@@ -263,7 +263,7 @@ QString VmRunner::Private::logTail(bool qemuErrors) const
     const QString prefix = QFileInfo(qemuFor(args)).fileName() + ':';
     for (const QString &line : QString::fromUtf8(f.readAll()).split('\n')) {
         const QString t = line.trimmed();
-        if (t.isEmpty() || t.startsWith("qemu-gui-manager:")) {
+        if (t.isEmpty() || t.startsWith("vitrine:")) {
             continue;
         }
         lines << t;
@@ -650,10 +650,10 @@ QStringList VmRunner::commandLine(const ArgsFile &args) const
     command += args.argv();
     for (qsizetype i = 0; i < shares.size(); i++) {
         command << "-chardev"
-                << QString("socket,id=qgm-fs%1,path=%2")
+                << QString("socket,id=vitrine-fs%1,path=%2")
                        .arg(QString::number(i), OptionValue::escape(d->sharePath(i)))
                 << "-device"
-                << QString("vhost-user-fs-pci,queue-size=1024,chardev=qgm-fs%1,tag=%2")
+                << QString("vhost-user-fs-pci,queue-size=1024,chardev=vitrine-fs%1,tag=%2")
                        .arg(QString::number(i), OptionValue::escape(shares[i].tag));
     }
     /* systemd in the guest mounts the shares at boot, else qemu-ga does */
@@ -665,11 +665,11 @@ QStringList VmRunner::commandLine(const ArgsFile &args) const
     }
     if (addsAgent(args)) {
         command << "-chardev"
-                << QString("socket,id=qgm-ga,path=%1,server=on,wait=off")
+                << QString("socket,id=vitrine-ga,path=%1,server=on,wait=off")
                        .arg(OptionValue::escape(d->agentPath()))
-                << "-device" << "virtio-serial-pci,id=qgm-serial"
+                << "-device" << "virtio-serial-pci,id=vitrine-serial"
                 << "-device"
-                << QString("virtserialport,bus=qgm-serial.0,chardev=qgm-ga,"
+                << QString("virtserialport,bus=vitrine-serial.0,chardev=vitrine-ga,"
                            "name=org.qemu.guest_agent.0,id=%1").arg(kAgentPort);
     }
     command << "-qmp" << d->qmpArg() << "-pidfile" << d->pidPath();
@@ -744,12 +744,12 @@ void VmRunner::start(const ArgsFile &args)
         d->fail(tr("Cannot write %1: %2").arg(d->logPath(), log.errorString()));
         return;
     }
-    log.write(QString("qemu-gui-manager: %1 %2\n")
+    log.write(QString("vitrine: %1 %2\n")
                   .arg(QDateTime::currentDateTime().toString(Qt::ISODate),
                        shellQuote(commandLine(args)))
                   .toUtf8());
     for (const QString &line : std::as_const(remade)) {
-        log.write(("qemu-gui-manager: " + line + '\n').toUtf8());
+        log.write(("vitrine: " + line + '\n').toUtf8());
     }
     log.close();
 

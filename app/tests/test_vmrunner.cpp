@@ -14,10 +14,10 @@
 #include "core/qmpclient.h"
 #include "core/vmrunner.h"
 
-/* Runs $QGM_TEST_QEMU, else the qemu-system-x86_64 in PATH, headless */
+/* Runs $VITRINE_TEST_QEMU, else the qemu-system-x86_64 in PATH, headless */
 static QString testQemu()
 {
-    const QString env = qEnvironmentVariable("QGM_TEST_QEMU");
+    const QString env = qEnvironmentVariable("VITRINE_TEST_QEMU");
     return env.isEmpty() ? QStandardPaths::findExecutable("qemu-system-x86_64") : env;
 }
 
@@ -62,7 +62,7 @@ private slots:
     void initTestCase()
     {
         if (!QFileInfo(testQemu()).isExecutable()) {
-            QSKIP("no QEMU build, set QGM_TEST_QEMU");
+            QSKIP("no QEMU build, set VITRINE_TEST_QEMU");
         }
         QStandardPaths::setTestModeEnabled(true);
         Paths::setQemuBinary(testQemu());
@@ -76,7 +76,7 @@ private slots:
 
     void init()
     {
-        id = QString("qgm-test-%1-%2").arg(QCoreApplication::applicationPid()).arg(++count);
+        id = QString("vitrine-test-%1-%2").arg(QCoreApplication::applicationPid()).arg(++count);
         runDir = QFileInfo(VmRunner(id, tmp.path()).commandLine({}).last()).absolutePath();
         Paths::setVirtiofsd({});
     }
@@ -101,9 +101,9 @@ private slots:
         QCOMPARE(command[0], testQemu());
         QCOMPARE(command.mid(1, 2), QStringList({"-m", "1G"}));
         QCOMPARE(command[3], "-chardev");
-        QCOMPARE(command[4], "socket,id=qgm-fs0,path=" + runDir + "/fs0.sock");
+        QCOMPARE(command[4], "socket,id=vitrine-fs0,path=" + runDir + "/fs0.sock");
         QCOMPARE(command[5], "-device");
-        QCOMPARE(command[6], "vhost-user-fs-pci,queue-size=1024,chardev=qgm-fs0,tag=pub");
+        QCOMPARE(command[6], "vhost-user-fs-pci,queue-size=1024,chardev=vitrine-fs0,tag=pub");
         QCOMPARE(command[7], "-qmp");
         QCOMPARE(command[8], "unix:" + runDir + "/qmp.sock,server=on,wait=off");
         QCOMPARE(command[9], "-pidfile");
@@ -123,11 +123,11 @@ private slots:
             "-m 1G\n#share tag=pub,path=/home/x,mount=/mnt/pub\n"
             "-device virtserialport,chardev=ga,name=org.qemu.guest_agent.0\n"));
 
-        QVERIFY(mount.contains("socket,id=qgm-ga,path=" + runDir + "/qga.sock,server=on,wait=off"));
-        QVERIFY(mount.contains("virtserialport,bus=qgm-serial.0,chardev=qgm-ga,"
-                               "name=org.qemu.guest_agent.0,id=qgm-ga-port"));
+        QVERIFY(mount.contains("socket,id=vitrine-ga,path=" + runDir + "/qga.sock,server=on,wait=off"));
+        QVERIFY(mount.contains("virtserialport,bus=vitrine-serial.0,chardev=vitrine-ga,"
+                               "name=org.qemu.guest_agent.0,id=vitrine-ga-port"));
         QCOMPARE(mount.size(), noMount.size() + 6 + 2);     // and -smbios
-        QVERIFY(!own.join(' ').contains("qgm-ga"));
+        QVERIFY(!own.join(' ').contains("vitrine-ga"));
     }
 
     /* systemd in the guest mounts what it reads from SMBIOS, as if in /etc/fstab */
@@ -193,7 +193,7 @@ private slots:
         QCOMPARE(runner->state(), VmRunner::State::Starting);
         QTRY_COMPARE_WITH_TIMEOUT(runner->state(), VmRunner::State::Running, 20000);
         QVERIFY(runner->qmp() && runner->qmp()->isReady());
-        QVERIFY(read(runner->logPath()).startsWith("qemu-gui-manager: "));
+        QVERIFY(read(runner->logPath()).startsWith("vitrine: "));
         QVERIFY(qemuPid() > 0);
 
         runner->pause();
@@ -286,7 +286,7 @@ private slots:
         QTRY_COMPARE_WITH_TIMEOUT(runner.state(), VmRunner::State::Running, 20000);
         QVERIFY(QFileInfo(dir + "/OVMF_VARS_4M.qcow2").isWritable());
         QVERIFY(read(runner.logPath())
-                    .contains("qemu-gui-manager: OVMF_VARS_4M.qcow2 was missing: a new copy of " +
+                    .contains("vitrine: OVMF_VARS_4M.qcow2 was missing: a new copy of " +
                               vars + '\n'));
         runner.forceOff();
         QTRY_COMPARE_WITH_TIMEOUT(runner.state(), VmRunner::State::Stopped, 15000);

@@ -1,15 +1,9 @@
-cmake_minimum_required(VERSION 3.21)
-project(qemu-gui-manager VERSION 0.1.0 LANGUAGES CXX)
-
-set(CMAKE_CXX_STANDARD 20)
-set(CMAKE_CXX_STANDARD_REQUIRED ON)
-set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
+# The Qt application: the VM manager and its windows
 
 find_package(Qt6 6.4 REQUIRED COMPONENTS Core Concurrent DBus Gui Network Widgets)
-qt_standard_project_setup()
 
 # Everything but the windows, so that tests can use it
-qt_add_library(qgm_core STATIC
+qt_add_library(vitrine_core STATIC
     src/core/argsfile.cpp
     src/core/argsfile.h
     src/core/diskinfo.cpp
@@ -57,15 +51,15 @@ qt_add_library(qgm_core STATIC
     src/core/vmtemplate.cpp
     src/core/vmtemplate.h
 )
-target_include_directories(qgm_core PUBLIC src)
+target_include_directories(vitrine_core PUBLIC src)
 # the virglrenderer patches File > Build QEMU applies
-qt_add_resources(qgm_core virglpatches PREFIX / BASE data
+qt_add_resources(vitrine_core virglpatches PREFIX / BASE data
     FILES data/patches/virglrenderer-amdgpu-force-wc.patch)
-target_link_libraries(qgm_core PUBLIC
+target_link_libraries(vitrine_core PUBLIC
     Qt6::Core Qt6::Concurrent Qt6::Gui Qt6::Network)
-target_compile_options(qgm_core PRIVATE -Wall -Wextra)
+target_compile_options(vitrine_core PRIVATE -Wall -Wextra)
 
-qt_add_executable(qemu-gui-manager
+qt_add_executable(vitrine
     src/main.cpp
     src/ui/argseditor.cpp
     src/ui/argseditor.h
@@ -118,20 +112,20 @@ qt_add_executable(qemu-gui-manager
     src/ui/widgets.cpp
     src/ui/widgets.h
 )
-qt_add_resources(qemu-gui-manager icons PREFIX /icons BASE data
-    FILES data/qemu-gui-manager.svg)
-target_link_libraries(qemu-gui-manager PRIVATE qgm_core Qt6::DBus Qt6::Widgets)
-target_compile_definitions(qemu-gui-manager PRIVATE QGM_VERSION="${PROJECT_VERSION}")
+qt_add_resources(vitrine icons PREFIX /icons BASE data
+    FILES data/vitrine.svg)
+target_link_libraries(vitrine PRIVATE vitrine_core Qt6::DBus Qt6::Widgets)
+target_compile_definitions(vitrine PRIVATE VITRINE_VERSION="${PROJECT_VERSION}")
 
 # The commit it is built from, for the update check; none outside a git checkout
-set(QGM_COMMIT "")
+set(VITRINE_COMMIT "")
 find_package(Git QUIET)
-if(GIT_FOUND AND IS_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}/.git")
+if(GIT_FOUND AND IS_DIRECTORY "${CMAKE_SOURCE_DIR}/.git")
     execute_process(COMMAND "${GIT_EXECUTABLE}" rev-parse HEAD
-                    WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}"
-                    OUTPUT_VARIABLE QGM_COMMIT OUTPUT_STRIP_TRAILING_WHITESPACE ERROR_QUIET)
+                    WORKING_DIRECTORY "${CMAKE_SOURCE_DIR}"
+                    OUTPUT_VARIABLE VITRINE_COMMIT OUTPUT_STRIP_TRAILING_WHITESPACE ERROR_QUIET)
     # configured again when the checkout moves, as a git pull does
-    set(git "${CMAKE_CURRENT_SOURCE_DIR}/.git")
+    set(git "${CMAKE_SOURCE_DIR}/.git")
     set(watched "${git}/HEAD")
     file(READ "${git}/HEAD" head)
     if(head MATCHES "^ref: ([^\n]+)" AND EXISTS "${git}/${CMAKE_MATCH_1}")
@@ -144,19 +138,17 @@ if(GIT_FOUND AND IS_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}/.git")
 endif()
 # rewritten only when it changes: only what includes it builds again
 configure_file(src/buildinfo.h.in buildinfo.h @ONLY)
-target_include_directories(qemu-gui-manager PRIVATE "${CMAKE_CURRENT_BINARY_DIR}")
-target_compile_options(qemu-gui-manager PRIVATE -Wall -Wextra)
+target_include_directories(vitrine PRIVATE "${CMAKE_CURRENT_BINARY_DIR}")
+target_compile_options(vitrine PRIVATE -Wall -Wextra)
 
 include(GNUInstallDirs)
-install(TARGETS qemu-gui-manager RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR})
-install(FILES data/qemu-gui-manager.desktop
+install(TARGETS vitrine RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR})
+install(FILES data/vitrine.desktop
     DESTINATION ${CMAKE_INSTALL_DATADIR}/applications)
-install(FILES data/qemu-gui-manager.svg
+install(FILES data/vitrine.svg
     DESTINATION ${CMAKE_INSTALL_DATADIR}/icons/hicolor/scalable/apps)
 
-option(BUILD_TESTING "Build the unit tests" ON)
 if(BUILD_TESTING)
-    enable_testing()
     find_package(Qt6 REQUIRED COMPONENTS Test)
     foreach(name
             argsfile
@@ -182,7 +174,7 @@ if(BUILD_TESTING)
             vmstore
             vmtemplate)
         qt_add_executable(test_${name} tests/test_${name}.cpp)
-        target_link_libraries(test_${name} PRIVATE qgm_core Qt6::Test)
+        target_link_libraries(test_${name} PRIVATE vitrine_core Qt6::Test)
         add_test(NAME ${name} COMMAND test_${name})
     endforeach()
 endif()
