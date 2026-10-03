@@ -521,6 +521,10 @@ void MainWindow::stateChanged(Vm *vm, VmRunner::State state)
     if (state == VmRunner::State::Stopped) {
         /* for failed(), which follows */
         m_endedFrom[id] = m_states.value(id);
+        /* the last of those the closing window waited for */
+        if (m_closeAfter.remove(id) && m_closeAfter.isEmpty()) {
+            QTimer::singleShot(0, this, &QWidget::close);
+        }
     } else {
         /* a new run, started here or found running (attach) */
         m_errors.remove(id);
@@ -861,6 +865,18 @@ void MainWindow::updateStatus()
         m_qemuStatus->setText(docs->status());
         m_qemuStatus->setToolTip(QString());
     }
+    if (!m_closeAfter.isEmpty()) {
+        QStringList names;
+        for (const QString &id : std::as_const(m_closeAfter)) {
+            if (const Vm *vm = m_store->find(id)) {
+                names << vm->name();
+            }
+        }
+        names.sort();
+        statusBar()->showMessage(tr("Waiting for %1 to shut down, then closing")
+                                     .arg(names.join(", ")));
+        return;
+    }
     statusBar()->showMessage(running == 0 ? QString()
                                           : tr("%n running", nullptr, running));
 }
@@ -1116,6 +1132,9 @@ void MainWindow::closeEvent(QCloseEvent *event)
     QSettings settings(Paths::settingsPath(), QSettings::IniFormat);
     const Vm *vm = current();
 
+    /* asked again: what the user answers now goes */
+    m_closeAfter.clear();
+    updateStatus();
     if (!m_pane->confirmChanges(tr("Apply them before closing?"))) {
         event->ignore();
         return;
@@ -1145,9 +1164,11 @@ void MainWindow::closeEvent(QCloseEvent *event)
         box->setInformativeText(
             shown.size() == 1
                 ? tr("In the background, it has no screen until vitrine starts again. "
-                     "Shut Down asks the guest to shut down, as the power button does.")
+                     "Shut Down asks the guest to shut down, as the power button does, "
+                     "and closes the window once it is off.")
                 : tr("In the background, they have no screen until vitrine starts again. "
-                     "Shut Down asks the guests to shut down, as the power button does."));
+                     "Shut Down asks the guests to shut down, as the power button does, "
+                     "and closes the window once they are off."));
         box->exec();
         if (box->clickedButton() == shutDown) {
             for (Vm *each : std::as_const(shown)) {
@@ -1156,8 +1177,17 @@ void MainWindow::closeEvent(QCloseEvent *event)
                     each->runner()->resume();
                 }
                 each->runner()->powerdown();
+                m_closeAfter.insert(each->id());
             }
-        } else if (box->clickedButton() != keep) {
+            /* the guest may ask first, on its screen (KDE does): the window
+               stays until they are off */
+            select(shown.first()->id());
+            m_pane->setTab(VmPane::Console);
+            updateStatus();
+            event->ignore();
+            return;
+        }
+        if (box->clickedButton() != keep) {
             event->ignore();
             return;
         }

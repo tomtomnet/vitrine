@@ -118,6 +118,12 @@ private:
     UpdateNotifier *m_updates;
     /* The selection left a VM with changes, to ask about */
     bool m_leaving = false;
+    /*
+     * VMs asked to shut down as the window closed: it closes once they are
+     * off, their screens shown meanwhile, as a guest may ask before it
+     * shuts down (KDE's logout screen)
+     */
+    QSet<QString> m_closeAfter;
 
     QAction *m_new;
     QAction *m_import;
