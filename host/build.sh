@@ -294,7 +294,10 @@ qargs=(--prefix="$prefix" --target-list=x86_64-softmmu --without-default-feature
 	--enable-libusb --enable-pa --enable-pipewire --enable-spice-protocol --enable-passt --enable-gio
 	--enable-dbus-display --enable-slirp --enable-tpm --enable-vhost-kernel --enable-vhost-net
 	--enable-vhost-user --enable-zstd --enable-png --enable-tools --enable-fdt=internal --disable-docs
-	--disable-plugins "--extra-ldflags=-Wl,-rpath,$prefix/lib64")
+	--disable-plugins --disable-containers --container-command=no
+	"--extra-ldflags=-Wl,-rpath,$prefix/lib64")
+# (no containers: configure would otherwise run podman to see if it works, which
+# sets up podman's storage in the user's home, for cross-builds we never do)
 qline="$src/qemu ${qargs[*]} PKG_CONFIG_PATH=$prefix/lib64/pkgconfig"
 if [ -f "$qbuild/build.ninja" ] && configured "$qbuild" "$qline"; then
 	echo "configured already"
