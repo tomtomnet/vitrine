@@ -26,36 +26,52 @@ fetch() {  # fetch FILE DEST -> 0 on success
 	curl -sS -f --connect-timeout 10 --max-time 60 -o "$2" "$url/$1?h=$tag"
 }
 
+# The driver's source files, from its Makefile (a file added upstream is
+# picked up without editing this script)
+sources_of() {
+	awk '/^virtio-gpu-y/ { sub(/^[^=]*=/, ""); c = 1 }
+	     c { cont = ($0 ~ /\\$/); gsub(/\\$/, ""); printf "%s ", $0; if (!cont) c = 0 }' "$1" |
+		tr ' \t' '\n\n' | sed -n 's/\.o$/.c/p'
+}
+
+# A cache is whole when every file is there and not empty: a guest that
+# lost power just after writing one has been seen to keep empty files
+cache_whole() {
+	[ -f "$1/.complete" ] && [ -s "$1/Makefile" ] || return 1
+	files=$(sources_of "$1/Makefile")
+	[ -n "$files" ] || return 1
+	for f in $files $headers; do
+		[ -s "$1/$f" ] || return 1
+	done
+}
+
 sources_from_cache() {
-	[ -f "$cache/.complete" ] || return 1
+	[ -d "$cache" ] || return 1
+	if ! cache_whole "$cache"; then
+		say "the cached sources of $tag are incomplete: fetching them again"
+		rm -rf "$cache"
+		return 1
+	fi
 	cp "$cache"/*.c "$cache"/*.h "$cache"/Makefile .
 	say "using the cached sources of $tag"
 }
 
 sources_from_upstream() {
-	tmp=$(mktemp -d)
+	mkdir -p "$(dirname "$cache")"
+	# beside the cache, so that putting it in place is one rename
+	tmp=$(mktemp -d "$(dirname "$cache")/.fetch.XXXXXX") && chmod 755 "$tmp"
 	fetch Makefile "$tmp/Makefile" || { rm -rf "$tmp"; return 1; }
-	# The list of source files comes from the kernel's own Makefile, so a
-	# file added upstream is picked up without editing this script.
-	objs=$(awk '/^virtio-gpu-y/ { sub(/^[^=]*=/, ""); c = 1 }
-	            c { cont = ($0 ~ /\\$/); gsub(/\\$/, ""); printf "%s ", $0; if (!cont) c = 0 }' "$tmp/Makefile")
-	[ -n "$objs" ] || { rm -rf "$tmp"; return 1; }
-	for o in $objs; do
-		case "$o" in *.o) ;; *) continue ;; esac
-		fetch "${o%.o}.c" "$tmp/${o%.o}.c" || { rm -rf "$tmp"; return 1; }
+	for f in $(sources_of "$tmp/Makefile") $headers; do
+		fetch "$f" "$tmp/$f" || { rm -rf "$tmp"; return 1; }
 	done
-	for h in $headers; do
-		fetch "$h" "$tmp/$h" || { rm -rf "$tmp"; return 1; }
-	done
-	# Only mark the cache complete once every file is there, so an
-	# interrupted download is not reused.
-	for o in $objs; do
-		case "$o" in *.o) [ -s "$tmp/${o%.o}.c" ] || { rm -rf "$tmp"; return 1; } ;; esac
-	done
-	mkdir -p "$cache"
-	cp "$tmp"/* "$cache"/ && touch "$cache/.complete"
-	cp "$tmp"/* .
-	rm -rf "$tmp"
+	touch "$tmp/.complete"
+	cache_whole "$tmp" || { rm -rf "$tmp"; return 1; }
+	# on the disk before it is the cache
+	sync "$tmp"/* "$tmp/.complete" 2> /dev/null || sync
+	rm -rf "$cache"
+	mv "$tmp" "$cache"
+	sync "$(dirname "$cache")" 2> /dev/null || true
+	cp "$cache"/*.c "$cache"/*.h "$cache"/Makefile .
 	say "fetched the sources of $tag from kernel.org"
 }
 

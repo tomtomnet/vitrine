@@ -2,7 +2,7 @@
 # exact version, and dnf takes an installed one of the same version as done.
 Name:           vitrine-guest-tools
 Version:        0.1.0
-Release:        3%{?dist}
+Release:        4%{?dist}
 Summary:        vitrine guest tools: patched virtio-gpu driver, settings and agent
 
 # the driver's sources (dkms/vendor, dkms/patches) are the kernel's: MIT
@@ -71,13 +71,20 @@ touch %{buildroot}%{_sysconfdir}/modprobe.d/vitrine-virtio-gpu.conf
 # update brings would stay off
 if [ $1 -gt 1 ]; then
 	systemctl --no-reload preset %{units} > /dev/null 2>&1 || :
+	# new driver sources: %%posttrans builds them where the driver is built
+	mkdir -p /run/vitrine-guest-tools && touch /run/vitrine-guest-tools/rebuild-driver
 fi
 %udev_rules_update
 
 %preun
 %systemd_preun %{units}
-# this version's driver out of every kernel (an update builds its own after)
-dkms remove -m %{dkms_name} -v %{version} --all > /dev/null 2>&1 || :
+# removed: the driver out of every kernel, all its versions; on an update
+# the new package's %%posttrans builds over it, keeping it if that fails
+if [ $1 -eq 0 ]; then
+	for v in $(dkms status -m %{dkms_name} 2> /dev/null | sed -n 's|^%{dkms_name}/\([^,:]*\)[,:].*|\1|p' | sort -u); do
+		dkms remove -m %{dkms_name} -v "$v" --all > /dev/null 2>&1 || :
+	done
+fi
 
 %postun
 # no restart on update: the agent runs the installer that updates it, and
@@ -92,10 +99,13 @@ fi
 %posttrans
 # the driver for every kernel with headers, now that the whole transaction
 # (kernel-devel included) is in; the installer makes the initramfs itself
+rebuild=
+[ -e /run/vitrine-guest-tools/rebuild-driver ] && rebuild=--rebuild
+rm -f /run/vitrine-guest-tools/rebuild-driver
 if [ -e /run/vitrine-guest-tools/installer-active ]; then
-	%{libexec}/dkms-sync --no-initramfs || :
+	%{libexec}/dkms-sync $rebuild --no-initramfs || :
 else
-	%{libexec}/dkms-sync --all-initramfs || :
+	%{libexec}/dkms-sync $rebuild --all-initramfs || :
 fi
 
 %files
@@ -114,6 +124,11 @@ fi
 %dir %{_sharedstatedir}/%{name}
 
 %changelog
+* Sat Oct 03 2026 vitrine <noreply@anthropic.com> - 0.1.0-4
+- an update builds the driver over the one in place and keeps it if the
+  build fails, instead of removing it first; the source cache is written
+  atomically and checked before use (a guest killed after writing it kept
+  empty files)
 * Sat Oct 03 2026 vitrine <noreply@anthropic.com> - 0.1.0-3
 - the installer: a repository id per medium (dnf kept the metadata of the
   previous one), its last result in /var/lib/vitrine-guest-tools for the agent

@@ -5,27 +5,38 @@
 # loads from there.  Kernels installed later get it from dkms's own
 # kernel-install hook (40-dkms.install, which runs before dracut's).
 #
-#   dkms-sync [--no-initramfs | --all-initramfs]
+#   dkms-sync [--rebuild] [--no-initramfs | --all-initramfs]
+#     --rebuild        build again where it is built already (an update of
+#                      the tools brought new sources); the driver in place
+#                      stays until the new one is built, so a build that
+#                      fails leaves the last good one
 #     --no-initramfs   the caller makes the initramfs (the installer, once)
 #     --all-initramfs  every kernel's initramfs, not only those of kernels
 #                      the driver was built for now (its options changed)
 set -u
 name=vitrine-virtio-gpu
 version=@VERSION@
-initramfs=changed
+rebuild=0 initramfs=changed
 for a in "$@"; do
 	case "$a" in
+	--rebuild) rebuild=1 ;;
 	--no-initramfs) initramfs=none ;;
 	--all-initramfs) initramfs=all ;;
 	*) echo "unknown argument $a" >&2; exit 2 ;;
 	esac
 done
 say() { echo "vitrine-virtio-gpu: $*"; }
+installed_for() {  # installed_for VERSION KERNEL
+	dkms status -m "$name" -v "$1" -k "$2" 2> /dev/null | grep -q ': installed'
+}
 
 [ -d "/usr/src/$name-$version" ] || { say "no sources in /usr/src/$name-$version" >&2; exit 1; }
 if ! dkms status -m "$name" -v "$version" 2> /dev/null | grep -q .; then
 	dkms add -m "$name" -v "$version" || exit 1
 fi
+# the versions an earlier package left (their sources are gone with it)
+others=$(dkms status -m "$name" 2> /dev/null | sed -n "s|^$name/\([^,:]*\)[,:].*|\1|p" |
+	sort -u | grep -vx "$version")
 
 rc=0
 changed=""
@@ -34,28 +45,49 @@ for dir in /lib/modules/*/; do
 	# what a removed kernel leaves behind
 	[ -e "$dir/vmlinuz" ] || continue
 	if [ ! -e "$dir/build/Makefile" ]; then
-		say "$k: no kernel headers (kernel-devel-$k), it keeps the stock driver"
+		say "$k: no kernel headers (kernel-devel-$k), it keeps the driver it has"
 		continue
 	fi
-	if dkms status -m "$name" -v "$version" -k "$k" 2> /dev/null | grep -q ': installed'; then
+	if installed_for "$version" "$k" && [ "$rebuild" = 0 ]; then
 		say "$k: built already"
 		continue
 	fi
 	say "$k: building"
-	if dkms install -m "$name" -v "$version" -k "$k"; then
+	if ! dkms build -m "$name" -v "$version" -k "$k" --force; then
+		say "$k: the build failed, see /var/lib/dkms/$name/$version/build/make.log;" \
+			"the driver it had stays" >&2
+		rc=1
+		continue
+	fi
+	# dkms installs over the same version only once uninstalled, and over
+	# another version (the in-kernel module version is the same) with --force
+	installed_for "$version" "$k" && dkms uninstall -m "$name" -v "$version" -k "$k" > /dev/null
+	if dkms install -m "$name" -v "$version" -k "$k" --force; then
 		changed="$changed $k"
 	else
-		say "$k: the build failed, see /var/lib/dkms/$name/$version/build/make.log" >&2
+		say "$k: the install failed" >&2
 		rc=1
 	fi
 done
 
+# the older versions, once this one is in for every kernel they were in
+for v in $others; do
+	keep=0
+	for k in $(dkms status -m "$name" -v "$v" 2> /dev/null | sed -n 's|^[^,]*, \([^,]*\), .*: installed.*|\1|p'); do
+		installed_for "$version" "$k" || keep=1
+	done
+	if [ "$keep" = 0 ]; then
+		say "removing version $v"
+		dkms remove -m "$name" -v "$v" --all > /dev/null 2>&1 || rm -rf "/var/lib/dkms/$name/$v"
+	fi
+done
+
 case "$initramfs" in
-none) ;;
+none) kernels="" ;;
 all) kernels=$(for d in /lib/modules/*/; do [ -e "$d/vmlinuz" ] && basename "$d"; done) ;;
 changed) kernels=$changed ;;
 esac
-for k in ${kernels:-}; do
+for k in $kernels; do
 	say "$k: initramfs"
 	dracut -f --kver "$k" || rc=1
 done
