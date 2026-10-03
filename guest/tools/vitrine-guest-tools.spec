@@ -2,7 +2,7 @@
 # exact version, and dnf takes an installed one of the same version as done.
 Name:           vitrine-guest-tools
 Version:        0.1.0
-Release:        11%{?dist}
+Release:        12%{?dist}
 Summary:        vitrine guest tools: patched virtio-gpu driver, settings and agent
 
 # the driver's sources (dkms/vendor, dkms/patches) are the kernel's: MIT
@@ -21,6 +21,13 @@ Requires:       kmod
 # the agent
 Requires:       python3
 Requires:       util-linux
+# the clipboard shared with the host: spice-vdagent talks to QEMU's
+# qemu-vdagent, and the bridge (clipboard/) passes Wayland copies on to it
+Requires:       spice-vdagent
+Requires:       wl-clipboard
+Requires:       xclip
+Requires:       libX11
+Requires:       libXfixes
 %{?systemd_requires}
 
 %global dkms_name vitrine-virtio-gpu
@@ -58,6 +65,11 @@ install -d %{buildroot}%{libexec}
 for f in libexec/* agent/vitrine-agent install; do
 	sed 's/@VERSION@/%{version}/' "$f" > tmp && install -m 0755 tmp %{buildroot}%{libexec}/$(basename "$f")
 done
+# spice-vdagent only sees the X11 clipboard, and KWin passes Wayland copies
+# on to X11 only for a focused X11 window: the bridge, from the qemu-gui
+# fork (contrib/vdagent-clipboard-bridge), copies them, in each session
+install -m 0755 clipboard/vdagent-clipboard-bridge %{buildroot}%{libexec}/vdagent-clipboard-bridge
+install -Dm 0644 clipboard/vitrine-clipboard-bridge.desktop %{buildroot}%{_sysconfdir}/xdg/autostart/vitrine-clipboard-bridge.desktop
 install -d %{buildroot}%{_sharedstatedir}/%{name}
 # written by the installer: blob_flush_fence=3 with vitrine's KWin
 install -d %{buildroot}%{_sysconfdir}/modprobe.d
@@ -120,10 +132,15 @@ fi
 %{_unitdir}/vitrine-virtio-gpu-check.service
 %{_unitdir}/vitrine-kernel-settings.service
 %{_presetdir}/80-vitrine-guest-tools.preset
+%{_sysconfdir}/xdg/autostart/vitrine-clipboard-bridge.desktop
 %{libexec}
 %dir %{_sharedstatedir}/%{name}
 
 %changelog
+* Sun Oct 04 2026 vitrine <noreply@anthropic.com> - 0.1.0-12
+- clipboard sharing with the host: spice-vdagent, and the bridge that passes
+  Wayland copies on to its X11 clipboard (from the qemu-gui fork), started
+  with each desktop session but GNOME's
 * Sat Oct 03 2026 vitrine <noreply@anthropic.com> - 0.1.0-11
 - the installer's error messages without their exit code
 * Sat Oct 03 2026 vitrine <noreply@anthropic.com> - 0.1.0-10
