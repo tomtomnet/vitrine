@@ -8,6 +8,7 @@
 #include <QLocalServer>
 #include <QLocalSocket>
 #include <QProcess>
+#include <QScopeGuard>
 #include <QSignalSpy>
 #include <QStandardPaths>
 #include <QTemporaryDir>
@@ -18,6 +19,7 @@
 
 #include "core/paths.h"
 #include "core/qmpclient.h"
+#include "core/vmconfig.h"
 #include "core/vmrunner.h"
 
 /* Runs $VITRINE_TEST_QEMU, else the qemu-system-x86_64 in PATH, headless */
@@ -706,6 +708,67 @@ private slots:
         runner.start(ArgsFile::parse("#qemu " + tmp.filePath("missing") + "\n" + kHeadless));
         QCOMPARE(failed.size(), 1);
         QVERIFY(failed[0][0].toString().contains("#qemu"));
+    }
+
+    /*
+     * No QEMU chosen, by #qemu or the preferences: vitrine's, which a VM
+     * waits for while it is not built, rather than start with the system's
+     */
+    void vitrinesQemuToBuild()
+    {
+        const QString dir = tmp.filePath("unbuilt");
+        const QString stack = Paths::stackDir();
+        const ArgsFile args = ArgsFile::parse(kHeadless);
+        ArgsFile own = args;
+
+        /* as the other tests have it, whatever fails here */
+        const auto restore = qScopeGuard([stack]() {
+            QFile::remove(stack + "/current");
+            QDir(stack + "/0123456789abcdef").removeRecursively();
+            Paths::setQemuBinary(testQemu());
+        });
+
+        VmConfig::setQemuBinary(own, testQemu());
+        QVERIFY(QDir().mkpath(dir));
+        /* the test's data: no stack built */
+        QVERIFY(stack.startsWith(QDir::homePath() + "/.qttest/"));
+        QVERIFY(Paths::stackQemu().isEmpty());
+        /* the preferences' QEMU, as for the other tests */
+        QVERIFY(!VmRunner::needsQemuBuild(args));
+        QVERIFY(!VmRunner::needsQemuBuild(own));
+
+        Paths::setQemuBinary({});
+        QVERIFY(VmRunner::needsQemuBuild(args));
+        QVERIFY(!VmRunner::needsQemuBuild(own));
+        {
+            VmRunner runner(id, dir);
+            QSignalSpy failed(&runner, &VmRunner::failed);
+            QSignalSpy states(&runner, &VmRunner::stateChanged);
+
+            runner.start(args);
+            QCOMPARE(failed.size(), 1);
+            QVERIFY(failed[0][0].toString().contains("Vitrine's QEMU, which is not built yet"));
+            QVERIFY(failed[0][0].toString().contains("Build QEMU"));
+            QCOMPARE(runner.state(), VmRunner::State::Stopped);
+            QVERIFY(states.isEmpty());
+            /* nothing ran, nor was written */
+            QVERIFY(!QFileInfo::exists(runner.logPath()));
+            QCOMPARE(qemuPid(), 0);
+            /* the arguments of the run refused, for the window to offer the build */
+            QVERIFY(VmRunner::needsQemuBuild(runner.runArgs()));
+        }
+
+        /* built: the VMs run with it */
+        const QString binary = stack + "/0123456789abcdef/bin/" + Paths::qemuSystemName();
+        QVERIFY(QDir().mkpath(QFileInfo(binary).path()));
+        QFile qemu(binary);
+        QVERIFY(qemu.open(QIODevice::WriteOnly) && qemu.write("#!/bin/sh\n") > 0);
+        qemu.close();
+        QVERIFY(qemu.setPermissions(QFileDevice::ReadOwner | QFileDevice::ExeOwner));
+        QVERIFY(QFile::link("0123456789abcdef", stack + "/current"));
+        QVERIFY(!Paths::stackQemu().isEmpty());
+        QVERIFY(!VmRunner::needsQemuBuild(args));
+        QVERIFY(!VmRunner::needsQemuBuild(own));
     }
 
     void sharesNeedSharedMemory()

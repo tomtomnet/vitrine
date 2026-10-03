@@ -704,6 +704,12 @@ QStringList VmRunner::commandLine(const ArgsFile &args) const
     return d->commandLine(args, qemuFor(args));
 }
 
+bool VmRunner::needsQemuBuild(const ArgsFile &args)
+{
+    return VmConfig::qemuBinary(args).isEmpty() && Paths::customQemuBinary().isEmpty() &&
+           Paths::stackQemu().isEmpty();
+}
+
 QStringList VmRunner::Private::commandLine(const ArgsFile &args, const QString &qemu,
                                           QStringList *problems) const
 {
@@ -911,6 +917,11 @@ void VmRunner::start(const ArgsFile &args)
     d->qemu = qemu;
     d->command.clear();
     d->embedded = VmConfig::screen(args) == VmConfig::Screen::Embedded;
+    if (needsQemuBuild(args)) {
+        d->fail(tr("This VM runs with Vitrine's QEMU, which is not built yet: build it with "
+                   "File > Build QEMU, or choose another QEMU in the preferences"));
+        return;
+    }
     if (qemu.isEmpty() || !QFileInfo(qemu).isExecutable()) {
         d->fail(VmConfig::qemuBinary(args).isEmpty()
                     ? tr("QEMU was not found: set its path in the preferences")

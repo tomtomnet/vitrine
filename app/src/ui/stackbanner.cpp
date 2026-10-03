@@ -95,8 +95,9 @@ void StackBanner::refresh()
         text = tr("Vitrine's QEMU could not be built. %1.").arg(m_error.toHtmlEscaped());
         button = tr("Show…");
     } else if (state == StackBuilder::State::NotBuilt) {
-        text = tr("<b>Vitrine's QEMU is not built yet.</b> VMs need it for their display in "
-                  "this window and for 3D acceleration. Building it takes a few minutes.");
+        text = tr("<b>Vitrine's QEMU is not built yet.</b> VMs run with it, for their display "
+                  "in this window and for 3D acceleration: they start once it is built. "
+                  "Building it takes a few minutes.");
         button = tr("Build…");
     } else if (state == StackBuilder::State::Outdated) {
         text = tr("<b>Vitrine's QEMU is out of date:</b> this version of Vitrine builds it from "

@@ -32,6 +32,7 @@
 #include "core/hostsettings.h"
 #include "core/paths.h"
 #include "core/qemuinfo.h"
+#include "core/stackbuilder.h"
 #include "core/vmconfig.h"
 #include "core/vmhardware.h"
 #include "core/vmrunner.h"
@@ -575,6 +576,7 @@ void MainWindow::failed(Vm *vm, const QString &error)
     const QString id = vm->id();
     const VmRunner::State state = vm->runner()->state();
     QList<FirmwareFiles::File> firmware;
+    bool build = false;
     QString title, text;
 
     if (state != VmRunner::State::Stopped) {
@@ -597,6 +599,8 @@ void MainWindow::failed(Vm *vm, const QString &error)
             title = tr("Cannot Start %1").arg(vm->name());
             text = tr("%1 could not start.").arg(vm->name());
             firmware = FirmwareRepair::named(vm, error);
+            /* start() refused it: its QEMU is Vitrine's, not built yet */
+            build = VmRunner::needsQemuBuild(vm->runner()->runArgs());
         } else if (from != VmRunner::State::Stopped) {
             title = tr("%1 Stopped").arg(vm->name());
             text = tr("%1 stopped unexpectedly.").arg(vm->name());
@@ -609,7 +613,16 @@ void MainWindow::failed(Vm *vm, const QString &error)
     auto *box = Widgets::messageBox(QMessageBox::Warning, title, text, QMessageBox::Close, this);
     box->setInformativeText(error);
     box->setAttribute(Qt::WA_DeleteOnClose);
-    if (QFileInfo::exists(vm->runner()->logPath())) {
+    if (build) {
+        QPushButton *button = box->addButton(StackBuilder::instance()->isRunning()
+                                                 ? tr("Show the &Build…")
+                                                 : tr("&Build Vitrine's QEMU…"),
+                                             QMessageBox::ActionRole);
+        connect(button, &QPushButton::clicked, this, &MainWindow::buildQemu);
+        box->setDefaultButton(button);
+    }
+    /* not for a start refused before QEMU ran: that log is of another run */
+    if (!build && QFileInfo::exists(vm->runner()->logPath())) {
         QPushButton *log = box->addButton(tr("Show &Log"), QMessageBox::ActionRole);
         connect(log, &QPushButton::clicked, this, [this, id]() {
             select(id);
@@ -998,14 +1011,14 @@ void MainWindow::start()
     if (vm == m_pane->vm() && !m_pane->confirmChanges(tr("Apply them before it starts?"))) {
         return;
     }
-    if (VmConfig::qemuBinary(vm->args()).isEmpty() && Paths::qemuBinary().isEmpty()) {
-        Widgets::warn(this, tr("QEMU Not Found"),
-                      tr("%1 is not in PATH. Choose the QEMU to use in the "
-                         "preferences, or build one with File > Build QEMU.")
-                          .arg(Paths::qemuSystemName()));
+    if (m_askingUsb.contains(vm->id())) {
         return;
     }
-    if (m_askingUsb.contains(vm->id())) {
+    /* its QEMU is Vitrine's, to build first: start() refuses it, which
+       failed() reports with the build at hand, before USB access is asked */
+    if (VmRunner::needsQemuBuild(vm->args())) {
+        m_starting.insert(vm->id());
+        vm->runner()->start(vm->args());
         return;
     }
     /* firmware copies a power cut damaged, say: new ones, if the user wants */
