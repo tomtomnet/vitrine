@@ -22,7 +22,7 @@ BUILT=2026-10-03T11:30:26Z
 QEMU_URL=https://github.com/tomtomnet/qemu-gui.git
 QEMU_COMMIT=49fd506758831883132515839a89d2c6238ef796
 QEMU_VERSION=11.1.50
-QEMU_PATCHES=0001-a.patch 0002-b.patch 0003-c.patch 0004-d.patch 0005-e.patch 0006-f.patch 0007-g.patch
+QEMU_PATCHES=research/0001-a.patch research/0002-b.patch research/0003-c.patch research/0004-d.patch research/0005-e.patch research/0006-f.patch vitrine/0001-g.patch
 VIRGL_URL=https://gitlab.freedesktop.org/virgl/virglrenderer.git
 VIRGL_COMMIT=cf6c62da2a1384b194f463e6221371962fe99575
 VIRGL_VERSION=1.3.0
@@ -300,6 +300,58 @@ private slots:
 
         QVERIFY(StackBuilder::inputStamp(m_tmp.filePath("nowhere")).isEmpty());
         QVERIFY(StackBuilder::inputStamp({}).isEmpty());
+    }
+
+    /* The patches of a component's folders too (QEMU's research/, vitrine/), in
+       the C order of their paths, as build.sh applies them */
+    void stampOfPatchFolders()
+    {
+        int status = 0;
+        const QString host = StackBuilder::hostDir();
+        const QString fixture = m_tmp.filePath("folders-host");
+        QVERIFY(QDir().mkpath(fixture));
+        QVERIFY(QFile::copy(host + "/build.sh", fixture + "/build.sh"));
+        QVERIFY(QFile::copy(host + "/versions.conf", fixture + "/versions.conf"));
+        for (const QString name : {"vitrine/0001-v.patch", "fork/0002-f.patch", "fork/0010-f.patch",
+                                   "research/0001-r.patch", "fork/0001-f.patch", "B/b.patch",
+                                   "a/a.patch", "_c/c.patch", "0001-top.patch",
+                                   "fork-x/0001-x.patch"}) {
+            QVERIFY(write(fixture + "/patches/qemu/" + name, name.toUtf8() + '\n'));
+        }
+        /* a folder's patches together, whatever the locale: sort's C order of
+           the paths, where "fork-x/" comes before "fork/" ('-' < '/') */
+        const QStringList expected = {
+            "patches/qemu/0001-top.patch",       "patches/qemu/B/b.patch",
+            "patches/qemu/_c/c.patch",           "patches/qemu/a/a.patch",
+            "patches/qemu/fork-x/0001-x.patch",  "patches/qemu/fork/0001-f.patch",
+            "patches/qemu/fork/0002-f.patch",    "patches/qemu/fork/0010-f.patch",
+            "patches/qemu/research/0001-r.patch", "patches/qemu/vitrine/0001-v.patch"};
+        QCOMPARE(StackBuilder::patches(fixture, "qemu"), expected);
+        QVERIFY(StackBuilder::patches(fixture, "virglrenderer").isEmpty());
+        const QString stamp = StackBuilder::inputStamp(fixture);
+        QCOMPARE(run("bash", {fixture + "/build.sh", "--print-stamp"}, {}, &status).trimmed(),
+                 stamp);
+        QCOMPARE(status, 0);
+
+        /* not applied: deeper folders, hidden ones, hidden files, other names */
+        for (const QString name : {"fork/old/0001-f.patch", ".hidden/0001-h.patch",
+                                   "fork/.0003-h.patch", "fork/README.md", "fork/0004-f.PATCH"}) {
+            QVERIFY(write(fixture + "/patches/qemu/" + name, name.toUtf8() + '\n'));
+        }
+        QCOMPARE(StackBuilder::patches(fixture, "qemu"), expected);
+        QCOMPARE(StackBuilder::inputStamp(fixture), stamp);
+        QCOMPARE(run("bash", {fixture + "/build.sh", "--print-stamp"}, {}, &status).trimmed(),
+                 stamp);
+
+        /* a patch moved to another folder is another input */
+        QVERIFY(QFile::rename(fixture + "/patches/qemu/research/0001-r.patch",
+                              fixture + "/patches/qemu/vitrine/0000-r.patch"));
+        QVERIFY(StackBuilder::inputStamp(fixture) != stamp);
+        QCOMPARE(run("bash", {fixture + "/build.sh", "--print-stamp"}, {}, &status).trimmed(),
+                 StackBuilder::inputStamp(fixture));
+
+        QVERIFY(StackBuilder::patches({}, "qemu").isEmpty());
+        QVERIFY(StackBuilder::patches(m_tmp.filePath("nowhere"), "qemu").isEmpty());
     }
 
     void detectsVersionChange()
@@ -673,10 +725,17 @@ sh -c 'echo $$ > %1; exec sleep 300'
         QVERIFY(write(host + "/versions.conf", versions()));
         const QByteArray newFile = "diff --git a/%1 b/%1\nnew file mode 100644\n"
                                    "--- /dev/null\n+++ b/%1\n@@ -0,0 +1 @@\n+%2\n";
-        QVERIFY(write(host + "/patches/qemu/0001-mark.patch",
+        QVERIFY(write(host + "/patches/qemu/fork/0001-mark.patch",
                       QString(newFile).arg("MARK", "one").toUtf8()));
         QVERIFY(write(host + "/patches/virglrenderer/0001-mark.patch",
                       QString(newFile).arg("MARK", "virgl").toUtf8()));
+        /* folder after folder: by their names alone, research's would come
+           before the file it changes is there */
+        QVERIFY(write(host + "/patches/qemu/fork/0002-base.patch",
+                      QString(newFile).arg("BASE", "base").toUtf8()));
+        QVERIFY(write(host + "/patches/qemu/research/0001-on-base.patch",
+                      "diff --git a/BASE b/BASE\n--- a/BASE\n+++ b/BASE\n"
+                      "@@ -1 +1 @@\n-base\n+base, then research\n"));
 
         const QString stack = m_tmp.filePath("e2e/stack");
         const QString work = m_tmp.filePath("e2e/work");
@@ -699,13 +758,16 @@ sh -c 'echo $$ > %1; exec sleep 300'
         QCOMPARE(first.stamp, stamp);
         QCOMPARE(QFileInfo(first.prefix).fileName(), stamp.left(16));
         QCOMPARE(first.qemuVersion, "9.9.9");
-        QCOMPARE(first.qemuPatches, QStringList({"0001-mark.patch"}));
+        QCOMPARE(first.qemuPatches, QStringList({"fork/0001-mark.patch", "fork/0002-base.patch",
+                                                 "research/0001-on-base.patch"}));
+        QCOMPARE(first.virglPatches, QStringList({"0001-mark.patch"}));
         QCOMPARE(first.virglVersion, "1.3.0");
         QCOMPARE(StackBuilder::state(host, stack), StackBuilder::State::UpToDate);
         QCOMPARE(built.size(), 1);
         QCOMPARE(built[0][0].toString(), first.qemuBinary());
         QVERIFY(QFileInfo::exists(first.prefix + "/share/qemu/qemu-options.hx"));
         QVERIFY(QFileInfo::exists(work + "/src/qemu/MARK"));
+        QCOMPARE(read(work + "/src/qemu/BASE"), "base, then research\n");
         QVERIFY(QFileInfo::exists(work + "/src/virglrenderer/MARK"));
         /* the subproject, downloaded with the sources, its patch files in */
         const QString sub = work + "/src/qemu/subprojects/keycodemapdb";
@@ -727,7 +789,7 @@ sh -c 'echo $$ > %1; exec sleep 300'
         QCOMPARE(built.size(), 2);
 
         /* 3. a QEMU patch changed: a new prefix, virglrenderer's sources as they were */
-        QVERIFY(write(host + "/patches/qemu/0001-mark.patch",
+        QVERIFY(write(host + "/patches/qemu/fork/0001-mark.patch",
                       QString(newFile).arg("MARK", "two").toUtf8()));
         QCOMPARE(StackBuilder::state(host, stack), StackBuilder::State::Outdated);
         output.clear();
@@ -739,7 +801,9 @@ sh -c 'echo $$ > %1; exec sleep 300'
         QVERIFY2(log(output).contains("virglrenderer at ") &&
                      log(output).contains("with 1 patches already"),
                  qPrintable(log(output)));
-        QVERIFY(log(output).contains("applying patches/qemu/0001-mark.patch"));
+        QVERIFY(log(output).contains("applying patches/qemu/fork/0001-mark.patch\n"
+                                     "applying patches/qemu/fork/0002-base.patch\n"
+                                     "applying patches/qemu/research/0001-on-base.patch\n"));
         QFile mark(work + "/src/qemu/MARK");
         QVERIFY(mark.open(QIODevice::ReadOnly));
         QCOMPARE(mark.readAll(), "two\n");
@@ -826,7 +890,7 @@ sh -c 'echo $$ > %1; exec sleep 300'
         QCOMPARE(read(sub + "/README"), "v2\n");
         /* nothing else of the last build stays in the sources: nested repositories neither */
         QVERIFY(QDir().mkpath(work + "/src/qemu/subprojects/stale/.git"));
-        QVERIFY(write(host + "/patches/qemu/0001-mark.patch",
+        QVERIFY(write(host + "/patches/qemu/fork/0001-mark.patch",
                       QString(newFile).arg("MARK", "three").toUtf8()));
         failure = buildOk();
         QVERIFY2(failure.isEmpty(), qPrintable(failure));

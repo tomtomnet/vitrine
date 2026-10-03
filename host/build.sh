@@ -2,8 +2,9 @@
 # SPDX-License-Identifier: GPL-2.0-or-later
 #
 # Builds Vitrine's QEMU: virglrenderer and the qemu-gui fork, each fetched
-# at the commit versions.conf pins and patched with patches/<component>/*.patch
-# in name order, installed into a prefix of their own:
+# at the commit versions.conf pins and patched with the *.patch files of
+# patches/<component> and of its folders (see patches_of), installed into a
+# prefix of their own:
 #
 #   <stack>/<stamp>/bin/qemu-system-x86_64, qemu-img and QEMU's other tools
 #   <stack>/<stamp>/lib64/libvirglrenderer.so.1
@@ -90,8 +91,14 @@ for v in QEMU_URL QEMU_COMMIT VIRGL_URL VIRGL_COMMIT; do
 	[ -n "${!v}" ] || die "versions.conf has no $v"
 done
 
-# the patches of a component, in name order whatever the locale
-patches_of() { (cd "$here" && printf '%s\n' patches/"$1"/*.patch | sed '/^$/d' | LC_ALL=C sort); }
+# the patches of a component: its *.patch files and those of its folders
+# (QEMU's research/ and vitrine/), in the C order of their paths
+# whatever the locale: a folder's patches one after the other in name order,
+# the folders in name order
+patches_of() {
+	(cd "$here" && printf '%s\n' patches/"$1"/*.patch patches/"$1"/*/*.patch | sed '/^$/d' |
+		LC_ALL=C sort)
+}
 mapfile -t qemu_patches < <(patches_of qemu)
 mapfile -t virgl_patches < <(patches_of virglrenderer)
 
@@ -441,7 +448,8 @@ echo "QEMU $version, virtio-gpu-gl-pci with drm_native_context and x-host-vblank
 # they start ignore the signals too
 trap '' TERM INT HUP
 mkdir -p "$(dirname "$manifest")"
-patch_names() { local p; for p in "$@"; do printf '%s ' "$(basename "$p")"; done; }
+# their paths in patches/<component>: research/0001-x.patch
+patch_names() { local p; for p in "$@"; do printf '%s ' "${p#patches/*/}"; done; }
 cat > "$manifest.new" << EOF
 # What host/build.sh built here
 STAMP=$stamp

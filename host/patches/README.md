@@ -1,14 +1,22 @@
 # Patches of Vitrine's QEMU
 
 `host/build.sh` fetches each component at the commit `host/versions.conf`
-pins and applies `patches/<component>/*.patch` in name order with
-`git apply`. The patches come verbatim from the research export
+pins and applies with `git apply` the `*.patch` files of
+`patches/<component>/` and of its folders, in the C order of their paths
+(`LC_ALL=C sort`): a folder's patches in name order, the folders in name
+order. Folders deeper down, hidden files and other names are not applied.
+
+The research patches come verbatim from the research export
 (`~/Documents/qemu-gui-experimental`, exported 2026-10-03: `qemu/patches/`
 and `host/virglrenderer/`); keep them byte-identical to it, and add
-Vitrine's own changes as new files (`1xxx-vitrine-*.patch`) rather than
-editing these.
+Vitrine's own changes as new files in `qemu/vitrine/` rather than editing
+these.
 
 ## qemu (on the qemu-gui fork at `49fd5067`)
+
+`qemu/research/`, then `qemu/vitrine/`.
+
+### `qemu/research/`
 
 0005-0007 are plain diffs (no `diff --git` headers): they were uncommitted
 in the fork, so these files are the only copy.
@@ -23,11 +31,13 @@ in the fork, so these files are the only copy.
 | `b720bb1a5400594737462850853c00a2df148a170ccef9ebce94d1f79d55d683` | `0006-zero-copy-default-full-screen-tiled.patch`: zero copy by default in full screen, tiled buffers with explicit modifiers, `x-vblank-swap-target-zc` |
 | `ca271b7d73b18402c826de59b28125c518e2ec574881a9370b1b70c956d4ee8e` | `0007-ui-dbus-zero-copy.patch`: zero copy for the D-Bus display (`Listener.Unix.ZeroCopy`, `ScanoutDMABUF2`) |
 
+### `qemu/vitrine/`
+
 Vitrine's own, on top, for the research side to take over:
 
 | sha256 | patch |
 |---|---|
-| `c477e012d64d05e0652e366bebc597e919af6ec64a02e794d471cd5188b0aafd` | `1001-vitrine-ui-sdl2-QEMU_SDL_POLL_FOCUSED-0-is-off.patch`: `QEMU_SDL_POLL_FOCUSED=0` is off, as `QEMU_SDL_ZERO_COPY=0` is |
+| `c477e012d64d05e0652e366bebc597e919af6ec64a02e794d471cd5188b0aafd` | `0001-ui-sdl2-QEMU_SDL_POLL_FOCUSED-0-is-off.patch`: `QEMU_SDL_POLL_FOCUSED=0` is off, as `QEMU_SDL_ZERO_COPY=0` is |
 
 ## virglrenderer (upstream at `cf6c62da`)
 
@@ -37,4 +47,4 @@ Vitrine's own, on top, for the research side to take over:
 | `0f629fef2724244d1900c707e24218eb91bd97dabd3d42dcfc3658a64fb6bcc5` | `0002-amdgpu-force-wc.patch`: write-combined mappings for host-visible amdgpu blobs |
 | `b2c05277f960fa91ffcd2fd90389b96cc62febb3753bc31153e9ff80114f0709` | `0003-guest-dmabuf-api.patch`: `virgl_renderer_resource_set_guest_dmabuf()`, for QEMU's zero copy of guest dma-bufs |
 
-Check: `cd host/patches && sha256sum qemu/*.patch virglrenderer/*.patch`.
+Check: `cd host/patches && sha256sum qemu/*/*.patch virglrenderer/*.patch`.

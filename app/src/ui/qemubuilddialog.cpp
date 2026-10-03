@@ -2,7 +2,6 @@
 #include "qemubuilddialog.h"
 
 #include <QDialogButtonBox>
-#include <QDir>
 #include <QFontDatabase>
 #include <QHBoxLayout>
 #include <QLabel>
@@ -65,11 +64,8 @@ QemuBuildDialog::QemuBuildDialog(QWidget *parent)
     auto *buttons = new QDialogButtonBox(QDialogButtonBox::Close);
     const QString host = StackBuilder::hostDir();
     const StackBuilder::Versions versions = StackBuilder::versions(host);
-    /* those build.sh applies: its glob matches with case */
     const auto patches = [&host](const char *component) {
-        return QDir(host + "/patches/" + component)
-            .entryList({"*.patch"}, QDir::Files | QDir::CaseSensitive)
-            .size();
+        return StackBuilder::patches(host, component).size();
     };
 
     if (versions.isValid()) {

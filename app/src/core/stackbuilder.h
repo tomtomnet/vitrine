@@ -40,7 +40,7 @@ public:
         QDateTime built;
         QString qemuCommit;
         QString qemuVersion;        // e.g. 11.1.50
-        QStringList qemuPatches;    // their file names
+        QStringList qemuPatches;    // their paths in patches/qemu: research/0001-x.patch
         QString virglCommit;
         QString virglVersion;
         QStringList virglPatches;
@@ -81,6 +81,12 @@ public:
     /* Sources and build trees: they make updates quick, and can go */
     static QString workDir();
     static Versions versions(const QString &hostDir);
+    /*
+     * The patches build.sh applies to @component ("qemu"), in its order:
+     * the *.patch files of @hostDir/patches/@component and of its folders,
+     * as paths in @hostDir (patches/qemu/research/0001-x.patch)
+     */
+    static QStringList patches(const QString &hostDir, const QString &component);
     /* The stamp of @hostDir's inputs: what `build.sh --print-stamp` prints */
     static QString inputStamp(const QString &hostDir);
     /* The build `current` points to in @stackDir; invalid if none */
