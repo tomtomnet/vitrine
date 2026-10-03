@@ -509,6 +509,18 @@ QStringList QemuInfo::probeProperties(const QString &binary, const QString &devi
     return names;
 }
 
+QStringList QemuInfo::probeObjectProperties(const QString &binary, const QString &type,
+                                            QString *error)
+{
+    QStringList names;
+
+    for (const QemuPropertyDoc &prop :
+         parsePropertyHelp(probe(binary, {"-object", type + ",help"}, error))) {
+        names << prop.name;
+    }
+    return names;
+}
+
 QStringList QemuInfo::probeList(const QString &binary, const QString &option, QString *error)
 {
     QStringList names;

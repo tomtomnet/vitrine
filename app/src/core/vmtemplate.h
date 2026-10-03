@@ -78,10 +78,11 @@ bool hasVga(const QString &arch = {});
  * What the QEMU a VM runs with offers.  @chosen is the QEMU the user chose
  * for it, its #qemu line else the other QEMU of the preferences: empty
  * for vitrine's, which has all the template uses and is not asked, built
- * or not; until it is, VmRunner::start() refuses to run such a VM with
- * the system's QEMU.  A chosen QEMU is asked: from @info, its QemuInfo,
- * else (null: not loaded yet, or it could not be) from the binary itself.
- * One that does not answer offers none of it, unless it is vitrine's.
+ * or not; until it is, VmRunner::start() refuses such a VM where the
+ * system's QEMU lacks what it uses.  A chosen QEMU is asked: from @info,
+ * its QemuInfo, else (null: not loaded yet, or it could not be) from the
+ * binary itself.  One that does not answer offers none of it, unless it
+ * is vitrine's.
  *
  * NAT through passt: installed on this computer, and in that QEMU, which
  * has it if built with it, as vitrine's is.

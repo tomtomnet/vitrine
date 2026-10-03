@@ -43,13 +43,14 @@ public:
     /* The full QEMU command line for @args, as start() would run it */
     QStringList commandLine(const ArgsFile &args) const;
     /*
-     * A VM of @args runs with vitrine's QEMU, as neither its #qemu line nor
-     * the preferences choose another, and that is not built yet.  start()
-     * refuses it then, rather than run it with the system's QEMU found in
-     * the meantime, which lacks what vitrine's VMs use, such as the 3D
-     * card's native context and vblank properties.
+     * A VM of @args waits for vitrine's QEMU, which start() refuses it
+     * without: neither its #qemu line nor the preferences choose a QEMU,
+     * vitrine's is not built yet, and the system's QEMU, which it would run
+     * with meanwhile, is not in PATH or lacks what @args use of vitrine's,
+     * such as the 3D card's native context and vblank properties, asked
+     * from that QEMU.  @why: the message for the user.
      */
-    static bool needsQemuBuild(const ArgsFile &args);
+    static bool needsQemuBuild(const ArgsFile &args, QString *why = nullptr);
     /*
      * @args with the properties vitrine computes for the 3D card, those
      * that @args leaves out (on the card's line, and with -global) and the

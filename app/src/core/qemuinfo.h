@@ -77,6 +77,12 @@ struct QemuInfo {
      */
     static QStringList probeProperties(const QString &binary, const QString &device,
                                        QString *error = nullptr);
+    /*
+     * The same for a QOM type that is no device, such as an accelerator
+     * (kvm-accel): -object TYPE,help lists those too
+     */
+    static QStringList probeObjectProperties(const QString &binary, const QString &type,
+                                             QString *error = nullptr);
     static QStringList probeList(const QString &binary, const QString &option,
                                  QString *error = nullptr);
     static QString rstToHtml(const QString &rst);

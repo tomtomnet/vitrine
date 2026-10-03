@@ -704,10 +704,139 @@ QStringList VmRunner::commandLine(const ArgsFile &args) const
     return d->commandLine(args, qemuFor(args));
 }
 
-bool VmRunner::needsQemuBuild(const ArgsFile &args)
+/*
+ * What @args set that @qemu lacks, where vitrine's QEMU has more than
+ * others: the virtio-gpu cards and their properties (native context, the
+ * vblank timing), the properties of -global and those of the accelerators
+ * (honor-guest-pat), and the network backends (passt, which new VMs take
+ * as vitrine's QEMU has it).  Asked from @qemu, a few milliseconds each,
+ * and kept; what it does not answer about counts as there, for QEMU to
+ * report.
+ */
+static QStringList lacking(const ArgsFile &args, const QString &qemu)
 {
-    return VmConfig::qemuBinary(args).isEmpty() && Paths::customQemuBinary().isEmpty() &&
-           Paths::stackQemu().isEmpty();
+    static const QStringList cards = {
+        "virtio-vga-gl", "virtio-gpu-gl-pci", "virtio-gpu-gl", "virtio-gpu-gl-device",
+        "virtio-vga",    "virtio-gpu-pci",    "virtio-gpu",    "virtio-gpu-device",
+    };
+    QStringList out;
+    const auto add = [&out](const QString &name) {
+        if (!out.contains(name)) {
+            out << name;
+        }
+    };
+    /* the keys of @v but @skip that @known lacks; a bare key is KEY=on, noKEY KEY=off */
+    const auto check = [&add](const OptionValue &v, const QStringList &known,
+                              const QStringList &skip) {
+        for (const OptionValue::Item &item : v.items()) {
+            if (item.key.isEmpty() || skip.contains(item.key) || known.contains(item.key) ||
+                (item.bare && item.key.startsWith("no") && known.contains(item.key.mid(2)))) {
+                continue;
+            }
+            add(item.key);
+        }
+    };
+
+    for (int i : args.indexesOf("device")) {
+        const OptionValue v = args.valueAt(i);
+        const QString driver = v.implied().isEmpty() ? v.get("driver") : v.implied();
+        QString error;
+
+        if (!cards.contains(driver)) {
+            continue;
+        }
+        const QStringList known = QemuInfo::probeProperties(qemu, driver, &error);
+        if (!error.isEmpty()) {
+            continue;
+        }
+        /* QEMU answers nothing for a device it lacks */
+        if (known.isEmpty()) {
+            add(driver);
+            continue;
+        }
+        /* qdev's own, which are no properties */
+        check(v, known, {"driver", "bus", "id"});
+    }
+    for (int i : args.indexesOf("global")) {
+        const OptionValue g = args.valueAt(i);
+        QString driver, property, error;
+
+        if (g.has("property")) {
+            driver = g.get("driver");
+            property = g.get("property");
+        } else if (!g.items().isEmpty()) {
+            /* DRIVER.PROPERTY=VALUE, split at the first dot as QEMU does */
+            driver = g.items().first().key.section('.', 0, 0);
+            property = g.items().first().key.section('.', 1);
+        }
+        if (driver.isEmpty() || property.isEmpty()) {
+            continue;
+        }
+        /* nothing for an abstract type such as virtio-gpu-base: not known */
+        const QStringList known = QemuInfo::probeProperties(qemu, driver, &error);
+        if (error.isEmpty() && !known.isEmpty() && !known.contains(property)) {
+            add(property);
+        }
+    }
+    for (int i : args.indexesOf("accel")) {
+        const OptionValue v = args.valueAt(i);
+        const QString accel = v.implied().isEmpty() ? v.get("accel") : v.implied();
+        QString error;
+
+        if (accel.isEmpty() || v.items().size() < 2) {
+            continue;
+        }
+        const QStringList known = QemuInfo::probeObjectProperties(qemu, accel + "-accel", &error);
+        if (error.isEmpty() && !known.isEmpty()) {
+            check(v, known, {"accel"});
+        }
+    }
+    for (const char *option : {"netdev", "nic"}) {
+        for (int i : args.indexesOf(option)) {
+            const OptionValue v = args.valueAt(i);
+            const QString type = v.implied().isEmpty() ? v.get("type") : v.implied();
+            QString error;
+
+            if (type.isEmpty() || type == "none") {
+                continue;
+            }
+            const QStringList known = QemuInfo::probeList(qemu, "netdev", &error);
+            if (error.isEmpty() && !known.isEmpty() && !known.contains(type)) {
+                add(type);
+            }
+        }
+    }
+    return out;
+}
+
+bool VmRunner::needsQemuBuild(const ArgsFile &args, QString *why)
+{
+    QString system;
+    QStringList lacks;
+
+    if (!VmConfig::qemuBinary(args).isEmpty() || !Paths::customQemuBinary().isEmpty() ||
+        !Paths::stackQemu().isEmpty()) {
+        return false;
+    }
+    system = Paths::defaultQemuBinary();
+    if (system.isEmpty()) {
+        if (why) {
+            *why = tr("Vitrine's QEMU is not built yet, and %1 is not in PATH: build it with "
+                      "File > Build QEMU, or choose a QEMU in the preferences")
+                       .arg(Paths::qemuSystemName());
+        }
+        return true;
+    }
+    lacks = lacking(args, system);
+    if (lacks.isEmpty()) {
+        return false;
+    }
+    if (why) {
+        *why = tr("This VM uses %1, which the system's QEMU lacks: build Vitrine's QEMU with "
+                  "File > Build QEMU, or choose another QEMU in the preferences")
+                   .arg(lacks.join(", "));
+    }
+    return true;
 }
 
 QStringList VmRunner::Private::commandLine(const ArgsFile &args, const QString &qemu,
@@ -917,9 +1046,8 @@ void VmRunner::start(const ArgsFile &args)
     d->qemu = qemu;
     d->command.clear();
     d->embedded = VmConfig::screen(args) == VmConfig::Screen::Embedded;
-    if (needsQemuBuild(args)) {
-        d->fail(tr("This VM runs with Vitrine's QEMU, which is not built yet: build it with "
-                   "File > Build QEMU, or choose another QEMU in the preferences"));
+    if (QString why; needsQemuBuild(args, &why)) {
+        d->fail(why);
         return;
     }
     if (qemu.isEmpty() || !QFileInfo(qemu).isExecutable()) {

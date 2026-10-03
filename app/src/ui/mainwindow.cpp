@@ -599,7 +599,7 @@ void MainWindow::failed(Vm *vm, const QString &error)
             title = tr("Cannot Start %1").arg(vm->name());
             text = tr("%1 could not start.").arg(vm->name());
             firmware = FirmwareRepair::named(vm, error);
-            /* start() refused it: its QEMU is Vitrine's, not built yet */
+            /* start() refused it, to wait for Vitrine's QEMU */
             build = VmRunner::needsQemuBuild(vm->runner()->runArgs());
         } else if (from != VmRunner::State::Stopped) {
             title = tr("%1 Stopped").arg(vm->name());
@@ -1014,8 +1014,8 @@ void MainWindow::start()
     if (m_askingUsb.contains(vm->id())) {
         return;
     }
-    /* its QEMU is Vitrine's, to build first: start() refuses it, which
-       failed() reports with the build at hand, before USB access is asked */
+    /* it waits for Vitrine's QEMU: start() refuses it, which failed()
+       reports with the build at hand, before USB access is asked */
     if (VmRunner::needsQemuBuild(vm->args())) {
         m_starting.insert(vm->id());
         vm->runner()->start(vm->args());

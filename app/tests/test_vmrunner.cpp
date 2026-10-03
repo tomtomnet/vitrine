@@ -21,6 +21,7 @@
 #include "core/qmpclient.h"
 #include "core/vmconfig.h"
 #include "core/vmrunner.h"
+#include "core/vmtemplate.h"
 
 /* Runs $VITRINE_TEST_QEMU, else the qemu-system-x86_64 in PATH, headless */
 static QString testQemu()
@@ -711,44 +712,147 @@ private slots:
     }
 
     /*
-     * No QEMU chosen, by #qemu or the preferences: vitrine's, which a VM
-     * waits for while it is not built, rather than start with the system's
+     * No QEMU chosen, by #qemu or the preferences, and vitrine's not built:
+     * a VM runs with the system's QEMU meanwhile, unless that lacks what
+     * the VM uses of vitrine's, or there is none.  Then it waits for
+     * vitrine's: start() refuses it.
      */
     void vitrinesQemuToBuild()
     {
+        const QString qemu = testQemu();
+        const QByteArray path = qgetenv("PATH");
         const QString dir = tmp.filePath("unbuilt");
         const QString stack = Paths::stackDir();
-        const ArgsFile args = ArgsFile::parse(kHeadless);
-        ArgsFile own = args;
+        /* QEMU 10.2: no native context, vblank timing or honor-guest-pat */
+        const QString system = tmp.filePath("system/" + Paths::qemuSystemName());
+        const QString broken = tmp.filePath("broken/" + Paths::qemuSystemName());
+        const auto withHeadless = [](const QString &lines) {
+            return ArgsFile::parse(QString(kHeadless) + lines);
+        };
+        const ArgsFile headless = ArgsFile::parse(kHeadless);
+        VmTemplate::Options o;
+        QString why;
 
         /* as the other tests have it, whatever fails here */
-        const auto restore = qScopeGuard([stack]() {
+        const auto restore = qScopeGuard([=]() {
+            qputenv("PATH", path);
             QFile::remove(stack + "/current");
             QDir(stack + "/0123456789abcdef").removeRecursively();
-            Paths::setQemuBinary(testQemu());
+            Paths::setQemuBinary(qemu);
         });
 
-        VmConfig::setQemuBinary(own, testQemu());
+        /* new VMs, made for vitrine's QEMU: Linux gets the 3D card */
+        o.name = "Linux";
+        o.arch = "x86_64";
+        const ArgsFile linuxVm = VmTemplate::build(o);
+        QVERIFY(linuxVm.toText().contains(",drm_native_context=on,x-host-vblank=on,"));
+        QVERIFY(linuxVm.toText().contains("-accel kvm,honor-guest-pat=on\n"));
+        o.os = VmTemplate::Os::Windows11;
+        o.graphics = VmTemplate::defaults(o.os).graphics;
+        const ArgsFile windows = VmTemplate::build(o);
+        QVERIFY(windows.toText().contains("-device virtio-vga\n"));
+        o.os = VmTemplate::Os::Other;
+        o.graphics = VmTemplate::defaults(o.os).graphics;
+        const ArgsFile other = VmTemplate::build(o);
+        ArgsFile own = linuxVm;
+        VmConfig::setQemuBinary(own, system);
+
         QVERIFY(QDir().mkpath(dir));
+        QVERIFY(QDir().mkpath(QFileInfo(system).path()));
+        QVERIFY(QDir().mkpath(QFileInfo(broken).path()));
+        script("system/" + Paths::qemuSystemName(),
+               "case \"$1 $2\" in\n"
+               "'-device virtio-gpu-gl-pci,help')\n"
+               "  echo 'virtio-gpu-gl-pci options:'\n"
+               "  echo '  addr=<str>             - Slot and optional function number'\n"
+               "  echo '  blob=<bool>            - on/off (default: off)'\n"
+               "  echo '  hostmem=<size>         -  (default: 0)'\n"
+               "  echo '  venus=<bool>           - on/off (default: off)' ;;\n"
+               "'-device virtio-vga,help')\n"
+               "  echo 'virtio-vga options:'\n"
+               "  echo '  edid=<bool>            - on/off (default: on)'\n"
+               "  echo '  xres=<uint32>          -  (default: 1280)' ;;\n"
+               "'-netdev help')\n"
+               "  echo 'Available netdev backend types:'\n"
+               "  echo 'user'; echo 'tap' ;;\n"
+               "'-object kvm-accel,help')\n"
+               "  echo 'kvm-accel options:'\n"
+               "  echo '  kernel-irqchip=<on|off|split> - Configure KVM in-kernel irqchip'\n"
+               "  echo '  kvm-shadow-mem=<int>   - KVM shadow MMU size' ;;\n"
+               "'-object '*)\n"
+               "  echo \"qemu: -object $2: Parameter 'qom-type' does not accept value\" >&2\n"
+               "  exit 1 ;;\n"
+               "*)\n"
+               "  echo \"qemu: -device $2: Device not found\" >&2 ;;\n"
+               "esac");
+        script("broken/" + Paths::qemuSystemName(), "exit 1");
         /* the test's data: no stack built */
         QVERIFY(stack.startsWith(QDir::homePath() + "/.qttest/"));
         QVERIFY(Paths::stackQemu().isEmpty());
         /* the preferences' QEMU, as for the other tests */
-        QVERIFY(!VmRunner::needsQemuBuild(args));
+        QVERIFY(!VmRunner::needsQemuBuild(linuxVm));
         QVERIFY(!VmRunner::needsQemuBuild(own));
 
         Paths::setQemuBinary({});
-        QVERIFY(VmRunner::needsQemuBuild(args));
+        qputenv("PATH", QFileInfo(system).path().toLocal8Bit());
+        QCOMPARE(Paths::qemuBinary(), system);
+        /* what the system's QEMU has: it runs them */
+        QVERIFY(linuxVm.toText().contains("-netdev user,"));
+        QVERIFY(!VmRunner::needsQemuBuild(headless));
+        QVERIFY(!VmRunner::needsQemuBuild(windows));
+        QVERIFY(!VmRunner::needsQemuBuild(other));
+        QVERIFY(!VmRunner::needsQemuBuild(
+            withHeadless("-accel kvm,kernel-irqchip=split\n"
+                         "-device virtio-gpu-gl-pci,id=gpu,bus=pcie.0,addr=02.0,blob=on\n"
+                         "-global virtio-gpu-gl-pci.hostmem=4G\n"
+                         "-global driver=virtio-vga,property=xres,value=1920\n"
+                         "-display sdl,gl=on\n")));
+        /* what it cannot tell, for QEMU to report */
+        QVERIFY(!VmRunner::needsQemuBuild(withHeadless("-global virtio-gpu-base.x-host-vblank=on\n"
+                                                       "-accel whpx,kernel-irqchip=off\n")));
+
+        /* what it lacks: vitrine's, to build */
+        QVERIFY(VmRunner::needsQemuBuild(linuxVm, &why));
+        QCOMPARE(why, "This VM uses drm_native_context, x-host-vblank, x-vblank-lead, "
+                      "x-vblank-lead-auto, honor-guest-pat, which the system's QEMU lacks: "
+                      "build Vitrine's QEMU with File > Build QEMU, or choose another QEMU in "
+                      "the preferences");
+        QVERIFY(VmRunner::needsQemuBuild(withHeadless("-device virtio-vga,x-host-vblank=on\n")));
+        QVERIFY(VmRunner::needsQemuBuild(withHeadless("-accel kvm,honor-guest-pat=on\n")));
+        QVERIFY(VmRunner::needsQemuBuild(
+            withHeadless("-global virtio-gpu-gl-pci.x-vblank-lead=3000\n"), &why));
+        QVERIFY(why.startsWith("This VM uses x-vblank-lead, which"));
+        QVERIFY(VmRunner::needsQemuBuild(withHeadless(
+            "-global driver=virtio-gpu-gl-pci,property=drm_native_context,value=on\n")));
+        /* NAT through passt, which new VMs take as vitrine's QEMU has it */
+        QVERIFY(VmRunner::needsQemuBuild(withHeadless("-nic none\n-netdev passt,id=net0\n"),
+                                         &why));
+        QVERIFY(why.startsWith("This VM uses passt, which"));
+        QVERIFY(VmRunner::needsQemuBuild(withHeadless("-nic passt,model=virtio-net-pci\n")));
+        QVERIFY(!VmRunner::needsQemuBuild(withHeadless("-nic user,model=virtio-net-pci\n")));
+        /* a bare key is on */
+        QVERIFY(VmRunner::needsQemuBuild(
+            withHeadless("-device virtio-gpu-gl-pci,blob,drm_native_context\n"), &why));
+        QVERIFY(why.startsWith("This VM uses drm_native_context, which"));
+        /* a card it lacks altogether */
+        QVERIFY(VmRunner::needsQemuBuild(withHeadless("-device virtio-vga-gl\n"), &why));
+        QVERIFY(why.startsWith("This VM uses virtio-vga-gl, which"));
+        /* a QEMU of the VM's own, or of the preferences: as the user chose */
         QVERIFY(!VmRunner::needsQemuBuild(own));
+        Paths::setQemuBinary(system);
+        QVERIFY(!VmRunner::needsQemuBuild(linuxVm));
+        Paths::setQemuBinary({});
+
+        /* refused before anything runs */
         {
             VmRunner runner(id, dir);
             QSignalSpy failed(&runner, &VmRunner::failed);
             QSignalSpy states(&runner, &VmRunner::stateChanged);
 
-            runner.start(args);
+            runner.start(linuxVm);
             QCOMPARE(failed.size(), 1);
-            QVERIFY(failed[0][0].toString().contains("Vitrine's QEMU, which is not built yet"));
-            QVERIFY(failed[0][0].toString().contains("Build QEMU"));
+            QVERIFY(failed[0][0].toString().contains("drm_native_context"));
+            QVERIFY(failed[0][0].toString().contains("File > Build QEMU"));
             QCOMPARE(runner.state(), VmRunner::State::Stopped);
             QVERIFY(states.isEmpty());
             /* nothing ran, nor was written */
@@ -758,16 +862,31 @@ private slots:
             QVERIFY(VmRunner::needsQemuBuild(runner.runArgs()));
         }
 
+        /* a system's QEMU that does not answer: QEMU says what is wrong */
+        qputenv("PATH", QFileInfo(broken).path().toLocal8Bit());
+        QCOMPARE(Paths::qemuBinary(), broken);
+        QVERIFY(!VmRunner::needsQemuBuild(linuxVm));
+
+        /* none: vitrine's, to build, whatever the VM */
+        qputenv("PATH", tmp.filePath("nowhere").toLocal8Bit());
+        QVERIFY(Paths::qemuBinary().isEmpty());
+        QVERIFY(VmRunner::needsQemuBuild(headless, &why));
+        QVERIFY(why.contains(Paths::qemuSystemName() + " is not in PATH"));
+        QVERIFY(why.contains("File > Build QEMU"));
+        QVERIFY(VmRunner::needsQemuBuild(windows));
+        QVERIFY(!VmRunner::needsQemuBuild(own));
+
         /* built: the VMs run with it */
         const QString binary = stack + "/0123456789abcdef/bin/" + Paths::qemuSystemName();
         QVERIFY(QDir().mkpath(QFileInfo(binary).path()));
-        QFile qemu(binary);
-        QVERIFY(qemu.open(QIODevice::WriteOnly) && qemu.write("#!/bin/sh\n") > 0);
-        qemu.close();
-        QVERIFY(qemu.setPermissions(QFileDevice::ReadOwner | QFileDevice::ExeOwner));
+        QFile built(binary);
+        QVERIFY(built.open(QIODevice::WriteOnly) && built.write("#!/bin/sh\n") > 0);
+        built.close();
+        QVERIFY(built.setPermissions(QFileDevice::ReadOwner | QFileDevice::ExeOwner));
         QVERIFY(QFile::link("0123456789abcdef", stack + "/current"));
         QVERIFY(!Paths::stackQemu().isEmpty());
-        QVERIFY(!VmRunner::needsQemuBuild(args));
+        QVERIFY(!VmRunner::needsQemuBuild(headless));
+        QVERIFY(!VmRunner::needsQemuBuild(linuxVm));
         QVERIFY(!VmRunner::needsQemuBuild(own));
     }
 
