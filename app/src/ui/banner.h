@@ -20,6 +20,8 @@ public:
     void setText(const QString &text);
     /* A button on the right, hidden until given a text */
     QPushButton *button() const { return m_button; }
+    /* Another button, right of the others, shown */
+    QPushButton *addButton(const QString &text);
 
 protected:
     void paintEvent(QPaintEvent *event) override;

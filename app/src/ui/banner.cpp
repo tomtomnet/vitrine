@@ -38,6 +38,14 @@ void Banner::setText(const QString &text)
     m_text->setText(text);
 }
 
+QPushButton *Banner::addButton(const QString &text)
+{
+    auto *button = new QPushButton(text);
+
+    static_cast<QHBoxLayout *>(layout())->addWidget(button, 0, Qt::AlignVCenter);
+    return button;
+}
+
 void Banner::paintEvent(QPaintEvent *)
 {
     QPainter painter(this);
