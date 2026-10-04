@@ -582,8 +582,88 @@ private slots:
         QTRY_VERIFY(saw(lines, QString("skip rt %1").arg(q2.pid())));
         QVERIFY(saw(lines, "ok gpu-floor card1 1800 MHz"));
         QCOMPARE(notices.size(), 1);
-        QCOMPARE(notices.first().first().toString(),
-                 QString("Host tuning: fair-server: kernel lockdown (integrity)"));
+        const QString off = "Real-time QEMU threads are off: the kernel's lockdown (Secure Boot) blocks "
+                            "the fair server.";
+        QCOMPARE(notices.first().first().toString(), off);
+        QCOMPARE(hs.realtimeOff(), off);
+    }
+
+    /* A refusal is said as it came: real-time off, and why */
+    void realtimeOffRefused()
+    {
+        QFile::setPermissions(QString("%1%2/cpu1/period").arg(m_root, kFair), QFileDevice::ReadOwner);
+        FakeQemu qemu;
+        HostSettings hs(nullptr);
+        QSignalSpy lines(&hs, &HostSettings::helperLine), notices(&hs, &HostSettings::notice);
+        fake(hs);
+        hs.tune(qemu.pid());
+        QTRY_VERIFY(saw(lines, QString("skip rt %1").arg(qemu.pid())));
+        const QString off = "Real-time QEMU threads are off: the fair server could not be set (fair "
+                            "server: cpu1: Permission denied).";
+        QCOMPARE(hs.realtimeOff(), off);
+        QCOMPARE(notices.size(), 1);
+        QCOMPARE(notices.first().first().toString(), off);
+        QCOMPARE(fair(0), QString("1000000000/50000000"));
+    }
+
+    /* Set: nothing to say, whatever the kernel looks like from here */
+    void realtimeOn()
+    {
+        FakeQemu qemu;
+        HostSettings hs(nullptr);
+        QSignalSpy lines(&hs, &HostSettings::helperLine);
+        fake(hs);
+        QCOMPARE(hs.realtimeOff(), HostSettings::realtimeLimit(m_root + "/sys"));
+        hs.tune(qemu.pid());
+        QTRY_VERIFY(saw(lines, QString("ok rt %1").arg(qemu.pid())));
+        QCOMPARE(hs.realtimeOff(), QString());
+    }
+
+    /* What can be told without root, before any VM ran */
+    void realtimeLimit_data()
+    {
+        QTest::addColumn<QByteArray>("lockdown");   // empty: no such file
+        QTest::addColumn<QByteArray>("schedExt");   // empty: no such file
+        QTest::addColumn<QString>("release");
+        QTest::addColumn<QString>("why");
+
+        const QByteArray none = "[none] integrity confidentiality\n";
+        QTest::newRow("this laptop") << none << QByteArray("disabled\n") << "7.2.7-200.fc44.x86_64"
+                                     << "";
+        QTest::newRow("Secure Boot") << QByteArray("none [integrity] confidentiality\n")
+                                     << QByteArray() << "7.2.7"
+                                     << "the kernel's lockdown (Secure Boot) blocks the fair server";
+        QTest::newRow("confidentiality") << QByteArray("none integrity [confidentiality]\n")
+                                         << QByteArray() << "6.17.0"
+                                         << "the kernel's lockdown (Secure Boot) blocks the fair server";
+        QTest::newRow("6.11") << none << QByteArray() << "6.11.4"
+                              << "this kernel has no fair server to keep them from starving the "
+                                 "host (Linux 6.12 and later have one)";
+        QTest::newRow("6.12") << none << QByteArray() << "6.12.48+deb13-amd64" << "";
+        QTest::newRow("sched_ext, 6.17") << none << QByteArray("enabled\n") << "6.17.1"
+                                         << "a sched_ext scheduler runs, and this kernel has no "
+                                            "server to keep them from starving its tasks (Linux "
+                                            "7.0 and later have one)";
+        QTest::newRow("sched_ext, 7.0") << none << QByteArray("enabled\n") << "7.0.3" << "";
+        QTest::newRow("no files") << QByteArray() << QByteArray() << "7.2.7" << "";
+        QTest::newRow("release unknown") << QByteArray() << QByteArray() << "custom" << "";
+    }
+    void realtimeLimit()
+    {
+        QFETCH(QByteArray, lockdown);
+        QFETCH(QByteArray, schedExt);
+        QFETCH(QString, release);
+        QFETCH(QString, why);
+        const QString sys = m_root + "/limit";
+
+        if (!lockdown.isEmpty()) {
+            writeFile(sys + "/kernel/security/lockdown", lockdown);
+        }
+        if (!schedExt.isEmpty()) {
+            writeFile(sys + "/kernel/sched_ext/state", schedExt);
+        }
+        QCOMPARE(HostSettings::realtimeLimit(sys, release),
+                 why.isEmpty() ? QString() : "Real-time QEMU threads are off: " + why + ".");
     }
 
     /* A VM gone before the helper could watch it: no news, and the helper ends */

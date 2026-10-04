@@ -25,6 +25,7 @@
 #include <sys/socket.h>
 #include <sys/stat.h>
 #include <sys/syscall.h>
+#include <sys/utsname.h>
 #include <sys/wait.h>
 #include <sys/xattr.h>
 #include <unistd.h>
@@ -153,6 +154,69 @@ QStringList HostSettings::amdCards(const QString &sysRoot, bool apus)
         cards << card;
     }
     return cards;
+}
+
+/* "Real-time QEMU threads are off: @why." */
+static QString realtimeOffBecause(const QString &why)
+{
+    return HostSettings::tr("Real-time QEMU threads are off: %1.").arg(why);
+}
+
+/* The helper's reason ("kernel lockdown (integrity)"...), in plain words */
+static QString realtimeOffFor(const QString &helperWhy)
+{
+    if (helperWhy.contains("lockdown")) {
+        return realtimeOffBecause(
+            HostSettings::tr("the kernel's lockdown (Secure Boot) blocks the fair server"));
+    }
+    if (helperWhy.contains("no fair server")) {
+        return realtimeOffBecause(
+            HostSettings::tr("this kernel has no fair server to keep them from starving the "
+                             "host (Linux 6.12 and later have one)"));
+    }
+    if (helperWhy.contains("sched_ext")) {
+        return realtimeOffBecause(
+            HostSettings::tr("a sched_ext scheduler runs, and this kernel has no server to keep "
+                             "them from starving its tasks (Linux 7.0 and later have one)"));
+    }
+    if (helperWhy.contains("debugfs is not mounted")) {
+        return realtimeOffBecause(
+            HostSettings::tr("debugfs, where the fair server is set, is not mounted"));
+    }
+    return realtimeOffBecause(HostSettings::tr("the fair server could not be set (%1)").arg(helperWhy));
+}
+
+QString HostSettings::realtimeLimit(const QString &sysRoot, const QString &kernelRelease)
+{
+    static const QRegularExpression version("^(\\d+)\\.(\\d+)");
+    QString release = kernelRelease;
+    if (release.isEmpty()) {
+        struct utsname u;
+        release = ::uname(&u) == 0 ? QString::fromLatin1(u.release) : QString();
+    }
+    const QRegularExpressionMatch m = version.match(release);
+    /* major * 1000 + minor; 0: not known, not held against it */
+    const int kernel = m.hasMatch() ? m.captured(1).toInt() * 1000 + m.captured(2).toInt() : 0;
+    QFile lockdown(sysRoot + "/kernel/security/lockdown"), scx(sysRoot + "/kernel/sched_ext/state");
+    const QByteArray level = lockdown.open(QIODevice::ReadOnly) ? lockdown.readAll() : QByteArray();
+    const QByteArray state = scx.open(QIODevice::ReadOnly) ? scx.readAll().trimmed() : QByteArray();
+
+    /* "none [integrity] confidentiality": the level in brackets */
+    if (level.contains('[') && !level.contains("[none]")) {
+        return realtimeOffFor("lockdown");
+    }
+    if (kernel && kernel < 6012) {
+        return realtimeOffFor("no fair server");
+    }
+    if (!state.isEmpty() && state != "disabled" && kernel && kernel < 7000) {
+        return realtimeOffFor("sched_ext");
+    }
+    return QString();
+}
+
+QString HostSettings::realtimeOff() const
+{
+    return m_realtimeKnown ? m_realtimeOff : realtimeLimit(m_sysRoot);
 }
 
 /* Running, not a zombie (QEMU is not vitrine's child: init reaps it) */
@@ -692,8 +756,11 @@ void HostSettings::handleLine(const QString &line)
     } else if (word == "error" && (line.endsWith(": watch a QEMU first") ||
                                    line.endsWith(": watch the process first"))) {
         /* after a watch that failed: said already, if worth it */
+    } else if (line.startsWith("ok fair-server on") || line.startsWith("skip fair-server") ||
+               line.startsWith("error fair-server")) {
+        fairServerLine(line);
     } else if (line.startsWith("skip rt ")) {
-        /* no real-time threads without the fair server: its own line says why */
+        /* no real-time threads without the fair server: its line said why */
     } else if (word == "skip" || word == "error") {
         /* "skip fair-server: kernel lockdown (integrity)" */
         say(tr("Host tuning: %1").arg(line.section(' ', 1)));
@@ -725,6 +792,17 @@ void HostSettings::udmabufLine(const QString &line)
     }
     /* "watch the process first", "watch a QEMU first": its watch failed,
        which leaves it untuned (setUntuned() answers) */
+}
+
+void HostSettings::fairServerLine(const QString &line)
+{
+    /* "ok fair-server on: ...", "skip fair-server: why", "error fair-server: why" */
+    m_realtimeKnown = true;
+    m_realtimeOff = line.startsWith("ok ") ? QString()
+                                           : realtimeOffFor(line.section(':', 1).trimmed());
+    if (!m_realtimeOff.isEmpty()) {
+        say(m_realtimeOff);
+    }
 }
 
 void HostSettings::flush()

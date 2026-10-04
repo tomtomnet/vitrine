@@ -120,7 +120,12 @@ void HostTuningPrefs::refresh()
 void HostTuningPrefs::showState(const HostSettings::Status &status)
 {
     if (status.active()) {
-        m_state->setText(tr("Active: vitrine-helper may tune the host without a password."));
+        /* what the helper said in this run, else what the kernel shows: no
+           real-time threads without the fair server */
+        const HostSettings *host = HostSettings::instance();
+        const QString realtime = host ? host->realtimeOff() : HostSettings::realtimeLimit();
+        m_state->setText(tr("Active: vitrine-helper may tune the host without a password.") +
+                         (realtime.isEmpty() ? QString() : ' ' + realtime.toHtmlEscaped()));
     } else {
         m_state->setText("<b>" + tr("Not active:") + "</b> " +
                          tr("%1.").arg(status.why().toHtmlEscaped()) + ' ' +

@@ -107,6 +107,23 @@ public:
     static QStringList amdCards(const QString &sysRoot, bool apus);
 
     /*
+     * Real-time threads need the kernel's fair server set (the bound on how
+     * long they keep other tasks waiting), which the helper refuses to do
+     * without.  Why it cannot be here, as far as can be told without root
+     * - the kernel's lockdown (Secure Boot), a kernel without a fair server
+     * (before 6.12), a sched_ext scheduler on a kernel without a server for
+     * its tasks (before 7.0) - from @sysRoot and the kernel's release
+     * (uname's when empty): "Real-time QEMU threads are off: why.", or "".
+     */
+    static QString realtimeLimit(const QString &sysRoot = QStringLiteral("/sys"),
+                                 const QString &kernelRelease = {});
+    /*
+     * The same, as the helper answered in this run of vitrine (once it
+     * did), else as realtimeLimit() tells: for the host tuning state
+     */
+    QString realtimeOff() const;
+
+    /*
      * The QEMU builds under @stack (<stack>/<build>/bin/qemu-system-*) that
      * an older vitrine-helper gave cap_sys_nice: the capability removed, as
      * their owner (the kernel clears it at a chown to the same owner, which
@@ -241,6 +258,8 @@ private:
     void handleLine(const QString &line);
     /* The helper's answer to "udmabuf PID" */
     void udmabufLine(const QString &line);
+    /* The helper's answer to "fair-server on": real-time threads or not */
+    void fairServerLine(const QString &line);
     void flush();
     void reap();
     void closeHelper();
@@ -279,6 +298,8 @@ private:
     QSet<qint64> m_udmabuf;             // QEMUs that need the udmabuf limits
     QList<qint64> m_udmabufAsked;       // their requests sent, not answered yet
     int m_restarts = 0;
+    bool m_realtimeKnown = false;       // the helper answered fair-server on
+    QString m_realtimeOff;              // then: why not, or ""
 
     /* the helper: its stdin, stdout and stderr are one end of a socket pair */
     pid_t m_pid = 0;
