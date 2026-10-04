@@ -54,9 +54,9 @@ struct Offers {
 
 /*
  * Of the QEMU @args run with: its #qemu line, else the other QEMU of the
- * preferences, else vitrine's.  A chosen QEMU is asked (a few ms, kept);
- * one that does not answer offers nothing (no value), unless it is
- * vitrine's.
+ * preferences, else vitrine's.  A chosen QEMU is asked (a few ms, kept
+ * until the binary changes); one that does not answer offers nothing (no
+ * value), unless it is vitrine's, and is asked again a minute later.
  */
 std::optional<Offers> offers(const ArgsFile &args);
 

@@ -2,6 +2,7 @@
 #include "cardupdate.h"
 
 #include <QCoreApplication>
+#include <QDeadlineTimer>
 #include <QFileInfo>
 #include <QHash>
 #include <QSettings>
@@ -68,12 +69,25 @@ static int cardLine(const ArgsFile &args)
     return args.indexOfDevice([](const QString &driver) { return kCards.contains(driver); });
 }
 
+/*
+ * What a QEMU offers for a card, until it changes: the Details tab and
+ * each Console ask on every change of a VM's arguments, and a QEMU that
+ * does not answer keeps them waiting 5 s.  One that failed is asked again
+ * a minute later, in case it was only short of memory.
+ */
+struct Probed {
+    std::optional<Offers> offers;
+    QDeadlineTimer expiry;
+};
+
 std::optional<Offers> offers(const ArgsFile &args)
 {
+    static QHash<QString, Probed> probed;
     QString chosen = VmConfig::qemuBinary(args);
     const int line = cardLine(args);
     QString error;
     Offers o;
+    std::optional<Offers> out;
 
     if (chosen.isEmpty()) {
         chosen = Paths::customQemuBinary();
@@ -85,15 +99,30 @@ std::optional<Offers> offers(const ArgsFile &args)
     if (line < 0) {
         return Offers{QStringList(), QStringList()};
     }
-    o.card = QemuInfo::probeProperties(chosen, args.valueAt(line).implied(), &error);
-    if (!error.isEmpty()) {
-        return isStackQemu(chosen) ? std::optional<Offers>(Offers()) : std::nullopt;
+    const QString driver = args.valueAt(line).implied();
+    const QFileInfo fi(chosen);
+    const QString key =
+        QStringList{chosen, fi.canonicalFilePath(),
+                    QString::number(fi.lastModified().toMSecsSinceEpoch()),
+                    QString::number(fi.size()), driver, Paths::stackQemu()}
+            .join('\n');
+    if (auto it = probed.constFind(key); it != probed.constEnd() && !it->expiry.hasExpired()) {
+        return it->offers;
     }
-    o.accel = QemuInfo::probeObjectProperties(chosen, "kvm-accel", &error);
+
+    o.card = QemuInfo::probeProperties(chosen, driver, &error);
     if (!error.isEmpty()) {
-        o.accel = QStringList();
+        out = isStackQemu(chosen) ? std::optional<Offers>(Offers()) : std::nullopt;
+    } else {
+        o.accel = QemuInfo::probeObjectProperties(chosen, "kvm-accel", &error);
+        if (!error.isEmpty()) {
+            o.accel = QStringList();
+        }
+        out = o;
     }
-    return o;
+    probed.insert(key, {out, error.isEmpty() ? QDeadlineTimer(QDeadlineTimer::Forever)
+                                             : QDeadlineTimer(60 * 1000)});
+    return out;
 }
 
 /* KEY written in any form: KEY=..., a bare KEY (on) or noKEY (off) */

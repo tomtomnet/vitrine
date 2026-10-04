@@ -613,6 +613,47 @@ private slots:
         QCOMPARE(changes(ArgsFile::parse(lacking)), all);
     }
 
+    /* A QEMU is asked once until it changes, even when it does not answer */
+    void askedOnce()
+    {
+        const auto restore = qScopeGuard([]() { Paths::setQemuBinary({}); });
+        const QString count = m_tmp.filePath("counted/count");
+        const QString failing = m_tmp.filePath("counted/" + Paths::qemuSystemName());
+        const QString lacking =
+            "#guest linux\n-machine q35\n-accel kvm\n-m 4G\n-device virtio-gpu-gl-pci\n";
+        const auto calls = [&count]() {
+            QFile f(count);
+            return f.open(QIODevice::ReadOnly) ? f.readAll().count('\n') : 0;
+        };
+
+        QVERIFY(script(failing, "echo >> '" + count.toUtf8() + "'\nexit 1"));
+        Paths::setQemuBinary(failing);
+        QCOMPARE(changes(ArgsFile::parse(lacking)), QList<Change>());
+        QCOMPARE(calls(), 1);
+        /* by Details and the Console, and after an edit of the arguments */
+        QCOMPARE(changes(ArgsFile::parse(lacking)), QList<Change>());
+        QCOMPARE(changes(ArgsFile::parse(QString(lacking).replace("-m 4G", "-m 2G"))),
+                 QList<Change>());
+        QCOMPARE(calls(), 1);
+        /* another card is asked about */
+        QCOMPARE(changes(ArgsFile::parse(QString(lacking).replace("virtio-gpu-gl-pci",
+                                                                  "virtio-vga-gl"))),
+                 QList<Change>());
+        QCOMPARE(calls(), 2);
+
+        /* a new binary there is asked */
+        QVERIFY(QFile::remove(failing));
+        QCOMPARE(fakeQemu("counted", "virtio-gpu-gl-pci",
+                          {"blob", "hostmem", "drm_native_context", "x-host-vblank",
+                           "x-vblank-lead", "x-vblank-lead-auto"},
+                          {"honor-guest-pat"}),
+                 failing);
+        QCOMPARE(changes(ArgsFile::parse(lacking)),
+                 QList<Change>({add("hostmem", "4G"), add("blob", "on"),
+                                add("drm_native_context", "on")}) +
+                     vblank() + QList<Change>({kPat, kMemory}));
+    }
+
     void plainWords()
     {
         for (const auto &[key, value] : VmTemplate::cardProperties()) {
