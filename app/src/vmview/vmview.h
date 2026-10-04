@@ -48,7 +48,13 @@ public:
     /* Detaches */
     ~VmView() override;
 
-    bool attach(const QString &monitorSocket, QString *error);
+    /*
+     * @guestWaits: the guest waits, paused, for its screen (VmRunner::
+     * waitsForDisplay): QEMU gets a size and the refresh rate at once, the
+     * size of the window around the view until it has its own.  Else only
+     * once the view has a size: a running guest keeps its mode until then.
+     */
+    bool attach(const QString &monitorSocket, QString *error, bool guestWaits = false);
     bool isAttached() const;
 
     /* Where the screen shows, but in full screen; owned by the view */
@@ -105,7 +111,7 @@ private:
        grab it takes or leaves itself (Ctrl+Alt+G, a click with a relative mouse) */
     void checkGrab();
     /* The first size and refresh rate for the guest, before the window has a size */
-    void sendFirstUiInfo();
+    void sendFirstUiInfo(bool guestWaits);
     /* The window's screen, its refresh rate or its pixel ratio changed */
     void screenChanged();
     void watchScreen();

@@ -359,7 +359,7 @@ void VmConsole::attach()
     /* a new view each time: a failed attach leaves the view half set up */
     auto *view = new VmView(this);
     m_screenLayout->addWidget(view->widget(), 1);
-    if (!view->attach(socket, &error)) {
+    if (!view->attach(socket, &error, m_vm->runner()->waitsForDisplay())) {
         delete view;
         if (++m_attempts < kAttachTries) {
             showMessage(tr("Connecting to the screen…"), {});

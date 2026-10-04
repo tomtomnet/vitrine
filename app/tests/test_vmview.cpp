@@ -685,6 +685,19 @@ private Q_SLOTS:
         delete view;
     }
 
+    /* A guest that runs keeps its mode while the view has no size (a
+       console not shown, after vitrine started again) */
+    void noScreenInfoUnshown()
+    {
+        FakeDisplay qemu(socketPath());
+        VmView view;
+        QString error;
+        QVERIFY2(view.attach(socketPath(), &error), qPrintable(error));
+        QTRY_VERIFY(qemu.listening());
+        QTest::qWait(300);
+        QCOMPARE(qemu.callsTo("UIInfo.Apply").size(), 0);
+    }
+
     /*
      * The guest's screen goes to QEMU as the view attaches, before its
      * window has a size: a guest paused until then runs at the answer
@@ -697,7 +710,7 @@ private Q_SLOTS:
         QSignalSpy applied(view, &VmView::screenInfoApplied);
         QString error;
         qemu.hold(true);
-        QVERIFY2(view->attach(socketPath(), &error), qPrintable(error));
+        QVERIFY2(view->attach(socketPath(), &error, true), qPrintable(error));
         QTRY_COMPARE(qemu.callsTo("UIInfo.Apply").size(), 1);
         const QString call = qemu.callsTo("UIInfo.Apply").first();
         QVERIFY2(call.contains("'width': <uint32") && call.contains("'refresh_rate': <uint32"),

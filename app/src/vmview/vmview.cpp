@@ -140,7 +140,7 @@ VmView::~VmView()
     delete m_host;
 }
 
-bool VmView::attach(const QString &monitorSocket, QString *error)
+bool VmView::attach(const QString &monitorSocket, QString *error, bool guestWaits)
 {
     if (m_dbus) {
         return true;
@@ -244,7 +244,7 @@ bool VmView::attach(const QString &monitorSocket, QString *error)
             Q_EMIT screenInfoApplied();
         }
     });
-    sendFirstUiInfo();
+    sendFirstUiInfo(guestWaits);
     /*
      * Last: QEMU reads the clipboard object's properties as it takes the
      * Register, with its main loop stopped until this thread answers them,
@@ -649,15 +649,16 @@ void VmView::releaseUndrawn()
  * waitsForDisplay) waits for QEMU's answer, and has the host's refresh rate
  * from its first frame on.  Until the window has a size of its own, which
  * it sends then, the window around the view's: the guest reads the size
- * only when its driver starts, seconds later.
+ * only when its driver starts, seconds later.  A guest that runs keeps its
+ * mode until the window has a size.
  */
-void VmView::sendFirstUiInfo()
+void VmView::sendFirstUiInfo(bool guestWaits)
 {
     const QWidget *top = m_host->window();
     const QScreen *screen = top->screen();
     const QSize size = top->size() * top->devicePixelRatio();
 
-    if (!m_window->physicalSize().isEmpty() || size.isEmpty()) {
+    if (!guestWaits || !m_window->physicalSize().isEmpty() || size.isEmpty()) {
         m_window->sendUiInfo();
         return;
     }
