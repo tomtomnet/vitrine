@@ -10,6 +10,7 @@
 
 #include <algorithm>
 
+#include "core/cardupdate.h"
 #include "core/paths.h"
 #include "core/vmconfig.h"
 #include "core/guesttools.h"
@@ -162,6 +163,15 @@ Vm *VmStore::create(const QString &name, QString *error)
     return vm;
 }
 
+/*
+ * What vitrine keeps of a VM beside its folder goes with it: a VM made
+ * later in a folder of the same name starts afresh
+ */
+static void forget(const QString &id)
+{
+    CardUpdate::setDeclined(id, false);
+}
+
 bool VmStore::remove(Vm *vm, QString *error)
 {
     if (vm->runner()->isActive()) {
@@ -178,6 +188,7 @@ bool VmStore::remove(Vm *vm, QString *error)
     }
     m_watcher->removePath(vm->argsPath());
     m_vms.removeOne(vm);
+    forget(vm->id());
     emit removed(vm->id());
     vm->deleteLater();
     return true;
@@ -196,6 +207,7 @@ void VmStore::reload()
     for (Vm *vm : QList<Vm *>(m_vms)) {
         if (!present.contains(vm->id()) && !vm->runner()->isActive()) {
             m_vms.removeOne(vm);
+            forget(vm->id());
             emit removed(vm->id());
             vm->deleteLater();
         }

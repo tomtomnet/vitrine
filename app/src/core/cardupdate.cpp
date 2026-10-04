@@ -494,7 +494,7 @@ void setDeclined(const QString &vmId, bool declined)
 
     if (declined) {
         s.setValue(declinedKey(vmId), true);
-    } else {
+    } else if (s.contains(declinedKey(vmId))) {
         s.remove(declinedKey(vmId));
     }
 }

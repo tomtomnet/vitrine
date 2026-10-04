@@ -6,6 +6,7 @@
 #include <QTemporaryDir>
 #include <QTest>
 
+#include "core/cardupdate.h"
 #include "core/paths.h"
 #include "core/vmstore.h"
 
@@ -125,10 +126,13 @@ private slots:
         QCOMPARE(store.vms().size(), 1);
         QCOMPARE(store.vms()[0]->name(), "Copied");
 
+        /* what vitrine keeps of it goes with it */
+        CardUpdate::setDeclined("copied", true);
         QVERIFY(QDir(tmp.filePath("copied")).removeRecursively());
         QTRY_COMPARE(removed.size(), 1);
         QCOMPARE(removed[0][0].toString(), "copied");
         QVERIFY(store.vms().isEmpty());
+        QVERIFY(!CardUpdate::isDeclined("copied"));
     }
 
     void existingFolders()
