@@ -761,8 +761,12 @@ void HostSettings::handleLine(const QString &line)
         fairServerLine(line);
     } else if (line.startsWith("skip rt ")) {
         /* no real-time threads without the fair server: its line said why */
+    } else if (line == "error behind: unknown request") {
+        /* a helper installed before vitrine sent the VMs behind through it */
+        say(tr("Host tuning: the installed vitrine-helper is older than Vitrine and cannot "
+               "make the threads of the VMs behind ordinary: install it again."));
     } else if (word == "skip" || word == "error") {
-        /* "skip fair-server: kernel lockdown (integrity)" */
+        /* "skip gpu-floor card1: no overdrive clock table (pp_od_clk_voltage)" */
         say(tr("Host tuning: %1").arg(line.section(' ', 1)));
     }
 }
