@@ -116,6 +116,8 @@ public:
 
     /* The VMs running with an issue, by name */
     QList<Issue> issues() const;
+    /* The limits now, read where the start check reads them */
+    Udmabuf::Limits limitsNow() const { return Udmabuf::read(m_sysRoot, m_device); }
 
     /* Tests: where /sys and the device are, how often the logs are read */
     void setSysRoot(const QString &root) { m_sysRoot = root; }

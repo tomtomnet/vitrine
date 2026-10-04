@@ -61,6 +61,16 @@ QString UdmabufNotifier::explanation(const QList<UdmabufWatch::Issue> &issues,
         return text + "<p>" + Udmabuf::problem(now).toHtmlEscaped() + ".</p><p>" +
                tr("See <a href=\"%1\">docs/host-tuning.md</a>.").arg(kDocs) + "</p>";
     }
+    if (!now.low()) {
+        /* raised since, by hand or by another VM's host tuning */
+        return text + "<p>" + tr("They are %1 entries and %2 MB now, which is enough: the windows "
+                                 "the guest makes from now on are not copied.")
+                                  .arg(now.listLimit)
+                                  .arg(now.sizeLimitMb) +
+               ' ' + tr("See <a href=\"%1\">docs/host-tuning.md</a> to have them so at each boot.")
+                         .arg(kDocs) +
+               "</p>";
+    }
     if (now.known()) {
         text += "<p>" + tr("They are %1 entries and %2 MB now.")
                             .arg(now.listLimit)
@@ -128,7 +138,7 @@ void UdmabufNotifier::explain()
                                      [](const UdmabufWatch::Issue &issue) { return issue.log.any(); });
     auto *box = Widgets::messageBox(QMessageBox::Warning,
                                     refused ? tr("Guest Windows Copied") : tr("udmabuf Limits Too Low"),
-                                    explanation(issues, Udmabuf::read()), QMessageBox::Close,
+                                    explanation(issues, m_watch->limitsNow()), QMessageBox::Close,
                                     m_window);
     const HostSettings::Status status = m_host ? m_host->untunedStatus() : HostSettings::Status();
     QPushButton *setUp = nullptr, *turnOn = nullptr;

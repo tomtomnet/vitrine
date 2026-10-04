@@ -129,6 +129,15 @@ private slots:
         text = UdmabufNotifier::explanation({one}, now);
         QVERIFY(text.contains("while native-context VMs run: it is off."));
 
+        /* raised since: said so */
+        Udmabuf::Limits raised = now;
+        raised.listLimit = 65536;
+        raised.sizeLimitMb = 2048;
+        text = UdmabufNotifier::explanation({one}, raised);
+        QVERIFY(text.contains("They are 65536 entries and 2048 MB now, which is enough: the "
+                              "windows the guest makes from now on are not copied."));
+        QVERIFY(!text.contains("Host tuning raises them"));
+
         /* no device: host tuning and the limits are no help */
         now.deviceErrno = ENOENT;
         text = UdmabufNotifier::explanation({one}, now);
@@ -185,6 +194,8 @@ private slots:
         QMessageBox *box = boxes().first();
         QCOMPARE(box->windowTitle(), QString("udmabuf Limits Too Low"));
         QVERIFY(box->text().contains("grubby"));
+        /* the limits as the watch reads them, not the host's */
+        QVERIFY(box->text().contains("They are 1024 entries and 64 MB now."));
         /* tuning is off here: the box offers to turn it on */
         bool turnOn = false;
         for (QAbstractButton *b : box->buttons()) {
