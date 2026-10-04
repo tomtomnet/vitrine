@@ -32,14 +32,24 @@ diff -ur a/src/backends/drm/drm_commit.h b/src/backends/drm/drm_commit.h
  
      void merge(DrmAtomicCommit *onTop);
 diff -ur a/src/backends/drm/drm_commit_thread.cpp b/src/backends/drm/drm_commit_thread.cpp
---- a/src/backends/drm/drm_commit_thread.cpp	2026-09-29 09:42:28.457417662 +0200
-+++ b/src/backends/drm/drm_commit_thread.cpp	2026-09-29 09:43:07.031257882 +0200
-@@ -166,7 +166,11 @@
+--- a/src/backends/drm/drm_commit_thread.cpp
++++ b/src/backends/drm/drm_commit_thread.cpp
+@@ -151,6 +151,9 @@
+ {
+     DrmAtomicCommit *commit = m_commits.front().get();
+     const auto vrr = commit->isVrr();
++    // read before the commit: once it is in, the main thread may handle its
++    // page flip, and clear the commit's frames, at any moment
++    const bool scheduledLate = commit->scheduledLate();
+     const bool success = commit->commit();
+     if (success) {
+         m_vrr = vrr.value_or(m_vrr);
+@@ -166,7 +169,11 @@
          const auto targetTimestamp = m_targetPageflipTime - m_baseSafetyMargin;
          // this is how much safety we need to add or remove to achieve that next time
          const auto safetyDifference = targetTimestamp - m_lastCommitTime;
 -        if (safetyDifference < std::chrono::nanoseconds::zero()) {
-+        if (safetyDifference < std::chrono::nanoseconds::zero() && commit->scheduledLate()) {
++        if (safetyDifference < std::chrono::nanoseconds::zero() && scheduledLate) {
 +            // the frame was requested too late for its vblank and rendered at
 +            // once; being late here says nothing about the safety margin, and
 +            // growing it would only make every following frame wait longer
@@ -47,7 +57,7 @@ diff -ur a/src/backends/drm/drm_commit_thread.cpp b/src/backends/drm/drm_commit_
              // the commit was done later than desired, immediately add the
              // required difference to make sure that it doesn't happen again
              m_additionalSafetyMargin -= safetyDifference;
-@@ -363,7 +367,7 @@
+@@ -363,7 +370,7 @@
  static constexpr std::chrono::microseconds s_defaultSafetyMarginMinimum{1000};
  // In virtual machines, commits usually wait for the host to process the new frame,
  // which takes longer and varies more than with real hardware
