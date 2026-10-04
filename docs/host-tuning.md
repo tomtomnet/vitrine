@@ -81,7 +81,7 @@ for them. It does only this, for the user who started it:
 | `fair-server on` | 10 ms / 1 ms on every CPU | Fixed values; only `cpuN` folders; nothing to choose |
 | `gpu-floor CARD MHZ\|auto` | An AMD GPU's lowest gfx clock | `cardN` of vendor 0x1002 driven by amdgpu; the clock within the GPU's own overdrive range; only when its performance level is `auto` |
 | `rt PID` | SCHED_FIFO 1 on every thread of a watched QEMU | Watched first, and checked again to be the caller's QEMU (it may have run another program since); real-time threads it finds are left as they are |
-| `udmabuf PID` | The udmabuf module's `list_limit` at 65536 and `size_limit_mb` at 2048, while that watched QEMU runs | Fixed values; raised only, a higher value stays; skipped when the module is not loaded; put back after the last QEMU that asked for it |
+| `udmabuf PID` | The udmabuf module's `list_limit` at 65536 and `size_limit_mb` at 2048, while that watched QEMU runs | A watched QEMU (its GPU is not checked: vitrine asks only for native-context ones); fixed values; raised only, a higher value stays; skipped when the module is not loaded; put back after the last QEMU that asked for it |
 | `setcap PATH` | `cap_sys_nice=ep` on vitrine's QEMU build | See below |
 | `setup-group` | The caller in the `vitrine` group, the group created (`groupadd --system`) if there is none | See below |
 
@@ -97,8 +97,8 @@ What this amounts to:
   keeps ordinary tasks running beside them.
 - Three host-wide settings changed while your VMs run, and put back after.
 - Bigger udmabufs. `/dev/udmabuf` is open to the user at the desktop
-  already (systemd's `uaccess` rule): anyone there can turn their own
-  memory into a udmabuf. The limits only set how many pieces and bytes
+  already (systemd's `uaccess` rule), and to the `kvm` group: they can turn
+  their own memory into a udmabuf. The limits only set how many pieces and bytes
   one udmabuf may have, and it is memory its owner has anyway. While they
   are raised, they are raised for every user of the host.
 - `cap_sys_nice` on a QEMU you built: QEMU may then make its vCPUs real-time
@@ -185,6 +185,11 @@ nothing):
 - Until the next boot only:
   `echo 65536 | sudo tee /sys/module/udmabuf/parameters/list_limit` and
   `echo 2048 | sudo tee /sys/module/udmabuf/parameters/size_limit_mb`.
+
+Run `systemd-tmpfiles --create` or the two `echo` commands while no
+native-context VM runs with host tuning on: host tuning would otherwise put
+the old values back when that VM stops, until the next boot (it cannot tell
+a write of the same values from its own).
 
 `modprobe.d` options do nothing where udmabuf is built into the kernel, as
 in Fedora's.
