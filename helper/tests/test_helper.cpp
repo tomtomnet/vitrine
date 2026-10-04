@@ -8,6 +8,7 @@
 #include <QDir>
 #include <QElapsedTimer>
 #include <QFile>
+#include <QMap>
 #include <QProcess>
 #include <QRegularExpression>
 #include <QScopeGuard>
@@ -79,7 +80,9 @@ private:
 class Helper
 {
 public:
-    Helper(const QString &root, const QStringList &extraEnv = {})
+    /* vitrine-helper-fake session, or @program @arguments that runs it */
+    Helper(const QString &root, const QStringList &extraEnv = {},
+           const QString &program = HELPER_FAKE, const QStringList &arguments = {})
     {
         QProcessEnvironment env = QProcessEnvironment::systemEnvironment();
         env.insert("VITRINE_HELPER_TEST_ROOT", root);
@@ -90,7 +93,7 @@ public:
         }
         m_process.setProcessEnvironment(env);
         m_process.setProcessChannelMode(QProcess::SeparateChannels);
-        m_process.start(HELPER_FAKE, {});
+        m_process.start(program, program == HELPER_FAKE ? QStringList{"session"} : arguments);
         m_process.waitForStarted();
     }
     ~Helper()
@@ -161,6 +164,7 @@ public:
         m_process.waitForFinished();
     }
     int exitCode() const { return m_process.exitCode(); }
+    qint64 pid() const { return m_process.processId(); }
     /* everything said so far, the rest read now */
     QStringList all()
     {
@@ -751,7 +755,7 @@ private slots:
         posix_spawn_file_actions_adddup2(&actions, sv[1], 0);
         posix_spawn_file_actions_adddup2(&actions, sv[1], 1);
         qputenv("VITRINE_HELPER_TEST_ROOT", m_root.toLocal8Bit());
-        char *argv[] = {const_cast<char *>(HELPER_FAKE), nullptr};
+        char *argv[] = {const_cast<char *>(HELPER_FAKE), const_cast<char *>("session"), nullptr};
         pid_t pid;
         QCOMPARE(posix_spawn(&pid, HELPER_FAKE, &actions, nullptr, argv, environ), 0);
         posix_spawn_file_actions_destroy(&actions);
@@ -831,7 +835,7 @@ private slots:
         QProcessEnvironment env = QProcessEnvironment::systemEnvironment();
         env.insert("VITRINE_HELPER_TEST_ROOT", m_root);
         p.setProcessEnvironment(env);
-        p.start(HELPER_FAKE, {});
+        p.start(HELPER_FAKE, {"session"});
         QVERIFY(p.waitForStarted());
         p.write(QString("watch %1\nfair-server on\n").arg(qemu.pid()).toUtf8());
         QTRY_VERIFY(fairAll("10000000/1000000"));
@@ -839,6 +843,69 @@ private slots:
         QVERIFY(p.waitForFinished());
         QVERIFY(fairAll("1000000000/50000000"));
         QVERIFY(QString::fromUtf8(p.readAllStandardOutput()).endsWith("bye\n"));
+    }
+
+    /*
+     * Signals as root's own, whatever its caller left: pkexec passes ignored
+     * ones and the mask on, and an ignored SIGCHLD has the kernel reap the
+     * group tools before their status is read.  Only SIGHUP and SIGPIPE are
+     * ignored, only SIGINT and SIGTERM blocked (the session's signalfd).
+     */
+    void signalsReset()
+    {
+        auto field = [](qint64 pid, const QByteArray &name) {
+            const QList<QByteArray> lines = readFile(QString("/proc/%1/status").arg(pid)).split('\n');
+            for (const QByteArray &l : lines) {
+                if (l.startsWith(name + ":")) {
+                    return l.mid(name.size() + 1).trimmed().toULongLong(nullptr, 16);
+                }
+            }
+            return ~0ULL;
+        };
+        const qulonglong ignored = 1ULL << (SIGHUP - 1) | 1ULL << (SIGPIPE - 1);
+        const qulonglong blocked = 1ULL << (SIGINT - 1) | 1ULL << (SIGTERM - 1);
+        {
+            /* the shell's trap: ignored through the exec */
+            Helper h(m_root, {}, "/bin/sh", {"-c", "trap '' CHLD USR1 TERM; exec \"$0\" session",
+                                             HELPER_FAKE});
+            QVERIFY(h.ready());
+            QCOMPARE(field(h.pid(), "SigIgn"), ignored);
+            QCOMPARE(field(h.pid(), "SigBlk"), blocked);
+        }
+        /* a mask with SIGCHLD and SIGUSR1 blocked */
+        int sv[2];
+        QVERIFY(socketpair(AF_UNIX, SOCK_STREAM | SOCK_CLOEXEC, 0, sv) == 0);
+        posix_spawn_file_actions_t actions;
+        posix_spawnattr_t attr;
+        sigset_t mask;
+        sigemptyset(&mask);
+        sigaddset(&mask, SIGCHLD);
+        sigaddset(&mask, SIGUSR1);
+        posix_spawn_file_actions_init(&actions);
+        posix_spawn_file_actions_adddup2(&actions, sv[1], 0);
+        posix_spawn_file_actions_adddup2(&actions, sv[1], 1);
+        posix_spawnattr_init(&attr);
+        posix_spawnattr_setsigmask(&attr, &mask);
+        posix_spawnattr_setflags(&attr, POSIX_SPAWN_SETSIGMASK);
+        qputenv("VITRINE_HELPER_TEST_ROOT", m_root.toLocal8Bit());
+        char *argv[] = {const_cast<char *>(HELPER_FAKE), const_cast<char *>("session"), nullptr};
+        pid_t pid;
+        QCOMPARE(posix_spawn(&pid, HELPER_FAKE, &actions, &attr, argv, environ), 0);
+        posix_spawn_file_actions_destroy(&actions);
+        posix_spawnattr_destroy(&attr);
+        qunsetenv("VITRINE_HELPER_TEST_ROOT");
+        ::close(sv[1]);
+        const auto cleanup = qScopeGuard([&]() {
+            ::close(sv[0]);
+            ::kill(pid, SIGKILL);
+            waitpid(pid, nullptr, 0);
+        });
+        char ready[16] = "";
+        struct pollfd in = {sv[0], POLLIN, 0};
+        QVERIFY(poll(&in, 1, 5000) == 1 && read(sv[0], ready, sizeof(ready) - 1) > 0);
+        QCOMPARE(QByteArray(ready), QByteArray("ready 1\n"));
+        QCOMPARE(field(pid, "SigBlk"), blocked);
+        QCOMPARE(field(pid, "SigIgn"), ignored);
     }
 
     void setcapValidation()
@@ -934,6 +1001,145 @@ private slots:
         QDir(work).removeRecursively();
     }
 
+    /*
+     * setup-group: the caller (and only the caller) in the vitrine group,
+     * created if need be; nothing changed when done already; no argument
+     */
+    void setupGroup()
+    {
+        struct passwd *pw = getpwuid(getuid());
+        QVERIFY(pw);
+        const QString me = QString::fromLocal8Bit(pw->pw_name);
+        const QString groupFile = path("/etc/group");
+        auto run = [this](const QStringList &args, const QString &uid = {}, QString *out = nullptr) {
+            QProcess p;
+            QProcessEnvironment env = QProcessEnvironment::systemEnvironment();
+            env.insert("VITRINE_HELPER_TEST_ROOT", m_root);
+            env.remove("SUDO_UID");
+            if (uid.isEmpty()) {
+                env.remove("PKEXEC_UID");
+            } else {
+                env.insert("PKEXEC_UID", uid);
+            }
+            p.setProcessEnvironment(env);
+            p.start(HELPER_FAKE, args);
+            p.waitForFinished();
+            if (out) {
+                *out = QString::fromUtf8(p.readAllStandardOutput() + p.readAllStandardError()).trimmed();
+            }
+            return p.exitCode();
+        };
+        const QString uid = QString::number(getuid());
+        QVERIFY(writeFile(groupFile, "root:x:0:\nwheel:x:10:" + me.toLocal8Bit() + "\n"));
+        QString out;
+
+        /* no group yet: created, the caller added */
+        QCOMPARE(run({"setup-group"}, uid, &out), 0);
+        QCOMPARE(out, "ok setup-group: " + me + " added to vitrine, group created");
+        QCOMPARE(readFile(groupFile), "root:x:0:\nwheel:x:10:" + me.toLocal8Bit() +
+                                          "\nvitrine:x:977:" + me.toLocal8Bit() + "\n");
+        QCOMPARE(journal().filter(QRegularExpression("^(groupadd|gpasswd) ")),
+                 QStringList({"groupadd --system vitrine", "gpasswd -a " + me + " vitrine"}));
+        QVERIFY(journal().contains(QString("log uid %1: %2 added to the group vitrine").arg(uid, me)));
+
+        /* again: nothing to do, nothing done */
+        clearJournal();
+        QCOMPARE(run({"setup-group"}, uid, &out), 0);
+        QCOMPARE(out, "ok setup-group: " + me + " is in vitrine already");
+        QVERIFY(journal().isEmpty());
+        /* without PKEXEC_UID, unprivileged (the test build): the real uid */
+        QCOMPARE(run({"setup-group"}, {}, &out), 0);
+        QCOMPARE(out, "ok setup-group: " + me + " is in vitrine already");
+
+        /* a group with other members: the caller added after them, they stay */
+        QVERIFY(writeFile(groupFile, "vitrine:x:977:alice,bob\n"));
+        QCOMPARE(run({"setup-group"}, uid, &out), 0);
+        QCOMPARE(out, "ok setup-group: " + me + " added to vitrine");
+        QCOMPARE(readFile(groupFile), "vitrine:x:977:alice,bob," + me.toLocal8Bit() + "\n");
+        /* a member through the primary group is one */
+        QVERIFY(writeFile(groupFile, QString("vitrine:x:%1:\n").arg(pw->pw_gid).toLocal8Bit()));
+        QCOMPARE(run({"setup-group"}, uid, &out), 0);
+        QCOMPARE(out, "ok setup-group: " + me + " is in vitrine already");
+
+        /* nobody else, no other group: no argument names one */
+        QVERIFY(writeFile(groupFile, "vitrine:x:977:\n"));
+        clearJournal();
+        for (const QStringList &args : {QStringList{"setup-group", "alice"},
+                                        QStringList{"setup-group", "vitrine", "alice"},
+                                        QStringList{"setup-group", "--user=alice"},
+                                        QStringList{"setup-group", "wheel"},
+                                        QStringList{"setup-group", ""}}) {
+            QCOMPARE(run(args, uid, &out), 2);
+            QVERIFY2(out.startsWith("usage: "), qPrintable(out));
+        }
+        /* root, a uid nobody has, no uid that parses */
+        QCOMPARE(run({"setup-group"}, "0", &out), 1);
+        QCOMPARE(out, QString("error setup-group: root needs no group"));
+        QCOMPARE(run({"setup-group"}, "3999999999", &out), 1);
+        QCOMPARE(out, QString("error setup-group: uid 3999999999 is not in the user database"));
+        QCOMPARE(run({"setup-group"}, uid + "x", &out), 1);
+        QVERIFY(out.contains("no PKEXEC_UID"));
+        QCOMPARE(readFile(groupFile), QByteArray("vitrine:x:977:\n"));
+        QVERIFY(journal().filter(QRegularExpression("^(groupadd|gpasswd) ")).isEmpty());
+
+        /* no verb at all: not the session, which pkexec would run under its
+           generic action */
+        QCOMPARE(run({}, uid, &out), 2);
+        QVERIFY2(out.startsWith("usage: "), qPrintable(out));
+
+        /*
+         * A group named vitrine that setup-group did not create: not joined,
+         * nothing changed (the caller would get that group's files)
+         */
+        const QString foreign = "error setup-group: a group named vitrine exists that vitrine did "
+                                "not create: ";
+        auto notJoined = [&](const QByteArray &groups, const QString &why) {
+            QString text;
+            writeFile(groupFile, groups);
+            clearJournal();
+            const int status = run({"setup-group"}, uid, &text);
+            if (status != 1 || text != foreign + why || readFile(groupFile) != groups ||
+                !journal().isEmpty()) {
+                qWarning() << groups << status << text << journal();
+                return false;
+            }
+            return true;
+        };
+        /* root's id; another user's private group, at a user's id */
+        QVERIFY(notJoined("vitrine:x:0:\n", "its id is 0"));
+        QVERIFY(notJoined("vitrine:x:1005:\n", "its id 1005 is not a system group's"));
+        /* a privileged group's id, whichever comes first */
+        QVERIFY(notJoined("disk:x:6:\nvitrine:x:6:\n", "its id 6 is also disk's"));
+        QVERIFY(notJoined("vitrine:x:6:\ndisk:x:6:\n", "its id 6 is also disk's"));
+        /* a system user's private group (useradd -r vitrine) */
+        QVERIFY(writeFile(path("/etc/passwd"), "root:x:0:0::/root:/bin/sh\n"
+                                               "vitrine:x:977:977::/home/vitrine:/bin/sh\n"));
+        QVERIFY(notJoined("vitrine:x:977:\n", "it is the primary group of vitrine"));
+        QFile::remove(path("/etc/passwd"));
+        /* login.defs' range for system groups */
+        QVERIFY(writeFile(path("/etc/login.defs"), "# comment\nSYS_GID_MIN   201\n"
+                                                   "SYS_GID_MAX   499\n"));
+        QVERIFY(notJoined("vitrine:x:977:\n", "its id 977 is not a system group's"));
+        QVERIFY(writeFile(path("/etc/login.defs"), "SYS_GID_MAX 1999\n"));
+        QVERIFY(writeFile(groupFile, "vitrine:x:1005:\n"));
+        QCOMPARE(run({"setup-group"}, uid, &out), 0);
+        QCOMPARE(out, "ok setup-group: " + me + " added to vitrine");
+        QFile::remove(path("/etc/login.defs"));
+
+        /* the database cannot be written: said, nothing half done */
+        QVERIFY(writeFile(groupFile, "vitrine:x:977:\n"));
+        chmod(qPrintable(groupFile), 0444);
+        QCOMPARE(run({"setup-group"}, uid, &out), 1);
+        QCOMPARE(out, QString("error setup-group: cannot add the user to the group: "
+                              "Permission denied"));
+        chmod(qPrintable(groupFile), 0644);
+        QFile::remove(groupFile);
+        QDir().rmdir(path("/etc"));
+        QCOMPARE(run({"setup-group"}, uid, &out), 1);
+        QCOMPARE(out, QString("error setup-group: cannot create the group: "
+                              "No such file or directory"));
+    }
+
     /* The test build needs its fake tree */
     void fakeNeedsRoot()
     {
@@ -967,24 +1173,50 @@ private slots:
         QFile policy(HELPER_POLICY);
         QVERIFY(policy.open(QIODevice::ReadOnly));
         QXmlStreamReader xml(&policy);
-        QString action, execPath, active;
+        /* action -> its annotations and defaults */
+        QMap<QString, QMap<QString, QString>> actions;
+        QString action;
         while (!xml.atEnd()) {
             xml.readNext();
-            if (xml.isStartElement() && xml.name() == u"action") {
+            if (!xml.isStartElement()) {
+                continue;
+            }
+            if (xml.name() == u"action") {
                 action = xml.attributes().value("id").toString();
-            } else if (xml.isStartElement() && xml.name() == u"annotate" &&
-                       xml.attributes().value("key") == u"org.freedesktop.policykit.exec.path") {
-                execPath = xml.readElementText();
-            } else if (xml.isStartElement() && xml.name() == u"allow_active") {
-                active = xml.readElementText();
+                actions[action];
+            } else if (xml.name() == u"annotate") {
+                const QString key = xml.attributes().value("key").toString();
+                actions[action][key] = xml.readElementText();
+            } else if (xml.name().startsWith(u"allow_")) {
+                const QString key = xml.name().toString();
+                actions[action][key] = xml.readElementText();
             }
         }
         QVERIFY2(!xml.hasError(), qPrintable(xml.errorString()));
-        QCOMPARE(action, QString("org.vitrine.helper"));
-        QCOMPARE(execPath, QString(HELPER_PATH));
-        QCOMPARE(active, QString("auth_admin"));
+        /*
+         * One action per verb, each with its argv1: pkexec takes the first
+         * action whose path matches and whose argv1, if any, is the first
+         * argument, in no fixed order - one without argv1 would match every
+         * verb
+         */
+        const QMap<QString, QString> verbs{{"org.vitrine.helper", "session"},
+                                           {"org.vitrine.helper.setcap", "setcap"},
+                                           {"org.vitrine.helper.setup-group", "setup-group"}};
+        QCOMPARE(actions.keys(), verbs.keys());
+        for (const QString &id : verbs.keys()) {
+            const auto a = actions[id];
+            QCOMPARE(a.value("org.freedesktop.policykit.exec.path"), QString(HELPER_PATH));
+            QCOMPARE(a.value("org.freedesktop.policykit.exec.argv1"), verbs[id]);
+            for (const char *when : {"allow_any", "allow_inactive", "allow_active"}) {
+                QCOMPARE(a.value(when), QString("auth_admin"));
+            }
+        }
+        /* the group's rule: session and setcap, never setup-group */
         const QByteArray rules = readFile(HELPER_RULES);
-        QVERIFY(rules.contains("action.id == \"org.vitrine.helper\""));
+        QVERIFY(rules.contains("(action.id == \"org.vitrine.helper\" || "
+                               "action.id == \"org.vitrine.helper.setcap\")"));
+        QVERIFY(!rules.contains("\"org.vitrine.helper.setup-group\""));
+        QVERIFY(!rules.contains("indexOf") && !rules.contains("startsWith"));
         QVERIFY(rules.contains("subject.isInGroup(\"vitrine\")"));
         QVERIFY(rules.contains("subject.local && subject.active"));
     }

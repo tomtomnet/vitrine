@@ -40,6 +40,7 @@
 #include "ui/clonedialog.h"
 #include "ui/firmwarerepair.h"
 #include "ui/guesttoolsdialog.h"
+#include "ui/hosttuningnotifier.h"
 #include "ui/icons.h"
 #include "ui/importdialog.h"
 #include "ui/memorymonitor.h"
@@ -247,15 +248,18 @@ MainWindow::MainWindow(VmStore *store, QWidget *parent)
     m_running->setObjectName("running");
     m_running->setContentsMargins(0, 0, fontMetrics().averageCharWidth() * 3, 0);
     m_running->hide();
+    /* the host's settings while VMs run (vitrine-helper): a warning while
+       VMs run untuned; what it could not apply here, for a while */
+    auto *host = new HostSettings(store, this);
+    connect(host, &HostSettings::notice, this,
+            [this](const QString &text) { statusBar()->showMessage(text, 15000); });
     statusBar()->addPermanentWidget(m_running);
     statusBar()->addPermanentWidget(m_input);
     statusBar()->addPermanentWidget(m_perf);
     statusBar()->addPermanentWidget(m_updates->button());
+    statusBar()->addPermanentWidget((new HostTuningNotifier(host, this))->button());
     statusBar()->addPermanentWidget(new MemoryMonitor(store, this));
     statusBar()->addPermanentWidget(m_qemuStatus);
-    /* the host's settings while VMs run (vitrine-helper): why not, once */
-    connect(new HostSettings(store, this), &HostSettings::notice, this,
-            [this](const QString &text) { statusBar()->showMessage(text, 15000); });
 
     connect(create, &QPushButton::clicked, m_new, &QAction::trigger);
     connect(m_list, &QListWidget::currentItemChanged, this, &MainWindow::currentChanged);

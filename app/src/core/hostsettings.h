@@ -3,6 +3,7 @@
 
 #include <QHash>
 #include <QObject>
+#include <QPair>
 #include <QSet>
 #include <QStringList>
 
@@ -22,8 +23,12 @@ class VmStore;
  * started with pkexec when a VM starts.  Members of the vitrine group need
  * no password; polkit is asked first, without interaction, each time the
  * helper starts (a membership given or taken meanwhile counts), so that
- * everyone else gets their VMs untuned and a word in the status bar once,
- * never a password dialog at each start.  The helper watches the QEMU
+ * everyone else gets their VMs untuned, never a password dialog at each
+ * start: the status bar shows that VMs run untuned and why (untuned()), and
+ * the first such start of a run offers to set up the group once
+ * (groupSetupSuggested(), setUpGroup()).  A change made elsewhere while VMs
+ * run untuned - the helper installed, the group joined by hand - counts
+ * when vitrine asks again (recheck()).  The helper watches the QEMU
  * processes and puts everything back after the last one, crash included,
  * even after vitrine has quit (VMs outlive it).  See docs/host-tuning.md.
  */
@@ -32,6 +37,43 @@ class HostSettings : public QObject
     Q_OBJECT
 
 public:
+    /* Why tuning is not active, as far as can be told without asking anyone */
+    enum class Problem {
+        None,           // active: polkit lets the helper run without a password
+        NotInstalled,   // no vitrine-helper where it is installed
+        NoPolkit,       // no pkcheck
+        NoPolicy,       // the helper's polkit action is not installed
+        NoGroup,        // polkit wants a password, and there is no vitrine group
+        NotMember,      // polkit wants a password: not in the vitrine group
+        NotLocal,       // a member, and polkit still wants a password
+        Failed,         // the helper did not run, or did not take a VM: see detail
+    };
+    struct Status {
+        Problem problem = Problem::None;
+        QString detail;     // Failed: why
+        bool active() const { return problem == Problem::None; }
+        /* The vitrine group, set up by setUpGroup(), is what it takes */
+        bool needsGroup() const
+        {
+            return problem == Problem::NoGroup || problem == Problem::NotMember;
+        }
+        /* Why it is not active, plain text without a period: "" if it is */
+        QString why() const;
+        bool operator==(const Status &) const = default;
+    };
+    /*
+     * What polkit's answer means: pkcheck's exit status (-1: it did not
+     * start) and error output, with the helper installed or not, and the
+     * vitrine group's existence and the user's membership
+     */
+    static Status classify(bool installed, int pkcheckStatus, const QString &pkcheckError,
+                           bool groupExists, bool member);
+    /*
+     * The state now, without interaction (pkcheck, the user database): @done
+     * gets it in @context's thread, later or at once
+     */
+    static void check(QObject *context, const std::function<void(const Status &)> &done);
+
     /* Tunes for the VMs of @store as they start or are found running, and
        gives vitrine's QEMU its capability: each new build, and one that
        lacks it (built before the group was joined, or with tuning off) */
@@ -50,8 +92,11 @@ public:
        pkexec runs; $VITRINE_HELPER names another for helperInstalled() (tests) */
     static QString helperPath();
     static bool helperInstalled();
-    /* The calling user is in the vitrine group (the user database's view,
-       as polkit's) */
+    /* The vitrine group exists, and the calling user is in it (the user
+       database's view, as polkit's: not this process's groups, which a
+       membership given since the login lacks).  $VITRINE_GROUP names
+       another group (tests). */
+    static bool vitrineGroupExists();
     static bool inVitrineGroup();
     /*
      * The AMD cards the helper can set a clock floor on (card1...) under
@@ -92,6 +137,51 @@ public:
     /* The app's (MainWindow makes it), for setFront(); null before */
     static HostSettings *instance();
 
+    /*
+     * The status bar's warning: tuning is on, and a VM runs untuned (the
+     * helper could not run, or did not take it).  Never while tuning is off.
+     */
+    bool untuned() const;
+    /* Why, while untuned(): one the vitrine group would fix if any VM has
+       it (needsGroup()), else that of the VM untuned first */
+    Status untunedStatus() const;
+    int untunedCount() const;
+
+    /*
+     * The state asked again (pkcheck, the user database), for a change made
+     * elsewhere while VMs run untuned: the helper installed, the group
+     * joined by hand.  Active now: those VMs tuned.  Else their reason
+     * brought up to date (not a VM's own, Failed).  Nothing of this while a
+     * VM start's check or setUpGroup() is under way: they do it themselves.
+     *
+     * Without @done (the window back in front): only while untuned(), not
+     * while another such recheck runs, and groupSetupSuggested() if the
+     * group is what it takes now and was not offered yet in this run.
+     * With @done (the warning's explanation, Preferences): always asked,
+     * the state to @done (if @context is still there) after it was
+     * applied; the caller shows it with its own Set Up, which counts as
+     * the offer of the run while VMs run untuned.
+     */
+    void recheck(QObject *context = nullptr,
+                 const std::function<void(const Status &now)> &done = {});
+
+    /* What came of setUpGroup() */
+    enum class Setup {
+        Done,       // in the group: the state after is in @now
+        Cancelled,  // the password dialog was dismissed, or the password refused
+        Failed,     // @error says why
+    };
+    /*
+     * The calling user in the vitrine group (created if need be):
+     * "vitrine-helper setup-group" through pkexec, whose action always wants
+     * an administrator's password, in the desktop's polkit dialog.  Then
+     * polkit is asked again, and the VMs running untuned are tuned if it
+     * says yes now.  One at a time: a second call while one runs fails.
+     */
+    void setUpGroup(const std::function<void(Setup result, const QString &error,
+                                             const Status &now)> &done);
+    bool settingUpGroup() const { return m_settingUp; }
+
     /* Tests: run @command instead of pkexec <helper>, without asking polkit */
     void setHelperCommand(const QStringList &command) { m_command = command; }
     /* Tests: where /sys is */
@@ -100,14 +190,23 @@ public:
 
 signals:
     /*
-     * For the status bar: why the host is not tuned, or a setting the
-     * helper could not apply here; each text once per run of vitrine
+     * For the status bar, for a while: a setting the helper could not apply
+     * here (kernel lockdown...), each text once per run of vitrine.  VMs
+     * running untuned are untuned(), not a notice.
      */
     void notice(const QString &text);
     /* Each line the helper writes */
     void helperLine(const QString &line);
     /* The helper ended (after the last VM it watched, or refused) */
     void helperFinished();
+    /* untuned() or untunedStatus() changed */
+    void untunedChanged();
+    /*
+     * A VM starts untuned for want of the vitrine group, with tuning on:
+     * the time to offer setUpGroup().  Once per run of vitrine, however many
+     * VMs start (VMs started at once share one check).
+     */
+    void groupSetupSuggested(const Status &status);
 
 private:
     /* polkit's answer is not kept: Denied only when pkexec itself refused */
@@ -124,12 +223,26 @@ private:
     void flush();
     void reap();
     void closeHelper();
-    /* No helper for the VMs asked for: for this start only, or (@always)
-       for the rest of the run */
-    void deny(const QString &why, bool always = false);
+    /* No helper for the VMs asked for (@pids): for this start only, or
+       (@always) for the rest of the run */
+    void deny(const Status &status, QSet<qint64> pids, bool always = false);
+    /* @pid runs untuned for @status, or (None) is tuned or gone */
+    void setUntuned(qint64 pid, const Status &status);
+    /* @now, the state just asked, for every VM running untuned for a
+       reason of the same kind (not their own, Failed) */
+    void restate(const Status &now);
+    /* recheck()'s answer, applied; @offer: groupSetupSuggested() if due */
+    void apply(const Status &now, bool offer);
+    /* groupSetupSuggested(), if @status needs the group, it was not offered
+       in this run, and no Set Up runs */
+    void offerGroup(const Status &status);
+    /* The requests that tune @pid, queued for the helper */
+    void queue(qint64 pid);
+    /* Each VM running untuned tuned again (the group set up, say) */
+    void retune();
     /* grantCapability() for the stack's QEMU if it has none, once per run
-       and binary; @granted: polkit said yes just now */
-    void ensureCapability(bool granted = false);
+       and binary, polkit asked first (its own action) */
+    void ensureCapability();
     void say(const QString &text);
 
     VmStore *m_store;
@@ -139,8 +252,12 @@ private:
     QString m_front;                    // the VM last in front
     QSet<qint64> m_expected;            // QEMUs asked to be watched, not ended
     Access m_access = Access::Unknown;
+    Status m_denied;                    // why, when Denied
     QSet<QString> m_said;
-    QSet<QString> m_refusals;           // said by deny()
+    QList<QPair<qint64, Status>> m_untuned;   // QEMUs running untuned, the first first
+    bool m_groupSuggested = false;
+    bool m_settingUp = false;
+    int m_rechecks = 0;                 // recheck()s under way
     QSet<QString> m_capabilityTried;    // ensureCapability(): QEMUs asked for
     int m_restarts = 0;
 

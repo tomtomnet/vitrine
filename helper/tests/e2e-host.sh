@@ -89,7 +89,7 @@ cleanup() {
 	sleep 1
 	for p in "${pids[@]}"; do kill -KILL "$p" 2> /dev/null; done
 	# whatever a helper left: a new one restores it at its start
-	sudo -n "$helper" < /dev/null > /dev/null 2>&1
+	sudo -n "$helper" session < /dev/null > /dev/null 2>&1
 	if [ "$(fair_now)" != "$fair_before" ] || [ "$(gpu_now)" != "$gpu_before" ]; then
 		echo "cleanup: the host is not as found, restoring by hand"
 		restore_by_hand
@@ -109,7 +109,7 @@ start_helper() {   # label
 	nh=$((nh + 1))
 	rm -f "$dev/h$nh.in" "$dev/h$nh.out"
 	mkfifo "$dev/h$nh.in" "$dev/h$nh.out"
-	sudo -n "$helper" < "$dev/h$nh.in" > "$dev/h$nh.out" 2>&1 &
+	sudo -n "$helper" session < "$dev/h$nh.in" > "$dev/h$nh.out" 2>&1 &
 	H_PID=$!
 	helpers+=("$H_PID")
 	exec {H_IN}> "$dev/h$nh.in"
@@ -260,7 +260,7 @@ sudo kill -KILL "$(helper_child)"
 wait "$H_PID" 2> /dev/null
 check "helper killed: settings still applied" 'fair_all "10000000 1000000"'
 check "helper killed: its state is there" 'sudo test -e /run/vitrine-helper/fair-server.state'
-out=$(sudo -n "$helper" < /dev/null)
+out=$(sudo -n "$helper" session < /dev/null)
 echo "$out" | sed 's/^/       /'
 check "the next helper restores them at its start" 'echo "$out" | grep -q "^restored fair-server"'
 check "fair server as found" '[ "$(fair_now)" = "$fair_before" ]'

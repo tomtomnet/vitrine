@@ -42,6 +42,15 @@ int sys_setsched(pid_t tid, int policy, int priority);
 int sys_set_file_cap(int fd, const char *path);
 /* An entry in the system log (the journal), for the record of what root did */
 void sys_log(const char *fmt, ...) __attribute__((format(printf, 1, 2)));
+/* The group @name in the user database: 1 with its gid in @gid, 0 if there
+   is none */
+int sys_group_find(const char *name, gid_t *gid);
+/* @user, whose primary group is @primary, is a member of the group @gid */
+bool sys_group_has(const char *user, gid_t primary, gid_t gid);
+/* Creates the system group @name: 0, or -1 with why in @err */
+int sys_group_create(const char *name, char *err, size_t size);
+/* Adds @user to the members of the group @name: 0, or -1 with why in @err */
+int sys_group_add_user(const char *name, const char *user, char *err, size_t size);
 
 /* --- helpers shared by the files --- */
 
@@ -101,3 +110,11 @@ void rt_off_all(void);
 void unwatch(int i);
 /* vitrine-helper setcap PATH: the exit status */
 int setcap(const char *path);
+
+/* --- group.c: the vitrine group --- */
+
+/* The group polkit's rule (49-vitrine.rules) lets use the helper without a
+   password */
+#define VITRINE_GROUP "vitrine"
+/* vitrine-helper setup-group: the exit status */
+int setup_group(void);

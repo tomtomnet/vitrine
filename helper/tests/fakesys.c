@@ -8,8 +8,9 @@
  * writes is tested, not just their values.  Every write, scheduler change,
  * capability and log line is appended to <root>/journal.  Schedulers are
  * kept in memory (an unprivileged test cannot make threads real-time); the
- * processes and /proc are real.  This build refuses to run as root, and the
- * installed helper has no test root at all.
+ * processes and /proc are real.  The group database is <root>/etc/group
+ * (name:x:gid:members lines); the users are the real ones.  This build
+ * refuses to run as root, and the installed helper has no test root at all.
  *
  * VITRINE_HELPER_TEST_KILL_AT=N kills it (SIGKILL) right after its Nth
  * write, as a crash or a kill in the middle of a change would.
@@ -353,4 +354,173 @@ void sys_log(const char *fmt, ...)
     vsnprintf(text, sizeof(text), fmt, ap);
     va_end(ap);
     journal("log %s", text);
+}
+
+/* --- the group database: <root>/etc/group --- */
+
+static void group_path(char *path, size_t size)
+{
+    snprintf(path, size, "%s/etc/group", root);
+}
+
+/* The fields of each line of the fake /etc/group: false from @fn stops */
+static void each_group(bool (*fn)(const char *name, unsigned gid, char *members, void *data),
+                       void *data)
+{
+    char path[PATH_MAX], text[8192], *save = NULL;
+
+    group_path(path, sizeof(path));
+    if (sys_read(path, text, sizeof(text)) <= 0) {
+        return;
+    }
+    for (char *l = strtok_r(text, "\n", &save); l; l = strtok_r(NULL, "\n", &save)) {
+        char name[64], members[1024] = "";
+        unsigned gid;
+
+        if (sscanf(l, "%63[^:]:%*[^:]:%u:%1023[^\n]", name, &gid, members) >= 2 &&
+            !fn(name, gid, members, data)) {
+            return;
+        }
+    }
+}
+
+struct find {
+    const char *name;
+    unsigned gid;
+    bool found;
+};
+
+static bool find_one(const char *name, unsigned gid, char *members, void *data)
+{
+    struct find *f = data;
+
+    (void)members;
+    if (strcmp(name, f->name) == 0) {
+        f->gid = gid;
+        f->found = true;
+        return false;
+    }
+    return true;
+}
+
+int sys_group_find(const char *name, gid_t *gid)
+{
+    struct find f = {name, 0, false};
+
+    each_group(find_one, &f);
+    if (f.found) {
+        *gid = (gid_t)f.gid;
+    }
+    return f.found;
+}
+
+struct has {
+    const char *user;
+    unsigned gid;
+    bool member;
+};
+
+static bool has_one(const char *name, unsigned gid, char *members, void *data)
+{
+    struct has *h = data;
+    char *save = NULL;
+
+    (void)name;
+    if (gid != h->gid) {
+        return true;
+    }
+    for (char *m = strtok_r(members, ",", &save); m; m = strtok_r(NULL, ",", &save)) {
+        h->member |= strcmp(m, h->user) == 0;
+    }
+    return !h->member;
+}
+
+bool sys_group_has(const char *user, gid_t primary, gid_t gid)
+{
+    struct has h = {user, (unsigned)gid, primary == gid};
+
+    if (!h.member) {
+        each_group(has_one, &h);
+    }
+    return h.member;
+}
+
+/* Appends @line to the fake /etc/group, or replaces the line of @name with it */
+static int group_put(const char *name, const char *line, char *err, size_t size)
+{
+    char path[PATH_MAX], text[8192] = "", out[8192] = "", *save = NULL;
+    size_t len = strlen(name), used = 0;
+    bool replaced = false;
+    int fd;
+
+    group_path(path, sizeof(path));
+    sys_read(path, text, sizeof(text));
+    for (char *l = strtok_r(text, "\n", &save); l; l = strtok_r(NULL, "\n", &save)) {
+        bool his = strncmp(l, name, len) == 0 && l[len] == ':';
+        used += (size_t)snprintf(out + used, sizeof(out) - used, "%s\n", his ? line : l);
+        replaced |= his;
+    }
+    if (!replaced) {
+        used += (size_t)snprintf(out + used, sizeof(out) - used, "%s\n", line);
+    }
+    fd = open(path, O_WRONLY | O_TRUNC | O_CREAT | O_CLOEXEC, 0644);
+    if (fd < 0 || write(fd, out, used) != (ssize_t)used) {
+        snprintf(err, size, "%s", strerror(errno));
+        if (fd >= 0) {
+            close(fd);
+        }
+        return -1;
+    }
+    close(fd);
+    return 0;
+}
+
+int sys_group_create(const char *name, char *err, size_t size)
+{
+    char line[128];
+    int ret;
+
+    /* groupadd --system: an id under 1000 */
+    snprintf(line, sizeof(line), "%s:x:977:", name);
+    ret = group_put(name, line, err, size);
+    journal("groupadd --system %s%s", name, ret ? " FAILED" : "");
+    return ret;
+}
+
+struct add {
+    const char *name;
+    char line[1100];
+    bool found;
+};
+
+static bool add_one(const char *name, unsigned gid, char *members, void *data)
+{
+    struct add *a = data;
+
+    if (strcmp(name, a->name) != 0) {
+        return true;
+    }
+    snprintf(a->line, sizeof(a->line), "%s:x:%u:%s", name, gid, members);
+    a->found = true;
+    return false;
+}
+
+int sys_group_add_user(const char *name, const char *user, char *err, size_t size)
+{
+    struct add a = {name, "", false};
+    size_t len;
+    int ret;
+
+    each_group(add_one, &a);
+    if (!a.found) {
+        snprintf(err, size, "group '%s' does not exist in /etc/group", name);
+        ret = -1;
+    } else {
+        len = strlen(a.line);
+        snprintf(a.line + len, sizeof(a.line) - len, "%s%s", a.line[len - 1] == ':' ? "" : ",",
+                 user);
+        ret = group_put(name, a.line, err, size);
+    }
+    journal("gpasswd -a %s %s%s", user, name, ret ? " FAILED" : "");
+    return ret;
 }

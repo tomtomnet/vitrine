@@ -154,6 +154,8 @@ qt_add_library(vitrine_ui STATIC
     src/ui/firmwarerepair.h
     src/ui/guesttoolsdialog.cpp
     src/ui/guesttoolsdialog.h
+    src/ui/hosttuningnotifier.cpp
+    src/ui/hosttuningnotifier.h
     src/ui/hosttuningprefs.cpp
     src/ui/hosttuningprefs.h
     src/ui/icons.cpp
