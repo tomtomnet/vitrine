@@ -52,6 +52,7 @@
 #include "ui/qemudocs.h"
 #include "ui/referencepanel.h"
 #include "ui/textdialog.h"
+#include "ui/udmabufnotifier.h"
 #include "ui/uiconfig.h"
 #include "ui/updatenotifier.h"
 #include "ui/usbaccess.h"
@@ -258,6 +259,10 @@ MainWindow::MainWindow(VmStore *store, QWidget *parent)
     statusBar()->addPermanentWidget(m_perf);
     statusBar()->addPermanentWidget(m_updates->button());
     statusBar()->addPermanentWidget((new HostTuningNotifier(host, this))->button());
+    /* native context's guest windows copied for want of udmabuf: after
+       the host settings, which raise its limits and say so first */
+    statusBar()->addPermanentWidget(
+        (new UdmabufNotifier(new UdmabufWatch(store, host, this), host, this))->button());
     statusBar()->addPermanentWidget(new MemoryMonitor(store, this));
     statusBar()->addPermanentWidget(m_qemuStatus);
 

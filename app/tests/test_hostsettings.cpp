@@ -26,6 +26,7 @@
 
 #include "core/hostsettings.h"
 #include "core/paths.h"
+#include "core/udmabuf.h"
 #include "core/vmrunner.h"
 #include "core/vmstore.h"
 
@@ -1697,6 +1698,73 @@ private slots:
         hs.preferencesChanged();
         QVERIFY(answered(answers, qemu.pid(), false, "host tuning is off"));
         QTRY_COMPARE(udmabuf(), QString("1024/64"));
+    }
+
+    /*
+     * The start check with host tuning: a native-context VM found running,
+     * the limits too low; the helper raises them, so nothing to say.
+     * Tuning off: the note and the issue; on again: raised, the issue gone.
+     */
+    void udmabufWatchWithTuning()
+    {
+        QTemporaryDir runtime(QDir::tempPath() + "/vt-XXXXXX");
+        QTemporaryDir vms;
+        QVERIFY(runtime.isValid() && vms.isValid());
+        qputenv("XDG_RUNTIME_DIR", runtime.path().toLocal8Bit());
+        QDir(vms.path()).mkpath("native");
+        writeFile(vms.path() + "/native/vm.args",
+                  "-name native\n-device virtio-vga-gl,blob=on,drm_native_context=on\n"
+                  "-display dbus,p2p=yes\n");
+        const QString run = Paths::vmRuntimeDir("native");
+        FakeQemu qemu({"-qmp", QString("unix:%1/qmp.sock,server=on,wait=off").arg(run)});
+        writeFile(run + "/qemu.pid", QByteArray::number(qemu.pid()) + "\n");
+        auto qmp = std::make_unique<FakeQmp>(run + "/qmp.sock");
+        const QString device = m_root + "/udmabuf-device";
+        writeFile(device, QByteArray());
+
+        VmStore store(vms.path());
+        HostSettings hs(&store);
+        UdmabufWatch watch(&store, &hs);
+        watch.setSysRoot(m_root + "/sys");
+        watch.setDevice(device);
+        QSignalSpy lines(&hs, &HostSettings::helperLine), changed(&watch, &UdmabufWatch::changed);
+        fake(hs);
+        Vm *vm = store.find("native");
+        vm->runner()->attach(vm->args());
+        QTRY_VERIFY(saw(lines, QString("ok udmabuf %1: list_limit 65536").arg(qemu.pid())));
+        QTRY_VERIFY(saw(lines, QString("ok rt %1").arg(qemu.pid())));
+        QVERIFY(watch.issues().isEmpty());
+        QVERIFY(changed.isEmpty());
+        QVERIFY(!QFileInfo::exists(vm->runner()->logPath()));
+
+        HostSettings::setEnabled(false);
+        hs.preferencesChanged();
+        QCOMPARE(watch.issues().size(), 1);
+        QCOMPARE(watch.issues().first().notRaised, QString("host tuning is off"));
+        QTRY_VERIFY(!hs.helperRunning());
+        QCOMPARE(udmabuf(), QString("1024/64"));
+        QFile log(vm->runner()->logPath());
+        QVERIFY(log.open(QIODevice::ReadOnly));
+        const QString note = QString::fromUtf8(log.readAll());
+        log.close();
+        QVERIFY(note.startsWith("vitrine: the host's udmabuf limits are 1024 entries and 64 MB"));
+        QVERIFY(note.contains("vitrine: host tuning would raise them while VMs run: host tuning is "
+                              "off\n"));
+
+        HostSettings::setEnabled(true);
+        hs.preferencesChanged();
+        QTRY_VERIFY(watch.issues().isEmpty());
+        QCOMPARE(udmabuf(), QString("65536/2048"));
+        QVERIFY(log.open(QIODevice::ReadOnly));
+        QVERIFY(log.readAll().endsWith("vitrine: host tuning raised the udmabuf limits: guest "
+                                       "windows made from now on are not copied\n"));
+        log.close();
+
+        qmp.reset();
+        qemu.stop();
+        QTRY_COMPARE(vm->runner()->state(), VmRunner::State::Stopped);
+        QTRY_COMPARE(udmabuf(), QString("1024/64"));
+        QTRY_VERIFY(!hs.helperRunning());
     }
 
     void capabilityWithoutHelper()

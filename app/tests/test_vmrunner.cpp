@@ -498,6 +498,21 @@ private slots:
         delete runner;
     }
 
+    /* What vitrine finds out later goes at the end of the log, as notes */
+    void appendNote()
+    {
+        VmRunner runner(id, tmp.path());
+        QFile log(runner.logPath());
+        QVERIFY(log.open(QIODevice::WriteOnly | QIODevice::Truncate));
+        log.write("vitrine: started\nqemu-system-x86_64: a line of QEMU's\n");
+        log.close();
+        runner.appendNote("the first\nthe second");
+        QCOMPARE(read(runner.logPath()),
+                 QString("vitrine: started\nqemu-system-x86_64: a line of QEMU's\n"
+                         "vitrine: the first\nvitrine: the second\n"));
+        QVERIFY(QFile::remove(runner.logPath()));
+    }
+
     /*
      * A guest's own suspend to RAM is no pause from here: QEMU takes input
      * there.  A QEMU stand-in found running, its monitor sending the events.
