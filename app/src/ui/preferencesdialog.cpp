@@ -118,7 +118,7 @@ PreferencesDialog::PreferencesDialog(QWidget *parent)
     updateStack();
     checkQemu();
     checkVirtiofsd();
-    resize(640, sizeHint().height());
+    Widgets::resizeToWidth(this, 640);
 }
 
 void PreferencesDialog::updateStack()

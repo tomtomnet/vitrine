@@ -332,6 +332,7 @@ if(BUILD_TESTING)
     # after the other: Qt's global factor, QT_SCALE_FACTOR's, is private
     foreach(name
             banner
+            dialogs
             icons)
         qt_add_executable(test_${name} tests/test_${name}.cpp tests/scales.h)
         target_link_libraries(test_${name} PRIVATE vitrine_ui Qt6::GuiPrivate Qt6::Test)

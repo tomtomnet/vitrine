@@ -212,6 +212,7 @@ private slots:
     void initTestCase()
     {
         Scales::quieter();
+        Scales::bigScreen();
         QVERIFY(m_tmp.isValid());
         /* the theme's icons where there is one, as on the desktop */
         QIcon::setThemeSearchPaths(QIcon::themeSearchPaths() << "/usr/share/icons");

@@ -11,6 +11,7 @@
 
 #include "core/vmcloner.h"
 #include "core/vmstore.h"
+#include "ui/icons.h"
 #include "ui/widgets.h"
 
 static QString bytesText(qint64 bytes)
@@ -74,6 +75,8 @@ CloneDialog::CloneDialog(VmStore *store, Vm *source, QWidget *parent)
     auto *buttons = new QDialogButtonBox(QDialogButtonBox::Cancel);
     m_ok = buttons->addButton(tr("&Clone"), QDialogButtonBox::AcceptRole);
     m_ok->setDefault(true);
+    /* as Machine > Clone */
+    Widgets::setButtonIcon(m_ok, Icons::themed({"edit-copy"}, QStyle::SP_FileDialogNewFolder));
     layout->addWidget(buttons);
     connect(buttons, &QDialogButtonBox::accepted, this, &CloneDialog::accept);
     connect(buttons, &QDialogButtonBox::rejected, this, &CloneDialog::reject);
@@ -98,8 +101,7 @@ CloneDialog::CloneDialog(VmStore *store, Vm *source, QWidget *parent)
             m_error->setVisible(true);
         }
     });
-    /* the height of the wrapped notes at that width */
-    resize(560, layout->totalHeightForWidth(560));
+    Widgets::resizeToWidth(this, 560);
 }
 
 void CloneDialog::accept()

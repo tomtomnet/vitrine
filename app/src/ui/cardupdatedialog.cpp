@@ -8,8 +8,10 @@
 #include <QLabel>
 #include <QPlainTextEdit>
 #include <QPushButton>
+#include <QResizeEvent>
 #include <QScreen>
 #include <QStyle>
+#include <QTextLayout>
 #include <QVBoxLayout>
 #include <QtMath>
 
@@ -18,41 +20,107 @@
 #include "core/vmrunner.h"
 #include "core/vmstore.h"
 #include "ui/banner.h"
+#include "ui/icons.h"
 #include "ui/qemudocs.h"
 #include "ui/vmpane.h"
 #include "ui/widgets.h"
 
-/* Argument lines, as written, in a box that wraps them anywhere */
-static QPlainTextEdit *linesBox()
-{
-    auto *box = new QPlainTextEdit;
-
-    box->setReadOnly(true);
-    box->setFont(QFontDatabase::systemFont(QFontDatabase::FixedFont));
-    box->setWordWrapMode(QTextOption::WrapAtWordBoundaryOrAnywhere);
-    return box;
-}
+namespace {
 
 /*
- * @lines in @box, as wide as the longest (the card's) where @maxWidth
- * allows, and as tall as they are once wrapped: no scrolling to see them
+ * Argument lines, as written, in a box that wraps them anywhere and is as
+ * tall as they are once wrapped at the width it has: no scrolling to see
+ * them.  Its height for its width, in its layout, laid out as the box lays
+ * them out: a count from the widths of the lines' characters could miss
+ * by a line, as it did by a pixel.
  */
-static void setLines(QPlainTextEdit *box, const QStringList &lines, int maxWidth)
+class LinesBox : public QPlainTextEdit
 {
-    const QFontMetrics fm(box->font());
-    const int margins = 2 * (box->frameWidth() + qCeil(box->document()->documentMargin()));
-    const int room = qMax(fm.averageCharWidth() * 40, maxWidth - margins);
-    int width = 0;
-    int rows = 0;
+public:
+    LinesBox()
+    {
+        QSizePolicy policy = sizePolicy();
 
-    for (const QString &line : lines) {
-        const int advance = fm.horizontalAdvance(line);
-        width = qMax(width, advance);
-        rows += qMax(1, (advance + room - 1) / room);
+        setReadOnly(true);
+        setFont(QFontDatabase::systemFont(QFontDatabase::FixedFont));
+        setWordWrapMode(QTextOption::WrapAtWordBoundaryOrAnywhere);
+        /* never needed, and its width would wrap the lines otherwise */
+        setVerticalScrollBarPolicy(Qt::ScrollBarAlwaysOff);
+        /* as tall as its lines, never more (sizeHint()) */
+        policy.setVerticalPolicy(QSizePolicy::Maximum);
+        policy.setHeightForWidth(true);
+        setSizePolicy(policy);
     }
-    box->setPlainText(lines.join('\n'));
-    box->setMinimumWidth(qMin(width + fm.averageCharWidth(), room) + margins);
-    box->setFixedHeight(qMax(rows, 1) * fm.lineSpacing() + margins + fm.descent());
+
+    bool hasHeightForWidth() const override { return true; }
+
+    int heightForWidth(int width) const override
+    {
+        const qreal margin = document()->documentMargin();
+        /* as QPlainTextDocumentLayout lays out its blocks, whole pixels a line */
+        const qreal room = width - 2 * frameWidth() - 2 * margin;
+        qreal height = 0;
+
+        for (const QString &line : toPlainText().split('\n')) {
+            QTextLayout layout(line, font());
+            layout.setTextOption(document()->defaultTextOption());
+            layout.beginLayout();
+            for (QTextLine l = layout.createLine(); l.isValid(); l = layout.createLine()) {
+                l.setLeadingIncluded(true);
+                l.setLineWidth(room);
+                height += l.height() + (l.leading() < 0 ? qCeil(l.leading()) : 0);
+            }
+            layout.endLayout();
+        }
+        /* and a pixel: QPlainTextEdit sees a line as hidden unless the
+           lines and the margins leave one (adjustScrollbars()) */
+        return qCeil(height + 2 * margin) + 1 + 2 * frameWidth();
+    }
+
+    /* As high as its lines at the width it has */
+    QSize sizeHint() const override
+    {
+        return QSize(QPlainTextEdit::sizeHint().width(),
+                     heightForWidth(qMax(width(), minimumWidth())));
+    }
+
+    /* At least as high as its lines unwrapped, not a scroll area's least */
+    QSize minimumSizeHint() const override
+    {
+        return QSize(QPlainTextEdit::minimumSizeHint().width(), heightForWidth(QWIDGETSIZE_MAX / 2));
+    }
+
+    /*
+     * @lines, as wide as the longest (the card's) where @maxWidth allows:
+     * the window may still be narrower, and lines wrap then
+     */
+    void setLines(const QStringList &lines, int maxWidth)
+    {
+        ensurePolished();
+        const QFontMetrics fm(font());
+        const int margins = 2 * (frameWidth() + qCeil(document()->documentMargin()));
+        const int room = qMax(fm.averageCharWidth() * 40, maxWidth - margins);
+        int widest = 0;
+
+        for (const QString &line : lines) {
+            widest = qMax(widest, fm.horizontalAdvance(line));
+        }
+        setPlainText(lines.join('\n'));
+        setMinimumWidth(qMin(widest + fm.averageCharWidth(), room) + margins);
+        updateGeometry();
+    }
+
+protected:
+    /* another width, maybe another height: the layout asks again */
+    void resizeEvent(QResizeEvent *event) override
+    {
+        QPlainTextEdit::resizeEvent(event);
+        if (event->size().width() != event->oldSize().width()) {
+            updateGeometry();
+        }
+    }
+};
+
 }
 
 void CardUpdateDialog::run(QWidget *from, Vm *vm)
@@ -80,7 +148,7 @@ void CardUpdateDialog::run(QWidget *from, Vm *vm)
 
 CardUpdateDialog::CardUpdateDialog(Vm *vm, QWidget *parent)
     : QDialog(parent), m_vm(vm), m_intro(Widgets::note()), m_list(Widgets::note()),
-      m_before(linesBox()), m_after(linesBox()), m_notes(Widgets::note()),
+      m_before(new LinesBox), m_after(new LinesBox), m_notes(Widgets::note()),
       m_buttons(new QDialogButtonBox(QDialogButtonBox::Cancel))
 {
     auto *layout = new QVBoxLayout(this);
@@ -97,6 +165,8 @@ CardUpdateDialog::CardUpdateDialog(Vm *vm, QWidget *parent)
     m_notes->setObjectName("notes");
     apply->setObjectName("apply");
     apply->setDefault(true);
+    Widgets::setButtonIcon(apply, Icons::themed({"dialog-ok-apply", "dialog-ok"},
+                                                QStyle::SP_DialogApplyButton));
     layout->addWidget(m_intro);
     layout->addWidget(m_list);
     layout->addWidget(Widgets::heading(tr("Before")));
@@ -133,8 +203,8 @@ void CardUpdateDialog::fill(const QString &lead)
     const QScreen *screen = parentWidget() ? parentWidget()->screen() : this->screen();
     const int room = screen->availableGeometry().width() * 4 / 5 -
                      2 * style()->pixelMetric(QStyle::PM_LayoutLeftMargin);
-    setLines(m_before, diff.before, room);
-    setLines(m_after, diff.after, room);
+    static_cast<LinesBox *>(m_before)->setLines(diff.before, room);
+    static_cast<LinesBox *>(m_after)->setLines(diff.after, room);
 
     if (!lead.isEmpty()) {
         notes << lead;

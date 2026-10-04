@@ -132,16 +132,25 @@ QLabel *heading(const QString &text)
 }
 
 bool confirm(QWidget *parent, QMessageBox::Icon icon, const QString &title,
-             const QString &text, const QString &action)
+             const QString &text, const QString &action, const QIcon &actionIcon)
 {
     QMessageBox box(icon, title, text, QMessageBox::Cancel, parent);
     QPushButton *yes = box.addButton(action, QMessageBox::DestructiveRole);
+
+    setButtonIcon(yes, actionIcon);
 
     /* the KDE dialog would make the action the default button */
     box.setOption(QMessageBox::Option::DontUseNativeDialog);
     box.setDefaultButton(QMessageBox::Cancel);
     box.exec();
     return box.clickedButton() == yes;
+}
+
+void setButtonIcon(QAbstractButton *button, const QIcon &icon)
+{
+    if (button->style()->styleHint(QStyle::SH_DialogButtonBox_ButtonsHaveIcons, nullptr, button)) {
+        button->setIcon(icon);
+    }
 }
 
 QMessageBox *messageBox(QMessageBox::Icon icon, const QString &title, const QString &text,

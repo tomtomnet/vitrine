@@ -22,6 +22,7 @@
 #include "core/vmconfig.h"
 #include "core/vmstore.h"
 #include "ui/banner.h"
+#include "ui/icons.h"
 #include "ui/widgets.h"
 
 ImportDialog::ImportDialog(VmStore *store, const QemuInfo *info, QWidget *parent)
@@ -78,6 +79,8 @@ ImportDialog::ImportDialog(VmStore *store, const QemuInfo *info, QWidget *parent
 
     auto *buttons = new QDialogButtonBox(QDialogButtonBox::Cancel);
     m_create = buttons->addButton(tr("Create VM"), QDialogButtonBox::AcceptRole);
+    /* as File > Import VM */
+    Widgets::setButtonIcon(m_create, Icons::themed({"document-import"}, QStyle::SP_DialogOpenButton));
     layout->addWidget(buttons);
 
     connect(open, &QPushButton::clicked, this, [this]() {

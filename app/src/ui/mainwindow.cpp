@@ -1125,7 +1125,7 @@ void MainWindow::reset()
 
     if (vm && Widgets::confirm(this, QMessageBox::Warning, tr("Reset %1?").arg(vm->name()),
                       tr("The VM restarts at once: the guest loses its unsaved work."),
-                      tr("&Reset"))) {
+                      tr("&Reset"), m_reset->icon())) {
         vm->runner()->reset();
     }
 }
@@ -1145,7 +1145,7 @@ void MainWindow::forceOff()
     if (Widgets::confirm(this, QMessageBox::Warning, tr("Force Off %1?").arg(vm->name()),
                 tr("The VM stops at once, as when pulling the plug: the guest loses its "
                    "unsaved work."),
-                tr("&Force Off"))) {
+                tr("&Force Off"), m_forceOff->icon())) {
         vm->runner()->forceOff();
     }
 }
@@ -1180,7 +1180,7 @@ void MainWindow::remove()
         text += ' ' + tr("The changes to its settings that are not applied are lost.");
     }
     if (Widgets::confirm(this, QMessageBox::Question, tr("Remove %1?").arg(vm->name()), text,
-                         tr("&Move to Trash")) &&
+                         tr("&Move to Trash"), m_remove->icon()) &&
         !m_store->remove(vm, &error)) {
         Widgets::warn(this, tr("Cannot Remove the VM"), error);
     }

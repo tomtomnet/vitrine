@@ -17,6 +17,7 @@
 #include "core/vmrunner.h"
 #include "core/vmstore.h"
 #include "ui/banner.h"
+#include "ui/icons.h"
 #include "ui/widgets.h"
 
 using GuestTools::Pending;
@@ -150,6 +151,10 @@ GuestToolsDialog::GuestToolsDialog(Vm *vm, QWidget *parent)
         tr("The VM starts with the tools medium only: install them by hand in the guest with\n"
            "sudo bash /run/media/$USER/%1/install")
             .arg(GuestTools::kLabel));
+    Widgets::setButtonIcon(m_install, Icons::themed({"run-build-install", "system-software-install"},
+                                                    QStyle::SP_DialogApplyButton));
+    Widgets::setButtonIcon(m_mediumButton, Icons::themed({"media-optical", "drive-optical"},
+                                                         QStyle::SP_DriveCDIcon));
     m_install->setEnabled(problem.isEmpty());
     m_mediumButton->setEnabled(problem.isEmpty());
     layout->addWidget(m_buttons);
@@ -165,7 +170,8 @@ GuestToolsDialog::GuestToolsDialog(Vm *vm, QWidget *parent)
         if (Widgets::confirm(this, QMessageBox::Warning, tr("Force Off %1?").arg(m_vm->name()),
                              tr("The guest has not shut down. Force the VM off? The guest "
                                 "loses its unsaved work."),
-                             tr("&Force Off"))) {
+                             tr("&Force Off"),
+                             Icons::themed({"process-stop"}, QStyle::SP_BrowserStop))) {
             m_vm->runner()->forceOff();
         } else {
             m_timeout->start(kShutdownMs);

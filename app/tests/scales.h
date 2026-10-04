@@ -15,12 +15,15 @@
 
 #include <QApplication>
 #include <QImage>
+#include <QJsonArray>
+#include <QJsonObject>
 #include <QMap>
 #include <QRegularExpression>
 #include <QTest>
 #include <QWidget>
 
 #include <private/qhighdpiscaling_p.h>
+#include <qpa/qplatformnativeinterface.h>
 
 #include <cmath>
 #include <functional>
@@ -168,6 +171,31 @@ inline void sweep(const std::function<QStringList(int)> &check)
     }
     QVERIFY2(failures.isEmpty(), qPrintable(QString("%1 failures over %2 scales")
                                                 .arg(failures.size()).arg(scales.size())));
+}
+
+/*
+ * The offscreen platform's screen as large as a 4K monitor, 3840x2160
+ * device pixels: its 800x800 would be 333 logical pixels high at 2.4, and
+ * windows are made to fit their screen
+ */
+inline void bigScreen()
+{
+    QPlatformNativeInterface *native = QGuiApplication::platformNativeInterface();
+    auto *configuration = reinterpret_cast<QJsonObject (*)(QPlatformNativeInterface *)>(
+        native ? native->nativeResourceForIntegration("configuration") : nullptr);
+    auto *setConfiguration = reinterpret_cast<void (*)(const QJsonObject &, QPlatformNativeInterface *)>(
+        native ? native->nativeResourceForIntegration("setConfiguration") : nullptr);
+    if (!configuration || !setConfiguration) {
+        QSKIP("not the offscreen platform");
+    }
+    QJsonObject config = configuration(native);
+    QJsonArray screens = config.value("screens").toArray();
+    QJsonObject screen = screens.at(0).toObject();
+    screen["width"] = 3840;
+    screen["height"] = 2160;
+    screens[0] = screen;
+    config["screens"] = screens;
+    setConfiguration(config, native);
 }
 
 inline QtMessageHandler &previousHandler()

@@ -40,6 +40,7 @@ private slots:
     void initTestCase()
     {
         Scales::quieter();
+        Scales::bigScreen();
         QVERIFY(m_tmp.isValid());
         QIcon::setThemeSearchPaths(QIcon::themeSearchPaths() << "/usr/share/icons");
         if (QDir("/usr/share/icons/breeze").exists()) {

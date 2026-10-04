@@ -416,6 +416,10 @@ bool VmPane::confirmChanges(const QString &question)
     QPushButton *apply = box.addButton(tr("&Apply"), QMessageBox::AcceptRole);
     QPushButton *discard = box.addButton(tr("&Discard"), QMessageBox::DestructiveRole);
 
+    /* as the page's own Apply and Discard */
+    Widgets::setButtonIcon(apply, m_apply->icon());
+    Widgets::setButtonIcon(discard, m_discard->icon());
+
     box.addButton(QMessageBox::Cancel);
     box.setInformativeText(question);
     /* the KDE dialog would choose the default button itself */

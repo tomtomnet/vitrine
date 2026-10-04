@@ -6,6 +6,7 @@
 #include <QSplitter>
 #include <QString>
 
+class QAbstractButton;
 class QIcon;
 class QLabel;
 class QLineEdit;
@@ -54,7 +55,12 @@ namespace Widgets {
 
 /* Asks before a destructive @action, which Enter does not trigger */
 bool confirm(QWidget *parent, QMessageBox::Icon icon, const QString &title,
-             const QString &text, const QString &action);
+             const QString &text, const QString &action, const QIcon &actionIcon);
+/*
+ * @button of a dialog's buttons with @icon where the style puts icons on
+ * them: as the standard buttons beside it (OK, Cancel, Close) have theirs
+ */
+void setButtonIcon(QAbstractButton *button, const QIcon &icon);
 
 /*
  * A message box Qt draws itself.  With KDE's platform theme a QMessageBox

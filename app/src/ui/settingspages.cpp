@@ -657,7 +657,7 @@ void StoragePage::addDisk()
     };
     connect(group, &QButtonGroup::buttonToggled, &dialog, update);
     update();
-    dialog.resize(560, dialog.sizeHint().height());
+    Widgets::resizeToWidth(&dialog, 560);
 
     while (dialog.exec() == QDialog::Accepted) {
         Entry e;
@@ -1075,7 +1075,7 @@ ShareDialog::ShareDialog(const VmConfig::Share &share, const QStringList &otherT
     connect(buttons, &QDialogButtonBox::rejected, this, &QDialog::reject);
     describeCache();
     validate();
-    resize(560, sizeHint().height());
+    Widgets::resizeToWidth(this, 560);
 }
 
 VmConfig::Share ShareDialog::share() const
