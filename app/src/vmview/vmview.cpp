@@ -305,12 +305,17 @@ void VmView::createWindow(bool fullScreen)
     }
     m_window->setGuestCursorVisible(m_cursorVisible);
     connect(m_window, &DisplayWindow::grabChanged, this, &VmView::checkGrab);
-    /* the grab its keys and clicks take, and in full screen its closing */
+    /* its first expose, and the grab its keys and clicks take */
     m_window->installEventFilter(this);
     /* queued: Ctrl+Alt+F comes from the window's own key handler, and the
        switch deletes the window */
     connect(m_window, &DisplayWindow::fullScreenToggled, this,
             [this]() { setFullScreen(!m_fullScreen); }, Qt::QueuedConnection);
+    /* the full-screen window closed by the desktop, e.g. from the task bar
+       (the window ignores the close, which would take the app down): back
+       to the widget, queued as above */
+    connect(m_window, &DisplayWindow::closeRequested, this,
+            [this]() { setFullScreen(false); }, Qt::QueuedConnection);
 
     if (fullScreen) {
         m_window->setTitle(m_dbus->vmName());
@@ -525,16 +530,6 @@ bool VmView::eventFilter(QObject *watched, QEvent *event)
                 }
             }
             break;
-        case QEvent::Close:
-            if (!m_fullScreen) {
-                break;
-            }
-            /* closed by the desktop, e.g. from the task bar: back to the widget,
-               not from the window's own event handler, which the switch deletes */
-            event->ignore();
-            QMetaObject::invokeMethod(this, [this]() { setFullScreen(false); },
-                                      Qt::QueuedConnection);
-            return true;
         case QEvent::KeyPress:
         case QEvent::MouseButtonPress:
             /* once the window has handled it */

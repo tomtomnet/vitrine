@@ -19,6 +19,13 @@ constexpr uint32_t kLeft = 0, kMiddle = 1, kRight = 2, kWheelUp = 3, kWheelDown 
 // qemu_input_queue_btn(): InputButton wheel-left / wheel-right.
 constexpr uint32_t kWheelLeft = 7, kWheelRight = 8;
 
+// The keys of KWin's modifier + button window actions ([MouseBindings]
+// CommandAllKey: Meta, the default, or Alt), as qnum codes.
+bool isWindowActionModifier(uint32_t qnum)
+{
+    return qnum == 0xdb || qnum == 0xdc || qnum == 0x38; // KEY_LEFTMETA, KEY_RIGHTMETA, KEY_LEFTALT
+}
+
 bool qtButton(Qt::MouseButton b, uint32_t *out)
 {
     switch (b) {
@@ -132,6 +139,15 @@ bool DisplayWindow::event(QEvent *e)
         m_pointerInside = false;
         m_suppressAuto = false;
         updateGrab();
+        break;
+    case QEvent::Close:
+        if (!parent()) {
+            // In its own window (--toplevel) the view is the app's last window:
+            // closing it would quit the app and kill QEMU. QEMU quits first.
+            e->ignore();
+            Q_EMIT closeRequested();
+            return true;
+        }
         break;
     default:
         break;
@@ -268,10 +284,21 @@ void DisplayWindow::key(QKeyEvent *e, bool down)
     const uint32_t qnum = linux_to_qnum[evdev];
     if (down) {
         m_pressed.insert(qnum);
+        if (isWindowActionModifier(qnum)) {
+            updateGrab(); // the confinement first: the button press may follow at once
+        }
         m_display->keyPress(qnum);
     } else if (m_pressed.remove(qnum)) {
+        if (isWindowActionModifier(qnum)) {
+            updateGrab();
+        }
         m_display->keyRelease(qnum);
     }
+}
+
+bool DisplayWindow::windowActionModifierHeld() const
+{
+    return std::any_of(m_pressed.cbegin(), m_pressed.cend(), isWindowActionModifier);
 }
 
 void DisplayWindow::releaseAllKeys()
@@ -330,16 +357,37 @@ void DisplayWindow::updateGrab()
     m_autoGrab = m_hostActive && m_pointerInside && absolute && !m_suppressAuto;
     const bool inhibit = m_grab || m_autoGrab;
     const bool lock = m_grab && !absolute;
-    if (inhibit != m_inhibited || lock != m_locked) {
+    // KWin runs its modifier + button window actions (Meta + left: move, Meta +
+    // right: resize, Meta + middle: raise/lower) on our window and keeps the press
+    // from us unless the pointer is constrained; the shortcuts inhibitor does not
+    // count (input.cpp windowActionForPointerButtonPress). An absolute pointer is not
+    // locked, so while the grab holds and such a modifier is down, confine it to the
+    // window: Meta+drag then reaches the guest, as with QEMU's SDL display, whose grab
+    // confines the pointer.
+    const bool confine = inhibit && absolute && windowActionModifierHeld();
+    if (inhibit != m_inhibited || lock != m_locked || confine != m_confined) {
         m_inhibited = inhibit;
         m_locked = lock;
+        m_confined = confine;
         if (m_wayland) {
             QWindow *top = this;
             while (top->parent()) {
                 top = top->parent();
             }
             m_wayland->setShortcutsInhibited(top, inhibit);
-            m_wayland->setPointerLocked(this, lock);
+            // one constraint per surface: the one going away goes first
+            if (!lock) {
+                m_wayland->setPointerLocked(top, false);
+            }
+            if (!confine) {
+                m_wayland->setPointerConfined(top, false);
+            }
+            if (lock) {
+                m_wayland->setPointerLocked(top, true); // as the confinement: the main surface
+            }
+            if (confine) {
+                m_wayland->setPointerConfined(top, true);
+            }
         }
     }
     updateCursor();

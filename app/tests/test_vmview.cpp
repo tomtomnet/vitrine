@@ -605,6 +605,30 @@ private Q_SLOTS:
     }
 
     /*
+     * The full-screen window closed by the desktop (its title bar, the task
+     * bar): the window refuses the close, which would delete it under the
+     * render thread and quit the app with the last window, and the view goes
+     * back to the widget
+     */
+    void fullScreenClosedByDesktop()
+    {
+        FakeDisplay qemu(socketPath());
+        VmView view;
+        QString error;
+        QVERIFY2(view.attach(socketPath(), &error), qPrintable(error));
+        QTRY_VERIFY(qemu.listening());
+        view.setFullScreen(true);
+        QPointer<QWindow> full = displayWindow();
+        QVERIFY(full && !full->parent());
+        /* refused; not at once: from the window's own event handler */
+        QVERIFY(!full->close());
+        QVERIFY(view.isFullScreen());
+        QTRY_VERIFY(!view.isFullScreen());
+        QVERIFY(full.isNull());
+        QVERIFY(displayWindow());
+    }
+
+    /*
      * Paused, QEMU drops the keys: the screen takes none, so that they reach
      * the window's shortcuts (Resume among them), and lets go of those held
      */

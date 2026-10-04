@@ -34,3 +34,4 @@ with the guest through the display's org.qemu.Display1.Clipboard.
 | file | change | why |
 |---|---|---|
 | `renderer.cpp` | the "swapchain: the compositor scans out / composites the window" line is printed once the scanout vote held 2 s | at the edge of its majority the vote flips with every frame, which filled the app's log |
+| `displaywindow.cpp` | the pointer lock (grab of a guest with a relative mouse) is taken on the top-level window's surface, as the confinement is, not on the view's own | KWin honours pointer constraints only on a window's main surface: embedded in vitrine's window, the view is a subsurface, and a lock on it never took effect (the pointer left the view) |

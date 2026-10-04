@@ -47,6 +47,7 @@ Q_SIGNALS:
     void grabChanged();
     void pressed();           // a click: the display wants the keyboard
     void fullScreenToggled(); // Ctrl+Alt+F
+    void closeRequested();    // the top-level view's own close: QEMU is quit first
 
 protected:
     bool event(QEvent *e) override;
@@ -67,6 +68,7 @@ private:
     void releaseAllKeys();
     void updateCursor();
     void updateGrab();
+    bool windowActionModifierHeld() const;
 
     DBusDisplay *m_display;
     WaylandExtras *m_wayland;
@@ -82,7 +84,7 @@ private:
     bool m_suppressAuto = false; // Ctrl+Alt+G released it until the pointer leaves
     bool m_pointerInside = false;
     bool m_hostActive = false;
-    bool m_inhibited = false, m_locked = false; // what the compositor was asked
+    bool m_inhibited = false, m_locked = false, m_confined = false; // what the compositor was asked
     bool m_waylandSet = false;
     double m_relX = 0, m_relY = 0;
     int m_wheelAccum = 0;
