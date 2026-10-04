@@ -4,7 +4,6 @@
 #include <QDir>
 #include <QFile>
 #include <QFileInfo>
-#include <QJsonObject>
 #include <QPointer>
 #include <QProcess>
 #include <QRegularExpression>
@@ -24,14 +23,13 @@
 #include <pwd.h>
 #include <spawn.h>
 #include <sys/socket.h>
+#include <sys/stat.h>
 #include <sys/syscall.h>
 #include <sys/wait.h>
 #include <sys/xattr.h>
 #include <unistd.h>
 
 #include "core/paths.h"
-#include "core/qmpclient.h"
-#include "core/stackbuilder.h"
 #include "core/vmhardware.h"
 #include "core/vmrunner.h"
 #include "core/vmstore.h"
@@ -42,9 +40,8 @@ extern char **environ;
 #define VITRINE_HELPER_PATH "/usr/libexec/vitrine-helper"
 #endif
 
-/* polkit's actions: one per verb of the helper (its first argument) */
-static const char kAction[] = "org.vitrine.helper";                 // session
-static const char kSetcapAction[] = "org.vitrine.helper.setcap";
+/* polkit's action of the helper's session (its first argument) */
+static const char kAction[] = "org.vitrine.helper";
 /* pkexec's line when it does not run the program: "...: Not authorized" */
 static const char kPkexecError[] = "Error executing command as another user: ";
 /* A helper that ends while VMs it tuned run is started again, this many
@@ -169,23 +166,6 @@ static bool alive(qint64 pid)
            stat[end + 2] != 'X';
 }
 
-/* The process has CAP_SYS_NICE in effect (the stack's QEMU, setcap'ed) */
-static bool hasSysNice(qint64 pid)
-{
-    QFile f(QString("/proc/%1/status").arg(pid));
-    const QList<QByteArray> lines = f.open(QIODevice::ReadOnly) ? f.readAll().split('\n')
-                                                                : QList<QByteArray>();
-
-    for (const QByteArray &line : lines) {
-        if (line.startsWith("CapEff:")) {
-            bool ok;
-            const qulonglong caps = line.mid(7).trimmed().toULongLong(&ok, 16);
-            return ok && (caps >> 23 & 1);     // CAP_SYS_NICE
-        }
-    }
-    return false;
-}
-
 /* The calling process for pkcheck: pid, start time, uid (no pid reuse) */
 static QString subject()
 {
@@ -300,81 +280,33 @@ void HostSettings::check(QObject *context, const std::function<void(const Status
     checkAction(kAction, context, done);
 }
 
-/* vitrine-helper setcap @path, once polkit said yes */
-static void setcap(const QString &path, QObject *context,
-                   const std::function<void(const QString &error)> &done)
+QStringList HostSettings::stripCapabilities(const QString &stack)
 {
-    auto *run = new QProcess(context);
-    run->setProcessChannelMode(QProcess::MergedChannels);
-    QObject::connect(run, &QProcess::finished, context, [run, path, done](int code) {
-        const QString last = QString::fromUtf8(run->readAll()).trimmed().section('\n', -1);
-        const QString prefix = "error setcap " + path + ": ";
-        run->deleteLater();
-        /* "error setcap PATH: why", or pkexec's own message */
-        done(code == 0 ? QString()
-             : last.startsWith(prefix) ? last.mid(prefix.size())
-             : last.isEmpty() ? HostSettings::tr("vitrine-helper failed") : last);
-    });
-    QObject::connect(run, &QProcess::errorOccurred, context,
-                     [run, done](QProcess::ProcessError error) {
-        if (error == QProcess::FailedToStart) {
-            run->deleteLater();
-            done(HostSettings::tr("pkexec is not installed"));
-        }
-    });
-    run->start("pkexec", {"--disable-internal-agent", VITRINE_HELPER_PATH, "setcap", path});
-}
+    QStringList stripped;
 
-void HostSettings::grantCapability(const QString &qemu, QObject *context,
-                                   const std::function<void(const QString &error)> &done)
-{
-    /* the helper refuses links: the stack's `current` among others */
-    const QString path = QFileInfo(qemu).canonicalFilePath();
+    /* the builds' folders, not `current`, a link to one of them */
+    for (const QString &build : QDir(stack).entryList(QDir::Dirs | QDir::NoDotAndDotDot |
+                                                      QDir::NoSymLinks)) {
+        const QDir bin(stack + '/' + build + "/bin");
+        for (const QString &name : bin.entryList({"qemu-system-*"}, QDir::Files | QDir::NoSymLinks)) {
+            const QByteArray path = QFile::encodeName(bin.filePath(name));
+            struct stat st;
 
-    if (!helperInstalled()) {
-        done(tr("vitrine-helper is not installed"));
-        return;
-    }
-    if (path.isEmpty()) {
-        done(tr("%1 does not exist").arg(qemu));
-        return;
-    }
-    /* its own action, which pkexec will use: a rule may grant one and not the other */
-    checkAction(kSetcapAction, context, [path, context, done](const Status &status) {
-        if (!status.active()) {
-            done(status.why());
-            return;
-        }
-        setcap(path, context, done);
-    });
-}
-
-void HostSettings::ensureCapability()
-{
-    /* canonical: the build itself, not `current` */
-    const QString qemu = Paths::stackQemu();
-    char value[64];
-
-    if (!enabled() || !helperInstalled() || qemu.isEmpty() || m_capabilityTried.contains(qemu) ||
-        getxattr(QFile::encodeName(qemu).constData(), "security.capability", value,
-                 sizeof(value)) >= 0 ||
-        errno != ENODATA) {
-        return;
-    }
-    auto grant = [this, qemu]() {
-        m_capabilityTried.insert(qemu);
-        setcap(qemu, this, [this](const QString &error) {
-            if (!error.isEmpty()) {
-                say(tr("Vitrine's QEMU cannot make its threads real-time: %1.").arg(clause(error)));
+            if (::getxattr(path.constData(), "security.capability", nullptr, 0) < 0 ||
+                ::lstat(path.constData(), &st) < 0 || !S_ISREG(st.st_mode) ||
+                st.st_uid != getuid()) {
+                continue;
             }
-        });
-    };
-    /* polkit's no is shown at a VM start, not here */
-    checkAction(kSetcapAction, this, [grant](const Status &status) {
-        if (status.active()) {
-            grant();
+            /* the kernel clears a file's capabilities when it changes owner,
+               to the same one included; no write, so a VM may run from it */
+            if (::chown(path.constData(), st.st_uid, st.st_gid) == 0 &&
+                ::getxattr(path.constData(), "security.capability", nullptr, 0) < 0 &&
+                errno == ENODATA) {
+                stripped << bin.filePath(name);
+            }
         }
-    });
+    }
+    return stripped;
 }
 
 HostSettings *HostSettings::instance()
@@ -397,23 +329,14 @@ HostSettings::HostSettings(VmStore *store, QObject *parent)
                 [this](const QString &id) { setUntuned(m_tuned.take(id), {}); });
     }
     /*
-     * Each build is a new file, without the capability of the one before:
-     * given after each build, and, when it lacks it, now - a QEMU built
-     * before joining the vitrine group or while tuning was off.  It takes
-     * effect at the next start of each VM: a running QEMU keeps what it has.
+     * QEMU gets no privilege any more: the helper sets its threads'
+     * scheduling.  The cap_sys_nice an older vitrine gave its builds goes,
+     * with what came with it (no core dumps, no debugger, no
+     * LD_LIBRARY_PATH): at the next start of each VM.
      */
-    ensureCapability();
-    connect(StackBuilder::instance(), &StackBuilder::built, this, [this](const QString &qemu) {
-        /* without the helper, a VM start says it */
-        if (!enabled() || !helperInstalled()) {
-            return;
-        }
-        grantCapability(qemu, this, [this](const QString &error) {
-            if (!error.isEmpty()) {
-                say(tr("Vitrine's QEMU cannot make its threads real-time: %1.").arg(clause(error)));
-            }
-        });
-    });
+    for (const QString &qemu : stripCapabilities(Paths::stackDir())) {
+        qInfo("vitrine: cap_sys_nice removed from %s", qPrintable(qemu));
+    }
 }
 
 HostSettings::~HostSettings()
@@ -497,7 +420,8 @@ void HostSettings::queue(qint64 pid)
         m_out += ("udmabuf " + n + '\n').toLatin1();
         m_udmabufAsked << pid;
     }
-    m_out += ("rt " + n + '\n').toLatin1();
+    /* real-time in front (or while none was), ordinary behind it */
+    m_out += ((behind(pid) ? "behind " : "rt ") + n + '\n').toLatin1();
 }
 
 void HostSettings::preferencesChanged()
@@ -520,15 +444,7 @@ void HostSettings::preferencesChanged()
             m_out = "release\n";
             flush();
         }
-        /* and focus priority: the vCPUs QEMU itself made real-time, or
-           ordinary at nice -5, are not the helper's to put back */
-        for (Vm *vm : m_store && !m_front.isEmpty() ? m_store->vms() : QList<Vm *>()) {
-            QmpClient *qmp = vm->runner()->qmp();
-            if (qmp && m_tuned.contains(vm->id()) &&
-                VmConfig::screen(vm->runner()->runArgs()) != VmConfig::Screen::OwnWindow) {
-                qmp->execute("x-vcpu-priority", QJsonObject{{"realtime", false}, {"nice", 0}});
-            }
-        }
+        /* focus priority with it: the helper's release put the threads back */
         m_front.clear();
         /* and nothing to show: off is the user's choice */
         if (!m_untuned.isEmpty()) {
@@ -540,7 +456,6 @@ void HostSettings::preferencesChanged()
     /* on, or another floor: each running VM tuned again - a run that
        started untuned among them; what the helper holds already, it says
        so ("already"), and a floor it holds it replaces */
-    ensureCapability();
     if (!m_store) {
         return;
     }
@@ -566,33 +481,27 @@ void HostSettings::setFront(const QString &vmId)
 void HostSettings::applyFront(Vm *vm)
 {
     const qint64 pid = m_tuned.value(vm->id());
-    QmpClient *qmp = vm->runner()->qmp();
-    const bool front = vm->id() == m_front;
 
-    if (m_front.isEmpty() || !pid || !qmp) {
+    if (m_front.isEmpty() || !pid || m_fd < 0) {
         return;
     }
     /* SDL: its window's focus is not known here, behind or not */
-    if (!front && VmConfig::screen(vm->runner()->runArgs()) == VmConfig::Screen::OwnWindow) {
+    if (vm->id() != m_front && VmConfig::screen(vm->runner()->runArgs()) == VmConfig::Screen::OwnWindow) {
         return;
     }
-    const bool capable = hasSysNice(pid);
-    QJsonObject arguments{{"realtime", front}};
-    if (front && !capable) {
-        /* QEMU may not make its threads real-time again: the helper may */
-        if (m_fd >= 0) {
-            m_out += "rt " + QByteArray::number(pid) + '\n';
-            flush();
+    m_out += (vm->id() == m_front ? "rt " : "behind ") + QByteArray::number(pid) + '\n';
+    flush();
+}
+
+bool HostSettings::behind(qint64 pid) const
+{
+    for (Vm *vm : m_store && !m_front.isEmpty() ? m_store->vms() : QList<Vm *>()) {
+        if (m_tuned.value(vm->id()) == pid) {
+            return vm->id() != m_front &&
+                   VmConfig::screen(vm->runner()->runArgs()) != VmConfig::Screen::OwnWindow;
         }
-        return;
     }
-    if (!front) {
-        /* the patch stops at the first thread it fails on: no lower nice
-           than this QEMU may set */
-        arguments["nice"] = capable ? -5 : 0;
-    }
-    /* a QEMU without the command (not vitrine's) says so: nothing to do */
-    qmp->execute("x-vcpu-priority", arguments);
+    return false;
 }
 
 void HostSettings::start()
@@ -630,13 +539,12 @@ void HostSettings::start()
             return;
         }
         /* the group joined since vitrine started, say: the VMs that ran
-           untuned until now too, and vitrine's QEMU's capability */
+           untuned until now too */
         for (const auto &entry : QList(m_untuned)) {
             if (!m_expected.contains(entry.first) && alive(entry.first)) {
                 queue(entry.first);
             }
         }
-        ensureCapability();
         if (!m_out.isEmpty()) {
             spawn({"pkexec", "--disable-internal-agent", VITRINE_HELPER_PATH, "session"});
         }
@@ -777,19 +685,6 @@ void HostSettings::handleLine(const QString &line)
         if (m_expected.isEmpty() && m_out.isEmpty() && m_fd >= 0) {
             /* nothing left to watch: it ends, putting everything back */
             ::shutdown(m_fd, SHUT_WR);
-        }
-    } else if (line.startsWith("ok rt ")) {
-        /*
-         * "ok rt PID: N of M threads real-time": every thread of that QEMU,
-         * the vCPUs of a VM behind the one in front among them - a VM that
-         * started since, or tuned again, or one whose x-vcpu-priority went
-         * out before the helper got to it.  Behind again, now.
-         */
-        const qint64 pid = line.section(' ', 2, 2).section(':', 0, 0).toLongLong();
-        for (Vm *vm : m_store ? m_store->vms() : QList<Vm *>()) {
-            if (pid > 0 && m_tuned.value(vm->id()) == pid && vm->id() != m_front) {
-                applyFront(vm);
-            }
         }
     } else if (line.startsWith("ok udmabuf ") || line.startsWith("skip udmabuf ") ||
                line.startsWith("error udmabuf")) {

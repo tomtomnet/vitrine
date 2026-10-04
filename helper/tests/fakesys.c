@@ -519,13 +519,6 @@ int sys_setnice(pid_t tid, int nice)
     return err;
 }
 
-int sys_set_file_cap(int fd, const char *path)
-{
-    (void)fd;
-    journal("setcap %s", path);
-    return 0;
-}
-
 void sys_log(const char *fmt, ...)
 {
     char text[512];

@@ -1,15 +1,13 @@
 /* SPDX-License-Identifier: GPL-2.0-or-later */
 /*
  * System access on the real system: the only place the installed helper
- * touches files, schedulers and capabilities.  The test build replaces this
+ * touches files, schedulers and the group database.  The test build replaces this
  * file with tests/fakesys.c.
  */
 #define _GNU_SOURCE
-#include <endian.h>
 #include <errno.h>
 #include <fcntl.h>
 #include <grp.h>
-#include <linux/capability.h>
 #include <sched.h>
 #include <spawn.h>
 #include <stdarg.h>
@@ -18,7 +16,6 @@
 #include <string.h>
 #include <sys/resource.h>
 #include <sys/wait.h>
-#include <sys/xattr.h>
 #include <syslog.h>
 #include <unistd.h>
 
@@ -115,29 +112,6 @@ int sys_getnice(pid_t tid, int *nice)
 int sys_setnice(pid_t tid, int nice)
 {
     return setpriority(PRIO_PROCESS, (id_t)tid, nice) < 0 ? -errno : 0;
-}
-
-int sys_set_file_cap(int fd, const char *path)
-{
-    /* what setcap cap_sys_nice=ep writes: revision 2, effective, permitted
-       (little-endian on disk) */
-    struct vfs_cap_data cap = {
-        .magic_etc = htole32(VFS_CAP_REVISION_2 | VFS_CAP_FLAGS_EFFECTIVE),
-        .data = {{.permitted = htole32(1u << CAP_SYS_NICE), .inheritable = 0}, {0, 0}},
-    };
-    struct vfs_cap_data back;
-    ssize_t n;
-
-    (void)path;
-    if (fsetxattr(fd, "security.capability", &cap, XATTR_CAPS_SZ_2, 0) < 0) {
-        return -errno;
-    }
-    /* read back: an LSM or file system may drop it silently */
-    n = fgetxattr(fd, "security.capability", &back, sizeof(back));
-    if (n != XATTR_CAPS_SZ_2 || memcmp(&back, &cap, XATTR_CAPS_SZ_2) != 0) {
-        return -EIO;
-    }
-    return 0;
 }
 
 void sys_log(const char *fmt, ...)

@@ -145,11 +145,7 @@ signals:
     void progress(int done, int total);
     /* @error is empty on success */
     void finished(const QString &error);
-    /*
-     * After each build that ended well, with the QEMU now `current`: a new
-     * file each time, without the file capabilities (cap_sys_nice) the one
-     * before may have had, which is where they are given again
-     */
+    /* After each build that ended well, with the QEMU now `current` */
     void built(const QString &qemuBinary);
 
 private:

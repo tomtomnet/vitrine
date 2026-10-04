@@ -1,22 +1,20 @@
 /* SPDX-License-Identifier: GPL-2.0-or-later */
 /*
- * The caller's QEMU processes: watching them (pidfd), making their threads
- * real-time, and the file capability on vitrine's own QEMU build.
+ * The caller's QEMU processes: watching them (pidfd), and their threads'
+ * scheduling - real-time for the VM in front, ordinary for those behind -
+ * set here, as root, so that QEMU needs no capability of its own.
  */
 #define _GNU_SOURCE
 #include <dirent.h>
-#include <elf.h>
 #include <errno.h>
 #include <fcntl.h>
 #include <limits.h>
-#include <pwd.h>
 #include <sched.h>
 #include <signal.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #include <sys/stat.h>
-#include <sys/statvfs.h>
 #include <sys/syscall.h>
 #include <unistd.h>
 
@@ -332,6 +330,22 @@ static bool other_thread(pid_t tid, int taskfd, const char *name, int *counts)
     return false;
 }
 
+/* counts: [0] vCPUs at BEHIND_NICE now */
+static bool behind_vcpu(pid_t tid, int taskfd, const char *name, int *counts)
+{
+    int nice;
+
+    if (!is_vcpu(taskfd, name) || sys_getnice(tid, &nice) < 0 || nice == BEHIND_NICE) {
+        return false;
+    }
+    /* a nice the user or QEMU chose (other than the default) stays */
+    if (nice == 0 && set_thread(tid, taskfd, name, -1, BEHIND_NICE) == 0) {
+        counts[0]++;
+        return true;
+    }
+    return false;
+}
+
 /* counts: [0] vCPUs back from BEHIND_NICE to 0 */
 static bool unnice_vcpu(pid_t tid, int taskfd, const char *name, int *counts)
 {
@@ -409,6 +423,43 @@ void rt_on(const char *arg)
     }
 }
 
+/*
+ * A VM behind the one in front: the threads rt made real-time back to
+ * SCHED_OTHER - every one of them, not only the vCPUs, so that VMs busy in
+ * the background cannot take every CPU at real-time priority - and, while
+ * real-time threads run (the bound in place), its vCPUs at nice
+ * BEHIND_NICE, a little ahead of ordinary tasks still.
+ */
+void behind(const char *arg)
+{
+    struct watched *w = find_watched(arg);
+    int others[1] = {0}, niced[1] = {0};
+    const char *why;
+    bool bound;
+
+    if (!w) {
+        reply("error behind: watch the process first");
+        return;
+    }
+    if (!still_qemu(w)) {
+        reply("error behind %d: no longer a QEMU of uid %u", (int)w->pid, (unsigned)caller_uid);
+        return;
+    }
+    bound = settings_bound(&why);
+    w->rt = false;
+    w->behind |= bound;
+    if ((w->held || w->behind) && !sched_hold(w)) {
+        reply("error behind %d: cannot record it: %s", (int)w->pid, strerror(errno));
+        return;
+    }
+    each_thread(w->procfd, other_thread, others);
+    if (bound) {
+        each_thread(w->procfd, behind_vcpu, niced);
+    }
+    reply("ok behind %d: %d threads ordinary, %d vCPUs at nice %d", (int)w->pid, others[0],
+          niced[0], BEHIND_NICE);
+}
+
 void sched_restore(pid_t pid, unsigned long long start, bool niced, bool say)
 {
     unsigned long long now;
@@ -448,192 +499,4 @@ void rt_off_all(void)
         sched_drop(&watched[i]);
         watched[i].rt = watched[i].behind = false;
     }
-}
-
-/* --- setcap --- */
-
-/* A file name: not empty, not "." nor ".." */
-static bool plain_name(const char *s)
-{
-    return s[0] && strcmp(s, ".") != 0 && strcmp(s, "..") != 0;
-}
-
-/* The ELF machine of the binaries this host runs */
-#if defined(__x86_64__)
-#define HOST_EM EM_X86_64
-#elif defined(__aarch64__)
-#define HOST_EM EM_AARCH64
-#elif defined(__riscv) && __riscv_xlen == 64
-#define HOST_EM EM_RISCV
-#elif defined(__powerpc64__)
-#define HOST_EM EM_PPC64
-#elif defined(__s390x__)
-#define HOST_EM EM_S390
-#elif defined(__loongarch64)
-#define HOST_EM EM_LOONGARCH
-#else
-#error "unknown host architecture"
-#endif
-
-static int fail_setcap(const char *path, const char *why)
-{
-    reply("error setcap %s: %s", path, why);
-    return 1;
-}
-
-/*
- * cap_sys_nice=ep on vitrine's own QEMU build, so that QEMU may make its
- * vCPU threads real-time (x-vcpu-priority) and create high-priority amdgpu
- * contexts.  The caller builds that QEMU, so its content is the caller's
- * choice whatever is checked here: what the group grants is CAP_SYS_NICE
- * for a program of the caller's.  The checks make sure it stays the
- * caller's own, private file:
- *  - an absolute path without links, ".", ".." or "//", inside the caller's
- *    home (from the user database, not the environment) and shaped like the
- *    stack's layout: .../vitrine/stack/<build>/bin/qemu-system-<arch>;
- *  - walked one component at a time without following links, each folder
- *    from the home down owned by the caller or root and writable by no one
- *    else (group write only for the caller's own primary group), so the file
- *    checked is the file changed;
- *  - a regular file of the caller's, one link, no setuid/setgid bit, an ELF
- *    executable for this machine, on a file system that honours file
- *    capabilities (not nosuid);
- *  - made 0700 before the capability is set: other users cannot run it.
- * Writing to the file afterwards drops the capability (the kernel does), so
- * every build needs this again.
- */
-int setcap(const char *path)
-{
-    static const char *tail[] = {"vitrine", "stack", NULL, "bin"};
-    char copy[PATH_MAX], home[PATH_MAX], proc[64];
-    const char *comps[PATH_MAX / 2];
-    struct stat st, st2;
-    struct statvfs vfs;
-    struct passwd *pw;
-    Elf64_Ehdr eh;
-    int ncomps = 0, nhome = 0, fd = -1, rfd, err;
-    size_t hlen;
-    char *p, *save = NULL;
-
-    if (path[0] != '/' || strlen(path) >= sizeof(copy)) {
-        return fail_setcap(path, "give an absolute path");
-    }
-    if (!(pw = getpwuid(caller_uid)) || pw->pw_dir[0] != '/' ||
-        strlen(pw->pw_dir) >= sizeof(home)) {
-        return fail_setcap(path, "the caller has no home folder");
-    }
-    snprintf(home, sizeof(home), "%s", pw->pw_dir);
-    hlen = strlen(home);
-    while (hlen > 1 && home[hlen - 1] == '/') {
-        home[--hlen] = '\0';
-    }
-    if (strncmp(path, home, hlen) != 0 || path[hlen] != '/') {
-        return fail_setcap(path, "not in the caller's home folder");
-    }
-    /* the components, each a plain name */
-    snprintf(copy, sizeof(copy), "%s", path);
-    if (strstr(copy, "//") || copy[strlen(copy) - 1] == '/') {
-        return fail_setcap(path, "not a plain path");
-    }
-    for (p = strtok_r(copy, "/", &save); p; p = strtok_r(NULL, "/", &save)) {
-        if (!plain_name(p)) {
-            return fail_setcap(path, "not a plain path");
-        }
-        comps[ncomps++] = p;
-    }
-    for (const char *h = home; *h; h++) {
-        nhome += *h == '/';
-    }
-    /* .../vitrine/stack/<build>/bin/qemu-system-<arch> */
-    if (ncomps < nhome + 5) {
-        return fail_setcap(path, "not a QEMU of vitrine's stack");
-    }
-    for (int i = 0; i < 4; i++) {
-        if (tail[i] && strcmp(comps[ncomps - 5 + i], tail[i]) != 0) {
-            return fail_setcap(path, "not a QEMU of vitrine's stack");
-        }
-    }
-    {
-        const char *base = comps[ncomps - 1];
-        bool ok = strncmp(base, "qemu-system-", 12) == 0 && base[12];
-
-        for (const char *a = base + 12; ok && *a; a++) {
-            ok = (*a >= 'a' && *a <= 'z') || (*a >= '0' && *a <= '9') || *a == '_';
-        }
-        if (!ok) {
-            return fail_setcap(path, "not a QEMU of vitrine's stack");
-        }
-    }
-
-    /* the walk: no links followed, nothing writable by others from the home down */
-    if ((fd = open("/", O_PATH | O_DIRECTORY | O_CLOEXEC)) < 0) {
-        return fail_setcap(path, strerror(errno));
-    }
-    for (int i = 0; i < ncomps; i++) {
-        bool last = i == ncomps - 1;
-        int next = openat(fd, comps[i], O_PATH | O_NOFOLLOW | O_CLOEXEC | (last ? 0 : O_DIRECTORY));
-
-        err = errno;
-        close(fd);
-        if (next < 0) {
-            return fail_setcap(path, err == ELOOP || err == ENOTDIR
-                                         ? "a link in the path: give the real path"
-                                         : strerror(err));
-        }
-        fd = next;
-        if (fstat(fd, &st) < 0) {
-            err = errno;
-            close(fd);
-            return fail_setcap(path, strerror(err));
-        }
-        if (!last && i >= nhome - 1 &&
-            ((st.st_uid != caller_uid && st.st_uid != 0) || (st.st_mode & S_IWOTH) ||
-             ((st.st_mode & S_IWGRP) && st.st_gid != pw->pw_gid))) {
-            close(fd);
-            return fail_setcap(path, "a folder on the way is writable by others");
-        }
-    }
-    if (S_ISLNK(st.st_mode)) {
-        close(fd);
-        return fail_setcap(path, "a link in the path: give the real path");
-    }
-    if (!S_ISREG(st.st_mode) || st.st_uid != caller_uid) {
-        close(fd);
-        return fail_setcap(path, "not a file of the caller's");
-    }
-    if (st.st_nlink != 1 || (st.st_mode & (S_ISUID | S_ISGID))) {
-        close(fd);
-        return fail_setcap(path, "a file with other links or a setuid/setgid bit");
-    }
-    if (fstatvfs(fd, &vfs) == 0 && (vfs.f_flag & ST_NOSUID)) {
-        close(fd);
-        return fail_setcap(path, "on a nosuid mount, where file capabilities are ignored");
-    }
-    /* the very file checked, opened for real through its O_PATH descriptor */
-    snprintf(proc, sizeof(proc), "/proc/self/fd/%d", fd);
-    rfd = open(proc, O_RDONLY | O_CLOEXEC | O_NOCTTY);
-    err = errno;
-    close(fd);
-    if (rfd < 0) {
-        return fail_setcap(path, strerror(err));
-    }
-    if (fstat(rfd, &st2) < 0 || st2.st_dev != st.st_dev || st2.st_ino != st.st_ino) {
-        close(rfd);
-        return fail_setcap(path, "the file changed while checked");
-    }
-    if (pread(rfd, &eh, sizeof(eh), 0) != (ssize_t)sizeof(eh) ||
-        memcmp(eh.e_ident, ELFMAG, SELFMAG) != 0 || eh.e_ident[EI_CLASS] != ELFCLASS64 ||
-        (eh.e_type != ET_EXEC && eh.e_type != ET_DYN) || eh.e_machine != HOST_EM) {
-        close(rfd);
-        return fail_setcap(path, "not an executable for this machine");
-    }
-    if (fchmod(rfd, 0700) < 0 || (err = sys_set_file_cap(rfd, path)) < 0) {
-        err = err < 0 ? -err : errno;
-        close(rfd);
-        return fail_setcap(path, strerror(err));
-    }
-    close(rfd);
-    sys_log("uid %u: cap_sys_nice=ep on %s", (unsigned)caller_uid, path);
-    reply("ok setcap %s: cap_sys_nice=ep, mode 0700", path);
-    return 0;
 }

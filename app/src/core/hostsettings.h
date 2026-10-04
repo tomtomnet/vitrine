@@ -19,9 +19,10 @@ class VmStore;
 /*
  * The host settings that keep VMs smooth, for as long as they run: the
  * kernel's fair server at 10 ms / 1 ms, a GPU clock floor on AMD APUs,
- * real-time QEMU threads, and for VMs whose GPU has native context higher
- * udmabuf limits.  They need root: vitrine-helper applies them,
- * started with pkexec when a VM starts.  Members of the vitrine group need
+ * real-time QEMU threads for the VM in front (with the fair server only),
+ * and for VMs whose GPU has native context higher udmabuf limits.  They
+ * need root: vitrine-helper applies them, started with pkexec when a VM
+ * starts; QEMU itself gets no privilege.  Members of the vitrine group need
  * no password; polkit is asked first, without interaction, each time the
  * helper starts (a membership given or taken meanwhile counts), so that
  * everyone else gets their VMs untuned, never a password dialog at each
@@ -75,9 +76,9 @@ public:
      */
     static void check(QObject *context, const std::function<void(const Status &)> &done);
 
-    /* Tunes for the VMs of @store as they start or are found running, and
-       gives vitrine's QEMU its capability: each new build, and one that
-       lacks it (built before the group was joined, or with tuning off) */
+    /* Tunes for the VMs of @store as they start or are found running; and
+       takes back the capability an older vitrine gave its QEMU builds
+       (stripCapabilities()) */
     explicit HostSettings(VmStore *store, QObject *parent = nullptr);
     /* Lets the helper go on alone: it keeps the settings while VMs run */
     ~HostSettings() override;
@@ -106,13 +107,15 @@ public:
     static QStringList amdCards(const QString &sysRoot, bool apus);
 
     /*
-     * cap_sys_nice=ep on @qemu, a QEMU of vitrine's stack, through the
-     * helper: QEMU may then make its vCPUs real-time itself and get
-     * high-priority amdgpu contexts.  Only without a password (members of
-     * the vitrine group).  @done gets an empty string, or why not.
+     * The QEMU builds under @stack (<stack>/<build>/bin/qemu-system-*) that
+     * an older vitrine-helper gave cap_sys_nice: the capability removed, as
+     * their owner (the kernel clears it at a chown to the same owner, which
+     * needs no write: a VM may run from the file).  QEMU no longer needs it,
+     * and it cost secure-exec (no LD_LIBRARY_PATH, LD_PRELOAD, TMPDIR), core
+     * dumps and debuggers, and gave a guest that escaped into QEMU the
+     * scheduling of every host process.  The files it took it from.
      */
-    static void grantCapability(const QString &qemu, QObject *context,
-                                const std::function<void(const QString &error)> &done);
+    static QStringList stripCapabilities(const QString &stack);
 
     /*
      * What a VM start does, for the QEMU @pid; @udmabuf: its GPU has native
@@ -128,15 +131,15 @@ public:
     void preferencesChanged();
 
     /*
-     * Focus priority: the vCPUs of the VM in front - its console or
-     * full-screen window has the focus - real-time, those of the other VMs
-     * ordinary (nice -5), so that VMs busy in the background cannot take
-     * every CPU at real-time priority.  A host window in front changes
-     * nothing: the VM last in front keeps them.  Through QEMU's own
-     * x-vcpu-priority, or the helper's rt where QEMU lacks CAP_SYS_NICE.
-     * A VM started later, or tuned again, goes behind once the helper's rt
-     * is done with it.  VMs in QEMU's own window (SDL) are left real-time:
-     * which window the desktop has in front is not known here.
+     * Focus priority: the threads of the VM in front - its console or
+     * full-screen window has the focus - real-time (the helper's rt), those
+     * of the other VMs ordinary, their vCPUs at nice -5 (the helper's
+     * behind), so that VMs busy in the background cannot take every CPU at
+     * real-time priority.  A host window in front changes nothing: the VM
+     * last in front keeps them.  A VM started later, or tuned again, starts
+     * behind.  VMs in QEMU's own window (SDL) are left real-time: which
+     * window the desktop has in front is not known here.  Real-time only
+     * where the helper could set the fair server.
      */
     void setFront(const QString &vmId);
     /* The app's (MainWindow makes it), for setFront(); null before */
@@ -230,6 +233,8 @@ private:
     void vmStateChanged(Vm *vm);
     /* @vm in front or behind, as m_front says */
     void applyFront(Vm *vm);
+    /* The QEMU @pid is a VM's that goes behind: another is in front */
+    bool behind(qint64 pid) const;
     void start();
     void spawn(const QStringList &command);
     void readHelper();
@@ -256,9 +261,6 @@ private:
     void queue(qint64 pid);
     /* Each VM running untuned tuned again (the group set up, say) */
     void retune();
-    /* grantCapability() for the stack's QEMU if it has none, once per run
-       and binary, polkit asked first (its own action) */
-    void ensureCapability();
     void say(const QString &text);
 
     VmStore *m_store;
@@ -274,7 +276,6 @@ private:
     bool m_groupSuggested = false;
     bool m_settingUp = false;
     int m_rechecks = 0;                 // recheck()s under way
-    QSet<QString> m_capabilityTried;    // ensureCapability(): QEMUs asked for
     QSet<qint64> m_udmabuf;             // QEMUs that need the udmabuf limits
     QList<qint64> m_udmabufAsked;       // their requests sent, not answered yet
     int m_restarts = 0;

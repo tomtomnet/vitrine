@@ -275,10 +275,20 @@ private:
         }
         return true;
     }
-    /* The threads of @pid */
+    /* The threads of @pid, and those named as QEMU names its vCPUs */
     static QStringList tids(qint64 pid)
     {
         return QDir(QString("/proc/%1/task").arg(pid)).entryList(QDir::Dirs | QDir::NoDotAndDotDot);
+    }
+    static QStringList vcpus(qint64 pid)
+    {
+        QStringList out;
+        for (const QString &tid : tids(pid)) {
+            if (readFile(QString("/proc/%1/task/%2/comm").arg(pid).arg(tid)).startsWith("CPU ")) {
+                out << tid;
+            }
+        }
+        return out;
     }
     /* What the fake kernel has for @tid: "policy priority nice", "" if untouched */
     QString schedOf(const QString &tid) const
@@ -478,6 +488,9 @@ private slots:
         QCOMPARE(h.answer("rt " + qemu.pidText()),
                  QString("skip rt %1: the fair server is not set: kernel lockdown (integrity)")
                      .arg(qemu.pid()));
+        /* behind: nothing real-time to put back, no nice either */
+        QCOMPARE(h.answer("behind " + qemu.pidText()),
+                 QString("ok behind %1: 0 threads ordinary, 0 vCPUs at nice -5").arg(qemu.pid()));
         QVERIFY(journal().filter(QRegularExpression("^(sched|nice) ")).isEmpty());
         QVERIFY(fairAll("1000000000/50000000"));
         h.ask("release");
@@ -758,6 +771,62 @@ private slots:
         QCOMPARE(stateFiles(), QStringList({"lock"}));
         b.closeInput();
         QVERIFY(b.finished());
+    }
+
+    /*
+     * A VM behind the one in front: every thread real-time made ordinary
+     * again, its vCPUs ("CPU n/KVM") at nice -5; in front again: real-time;
+     * at the end everything as it was
+     */
+    void behindAndFront()
+    {
+        FakeQemu qemu;
+        Helper h(m_root);
+        QVERIFY(h.ready());
+        h.answer("watch " + qemu.pidText());
+        QVERIFY(h.answer("fair-server on").startsWith("ok fair-server on"));
+        const QStringList cpus = vcpus(qemu.pid());
+        QCOMPARE(cpus.size(), 2);
+        QCOMPARE(h.answer("rt " + qemu.pidText()),
+                 QString("ok rt %1: 4 of 4 threads real-time").arg(qemu.pid()));
+        QCOMPARE(h.answer("behind " + qemu.pidText()),
+                 QString("ok behind %1: 4 threads ordinary, 2 vCPUs at nice -5").arg(qemu.pid()));
+        for (const QString &tid : tids(qemu.pid())) {
+            QCOMPARE(schedOf(tid), QString("0 0 %1").arg(cpus.contains(tid) ? -5 : 0));
+        }
+        QVERIFY(readFile(path("/run/vitrine-helper/sched-" + qemu.pidText() + ".state"))
+                    .endsWith(" niced 1\n"));
+        /* again: nothing more to do */
+        QCOMPARE(h.answer("behind " + qemu.pidText()),
+                 QString("ok behind %1: 0 threads ordinary, 0 vCPUs at nice -5").arg(qemu.pid()));
+        /* in front again */
+        QCOMPARE(h.answer("rt " + qemu.pidText()),
+                 QString("ok rt %1: 4 of 4 threads real-time").arg(qemu.pid()));
+        h.ask("release");
+        QVERIFY(h.finished());
+        QVERIFY(h.all().contains(QString("restored rt %1: 4 threads back to SCHED_OTHER, vCPUs back "
+                                         "to nice 0").arg(qemu.pid())));
+        for (const QString &tid : tids(qemu.pid())) {
+            QCOMPARE(schedOf(tid), QString("0 0 0"));
+        }
+        QCOMPARE(stateFiles(), QStringList({"lock"}));
+    }
+
+    /* Behind from the start (a VM that starts while another is in front) */
+    void behindFromTheStart()
+    {
+        FakeQemu qemu;
+        Helper h(m_root);
+        QVERIFY(h.ready());
+        h.answer("watch " + qemu.pidText());
+        QVERIFY(h.answer("fair-server on").startsWith("ok fair-server on"));
+        QCOMPARE(h.answer("behind " + qemu.pidText()),
+                 QString("ok behind %1: 0 threads ordinary, 2 vCPUs at nice -5").arg(qemu.pid()));
+        qemu.stop();
+        QVERIFY(h.finished());
+        QVERIFY(journal().filter("sched ").isEmpty());
+        QCOMPARE(journal().filter(QRegularExpression("^nice \\d+ -5$")).size(), 2);
+        QCOMPARE(stateFiles(), QStringList({"lock"}));
     }
 
     /* Restore only what still holds the value written */
@@ -1532,99 +1601,6 @@ private slots:
         QCOMPARE(field(pid, "SigIgn"), ignored);
     }
 
-    void setcapValidation()
-    {
-        struct passwd *pw = getpwuid(getuid());
-        QVERIFY(pw);
-        const QString home = QDir(pw->pw_dir).canonicalPath();
-        const QString work = QDir(TEST_WORK_DIR).absolutePath() + "/setcap";
-        if (!work.startsWith(home + '/')) {
-            QSKIP("the build folder is not in the home folder");
-        }
-        QDir(work).removeRecursively();
-        const QString bin = work + "/data/vitrine/stack/0123abcd/bin";
-        const QString qemu = bin + "/qemu-system-x86_64";
-        QVERIFY(QDir().mkpath(bin));
-        QVERIFY(QFile::copy(FAKE_QEMU, qemu));
-        chmod(qPrintable(qemu), 0755);
-
-        auto setcap = [this](const QString &target, QString *out = nullptr) {
-            QProcess p;
-            QProcessEnvironment env = QProcessEnvironment::systemEnvironment();
-            env.insert("VITRINE_HELPER_TEST_ROOT", m_root);
-            env.remove("PKEXEC_UID");
-            env.remove("SUDO_UID");
-            p.setProcessEnvironment(env);
-            p.start(HELPER_FAKE, {"setcap", target});
-            p.waitForFinished();
-            if (out) {
-                *out = QString::fromUtf8(p.readAllStandardOutput()).trimmed();
-            }
-            return p.exitCode();
-        };
-        QString out;
-        QCOMPARE(setcap(qemu, &out), 0);
-        QCOMPARE(out, "ok setcap " + qemu + ": cap_sys_nice=ep, mode 0700");
-        QVERIFY(journal().contains("setcap " + qemu));
-        QCOMPARE(int(QFileInfo(qemu).permissions() & 0x0077), 0);
-        struct stat st;
-        QCOMPARE(stat(qPrintable(qemu), &st), 0);
-        QCOMPARE(st.st_mode & 07777, mode_t(0700));
-
-        auto refused = [&](const QString &target, const QString &why) {
-            QString text;
-            const int status = setcap(target, &text);
-            if (status != 1 || text != "error setcap " + target + ": " + why) {
-                qWarning() << target << text;
-                return false;
-            }
-            return true;
-        };
-        QVERIFY(refused("relative/qemu-system-x86_64", "give an absolute path"));
-        QVERIFY(refused("/tmp/vitrine/stack/x/bin/qemu-system-x86_64", "not in the caller's home folder"));
-        QVERIFY(refused(bin + "/../bin/qemu-system-x86_64", "not a plain path"));
-        QVERIFY(refused(bin + "//qemu-system-x86_64", "not a plain path"));
-        QVERIFY(refused(work + "/data/vitrine/stack/bin/qemu-system-x86_64", "not a QEMU of vitrine's stack"));
-        QVERIFY(refused(bin + "/qemu-system-X86", "not a QEMU of vitrine's stack"));
-        QVERIFY(refused(bin + "/qemu-img", "not a QEMU of vitrine's stack"));
-        QVERIFY(refused(bin + "/qemu-system-aarch64", "No such file or directory"));
-        /* a link on the way, or as the file */
-        QVERIFY(QFile::link(work + "/data/vitrine/stack/0123abcd", work + "/data/vitrine/stack/current"));
-        QVERIFY(refused(work + "/data/vitrine/stack/current/bin/qemu-system-x86_64",
-                        "a link in the path: give the real path"));
-        QVERIFY(QFile::link(qemu, bin + "/qemu-system-i386"));
-        QVERIFY(refused(bin + "/qemu-system-i386", "a link in the path: give the real path"));
-        /* not an executable for this machine */
-        QVERIFY(writeFile(bin + "/qemu-system-riscv64", "#!/bin/sh\n"));
-        QVERIFY(refused(bin + "/qemu-system-riscv64", "not an executable for this machine"));
-        /* a second link to the file */
-        QVERIFY(::link(qPrintable(qemu), qPrintable(work + "/other")) == 0);
-        QVERIFY(refused(qemu, "a file with other links or a setuid/setgid bit"));
-        QFile::remove(work + "/other");
-        /* a folder others may write to */
-        chmod(qPrintable(bin), 0777);
-        QVERIFY(refused(qemu, "a folder on the way is writable by others"));
-        chmod(qPrintable(bin), 0755);
-        /* setuid */
-        chmod(qPrintable(qemu), 04700);
-        QVERIFY(refused(qemu, "a file with other links or a setuid/setgid bit"));
-        chmod(qPrintable(qemu), 0700);
-        QCOMPARE(setcap(qemu), 0);
-        /* another user asking */
-        {
-            QProcess p;
-            QProcessEnvironment env = QProcessEnvironment::systemEnvironment();
-            env.insert("VITRINE_HELPER_TEST_ROOT", m_root);
-            env.insert("PKEXEC_UID", "0");
-            p.setProcessEnvironment(env);
-            p.start(HELPER_FAKE, {"setcap", qemu});
-            p.waitForFinished();
-            QCOMPARE(p.exitCode(), 1);
-            QVERIFY(QString::fromUtf8(p.readAllStandardOutput()).contains("not in the caller's home folder"));
-        }
-        QDir(work).removeRecursively();
-    }
-
     /*
      * setup-group: the caller (and only the caller) in the vitrine group,
      * created if need be; nothing changed when done already; no argument
@@ -1824,7 +1800,6 @@ private slots:
          * verb
          */
         const QMap<QString, QString> verbs{{"org.vitrine.helper", "session"},
-                                           {"org.vitrine.helper.setcap", "setcap"},
                                            {"org.vitrine.helper.setup-group", "setup-group"}};
         QCOMPARE(actions.keys(), verbs.keys());
         for (const QString &id : verbs.keys()) {
@@ -1835,11 +1810,12 @@ private slots:
                 QCOMPARE(a.value(when), QString("auth_admin"));
             }
         }
-        /* the group's rule: session and setcap, never setup-group */
+        /* the group's rule: the session, never setup-group (and no setcap,
+           which is gone: QEMU gets no capability) */
         const QByteArray rules = readFile(HELPER_RULES);
-        QVERIFY(rules.contains("(action.id == \"org.vitrine.helper\" || "
-                               "action.id == \"org.vitrine.helper.setcap\")"));
+        QVERIFY(rules.contains("if (action.id == \"org.vitrine.helper\" &&"));
         QVERIFY(!rules.contains("\"org.vitrine.helper.setup-group\""));
+        QVERIFY(!rules.contains("setcap"));
         QVERIFY(!rules.contains("indexOf") && !rules.contains("startsWith"));
         QVERIFY(rules.contains("subject.isInGroup(\"vitrine\")"));
         QVERIFY(rules.contains("subject.local && subject.active"));

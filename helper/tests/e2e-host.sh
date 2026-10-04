@@ -8,8 +8,10 @@
 # must be back as it was.  Then: a helper killed while holding the settings
 # (the next one restores them), vitrine gone while the VM runs (stdin
 # closed), two helpers, a udmabuf limit changed by hand meanwhile (left as
-# it is), and the file capability on a copy of QEMU, with x-vcpu-priority
-# through it, and the app's HostSettings driving this helper.
+# it is), focus priority on a real QEMU's threads (rt for the VM in front,
+# behind for the others: vCPUs at nice -5), the capability an older vitrine
+# gave its QEMU taken back by the app, and the app's HostSettings driving
+# this helper.
 #
 #   helper/tests/e2e-host.sh [BUILD_DIR]
 #
@@ -402,36 +404,60 @@ if [ -n "$udma_before" ]; then
 fi
 
 # ======================================================================
-echo "== 4. setcap on a copy of QEMU in a stack layout, x-vcpu-priority through it"
-stackbin=$dev/data/vitrine/stack/e2e0000000000000/bin
-mkdir -p "$stackbin"
-cp "$qemu" "$stackbin/qemu-system-x86_64"
-out=$(sudo -n "$helper" setcap "$stackbin/qemu-system-x86_64")
-check "setcap: $out" '[ "$out" = "ok setcap $stackbin/qemu-system-x86_64: cap_sys_nice=ep, mode 0700" ]'
-check "getcap shows cap_sys_nice=ep" 'getcap "$stackbin/qemu-system-x86_64" | grep -q "cap_sys_nice=ep"'
-out=$(sudo -n "$helper" setcap "$qemu")
-check "setcap refuses the export's QEMU: $out" 'echo "$out" | grep -q "^error setcap .*: not a QEMU of vitrine.s stack"'
-out=$(sudo -n "$helper" setcap /usr/bin/python3)
-check "setcap refuses a system file: $out" 'echo "$out" | grep -q "^error setcap /usr/bin/python3: not in the caller.s home folder"'
-"$stackbin/qemu-system-x86_64" -L "$pcbios" -name e2e-cap,debug-threads=on -machine q35 -accel kvm -smp 2 -m 256M -display none -S \
-	-qmp unix:"$dev/q4.sock",server=on,wait=off > "$dev/q4.log" 2>&1 &
+echo "== 4. focus priority on a real QEMU: rt in front, behind (vCPUs at nice -5), back"
+"$qemu" -L "$pcbios" -name e2e-focus,debug-threads=on -machine q35 -accel kvm -smp 2 -m 256M \
+	-display none -S > "$dev/q4.log" 2>&1 &
 q4=$!
 pids+=("$q4")
 sleep 1
-check "the capable QEMU runs" 'kill -0 $q4'
-check "it has CAP_SYS_NICE effective" '[ $(( 0x$(awk "/^CapEff/ {print \$2}" /proc/$q4/status) >> 23 & 1 )) = 1 ]'
-qmp() { printf '{"execute":"qmp_capabilities"}\n%s\n' "$1" | socat -t 2 - UNIX-CONNECT:"$dev/q4.sock" | tail -1 | tr -d '\r'; }
-r=$(qmp '{"execute":"x-vcpu-priority","arguments":{"realtime":true}}')
-check "x-vcpu-priority realtime: $r" '[ "$r" = "{\"return\": {}}" ]'
-vcpus_fifo() { local t n=0; for t in /proc/$q4/task/*; do grep -q "^CPU" $t/comm || continue; chrt -p ${t##*/} | grep -q "policy: SCHED_FIFO" || return 1; n=$((n + 1)); done; [ $n -gt 0 ]; }
-check "its vCPUs SCHED_FIFO" vcpus_fifo
-r=$(qmp '{"execute":"x-vcpu-priority","arguments":{"realtime":false}}')
-check "x-vcpu-priority back to ordinary (nice -5): $r" '[ "$r" = "{\"return\": {}}" ] && ! vcpus_fifo'
-check "and back to real-time again (needs the capability)" '[ "$(qmp "{\"execute\":\"x-vcpu-priority\",\"arguments\":{\"realtime\":true}}")" = "{\"return\": {}}" ] && vcpus_fifo'
+# "policy nice" of a thread: /proc/PID/task/TID/stat fields 41 and 19
+thread_sched() { awk '{print $41 " " $19}' "/proc/$q4/task/$1/stat"; }
+vcpus4() { local t; for t in /proc/$q4/task/*; do grep -q "^CPU [0-9]*/KVM" "$t/comm" && echo "${t##*/}"; done; }
+others4() { local t; for t in /proc/$q4/task/*; do grep -q "^CPU [0-9]*/KVM" "$t/comm" || echo "${t##*/}"; done; }
+all_threads() {   # expected "policy nice" for the vCPUs, then for the others
+	local t
+	for t in $(vcpus4); do [ "$(thread_sched "$t")" = "$1" ] || return 1; done
+	for t in $(others4); do [ "$(thread_sched "$t")" = "$2" ] || return 1; done
+	[ -n "$(vcpus4)" ]
+}
+check "QEMU's vCPU threads named CPU n/KVM: $(vcpus4 | wc -l)" '[ "$(vcpus4 | wc -l)" = 2 ]'
+start_helper "session 4"
+say "watch $q4"; expect "watch" "ok watch $q4"
+say "fair-server on"; expect "fair server" "ok fair-server on: .*"
+say "rt $q4"; expect "rt (in front)" "ok rt $q4: ([0-9]+) of ([0-9]+) threads real-time"
+check "in front: every thread SCHED_FIFO" 'all_threads "1 0" "1 0"'
+say "behind $q4"; expect "behind" "ok behind $q4: [0-9]+ threads ordinary, 2 vCPUs at nice -5"
+check "behind: vCPUs SCHED_OTHER nice -5, the others SCHED_OTHER nice 0" 'all_threads "0 -5" "0 0"'
+say "rt $q4"; expect "rt (in front again)" "ok rt $q4: .*"
+check "in front again: every thread SCHED_FIFO" 'all_threads "1 -5" "1 0"'
+say "behind $q4"; expect "behind again" "ok behind $q4: .*"
+say "release"
+wait_for "release puts the threads back" "restored rt $q4: [0-9]+ threads back to SCHED_OTHER, vCPUs back to nice 0"
+wait_for "helper ends" "bye"
+check "released: every thread SCHED_OTHER nice 0" 'all_threads "0 0" "0 0"'
+check "fair server as found" '[ "$(fair_now)" = "$fair_before" ]'
 kill $q4; wait $q4 2> /dev/null
-# a write drops the capability, as the kernel does on every write
-cat "$qemu" > "$stackbin/qemu-system-x86_64"
-check "rewritten: the capability is gone" '[ -z "$(getcap "$stackbin/qemu-system-x86_64")" ]'
+
+echo "== 4b. the capability an older vitrine gave its QEMU: taken back by the app"
+stackbin=$dev/data/vitrine/stack/e2e0000000000000/bin
+mkdir -p "$stackbin"
+cp "$qemu" "$stackbin/qemu-system-x86_64"
+sudo -n setcap cap_sys_nice=ep "$stackbin/qemu-system-x86_64"
+check "set by hand, as an older helper did: $(getcap "$stackbin/qemu-system-x86_64")" \
+	'getcap "$stackbin/qemu-system-x86_64" | grep -q "cap_sys_nice=ep"'
+# a VM running from it meanwhile: the capability goes all the same (no write)
+"$stackbin/qemu-system-x86_64" -L "$pcbios" -machine none -display none -S > /dev/null 2>&1 &
+q4b=$!
+pids+=("$q4b")
+sleep 1
+if [ -x "$build/app/test_hostsettings" ]; then
+	out=$(VITRINE_TEST_CAP_STACK=$dev/data/vitrine/stack "$build/app/test_hostsettings" capabilityStripped 2>&1)
+	check "the app took it back" 'echo "$out" | grep -q "^PASS   : TestHostSettings::capabilityStripped()"'
+else
+	echo "  (no $build/app/test_hostsettings: skipped)"
+fi
+check "getcap shows none" '[ -z "$(getcap "$stackbin/qemu-system-x86_64")" ]'
+kill $q4b; wait $q4b 2> /dev/null
 rm -rf "$dev/data"
 
 # ======================================================================

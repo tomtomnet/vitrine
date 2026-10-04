@@ -66,8 +66,6 @@ int sys_setsched(pid_t tid, int policy, int priority);
 /* A thread's nice value: 0 or -errno */
 int sys_getnice(pid_t tid, int *nice);
 int sys_setnice(pid_t tid, int nice);
-/* cap_sys_nice=ep on the open file @fd (@path for messages): 0 or -errno */
-int sys_set_file_cap(int fd, const char *path);
 /* An entry in the system log (the journal), for the record of what root did */
 void sys_log(const char *fmt, ...) __attribute__((format(printf, 1, 2)));
 /* The group @name in the user database: 1 with its gid in @gid, 0 if there
@@ -120,8 +118,8 @@ void udmabuf_check(void);
    one to hold */
 void settings_release(void);
 
-/* The record of a QEMU whose threads this helper made real-time, for the
-   next helper to put back
+/* The record of a QEMU whose threads this helper made real-time or ordinary
+   at nice BEHIND_NICE (rt- and behind-), for the next helper to put back
    should this one die: taken (or updated) before the change; false when it
    cannot be, and then nothing is changed */
 struct watched;
@@ -129,7 +127,7 @@ bool sched_hold(struct watched *w);
 /* Lets go of it: the threads put back by the last holder, if still there */
 void sched_drop(struct watched *w);
 
-/* --- process.c: QEMU processes, real-time threads, file capability --- */
+/* --- process.c: QEMU processes and their threads' scheduling --- */
 
 /* The caller: PKEXEC_UID, else SUDO_UID, else the real uid of a non-root run */
 extern uid_t caller_uid;
@@ -152,8 +150,10 @@ extern int nwatched;
 bool watch(const char *arg);
 /* The watched process with this pid, or NULL */
 struct watched *find_watched(const char *arg);
-/* The protocol's rt <pid> */
+/* The protocol's rt <pid>: the VM in front */
 void rt_on(const char *arg);
+/* The protocol's behind <pid>: a VM behind the one in front */
+void behind(const char *arg);
 /* Every watched QEMU's threads as they were before rt and behind */
 void rt_off_all(void);
 /* Forgets watched[i], which has exited */
@@ -165,8 +165,6 @@ void unwatch(int i);
  * many when @say.
  */
 void sched_restore(pid_t pid, unsigned long long start, bool niced, bool say);
-/* vitrine-helper setcap PATH: the exit status */
-int setcap(const char *path);
 
 /* --- group.c: the vitrine group --- */
 
