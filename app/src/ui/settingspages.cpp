@@ -950,7 +950,11 @@ void SharesPage::edit(int row)
             others << m_shares[i].tag;
         }
     }
-    ShareDialog dialog(adding ? VmConfig::Share() : m_shares[row], others, this);
+    /* a new one read-only: a guest that can write to a host folder can
+       change what the host runs from it, which the user allows by choice */
+    VmConfig::Share fresh;
+    fresh.readonly = true;
+    ShareDialog dialog(adding ? fresh : m_shares[row], others, this);
     if (dialog.exec() != QDialog::Accepted) {
         return;
     }
