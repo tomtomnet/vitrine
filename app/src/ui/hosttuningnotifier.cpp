@@ -60,8 +60,9 @@ bool HostTuningNotifier::eventFilter(QObject *watched, QEvent *event)
 
 QString HostTuningNotifier::summary()
 {
-    return tr("Real-time QEMU threads, a shorter kernel fair-server period and a GPU clock "
-              "floor while VMs run, put back after the last one.");
+    return tr("Real-time QEMU threads, a shorter kernel fair-server period, a GPU clock floor "
+              "and, for native-context VMs, higher udmabuf limits while VMs run, put back after "
+              "the last one.");
 }
 
 QString HostTuningNotifier::fix(const HostSettings::Status &status)
@@ -175,8 +176,9 @@ void HostTuningNotifier::ask(const HostSettings::Status &status)
     auto *box = Widgets::messageBox(
         QMessageBox::Question, tr("Tune the Host for VMs?"),
         "<p>" + tr("Vitrine can tune the host while VMs run: real-time QEMU threads, a shorter "
-                   "kernel fair-server period and a GPU clock floor, put back after the last "
-                   "VM.") + "</p><p>" +
+                   "kernel fair-server period, a GPU clock floor and higher udmabuf limits, "
+                   "without which native-context VMs copy the windows of Qt Widgets and GTK "
+                   "apps. All of it is put back after the last VM.") + "</p><p>" +
             tr("vitrine-helper does it as root, without a password for members of the vitrine "
                "group.") + ' ' + group + ' ' +
             tr("It asks for an administrator's password once.") + "</p><p>" +

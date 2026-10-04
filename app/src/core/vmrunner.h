@@ -40,6 +40,11 @@ public:
     QString errorString() const;
     /* <dir>/qemu.log: the output of QEMU and virtiofsd during the last run */
     QString logPath() const;
+    /*
+     * @text in the log, each of its lines as a "vitrine: " note, as start()
+     * writes what it did: for what vitrine finds out about the run later
+     */
+    void appendNote(const QString &text) const;
     /* The full QEMU command line for @args, as start() would run it */
     QStringList commandLine(const ArgsFile &args) const;
     /*

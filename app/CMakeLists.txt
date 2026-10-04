@@ -42,6 +42,8 @@ qt_add_library(vitrine_core STATIC
     src/core/snapshots.h
     src/core/stackbuilder.cpp
     src/core/stackbuilder.h
+    src/core/udmabuf.cpp
+    src/core/udmabuf.h
     src/core/updatecheck.cpp
     src/core/updatecheck.h
     src/core/vmconfig.cpp
@@ -192,6 +194,8 @@ qt_add_library(vitrine_ui STATIC
     src/ui/stackbanner.h
     src/ui/textdialog.cpp
     src/ui/textdialog.h
+    src/ui/udmabufnotifier.cpp
+    src/ui/udmabufnotifier.h
     src/ui/uiconfig.cpp
     src/ui/uiconfig.h
     src/ui/updatenotifier.cpp
@@ -290,6 +294,7 @@ if(BUILD_TESTING)
             qmpclient
             snapshots
             stackbuilder
+            udmabuf
             updatecheck
             vmcloner
             vmconfig
@@ -307,7 +312,8 @@ if(BUILD_TESTING)
             cardupdatedialog
             newvmdialog
             settingspages
-            stackbanner)
+            stackbanner
+            udmabufnotifier)
         qt_add_executable(test_${name} tests/test_${name}.cpp)
         target_link_libraries(test_${name} PRIVATE vitrine_ui Qt6::Test)
         add_test(NAME ${name} COMMAND test_${name})
@@ -323,6 +329,10 @@ if(BUILD_TESTING)
     # the same stand-in, for QEMUs found running
     target_compile_definitions(test_vmrunner PRIVATE FAKE_QEMU="$<TARGET_FILE:fake-qemu>")
     add_dependencies(test_vmrunner fake-qemu)
+    target_compile_definitions(test_udmabuf PRIVATE FAKE_QEMU="$<TARGET_FILE:fake-qemu>")
+    add_dependencies(test_udmabuf fake-qemu)
+    target_compile_definitions(test_udmabufnotifier PRIVATE FAKE_QEMU="$<TARGET_FILE:fake-qemu>")
+    add_dependencies(test_udmabufnotifier fake-qemu)
 
     # VmView against a stand-in for QEMU's display (QMP and D-Bus), offscreen
     qt_add_executable(test_vmview tests/test_vmview.cpp)

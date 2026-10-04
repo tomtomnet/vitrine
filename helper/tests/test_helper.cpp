@@ -29,6 +29,7 @@ extern char **environ;
 
 static const char kFair[] = "/sys/kernel/debug/sched/fair_server";
 static const char kCard[] = "/sys/class/drm/card1/device";
+static const char kUdmabuf[] = "/sys/module/udmabuf/parameters";
 
 static bool writeFile(const QString &path, const QByteArray &data)
 {
@@ -226,6 +227,17 @@ private:
         return true;
     }
     QString level() const { return value(QString(kCard) + "/power_dpm_force_performance_level"); }
+    void setUdmabuf(qint64 list, qint64 sizeMb) const
+    {
+        writeFile(path(QString(kUdmabuf) + "/list_limit"), QByteArray::number(list) + '\n');
+        writeFile(path(QString(kUdmabuf) + "/size_limit_mb"), QByteArray::number(sizeMb) + '\n');
+    }
+    /* "list_limit/size_limit_mb" */
+    QString udmabuf() const
+    {
+        return QString("%1/%2").arg(value(QString(kUdmabuf) + "/list_limit"),
+                                    value(QString(kUdmabuf) + "/size_limit_mb"));
+    }
     QByteArray odTable() const { return readFile(path(QString(kCard) + "/pp_od_clk_voltage")); }
     /* what the helpers leave in their state folder */
     QStringList stateFiles() const
@@ -236,6 +248,17 @@ private:
     {
         return QFile::exists(path("/run/vitrine-helper/" + key + ".state"));
     }
+    /* cardN: an APU like the Radeon 780M */
+    void amdApu(int n) const
+    {
+        const QString card = path(QString("/sys/class/drm/card%1/device").arg(n));
+        writeFile(card + "/vendor", "0x1002\n");
+        writeFile(card + "/power_dpm_force_performance_level", "auto\n");
+        writeFile(card + "/pp_od_clk_voltage", od(800, 2700));
+        /* gpu_metrics header: size 120, format 2 (an APU's), content 1 */
+        writeFile(card + "/gpu_metrics", QByteArray("\x78\x00\x02\x01", 4) + QByteArray(116, 0));
+        QFile::link("../../../../bus/pci/drivers/amdgpu", card + "/driver");
+    }
     /* the kernel's defaults and an APU like the Radeon 780M */
     void makeTree()
     {
@@ -245,14 +268,10 @@ private:
         for (int i = 0; i < m_cpus; i++) {
             setFair(i, 1000000000, 50000000);
         }
-        const QString card = path(kCard);
-        writeFile(card + "/vendor", "0x1002\n");
-        writeFile(card + "/power_dpm_force_performance_level", "auto\n");
-        writeFile(card + "/pp_od_clk_voltage", od(800, 2700));
-        /* gpu_metrics header: size 120, format 2 (an APU's), content 1 */
-        writeFile(card + "/gpu_metrics", QByteArray("\x78\x00\x02\x01", 4) + QByteArray(116, 0));
-        QFile::link("../../../../bus/pci/drivers/amdgpu", card + "/driver");
+        amdApu(1);
         writeFile(path("/sys/class/drm/card0/device/vendor"), "0x8086\n");
+        /* the kernel's defaults */
+        setUdmabuf(1024, 64);
     }
 
 private slots:
@@ -626,6 +645,280 @@ private slots:
         QCOMPARE(odTable(), od(800, 2700));
         b.closeInput();
         QVERIFY(b.finished());
+    }
+
+    /* Raised while the QEMU that asked runs, back after it */
+    void udmabufRaiseAndRestore()
+    {
+        FakeQemu qemu;
+        Helper h(m_root);
+        QVERIFY(h.ready());
+        h.answer("watch " + qemu.pidText());
+        QCOMPARE(h.answer("udmabuf " + qemu.pidText()),
+                 QString("ok udmabuf %1: list_limit 65536 (was 1024), size_limit_mb 2048 (was 64)")
+                     .arg(qemu.pid()));
+        QCOMPARE(udmabuf(), QString("65536/2048"));
+        QVERIFY(stateExists("udmabuf"));
+        QCOMPARE(writes(), QStringList({QString(kUdmabuf) + "/list_limit 65536",
+                                        QString(kUdmabuf) + "/size_limit_mb 2048"}));
+        QVERIFY(journal().join('\n').contains("log uid "));
+        QCOMPARE(h.answer("udmabuf " + qemu.pidText()),
+                 QString("ok udmabuf %1: already").arg(qemu.pid()));
+
+        clearJournal();
+        qemu.stop();
+        QCOMPARE(h.waitFor("restored"), QString("restored udmabuf: list_limit 1024, size_limit_mb 64"));
+        QCOMPARE(h.waitFor("bye"), QString("bye"));
+        QVERIFY(h.finished());
+        QCOMPARE(udmabuf(), QString("1024/64"));
+        QCOMPARE(writes(), QStringList({QString(kUdmabuf) + "/list_limit 1024",
+                                        QString(kUdmabuf) + "/size_limit_mb 64"}));
+        QCOMPARE(stateFiles(), QStringList({"lock"}));
+        QVERIFY(journal().join('\n').contains("log udmabuf: back to list_limit 1024, size_limit_mb 64"));
+    }
+
+    /* Raised only: a higher value (the kernel's command line) stays as it is */
+    void udmabufKeepsHigher()
+    {
+        setUdmabuf(131072, 64);
+        {
+            FakeQemu qemu;
+            Helper h(m_root);
+            QVERIFY(h.ready());
+            h.answer("watch " + qemu.pidText());
+            QCOMPARE(h.answer("udmabuf " + qemu.pidText()),
+                     QString("ok udmabuf %1: list_limit 131072 already, size_limit_mb 2048 (was 64)")
+                         .arg(qemu.pid()));
+            QCOMPARE(writes(), QStringList({QString(kUdmabuf) + "/size_limit_mb 2048"}));
+            qemu.stop();
+            QVERIFY(h.finished());
+            QVERIFY(h.all().contains("restored udmabuf: size_limit_mb 64"));
+            QCOMPARE(udmabuf(), QString("131072/64"));
+        }
+        /* both higher already (this laptop's boot): nothing written, nothing kept */
+        setUdmabuf(65536, 4096);
+        clearJournal();
+        FakeQemu qemu;
+        Helper h(m_root);
+        QVERIFY(h.ready());
+        h.answer("watch " + qemu.pidText());
+        QCOMPARE(h.answer("udmabuf " + qemu.pidText()),
+                 QString("ok udmabuf %1: list_limit 65536 already, size_limit_mb 4096 already")
+                     .arg(qemu.pid()));
+        QVERIFY(!stateExists("udmabuf"));
+        qemu.stop();
+        QVERIFY(h.finished());
+        QVERIFY(!h.all().join('\n').contains("udmabuf: "));
+        QVERIFY(writes().isEmpty());
+        QCOMPARE(udmabuf(), QString("65536/4096"));
+        QCOMPARE(stateFiles(), QStringList({"lock"}));
+    }
+
+    /* Put back only where it still holds what the helper wrote */
+    void udmabufRestoreOnlyIfOurs()
+    {
+        FakeQemu qemu;
+        Helper h(m_root);
+        QVERIFY(h.ready());
+        h.answer("watch " + qemu.pidText());
+        QVERIFY(h.answer("udmabuf " + qemu.pidText()).startsWith("ok udmabuf"));
+        /* an administrator's change meanwhile */
+        writeFile(path(QString(kUdmabuf) + "/list_limit"), "32768\n");
+        qemu.stop();
+        QVERIFY(h.finished());
+        const QStringList all = h.all();
+        QVERIFY(all.contains("restored udmabuf: size_limit_mb 64"));
+        QVERIFY(all.contains("left udmabuf: list_limit changed by someone else since"));
+        QCOMPARE(udmabuf(), QString("32768/64"));
+        QCOMPARE(stateFiles(), QStringList({"lock"}));
+    }
+
+    /* Killed holding them, or between two writes: the next helper puts them back */
+    void udmabufCrashRecovery_data()
+    {
+        QTest::addColumn<int>("killAt");
+        QTest::addColumn<bool>("restoring");
+        QTest::newRow("held") << 0 << false;
+        QTest::newRow("setting, after list_limit") << 1 << false;
+        QTest::newRow("restoring, after list_limit") << 3 << true;
+    }
+    void udmabufCrashRecovery()
+    {
+        QFETCH(int, killAt);
+        QFETCH(bool, restoring);
+        {
+            FakeQemu qemu;
+            Helper a(m_root, killAt ? QStringList{QString("VITRINE_HELPER_TEST_KILL_AT=%1").arg(killAt)}
+                                    : QStringList());
+            QVERIFY(a.ready());
+            a.answer("watch " + qemu.pidText());
+            const QString on = a.answer("udmabuf " + qemu.pidText());
+            if (!killAt) {
+                QVERIFY(on.startsWith("ok udmabuf"));
+                a.kill();
+            } else if (restoring) {
+                QVERIFY(on.startsWith("ok udmabuf"));
+                qemu.stop();
+            }
+            QVERIFY(a.finished());
+        }
+        QVERIFY(udmabuf() != "1024/64");
+        QVERIFY(stateExists("udmabuf"));
+        Helper b(m_root);
+        QCOMPARE(b.line(), QString("restored udmabuf: list_limit 1024, size_limit_mb 64"));
+        QVERIFY(b.ready());
+        QCOMPARE(udmabuf(), QString("1024/64"));
+        QCOMPARE(stateFiles(), QStringList({"lock"}));
+        b.closeInput();
+        QVERIFY(b.finished());
+        QVERIFY(!b.all().join('\n').contains("left udmabuf"));
+    }
+
+    /* Two helpers (vitrine restarted, another user): the last one out restores */
+    void udmabufTwoHelpers()
+    {
+        FakeQemu q1, q2;
+        Helper a(m_root), b(m_root);
+        QVERIFY(a.ready());
+        QVERIFY(b.ready());
+        a.answer("watch " + q1.pidText());
+        b.answer("watch " + q2.pidText());
+        QVERIFY(a.answer("udmabuf " + q1.pidText()).startsWith("ok udmabuf"));
+        clearJournal();
+        QCOMPARE(b.answer("udmabuf " + q2.pidText()),
+                 QString("ok udmabuf %1: set by another vitrine session").arg(q2.pid()));
+        QVERIFY(writes().isEmpty());
+        q1.stop();
+        QVERIFY(a.finished());
+        QVERIFY(!a.all().join('\n').contains("restored"));
+        QCOMPARE(udmabuf(), QString("65536/2048"));
+        q2.stop();
+        QVERIFY(b.finished());
+        QVERIFY(b.all().contains("restored udmabuf: list_limit 1024, size_limit_mb 64"));
+        QCOMPARE(udmabuf(), QString("1024/64"));
+        QCOMPARE(stateFiles(), QStringList({"lock"}));
+    }
+
+    /* Held for the QEMUs that asked: the last of those lets go, whatever
+       else the helper still watches */
+    void udmabufPerQemu()
+    {
+        FakeQemu q1, q2, q3;
+        Helper h(m_root);
+        QVERIFY(h.ready());
+        for (const FakeQemu *q : {&q1, &q2, &q3}) {
+            h.answer("watch " + q->pidText());
+        }
+        QVERIFY(h.answer("fair-server on").startsWith("ok fair-server on"));
+        QVERIFY(h.answer("udmabuf " + q1.pidText()).startsWith("ok udmabuf"));
+        QCOMPARE(h.answer("udmabuf " + q2.pidText()), QString("ok udmabuf %1: already").arg(q2.pid()));
+        const QString first = q1.pidText();
+        q1.stop();
+        QCOMPARE(h.waitFor("exited"), "exited " + first);
+        QTest::qWait(200);
+        QCOMPARE(udmabuf(), QString("65536/2048"));
+        q2.stop();
+        QCOMPARE(h.waitFor("restored"), QString("restored udmabuf: list_limit 1024, size_limit_mb 64"));
+        QCOMPARE(udmabuf(), QString("1024/64"));
+        /* q3 runs on, untouched by it: the fair server still held */
+        QVERIFY(h.running());
+        QVERIFY(fairAll("10000000/1000000"));
+        QVERIFY(!stateExists("udmabuf"));
+        /* asked again: raised again */
+        QVERIFY(h.answer("udmabuf " + q3.pidText()).startsWith("ok udmabuf"));
+        QCOMPARE(udmabuf(), QString("65536/2048"));
+        h.ask("release");
+        QVERIFY(h.finished());
+        QCOMPARE(udmabuf(), QString("1024/64"));
+        QVERIFY(fairAll("1000000000/50000000"));
+        QCOMPARE(stateFiles(), QStringList({"lock"}));
+    }
+
+    void udmabufSkips()
+    {
+        FakeQemu qemu, other;
+        Helper h(m_root);
+        QVERIFY(h.ready());
+        QCOMPARE(h.answer("udmabuf " + qemu.pidText()), QString("error udmabuf: watch a QEMU first"));
+        h.answer("watch " + qemu.pidText());
+        QCOMPARE(h.answer("udmabuf " + other.pidText()), QString("error udmabuf: watch the process first"));
+        QCOMPARE(h.answer("udmabuf on"), QString("error udmabuf: watch the process first"));
+        /* a value that is not one: nothing written, nothing held */
+        writeFile(path(QString(kUdmabuf) + "/list_limit"), "-1\n");
+        QCOMPARE(h.answer("udmabuf " + qemu.pidText()),
+                 QString("error udmabuf %1: cannot read its limits").arg(qemu.pid()));
+        QVERIFY(!stateExists("udmabuf"));
+        /* a module not loaded: no parameters */
+        QDir(path("/sys/module/udmabuf")).removeRecursively();
+        QCOMPARE(h.answer("udmabuf " + qemu.pidText()),
+                 QString("skip udmabuf %1: the udmabuf module is not loaded").arg(qemu.pid()));
+        QVERIFY(writes().isEmpty());
+        QCOMPARE(stateFiles(), QStringList({"lock"}));
+    }
+
+    /* The second write refused: the first one undone, nothing held */
+    void udmabufHalfWay()
+    {
+        FakeQemu qemu;
+        Helper h(m_root);
+        QVERIFY(h.ready());
+        h.answer("watch " + qemu.pidText());
+        QFile::setPermissions(path(QString(kUdmabuf) + "/size_limit_mb"), QFileDevice::ReadOwner);
+        QCOMPARE(h.answer("udmabuf " + qemu.pidText()),
+                 QString("error udmabuf %1: Permission denied").arg(qemu.pid()));
+        QCOMPARE(writes(), QStringList({QString(kUdmabuf) + "/list_limit 65536",
+                                        QString(kUdmabuf) + "/size_limit_mb 2048 FAILED",
+                                        QString(kUdmabuf) + "/list_limit 1024"}));
+        QCOMPARE(udmabuf(), QString("1024/64"));
+        QCOMPARE(stateFiles(), QStringList({"lock"}));
+        qemu.stop();
+        QVERIFY(h.finished());
+        QVERIFY(!h.all().join('\n').contains("restored"));
+    }
+
+    /* A state left by a crash, the module's parameters gone since: dropped */
+    void udmabufStaleStateWithoutModule()
+    {
+        {
+            FakeQemu qemu;
+            Helper a(m_root);
+            QVERIFY(a.ready());
+            a.answer("watch " + qemu.pidText());
+            QVERIFY(a.answer("udmabuf " + qemu.pidText()).startsWith("ok udmabuf"));
+            a.kill();
+            QVERIFY(a.finished());
+        }
+        QVERIFY(stateExists("udmabuf"));
+        QDir(path("/sys/module/udmabuf")).removeRecursively();
+        Helper b(m_root);
+        QCOMPARE(b.line(), QString("restored udmabuf: nothing (some failed)"));
+        QVERIFY(b.ready());
+        QCOMPARE(stateFiles(), QStringList({"lock"}));
+        b.closeInput();
+        QVERIFY(b.finished());
+    }
+
+    /* Every hold taken (the fair server, udmabuf, eight cards): the next says why */
+    void holdsExhausted()
+    {
+        for (int n = 2; n <= 9; n++) {
+            amdApu(n);
+        }
+        FakeQemu qemu;
+        Helper h(m_root);
+        QVERIFY(h.ready());
+        h.answer("watch " + qemu.pidText());
+        QVERIFY(h.answer("fair-server on").startsWith("ok fair-server on"));
+        QVERIFY(h.answer("udmabuf " + qemu.pidText()).startsWith("ok udmabuf"));
+        for (int n = 1; n <= 8; n++) {
+            QVERIFY(h.answer(QString("gpu-floor card%1 auto").arg(n)).startsWith("ok gpu-floor"));
+        }
+        QCOMPARE(h.answer("gpu-floor card9 auto"),
+                 QString("error gpu-floor card9: cannot take the hold: No space left on device"));
+        h.ask("release");
+        QVERIFY(h.finished());
+        QCOMPARE(udmabuf(), QString("1024/64"));
+        QCOMPARE(stateFiles(), QStringList({"lock"}));
     }
 
     /* vitrine quits while its VMs run: the helper keeps the settings until the last one ends */

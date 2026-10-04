@@ -5,7 +5,8 @@
  * file plays the kernel's part - the fair server's runtime <= period check
  * at each write, amdgpu's overdrive table that takes edits in manual only
  * and a commit that fails while the maximum is 0 - so that the order of the
- * writes is tested, not just their values.  Every write, scheduler change,
+ * writes is tested, not just their values.  Other files (the udmabuf
+ * module's parameters) take any value, as the kernel's int parameters do.  Every write, scheduler change,
  * capability and log line is appended to <root>/journal.  Schedulers are
  * kept in memory (an unprivileged test cannot make threads real-time); the
  * processes and /proc are real.  The group database is <root>/etc/group

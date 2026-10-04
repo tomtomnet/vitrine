@@ -18,6 +18,7 @@
 
 #include <csignal>
 #include <memory>
+#include <vector>
 
 #include <grp.h>
 #include <pwd.h>
@@ -26,10 +27,12 @@
 
 #include "core/hostsettings.h"
 #include "core/paths.h"
+#include "core/udmabuf.h"
 #include "core/vmrunner.h"
 #include "core/vmstore.h"
 
 static const char kFair[] = "/sys/kernel/debug/sched/fair_server";
+static const char kUdmabuf[] = "/sys/module/udmabuf/parameters";
 
 /* What QCOMPARE prints of a Status */
 char *toString(const HostSettings::Status &status)
@@ -154,6 +157,22 @@ private:
         return readFile(m_root + kCard + "/power_dpm_force_performance_level");
     }
     QByteArray odTable() const { return readFile(m_root + kCard + "/pp_od_clk_voltage"); }
+    /* "list_limit/size_limit_mb" */
+    QString udmabuf() const
+    {
+        return QString("%1/%2").arg(readFile(m_root + kUdmabuf + "/list_limit"),
+                                    readFile(m_root + kUdmabuf + "/size_limit_mb"));
+    }
+    static bool answered(const QSignalSpy &spy, qint64 pid, bool raised, const QString &why)
+    {
+        for (const QList<QVariant> &args : spy) {
+            if (args.value(0).toLongLong() == pid && args.value(1).toBool() == raised &&
+                args.value(2).toString() == why) {
+                return true;
+            }
+        }
+        return false;
+    }
     /* A HostSettings on the fake tree, through the helper's test build */
     void fake(HostSettings &hs) const
     {
@@ -191,6 +210,9 @@ private slots:
         }
         amdCard(m_root + "/sys", "card1", 2);
         writeFile(m_root + "/sys/class/drm/card0/device/vendor", "0x8086\n");
+        /* the kernel's defaults */
+        writeFile(m_root + kUdmabuf + "/list_limit", "1024\n");
+        writeFile(m_root + kUdmabuf + "/size_limit_mb", "64\n");
         qputenv("VITRINE_HELPER_TEST_ROOT", m_root.toLocal8Bit());
     }
 
@@ -623,6 +645,14 @@ private slots:
             : "/sys/class/drm/" + apus.first() + "/device/power_dpm_force_performance_level";
         const QByteArray levelBefore = readFile(levelFile);
         QVERIFY(!fairBefore.startsWith('/'));
+        /* the udmabuf limits, world-readable; e2e-host.sh lowers them first
+           where they are at host tuning's values already */
+        const QString udma = "/sys/module/udmabuf/parameters/";
+        auto udmabufNow = [&udma]() {
+            return QString("%1/%2").arg(readFile(udma + "list_limit"), readFile(udma + "size_limit_mb"));
+        };
+        const bool hasUdmabuf = QFileInfo::exists(udma + "list_limit");
+        const QString udmabufBefore = udmabufNow();
 
         QProcess qemu;
         /* gone with the test, crash included: the root helper then sees it
@@ -634,7 +664,8 @@ private slots:
         QSignalSpy lines(&hs, &HostSettings::helperLine), notices(&hs, &HostSettings::notice),
             finished(&hs, &HostSettings::helperFinished);
         hs.setHelperCommand({"sudo", "-n", helper, "session"});
-        hs.tune(qemu.processId());
+        QSignalSpy answers(&hs, &HostSettings::udmabufAnswered);
+        hs.tune(qemu.processId(), true);
         QTRY_VERIFY_WITH_TIMEOUT(saw(lines, QString("ok rt %1").arg(qemu.processId())), 10000);
         for (const QList<QVariant> &line : lines) {
             qInfo("helper: %s", qPrintable(line.first().toString()));
@@ -644,6 +675,11 @@ private slots:
                  QString("10000000/1000000"));
         if (!levelFile.isEmpty() && levelBefore == "auto") {
             QCOMPARE(readFile(levelFile), QByteArray("manual"));
+        }
+        if (hasUdmabuf) {
+            QVERIFY(answered(answers, qemu.processId(), true, QString()));
+            QVERIFY(readFile(udma + "list_limit").toLongLong() >= 65536);
+            QVERIFY(readFile(udma + "size_limit_mb").toLongLong() >= 2048);
         }
         /* every thread SCHED_FIFO (/proc/PID/task/TID/stat field 41: 1) */
         const QDir tasks(QString("/proc/%1/task").arg(qemu.processId()));
@@ -659,6 +695,7 @@ private slots:
         if (!levelFile.isEmpty()) {
             QCOMPARE(readFile(levelFile), levelBefore);
         }
+        QCOMPARE(udmabufNow(), udmabufBefore);
     }
 
     /*
@@ -1569,6 +1606,265 @@ private slots:
         QCOMPARE(hs.untunedStatus().problem, P::Failed);
         other.kill();
         other.waitForFinished();
+    }
+
+    /*
+     * A QEMU whose GPU has native context gets the udmabuf limits raised
+     * too, while it runs; the others do not ask for them
+     */
+    void udmabufForNativeContext()
+    {
+        FakeQemu q1, q2;
+        HostSettings hs(nullptr);
+        QSignalSpy lines(&hs, &HostSettings::helperLine), notices(&hs, &HostSettings::notice),
+            answers(&hs, &HostSettings::udmabufAnswered), finished(&hs, &HostSettings::helperFinished);
+        fake(hs);
+        hs.tune(q1.pid(), true);
+        QTRY_VERIFY(saw(lines, QString("ok rt %1").arg(q1.pid())));
+        QVERIFY(saw(lines, QString("ok udmabuf %1: list_limit 65536 (was 1024), size_limit_mb 2048 "
+                                   "(was 64)").arg(q1.pid())));
+        QCOMPARE(answers.size(), 1);
+        QVERIFY(answered(answers, q1.pid(), true, QString()));
+        QCOMPARE(udmabuf(), QString("65536/2048"));
+        hs.tune(q2.pid());
+        QTRY_VERIFY(saw(lines, QString("ok rt %1").arg(q2.pid())));
+        QVERIFY(!saw(lines, QString("ok udmabuf %1").arg(q2.pid())));
+        QCOMPARE(answers.size(), 1);
+        /* the one that asked ends: back, while the other runs on */
+        q1.stop();
+        QTRY_VERIFY(saw(lines, "restored udmabuf: list_limit 1024, size_limit_mb 64"));
+        QCOMPARE(udmabuf(), QString("1024/64"));
+        QVERIFY(hs.helperRunning());
+        QCOMPARE(fair(0), QString("10000000/1000000"));
+        q2.stop();
+        QTRY_COMPARE(finished.size(), 1);
+        QVERIFY(notices.isEmpty());
+    }
+
+    /* Why they are not raised, for the start check; never a notice of its own */
+    void udmabufNotRaised()
+    {
+        FakeQemu q1, q2, q3;
+        {
+            /* the module not loaded: the helper skips them */
+            QDir(m_root + "/sys/module/udmabuf").removeRecursively();
+            HostSettings hs(nullptr);
+            QSignalSpy lines(&hs, &HostSettings::helperLine), notices(&hs, &HostSettings::notice),
+                answers(&hs, &HostSettings::udmabufAnswered);
+            fake(hs);
+            hs.tune(q1.pid(), true);
+            QTRY_VERIFY(saw(lines, QString("ok rt %1").arg(q1.pid())));
+            QVERIFY(answered(answers, q1.pid(), false, "the udmabuf module is not loaded"));
+            QVERIFY(notices.isEmpty());
+        }
+        {
+            /* a helper from before udmabuf: "unknown request", without a pid */
+            HostSettings hs(nullptr);
+            QSignalSpy notices(&hs, &HostSettings::notice),
+                answers(&hs, &HostSettings::udmabufAnswered);
+            hs.setSysRoot(m_root + "/sys");
+            hs.setHelperCommand(
+                {"/bin/sh", "-c",
+                 "echo 'ready 1'; while read -r verb arg rest; do case $verb in "
+                 "watch) echo \"ok watch $arg\";; "
+                 "fair-server) echo 'ok fair-server on: already 10 ms / 1 ms';; "
+                 "gpu-floor) echo \"ok gpu-floor $arg auto: already\";; "
+                 "rt) echo \"ok rt $arg: 1 of 1 threads real-time\";; "
+                 "*) echo \"error $verb: unknown request\";; esac; done"});
+            hs.tune(q2.pid(), true);
+            QTRY_COMPARE(answers.size(), 1);
+            QVERIFY(answered(answers, q2.pid(), false,
+                             "the installed vitrine-helper is older than Vitrine and cannot raise "
+                             "them: install it again"));
+            QVERIFY(notices.isEmpty());
+        }
+        {
+            /* tuning off: at once */
+            HostSettings::setEnabled(false);
+            HostSettings hs(nullptr);
+            QSignalSpy answers(&hs, &HostSettings::udmabufAnswered);
+            fake(hs);
+            hs.tune(q3.pid(), true);
+            QCOMPARE(answers.size(), 1);
+            QVERIFY(answered(answers, q3.pid(), false, "host tuning is off"));
+            QVERIFY(!hs.helperRunning());
+        }
+    }
+
+    /* Untuned for want of the group, then joined: not raised, then raised */
+    void udmabufUntunedThenTuned()
+    {
+        fakePolkit();
+        writeFile(m_root + "/answer", "2\n");
+        FakeQemu qemu;
+        HostSettings hs(nullptr);
+        QSignalSpy lines(&hs, &HostSettings::helperLine),
+            answers(&hs, &HostSettings::udmabufAnswered);
+        hs.setSysRoot(m_root + "/sys");
+        hs.tune(qemu.pid(), true);
+        QTRY_VERIFY(hs.untuned());
+        QVERIFY(answered(answers, qemu.pid(), false, hs.untunedStatus().why()));
+        QCOMPARE(udmabuf(), QString("1024/64"));
+        writeFile(m_root + "/answer", "0\n");
+        hs.recheck();
+        QTRY_VERIFY(answered(answers, qemu.pid(), true, QString()));
+        QCOMPARE(udmabuf(), QString("65536/2048"));
+        /* tuning turned off: back at once, and said */
+        HostSettings::setEnabled(false);
+        hs.preferencesChanged();
+        QVERIFY(answered(answers, qemu.pid(), false, "host tuning is off"));
+        QTRY_COMPARE(udmabuf(), QString("1024/64"));
+    }
+
+    /*
+     * The start check with host tuning: a native-context VM found running,
+     * the limits too low; the helper raises them, so nothing to say.
+     * Tuning off: the note and the issue; on again: raised, the issue gone.
+     */
+    void udmabufWatchWithTuning()
+    {
+        QTemporaryDir runtime(QDir::tempPath() + "/vt-XXXXXX");
+        QTemporaryDir vms;
+        QVERIFY(runtime.isValid() && vms.isValid());
+        qputenv("XDG_RUNTIME_DIR", runtime.path().toLocal8Bit());
+        QDir(vms.path()).mkpath("native");
+        writeFile(vms.path() + "/native/vm.args",
+                  "-name native\n-device virtio-vga-gl,blob=on,drm_native_context=on\n"
+                  "-display dbus,p2p=yes\n");
+        const QString run = Paths::vmRuntimeDir("native");
+        FakeQemu qemu({"-qmp", QString("unix:%1/qmp.sock,server=on,wait=off").arg(run)});
+        writeFile(run + "/qemu.pid", QByteArray::number(qemu.pid()) + "\n");
+        auto qmp = std::make_unique<FakeQmp>(run + "/qmp.sock");
+        const QString device = m_root + "/udmabuf-device";
+        writeFile(device, QByteArray());
+
+        VmStore store(vms.path());
+        HostSettings hs(&store);
+        UdmabufWatch watch(&store, &hs);
+        watch.setSysRoot(m_root + "/sys");
+        watch.setDevice(device);
+        QSignalSpy lines(&hs, &HostSettings::helperLine), changed(&watch, &UdmabufWatch::changed);
+        fake(hs);
+        Vm *vm = store.find("native");
+        vm->runner()->attach(vm->args());
+        QTRY_VERIFY(saw(lines, QString("ok udmabuf %1: list_limit 65536").arg(qemu.pid())));
+        QTRY_VERIFY(saw(lines, QString("ok rt %1").arg(qemu.pid())));
+        QVERIFY(watch.issues().isEmpty());
+        QVERIFY(changed.isEmpty());
+        QVERIFY(!QFileInfo::exists(vm->runner()->logPath()));
+
+        HostSettings::setEnabled(false);
+        hs.preferencesChanged();
+        QCOMPARE(watch.issues().size(), 1);
+        QCOMPARE(watch.issues().first().notRaised, QString("host tuning is off"));
+        QTRY_VERIFY(!hs.helperRunning());
+        QCOMPARE(udmabuf(), QString("1024/64"));
+        QFile log(vm->runner()->logPath());
+        QVERIFY(log.open(QIODevice::ReadOnly));
+        const QString note = QString::fromUtf8(log.readAll());
+        log.close();
+        QVERIFY(note.startsWith("vitrine: the host's udmabuf limits are 1024 entries and 64 MB"));
+        QVERIFY(note.contains("vitrine: host tuning would raise them while VMs run: host tuning is "
+                              "off\n"));
+
+        HostSettings::setEnabled(true);
+        hs.preferencesChanged();
+        QTRY_VERIFY(watch.issues().isEmpty());
+        QCOMPARE(udmabuf(), QString("65536/2048"));
+        QVERIFY(log.open(QIODevice::ReadOnly));
+        QVERIFY(log.readAll().endsWith("vitrine: host tuning raised the udmabuf limits: guest "
+                                       "windows made from now on are not copied\n"));
+        log.close();
+
+        qmp.reset();
+        qemu.stop();
+        QTRY_COMPARE(vm->runner()->state(), VmRunner::State::Stopped);
+        QTRY_COMPARE(udmabuf(), QString("1024/64"));
+        QTRY_VERIFY(!hs.helperRunning());
+    }
+
+    /*
+     * A native-context VM whose start check finds the limits raised by
+     * another one's hold: tuning turned off, the helper puts them back
+     * after it answered, and the next read of the logs sees them low - a
+     * note and an issue for it too
+     */
+    void udmabufWatchHeldByAnother()
+    {
+        QTemporaryDir runtime(QDir::tempPath() + "/vt-XXXXXX");
+        QTemporaryDir vms;
+        QVERIFY(runtime.isValid() && vms.isValid());
+        qputenv("XDG_RUNTIME_DIR", runtime.path().toLocal8Bit());
+        const QByteArray args = "-device virtio-vga-gl,blob=on,drm_native_context=on\n"
+                                "-display dbus,p2p=yes\n";
+        QList<std::shared_ptr<FakeQemu>> qemus;
+        std::vector<std::unique_ptr<FakeQmp>> qmps;
+        auto running = [&](const QString &id) {
+            QDir(vms.path()).mkpath(id);
+            writeFile(vms.path() + "/" + id + "/vm.args", "-name " + id.toLatin1() + "\n" + args);
+            const QString run = Paths::vmRuntimeDir(id);
+            qemus << std::make_shared<FakeQemu>(
+                QStringList{"-qmp", QString("unix:%1/qmp.sock,server=on,wait=off").arg(run)});
+            writeFile(run + "/qemu.pid", QByteArray::number(qemus.last()->pid()) + "\n");
+            qmps.push_back(std::make_unique<FakeQmp>(run + "/qmp.sock"));
+            return qemus.last()->pid();
+        };
+        const QString device = m_root + "/udmabuf-device";
+        writeFile(device, QByteArray());
+
+        const qint64 a = running("a");
+        VmStore store(vms.path());
+        HostSettings hs(&store);
+        UdmabufWatch watch(&store, &hs);
+        watch.setSysRoot(m_root + "/sys");
+        watch.setDevice(device);
+        watch.setPollInterval(100000);
+        QSignalSpy lines(&hs, &HostSettings::helperLine);
+        fake(hs);
+        store.find("a")->runner()->attach(store.find("a")->args());
+        QTRY_VERIFY(saw(lines, QString("ok udmabuf %1: list_limit 65536").arg(a)));
+        QTRY_VERIFY(saw(lines, QString("ok rt %1").arg(a)));
+        QCOMPARE(udmabuf(), QString("65536/2048"));
+
+        /* the second one, found running while the first one's hold has them */
+        const qint64 b = running("b");
+        store.reload();
+        QTRY_VERIFY(store.find("b"));
+        store.find("b")->runner()->attach(store.find("b")->args());
+        QTRY_VERIFY(saw(lines, QString("ok udmabuf %1: already").arg(b)));
+        QTRY_VERIFY(saw(lines, QString("ok rt %1").arg(b)));
+        watch.poll();
+        QVERIFY(watch.issues().isEmpty());
+
+        HostSettings::setEnabled(false);
+        hs.preferencesChanged();
+        QTRY_COMPARE(udmabuf(), QString("1024/64"));
+        watch.poll();
+        QCOMPARE(watch.issues().size(), 2);
+        for (const UdmabufWatch::Issue &issue : watch.issues()) {
+            QVERIFY(issue.limitsLow);
+            QCOMPARE(issue.notRaised, QString("host tuning is off"));
+            QCOMPARE(issue.limits.listLimit, qint64(1024));
+        }
+        QFile log(store.find("b")->runner()->logPath());
+        QVERIFY(log.open(QIODevice::ReadOnly));
+        const QString note = QString::fromUtf8(log.readAll());
+        log.close();
+        QVERIFY(note.startsWith("vitrine: the host's udmabuf limits are 1024 entries and 64 MB"));
+        QCOMPARE(note.count("vitrine: "), 3);
+
+        /* on again: raised, both issues gone */
+        HostSettings::setEnabled(true);
+        hs.preferencesChanged();
+        QTRY_VERIFY(watch.issues().isEmpty());
+        QCOMPARE(udmabuf(), QString("65536/2048"));
+
+        qmps.clear();
+        for (const auto &q : qemus) {
+            q->stop();
+        }
+        QTRY_COMPARE(udmabuf(), QString("1024/64"));
+        QTRY_VERIFY(!hs.helperRunning());
     }
 
     void capabilityWithoutHelper()

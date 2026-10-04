@@ -13,6 +13,13 @@ A desktop VM stays smooth under host load when the host gives it a hand:
   lowest clock, where copying a 4K frame takes about 1 ms. With the lowest
   gfx clock at 1800 MHz a Radeon 780M showed new images at 94-95 % of the
   refreshes during window animations instead of 87-90 %, for about 0.3 W.
+- **Higher udmabuf limits** (VMs whose GPU has native context): QEMU
+  hands the host GPU each guest buffer in guest memory as a udmabuf, one
+  entry per contiguous piece of guest RAM. A maximized 4K window drawn by
+  the CPU (Qt Widgets and GTK apps, cursors) is about 32 MB in 1,200 to
+  8,000 pieces; the kernel's defaults, 1024 entries and 64 MB, refuse it,
+  and the guest's compositor then copies that window at each change. The
+  helper raises them to 65536 entries and 2048 MB.
 
 These need root. vitrine applies them through a small helper,
 `vitrine-helper`, when a VM starts, and the helper puts everything back
@@ -74,6 +81,7 @@ for them. It does only this, for the user who started it:
 | `fair-server on` | 10 ms / 1 ms on every CPU | Fixed values; only `cpuN` folders; nothing to choose |
 | `gpu-floor CARD MHZ\|auto` | An AMD GPU's lowest gfx clock | `cardN` of vendor 0x1002 driven by amdgpu; the clock within the GPU's own overdrive range; only when its performance level is `auto` |
 | `rt PID` | SCHED_FIFO 1 on every thread of a watched QEMU | Watched first, and checked again to be the caller's QEMU (it may have run another program since); real-time threads it finds are left as they are |
+| `udmabuf PID` | The udmabuf module's `list_limit` at 65536 and `size_limit_mb` at 2048, while that watched QEMU runs | A watched QEMU (its GPU is not checked: vitrine asks only for native-context ones); fixed values; raised only, a higher value stays; skipped when the module is not loaded; put back after the last QEMU that asked for it |
 | `setcap PATH` | `cap_sys_nice=ep` on vitrine's QEMU build | See below |
 | `setup-group` | The caller in the `vitrine` group, the group created (`groupadd --system`) if there is none | See below |
 
@@ -87,7 +95,12 @@ What this amounts to:
   no proof of anything, and a guest's own code runs on those vCPUs: think of
   the group as `rtprio 1` in `limits.conf`. The shorter fair-server period
   keeps ordinary tasks running beside them.
-- Two host-wide settings changed while your VMs run, and put back after.
+- Three host-wide settings changed while your VMs run, and put back after.
+- Bigger udmabufs. `/dev/udmabuf` is open to the user at the desktop
+  already (systemd's `uaccess` rule), and to the `kvm` group: they can turn
+  their own memory into a udmabuf. The limits only set how many pieces and bytes
+  one udmabuf may have, and it is memory its owner has anyway. While they
+  are raised, they are raised for every user of the host.
 - `cap_sys_nice` on a QEMU you built: QEMU may then make its vCPUs real-time
   (vitrine's focus priority) and ask amdgpu for high-priority GPU contexts.
   vitrine builds that QEMU from sources in your home folder, so the content
@@ -140,6 +153,61 @@ to run without one, which pkexec would put under its generic action.)
 
 Give the group to the people you would give real-time priority to.
 
+## The udmabuf limits without host tuning
+
+To have the udmabuf limits raised at every boot instead, with or without
+host tuning, any of these does it (as root; the values are those host
+tuning sets, and host tuning then finds them high enough and changes
+nothing):
+
+- The kernel's command line, which works whether udmabuf is built in (as
+  in Fedora's kernel) or a module. On Fedora:
+
+  ```
+  sudo grubby --update-kernel=ALL --args='udmabuf.list_limit=65536 udmabuf.size_limit_mb=2048'
+  ```
+
+  then restart. Elsewhere, add the two to the kernel's command line the
+  way the distribution does (`GRUB_CMDLINE_LINUX` in `/etc/default/grub`,
+  say). The same command with `--remove-args` instead of `--args` takes
+  them back.
+- A file `/etc/tmpfiles.d/udmabuf.conf`, which systemd applies at each
+  boot:
+
+  ```
+  w /sys/module/udmabuf/parameters/list_limit - - - - 65536
+  w /sys/module/udmabuf/parameters/size_limit_mb - - - - 2048
+  ```
+
+  and now: `sudo systemd-tmpfiles --create /etc/tmpfiles.d/udmabuf.conf`.
+  It needs the parameters there at boot: udmabuf built in, or a module
+  loaded by then.
+- Until the next boot only:
+  `echo 65536 | sudo tee /sys/module/udmabuf/parameters/list_limit` and
+  `echo 2048 | sudo tee /sys/module/udmabuf/parameters/size_limit_mb`.
+
+Run `systemd-tmpfiles --create` or the two `echo` commands while no
+native-context VM runs with host tuning on: host tuning would otherwise put
+the old values back when that VM stops, until the next boot (it cannot tell
+a write of the same values from its own).
+
+`modprobe.d` options do nothing where udmabuf is built into the kernel, as
+in Fedora's.
+
+At each start of a VM whose GPU has native context, vitrine reads the
+limits and opens `/dev/udmabuf` as QEMU does. When they are too low (under
+16384 entries or 128 MB) and host tuning will not raise them, or the
+device does not open, it writes a `vitrine:` note in the VM's `qemu.log`,
+and the status bar says so until the VM stops or host tuning raises them
+(with host tuning on, the first time in a run of vitrine, the explanation
+opens by itself). Limits high enough at the start only because another
+VM's host tuning holds them are read again while the VM runs.
+While a VM runs, vitrine also reads its `qemu.log` for buffers QEMU refused
+(`ctrl 0x10c, error 0x1201`) and then shows "Guest windows copied", with
+the count in its tooltip. It blames the limits only for a
+`UDMABUF_CREATE_LIST: Invalid argument` with more entries or bytes than
+they allow; for other refusals, `qemu.log` says why.
+
 ## Installing
 
 `cmake --install` puts the helper in `<prefix>/libexec/vitrine-helper`,
@@ -176,3 +244,6 @@ configuring: `cmake --install --prefix` with another prefix is refused.
   written: no fair-server change there, the rest still applies.
 - GPUs other than AMD APUs get no automatic floor. A discrete AMD GPU needs
   the overdrive bit of `amdgpu.ppfeaturemask` for any floor.
+- `cat /sys/module/udmabuf/parameters/list_limit /sys/module/udmabuf/parameters/size_limit_mb`
+  shows the udmabuf limits. Where udmabuf is a module that is not loaded
+  yet, the helper cannot raise them (it does not load modules).

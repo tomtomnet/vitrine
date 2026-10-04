@@ -28,9 +28,13 @@
  *                          an amdgpu card's lowest gfx clock (auto: 1800 MHz on
  *                          APUs whose minimum is lower)
  *   rt PID                 SCHED_FIFO 1 on every thread of a watched QEMU
+ *   udmabuf PID            the udmabuf limits raised (65536 entries, 2048 MB)
+ *                          while that watched QEMU runs: one with a
+ *                          native-context GPU
  *   release                everything back now, then exit
  * The settings need a watched QEMU.  Replies start with a word: ready,
- * ok, skip (cannot apply here: lockdown, no debugfs, no amdgpu...), error;
+ * ok, skip (cannot apply here: lockdown, no debugfs, no amdgpu, no udmabuf
+ * module...), error;
  * unprompted: exited PID, restored ..., left ... (changed by someone else
  * since, so not restored), bye.
  *
@@ -198,7 +202,8 @@ static bool request(char *line)
         fair_server_off();
     } else if (IS("gpu-floor", 2) && strcmp(words[2], "off") == 0) {
         gpu_floor(words[1], words[2]);
-    } else if ((IS("fair-server", 1) || IS("gpu-floor", 2) || IS("rt", 1)) && !nwatched) {
+    } else if ((IS("fair-server", 1) || IS("gpu-floor", 2) || IS("rt", 1) || IS("udmabuf", 1)) &&
+               !nwatched) {
         /* nothing applied while no VM runs */
         reply("error %s: watch a QEMU first", words[0]);
     } else if (IS("fair-server", 1) && strcmp(words[1], "on") == 0) {
@@ -207,6 +212,8 @@ static bool request(char *line)
         gpu_floor(words[1], words[2]);
     } else if (IS("rt", 1)) {
         rt_on(words[1]);
+    } else if (IS("udmabuf", 1)) {
+        udmabuf_on(words[1]);
     } else {
         reply("error %.32s: unknown request", words[0]);
     }
@@ -304,6 +311,11 @@ static int session(void)
                     break;
                 }
             }
+        }
+        /* the udmabuf limits go with the last QEMU that asked for them, not
+           with the last QEMU */
+        if (ngone) {
+            udmabuf_check();
         }
         /* the last VM is gone, or vitrine with none left */
         if ((ever && !nwatched) || (!input && !nwatched)) {

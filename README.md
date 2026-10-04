@@ -23,6 +23,14 @@ with an AMD Radeon 780M, with Fedora 44 KDE guests. It is not packaged.
   6.14 or later and a Mesa with native context, which the guest tools install in
   Fedora 44 guests ([docs/guest-mesa.md](docs/guest-mesa.md) covers others).
   Otherwise the guest falls back to virgl.
+- For native context, the host's udmabuf limits raised: the kernel's defaults
+  (1024 entries, 64 MB per buffer) refuse the windows a 4K guest draws with
+  the CPU (Qt Widgets and GTK apps, cursors), which the guest then copies.
+  Host tuning raises them while such VMs run (see Install), or once for every
+  boot:
+  `sudo grubby --update-kernel=ALL --args='udmabuf.list_limit=65536 udmabuf.size_limit_mb=2048'`
+  and a restart ([docs/host-tuning.md](docs/host-tuning.md) has other ways).
+  vitrine checks them at each start of such a VM and says when they are low.
 - An internet connection to build vitrine's QEMU and the guest tools.
 
 ## Dependencies (Fedora)

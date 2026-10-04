@@ -698,6 +698,20 @@ QString VmRunner::logPath() const
     return d->logPath();
 }
 
+void VmRunner::appendNote(const QString &text) const
+{
+    QFile log(d->logPath());
+    QByteArray lines;
+
+    for (const QString &line : text.split('\n')) {
+        lines += ("vitrine: " + line + '\n').toUtf8();
+    }
+    /* QEMU appends to it at the same time: the lines in one write, at the end */
+    if (log.open(QIODevice::WriteOnly | QIODevice::Append | QIODevice::Unbuffered)) {
+        log.write(lines);
+    }
+}
+
 QStringList VmRunner::commandLine(const ArgsFile &args) const
 {
     /* the QEMU resolved once: `current` may switch to a new build meanwhile */
