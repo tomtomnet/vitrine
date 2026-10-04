@@ -116,8 +116,22 @@ public:
      */
     void setShutdownHandler(const std::function<bool()> &handler);
     void reset();
-    /* Quits QEMU at once */
+    /*
+     * Quits QEMU at once: QMP quit, then SIGTERM if it is still there
+     * after a few seconds, and never more - a SIGKILL loses what QEMU had
+     * not written to the disks yet, a qcow2 image's cached metadata among
+     * it.  A QEMU still running a few seconds after SIGTERM gets
+     * notResponding(), for the user to decide (killQemu()).
+     */
     void forceOff();
+    /*
+     * SIGKILL for a QEMU that does not respond (notResponding()), only when
+     * the user asked for it: its disks may lose their last writes
+     */
+    void killQemu();
+    /* Tests: how long QEMU has to quit before SIGTERM, and to end after it
+       (twice that once its monitor closed) */
+    void setQuitTimeout(int ms);
     /* Null while stopped */
     QmpClient *qmp() const;
     /* QEMU's process, 0 while stopped */
@@ -130,6 +144,12 @@ signals:
     void suspendedChanged(bool suspended);
     /* The start failed, QEMU stopped unexpectedly, or refused a command */
     void failed(const QString &error);
+    /*
+     * QEMU did not end after forceOff(): neither QMP quit nor SIGTERM ended
+     * it (or, its monitor closed, it did not end by itself).  It runs on
+     * (Stopping) until it ends or killQemu() ends it.
+     */
+    void notResponding();
     /*
      * The guest agent came up, at each boot of the guest, and the shared
      * folders with a mount point were mounted there, or not

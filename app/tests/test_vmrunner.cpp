@@ -17,6 +17,8 @@
 #include <cerrno>
 #include <csignal>
 
+#include <unistd.h>
+
 #include "core/paths.h"
 #include "core/qmpclient.h"
 #include "core/vmconfig.h"
@@ -51,6 +53,22 @@ static bool gone(qint64 pid)
         return true;
     }
     return ::kill(pid_t(pid), 0) != 0 && errno == ESRCH;
+}
+
+/*
+ * Ends a stand-in started in a process group of its own, with what it
+ * started.  Only while QProcess still runs it: its pid, then, is that
+ * group's (processId() is 0 once it finished, and kill(0) would hit the
+ * test's own group).
+ */
+static void stopGroup(QProcess &process)
+{
+    const pid_t group = pid_t(process.processId());
+
+    if (process.state() != QProcess::NotRunning && group > 0) {
+        ::kill(-group, SIGKILL);
+    }
+    process.waitForFinished();
 }
 
 /* QEMU's end of QMP: answers every command, query-status with @status;
@@ -966,6 +984,93 @@ private slots:
         QCOMPARE(runner.state(), VmRunner::State::Stopped);
         QCOMPARE(failed.size(), 0);
         QTRY_VERIFY2(gone(helper), qPrintable(read(QString("/proc/%1/stat").arg(helper))));
+    }
+
+    /*
+     * A QEMU that takes neither QMP quit nor SIGTERM: never killed by the
+     * runner (a SIGKILL loses its disks' last writes), said to the user,
+     * killed only when asked.  A shell stands in, its monitor answering
+     * every command, in a process group of its own (its sleep goes with it).
+     */
+    void forceOffNeverKills()
+    {
+        const QStringList command = VmRunner(id, tmp.path()).commandLine({});
+        FakeMonitor monitor(runDir + "/qmp.sock");
+        QProcess qemu;
+        qemu.setChildProcessModifier([]() { setpgid(0, 0); });
+        qemu.start("/bin/sh", {"-c", "trap '' TERM; while :; do sleep 0.1; done", "sh", "-qmp",
+                               command[command.size() - 3]});
+        QVERIFY(qemu.waitForStarted());
+        const auto end = qScopeGuard([&qemu]() { stopGroup(qemu); });
+        /* processId() is 0 once it ended */
+        const qint64 qemuPid = qemu.processId();
+        QFile pid(runDir + "/qemu.pid");
+        QVERIFY(pid.open(QIODevice::WriteOnly));
+        pid.write(QByteArray::number(qemuPid) + '\n');
+        pid.close();
+
+        VmRunner runner(id, tmp.path());
+        QSignalSpy notResponding(&runner, &VmRunner::notResponding), failed(&runner, &VmRunner::failed);
+        runner.setQuitTimeout(200);
+        runner.attach(ArgsFile::parse(kHeadless));
+        QTRY_COMPARE(runner.state(), VmRunner::State::Running);
+        runner.forceOff();
+        QCOMPARE(runner.state(), VmRunner::State::Stopping);
+        /* quit, then SIGTERM, then the user is told: nothing more */
+        QTRY_COMPARE(notResponding.size(), 1);
+        QTest::qWait(1000);
+        QCOMPARE(notResponding.size(), 1);
+        QVERIFY(!gone(qemuPid));
+        QCOMPARE(runner.state(), VmRunner::State::Stopping);
+        QVERIFY(QFileInfo::exists(runDir + "/qemu.pid"));
+        /* Force Off again, the user having waited: asked again */
+        runner.forceOff();
+        QCOMPARE(notResponding.size(), 2);
+        QVERIFY(!gone(qemuPid));
+
+        /* the user's choice */
+        runner.killQemu();
+        QTRY_VERIFY(gone(qemuPid));
+        monitor.close();
+        QTRY_COMPARE_WITH_TIMEOUT(runner.state(), VmRunner::State::Stopped, 10000);
+        QCOMPARE(failed.size(), 0);
+        QVERIFY(read(runner.logPath()).contains("vitrine: QEMU killed (SIGKILL) at the user's request"));
+    }
+
+    /* Its monitor closed and it runs on (stuck on its way out): not Stopped
+       while it runs, not killed, said */
+    void exitingButRunning()
+    {
+        const QStringList command = VmRunner(id, tmp.path()).commandLine({});
+        FakeMonitor monitor(runDir + "/qmp.sock");
+        QProcess qemu;
+        qemu.setChildProcessModifier([]() { setpgid(0, 0); });
+        qemu.start("/bin/sh", {"-c", "trap '' TERM; while :; do sleep 0.1; done", "sh", "-qmp",
+                               command[command.size() - 3]});
+        QVERIFY(qemu.waitForStarted());
+        const auto end = qScopeGuard([&qemu]() { stopGroup(qemu); });
+        /* processId() is 0 once it ended */
+        const qint64 qemuPid = qemu.processId();
+        QFile pid(runDir + "/qemu.pid");
+        QVERIFY(pid.open(QIODevice::WriteOnly));
+        pid.write(QByteArray::number(qemuPid) + '\n');
+        pid.close();
+
+        VmRunner runner(id, tmp.path());
+        QSignalSpy notResponding(&runner, &VmRunner::notResponding);
+        runner.setQuitTimeout(200);
+        runner.attach(ArgsFile::parse(kHeadless));
+        QTRY_COMPARE(runner.state(), VmRunner::State::Running);
+        monitor.close();
+        QTRY_COMPARE(runner.state(), VmRunner::State::Stopping);
+        QTRY_COMPARE(notResponding.size(), 1);
+        QTest::qWait(500);
+        QCOMPARE(runner.state(), VmRunner::State::Stopping);
+        QVERIFY(!gone(qemuPid));
+        /* it ends at last: stopped then */
+        stopGroup(qemu);
+        QTRY_COMPARE_WITH_TIMEOUT(runner.state(), VmRunner::State::Stopped, 10000);
+        QCOMPARE(notResponding.size(), 1);
     }
 
     /* The QEMU of a start is the one it began with, even if the preferences

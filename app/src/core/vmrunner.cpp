@@ -27,10 +27,12 @@
 static const int kPollMs = 50;
 /* virtiofsd opening its socket */
 static const int kHelperTimeoutMs = 10000;
-/* QEMU quitting before SIGTERM, then before SIGKILL */
+/*
+ * QEMU quitting before SIGTERM, then ending after it before the user is
+ * asked; twice that for QEMU exiting once its QMP socket closed (its disks
+ * closed already)
+ */
 static const int kQuitTimeoutMs = 5000;
-/* QEMU exiting once its QMP socket closed */
-static const int kExitTimeoutMs = 10000;
 
 /* A live process, not a zombie */
 static bool alive(qint64 pid)
@@ -209,7 +211,9 @@ struct VmRunner::Private
     bool connecting = false;
     bool suspended = false;     // Paused by the guest's own suspend (S3)
     bool stopRequested = false; // the end of the run is no failure
+    /* forceOff()'s steps: 0 none, 1 SIGTERM sent, 2 notResponding() said */
     int killStep = 0;
+    int quitTimeoutMs = kQuitTimeoutMs;
 
     QString runDir() const;
     QString qmpPath() const { return runDir() + "/qmp.sock"; }
@@ -467,8 +471,17 @@ void VmRunner::Private::tick()
         break;
     }
     case Phase::Exiting:
-        if (!alive(pid) || clock.elapsed() > kExitTimeoutMs) {
+        if (!alive(pid)) {
             exited();
+        } else if (clock.elapsed() > 2 * quitTimeoutMs && killStep < 2) {
+            /*
+             * Its monitor closed and it runs on: stuck on its way out, or
+             * still writing.  Not Stopped while it runs (a new start would
+             * find its disks locked), and not killed: the user decides.
+             */
+            killTimer->stop();
+            killStep = 2;
+            emit q->notResponding();
         }
         break;
     default:
@@ -477,15 +490,24 @@ void VmRunner::Private::tick()
     }
 }
 
-/* QEMU did not quit: SIGTERM, then SIGKILL */
+/*
+ * QEMU did not quit: SIGTERM, which it takes as a request to shut down
+ * (its disks flushed and closed); still there after that, the user is
+ * asked.  Never SIGKILL here: what QEMU had not written yet - a qcow2
+ * image's cached metadata among it - would be lost.
+ */
 void VmRunner::Private::escalate()
 {
     if (!alive(pid)) {
         return;
     }
-    signalIfOurs(pid, qmpArg(), killStep == 0 ? SIGTERM : SIGKILL);
-    if (killStep++ == 0) {
-        killTimer->start(kQuitTimeoutMs);
+    if (killStep == 0) {
+        killStep = 1;
+        signalIfOurs(pid, qmpArg(), SIGTERM);
+        killTimer->start(quitTimeoutMs);
+    } else if (killStep == 1) {
+        killStep = 2;
+        emit q->notResponding();
     }
 }
 
@@ -1251,19 +1273,46 @@ void VmRunner::forceOff()
         d->setState(State::Stopped);
         return;
     }
-    if (!isActive() || d->phase == Private::Phase::Exiting) {
+    if (!isActive()) {
+        return;
+    }
+    if (d->killStep == 2) {
+        /* said already, and the user chose to wait: asked again */
+        if (alive(d->pid)) {
+            emit notResponding();
+        }
+        return;
+    }
+    if (d->phase == Private::Phase::Exiting || d->killTimer->isActive()) {
+        /* on its way out, or quit / SIGTERM sent: the steps go on */
         return;
     }
     d->stopRequested = true;
-    d->killStep = 0;
+    d->setState(State::Stopping);
     if (d->qmp->isReady()) {
         d->qmp->execute("quit");
-        d->setState(State::Stopping);
-        d->killTimer->start(kQuitTimeoutMs);
+        d->killTimer->start(d->quitTimeoutMs);
     } else {
         /* still starting: no QMP to ask QEMU to quit */
         d->escalate();
     }
+}
+
+void VmRunner::killQemu()
+{
+    if (!isActive() || d->phase == Private::Phase::Helpers || !alive(d->pid)) {
+        return;
+    }
+    d->stopRequested = true;
+    d->killTimer->stop();
+    appendNote(tr("QEMU killed (SIGKILL) at the user's request: it did not respond"));
+    /* its end follows as any other: the monitor closes, or the poll sees it */
+    signalIfOurs(d->pid, d->qmpArg(), SIGKILL);
+}
+
+void VmRunner::setQuitTimeout(int ms)
+{
+    d->quitTimeoutMs = ms;
 }
 
 qint64 VmRunner::pid() const

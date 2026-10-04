@@ -168,6 +168,8 @@ qt_add_library(vitrine_ui STATIC
     src/ui/icons.h
     src/ui/importdialog.cpp
     src/ui/importdialog.h
+    src/ui/killprompt.cpp
+    src/ui/killprompt.h
     src/ui/logview.cpp
     src/ui/logview.h
     src/ui/mainwindow.cpp
