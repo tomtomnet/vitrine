@@ -1,0 +1,31 @@
+--- a/drivers/gpu/drm/virtio/virtgpu_prime.c
++++ b/drivers/gpu/drm/virtio/virtgpu_prime.c
+@@ -27,6 +27,17 @@
+ 
+ #include "virtgpu_drv.h"
+ 
++/*
++ * Linux 7.2.9 / 7.3-rc5 reverted the import of foreign dma-bufs on a 3D
++ * device (stable bed76f2c0f, upstream 1e3b08de63).  With a DRM native
++ * context the host maps such imports (QEMU's guest-memory blobs), and the
++ * compositor's zero-copy wl_shm path depends on them: allowed again when
++ * the host offers the DRM capset, unless import_3d=0.
++ */
++static bool import_3d = true;
++module_param(import_3d, bool, 0444);
++MODULE_PARM_DESC(import_3d, "Import foreign dma-bufs on a 3D device when the host offers DRM native contexts (default true; false = as Linux 7.2.9)");
++
+ MODULE_IMPORT_NS("DMA_BUF");
+ 
+ static int virtgpu_virtio_get_uuid(struct dma_buf *buf,
+@@ -310,7 +321,9 @@
+ 		}
+ 	}
+ 
+-	if (!vgdev->has_resource_blob || vgdev->has_virgl_3d)
++	if (!vgdev->has_resource_blob ||
++	    (vgdev->has_virgl_3d &&
++	     !(import_3d && (vgdev->capset_id_mask & BIT_ULL(VIRTIO_GPU_CAPSET_DRM)))))
+ 		return drm_gem_prime_import(dev, buf);
+ 
+ 	bo = kzalloc_obj(*bo);

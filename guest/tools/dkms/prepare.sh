@@ -8,7 +8,8 @@
 # under /var/cache.  Offline, the vendored copy is used only for the kernel
 # version it comes from (vendor/VERSION): built for another kernel it could
 # load and misbehave, so the build fails instead, loudly, and that kernel
-# keeps the stock driver.
+# keeps the stock driver.  The patches apply without fuzz for the same
+# reason: one that only fits with fuzz could land in the wrong place.
 #
 # Usage (DKMS calls it): prepare.sh KERNELVERSION
 set -eu
@@ -42,21 +43,28 @@ sources_of() {
 		tr ' \t' '\n\n' | sed -n 's/\.o$/.c/p'
 }
 
-# A cache is whole when every file is there and not empty: a guest that
-# lost power just after writing one has been seen to keep empty files
+# A kernel source file, not the page a proxy or kernel.org's bot check
+# answers with status 200: curl -f takes that for the file
+kernel_source() {
+	grep -q '^#include' "$1" && ! head -c 1024 "$1" | grep -qi '<!doctype\|<html'
+}
+
+# A cache is whole when every file is there, not empty, and a kernel source:
+# a guest that lost power just after writing one has been seen to keep
+# empty files, and before 0.1.0-14 such a page could be cached as one
 cache_whole() {
 	[ -f "$1/.complete" ] && [ -s "$1/Makefile" ] || return 1
 	files=$(sources_of "$1/Makefile")
 	[ -n "$files" ] || return 1
 	for f in $files $headers; do
-		[ -s "$1/$f" ] || return 1
+		[ -s "$1/$f" ] && kernel_source "$1/$f" || return 1
 	done
 }
 
 sources_from_cache() {
 	[ -d "$cache" ] || return 1
 	if ! cache_whole "$cache"; then
-		say "the cached sources of $tag are incomplete: fetching them again"
+		say "the cached sources of $tag are incomplete or not kernel sources: fetching them again"
 		rm -rf "$cache"
 		return 1
 	fi
@@ -69,8 +77,19 @@ sources_from_upstream() {
 	# beside the cache, so that putting it in place is one rename
 	tmp=$(mktemp -d "$(dirname "$cache")/.fetch.XXXXXX") && chmod 755 "$tmp"
 	fetch Makefile "$tmp/Makefile" || { rm -rf "$tmp"; return 1; }
-	for f in $(sources_of "$tmp/Makefile") $headers; do
+	files=$(sources_of "$tmp/Makefile")
+	if [ -z "$files" ]; then
+		say "the Makefile kernel.org sent for $tag names no source of the driver (a proxy's or a bot check's page?)" >&2
+		rm -rf "$tmp"
+		return 1
+	fi
+	for f in $files $headers; do
 		fetch "$f" "$tmp/$f" || { rm -rf "$tmp"; return 1; }
+		if ! kernel_source "$tmp/$f"; then
+			say "what kernel.org sent for $f of $tag is not a kernel source file (a proxy's or a bot check's page?)" >&2
+			rm -rf "$tmp"
+			return 1
+		fi
 	done
 	touch "$tmp/.complete"
 	cache_whole "$tmp" || { rm -rf "$tmp"; return 1; }
@@ -108,76 +127,84 @@ sed -i 's|#define TRACE_INCLUDE_PATH .*|#define TRACE_INCLUDE_PATH .|' virtgpu_t
 if grep -q '\.open = virtio_gpu_gem_object_open' virtgpu_prime.c; then
 	say "the import patch is already in these sources, nothing to apply"
 else
-	patch -p5 --forward --silent < patches/linux-drm-virtio-attach-imported-dmabufs.patch
+	patch -p5 --forward -F0 --no-backup-if-mismatch < patches/linux-drm-virtio-attach-imported-dmabufs.patch
 	say "import patch applied"
+fi
+
+# Linux 7.2.9 and 7.3-rc5 refuse foreign dma-buf imports on a 3D device again
+# (the revert of df4dc947): the import patch above would apply and do nothing.
+# Allowed again for native contexts (module parameter import_3d).
+if grep -q 'has_resource_blob || vgdev->has_virgl_3d)' virtgpu_prime.c; then
+	patch -p5 --forward -F0 --no-backup-if-mismatch < patches/linux-drm-virtio-import-3d.patch
+	say "import-3d patch applied (these sources have the 7.2.9 revert)"
 fi
 
 if grep -q 'virtio_gpu_host_vblank' virtgpu_display.c; then
 	say "the host-vblank patch is already in these sources, nothing to apply"
 else
-	patch -p5 --forward --silent < patches/linux-drm-virtio-host-vblank.patch
+	patch -p5 --forward -F0 --no-backup-if-mismatch < patches/linux-drm-virtio-host-vblank.patch
 	say "host-vblank patch applied"
 fi
 
 if grep -q 'virtio_gpu_flip_in_grace' virtgpu_display.c; then
 	say "the flip-grace patch is already in these sources, nothing to apply"
 else
-	patch -p5 --forward --silent < patches/linux-drm-virtio-flip-grace.patch
+	patch -p5 --forward -F0 --no-backup-if-mismatch < patches/linux-drm-virtio-flip-grace.patch
 	say "flip-grace patch applied"
 fi
 
 if grep -q 'flush_unchanged' virtgpu_plane.c; then
 	say "the unchanged-flush patch is already in these sources, nothing to apply"
 else
-	patch -p5 --forward --silent < patches/linux-drm-virtio-skip-unchanged-flush.patch
+	patch -p5 --forward -F0 --no-backup-if-mismatch < patches/linux-drm-virtio-skip-unchanged-flush.patch
 	say "unchanged-flush patch applied"
 fi
 
 if grep -q 'blob_flush_fence' virtgpu_plane.c; then
 	say "the blob-flush-fence patch is already in these sources, nothing to apply"
 else
-	patch -p5 --forward --silent < patches/linux-drm-virtio-blob-flush-fence.patch
+	patch -p5 --forward -F0 --no-backup-if-mismatch < patches/linux-drm-virtio-blob-flush-fence.patch
 	say "blob-flush-fence patch applied"
 fi
 
 if grep -q 'blob_damage' virtgpu_plane.c; then
 	say "the host-blob-damage patch is already in these sources, nothing to apply"
 else
-	patch -p5 --forward --silent < patches/linux-drm-virtio-host-blob-damage.patch
+	patch -p5 --forward -F0 --no-backup-if-mismatch < patches/linux-drm-virtio-host-blob-damage.patch
 	say "host-blob-damage patch applied"
 fi
 
 if grep -q 'virtio_gpu_flip_gate_poll' virtgpu_display.c; then
 	say "the gated-flip-event patch is already in these sources, nothing to apply"
 else
-	patch -p5 --forward --silent < patches/linux-drm-virtio-gated-flip-event.patch
+	patch -p5 --forward -F0 --no-backup-if-mismatch < patches/linux-drm-virtio-gated-flip-event.patch
 	say "gated-flip-event patch applied"
 fi
 
 if grep -q 'linear_scanout' virtgpu_plane.c; then
 	say "the linear-scanout patch is already in these sources, nothing to apply"
 else
-	patch -p5 --forward --silent < patches/linux-drm-virtio-linear-scanout.patch
+	patch -p5 --forward -F0 --no-backup-if-mismatch < patches/linux-drm-virtio-linear-scanout.patch
 	say "linear-scanout patch applied"
 fi
 
 if grep -q 'virtio_gpu_fence_own_context' virtgpu_fence.c; then
 	say "the flush-fence-context patch is already in these sources, nothing to apply"
 else
-	patch -p5 --forward --silent < patches/linux-drm-virtio-flush-fence-context.patch
+	patch -p5 --forward -F0 --no-backup-if-mismatch < patches/linux-drm-virtio-flush-fence-context.patch
 	say "flush-fence-context patch applied"
 fi
 
 if grep -q 'blob_flush_fence == 3' virtgpu_plane.c; then
 	say "the reader-fence patch is already in these sources, nothing to apply"
 else
-	patch -p5 --forward --silent < patches/linux-drm-virtio-reader-fence.patch
+	patch -p5 --forward -F0 --no-backup-if-mismatch < patches/linux-drm-virtio-reader-fence.patch
 	say "reader-fence patch applied"
 fi
 
 if grep -q 'tiled_scanout' virtgpu_plane.c; then
 	say "the tiled-scanout patch is already in these sources, nothing to apply"
 else
-	patch -p5 --forward --silent < patches/linux-drm-virtio-tiled-scanout.patch
+	patch -p5 --forward -F0 --no-backup-if-mismatch < patches/linux-drm-virtio-tiled-scanout.patch
 	say "tiled-scanout patch applied"
 fi
