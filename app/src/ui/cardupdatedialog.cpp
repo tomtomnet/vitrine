@@ -18,6 +18,7 @@
 #include "core/vmrunner.h"
 #include "core/vmstore.h"
 #include "ui/banner.h"
+#include "ui/qemudocs.h"
 #include "ui/vmpane.h"
 #include "ui/widgets.h"
 
@@ -203,6 +204,8 @@ CardUpdateBanner::CardUpdateBanner(QWidget *parent)
             setDeclined(m_vm->id(), true);
         }
     });
+    /* the QEMU of the preferences, or a build of vitrine's, may offer otherwise */
+    connect(QemuDocs::preferred(), &QemuDocs::changed, this, &CardUpdateBanner::refresh);
     banners().removeAll(nullptr);
     banners() << this;
     hide();

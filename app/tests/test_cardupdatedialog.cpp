@@ -17,6 +17,7 @@
 #include "core/paths.h"
 #include "core/vmstore.h"
 #include "ui/cardupdatedialog.h"
+#include "ui/qemudocs.h"
 #include "ui/vmconsole.h"
 #include "ui/vmdetails.h"
 #include "ui/vmpane.h"
@@ -364,6 +365,25 @@ private slots:
         QVERIFY2(dialog->findChild<QLabel *>("notes")->text().contains("File &gt; Build QEMU"),
                  qPrintable(dialog->findChild<QLabel *>("notes")->text()));
         QVERIFY(dialog->findChild<QLabel *>("changes")->text().contains("drm_native_context=on"));
+    }
+
+    /* The QEMU of the preferences: what it lacks is not offered, until it changes */
+    void preferencesQemu()
+    {
+        const QString fedora = QString(kUserVm).replace(",drm_native_context=on", "");
+        Vm vm(vmDir("chosen", fedora));
+        VmConsole console(&vm);
+        CardUpdateBanner *banner = bannerIn(&console);
+
+        QVERIFY(!banner->isHidden());
+        /* Fedora's chosen: it has nothing more to offer */
+        Paths::setQemuBinary(m_tmp.filePath("bin/" + Paths::qemuSystemName()));
+        QemuDocs::reloadPreferred();
+        QVERIFY(banner->isHidden());
+        /* vitrine's again */
+        Paths::setQemuBinary({});
+        QemuDocs::reloadPreferred();
+        QVERIFY(!banner->isHidden());
     }
 
     /* Nothing for a VM that has it all, or that is no Linux one */
