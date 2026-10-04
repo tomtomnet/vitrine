@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: GPL-2.0-or-later
 #include <QCoreApplication>
 #include <QDir>
+#include <QElapsedTimer>
 #include <QFile>
 #include <QFileInfo>
 #include <QJsonDocument>
@@ -13,6 +14,7 @@
 #include <QStandardPaths>
 #include <QTemporaryDir>
 #include <QTest>
+#include <QThread>
 
 #include <cerrno>
 #include <csignal>
@@ -53,6 +55,28 @@ static bool gone(qint64 pid)
         return true;
     }
     return ::kill(pid_t(pid), 0) != 0 && errno == ESRCH;
+}
+
+/*
+ * Starts a stand-in for a QEMU found running, and waits until it runs its
+ * program: waitForStarted() may return while the kernel still sets the
+ * program up (a vfork'ed child lets its parent go at exec), and a runner
+ * that reads /proc/PID/cmdline then finds it empty - a QEMU found running
+ * wrote its pid file long after its exec
+ */
+static bool startStandIn(QProcess &process, const QString &program, const QStringList &arguments)
+{
+    process.start(program, arguments);
+    if (!process.waitForStarted()) {
+        return false;
+    }
+    const QString path = QString("/proc/%1/cmdline").arg(process.processId());
+    QElapsedTimer clock;
+    clock.start();
+    while (!read(path).contains(arguments.last()) && clock.elapsed() < 5000) {
+        QThread::msleep(5);
+    }
+    return read(path).contains(arguments.last());
 }
 
 /*
@@ -540,8 +564,7 @@ private slots:
         const QStringList command = VmRunner(id, tmp.path()).commandLine({});
         FakeMonitor monitor(runDir + "/qmp.sock");
         QProcess qemu;
-        qemu.start(FAKE_QEMU, {"-qmp", command[command.size() - 3]});
-        QVERIFY(qemu.waitForStarted());
+        QVERIFY(startStandIn(qemu, FAKE_QEMU, {"-qmp", command[command.size() - 3]}));
         QFile pid(runDir + "/qemu.pid");
         QVERIFY(pid.open(QIODevice::WriteOnly));
         pid.write(QByteArray::number(qemu.processId()) + '\n');
@@ -632,8 +655,7 @@ private slots:
         }
         FakeMonitor monitor(runDir + "/qmp.sock");
         QProcess qemu;
-        qemu.start(FAKE_QEMU, arguments);
-        QVERIFY(qemu.waitForStarted());
+        QVERIFY(startStandIn(qemu, FAKE_QEMU, arguments));
         QFile pid(runDir + "/qemu.pid");
         QVERIFY(pid.open(QIODevice::WriteOnly));
         pid.write(QByteArray::number(qemu.processId()) + '\n');
@@ -998,9 +1020,9 @@ private slots:
         FakeMonitor monitor(runDir + "/qmp.sock");
         QProcess qemu;
         qemu.setChildProcessModifier([]() { setpgid(0, 0); });
-        qemu.start("/bin/sh", {"-c", "trap '' TERM; while :; do sleep 0.1; done", "sh", "-qmp",
-                               command[command.size() - 3]});
-        QVERIFY(qemu.waitForStarted());
+        QVERIFY(startStandIn(qemu, "/bin/sh",
+                             {"-c", "trap '' TERM; while :; do sleep 0.1; done", "sh", "-qmp",
+                              command[command.size() - 3]}));
         const auto end = qScopeGuard([&qemu]() { stopGroup(qemu); });
         /* processId() is 0 once it ended */
         const qint64 qemuPid = qemu.processId();
@@ -1045,9 +1067,9 @@ private slots:
         FakeMonitor monitor(runDir + "/qmp.sock");
         QProcess qemu;
         qemu.setChildProcessModifier([]() { setpgid(0, 0); });
-        qemu.start("/bin/sh", {"-c", "trap '' TERM; while :; do sleep 0.1; done", "sh", "-qmp",
-                               command[command.size() - 3]});
-        QVERIFY(qemu.waitForStarted());
+        QVERIFY(startStandIn(qemu, "/bin/sh",
+                             {"-c", "trap '' TERM; while :; do sleep 0.1; done", "sh", "-qmp",
+                              command[command.size() - 3]}));
         const auto end = qScopeGuard([&qemu]() { stopGroup(qemu); });
         /* processId() is 0 once it ended */
         const qint64 qemuPid = qemu.processId();
