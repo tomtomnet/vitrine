@@ -154,7 +154,8 @@ inline void sweep(const std::function<QStringList(int)> &check)
                 at << n;
             }
         }
-        QVERIFY2(QApplication::topLevelWidgets().isEmpty(), "a window left over");
+        /* the global factor is for windows made afterwards */
+        QVERIFY2(QGuiApplication::allWindows().isEmpty(), "a window left over");
     }
     set(120);
     for (auto it = kinds.cbegin(); it != kinds.cend(); ++it) {

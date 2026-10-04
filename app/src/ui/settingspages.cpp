@@ -385,8 +385,13 @@ StoragePage::StoragePage(const QString &vmDir, QWidget *parent)
     m_table->setEditTriggers(QAbstractItemView::NoEditTriggers);
     m_table->setWordWrap(false);
 
+    /* each button of the column with its icon, not some */
     addDisk->setIcon(Icons::themed({"drive-harddisk", "list-add"}, QStyle::SP_DriveHDIcon));
     addCdrom->setIcon(Icons::themed({"drive-optical", "list-add"}, QStyle::SP_DriveCDIcon));
+    m_disc->setIcon(Icons::themed({"document-open"}, QStyle::SP_DialogOpenButton));
+    m_eject->setIcon(Icons::themed({"media-eject"}, QStyle::SP_ArrowUp));
+    m_resize->setIcon(Icons::themed({"transform-scale", "document-edit"},
+                                    QStyle::SP_FileDialogDetailedView));
     m_remove->setIcon(Icons::themed({"list-remove", "edit-delete"}, QStyle::SP_TrashIcon));
     /* beside the table, as a row under it would not fit a narrow window */
     buttons->addWidget(addDisk);
@@ -788,6 +793,7 @@ SharesPage::SharesPage(QWidget *parent)
     m_table->setWordWrap(false);
 
     add->setIcon(Icons::themed({"list-add"}, QStyle::SP_FileDialogNewFolder));
+    m_edit->setIcon(Icons::themed({"document-edit"}, QStyle::SP_FileDialogDetailedView));
     m_remove->setIcon(Icons::themed({"list-remove", "edit-delete"}, QStyle::SP_TrashIcon));
     buttons->addWidget(add);
     buttons->addWidget(m_edit);

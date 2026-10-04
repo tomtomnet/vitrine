@@ -70,6 +70,14 @@ static void listen(QLocalServer *server, const QString &socketPath, MainWindow *
 
 int main(int argc, char **argv)
 {
+    /*
+     * The desktop's scale as it is, 1.25 or 1.5 too: Qt 6's default, said
+     * here because Qt's Wayland plugin takes the compositor's fractional
+     * scale (wp_fractional_scale_v1) with this policy only, and rounds to a
+     * whole one with any other.  QT_SCALE_FACTOR_ROUNDING_POLICY still wins.
+     */
+    QGuiApplication::setHighDpiScaleFactorRoundingPolicy(
+        Qt::HighDpiScaleFactorRoundingPolicy::PassThrough);
     QApplication app(argc, argv);
 
     QApplication::setApplicationName("vitrine");

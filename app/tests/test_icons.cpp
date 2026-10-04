@@ -1,8 +1,10 @@
 // SPDX-License-Identifier: GPL-2.0-or-later
 #include <QDir>
+#include <QFile>
 #include <QHBoxLayout>
 #include <QListWidget>
 #include <QPainter>
+#include <QPushButton>
 #include <QStyleFactory>
 #include <QTemporaryDir>
 #include <QToolButton>
@@ -162,6 +164,121 @@ private slots:
             }
             return wrong;
         });
+    }
+
+    /*
+     * Advanced, under the settings pages, in line with them: its name where
+     * a row of the list has its name, its arrow in the column of their icons
+     */
+    void sectionRow_data()
+    {
+        sizes_data();
+    }
+
+    void sectionRow()
+    {
+        QFETCH(QString, style);
+        QApplication::setStyle(style);
+        QFile args(m_tmp.filePath("section/vm.args"));
+        QVERIFY(QDir().mkpath(m_tmp.filePath("section")));
+        QVERIFY(args.open(QIODevice::WriteOnly) && args.write("-m 1G\n") > 0);
+        args.close();
+        Vm vm(m_tmp.filePath("section"));
+
+        /* made once: shown, then its window destroyed, at each scale */
+        struct Pane : VmPane {
+            using QWidget::destroy;
+        } pane;
+        pane.setVm(&vm);
+        pane.setTab(VmPane::Settings);
+        auto *pages = pane.findChild<QListWidget *>("pages");
+        auto *advanced = pane.findChild<QToolButton *>("advanced");
+        QVERIFY(pages && advanced);
+        /* a row of the same name in the list, to compare with */
+        pages->addItem(new QListWidgetItem(computer(), advanced->text()));
+        pages->setFixedHeight(pages->height() + pages->sizeHintForRow(0) * 2);
+        pane.resize(900, 700);
+
+        Scales::sweep([&](int) {
+            using namespace Scales;
+            QStringList wrong;
+            settle(&pane);
+            const qreal ratio = pane.devicePixelRatio();
+            const QImage shot = grab(&pane);
+            const QRect list = geometryIn(pages, &pane);
+            const QRgb background = shot.pixel(qRound(list.right() * ratio) - 2,
+                                               qRound(list.bottom() * ratio) - 2);
+
+            /* the runs of columns with ink in the device rows of @r */
+            auto inkRuns = [&](const QRect &r) {
+                QList<std::pair<int, int>> runs;
+                const int y0 = qCeil(r.top() * ratio), y1 = qFloor((r.bottom() + 1) * ratio) - 1;
+                for (int x = qCeil(r.left() * ratio); x < qFloor((r.right() + 1) * ratio); x++) {
+                    bool ink = false;
+                    for (int y = y0; y <= y1 && !ink; y++) {
+                        ink = difference(shot.pixel(x, y), background) > 90;
+                    }
+                    if (!ink) {
+                        continue;
+                    }
+                    /* a gap of two columns or more parts the icon from the name */
+                    if (!runs.isEmpty() && x <= runs.last().second + 2) {
+                        runs.last().second = x;
+                    } else {
+                        runs << std::pair(x, x);
+                    }
+                }
+                return runs;
+            };
+            const QRect last = pages->visualItemRect(pages->item(pages->count() - 1))
+                                   .translated(geometryIn(pages->viewport(), &pane).topLeft());
+            const auto row = inkRuns(last);
+            const auto button = inkRuns(geometryIn(advanced, &pane));
+            /* icon (or arrow), then the name's letters */
+            if (row.size() < 2 || button.size() < 2) {
+                wrong << QString("%1 runs of ink in the row, %2 in Advanced").arg(row.size())
+                             .arg(button.size());
+            } else {
+                if (qAbs(row[1].first - button[1].first) > 1) {
+                    wrong << QString("Advanced's name at %1, a row's at %2 (device pixels)")
+                                 .arg(button[1].first).arg(row[1].first);
+                }
+                if (button[0].first < row[0].first || button[0].second > row[0].second) {
+                    wrong << QString("Advanced's arrow at %1-%2, the icon at %3-%4")
+                                 .arg(button[0].first).arg(button[0].second)
+                                 .arg(row[0].first).arg(row[0].second);
+                }
+            }
+            pane.hide();
+            pane.destroy();
+            return wrong;
+        });
+    }
+
+    /* The buttons of a row or a column, the settings pages' and the tabs': icons on all or none */
+    void buttonGroups()
+    {
+        QFile args(m_tmp.filePath("groups/vm.args"));
+        QVERIFY(QDir().mkpath(m_tmp.filePath("groups")));
+        QVERIFY(args.open(QIODevice::WriteOnly) && args.write("-m 1G\n") > 0);
+        args.close();
+        Vm vm(m_tmp.filePath("groups"));
+        VmPane pane;
+        QStringList wrong;
+
+        pane.setVm(&vm);
+        for (QLayout *layout : pane.findChildren<QLayout *>()) {
+            QStringList with, without;
+            for (int i = 0; i < layout->count(); i++) {
+                if (auto *button = qobject_cast<QPushButton *>(layout->itemAt(i)->widget())) {
+                    (button->icon().isNull() ? without : with) << button->text().remove('&');
+                }
+            }
+            if (!with.isEmpty() && !without.isEmpty()) {
+                wrong << QString("icons on %1, not on %2").arg(with.join(", "), without.join(", "));
+            }
+        }
+        QVERIFY2(wrong.isEmpty(), qPrintable(wrong.join("; ")));
     }
 
     /* Each role's icons at the style's size for it, in Breeze as in Fusion */
