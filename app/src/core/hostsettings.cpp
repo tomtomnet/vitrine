@@ -41,7 +41,11 @@ extern char **environ;
 #define VITRINE_HELPER_PATH "/usr/libexec/vitrine-helper"
 #endif
 
-static const char kAction[] = "org.vitrine.helper";
+/* polkit's actions: one per verb of the helper (its first argument) */
+static const char kAction[] = "org.vitrine.helper";                 // session
+static const char kSetcapAction[] = "org.vitrine.helper.setcap";
+/* pkexec's line when it does not run the program: "...: Not authorized" */
+static const char kPkexecError[] = "Error executing command as another user: ";
 /* A helper that ends while VMs it tuned run is started again, this many
    times at most per run of vitrine */
 static const int kRestarts = 5;
@@ -246,13 +250,26 @@ HostSettings::Status HostSettings::classify(bool installed, int pkcheckStatus,
     return {Problem::Failed, error.isEmpty() ? tr("polkit did not answer") : error};
 }
 
-/*
- * Asks polkit whether this process may run the helper without anyone
- * typing a password, and with the user database says why not
- */
-void HostSettings::check(QObject *context, const std::function<void(const Status &)> &done)
+/* A message as part of a sentence: without its period */
+static QString clause(QString text)
 {
-    if (!helperInstalled()) {
+    text = text.trimmed();
+    if (text.endsWith('.') && !text.endsWith("..")) {
+        text.chop(1);
+    }
+    return text;
+}
+
+/*
+ * Asks polkit whether this process may run the helper's @action without
+ * anyone typing a password, and with the user database says why not
+ */
+static void checkAction(const char *action, QObject *context,
+                        const std::function<void(const HostSettings::Status &)> &done)
+{
+    using Problem = HostSettings::Problem;
+
+    if (!HostSettings::helperInstalled()) {
         done({Problem::NotInstalled, {}});
         return;
     }
@@ -262,18 +279,24 @@ void HostSettings::check(QObject *context, const std::function<void(const Status
                      [check, done](int code, QProcess::ExitStatus status) {
         const QString err = QString::fromLocal8Bit(check->readAllStandardError());
         check->deleteLater();
-        done(classify(true, status == QProcess::NormalExit ? code : 127, err, vitrineGroupExists(),
-                      inVitrineGroup()));
+        done(HostSettings::classify(true, status == QProcess::NormalExit ? code : 127, err,
+                                    HostSettings::vitrineGroupExists(),
+                                    HostSettings::inVitrineGroup()));
     });
     QObject::connect(check, &QProcess::errorOccurred, context,
                      [check, done](QProcess::ProcessError error) {
         if (error == QProcess::FailedToStart) {
             check->deleteLater();
-            done(classify(true, -1, QString(), false, false));
+            done(HostSettings::classify(true, -1, QString(), false, false));
         }
     });
     /* no --allow-user-interaction: never a dialog from here */
-    check->start("pkcheck", {"--action-id", kAction, "--process", subject()});
+    check->start("pkcheck", {"--action-id", action, "--process", subject()});
+}
+
+void HostSettings::check(QObject *context, const std::function<void(const Status &)> &done)
+{
+    checkAction(kAction, context, done);
 }
 
 /* vitrine-helper setcap @path, once polkit said yes */
@@ -315,7 +338,8 @@ void HostSettings::grantCapability(const QString &qemu, QObject *context,
         done(tr("%1 does not exist").arg(qemu));
         return;
     }
-    check(context, [path, context, done](const Status &status) {
+    /* its own action, which pkexec will use: a rule may grant one and not the other */
+    checkAction(kSetcapAction, context, [path, context, done](const Status &status) {
         if (!status.active()) {
             done(status.why());
             return;
@@ -324,7 +348,7 @@ void HostSettings::grantCapability(const QString &qemu, QObject *context,
     });
 }
 
-void HostSettings::ensureCapability(bool granted)
+void HostSettings::ensureCapability()
 {
     /* canonical: the build itself, not `current` */
     const QString qemu = Paths::stackQemu();
@@ -340,16 +364,12 @@ void HostSettings::ensureCapability(bool granted)
         m_capabilityTried.insert(qemu);
         setcap(qemu, this, [this](const QString &error) {
             if (!error.isEmpty()) {
-                say(tr("Vitrine's QEMU cannot make its threads real-time: %1.").arg(error));
+                say(tr("Vitrine's QEMU cannot make its threads real-time: %1.").arg(clause(error)));
             }
         });
     };
-    if (granted) {
-        grant();
-        return;
-    }
     /* polkit's no is shown at a VM start, not here */
-    check(this, [grant](const Status &status) {
+    checkAction(kSetcapAction, this, [grant](const Status &status) {
         if (status.active()) {
             grant();
         }
@@ -389,7 +409,7 @@ HostSettings::HostSettings(VmStore *store, QObject *parent)
         }
         grantCapability(qemu, this, [this](const QString &error) {
             if (!error.isEmpty()) {
-                say(tr("Vitrine's QEMU cannot make its threads real-time: %1.").arg(error));
+                say(tr("Vitrine's QEMU cannot make its threads real-time: %1.").arg(clause(error)));
             }
         });
     });
@@ -583,9 +603,9 @@ void HostSettings::start()
             return;
         }
         /* the group joined since vitrine started, say */
-        ensureCapability(true);
+        ensureCapability();
         if (!m_out.isEmpty()) {
-            spawn({"pkexec", "--disable-internal-agent", VITRINE_HELPER_PATH});
+            spawn({"pkexec", "--disable-internal-agent", VITRINE_HELPER_PATH, "session"});
         }
     });
 }

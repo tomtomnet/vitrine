@@ -157,7 +157,7 @@ private:
     /* A HostSettings on the fake tree, through the helper's test build */
     void fake(HostSettings &hs) const
     {
-        hs.setHelperCommand({HELPER_FAKE});
+        hs.setHelperCommand({HELPER_FAKE, "session"});
         hs.setSysRoot(m_root + "/sys");
     }
     static bool saw(const QSignalSpy &spy, const QString &start)
@@ -495,9 +495,9 @@ private slots:
         QTRY_VERIFY(saw(lines, QString("ok rt %1").arg(q2.pid())));
         QCOMPARE(polkitLog("pkcheck").size(), 2);
         QCOMPARE(polkitLog("pkexec").size(), 1);
-        /* the installed helper, the one the action names */
-        QVERIFY(polkitLog("pkexec").first().startsWith("--disable-internal-agent /"));
-        QVERIFY(!polkitLog("pkexec").first().contains(HELPER_FAKE));
+        /* the installed helper, the one the action names, and its verb */
+        QCOMPARE(polkitLog("pkexec").first(),
+                 QString("--disable-internal-agent " VITRINE_HELPER_PATH " session"));
         /* the one started before still runs untuned */
         QCOMPARE(hs.untunedCount(), 1);
         q2.stop();
@@ -629,7 +629,7 @@ private slots:
         HostSettings hs(nullptr);
         QSignalSpy lines(&hs, &HostSettings::helperLine), notices(&hs, &HostSettings::notice),
             finished(&hs, &HostSettings::helperFinished);
-        hs.setHelperCommand({"sudo", "-n", helper});
+        hs.setHelperCommand({"sudo", "-n", helper, "session"});
         hs.tune(qemu.processId());
         QTRY_VERIFY_WITH_TIMEOUT(saw(lines, QString("ok rt %1").arg(qemu.processId())), 10000);
         for (const QList<QVariant> &line : lines) {
@@ -872,6 +872,9 @@ private slots:
             HostSettings hs(nullptr);
             QSignalSpy notices(&hs, &HostSettings::notice);
             QTRY_COMPARE(polkitLog("pkcheck").size(), 1);
+            /* the action pkexec would use: a rule may grant it apart */
+            QVERIFY(polkitLog("pkcheck").first().startsWith(
+                "--action-id org.vitrine.helper.setcap --process "));
             QTest::qWait(200);
             QVERIFY(polkitLog("pkexec").isEmpty());
             QVERIFY(notices.isEmpty());

@@ -2,16 +2,23 @@
 /*
  * vitrine-helper - host settings for vitrine's VMs, as root, while they run.
  *
- * vitrine starts it with pkexec when a VM starts (polkit action
- * org.vitrine.helper: no password for members of the vitrine group, never
- * asked otherwise).  Nothing is installed as a service and nothing stays
- * applied once the VMs are gone.
+ * vitrine runs it with pkexec, under one polkit action per verb (each names
+ * its first argument, so pkexec's choice is never in doubt):
  *
- *   vitrine-helper                one session: requests on stdin, one per line
- *   vitrine-helper setcap PATH    cap_sys_nice=ep on vitrine's QEMU build, then exit
+ *   vitrine-helper session        one session: requests on stdin, one per
+ *                                 line (org.vitrine.helper)
+ *   vitrine-helper setcap PATH    cap_sys_nice=ep on vitrine's QEMU build, then
+ *                                 exit (org.vitrine.helper.setcap)
  *   vitrine-helper setup-group    the caller in the vitrine group (created if
- *                                 need be), then exit: an administrator's
- *                                 password for non-members
+ *                                 need be), then exit
+ *                                 (org.vitrine.helper.setup-group)
+ *
+ * session and setcap: no password for members of the vitrine group in their
+ * local, active session (49-vitrine.rules); vitrine asks polkit first and
+ * never runs them when it would want one.  setup-group: an administrator's
+ * password, always - vitrine runs it only when the user clicks Set Up.
+ * Nothing is installed as a service and nothing stays applied once the VMs
+ * are gone.
  *
  * Session requests, each answered by one line or more:
  *   watch PID              a QEMU of the caller's (same uids, qemu-system-*
@@ -137,6 +144,25 @@ static void sane_fds(void)
         }
     }
     close_range(3, ~0U, 0);
+}
+
+/*
+ * No signal ignored, caught or blocked as whoever started it left it: pkexec
+ * passes both on.  An ignored SIGCHLD, say, has the kernel reap the group
+ * tools before their exit status is read.
+ */
+static void sane_signals(void)
+{
+    struct sigaction dfl = {.sa_handler = SIG_DFL};
+    sigset_t none;
+
+    sigemptyset(&dfl.sa_mask);
+    for (int sig = 1; sig < NSIG; sig++) {
+        /* SIGKILL, SIGSTOP and libc's own refuse: nothing to do for them */
+        sigaction(sig, &dfl, NULL);
+    }
+    sigemptyset(&none);
+    sigprocmask(SIG_SETMASK, &none, NULL);
 }
 
 /* One request: false when it asks the helper to end */
@@ -294,6 +320,7 @@ end:
 
 int main(int argc, char **argv)
 {
+    sane_signals();
     sane_fds();
     umask(077);
     signal(SIGPIPE, SIG_IGN);
@@ -308,6 +335,9 @@ int main(int argc, char **argv)
         fprintf(stderr, "vitrine-helper: run it through pkexec (no PKEXEC_UID)\n");
         return 1;
     }
+    if (argc == 2 && strcmp(argv[1], "session") == 0) {
+        return session();
+    }
     if (argc == 3 && strcmp(argv[1], "setcap") == 0) {
         return setcap(argv[2]);
     }
@@ -315,9 +345,7 @@ int main(int argc, char **argv)
     if (argc == 2 && strcmp(argv[1], "setup-group") == 0) {
         return setup_group();
     }
-    if (argc != 1) {
-        fprintf(stderr, "usage: vitrine-helper [setcap PATH | setup-group]\n");
-        return 2;
-    }
-    return session();
+    /* none at all included: pkexec would run that under its generic action */
+    fprintf(stderr, "usage: vitrine-helper session | setcap PATH | setup-group\n");
+    return 2;
 }

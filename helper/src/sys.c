@@ -166,13 +166,15 @@ bool sys_group_has(const char *user, gid_t primary, gid_t gid)
  * Runs a tool of the shadow suite, which keeps /etc/group and /etc/gshadow
  * consistent and locked while it edits them, and tells caches (nscd, sssd)
  * about the change.  It is looked for in the usual places only, run with a
- * fixed environment, and its error output goes to @err.
+ * fixed environment, and the first line of its error output goes to @err
+ * (its output says what it is doing - gpasswd's "Adding user ..." - and is
+ * dropped).
  */
 static int run_tool(const char *const places[], char *const argv[], char *err, size_t size)
 {
     static char *const env[] = {"PATH=/usr/sbin:/usr/bin:/sbin:/bin", "LC_ALL=C", NULL};
     posix_spawn_file_actions_t actions;
-    int out[2], status, rc = ENOENT;
+    int out[2], status = -1, rc = ENOENT;
     const char *tool = NULL;
     size_t len = 0;
     ssize_t n;
@@ -194,7 +196,7 @@ static int run_tool(const char *const places[], char *const argv[], char *err, s
     }
     posix_spawn_file_actions_init(&actions);
     posix_spawn_file_actions_addopen(&actions, STDIN_FILENO, "/dev/null", O_RDONLY, 0);
-    posix_spawn_file_actions_adddup2(&actions, out[1], STDOUT_FILENO);
+    posix_spawn_file_actions_addopen(&actions, STDOUT_FILENO, "/dev/null", O_WRONLY, 0);
     posix_spawn_file_actions_adddup2(&actions, out[1], STDERR_FILENO);
     rc = posix_spawn(&pid, tool, &actions, NULL, argv, env);
     posix_spawn_file_actions_destroy(&actions);
@@ -210,7 +212,13 @@ static int run_tool(const char *const places[], char *const argv[], char *err, s
     }
     err[len] = '\0';
     close(out[0]);
-    while (waitpid(pid, &status, 0) < 0 && errno == EINTR) {
+    while (waitpid(pid, &status, 0) < 0) {
+        if (errno != EINTR) {
+            /* its status unknown: not a success (main() lets no SIGCHLD
+               ignored have the kernel reap it) */
+            snprintf(err, size, "cannot wait for %s: %s", argv[0], strerror(errno));
+            return -1;
+        }
     }
     if (WIFEXITED(status) && WEXITSTATUS(status) == 0) {
         err[0] = '\0';

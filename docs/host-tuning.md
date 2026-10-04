@@ -103,23 +103,41 @@ What this amounts to:
 the caller (pkexec's `PKEXEC_UID`, looked up in the user database),
 never anyone else. It cannot add another user, add anyone to another
 group, remove anyone, or change a group's other members; it refuses root
-and uids the user database does not know, and does not join a group named
-`vitrine` whose id is 0. When the caller is a member already it changes
-nothing. `groupadd` and `gpasswd` do the editing (they lock and update
-`/etc/group` and `/etc/gshadow` together), and the journal records it.
-It runs under the same polkit action as the rest, so polkit asks
-everyone but the group's members for an administrator's password; a
-member gets it without one, and nothing to change. (pkexec picks the
-first action whose path matches, in no fixed order, so a separate action
-for this verb would not reliably be the one used.)
+and uids the user database does not know. When the caller is a member
+already it changes nothing. `groupadd` and `gpasswd` do the editing (they
+lock and update `/etc/group` and `/etc/gshadow` together), and the
+journal records it.
+
+It joins an existing `vitrine` group only if it looks like the one it
+would have created: a system group (an id from 1 to `SYS_GID_MAX` of
+`/etc/login.defs`, 999 by default) listed in `/etc/group`, alone with its
+id, and nobody's primary group. Any other group of that name - a user
+named vitrine's private group, a group sharing the id of `disk` or
+`wheel`, one from LDAP - would give you that group's access to files, which
+the password dialog does not mention: setup-group refuses it ("a group
+named vitrine exists that vitrine did not create") and changes nothing.
+Rename that group, or add yourself to it by hand if that is what you want.
+
+Each verb of the helper has a polkit action of its own, named by its
+first argument: `org.vitrine.helper` (`session`, the settings while VMs
+run), `org.vitrine.helper.setcap` and `org.vitrine.helper.setup-group`.
+The group's rule grants the first two only: setup-group always wants an
+administrator's password, from members too, and its dialog says it adds
+you to the vitrine group. A rule of your own that gives the helper to more
+people, or lets them use their own password, does not bring a lasting
+change of `/etc/group` along unless it names setup-group's action.
+(pkexec takes the first action whose path matches and whose first
+argument, if the action names one, matches too, in no fixed order: each
+action names its argument, so exactly one matches, and the helper refuses
+to run without one, which pkexec would put under its generic action.)
 
 Give the group to the people you would give real-time priority to.
 
 ## Installing
 
 `cmake --install` puts the helper in `<prefix>/libexec/vitrine-helper`,
-the polkit action in `<prefix>/share/polkit-1/actions` and the rule for the
-group in `<prefix>/share/polkit-1/rules.d`. polkit reads only
+its polkit actions in `<prefix>/share/polkit-1/actions` and the rule for
+the group in `<prefix>/share/polkit-1/rules.d`. polkit reads only
 `/usr/share/polkit-1` (and `/etc/polkit-1/rules.d`), so configure with
 that prefix, or set `VITRINE_POLKIT_ACTIONS_DIR` and
 `VITRINE_POLKIT_RULES_DIR` to those folders:
@@ -130,7 +148,7 @@ cmake --build build
 sudo cmake --install build
 ```
 
-The action and the app name the helper by its installed path, fixed when
+The actions and the app name the helper by its installed path, fixed when
 configuring: `cmake --install --prefix` with another prefix is refused.
 
 ## When something looks wrong
@@ -146,7 +164,7 @@ configuring: `cmake --install --prefix` with another prefix is refused.
 - Its state is in `/run/vitrine-helper` (root only; gone at the next boot).
   A helper that died while holding settings leaves its state there: the next
   helper puts them back when it starts. To do it now:
-  `sudo /usr/libexec/vitrine-helper < /dev/null`.
+  `sudo /usr/libexec/vitrine-helper session < /dev/null`.
 - Hosts with Secure Boot run the kernel in lockdown, where debugfs cannot be
   written: no fair-server change there, the rest still applies.
 - GPUs other than AMD APUs get no automatic floor. A discrete AMD GPU needs

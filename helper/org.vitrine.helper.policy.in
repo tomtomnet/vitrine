@@ -3,31 +3,59 @@
  "http://www.freedesktop.org/standards/PolicyKit/1/policyconfig.dtd">
 <!-- SPDX-License-Identifier: GPL-2.0-or-later -->
 <!--
-  vitrine-helper, run as root by pkexec while vitrine's VMs run: the kernel's
-  fair server, an AMD GPU's clock floor, real-time threads for the caller's
-  QEMU (all put back after the last VM), cap_sys_nice on vitrine's own QEMU
-  build, and the caller in the vitrine group (setup-group).  An
-  administrator's password by default; 49-vitrine.rules lets members of the
-  vitrine group use it without one - for whom setup-group changes nothing.
+  vitrine-helper, run as root by pkexec: one action per verb.  pkexec takes
+  the first action whose exec.path matches and whose exec.argv1, if it has
+  one, is the program's first argument; the actions come in no fixed order.
+  Each one here names its argv1, so exactly one matches each verb, and the
+  helper refuses a run without one (pkexec would use its generic action).
 
-  One action for every verb: pkexec takes the first action whose exec.path
-  matches, in no fixed order, and one without exec.argv1 matches any
-  argument, so a setup-group action beside this one would not reliably be
-  the one asked.  vitrine runs the helper without a password only after
-  pkcheck said yes, so this action's dialog is in practice the one of
-  setup-group: its message says what the password is for.
+  - session: the kernel's fair server, an AMD GPU's clock floor and
+    real-time threads for the caller's QEMU while vitrine's VMs run, all
+    put back after the last one;
+  - setcap: cap_sys_nice on vitrine's own QEMU build;
+  - setup-group: the caller in the vitrine group, created if need be.
+
+  An administrator's password by default.  49-vitrine.rules lets members of
+  the vitrine group run session and setcap without one, never setup-group:
+  a lasting change of /etc/group, which a rule granting the helper to more
+  people (or with auth_self) must not bring along.  vitrine asks polkit
+  first and runs session and setcap only when no password is wanted;
+  setup-group only when the user clicks Set Up.
 -->
 <policyconfig>
   <vendor>vitrine</vendor>
   <vendor_url>https://github.com/tomtomnet/vitrine</vendor_url>
   <action id="org.vitrine.helper">
     <description>Tune the host while virtual machines run</description>
-    <message>Authentication is required to let you tune the host's scheduler and GPU settings while your virtual machines run</message>
+    <message>Authentication is required to tune the host's scheduler and GPU settings while your virtual machines run</message>
     <defaults>
       <allow_any>auth_admin</allow_any>
       <allow_inactive>auth_admin</allow_inactive>
       <allow_active>auth_admin</allow_active>
     </defaults>
     <annotate key="org.freedesktop.policykit.exec.path">@VITRINE_HELPER_PATH@</annotate>
+    <annotate key="org.freedesktop.policykit.exec.argv1">session</annotate>
+  </action>
+  <action id="org.vitrine.helper.setcap">
+    <description>Let vitrine's QEMU make its threads real-time</description>
+    <message>Authentication is required to let your QEMU build make its threads real-time</message>
+    <defaults>
+      <allow_any>auth_admin</allow_any>
+      <allow_inactive>auth_admin</allow_inactive>
+      <allow_active>auth_admin</allow_active>
+    </defaults>
+    <annotate key="org.freedesktop.policykit.exec.path">@VITRINE_HELPER_PATH@</annotate>
+    <annotate key="org.freedesktop.policykit.exec.argv1">setcap</annotate>
+  </action>
+  <action id="org.vitrine.helper.setup-group">
+    <description>Add you to the vitrine group</description>
+    <message>Authentication is required to add you to the vitrine group, whose members may tune the host without a password while virtual machines run</message>
+    <defaults>
+      <allow_any>auth_admin</allow_any>
+      <allow_inactive>auth_admin</allow_inactive>
+      <allow_active>auth_admin</allow_active>
+    </defaults>
+    <annotate key="org.freedesktop.policykit.exec.path">@VITRINE_HELPER_PATH@</annotate>
+    <annotate key="org.freedesktop.policykit.exec.argv1">setup-group</annotate>
   </action>
 </policyconfig>

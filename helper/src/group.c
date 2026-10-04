@@ -4,15 +4,21 @@
  * polkit lets use the helper without a password (49-vitrine.rules).
  *
  * vitrine offers it when a VM starts untuned because its user is not in the
- * group.  pkexec runs it under the helper's one polkit action: an
- * administrator's password, typed in the desktop's polkit dialog, for
- * anyone but the group's members - for whom it changes nothing.  It takes
- * no argument: the group is "vitrine" and the user is the caller (pkexec's
- * PKEXEC_UID, from the user database), never anyone else.  It creates the
- * group as a system group when there is none, adds the caller to it, and
- * changes nothing when both are done already.
+ * group.  pkexec runs it under an action of its own,
+ * org.vitrine.helper.setup-group: an administrator's password, typed in the
+ * desktop's polkit dialog, for everyone (the group's rule does not grant
+ * it).  It takes no argument: the group is "vitrine" and the user is the
+ * caller (pkexec's PKEXEC_UID, from the user database), never anyone else.
+ * It creates the group as a system group when there is none, adds the
+ * caller to it, and changes nothing when both are done already.  A group
+ * named vitrine that it did not create - another user's private group, one
+ * sharing the id of disk or wheel - is not joined: the caller would get that
+ * group's access to files, which the administrator's dialog does not say.
  */
 #define _GNU_SOURCE
+#include <errno.h>
+#include <grp.h>
+#include <limits.h>
 #include <pwd.h>
 #include <stdarg.h>
 #include <stdio.h>
@@ -52,9 +58,91 @@ static bool plain_user(const char *name)
     return true;
 }
 
+/* The highest id groupadd --system gives: login.defs' SYS_GID_MAX */
+static unsigned long sys_gid_max(void)
+{
+    char path[PATH_MAX], line[256], key[32];
+    unsigned long max = 999, v;
+    FILE *f;
+
+    if (!rooted(path, sizeof(path), "/etc/login.defs") || !(f = fopen(path, "re"))) {
+        return max;
+    }
+    while (fgets(line, sizeof(line), f)) {
+        if (sscanf(line, " %31s %lu", key, &v) == 2 && strcmp(key, "SYS_GID_MAX") == 0) {
+            max = v;
+        }
+    }
+    fclose(f);
+    return max;
+}
+
+/*
+ * The group VITRINE_GROUP, of id @gid, as setup-group would have created it:
+ * a system group of /etc/group, alone with its id, and nobody's primary
+ * group (not a user's private group).  NULL, or why not in @why.
+ */
+static const char *not_ours(gid_t gid, char *why, size_t size)
+{
+    char path[PATH_MAX];
+    struct group *gr;
+    struct passwd *pw;
+    bool listed = false;
+    FILE *f;
+
+    if (gid == 0) {
+        return "its id is 0";
+    }
+    if (gid > sys_gid_max()) {
+        snprintf(why, size, "its id %u is not a system group's", (unsigned)gid);
+        return why;
+    }
+    if (!rooted(path, sizeof(path), "/etc/group") || !(f = fopen(path, "re"))) {
+        return "/etc/group cannot be read";
+    }
+    why[0] = '\0';
+    while ((gr = fgetgrent(f))) {
+        if (gr->gr_gid != gid) {
+            continue;
+        }
+        if (strcmp(gr->gr_name, VITRINE_GROUP) == 0) {
+            listed = true;
+        } else if (!why[0]) {
+            snprintf(why, size, "its id %u is also %.64s's", (unsigned)gid, gr->gr_name);
+        }
+    }
+    fclose(f);
+    if (why[0]) {
+        return why;
+    }
+    if (!listed) {
+        /* the user database's, from elsewhere (LDAP, sssd): not for gpasswd */
+        return "it is not in /etc/group";
+    }
+    /* /etc/passwd's users, and the user database's vitrine */
+    if (!rooted(path, sizeof(path), "/etc/passwd")) {
+        return "/etc/passwd cannot be read";
+    }
+    if ((f = fopen(path, "re"))) {
+        while ((pw = fgetpwent(f))) {
+            if (pw->pw_gid == gid && !why[0]) {
+                snprintf(why, size, "it is the primary group of %.64s", pw->pw_name);
+            }
+        }
+        fclose(f);
+    } else if (errno != ENOENT) {
+        return "/etc/passwd cannot be read";
+    }
+    if (!why[0] && (pw = getpwnam(VITRINE_GROUP)) && pw->pw_gid == gid) {
+        snprintf(why, size, "it is the primary group of " VITRINE_GROUP);
+    }
+    return why[0] ? why : NULL;
+}
+
 int setup_group(void)
 {
-    char user[65], err[256];
+    char user[65], err[256], why[128];
+    const char *theirs;
     struct passwd *pw;
     gid_t primary, gid;
     bool created = false;
@@ -83,10 +171,10 @@ int setup_group(void)
     } else if (sys_group_has(user, primary, gid)) {
         reply("ok setup-group: %s is in " VITRINE_GROUP " already", user);
         return 0;
-    }
-    /* a group root's by its id would give the caller far more than the helper */
-    if (gid == 0) {
-        return fail("the group " VITRINE_GROUP " has the id 0");
+    } else if ((theirs = not_ours(gid, why, sizeof(why)))) {
+        /* the same name, another group: joined, it would give its files */
+        return fail("a group named " VITRINE_GROUP " exists that vitrine did not create: %s",
+                    theirs);
     }
     if (sys_group_add_user(VITRINE_GROUP, user, err, sizeof(err)) < 0) {
         return fail("cannot add the user to the group: %s", err);

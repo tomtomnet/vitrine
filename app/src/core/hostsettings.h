@@ -210,8 +210,8 @@ private:
     /* Each VM running untuned tuned again (the group set up, say) */
     void retune();
     /* grantCapability() for the stack's QEMU if it has none, once per run
-       and binary; @granted: polkit said yes just now */
-    void ensureCapability(bool granted = false);
+       and binary, polkit asked first (its own action) */
+    void ensureCapability();
     void say(const QString &text);
 
     VmStore *m_store;
