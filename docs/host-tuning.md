@@ -153,6 +153,52 @@ to run without one, which pkexec would put under its generic action.)
 
 Give the group to the people you would give real-time priority to.
 
+## The udmabuf limits without host tuning
+
+To have the udmabuf limits raised at every boot instead, with or without
+host tuning, any of these does it (as root; the values are those host
+tuning sets, and host tuning then finds them high enough and changes
+nothing):
+
+- The kernel's command line, which works whether udmabuf is built in (as
+  in Fedora's kernel) or a module. On Fedora:
+
+  ```
+  sudo grubby --update-kernel=ALL --args='udmabuf.list_limit=65536 udmabuf.size_limit_mb=2048'
+  ```
+
+  then restart. Elsewhere, add the two to the kernel's command line the
+  way the distribution does (`GRUB_CMDLINE_LINUX` in `/etc/default/grub`,
+  say). The same command with `--remove-args` instead of `--args` takes
+  them back.
+- A file `/etc/tmpfiles.d/udmabuf.conf`, which systemd applies at each
+  boot:
+
+  ```
+  w /sys/module/udmabuf/parameters/list_limit - - - - 65536
+  w /sys/module/udmabuf/parameters/size_limit_mb - - - - 2048
+  ```
+
+  and now: `sudo systemd-tmpfiles --create /etc/tmpfiles.d/udmabuf.conf`.
+  It needs the parameters there at boot: udmabuf built in, or a module
+  loaded by then.
+- Until the next boot only:
+  `echo 65536 | sudo tee /sys/module/udmabuf/parameters/list_limit` and
+  `echo 2048 | sudo tee /sys/module/udmabuf/parameters/size_limit_mb`.
+
+`modprobe.d` options do nothing where udmabuf is built into the kernel, as
+in Fedora's.
+
+At each start of a VM whose GPU has native context, vitrine reads the
+limits and opens `/dev/udmabuf` as QEMU does. When they are too low (under
+16384 entries or 128 MB) and host tuning will not raise them, or the
+device does not open, it writes a `vitrine:` note in the VM's `qemu.log`,
+and the status bar says so until the VM stops or host tuning raises them
+(the first time in a run of vitrine, the explanation opens by itself).
+While a VM runs, vitrine also reads its `qemu.log` for buffers QEMU refused
+(`UDMABUF_CREATE_LIST: Invalid argument`, `ctrl 0x10c, error 0x1201`) and
+then shows "Guest windows copied", with the count in its tooltip.
+
 ## Installing
 
 `cmake --install` puts the helper in `<prefix>/libexec/vitrine-helper`,
