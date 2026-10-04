@@ -3,14 +3,24 @@
 #
 # vitrine-helper end to end on this host, as root through sudo (pkexec would
 # need the polkit files installed): a test VM boots, the helper watches its
-# QEMU and applies the fair server, the GPU clock floor (an AMD APU) and
-# real-time threads; the VM powers off and everything must be back as it
-# was.  Then: a helper killed while holding the settings (the next one
-# restores them), vitrine gone while the VM runs (stdin closed), and the
-# file capability on a copy of QEMU, with x-vcpu-priority through it, and
-# the app's HostSettings driving this helper.
+# QEMU and applies the fair server, the GPU clock floor (an AMD APU), the
+# udmabuf limits and real-time threads; the VM powers off and everything
+# must be back as it was.  Then: a helper killed while holding the settings
+# (the next one restores them), vitrine gone while the VM runs (stdin
+# closed), two helpers, a udmabuf limit changed by hand meanwhile (left as
+# it is), and the file capability on a copy of QEMU, with x-vcpu-priority
+# through it, and the app's HostSettings driving this helper.
 #
 #   helper/tests/e2e-host.sh [BUILD_DIR]
+#
+# E2E_NAME, E2E_PORT and E2E_MEM name the test VM, its ssh port and its
+# memory (vitrine-helper-e2e, 2234, 2G): each work stream has its own.
+#
+# The udmabuf limits: where they are at host tuning's values already (a
+# host booted with them), the test lowers them to 32768 entries / 1024 MB
+# first, so that the helper has something to raise - values that still
+# take any guest window, for VMs running meanwhile - and the exit trap puts
+# back the values found.
 #
 # Needs password-less sudo, the research export's QEMU and the KDE base
 # image (an overlay is made in .dev; the base is never written).  Not part
@@ -27,10 +37,12 @@ qemu=$export_dir/build/qemu/qemu-system-x86_64
 pcbios=$export_dir/build/src/qemu/pc-bios
 base=/home/user/vms/f44-kde-base.qcow2
 key=/home/user/.ssh/vmtest_ed25519
-port=2234
-name=vitrine-helper-e2e
+port=${E2E_PORT:-2234}
+name=${E2E_NAME:-vitrine-helper-e2e}
+mem=${E2E_MEM:-2G}
 dev=$repo/.dev/helper-e2e
 fs=/sys/kernel/debug/sched/fair_server
+udma=/sys/module/udmabuf/parameters
 
 fails=0
 ok() { echo "  ok   $*"; }
@@ -39,7 +51,7 @@ check() { if eval "$2"; then ok "$1"; else bad "$1"; fi; }
 
 [ -x "$helper" ] || { echo "no $helper: build first" >&2; exit 2; }
 sudo -n true 2> /dev/null || { echo "needs password-less sudo" >&2; exit 2; }
-# a 2 GiB VM: the host keeps 10 GiB free first (notes/agents/COMMON.md);
+# a VM of 2 GiB (E2E_MEM): the host keeps 10 GiB free first (notes/agents/COMMON.md);
 # run the script in a capped scope, e.g. systemd-run --user --scope -p MemoryMax=6G
 avail=$(awk '/^MemAvailable:/ {print int($2 / 1048576)}' /proc/meminfo)
 [ "$avail" -ge 10 ] || { echo "only $avail GiB available: wait and retry" >&2; exit 3; }
@@ -53,12 +65,29 @@ for c in /sys/class/drm/card[0-9]*; do
 done
 fair_now() { for c in $(sudo ls $fs | sort -V); do echo "$c $(sudo cat $fs/$c/period) $(sudo cat $fs/$c/runtime)"; done; }
 gpu_now() { [ -n "$card" ] && { cat "/sys/class/drm/$card/device/power_dpm_force_performance_level"; cat "/sys/class/drm/$card/device/pp_od_clk_voltage"; }; }
+udma_now() { [ -d $udma ] && echo "$(cat $udma/list_limit) $(cat $udma/size_limit_mb)"; }
+set_udma() {  # LIST SIZE_MB
+	echo "$1" | sudo tee $udma/list_limit > /dev/null
+	echo "$2" | sudo tee $udma/size_limit_mb > /dev/null
+}
 fair_before=$(fair_now)
 gpu_before=$(gpu_now)
+udma_before=$(udma_now)
 ncpu=$(echo "$fair_before" | wc -l)
+# the cpus the helper changes, and puts back: those not at 10 ms / 1 ms (a
+# tool may have left some there)
+fair_todo=$(echo "$fair_before" | awk '$2 != 10000000 || $3 != 1000000' | wc -l)
 echo "host: $ncpu cpus, fair server $(echo "$fair_before" | head -1 | cut -d' ' -f2-), gpu ${card:-none} level $(echo "$gpu_before" | head -1)"
-[ "$(echo "$fair_before" | head -1 | cut -d' ' -f2-)" = "1000000000 50000000" ] ||
-	echo "  note: the fair server is not at the kernel's default (another tool holds it?)"
+echo "udmabuf before: ${udma_before:-no parameters} (list_limit size_limit_mb)"
+# what the helper raises from in this test, both below host tuning's values
+udma_low=
+if [ -n "$udma_before" ]; then
+	read -r l s <<< "$udma_before"
+	if [ "$l" -lt 65536 ] && [ "$s" -lt 2048 ]; then udma_low=$udma_before; else udma_low="32768 1024"; fi
+fi
+udma_raised() { local l s; read -r l s <<< "$(udma_now)"; [ "$l" -ge 65536 ] && [ "$s" -ge 2048 ]; }
+[ "$fair_todo" = "$ncpu" ] ||
+	echo "  note: $((ncpu - fair_todo)) cpus have the fair server at 10 ms / 1 ms already (another tool?): left as they are"
 
 pids=()          # processes started here, stopped by the trap
 helpers=()       # sudo pids of helpers
@@ -79,7 +108,11 @@ restore_by_hand() {
 		echo c | sudo tee /sys/class/drm/$card/device/pp_od_clk_voltage > /dev/null
 		echo "$gpu_before" | head -1 | sudo tee /sys/class/drm/$card/device/power_dpm_force_performance_level > /dev/null
 	fi
+	# shellcheck disable=SC2086
+	[ "$(udma_now)" = "$udma_before" ] || set_udma $udma_before
 }
+host_now() { fair_now; gpu_now; echo "udmabuf $(udma_now)"; }
+host_before() { echo "$fair_before"; echo "$gpu_before"; echo "udmabuf $udma_before"; }
 cleanup() {
 	local p c
 	for p in "${helpers[@]}"; do
@@ -90,15 +123,21 @@ cleanup() {
 	for p in "${pids[@]}"; do kill -KILL "$p" 2> /dev/null; done
 	# whatever a helper left: a new one restores it at its start
 	sudo -n "$helper" session < /dev/null > /dev/null 2>&1
-	if [ "$(fair_now)" != "$fair_before" ] || [ "$(gpu_now)" != "$gpu_before" ]; then
+	# the udmabuf limits the test lowered: the values found
+	if [ -n "$udma_before" ] && [ "$(udma_now)" = "$udma_low" ] && [ "$udma_low" != "$udma_before" ]; then
+		# shellcheck disable=SC2086
+		set_udma $udma_before
+	fi
+	if [ "$(host_now)" != "$(host_before)" ]; then
 		echo "cleanup: the host is not as found, restoring by hand"
 		restore_by_hand
 	fi
 	rm -rf "$dev/data" "$dev"/h*.in "$dev"/h*.out
-	if [ "$(fair_now)" = "$fair_before" ] && [ "$(gpu_now)" = "$gpu_before" ]; then
+	echo "udmabuf after: $(udma_now)"
+	if [ "$(host_now)" = "$(host_before)" ]; then
 		echo "host settings as found"
 	else
-		echo "HOST SETTINGS NOT RESTORED:"; diff <(echo "$fair_before"; echo "$gpu_before") <(fair_now; gpu_now)
+		echo "HOST SETTINGS NOT RESTORED:"; diff <(host_before) <(host_now)
 	fi
 }
 trap cleanup EXIT
@@ -158,7 +197,7 @@ ssh_vm() { ssh -p $port -i "$key" -o BatchMode=yes -o ConnectTimeout=5 -o Strict
 echo "== 1. a VM's run: apply, check, power off, check restored"
 [ -e "$dev/disk.qcow2" ] || qemu-img create -q -f qcow2 -b "$base" -F qcow2 "$dev/disk.qcow2"
 [ -e "$dev/OVMF_VARS.fd" ] || cp /usr/share/edk2/ovmf/OVMF_VARS.fd "$dev/OVMF_VARS.fd"
-"$qemu" -name "$name,debug-threads=on" -machine q35 -accel kvm -cpu host -smp 2 -m 2G \
+"$qemu" -name "$name,debug-threads=on" -machine q35 -accel kvm -cpu host -smp 2 -m "$mem" \
 	-drive if=pflash,format=raw,readonly=on,file=/usr/share/edk2/ovmf/OVMF_CODE.fd \
 	-drive if=pflash,format=raw,file="$dev/OVMF_VARS.fd" \
 	-drive file="$dev/disk.qcow2",if=virtio,cache=none,discard=unmap \
@@ -172,19 +211,29 @@ sleep 2
 kill -0 $vm 2> /dev/null || { echo "QEMU did not start:"; cat "$dev/qemu.log"; exit 1; }
 echo "  VM $name: QEMU $vm"
 
+# shellcheck disable=SC2086
+[ -n "$udma_before" ] && set_udma $udma_low
 start_helper "session 1"
 say "watch $vm"; expect "watch" "ok watch $vm"
 say "fair-server on"
-if [ "$(echo "$fair_before" | head -1 | cut -d' ' -f2-)" = "1000000000 50000000" ]; then
+if [ "$(echo "$fair_before" | awk '{print $2 " " $3}' | sort -u)" = "1000000000 50000000" ]; then
 	expect "fair server" "ok fair-server on: $ncpu cpus at 10 ms / 1 ms \(was 1000 ms / 50 ms\)"
+elif [ "$fair_todo" = 0 ]; then
+	expect "fair server" "ok fair-server on: already 10 ms / 1 ms"
 else
-	expect "fair server" "ok fair-server on: .*"
+	expect "fair server" "ok fair-server on: $fair_todo cpus at 10 ms / 1 ms .*"
 fi
 if [ -n "$card" ]; then
 	say "gpu-floor $card auto"; expect "gpu floor" "ok gpu-floor $card 1800 MHz \(was [0-9]+ MHz, level auto\)"
 fi
 say "rt $vm"; expect "rt" "ok rt $vm: ([0-9]+) of ([0-9]+) threads real-time"
 check "rt: every thread" '[ "${BASH_REMATCH[1]:-x}" = "${BASH_REMATCH[2]:-y}" ]'
+if [ -n "$udma_before" ]; then
+	say "udmabuf $vm"
+	expect "udmabuf" "ok udmabuf $vm: list_limit 65536 \(was ${udma_low% *}\), size_limit_mb 2048 \(was ${udma_low#* }\)"
+	check "udmabuf raised: $(udma_now)" udma_raised
+	check "udmabuf state recorded" 'sudo test -e /run/vitrine-helper/udmabuf.state'
+fi
 check "every cpu at 10 ms / 1 ms" 'fair_all "10000000 1000000"'
 if [ -n "$card" ]; then
 	check "gpu level manual" '[ "$(cat /sys/class/drm/$card/device/power_dpm_force_performance_level)" = manual ]'
@@ -193,8 +242,8 @@ fi
 read -r rt all <<< "$(threads_rt $vm)"
 check "QEMU threads real-time: $rt of $all" '[ "$rt" = "$all" ]'
 check "vCPU threads SCHED_FIFO 1" '[ -z "$(for t in /proc/$vm/task/*; do grep -q "^CPU" $t/comm && chrt -p ${t##*/} | grep -v "SCHED_FIFO\|priority: 1$"; done)" ]'
-check "state recorded in /run/vitrine-helper" 'sudo test -e /run/vitrine-helper/fair-server.state'
-check "the journal has the record" 'sudo journalctl -q --since "-2min" -t vitrine-helper | grep -q "fair server"'
+[ "$fair_todo" -gt 0 ] && check "state recorded in /run/vitrine-helper" 'sudo test -e /run/vitrine-helper/fair-server.state'
+check "the journal has the record" 'sudo journalctl -q --since "-2min" -t vitrine-helper | grep -q "fair server\|udmabuf\|clock floor"'
 
 echo "  waiting for the guest (ssh on $port)..."
 for _ in $(seq 60); do ssh_vm true 2> /dev/null && break; sleep 3; done
@@ -225,7 +274,8 @@ if ! gone $vm; then
 	wait_gone $vm 10
 fi
 wait_for "QEMU exit seen" "exited $vm"
-wait_for "fair server restored" "restored fair-server: $ncpu cpus back to [0-9]+ ms / [0-9]+ ms"
+[ -n "$udma_before" ] && wait_for "udmabuf restored" "restored udmabuf: list_limit ${udma_low% *}, size_limit_mb ${udma_low#* }"
+[ "$fair_todo" -gt 0 ] && wait_for "fair server restored" "restored fair-server: $fair_todo cpus back to [0-9]+ ms / [0-9]+ ms"
 [ -n "$card" ] && wait_for "gpu restored" "restored gpu-floor $card: level auto"
 wait_for "helper ends" "bye"
 if ! wait_gone "$H_PID" 15; then
@@ -238,6 +288,7 @@ fi
 gone "$H_PID" && wait "$H_PID" 2> /dev/null
 check "fair server as found" '[ "$(fair_now)" = "$fair_before" ]'
 check "gpu as found" '[ "$(gpu_now)" = "$gpu_before" ]'
+[ -n "$udma_before" ] && check "udmabuf back to $udma_low" '[ "$(udma_now)" = "$udma_low" ]'
 check "nothing left in /run/vitrine-helper but its lock" '[ "$(sudo ls /run/vitrine-helper)" = lock ]'
 gone $vm && wait $vm 2> /dev/null
 
@@ -252,6 +303,7 @@ start_helper "session 2"
 say "watch $q2"; expect "watch" "ok watch $q2"
 say "fair-server on"; expect "fair server" "ok fair-server on: .*"
 [ -n "$card" ] && { say "gpu-floor $card auto"; expect "gpu floor" "ok gpu-floor $card .*"; }
+[ -n "$udma_before" ] && { say "udmabuf $q2"; expect "udmabuf" "ok udmabuf $q2: .*"; }
 exec {H_IN}>&-
 sleep 1
 check "stdin closed, the VM runs: helper still there" 'kill -0 $H_PID 2> /dev/null'
@@ -259,12 +311,17 @@ check "stdin closed, the VM runs: settings kept" 'fair_all "10000000 1000000"'
 sudo kill -KILL "$(helper_child)"
 wait "$H_PID" 2> /dev/null
 check "helper killed: settings still applied" 'fair_all "10000000 1000000"'
-check "helper killed: its state is there" 'sudo test -e /run/vitrine-helper/fair-server.state'
+[ "$fair_todo" -gt 0 ] && check "helper killed: its state is there" 'sudo test -e /run/vitrine-helper/fair-server.state'
+[ -n "$udma_before" ] && check "helper killed: udmabuf still raised: $(udma_now)" udma_raised
 out=$(sudo -n "$helper" session < /dev/null)
 echo "$out" | sed 's/^/       /'
-check "the next helper restores them at its start" 'echo "$out" | grep -q "^restored fair-server"'
+[ "$fair_todo" -gt 0 ] && check "the next helper restores them at its start" 'echo "$out" | grep -q "^restored fair-server"'
 check "fair server as found" '[ "$(fair_now)" = "$fair_before" ]'
 check "gpu as found" '[ "$(gpu_now)" = "$gpu_before" ]'
+if [ -n "$udma_before" ]; then
+	check "the next helper restores udmabuf too" 'echo "$out" | grep -q "^restored udmabuf"'
+	check "udmabuf back to $udma_low" '[ "$(udma_now)" = "$udma_low" ]'
+fi
 kill $q2; wait $q2 2> /dev/null
 
 # ======================================================================
@@ -278,18 +335,44 @@ sleep 1
 start_helper "helper A"; A_IN=$H_IN A_OUT=$H_OUT A_PID=$H_PID
 say "watch $qa"; expect "A watch" "ok watch $qa"
 say "fair-server on"; expect "A fair server" "ok fair-server on: .*"
+[ -n "$udma_before" ] && { say "udmabuf $qa"; expect "A udmabuf" "ok udmabuf $qa: .*"; }
 start_helper "helper B"; B_IN=$H_IN B_OUT=$H_OUT B_PID=$H_PID
 say "watch $qb"; expect "B watch" "ok watch $qb"
 say "fair-server on"; expect "B fair server" "ok fair-server on: set by another vitrine session"
+[ -n "$udma_before" ] && { say "udmabuf $qb"; expect "B udmabuf" "ok udmabuf $qb: set by another vitrine session"; }
 kill $qa; wait $qa 2> /dev/null
 H_IN=$A_IN H_OUT=$A_OUT H_PID=$A_PID
 wait_for "A ends" "bye"
 check "A gone, B holds: still applied" 'fair_all "10000000 1000000"'
+[ -n "$udma_before" ] && check "A gone, B holds: udmabuf still raised" udma_raised
 kill $qb; wait $qb 2> /dev/null
 H_IN=$B_IN H_OUT=$B_OUT H_PID=$B_PID
-wait_for "B restores" "restored fair-server: .*"
+[ -n "$udma_before" ] && wait_for "B restores udmabuf" "restored udmabuf: .*"
+[ "$fair_todo" -gt 0 ] && wait_for "B restores" "restored fair-server: .*"
 wait_for "B ends" "bye"
 check "fair server as found" '[ "$(fair_now)" = "$fair_before" ]'
+[ -n "$udma_before" ] && check "udmabuf back to $udma_low" '[ "$(udma_now)" = "$udma_low" ]'
+
+# ======================================================================
+if [ -n "$udma_before" ]; then
+	echo "== 3b. a udmabuf limit changed by hand meanwhile: left as it is"
+	"$qemu" -machine none -display none -S > /dev/null 2>&1 &
+	qc=$!
+	pids+=("$qc")
+	sleep 1
+	start_helper "helper C"
+	say "watch $qc"; expect "C watch" "ok watch $qc"
+	say "udmabuf $qc"; expect "C udmabuf" "ok udmabuf $qc: .*"
+	# still above what a guest window needs, for VMs running meanwhile
+	echo 40000 | sudo tee $udma/list_limit > /dev/null
+	kill $qc; wait $qc 2> /dev/null
+	wait_for "C restores the other one" "restored udmabuf: size_limit_mb ${udma_low#* }"
+	wait_for "C leaves the one changed" "left udmabuf: list_limit changed by someone else since"
+	wait_for "C ends" "bye"
+	check "list_limit as changed, size_limit_mb back: $(udma_now)" '[ "$(udma_now)" = "40000 ${udma_low#* }" ]'
+	# shellcheck disable=SC2086
+	set_udma $udma_low
+fi
 
 # ======================================================================
 echo "== 4. setcap on a copy of QEMU in a stack layout, x-vcpu-priority through it"
@@ -332,6 +415,7 @@ if [ -x "$build/app/test_hostsettings" ]; then
 	check "HostSettings applied and reverted on the real host" 'echo "$out" | grep -q "^PASS   : TestHostSettings::realHost()"'
 	check "fair server as found" '[ "$(fair_now)" = "$fair_before" ]'
 	check "gpu as found" '[ "$(gpu_now)" = "$gpu_before" ]'
+	[ -n "$udma_before" ] && check "udmabuf back to $udma_low" '[ "$(udma_now)" = "$udma_low" ]'
 else
 	echo "  (no $build/app/test_hostsettings: skipped)"
 fi

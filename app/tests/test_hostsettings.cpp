@@ -644,6 +644,14 @@ private slots:
             : "/sys/class/drm/" + apus.first() + "/device/power_dpm_force_performance_level";
         const QByteArray levelBefore = readFile(levelFile);
         QVERIFY(!fairBefore.startsWith('/'));
+        /* the udmabuf limits, world-readable; e2e-host.sh lowers them first
+           where they are at host tuning's values already */
+        const QString udma = "/sys/module/udmabuf/parameters/";
+        auto udmabufNow = [&udma]() {
+            return QString("%1/%2").arg(readFile(udma + "list_limit"), readFile(udma + "size_limit_mb"));
+        };
+        const bool hasUdmabuf = QFileInfo::exists(udma + "list_limit");
+        const QString udmabufBefore = udmabufNow();
 
         QProcess qemu;
         /* gone with the test, crash included: the root helper then sees it
@@ -655,7 +663,8 @@ private slots:
         QSignalSpy lines(&hs, &HostSettings::helperLine), notices(&hs, &HostSettings::notice),
             finished(&hs, &HostSettings::helperFinished);
         hs.setHelperCommand({"sudo", "-n", helper, "session"});
-        hs.tune(qemu.processId());
+        QSignalSpy answers(&hs, &HostSettings::udmabufAnswered);
+        hs.tune(qemu.processId(), true);
         QTRY_VERIFY_WITH_TIMEOUT(saw(lines, QString("ok rt %1").arg(qemu.processId())), 10000);
         for (const QList<QVariant> &line : lines) {
             qInfo("helper: %s", qPrintable(line.first().toString()));
@@ -665,6 +674,11 @@ private slots:
                  QString("10000000/1000000"));
         if (!levelFile.isEmpty() && levelBefore == "auto") {
             QCOMPARE(readFile(levelFile), QByteArray("manual"));
+        }
+        if (hasUdmabuf) {
+            QVERIFY(answered(answers, qemu.processId(), true, QString()));
+            QVERIFY(readFile(udma + "list_limit").toLongLong() >= 65536);
+            QVERIFY(readFile(udma + "size_limit_mb").toLongLong() >= 2048);
         }
         /* every thread SCHED_FIFO (/proc/PID/task/TID/stat field 41: 1) */
         const QDir tasks(QString("/proc/%1/task").arg(qemu.processId()));
@@ -680,6 +694,7 @@ private slots:
         if (!levelFile.isEmpty()) {
             QCOMPARE(readFile(levelFile), levelBefore);
         }
+        QCOMPARE(udmabufNow(), udmabufBefore);
     }
 
     /*
