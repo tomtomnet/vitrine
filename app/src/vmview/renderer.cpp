@@ -239,11 +239,14 @@ const wp_presentation_listener kPresentationListener = {
 };
 
 const wl_registry_listener kRegistryListener = {
-    [](void *data, wl_registry *reg, uint32_t name, const char *iface, uint32_t) {
+    [](void *data, wl_registry *reg, uint32_t name, const char *iface, uint32_t version) {
         auto *s = static_cast<RenderState *>(data);
         if (strcmp(iface, wp_presentation_interface.name) == 0) {
-            s->presentation = static_cast<wp_presentation *>(
-                wl_registry_bind(reg, name, &wp_presentation_interface, 1));
+            // version 2 when there is one: under a variable refresh rate a
+            // version 1 client gets refresh 0, so QEMU keeps its default
+            s->presentation = static_cast<wp_presentation *>(wl_registry_bind(
+                reg, name, &wp_presentation_interface,
+                std::min(version, uint32_t(wp_presentation_interface.version))));
             wp_presentation_add_listener(s->presentation, &kPresentationListener, s);
         } else if (strcmp(iface, zwp_linux_dmabuf_v1_interface.name) == 0) {
             if (s->swapchain) {

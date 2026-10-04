@@ -685,6 +685,48 @@ private Q_SLOTS:
         delete view;
     }
 
+    /*
+     * The guest's screen goes to QEMU as the view attaches, before its
+     * window has a size: a guest paused until then runs at the answer
+     * (screenInfoApplied, once), with the refresh rate of the screen
+     */
+    void screenInfoAtAttach()
+    {
+        FakeDisplay qemu(socketPath());
+        auto *view = new VmView;
+        QSignalSpy applied(view, &VmView::screenInfoApplied);
+        QString error;
+        qemu.hold(true);
+        QVERIFY2(view->attach(socketPath(), &error), qPrintable(error));
+        QTRY_COMPARE(qemu.callsTo("UIInfo.Apply").size(), 1);
+        const QString call = qemu.callsTo("UIInfo.Apply").first();
+        QVERIFY2(call.contains("'width': <uint32") && call.contains("'refresh_rate': <uint32"),
+                 qPrintable(call));
+        QTest::qWait(50);
+        QCOMPARE(applied.size(), 0);
+        qemu.letGo();
+        QTRY_COMPARE(applied.size(), 1);
+        qemu.hold(false);
+
+        /* the window's own size: again, no signal */
+        QWidget top;
+        auto *layout = new QVBoxLayout(&top);
+        layout->addWidget(view->widget());
+        top.resize(640, 480);
+        top.show();
+        QTRY_COMPARE(qemu.callsTo("UIInfo.Apply").size(), 2);
+        QTest::qWait(50);
+        QCOMPARE(applied.size(), 1);
+
+        /* a new pixel ratio, from a move to another screen (which the
+           size in logical pixels does not tell): the guest's mode again */
+        QEvent dpr(QEvent::DevicePixelRatioChange);
+        QCoreApplication::sendEvent(displayWindow(), &dpr);
+        QTRY_COMPARE(qemu.callsTo("UIInfo.Apply").size(), 3);
+        QCOMPARE(applied.size(), 1);
+        delete view;
+    }
+
     /* The view shares the clipboard on its connection; it may go before
        QEMU answers its Register */
     void clipboard()

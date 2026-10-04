@@ -14,6 +14,7 @@
 #include <QTimer>
 
 #include <csignal>
+#include <utility>
 
 #include "core/firmwarefiles.h"
 #include "core/guestagent.h"
@@ -31,6 +32,8 @@ static const int kHelperTimeoutMs = 10000;
 static const int kQuitTimeoutMs = 5000;
 /* QEMU exiting once its QMP socket closed */
 static const int kExitTimeoutMs = 10000;
+/* The guest waiting for its screen at most (VmRunner::waitsForDisplay) */
+static int displayWaitMs = 5000;
 
 /* A live process, not a zombie */
 static bool alive(qint64 pid)
@@ -124,6 +127,17 @@ static QString fstabLine(const VmConfig::Share &s)
         .arg(mountEscape(s.tag), mountEscape(s.mount), s.readonly ? "ro,nofail" : "nofail");
 }
 
+/*
+ * QEMU starts paused (-S) until the screen of the VM is set: a VM shown in
+ * vitrine's window, unless its own arguments start it paused or wait for
+ * an incoming migration, which would then stay paused
+ */
+static bool pausedForDisplay(const ArgsFile &args)
+{
+    return VmConfig::screen(args) == VmConfig::Screen::Embedded && args.indexOf("S") < 0 &&
+           args.indexOf("incoming") < 0;
+}
+
 /* The QEMU of the VM's #qemu directive, else the one in the preferences */
 static QString qemuFor(const ArgsFile &args)
 {
@@ -207,6 +221,9 @@ struct VmRunner::Private
     GuestAgent *agent = nullptr;    // mounting the shares
     std::function<bool()> shutdownHandler;
     bool connecting = false;
+    bool heldForDisplay = false;    // started paused (-S) for its screen
+    bool waitingForDisplay = false; // and waiting for it now: waitsForDisplay()
+    QTimer *displayTimer;
     bool suspended = false;     // Paused by the guest's own suspend (S3)
     bool stopRequested = false; // the end of the run is no failure
     int killStep = 0;
@@ -243,6 +260,8 @@ struct VmRunner::Private
     void qmpFailed();
     void qmpClosed();
     void exited();
+    void waitForDisplay();
+    void endDisplayWait(bool timedOut);
     void event(const QString &name, const QJsonObject &data);
     void mountShares();
     void mountNext(QList<VmConfig::Share> shares, QStringList mounted, QStringList problems);
@@ -390,8 +409,13 @@ void VmRunner::Private::cleanup()
 {
     poll->stop();
     killTimer->stop();
+    displayTimer->stop();
     phase = Phase::Idle;
     connecting = false;
+    heldForDisplay = false;
+    if (std::exchange(waitingForDisplay, false)) {
+        emit q->waitsForDisplayChanged(false);
+    }
     suspended = false;
     qmp->disconnectFromSocket();
     for (const Helper &h : std::as_const(helpers)) {
@@ -496,10 +520,60 @@ void VmRunner::Private::qmpReady()
     connecting = false;
     qmp->execute("query-status", {}, [this](const QJsonValue &result, const QString &err) {
         if (err.isEmpty() && state != State::Stopping) {
-            setSuspended(result["status"].toString() == "suspended");
+            const QString status = result["status"].toString();
+            setSuspended(status == "suspended");
+            /* paused by vitrine for its screen, not yet run (also after a restart) */
+            if (heldForDisplay && status == "prelaunch") {
+                waitForDisplay();
+                return;
+            }
+            heldForDisplay = false;
             setState(result["running"].toBool() ? State::Running : State::Paused);
         }
     });
+}
+
+/* Starting, until displayReady() or the time is up */
+void VmRunner::Private::waitForDisplay()
+{
+    setState(State::Starting);
+    waitingForDisplay = true;
+    displayTimer->start(displayWaitMs);
+    emit q->waitsForDisplayChanged(true);
+}
+
+/* The guest runs, its screen set or not in time; RESUME tells it runs */
+void VmRunner::Private::endDisplayWait(bool timedOut)
+{
+    if (!waitingForDisplay) {
+        return;
+    }
+    waitingForDisplay = false;
+    heldForDisplay = false;
+    displayTimer->stop();
+    /* asked to stop meanwhile */
+    if (state != State::Starting) {
+        emit q->waitsForDisplayChanged(false);
+        return;
+    }
+    if (timedOut) {
+        q->appendNote(VmRunner::tr("the screen did not answer within %1 s: the guest starts "
+                                   "without its size and refresh rate")
+                          .arg(displayWaitMs / 1000.0));
+    }
+    qmp->execute("cont", {}, [this](const QJsonValue &, const QString &err) {
+        if (err.isEmpty() || !qmp->isReady()) {
+            return;
+        }
+        /* not Starting for ever: what QEMU says it is */
+        emit q->failed(QString("cont: %1").arg(err));
+        qmp->execute("query-status", {}, [this](const QJsonValue &result, const QString &e) {
+            if (e.isEmpty() && state == State::Starting) {
+                setState(result["running"].toBool() ? State::Running : State::Paused);
+            }
+        });
+    });
+    emit q->waitsForDisplayChanged(false);
 }
 
 void VmRunner::Private::qmpFailed()
@@ -653,6 +727,9 @@ VmRunner::VmRunner(const QString &id, const QString &dir, QObject *parent)
     d->poll->setInterval(kPollMs);
     d->killTimer = new QTimer(this);
     d->killTimer->setSingleShot(true);
+    d->displayTimer = new QTimer(this);
+    d->displayTimer->setSingleShot(true);
+    connect(d->displayTimer, &QTimer::timeout, this, [this]() { d->endDisplayWait(true); });
     connect(d->poll, &QTimer::timeout, this, [this]() { d->tick(); });
     connect(d->killTimer, &QTimer::timeout, this, [this]() { d->escalate(); });
     connect(d->qmp, &QmpClient::ready, this, [this]() { d->qmpReady(); });
@@ -668,6 +745,11 @@ VmRunner::~VmRunner()
        QEMU that will never come */
     if (d->phase == Private::Phase::Helpers) {
         d->cleanup();
+    }
+    /* nor paused for a screen that will not come */
+    if (d->waitingForDisplay && d->qmp->isReady()) {
+        d->qmp->execute("cont");
+        d->qmp->flush();
     }
     delete d->qmp;
     delete d;
@@ -898,6 +980,9 @@ QStringList VmRunner::Private::commandLine(const ArgsFile &args, const QString &
         /* a second -qmp; -mon is deprecated */
         command << "-qmp" << displayArg();
     }
+    if (pausedForDisplay(args)) {
+        command << "-S";
+    }
     /* the guest tools' agent, on qemu-ga's controller if there is one */
     if (GuestTools::addsAgentPort(args, qemu)) {
         if (!addsAgent(args)) {
@@ -1028,6 +1113,21 @@ QStringList VmRunner::shellAssignments(const QStringList &environment)
     return out;
 }
 
+bool VmRunner::waitsForDisplay() const
+{
+    return d->waitingForDisplay;
+}
+
+void VmRunner::displayReady()
+{
+    d->endDisplayWait(false);
+}
+
+void VmRunner::setDisplayWait(int ms)
+{
+    displayWaitMs = ms;
+}
+
 QString VmRunner::displaySocket() const
 {
     return isActive() && d->embedded ? d->displayPath() : QString();
@@ -1060,6 +1160,7 @@ void VmRunner::start(const ArgsFile &args)
     d->qemu = qemu;
     d->command.clear();
     d->embedded = VmConfig::screen(args) == VmConfig::Screen::Embedded;
+    d->heldForDisplay = pausedForDisplay(args);
     if (QString why; needsQemuBuild(args, &why)) {
         d->fail(why);
         return;
@@ -1189,6 +1290,8 @@ void VmRunner::attach(const ArgsFile &args)
         d->args = args;
     }
     d->embedded = running.contains(d->displayArg());
+    /* still paused for its screen when the vitrine that started it ended */
+    d->heldForDisplay = d->embedded && running.contains("-S") && d->args.indexOf("S") < 0;
     d->pid = pid;
     /* the binary it runs, not the one the preferences may name now */
     d->qemu = running.value(0);

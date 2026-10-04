@@ -81,9 +81,15 @@ public:
     QString vmName() const;
 
 Q_SIGNALS:
-    /* grabbed(), grabState() or hasKeyboard() changed */
+    /* grabbed(), grabState(), hasKeyboard() or inputEnabled() changed */
     void grabChanged();
     void fullScreenChanged(bool on);
+    /*
+     * QEMU answered the first size and refresh rate of the screen the view
+     * gave it for the guest (UIInfo.Apply), taken or refused: once per
+     * attach().  A guest paused until then may run (VmRunner::displayReady).
+     */
+    void screenInfoApplied();
 
 protected:
     bool eventFilter(QObject *watched, QEvent *event) override;
@@ -98,6 +104,11 @@ private:
     /* grabChanged() if the grab changed: DisplayWindow does not signal the
        grab it takes or leaves itself (Ctrl+Alt+G, a click with a relative mouse) */
     void checkGrab();
+    /* The first size and refresh rate for the guest, before the window has a size */
+    void sendFirstUiInfo();
+    /* The window's screen, its refresh rate or its pixel ratio changed */
+    void screenChanged();
+    void watchScreen();
 
     Options m_opts;
     /* on the heap: it outlives the view while D-Bus calls complete (detach) */
@@ -120,6 +131,10 @@ private:
     QTimer *m_undrawn = nullptr;
     bool m_exposedOnce = false;
     bool m_renderFailed = false;
+    /* UIInfo again once the screen settled (screenChanged()) */
+    QTimer *m_uiInfo = nullptr;
+    QMetaObject::Connection m_refreshWatch;  // the window's screen's refresh rate
+    bool m_uiInfoApplied = false;   // screenInfoApplied() was signalled
     QString m_grabState;    // as last signalled
     /* what the guest said last, for a new window */
     QSize m_guestSize;

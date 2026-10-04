@@ -16,6 +16,7 @@
 
 #include <cerrno>
 #include <csignal>
+#include <utility>
 
 #include "core/paths.h"
 #include "core/qmpclient.h"
@@ -53,8 +54,8 @@ static bool gone(qint64 pid)
     return ::kill(pid_t(pid), 0) != 0 && errno == ESRCH;
 }
 
-/* QEMU's end of QMP: answers every command, query-status with @status;
-   events on demand */
+/* QEMU's end of QMP: answers every command, query-status with @status,
+   cont with RESUME; events on demand; the commands it got in @commands */
 class FakeMonitor : public QObject
 {
 public:
@@ -71,6 +72,7 @@ public:
         });
     }
     QString status = "running";
+    QStringList commands;
     /* to every monitor connection */
     void event(const QString &name)
     {
@@ -98,8 +100,13 @@ private:
             const QJsonObject command = QJsonDocument::fromJson(buffer.left(nl)).object();
             QJsonObject reply{{"return", QJsonObject()}, {"id", command["id"]}};
             buffer.remove(0, nl + 1);
+            commands << command["execute"].toString();
             if (command["execute"] == "query-status") {
                 reply["return"] = QJsonObject{{"running", status == "running"}, {"status", status}};
+            } else if (command["execute"] == "cont") {
+                /* as QEMU: the event before the answer */
+                status = "running";
+                event("RESUME");
             }
             peer->write(QJsonDocument(reply).toJson(QJsonDocument::Compact) + '\n');
         }
@@ -208,6 +215,25 @@ private slots:
         QVERIFY(!sdl.contains(monitor));
         QVERIFY(!bus.contains(monitor));
         QCOMPARE(runner.displaySocket(), "");   // not running
+    }
+
+    /*
+     * A VM shown in vitrine's window starts paused until its screen is set
+     * (waitsForDisplay), unless its own arguments start it paused or wait
+     * for a migration
+     */
+    void pausedForDisplay()
+    {
+        const VmRunner runner(id, tmp.path());
+        auto paused = [&runner](const QString &args) {
+            return runner.commandLine(ArgsFile::parse("-m 1G\n" + args)).count("-S");
+        };
+
+        QCOMPARE(paused("-display dbus,p2p=yes,gl=on\n"), 1);
+        QCOMPARE(paused("-display dbus,p2p=yes,gl=on\n-S\n"), 1);
+        QCOMPARE(paused("-display dbus,p2p=yes,gl=on\n-incoming defer\n"), 0);
+        QCOMPARE(paused("-display sdl,gl=on\n"), 0);
+        QCOMPARE(paused("-display none\n"), 0);
     }
 
     /* The swap targets of the 3D card, where vm.args leaves them out */
@@ -641,6 +667,93 @@ private slots:
         qemu.waitForFinished();
         QTRY_COMPARE_WITH_TIMEOUT(runner.state(), VmRunner::State::Stopped, 10000);
         QVERIFY(!QFileInfo::exists(runDir + "/run.args"));
+    }
+
+    /*
+     * The guest waits for its screen: a QEMU started paused for it (-S on
+     * its command line, not in its arguments), found running as this
+     * vitrine finds the QEMU it started or one an earlier vitrine left,
+     * runs once the screen is set, or after a while without, or when the
+     * manager ends; one paused by its own arguments stays paused
+     */
+    void waitsForDisplay_data()
+    {
+        QTest::addColumn<QString>("kept");  // run.args
+        QTest::addColumn<QString>("end");   // ready, timeout, manager ends
+        QTest::addColumn<bool>("waits");
+
+        const QString embedded = "-m 1G\n-display dbus,p2p=yes,gl=on\n";
+        QTest::newRow("screen set") << embedded << "ready" << true;
+        QTest::newRow("no answer") << embedded << "timeout" << true;
+        QTest::newRow("manager ends") << embedded << "quit" << true;
+        QTest::newRow("paused by its arguments") << embedded + "-S\n" << "ready" << false;
+    }
+    void waitsForDisplay()
+    {
+        QFETCH(QString, kept);
+        QFETCH(QString, end);
+        QFETCH(bool, waits);
+        const QStringList command = VmRunner(id, tmp.path()).commandLine({});
+        FakeMonitor monitor(runDir + "/qmp.sock");
+        QProcess qemu;
+        monitor.status = "prelaunch";
+        qemu.start(FAKE_QEMU, {"-qmp", command[command.size() - 3], "-qmp",
+                               "unix:" + runDir + "/display.sock,server=on,wait=off", "-S"});
+        QVERIFY(qemu.waitForStarted());
+        QFile pid(runDir + "/qemu.pid");
+        QVERIFY(pid.open(QIODevice::WriteOnly));
+        pid.write(QByteArray::number(qemu.processId()) + '\n');
+        pid.close();
+        QFile args(runDir + "/run.args");
+        QVERIFY(args.open(QIODevice::WriteOnly));
+        args.write(kept.toUtf8());
+        args.close();
+        VmRunner::setDisplayWait(end == "timeout" ? 300 : 60000);
+        const auto restore = qScopeGuard([]() { VmRunner::setDisplayWait(5000); });
+
+        auto *runner = new VmRunner(id, tmp.path());
+        QSignalSpy waiting(runner, &VmRunner::waitsForDisplayChanged);
+        QFile::remove(runner->logPath());
+        runner->attach(ArgsFile::parse(kept));
+        if (!waits) {
+            QTRY_COMPARE(runner->state(), VmRunner::State::Paused);
+            runner->displayReady();
+            QTest::qWait(100);
+            QCOMPARE(runner->state(), VmRunner::State::Paused);
+            QVERIFY(!monitor.commands.contains("cont"));
+            QCOMPARE(waiting.size(), 0);
+        } else {
+            QTRY_VERIFY(runner->waitsForDisplay());
+            QCOMPARE(runner->state(), VmRunner::State::Starting);
+            QCOMPARE(runner->displaySocket(), runDir + "/display.sock");
+            QCOMPARE(waiting.size(), 1);
+            QVERIFY(!monitor.commands.contains("cont"));
+            if (end == "quit") {
+                delete std::exchange(runner, nullptr);
+                QTRY_VERIFY(monitor.commands.contains("cont"));
+            } else {
+                if (end == "ready") {
+                    runner->displayReady();
+                }
+                QTRY_COMPARE(runner->state(), VmRunner::State::Running);
+                QVERIFY(!runner->waitsForDisplay());
+                QCOMPARE(waiting.size(), 2);
+                QCOMPARE(monitor.commands.count("cont"), 1);
+                QCOMPARE(read(runner->logPath()).contains("did not answer"), end == "timeout");
+                /* once */
+                runner->displayReady();
+                QTest::qWait(100);
+                QCOMPARE(monitor.commands.count("cont"), 1);
+            }
+        }
+        monitor.close();
+        qemu.kill();
+        qemu.waitForFinished();
+        if (runner) {
+            QTRY_COMPARE_WITH_TIMEOUT(runner->state(), VmRunner::State::Stopped, 10000);
+            delete runner;
+        }
+        QDir(runDir).removeRecursively();
     }
 
     void attachWithoutVm()

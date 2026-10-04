@@ -118,6 +118,20 @@ VmView::VmView(QObject *parent) : QObject(parent)
     m_undrawn = new QTimer(this);
     m_undrawn->setInterval(50);
     connect(m_undrawn, &QTimer::timeout, this, &VmView::releaseUndrawn);
+    /* a move to another screen changes the screen, the pixel ratio and the
+       size at once: one UIInfo for them, and the guest's cursor at the new
+       pixel ratio */
+    m_uiInfo = new QTimer(this);
+    m_uiInfo->setSingleShot(true);
+    m_uiInfo->setInterval(100);
+    connect(m_uiInfo, &QTimer::timeout, this, [this]() {
+        if (m_window) {
+            m_window->sendUiInfo();
+            if (!m_cursor.isNull()) {
+                m_window->setGuestCursor(m_cursor, m_cursorHotX, m_cursorHotY);
+            }
+        }
+    });
 }
 
 VmView::~VmView()
@@ -225,7 +239,12 @@ bool VmView::attach(const QString &monitorSocket, QString *error)
         detach();
         return false;
     }
-    m_window->sendUiInfo();
+    connect(m_dbus, &DBusDisplay::uiInfoApplied, this, [this]() {
+        if (!std::exchange(m_uiInfoApplied, true)) {
+            Q_EMIT screenInfoApplied();
+        }
+    });
+    sendFirstUiInfo();
     /*
      * Last: QEMU reads the clipboard object's properties as it takes the
      * Register, with its main loop stopped until this thread answers them,
@@ -250,6 +269,8 @@ void VmView::detach()
     /* before the connection closes: QEMU's calls to it end here */
     delete std::exchange(m_clipboard, nullptr);
     if (m_dbus) {
+        /* the answers of its calls still to come are not the view's */
+        disconnect(m_dbus, nullptr, this, nullptr);
         retire(std::exchange(m_dbus, nullptr), std::move(m_stats));
     }
     if (m_wayland) {
@@ -305,6 +326,10 @@ void VmView::createWindow(bool fullScreen)
     }
     m_window->setGuestCursorVisible(m_cursorVisible);
     connect(m_window, &DisplayWindow::grabChanged, this, &VmView::checkGrab);
+    /* the guest's mode follows the window's size (DisplayWindow), and its
+       screen: the refresh rate and the pixel ratio (event filter) */
+    connect(m_window, &QWindow::screenChanged, this, &VmView::screenChanged);
+    watchScreen();
     /* its first expose, and the grab its keys and clicks take */
     m_window->installEventFilter(this);
     /* queued: Ctrl+Alt+F comes from the window's own key handler, and the
@@ -375,6 +400,8 @@ void VmView::createWindow(bool fullScreen)
 void VmView::destroyWindow()
 {
     m_undrawn->stop();
+    m_uiInfo->stop();
+    disconnect(m_refreshWatch);
     if (m_window) {
         /* key releases to the guest, and the desktop's shortcuts back */
         m_window->setHostActive(false);
@@ -472,6 +499,10 @@ void VmView::setInputEnabled(bool on)
         /* off: the keys held go up and the grab goes, as when the window
            loses the keyboard - Ctrl+Alt+G could not release it now */
         updateHostActive();
+        /* what the window says of the keyboard follows it (the state's
+           change may have been told before the view took it, as when a
+           guest paused for its screen starts) */
+        Q_EMIT grabChanged();
     }
 }
 
@@ -534,6 +565,9 @@ bool VmView::eventFilter(QObject *watched, QEvent *event)
         case QEvent::MouseButtonPress:
             /* once the window has handled it */
             QMetaObject::invokeMethod(this, &VmView::checkGrab, Qt::QueuedConnection);
+            break;
+        case QEvent::DevicePixelRatioChange:
+            screenChanged();
             break;
         default:
             break;
@@ -606,6 +640,49 @@ void VmView::releaseUndrawn()
     }
     for (const auto &[invocation, received] : deferred) {
         g_dbus_method_invocation_return_value(invocation, nullptr);
+    }
+}
+
+/*
+ * The guest's screen before the window has a size, which it has once the
+ * layout gets to it: a guest started paused for it (VmRunner::
+ * waitsForDisplay) waits for QEMU's answer, and has the host's refresh rate
+ * from its first frame on.  Until the window has a size of its own, which
+ * it sends then, the window around the view's: the guest reads the size
+ * only when its driver starts, seconds later.
+ */
+void VmView::sendFirstUiInfo()
+{
+    const QWidget *top = m_host->window();
+    const QScreen *screen = top->screen();
+    const QSize size = top->size() * top->devicePixelRatio();
+
+    if (!m_window->physicalSize().isEmpty() || size.isEmpty()) {
+        m_window->sendUiInfo();
+        return;
+    }
+    m_dbus->applyUiInfo(uint32_t(size.width()), uint32_t(size.height()),
+                        uint32_t(qRound((screen ? screen->refreshRate() : 60.0) * 1000)), 0, 0);
+}
+
+/*
+ * The window's screen, its refresh rate or its pixel ratio changed, as when
+ * the window moves to another monitor: the guest's mode and refresh rate
+ * follow, which a size in logical pixels that stays the same would not tell
+ * DisplayWindow (qt-client.md F13)
+ */
+void VmView::screenChanged()
+{
+    watchScreen();
+    m_uiInfo->start();
+}
+
+void VmView::watchScreen()
+{
+    disconnect(m_refreshWatch);
+    if (QScreen *screen = m_window ? m_window->screen() : nullptr) {
+        m_refreshWatch = connect(screen, &QScreen::refreshRateChanged, this,
+                                 &VmView::screenChanged);
     }
 }
 

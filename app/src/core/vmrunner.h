@@ -86,6 +86,21 @@ public:
     /* The socket of the vitrine agent's port (guest tools), while active */
     QString agentSocket() const;
     /*
+     * A VM shown in vitrine's window starts paused (QEMU's -S) and waits
+     * for its screen, the state Starting meanwhile: the view attaches to
+     * displaySocket() and tells QEMU the size and refresh rate of the
+     * screen, then displayReady() lets the guest run.  The guest has the
+     * host's refresh rate from its first frame on: QEMU's EDID says 75 Hz
+     * until a display tells it, and Plasma's animations run too fast for a
+     * whole session when the rate changes after its shell started.  After
+     * a few seconds without displayReady() the guest runs anyway.  Not for
+     * a VM whose own arguments start it paused (-S), which stays paused.
+     */
+    bool waitsForDisplay() const;
+    void displayReady();
+    /* How long the guest waits for its screen at most, in ms (for tests) */
+    static void setDisplayWait(int ms);
+    /*
      * The arguments of the current run, or the last: those given to start(),
      * also for a QEMU found running (start() keeps them with the run's
      * runtime files).  vm.args may have changed since.
@@ -128,6 +143,8 @@ signals:
     /* isSuspended() changed, which a pause of a suspended guest does
        without a state change */
     void suspendedChanged(bool suspended);
+    /* waitsForDisplay() changed */
+    void waitsForDisplayChanged(bool waiting);
     /* The start failed, QEMU stopped unexpectedly, or refused a command */
     void failed(const QString &error);
     /*
