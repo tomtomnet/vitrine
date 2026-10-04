@@ -20,6 +20,8 @@ class QCheckBox;
 class QComboBox;
 class QLabel;
 class QLineEdit;
+class QListWidget;
+class QListWidgetItem;
 class QPushButton;
 class QSlider;
 class QSpinBox;
@@ -164,6 +166,16 @@ private:
         QString file;               // the disc now in a CD/DVD drive
         int newGiB = 0;             // a disk to create, of this size
         bool removed = false;
+        int id = 0;                 // the boot order's name for it, while the page edits it
+    };
+    /* A device of the boot order: a disk of the page, or a network card */
+    struct BootItem {
+        VmConfig::BootEntry::Kind kind = VmConfig::BootEntry::HardDisk;
+        int entry = -1;             // the id of a disk's Entry
+        int nic = -1;               // the place of a network card among them
+        QString card;               // its driver, e.g. virtio-net-pci
+        bool on = false;
+        bool editable = true;
     };
 
     void fill();
@@ -174,6 +186,11 @@ private:
     void chooseDisc();
     void resize();
     QString newDiskName() const;
+    /* The boot order: an entry added to it, the list made again, a device moved */
+    void addBootItem(const Entry &entry);
+    void fillBoot();
+    void moveBoot(int by);
+    void bootChanged(QListWidgetItem *item);
 
     QString m_vmDir;
     QTableWidget *m_table;
@@ -181,7 +198,16 @@ private:
     QPushButton *m_eject;
     QPushButton *m_resize;
     QPushButton *m_remove;
+    QListWidget *m_boot;
+    QPushButton *m_bootUp;
+    QPushButton *m_bootDown;
+    QLabel *m_bootHint;
     QList<Entry> m_entries;
+    int m_nextId = 0;
+    QList<BootItem> m_bootItems;
+    /* The arguments have an order of their own; the page changed it */
+    bool m_bootSet = false;
+    bool m_bootChanged = false;
     /* New disks, by file name, until the dialog applies and creates them */
     QMap<QString, int> m_pending;
     bool m_virt = false;
@@ -376,14 +402,12 @@ private:
     QLabel *m_firmwareInfo;
     QPushButton *m_resetVars;
     QCheckBox *m_bootMenu;
-    QComboBox *m_bootDevice;
     /* The firmware files apply() copies, until the dialog applies */
     QTemporaryDir m_staging;
 
     QString m_machine;
     VmConfig::FirmwareKind m_loadedFirmware = VmConfig::FirmwareKind::Bios;
     bool m_loadedBootMenu = false;
-    VmConfig::BootDevice m_loadedBootDevice = VmConfig::BootDevice::Default;
 };
 
 class PciPage : public SettingsPage

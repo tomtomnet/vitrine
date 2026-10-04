@@ -726,51 +726,110 @@ private slots:
         QCOMPARE(text(a), "-boot order=d\n");
     }
 
-    void bootDevice()
+    /* The devices the VM starts from, in their order */
+    void bootOrder()
     {
-        ArgsFile a = ArgsFile::parse("-drive file=disk.qcow2,format=qcow2,if=virtio,discard=unmap\n"
+        using E = BootEntry;
+        auto entry = [](E::Kind kind, int index, bool on, bool editable = true) {
+            E e;
+            e.kind = kind;
+            e.index = index;
+            e.on = on;
+            e.editable = editable;
+            return e;
+        };
+        ArgsFile a = ArgsFile::parse("-machine q35\n"
                                      "-drive file=x.iso,media=cdrom,readonly=on\n"
+                                     "-drive file=disk.qcow2,format=qcow2,if=virtio,discard=unmap\n"
                                      "-netdev user,id=net0\n"
                                      "-device virtio-net-pci,netdev=net0\n");
+        const QString plain = text(a);
 
-        QCOMPARE(firstBootDevice(a), BootDevice::Default);
-        QVERIFY(setFirstBootDevice(a, BootDevice::Disk));
-        QCOMPARE(text(a), "-drive file=disk.qcow2,format=qcow2,discard=unmap,if=none,id=disk0\n"
-                          "-device virtio-blk-pci,drive=disk0,bootindex=1\n"
-                          "-drive file=x.iso,media=cdrom,readonly=on\n"
-                          "-netdev user,id=net0\n"
-                          "-device virtio-net-pci,netdev=net0\n");
-        QCOMPARE(firstBootDevice(a), BootDevice::Disk);
+        /* none of its own: the firmware's, disks, CD/DVD drives, network */
+        QVERIFY(!hasBootOrder(a));
+        QCOMPARE(VmConfig::bootOrder(a),
+                 QList<E>({entry(E::HardDisk, 1, true), entry(E::Cdrom, 0, true),
+                           entry(E::Network, 0, true)}));
+        /* as it is: nothing to write */
+        setBootOrder(a, VmConfig::bootOrder(a));
+        QVERIFY(!text(a).contains("strict"));
 
-        QVERIFY(setFirstBootDevice(a, BootDevice::Cdrom));
-        QCOMPARE(text(a), "-drive file=disk.qcow2,format=qcow2,discard=unmap,if=none,id=disk0\n"
-                          "-device virtio-blk-pci,drive=disk0\n"
+        /* the CD/DVD drive first, then the disk, never the network */
+        a = ArgsFile::parse(plain);
+        setBootOrder(a, {entry(E::Cdrom, 0, true), entry(E::HardDisk, 1, true),
+                         entry(E::Network, 0, false)});
+        QCOMPARE(text(a), "-machine q35\n"
+                          "-boot strict=on\n"
                           "-drive file=x.iso,media=cdrom,readonly=on,if=none,id=cd0\n"
                           "-device ide-cd,drive=cd0,bootindex=1\n"
+                          "-drive file=disk.qcow2,format=qcow2,discard=unmap,if=none,id=disk0\n"
+                          "-device virtio-blk-pci,drive=disk0,bootindex=2\n"
                           "-netdev user,id=net0\n"
                           "-device virtio-net-pci,netdev=net0\n");
-        QCOMPARE(firstBootDevice(a), BootDevice::Cdrom);
+        QVERIFY(hasBootOrder(a));
+        QCOMPARE(VmConfig::bootOrder(a),
+                 QList<E>({entry(E::Cdrom, 0, true), entry(E::HardDisk, 1, true),
+                           entry(E::Network, 0, false)}));
+        /* read back and written again: the same */
+        const QString ordered = text(a);
+        setBootOrder(a, VmConfig::bootOrder(a));
+        QCOMPARE(text(a), ordered);
 
-        QVERIFY(setFirstBootDevice(a, BootDevice::Network));
+        /* the network first, the disk off */
+        setBootOrder(a, {entry(E::Network, 0, true), entry(E::Cdrom, 0, true),
+                         entry(E::HardDisk, 1, false)});
         QVERIFY(text(a).contains("-device virtio-net-pci,netdev=net0,bootindex=1\n"));
-        QVERIFY(text(a).contains("-device ide-cd,drive=cd0\n"));
-        QCOMPARE(firstBootDevice(a), BootDevice::Network);
+        QVERIFY(text(a).contains("-device ide-cd,drive=cd0,bootindex=2\n"));
+        QVERIFY(text(a).contains("-device virtio-blk-pci,drive=disk0\n"));
+        QVERIFY(text(a).contains("-boot strict=on\n"));
+        QCOMPARE(VmConfig::bootOrder(a),
+                 QList<E>({entry(E::Network, 0, true), entry(E::Cdrom, 0, true),
+                           entry(E::HardDisk, 1, false)}));
 
-        QVERIFY(setFirstBootDevice(a, BootDevice::Default));
+        /* all on: in that order, nothing left out, not strict */
+        setBootOrder(a, {entry(E::HardDisk, 1, true), entry(E::Cdrom, 0, true),
+                         entry(E::Network, 0, true)});
+        QVERIFY(!text(a).contains("-boot"));
+        QVERIFY(text(a).contains("-device virtio-blk-pci,drive=disk0,bootindex=1\n"));
+        QVERIFY(text(a).contains("-device virtio-net-pci,netdev=net0,bootindex=3\n"));
+
+        /* none on: the firmware's own again */
+        setBootOrder(a, {entry(E::HardDisk, 1, false), entry(E::Cdrom, 0, false),
+                         entry(E::Network, 0, false)});
         QVERIFY(!text(a).contains("bootindex"));
+        QVERIFY(!text(a).contains("-boot"));
+        QVERIFY(!hasBootOrder(a));
 
-        /* -hda, and -boot order, which OVMF does not follow */
-        a = ArgsFile::parse("-hda cachyos.qcow2\n-boot order=d,menu=on\n");
-        QCOMPARE(firstBootDevice(a), BootDevice::Cdrom);
-        QVERIFY(setFirstBootDevice(a, BootDevice::Disk));
-        QCOMPARE(text(a), "-drive file=cachyos.qcow2,if=none,id=disk0\n"
+        /* -hda and -cdrom, and -boot order=, which OVMF does not follow */
+        a = ArgsFile::parse("-hda win.qcow2\n-cdrom setup.iso\n-boot order=dc,menu=on\n");
+        QVERIFY(hasBootOrder(a));
+        QCOMPARE(VmConfig::bootOrder(a),
+                 QList<E>({entry(E::Cdrom, 1, true), entry(E::HardDisk, 0, true)}));
+        setBootOrder(a, {entry(E::HardDisk, 0, true), entry(E::Cdrom, 1, false)});
+        QCOMPARE(text(a), "-drive file=win.qcow2,if=none,id=disk0\n"
                           "-device ide-hd,drive=disk0,bootindex=1\n"
-                          "-boot menu=on\n");
+                          "-cdrom setup.iso\n"
+                          "-boot menu=on,strict=on\n");
+        /* -boot d, the old way: its kinds only */
+        a = ArgsFile::parse("-hda win.qcow2\n-cdrom setup.iso\n-boot d\n");
+        QCOMPARE(VmConfig::bootOrder(a),
+                 QList<E>({entry(E::Cdrom, 1, true), entry(E::HardDisk, 0, false)}));
 
-        /* nothing to boot from */
-        a = ArgsFile::parse("-m 1G\n");
-        QVERIFY(!setFirstBootDevice(a, BootDevice::Network));
-        QVERIFY(!setFirstBootDevice(a, BootDevice::Cdrom));
+        /* a -blockdev with its -device, and the bootindex of another device kept */
+        a = ArgsFile::parse("-blockdev driver=file,filename=a.qcow2,node-name=f0\n"
+                            "-blockdev driver=qcow2,file=f0,node-name=d0\n"
+                            "-device virtio-blk-pci,drive=d0,bootindex=3\n"
+                            "-drive file=old.img,if=scsi\n"
+                            "-device usb-host,vendorid=0x1234,productid=0x5678,bootindex=1\n");
+        QCOMPARE(VmConfig::bootOrder(a),
+                 QList<E>({entry(E::HardDisk, 0, true), entry(E::HardDisk, 1, false, false)}));
+        setBootOrder(a, VmConfig::bootOrder(a));
+        QCOMPARE(text(a), "-boot strict=on\n"
+                          "-blockdev driver=file,filename=a.qcow2,node-name=f0\n"
+                          "-blockdev driver=qcow2,file=f0,node-name=d0\n"
+                          "-device virtio-blk-pci,drive=d0,bootindex=2\n"
+                          "-drive file=old.img,if=scsi\n"
+                          "-device usb-host,vendorid=0x1234,productid=0x5678,bootindex=1\n");
     }
 };
 
