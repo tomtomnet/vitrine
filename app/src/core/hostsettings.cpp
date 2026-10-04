@@ -183,7 +183,8 @@ static QString realtimeOffFor(const QString &helperWhy)
         return realtimeOffBecause(
             HostSettings::tr("debugfs, where the fair server is set, is not mounted"));
     }
-    return realtimeOffBecause(HostSettings::tr("the fair server could not be set (%1)").arg(helperWhy));
+    return realtimeOffBecause(
+        HostSettings::tr("the fair server could not be set (%1)").arg(helperWhy));
 }
 
 QString HostSettings::realtimeLimit(const QString &sysRoot, const QString &kernelRelease)
@@ -352,7 +353,8 @@ QStringList HostSettings::stripCapabilities(const QString &stack)
     for (const QString &build : QDir(stack).entryList(QDir::Dirs | QDir::NoDotAndDotDot |
                                                       QDir::NoSymLinks)) {
         const QDir bin(stack + '/' + build + "/bin");
-        for (const QString &name : bin.entryList({"qemu-system-*"}, QDir::Files | QDir::NoSymLinks)) {
+        for (const QString &name :
+             bin.entryList({"qemu-system-*"}, QDir::Files | QDir::NoSymLinks)) {
             const QByteArray path = QFile::encodeName(bin.filePath(name));
             struct stat st;
 
@@ -550,7 +552,8 @@ void HostSettings::applyFront(Vm *vm)
         return;
     }
     /* SDL: its window's focus is not known here, behind or not */
-    if (vm->id() != m_front && VmConfig::screen(vm->runner()->runArgs()) == VmConfig::Screen::OwnWindow) {
+    if (vm->id() != m_front &&
+        VmConfig::screen(vm->runner()->runArgs()) == VmConfig::Screen::OwnWindow) {
         return;
     }
     m_out += (vm->id() == m_front ? "rt " : "behind ") + QByteArray::number(pid) + '\n';

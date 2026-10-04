@@ -530,7 +530,8 @@ void MainWindow::addVm(Vm *vm)
     connect(vm->runner(), &VmRunner::failed, this,
             [this, vm](const QString &error) { failed(vm, error); });
     /* QEMU that does not end after Force Off: killed only if the user says so */
-    connect(vm->runner(), &VmRunner::notResponding, this, [this, vm]() { KillPrompt::ask(this, vm); });
+    connect(vm->runner(), &VmRunner::notResponding, this,
+            [this, vm]() { KillPrompt::ask(this, vm); });
     m_states[vm->id()] = vm->runner()->state();
     updateItem(vm);
     m_list->sortItems();

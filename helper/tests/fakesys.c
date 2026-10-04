@@ -8,8 +8,9 @@
  * manual only and a commit that fails while the maximum is 0 - so that the
  * order of the writes is tested, not just their values.  A file with a
  * sibling <file>.stuck takes writes without keeping them (for
- * pp_od_clk_voltage, its commits), for the read back.  Other files (the udmabuf module's parameters) take any value,
- * as the kernel's int parameters do.  Every write, scheduler and nice
+ * pp_od_clk_voltage, its commits), for the read back.  Other files (the
+ * udmabuf module's parameters) take any value, as the kernel's int
+ * parameters do.  Every write, scheduler and nice
  * change and log line is appended to <root>/journal.  Schedulers and nice
  * values are kept in <root>/sched (an unprivileged test cannot make threads
  * real-time nor lower their nice), where the next helper finds them; the
@@ -374,7 +375,8 @@ static void sched_load(void)
         return;
     }
     text[n] = '\0';
-    for (char *l = strtok_r(text, "\n", &save); l && nsched < 4096; l = strtok_r(NULL, "\n", &save)) {
+    for (char *l = strtok_r(text, "\n", &save); l && nsched < 4096;
+         l = strtok_r(NULL, "\n", &save)) {
         struct sched_entry e;
 
         if (sscanf(l, "%d %d %d %d", &e.tid, &e.policy, &e.priority, &e.nice) == 4) {
