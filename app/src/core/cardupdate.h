@@ -30,7 +30,8 @@ struct Change {
         AddProperty,
         /* venus=off off the card: QEMU's default, a line that says nothing */
         RemoveVenus,
-        /* honor-guest-pat=on on -accel kvm */
+        /* honor-guest-pat=auto on -accel kvm (on: QEMU refuses to start
+           where KVM cannot, before Linux 6.16) */
         HonorGuestPat,
         /* guest RAM in a shared memfd backend, of the same size */
         SharedMemory,

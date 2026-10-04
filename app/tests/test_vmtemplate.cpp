@@ -87,7 +87,7 @@ private slots:
                  "\n"
                  "# System\n"
                  "-machine q35,memory-backend=mem,dump-guest-core=off\n"
-                 "-accel kvm,honor-guest-pat=on\n") + cpu +
+                 "-accel kvm,honor-guest-pat=auto\n") + cpu +
                  "-smp 4,sockets=1,cores=2,threads=2\n"
                  "-object memory-backend-memfd,id=mem,size=8G,share=on\n"
                  "\n"
@@ -145,7 +145,7 @@ private slots:
         QVERIFY(g.nativeContext);
         QCOMPARE(g.hostmemMiB, 4096);
         QVERIFY(VmConfig::screen(args) == VmConfig::Screen::Embedded);
-        QCOMPARE(VmConfig::accelProperty(args, "honor-guest-pat"), "on");
+        QCOMPARE(VmConfig::accelProperty(args, "honor-guest-pat"), "auto");
         const VmConfig::Network net = VmConfig::network(args);
         QCOMPARE(net.kind, VmConfig::Network::Nat);
         QCOMPARE(net.backend, "passt");
@@ -255,7 +255,7 @@ private slots:
         o.gpuProperties = gpuProperties(&system, {});
         const ArgsFile args = build(o);
         QVERIFY(args.toText().contains(full));
-        QVERIFY(args.toText().contains("-accel kvm,honor-guest-pat=on\n"));
+        QVERIFY(args.toText().contains("-accel kvm,honor-guest-pat=auto\n"));
         QVERIFY(!args.toText().contains("venus"));
         QVERIFY(VmConfig::graphics(args).nativeContext);
 
@@ -363,7 +363,7 @@ private slots:
         QVERIFY(text.contains("-cpu host\n"));
         QVERIFY(text.contains("-device virtio-gpu-gl-pci,drm_native_context=on,blob=on,"
                               "hostmem=4G\n"));
-        QVERIFY(text.contains("-accel kvm,honor-guest-pat=on\n"));
+        QVERIFY(text.contains("-accel kvm,honor-guest-pat=auto\n"));
         QVERIFY(!text.contains("-vga"));
         QVERIFY(!text.contains("VGA"));
         QVERIFY(!text.contains("virtio-vga"));

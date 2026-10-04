@@ -198,8 +198,9 @@ static void linuxPc(Writer &w, const Options &o,
     w.section("System");
     /* no guest RAM in QEMU's core dumps */
     w.option("machine", "q35,memory-backend=mem,dump-guest-core=off");
-    /* the guest's caching of its GPU mappings, which Intel GPUs need */
-    w.option("accel", nativeContext ? "kvm,honor-guest-pat=on" : "kvm");
+    /* the guest's caching of its GPU mappings, which Intel GPUs need; auto:
+       where the host's KVM can (Linux 6.16 and later), QEMU refuses on */
+    w.option("accel", nativeContext ? "kvm,honor-guest-pat=auto" : "kvm");
     /* AMD: the guest sees the threads of a core, and the caches they share, with topoext */
     w.option("cpu", threads > 1 && HostDevices::cpuHasFlag("topoext") ? "host,topoext=on"
                                                                       : "host");

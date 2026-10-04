@@ -814,7 +814,7 @@ private slots:
         o.arch = "x86_64";
         const ArgsFile linuxVm = VmTemplate::build(o);
         QVERIFY(linuxVm.toText().contains(",drm_native_context=on,x-host-vblank=on,"));
-        QVERIFY(linuxVm.toText().contains("-accel kvm,honor-guest-pat=on\n"));
+        QVERIFY(linuxVm.toText().contains("-accel kvm,honor-guest-pat=auto\n"));
         o.os = VmTemplate::Os::Windows11;
         o.graphics = VmTemplate::defaults(o.os).graphics;
         const ArgsFile windows = VmTemplate::build(o);

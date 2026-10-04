@@ -103,7 +103,7 @@ private slots:
         const QString args = create();
 
         QVERIFY2(args.contains(kCard), qPrintable(args));
-        QVERIFY(args.contains("-accel kvm,honor-guest-pat=on\n"));
+        QVERIFY(args.contains("-accel kvm,honor-guest-pat=auto\n"));
         QVERIFY(!args.contains("venus"));
         QVERIFY(!args.contains("#qemu"));
     }

@@ -57,7 +57,7 @@ static QString updated(const QString &text)
 {
     return QString(text)
         .replace(QString(kOldCard) + "\n", QString(kNewCard) + "\n")
-        .replace("-accel kvm\n", "-accel kvm,honor-guest-pat=on\n");
+        .replace("-accel kvm\n", "-accel kvm,honor-guest-pat=auto\n");
 }
 
 /*
@@ -211,11 +211,11 @@ private slots:
             QVERIFY2(list.contains(CardUpdate::describe(c).toHtmlEscaped()), qPrintable(list));
         }
         QVERIFY(list.contains("venus=off"));
-        QVERIFY(list.contains("honor-guest-pat=on"));
+        QVERIFY(list.contains("honor-guest-pat=auto"));
         QCOMPARE(dialog->findChild<QPlainTextEdit *>("before")->toPlainText(),
                  QString("-accel kvm\n") + kOldCard);
         QCOMPARE(dialog->findChild<QPlainTextEdit *>("after")->toPlainText(),
-                 QString("-accel kvm,honor-guest-pat=on\n") + kNewCard);
+                 QString("-accel kvm,honor-guest-pat=auto\n") + kNewCard);
         const QString notes = dialog->findChild<QLabel *>("notes")->text();
         QVERIFY(!notes.contains("running"));
         /* it has native context already, which the system's QEMU lacks */
@@ -260,7 +260,7 @@ private slots:
                      notes.contains("The other lines and keys stay as they are."),
                  qPrintable(notes));
         QCOMPARE(dialog->findChild<QPlainTextEdit *>("after")->toPlainText(),
-                 "-accel kvm,honor-guest-pat=on\n"
+                 "-accel kvm,honor-guest-pat=auto\n"
                  "-device virtio-gpu-gl-pci,hostmem=4G,blob=on,drm_native_context=on,"
                  "x-host-vblank=off");
         button(dialog, "apply")->click();
@@ -268,7 +268,7 @@ private slots:
         QCOMPARE(read(dir + "/vm.args"),
                  QString(byHand)
                      .replace("venus=off,", "")
-                     .replace("-accel kvm\n", "-accel kvm,honor-guest-pat=on\n"));
+                     .replace("-accel kvm\n", "-accel kvm,honor-guest-pat=auto\n"));
     }
 
     /* Don't Ask Again: for this VM, everywhere, until Details offers it again */

@@ -18,6 +18,7 @@
 #include "core/firmwarefiles.h"
 #include "core/guestagent.h"
 #include "core/guesttools.h"
+#include "core/hostkvm.h"
 #include "core/paths.h"
 #include "core/qemuinfo.h"
 #include "core/qmpclient.h"
@@ -881,7 +882,13 @@ QStringList VmRunner::Private::commandLine(const ArgsFile &args, const QString &
     const QList<VmConfig::Share> shares = VmConfig::shares(args);
     QStringList command{qemu};
 
-    command += withComputedProperties(args, [&qemu, problems](const QString &driver) {
+    /* honor-guest-pat=on, which QEMU refuses where KVM cannot do it, as auto there */
+    QString patNote;
+    const ArgsFile hostArgs = HostKvm::withHostPat(args, HostKvm::canHonorGuestPat(), &patNote);
+    if (!patNote.isEmpty() && problems) {
+        *problems << patNote;
+    }
+    command += withComputedProperties(hostArgs, [&qemu, problems](const QString &driver) {
                    QString error;
                    const QStringList names = QemuInfo::probeProperties(qemu, driver, &error);
                    if (!error.isEmpty() && problems) {

@@ -519,10 +519,11 @@ static void setCard(ArgsFile &args, const Graphics &now, const Graphics &g)
         args.lines[vga].value = "none";
     }
 
-    /* Intel GPUs need it for the caching of the guest's mappings */
+    /* Intel GPUs need it for the caching of the guest's mappings; auto, as
+       on makes QEMU refuse to start where KVM cannot (before Linux 6.16) */
     if (g.nativeContext && accel(args).startsWith("kvm") &&
         accelProperty(args, "honor-guest-pat").isEmpty()) {
-        setAccelProperty(args, "honor-guest-pat", "on");
+        setAccelProperty(args, "honor-guest-pat", "auto");
     }
 }
 

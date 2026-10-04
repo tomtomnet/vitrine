@@ -334,7 +334,10 @@ when it draws through virgl.
 
 - QEMU needs `-device virtio-gpu-gl-pci,blob=on,hostmem=4G,drm_native_context=on`
   (or `virtio-vga-gl` with the same properties), and
-  `-accel kvm,honor-guest-pat=on` for Intel GPUs and for the AMD patch below.
+  `-accel kvm,honor-guest-pat=auto` for Intel GPUs and for the AMD patch below
+  (KVM honors the guest's memory types from Linux 6.16 on; with `on`, QEMU
+  refuses to start on older kernels, and Vitrine starts such VMs with `auto`
+  there).
   New Linux VMs on a PC get them from Vitrine's template when their QEMU has
   them, as Vitrine's own does. Other VMs (on ARM, imported, or older ones)
   get them on the Arguments page, under Advanced in the VM's settings.
