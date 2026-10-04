@@ -26,6 +26,7 @@
 #include "core/vmrunner.h"
 #include "core/vmstore.h"
 #include "ui/banner.h"
+#include "ui/cardupdatedialog.h"
 #include "ui/guesttoolsdialog.h"
 #include "ui/icons.h"
 #include "ui/qemudocs.h"
@@ -34,6 +35,8 @@
 /* How to build a guest Mesa with native context, in the repository */
 static const char kGuestMesaGuide[] =
     "https://github.com/tomtomnet/vitrine/blob/main/docs/guest-mesa.md";
+/* The link that offers vitrine's 3D card again after Don't Ask Again */
+static const char kOfferCard[] = "vitrine:offer-card-update";
 
 /* The guest shut down, but -no-shutdown keeps QEMU open until Force Off */
 static bool keptOpen(const Vm *vm)
@@ -79,7 +82,7 @@ VmDetails::VmDetails(QWidget *parent)
     : QWidget(parent), m_icon(new QLabel), m_name(new QLabel), m_state(new QLabel),
       m_note(new Banner(Banner::Information)), m_error(new Banner(Banner::Warning)),
       m_text(new QTextBrowser), m_growing(new QTimer(this)), m_contexts(new GpuContexts(this)),
-      m_contextsNote(new Banner(Banner::Warning))
+      m_contextsNote(new Banner(Banner::Warning)), m_card(new CardUpdateBanner)
 {
     auto *layout = new QVBoxLayout(this);
     auto *header = new QHBoxLayout;
@@ -109,8 +112,12 @@ VmDetails::VmDetails(QWidget *parent)
     m_text->setObjectName("details");
     /* QTextBrowser would open file: links itself, and show nothing */
     m_text->setOpenLinks(false);
-    connect(m_text, &QTextBrowser::anchorClicked, this, [](const QUrl &url) {
-        if (!url.scheme().isEmpty()) {
+    connect(m_text, &QTextBrowser::anchorClicked, this, [this](const QUrl &url) {
+        if (url == QUrl(kOfferCard)) {
+            if (m_vm) {
+                CardUpdateBanner::setDeclined(m_vm->id(), false);
+            }
+        } else if (!url.scheme().isEmpty()) {
             QDesktopServices::openUrl(url);
         }
     });
@@ -124,9 +131,12 @@ VmDetails::VmDetails(QWidget *parent)
     layout->addWidget(m_error);
     layout->addWidget(m_contextsNote);
     layout->addWidget(new GuestToolsBanner(this));
+    layout->addWidget(m_card);
     layout->addWidget(m_text, 1);
 
     connect(m_error->button(), &QPushButton::clicked, this, &VmDetails::showLog);
+    /* the row that offers it again */
+    connect(m_card, &CardUpdateBanner::declinedChanged, this, &VmDetails::refresh);
 
     /* the disks fill up as the VM runs, and its guest starts drawing */
     m_contextsNote->hide();
@@ -151,6 +161,7 @@ void VmDetails::setVm(Vm *vm)
     }
     m_vm = vm;
     findChild<GuestToolsBanner *>()->setVm(vm);
+    m_card->setVm(vm);
     refresh();
 }
 
@@ -173,6 +184,7 @@ void VmDetails::refresh()
     m_name->setText(m_vm->name());
     m_state->setText(stateText(m_vm));
     m_note->setVisible(keptOpen(m_vm));
+    m_card->refresh();
 
     /* native context asked for: what the guest does with it, while it runs */
     const VmConfig::Graphics graphics = VmConfig::graphics(m_vm->args());
@@ -331,6 +343,13 @@ QString VmDetails::html() const
         }
         display << std::pair(tr("DRM native context"), text(native))
                 << std::pair(tr("Venus"), text(venus));
+        /* Don't Ask Again, undone here */
+        if (m_card->isDeclined()) {
+            display << std::pair(tr("Card update"),
+                                 text(tr("not offered")) +
+                                     QString(" · <a href=\"%1\">%2</a>")
+                                         .arg(kOfferCard, text(tr("Offer again"))));
+        }
     }
     section(tr("Display"), display);
 

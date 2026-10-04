@@ -6,6 +6,8 @@ find_package(Qt6 6.4 REQUIRED COMPONENTS Core Concurrent DBus Gui Network Widget
 qt_add_library(vitrine_core STATIC
     src/core/argsfile.cpp
     src/core/argsfile.h
+    src/core/cardupdate.cpp
+    src/core/cardupdate.h
     src/core/diskinfo.cpp
     src/core/diskinfo.h
     src/core/firmware.cpp
@@ -148,6 +150,8 @@ qt_add_library(vitrine_ui STATIC
     src/ui/argseditor.h
     src/ui/banner.cpp
     src/ui/banner.h
+    src/ui/cardupdatedialog.cpp
+    src/ui/cardupdatedialog.h
     src/ui/clonedialog.cpp
     src/ui/clonedialog.h
     src/ui/firmwarerepair.cpp
@@ -269,6 +273,7 @@ if(BUILD_TESTING)
     endfunction()
     foreach(name
             argsfile
+            cardupdate
             diskinfo
             firmware
             firmwarefiles
@@ -299,6 +304,7 @@ if(BUILD_TESTING)
     endforeach()
     # the windows': widgets that are never shown, so no screen either
     foreach(name
+            cardupdatedialog
             newvmdialog
             settingspages
             stackbanner)
