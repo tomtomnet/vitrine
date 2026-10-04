@@ -37,8 +37,8 @@ public:
     void accept() override;
 
 private:
-    /* The changes for the arguments of now */
-    void fill();
+    /* The changes for the arguments of now, the notes after @lead */
+    void fill(const QString &lead = {});
 
     QPointer<Vm> m_vm;
     /* The arguments the changes were found for */

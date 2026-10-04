@@ -110,7 +110,7 @@ CardUpdateDialog::CardUpdateDialog(Vm *vm, QWidget *parent)
     fill();
 }
 
-void CardUpdateDialog::fill()
+void CardUpdateDialog::fill(const QString &lead)
 {
     QStringList notes;
     QString items;
@@ -136,6 +136,9 @@ void CardUpdateDialog::fill()
     setLines(m_before, diff.before, room);
     setLines(m_after, diff.after, room);
 
+    if (!lead.isEmpty()) {
+        notes << lead;
+    }
     notes << tr("The other lines and keys stay as they are.");
     if (m_vm->runner()->isActive()) {
         notes << tr("The VM is running: the changes apply the next time it starts.");
@@ -162,9 +165,7 @@ void CardUpdateDialog::accept()
     }
     /* vm.args edited meanwhile, say by hand: shown again, not applied unseen */
     if (m_vm->args().toText() != m_args.toText()) {
-        fill();
-        m_notes->setText(tr("The VM's arguments changed meanwhile: these are the changes "
-                            "for them now.").toHtmlEscaped());
+        fill(tr("The VM's arguments changed meanwhile: these are the changes for them now."));
         return;
     }
     if (!m_vm->save(CardUpdate::apply(m_args, m_changes), &error)) {

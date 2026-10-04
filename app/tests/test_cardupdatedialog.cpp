@@ -255,7 +255,10 @@ private slots:
         button(dialog, "apply")->click();
         QVERIFY(dialog->isVisible());
         QCOMPARE(read(dir + "/vm.args"), byHand);
-        QVERIFY(dialog->findChild<QLabel *>("notes")->text().contains("changed meanwhile"));
+        const QString notes = dialog->findChild<QLabel *>("notes")->text();
+        QVERIFY2(notes.startsWith("The VM's arguments changed meanwhile") &&
+                     notes.contains("The other lines and keys stay as they are."),
+                 qPrintable(notes));
         QCOMPARE(dialog->findChild<QPlainTextEdit *>("after")->toPlainText(),
                  "-accel kvm,honor-guest-pat=on\n"
                  "-device virtio-gpu-gl-pci,hostmem=4G,blob=on,drm_native_context=on,"
@@ -365,6 +368,14 @@ private slots:
         QVERIFY2(dialog->findChild<QLabel *>("notes")->text().contains("File &gt; Build QEMU"),
                  qPrintable(dialog->findChild<QLabel *>("notes")->text()));
         QVERIFY(dialog->findChild<QLabel *>("changes")->text().contains("drm_native_context=on"));
+
+        /* an edit meanwhile: shown again, with what it means still said */
+        QVERIFY(vm.save(ArgsFile::parse(QString(fedora).replace("-smp 4", "-smp 2"))));
+        button(dialog, "apply")->click();
+        QVERIFY(dialog->isVisible());
+        const QString notes = dialog->findChild<QLabel *>("notes")->text();
+        QVERIFY2(notes.contains("changed meanwhile") && notes.contains("File &gt; Build QEMU"),
+                 qPrintable(notes));
     }
 
     /* The QEMU of the preferences: what it lacks is not offered, until it changes */
