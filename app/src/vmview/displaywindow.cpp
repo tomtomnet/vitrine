@@ -57,10 +57,17 @@ DisplayWindow::DisplayWindow(DBusDisplay *display, WaylandExtras *wayland, const
     m_uiInfoTimer.setInterval(100); // resize storms: tell the guest once
     connect(&m_uiInfoTimer, &QTimer::timeout, this, &DisplayWindow::sendUiInfo);
     // the guest's USB tablet driver switches the mouse to absolute after boot
-    connect(m_display, &DBusDisplay::mouseModeChanged, this, &DisplayWindow::updateGrab);
+    connect(m_display, &DBusDisplay::mouseModeChanged, this, [this]() {
+        releaseAllButtons(); // pressed in the other mode
+        updateGrab();
+    });
     if (m_wayland) {
+        // relative motion goes on while the compositor unlocked the pointer
+        // (it does when the window loses focus, say): only while locked
+        connect(m_wayland, &WaylandExtras::pointerLockActive, this,
+                [this](bool active) { m_lockActive = active; });
         connect(m_wayland, &WaylandExtras::relativeMotion, this, [this](double dx, double dy) {
-            if (!m_grab || m_display->mouseIsAbsolute()) {
+            if (!m_grab || m_display->mouseIsAbsolute() || !m_lockActive) {
                 return;
             }
             m_relX += dx;
@@ -136,6 +143,9 @@ bool DisplayWindow::event(QEvent *e)
         updateGrab();
         break;
     case QEvent::Leave:
+        // with a button down only when the compositor took the pointer away
+        // (a screen lock, its own grab): Qt forgets the button, no release follows
+        releaseAllButtons();
         m_pointerInside = false;
         m_suppressAuto = false;
         updateGrab();
@@ -214,6 +224,7 @@ void DisplayWindow::mousePressEvent(QMouseEvent *e)
     if (qtButton(e->button(), &b)) {
         mouseMoveEvent(e);
         m_display->mouseButton(b, true);
+        m_buttons |= 1u << b;
     }
 }
 
@@ -222,6 +233,18 @@ void DisplayWindow::mouseReleaseEvent(QMouseEvent *e)
     uint32_t b;
     if (qtButton(e->button(), &b)) {
         m_display->mouseButton(b, false);
+        m_buttons &= ~(1u << b);
+    }
+}
+
+// The buttons still down in the guest: up, or it drags on with the next motion
+void DisplayWindow::releaseAllButtons()
+{
+    for (uint32_t b = 0; m_buttons; b++) {
+        if (m_buttons & (1u << b)) {
+            m_display->mouseButton(b, false);
+            m_buttons &= ~(1u << b);
+        }
     }
 }
 
@@ -333,6 +356,7 @@ void DisplayWindow::setHostActive(bool active)
     m_hostActive = active;
     if (!active) {
         releaseAllKeys();
+        releaseAllButtons();
         m_grab = false;
         m_suppressAuto = false;
     }
@@ -343,6 +367,7 @@ void DisplayWindow::setGrab(bool on)
 {
     m_grab = on;
     if (!on) {
+        releaseAllButtons();
         // releasing holds off the automatic grab until the pointer leaves
         m_suppressAuto = m_pointerInside;
     }

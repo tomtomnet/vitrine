@@ -66,6 +66,7 @@ private:
     void key(QKeyEvent *e, bool down);
     bool guestPos(QPointF pos, uint32_t *x, uint32_t *y) const;
     void releaseAllKeys();
+    void releaseAllButtons();
     void updateCursor();
     void updateGrab();
     bool windowActionModifierHeld() const;
@@ -77,6 +78,8 @@ private:
     QTimer m_uiInfoTimer;
     QSize m_guestSize;
     QSet<uint32_t> m_pressed;
+    uint32_t m_buttons = 0;      // the guest's mouse buttons down, 1 << QEMU's button
+    bool m_lockActive = false;   // the compositor locked the pointer (relative motion)
     QCursor m_guestCursor{Qt::ArrowCursor};
     bool m_cursorVisible = true;
     bool m_grab = false;         // Ctrl+Alt+G, or a click with a relative mouse

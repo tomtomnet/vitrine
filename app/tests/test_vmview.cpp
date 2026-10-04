@@ -11,6 +11,7 @@
 #include <QApplication>
 #include <QDir>
 #include <QKeyEvent>
+#include <QMouseEvent>
 #include <QSignalSpy>
 #include <QTemporaryDir>
 #include <QTest>
@@ -872,6 +873,53 @@ private Q_SLOTS:
         qemu.letGo();
         QTest::qWait(200);
         QVERIFY(!applied);
+    }
+
+    /*
+     * A button down in the guest goes up when the pointer is taken away
+     * without its release (a compositor's grab, a screen lock: Qt gets a
+     * Leave and forgets the button) or the view loses the keyboard, else
+     * the guest drags on with the next motion (qt-client.md F11)
+     */
+    void buttonsReleased()
+    {
+        FakeDisplay qemu(socketPath());
+        QWidget top;
+        auto *layout = new QVBoxLayout(&top);
+        auto *view = new VmView(&top);
+        QString error;
+        QVERIFY2(view->attach(socketPath(), &error), qPrintable(error));
+        QTRY_VERIFY(qemu.listening());
+        layout->addWidget(view->widget());
+        top.resize(640, 480);
+        top.show();
+        QVERIFY(QTest::qWaitForWindowActive(&top));
+        view->focus();
+        QTRY_VERIFY(view->hasKeyboard());
+        QWindow *screen = displayWindow();
+        QVERIFY(screen);
+        auto press = [screen](Qt::MouseButton button) {
+            QMouseEvent e(QEvent::MouseButtonPress, QPointF(10, 10), QPointF(10, 10), button,
+                          button, Qt::NoModifier);
+            QCoreApplication::sendEvent(screen, &e);
+        };
+
+        press(Qt::LeftButton);
+        QTRY_COMPARE(qemu.callsTo("Mouse.Press"), QStringList({"Mouse.Press (0,)"}));
+        QEvent leave(QEvent::Leave);
+        QCoreApplication::sendEvent(screen, &leave);
+        QTRY_COMPARE(qemu.callsTo("Mouse.Release"), QStringList({"Mouse.Release (0,)"}));
+
+        press(Qt::RightButton);
+        QTRY_COMPARE(qemu.callsTo("Mouse.Press").size(), 2);
+        view->setInputEnabled(false);
+        QTRY_COMPARE(qemu.callsTo("Mouse.Release"),
+                     QStringList({"Mouse.Release (0,)", "Mouse.Release (2,)"}));
+        /* once */
+        QCoreApplication::sendEvent(screen, &leave);
+        QTest::qWait(100);
+        QCOMPARE(qemu.callsTo("Mouse.Release").size(), 2);
+        delete view;
     }
 
     /* The view shares the clipboard on its connection; it may go before
