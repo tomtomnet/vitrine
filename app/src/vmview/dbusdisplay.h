@@ -7,6 +7,7 @@
 #include <QString>
 #include <cstdint>
 
+typedef struct _GCancellable GCancellable;
 typedef struct _GDBusConnection GDBusConnection;
 class Stats;
 
@@ -46,6 +47,9 @@ private:
 
     Stats *m_stats;
     GDBusConnection *m_conn = nullptr;
+    // the calls still on their way when it goes: their completions, which
+    // GLib runs later on the GUI thread, then touch neither it nor m_stats
+    GCancellable *m_cancel = nullptr;
     QString m_path;
     QString m_name;
     bool m_absolute = true;

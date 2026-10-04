@@ -36,6 +36,8 @@
 #include <sys/un.h>
 #include <unistd.h>
 
+#include "vmview/dbusdisplay.h"
+#include "vmview/qmp.h"
 #include "vmview/vmview.h"
 
 namespace {
@@ -818,6 +820,58 @@ private Q_SLOTS:
             delete view;
         }
         QTest::qWait(100);
+    }
+
+    /*
+     * The display's calls still on their way when it goes complete later,
+     * from GLib on the GUI thread, with a pointer to it: they must not reach
+     * it (qt-client.md F14; VmView's retire() also keeps it until then)
+     */
+    void displayGoesWithCallsInFlight()
+    {
+        FakeDisplay qemu(socketPath());
+        /* the view's way to the display's connection: getfd + add_client */
+        const int fd = socket(AF_UNIX, SOCK_STREAM | SOCK_CLOEXEC, 0);
+        sockaddr_un addr{};
+        const QByteArray path = socketPath().toLocal8Bit();
+        addr.sun_family = AF_UNIX;
+        memcpy(addr.sun_path, path.constData(), size_t(path.size()));
+        QVERIFY(::connect(fd, reinterpret_cast<sockaddr *>(&addr), sizeof(addr)) == 0);
+        int sv[2];
+        QVERIFY(socketpair(AF_UNIX, SOCK_STREAM | SOCK_CLOEXEC, 0, sv) == 0);
+        {
+            Qmp qmp(fd);
+            QJsonObject ret;
+            QString error;
+            QVERIFY2(qmp.handshake(&error, 5000), qPrintable(error));
+            QVERIFY(qmp.execute("getfd", {{"fdname", "d"}}, &ret, &error, sv[1]));
+            QVERIFY(qmp.execute("add_client", {{"protocol", "@dbus-display"}, {"fdname", "d"}},
+                                &ret, &error));
+        }
+        close(sv[1]);
+        auto *display = new DBusDisplay(nullptr);
+        QString error;
+        QVERIFY2(display->connectPeer(sv[0], &error), qPrintable(error));
+        QVERIFY2(display->selectConsole(&error), qPrintable(error));
+        bool applied = false;
+        connect(display, &DBusDisplay::uiInfoApplied, this, [&applied]() { applied = true; });
+
+        /* one answered while the GUI thread does not look, one held */
+        display->applyUiInfo(640, 480, 60000, 0, 0);
+        for (int i = 0; i < 400 && qemu.callsTo("UIInfo.Apply").isEmpty(); i++) {
+            std::this_thread::sleep_for(std::chrono::milliseconds(5));
+        }
+        std::this_thread::sleep_for(std::chrono::milliseconds(50));
+        qemu.hold(true);
+        display->applyUiInfo(800, 600, 60000, 0, 0);
+        for (int i = 0; i < 400 && qemu.callsTo("UIInfo.Apply").size() < 2; i++) {
+            std::this_thread::sleep_for(std::chrono::milliseconds(5));
+        }
+        QCOMPARE(qemu.callsTo("UIInfo.Apply").size(), 2);
+        delete display;
+        qemu.letGo();
+        QTest::qWait(200);
+        QVERIFY(!applied);
     }
 
     /* The view shares the clipboard on its connection; it may go before
