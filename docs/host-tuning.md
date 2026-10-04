@@ -14,8 +14,9 @@ A desktop VM stays smooth under host load when the host gives it a hand:
   ordinary task stuck behind a real-time vCPU (a kernel worker pushing GPU
   jobs, say) could then wait up to 950 ms; at 1 ms every 10 ms it waits
   under ~9 ms. This is the only bound the kernel has on real-time threads
-  (since Linux 6.12 there is no real-time throttling), so where it cannot
-  be set, QEMU's threads stay ordinary: see below. Under a sched_ext
+  (real-time throttling went in Linux 6.12, except with real-time group
+  scheduling, which Fedora's kernel leaves out), so where it cannot be
+  set, QEMU's threads stay ordinary: see below. Under a sched_ext
   scheduler, ordinary tasks wait for the ext server instead, which gets the
   same.
 - **A GPU clock floor** (AMD APUs): at moderate load the GPU stays at its
