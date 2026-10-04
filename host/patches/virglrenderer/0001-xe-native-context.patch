@@ -89,7 +89,7 @@ new file mode 100644
 index 00000000..22457199
 --- /dev/null
 +++ b/src/drm/xe/xe_ccmd.c
-@@ -0,0 +1,419 @@
+@@ -0,0 +1,432 @@
 +/*
 + * Copyright 2025 Google LLC
 + * SPDX-License-Identifier: MIT
@@ -412,6 +412,19 @@ index 00000000..22457199
 +
 +   if (!eq) {
 +      drm_err("unknown exec_queue_id %u", req->exec_queue_id);
++      rsp->ret = EINVAL;
++      return 0;
++   }
++
++   /*
++    * With more than one batch buffer (a parallel exec queue) the kernel
++    * reads an array of addresses from the user pointer in `address`: the
++    * guest's value would be a pointer into this host process.  Single-batch
++    * submissions only (all that Mesa's xe driver sends for the guest).
++    */
++   if (req->num_batch_buffer != 1) {
++      drm_err("num_batch_buffer %u: only single-batch submissions",
++              req->num_batch_buffer);
 +      rsp->ret = EINVAL;
 +      return 0;
 +   }

@@ -105,7 +105,7 @@ From the research export's `host/virglrenderer/`, byte-identical.
 
 | sha256 | patch |
 |---|---|
-| `936e47b0becee1151a0a170003a06b9932c3afd9454134f8568c498d4b53e85d` | `0001-xe-native-context.patch`: cmspam's Intel Xe native context, rebased on main |
+| `515120f1b7ddd08c8101acbf8d02c4fc52c147505f1010894ae99246992a98ed` | `0001-xe-native-context.patch`: cmspam's Intel Xe native context, rebased on main; single-batch exec only (2026-10-04: with more batches the kernel reads the guest's `address` as a pointer into QEMU) |
 | `0f629fef2724244d1900c707e24218eb91bd97dabd3d42dcfc3658a64fb6bcc5` | `0002-amdgpu-force-wc.patch`: write-combined mappings for host-visible amdgpu blobs |
 | `b2c05277f960fa91ffcd2fd90389b96cc62febb3753bc31153e9ff80114f0709` | `0003-guest-dmabuf-api.patch`: `virgl_renderer_resource_set_guest_dmabuf()`, for QEMU's zero copy of guest dma-bufs |
 
