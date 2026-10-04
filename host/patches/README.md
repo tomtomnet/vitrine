@@ -101,7 +101,9 @@ Vitrine's own, on top, for the research side to take over:
 
 ## virglrenderer (upstream at `cf6c62da`)
 
-From the research export's `host/virglrenderer/`, byte-identical.
+The patches at the top of `virglrenderer/` come from the research
+export's `host/virglrenderer/`, byte-identical; `virglrenderer/vitrine/`
+holds Vitrine's own, applied after them.
 
 | sha256 | patch |
 |---|---|
@@ -109,4 +111,12 @@ From the research export's `host/virglrenderer/`, byte-identical.
 | `0f629fef2724244d1900c707e24218eb91bd97dabd3d42dcfc3658a64fb6bcc5` | `0002-amdgpu-force-wc.patch`: write-combined mappings for host-visible amdgpu blobs |
 | `b2c05277f960fa91ffcd2fd90389b96cc62febb3753bc31153e9ff80114f0709` | `0003-guest-dmabuf-api.patch`: `virgl_renderer_resource_set_guest_dmabuf()`, for QEMU's zero copy of guest dma-bufs |
 
-Check: `cd host/patches && sha256sum qemu/*/*.patch virglrenderer/*.patch`.
+### `virglrenderer/vitrine/`
+
+Vitrine's own, on top, for the research side to take over:
+
+| sha256 | patch |
+|---|---|
+| `88c80b43864f8b875f83b631e68092d34b462762c5e713fa092f2353aa8e0323` | `0001-xe-sync-only-execs-pass-again.patch`: Xe execs without a batch buffer pass again (0001's check refused them too): Mesa sends them to wait for a queue to go idle, and ANV loses its device when they fail |
+
+Check: `cd host/patches && sha256sum qemu/*/*.patch virglrenderer/*.patch virglrenderer/*/*.patch`.
