@@ -24,11 +24,13 @@ say() { echo "vitrine-virtio-gpu: $*"; }
 
 fetch() {  # fetch FILE DEST -> 0 on success, else says why
 	# kernel.org's cgit answers 429 or 503 now and then, and a guest's
-	# network may come up late: three more tries before giving up
+	# network may come up late: three more tries before giving up.  Not an
+	# error yet: the vendored copy may do (the summary below says ERROR
+	# when nothing does)
 	curl -sS -f --connect-timeout 10 --max-time 60 --retry 3 --retry-all-errors \
 		--retry-delay 2 -o "$2" "$url/$1?h=$tag" && return 0
 	rc=$?
-	say "ERROR: could not fetch $1 of $tag from kernel.org (curl exit status $rc, 4 tries)" >&2
+	say "could not fetch $1 of $tag from kernel.org (curl exit status $rc, 4 tries)" >&2
 	return 1
 }
 
