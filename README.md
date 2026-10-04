@@ -127,8 +127,9 @@ update its QEMU if needed.
 The helper tunes the host while VMs run, for members of the `vitrine` group
 ([docs/host-tuning.md](docs/host-tuning.md)); without it, VMs run untuned
 and the status bar says so. At the first VM start, vitrine offers to set
-the group up (an administrator's password, in the desktop's polkit
-dialog); Preferences shows whether tuning is active. By hand:
+the group up (Set Up: an administrator's password, in the desktop's polkit
+dialog); Preferences shows whether tuning is active. Instead of Set Up, by
+hand:
 
 ```
 sudo groupadd --system vitrine

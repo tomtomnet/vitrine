@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: GPL-2.0-or-later
 #include "hosttuningnotifier.h"
 
+#include <QEvent>
 #include <QMessageBox>
 #include <QPointer>
 #include <QPushButton>
@@ -38,12 +39,23 @@ HostTuningNotifier::HostTuningNotifier(HostSettings *host, QWidget *window)
     m_button->setAutoRaise(true);
     m_button->setToolButtonStyle(Qt::ToolButtonTextBesideIcon);
     m_button->setIcon(Icons::themed({"dialog-warning"}, QStyle::SP_MessageBoxWarning));
-    m_button->setText(tr("Host tuning off"));
+    /* tuning is on (the user's choice): it does not take effect */
+    m_button->setText(tr("Host tuning inactive"));
     m_button->hide();
     connect(m_button, &QToolButton::clicked, this, &HostTuningNotifier::explain);
     connect(host, &HostSettings::untunedChanged, this, &HostTuningNotifier::update);
     connect(host, &HostSettings::groupSetupSuggested, this, &HostTuningNotifier::ask);
+    /* back from a terminal where the helper was installed, say */
+    window->installEventFilter(this);
     update();
+}
+
+bool HostTuningNotifier::eventFilter(QObject *watched, QEvent *event)
+{
+    if (watched == m_window && event->type() == QEvent::WindowActivate && m_host->untuned()) {
+        m_host->recheck();
+    }
+    return QObject::eventFilter(watched, event);
 }
 
 QString HostTuningNotifier::summary()
@@ -61,7 +73,9 @@ QString HostTuningNotifier::fix(const HostSettings::Status &status)
         return QString();
     case Problem::NotInstalled:
         return tr("Install it with Vitrine, from Vitrine's source folder, configured for the "
-                  "prefix <nobr>/usr</nobr>:") + installCommands() + docsLink();
+                  "prefix <nobr>/usr</nobr>:") + installCommands() +
+               tr("Then, unless you are in the vitrine group, Vitrine offers to set it up "
+                  "(an administrator's password, once).") + ' ' + docsLink();
     case Problem::NoPolicy:
         return tr("polkit reads actions from /usr/share/polkit-1 only: configure Vitrine for "
                   "the prefix <nobr>/usr</nobr> and install it again, from its source folder:") +
@@ -98,14 +112,35 @@ void HostTuningNotifier::update()
 
 void HostTuningNotifier::explain()
 {
-    const HostSettings::Status status = m_host->untunedStatus();
-
     if (!m_host->untuned()) {
         m_button->hide();
         return;
     }
+    /* the state now, not the one of the VM start: the helper installed or
+       the group joined since */
+    m_button->setEnabled(false);
+    m_host->recheck(this, [this](const HostSettings::Status &now) {
+        m_button->setEnabled(true);
+        if (now.active() || !m_host->untuned()) {
+            /* the running VMs are being tuned: the warning goes with that */
+            if (m_host->untuned()) {
+                auto *box = Widgets::messageBox(
+                    QMessageBox::Information, tr("Host Tuning Active"),
+                    tr("Vitrine may tune the host now: it tunes the running VMs."),
+                    QMessageBox::Close, m_window);
+                box->setAttribute(Qt::WA_DeleteOnClose);
+                box->open();
+            }
+            return;
+        }
+        explainNow(m_host->untunedStatus());
+    });
+}
+
+void HostTuningNotifier::explainNow(const HostSettings::Status &status)
+{
     auto *box = Widgets::messageBox(
-        QMessageBox::Warning, tr("Host Tuning Off"),
+        QMessageBox::Warning, tr("Host Tuning Inactive"),
         "<p>" + untunedText(m_host->untunedCount(), status.why().toHtmlEscaped()) + "</p><p>" +
             summary() + "</p><p>" + fix(status) + "</p>",
         QMessageBox::Close, m_window);
@@ -113,8 +148,12 @@ void HostTuningNotifier::explain()
                                              : nullptr;
     QPushButton *off = box->addButton(tr("&Turn Off Tuning"), QMessageBox::DestructiveRole);
     off->setToolTip(tr("Preferences > Tune the host while VMs run"));
+    /* opened by a click: Set Up may be the default; without it Close, not
+       the first button, which would be Turn Off Tuning */
     if (setUp) {
         box->setDefaultButton(setUp);
+    } else {
+        box->setDefaultButton(QMessageBox::Close);
     }
     box->setAttribute(Qt::WA_DeleteOnClose);
     connect(box, &QMessageBox::finished, this, [this, box, setUp, off]() {
@@ -147,7 +186,9 @@ void HostTuningNotifier::ask(const HostSettings::Status &status)
     QPushButton *notNow = box->addButton(tr("&Not Now"), QMessageBox::RejectRole);
     QPushButton *off = box->addButton(tr("&Turn Off Tuning"), QMessageBox::DestructiveRole);
     off->setToolTip(tr("Preferences > Tune the host while VMs run"));
-    box->setDefaultButton(setUp);
+    /* it comes up by itself, at a VM start: an Enter meant for the guest
+       (its boot menu, its login) must not start the password dialog */
+    box->setDefaultButton(notNow);
     box->setEscapeButton(notNow);
     box->setAttribute(Qt::WA_DeleteOnClose);
     connect(box, &QMessageBox::finished, this, [this, box, setUp, off]() {
@@ -201,9 +242,9 @@ void HostTuningNotifier::setUp(QWidget *parent, const std::function<void()> &don
                     QMessageBox::Close, guard);
             } else {
                 box = Widgets::messageBox(
-                    QMessageBox::Warning, tr("Host Tuning Still Off"),
-                    "<p>" + tr("You are in the vitrine group now, but host tuning is still off: "
-                               "%1.").arg(now.why().toHtmlEscaped()) +
+                    QMessageBox::Warning, tr("Host Tuning Still Inactive"),
+                    "<p>" + tr("You are in the vitrine group now, but host tuning is still "
+                               "inactive: %1.").arg(now.why().toHtmlEscaped()) +
                         "</p><p>" + fix(now) + "</p>",
                     QMessageBox::Close, guard);
             }

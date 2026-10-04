@@ -106,8 +106,15 @@ void HostTuningPrefs::refresh()
     m_state->setText(tr("Checking…"));
     m_needsGroup = false;
     m_setUp->hide();
-    /* without interaction: pkcheck and the user database */
-    HostSettings::check(this, [this](const HostSettings::Status &status) { showState(status); });
+    /* without interaction: pkcheck and the user database; through the
+       app's HostSettings, so that the status bar's warning says the same
+       (and VMs that ran untuned get tuned if it is active now) */
+    auto show = [this](const HostSettings::Status &status) { showState(status); };
+    if (HostSettings *host = HostSettings::instance()) {
+        host->recheck(this, show);
+    } else {
+        HostSettings::check(this, show);
+    }
 }
 
 void HostTuningPrefs::showState(const HostSettings::Status &status)

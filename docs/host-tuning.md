@@ -25,36 +25,43 @@ run. Nothing is applied while no VM runs.
 The helper runs through polkit (`pkexec`). By default it would need an
 administrator's password; vitrine never asks for one when a VM starts - it
 runs the VM without these settings, and while such VMs run the status bar
-shows "Host tuning off" (its tooltip says why, a click says what to do).
-Preferences > Tune the host while VMs run says whether tuning is active,
-and if not why.
+shows "Host tuning inactive" (its tooltip says why, a click checks again
+and says what to do). Preferences > Tune the host while VMs run says
+whether tuning is active, and if not why. With that box unticked, vitrine
+shows no warning.
 
 Members of the `vitrine` group use the helper without a password, from
-their local desktop session. At the first VM start that runs untuned for
-want of the group, vitrine offers to set it up once per run: Set Up, Not
-Now, or Turn Off Tuning. Set Up (also in Preferences and behind the
-status-bar warning) runs `vitrine-helper setup-group` through pkexec: the
-desktop's polkit dialog asks for an administrator's password, then the
-helper creates the group if there is none and adds you to it. By hand,
-the same:
+their local, active desktop session (not over ssh or waypipe, not from a
+session switched away from). When VMs run untuned for want of the group,
+vitrine offers once per run to set it up: Set Up, Not Now, or Turn Off
+Tuning. Set Up (also in Preferences and behind the status-bar warning)
+runs `vitrine-helper setup-group` through pkexec: the desktop's polkit
+dialog asks for an administrator's password, then the helper creates the
+group if there is none and adds you to it. Without the helper installed,
+the warning says how to install it; the offer comes once it is. Instead of
+Set Up, by hand:
 
 ```
 sudo groupadd --system vitrine
 sudo usermod -aG vitrine "$USER"
 ```
 
-vitrine asks polkit again before each start of the helper, and polkit
-reads the groups from the user database at each check: the new
-membership counts at once, for the VMs running too, without logging in
-again or restarting vitrine (`id` in a terminal lists it only after a new
-login). Preferences > Tune the host while VMs run turns tuning off for
-you, at once for the VMs running too (and on again, or another GPU clock
-floor, the same way); off, vitrine shows no warning about it.
+polkit reads the groups from the user database at each check, and vitrine
+asks it again before each start of the helper, when its window comes back
+to the front while VMs run untuned, and when Preferences or the warning's
+explanation open. A new membership, or the helper installed meanwhile,
+counts then, for the VMs running too, without logging in again or
+restarting vitrine (`id` in a terminal lists it only after a new login).
+Preferences > Tune the host while VMs run turns tuning off for you, at
+once for the VMs running too (and on again, or another GPU clock floor,
+the same way).
 
 To take it back: `sudo gpasswd -d "$USER" vitrine` (and
-`sudo groupdel vitrine` when nobody is left in it). From the next VM start
-on, vitrine runs the VMs without these settings, without asking for a
-password.
+`sudo groupdel vitrine` when nobody is left in it), and untick
+Preferences > Tune the host while VMs run. From the next VM start on,
+vitrine runs the VMs without these settings, without asking for a
+password; with the box still ticked it also shows the warning while they
+run, and offers Set Up again once per run.
 
 ## What the group allows
 
@@ -155,8 +162,8 @@ configuring: `cmake --install --prefix` with another prefix is refused.
 
 - `journalctl -t vitrine-helper` lists what the helper changed and put back.
 - Preferences > Tune the host while VMs run says whether tuning is
-  active, and the status bar's "Host tuning off" why the running VMs are
-  not tuned.
+  active, and the status bar's "Host tuning inactive" why the running VMs
+  are not tuned.
 - "polkit wants a password here" for a member of the group: the rule
   applies only in a local, active desktop session (not over ssh or
   waypipe, not from a session switched away from), and only once

@@ -13,9 +13,12 @@ class QWidget;
 /*
  * Host tuning in the main window.  While tuning is on and VMs run untuned
  * (HostSettings::untuned()), a warning stays in the status bar: its tooltip
- * says why, a click explains it and offers the fix.  Once per run, when a
- * VM starts untuned for want of the vitrine group, it offers to set the
- * group up.  Nothing of this while tuning is off: that is the user's choice.
+ * says why, a click asks the state again and explains it with the fix.
+ * Once per run, when a VM runs untuned for want of the vitrine group, it
+ * offers to set the group up.  The state is asked again each time the
+ * window comes back to the front while VMs run untuned: the helper
+ * installed or the group joined from a terminal counts then.  Nothing of
+ * this while tuning is off: that is the user's choice.
  */
 class HostTuningNotifier : public QObject
 {
@@ -40,9 +43,14 @@ public:
     /* Tuning off, now: the Preferences' checkbox unticked */
     static void turnOff();
 
+protected:
+    bool eventFilter(QObject *watched, QEvent *event) override;
+
 private:
     void update();
+    /* The state asked again, then explainNow() */
     void explain();
+    void explainNow(const HostSettings::Status &status);
     void ask(const HostSettings::Status &status);
 
     HostSettings *m_host;
