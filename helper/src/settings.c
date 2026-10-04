@@ -44,7 +44,8 @@ struct hold {
     int fd;             /* <key>.hold */
     char value[16];     /* what was asked: on, auto or MHz */
 };
-#define MAX_HOLDS 9
+/* the fair server, the udmabuf limits and eight cards */
+#define MAX_HOLDS 10
 static struct hold holds[MAX_HOLDS];
 
 static void lock_all(void)
@@ -209,6 +210,8 @@ static struct hold *hold_take(const char *key, const char *value, bool *first)
     int fd;
 
     if (!h) {
+        /* the callers say why from errno */
+        errno = ENOSPC;
         return NULL;
     }
     snprintf(name, sizeof(name), "%s.hold", key);
@@ -835,8 +838,10 @@ void gpu_floor(const char *card, const char *value)
 
     lock_all();
     if (!(h = hold_take(key, value, &first))) {
+        int err = errno;
+
         unlock_all();
-        reply("error gpu-floor %s: cannot take the hold: %s", card, strerror(errno));
+        reply("error gpu-floor %s: cannot take the hold: %s", card, strerror(err));
         return;
     }
     if (!first) {

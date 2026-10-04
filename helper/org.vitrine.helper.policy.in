@@ -9,9 +9,9 @@
   Each one here names its argv1, so exactly one matches each verb, and the
   helper refuses a run without one (pkexec would use its generic action).
 
-  - session: the kernel's fair server, an AMD GPU's clock floor and
-    real-time threads for the caller's QEMU while vitrine's VMs run, all
-    put back after the last one;
+  - session: the kernel's fair server, an AMD GPU's clock floor, the
+    udmabuf limits and real-time threads for the caller's QEMU while
+    vitrine's VMs run, all put back after the last one;
   - setcap: cap_sys_nice on vitrine's own QEMU build;
   - setup-group: the caller in the vitrine group, created if need be.
 

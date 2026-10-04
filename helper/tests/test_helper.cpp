@@ -248,6 +248,17 @@ private:
     {
         return QFile::exists(path("/run/vitrine-helper/" + key + ".state"));
     }
+    /* cardN: an APU like the Radeon 780M */
+    void amdApu(int n) const
+    {
+        const QString card = path(QString("/sys/class/drm/card%1/device").arg(n));
+        writeFile(card + "/vendor", "0x1002\n");
+        writeFile(card + "/power_dpm_force_performance_level", "auto\n");
+        writeFile(card + "/pp_od_clk_voltage", od(800, 2700));
+        /* gpu_metrics header: size 120, format 2 (an APU's), content 1 */
+        writeFile(card + "/gpu_metrics", QByteArray("\x78\x00\x02\x01", 4) + QByteArray(116, 0));
+        QFile::link("../../../../bus/pci/drivers/amdgpu", card + "/driver");
+    }
     /* the kernel's defaults and an APU like the Radeon 780M */
     void makeTree()
     {
@@ -257,13 +268,7 @@ private:
         for (int i = 0; i < m_cpus; i++) {
             setFair(i, 1000000000, 50000000);
         }
-        const QString card = path(kCard);
-        writeFile(card + "/vendor", "0x1002\n");
-        writeFile(card + "/power_dpm_force_performance_level", "auto\n");
-        writeFile(card + "/pp_od_clk_voltage", od(800, 2700));
-        /* gpu_metrics header: size 120, format 2 (an APU's), content 1 */
-        writeFile(card + "/gpu_metrics", QByteArray("\x78\x00\x02\x01", 4) + QByteArray(116, 0));
-        QFile::link("../../../../bus/pci/drivers/amdgpu", card + "/driver");
+        amdApu(1);
         writeFile(path("/sys/class/drm/card0/device/vendor"), "0x8086\n");
         /* the kernel's defaults */
         setUdmabuf(1024, 64);
@@ -848,6 +853,71 @@ private slots:
         QCOMPARE(h.answer("udmabuf " + qemu.pidText()),
                  QString("skip udmabuf %1: the udmabuf module is not loaded").arg(qemu.pid()));
         QVERIFY(writes().isEmpty());
+        QCOMPARE(stateFiles(), QStringList({"lock"}));
+    }
+
+    /* The second write refused: the first one undone, nothing held */
+    void udmabufHalfWay()
+    {
+        FakeQemu qemu;
+        Helper h(m_root);
+        QVERIFY(h.ready());
+        h.answer("watch " + qemu.pidText());
+        QFile::setPermissions(path(QString(kUdmabuf) + "/size_limit_mb"), QFileDevice::ReadOwner);
+        QCOMPARE(h.answer("udmabuf " + qemu.pidText()),
+                 QString("error udmabuf %1: Permission denied").arg(qemu.pid()));
+        QCOMPARE(writes(), QStringList({QString(kUdmabuf) + "/list_limit 65536",
+                                        QString(kUdmabuf) + "/size_limit_mb 2048 FAILED",
+                                        QString(kUdmabuf) + "/list_limit 1024"}));
+        QCOMPARE(udmabuf(), QString("1024/64"));
+        QCOMPARE(stateFiles(), QStringList({"lock"}));
+        qemu.stop();
+        QVERIFY(h.finished());
+        QVERIFY(!h.all().join('\n').contains("restored"));
+    }
+
+    /* A state left by a crash, the module's parameters gone since: dropped */
+    void udmabufStaleStateWithoutModule()
+    {
+        {
+            FakeQemu qemu;
+            Helper a(m_root);
+            QVERIFY(a.ready());
+            a.answer("watch " + qemu.pidText());
+            QVERIFY(a.answer("udmabuf " + qemu.pidText()).startsWith("ok udmabuf"));
+            a.kill();
+            QVERIFY(a.finished());
+        }
+        QVERIFY(stateExists("udmabuf"));
+        QDir(path("/sys/module/udmabuf")).removeRecursively();
+        Helper b(m_root);
+        QCOMPARE(b.line(), QString("restored udmabuf: nothing (some failed)"));
+        QVERIFY(b.ready());
+        QCOMPARE(stateFiles(), QStringList({"lock"}));
+        b.closeInput();
+        QVERIFY(b.finished());
+    }
+
+    /* Every hold taken (the fair server, udmabuf, eight cards): the next says why */
+    void holdsExhausted()
+    {
+        for (int n = 2; n <= 9; n++) {
+            amdApu(n);
+        }
+        FakeQemu qemu;
+        Helper h(m_root);
+        QVERIFY(h.ready());
+        h.answer("watch " + qemu.pidText());
+        QVERIFY(h.answer("fair-server on").startsWith("ok fair-server on"));
+        QVERIFY(h.answer("udmabuf " + qemu.pidText()).startsWith("ok udmabuf"));
+        for (int n = 1; n <= 8; n++) {
+            QVERIFY(h.answer(QString("gpu-floor card%1 auto").arg(n)).startsWith("ok gpu-floor"));
+        }
+        QCOMPARE(h.answer("gpu-floor card9 auto"),
+                 QString("error gpu-floor card9: cannot take the hold: No space left on device"));
+        h.ask("release");
+        QVERIFY(h.finished());
+        QCOMPARE(udmabuf(), QString("1024/64"));
         QCOMPARE(stateFiles(), QStringList({"lock"}));
     }
 
