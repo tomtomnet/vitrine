@@ -416,7 +416,6 @@ private slots:
                  QStringList({"DISABLE_RTKIT=1", "A=b"}));
     }
 
-
     /* The environment as the log and Show Command Line print it: a shell
        must take it as assignments, with the values QEMU gets */
     void environmentForAShell()
