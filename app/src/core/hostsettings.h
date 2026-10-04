@@ -18,8 +18,9 @@ class VmStore;
 
 /*
  * The host settings that keep VMs smooth, for as long as they run: the
- * kernel's fair server at 10 ms / 1 ms, a GPU clock floor on AMD APUs and
- * real-time QEMU threads.  They need root: vitrine-helper applies them,
+ * kernel's fair server at 10 ms / 1 ms, a GPU clock floor on AMD APUs,
+ * real-time QEMU threads, and for VMs whose GPU has native context higher
+ * udmabuf limits.  They need root: vitrine-helper applies them,
  * started with pkexec when a VM starts.  Members of the vitrine group need
  * no password; polkit is asked first, without interaction, each time the
  * helper starts (a membership given or taken meanwhile counts), so that
@@ -113,8 +114,12 @@ public:
     static void grantCapability(const QString &qemu, QObject *context,
                                 const std::function<void(const QString &error)> &done);
 
-    /* What a VM start does, for the QEMU @pid */
-    void tune(qint64 pid);
+    /*
+     * What a VM start does, for the QEMU @pid; @udmabuf: its GPU has native
+     * context, which needs the host's udmabuf limits raised too
+     * (udmabufAnswered() says whether they will be)
+     */
+    void tune(qint64 pid, bool udmabuf = false);
     /*
      * The preferences changed (Preferences > Tune the host): applied to the
      * VMs running now, not at the next start - off lets everything go,
@@ -181,6 +186,8 @@ public:
     void setUpGroup(const std::function<void(Setup result, const QString &error,
                                              const Status &now)> &done);
     bool settingUpGroup() const { return m_settingUp; }
+    /* groupSetupSuggested() was emitted in this run, or Set Up was used */
+    bool groupOffered() const { return m_groupSuggested; }
 
     /* Tests: run @command instead of pkexec <helper>, without asking polkit */
     void setHelperCommand(const QStringList &command) { m_command = command; }
@@ -207,6 +214,13 @@ signals:
      * VMs start (VMs started at once share one check).
      */
     void groupSetupSuggested(const Status &status);
+    /*
+     * For a QEMU tuned with @udmabuf: whether the helper raised the udmabuf
+     * limits for it (or found them high enough), or why not - tuning off,
+     * the VM untuned, the helper skipped them.  Again when that changes
+     * (tuning turned off or on, the group set up).
+     */
+    void udmabufAnswered(qint64 pid, bool raised, const QString &why);
 
 private:
     /* polkit's answer is not kept: Denied only when pkexec itself refused */
@@ -220,6 +234,8 @@ private:
     void spawn(const QStringList &command);
     void readHelper();
     void handleLine(const QString &line);
+    /* The helper's answer to "udmabuf PID" */
+    void udmabufLine(const QString &line);
     void flush();
     void reap();
     void closeHelper();
@@ -259,6 +275,8 @@ private:
     bool m_settingUp = false;
     int m_rechecks = 0;                 // recheck()s under way
     QSet<QString> m_capabilityTried;    // ensureCapability(): QEMUs asked for
+    QSet<qint64> m_udmabuf;             // QEMUs that need the udmabuf limits
+    QList<qint64> m_udmabufAsked;       // their requests sent, not answered yet
     int m_restarts = 0;
 
     /* the helper: its stdin, stdout and stderr are one end of a socket pair */

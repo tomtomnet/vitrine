@@ -439,7 +439,9 @@ void HostSettings::vmStateChanged(Vm *vm)
 
     if (state == VmRunner::State::Stopped) {
         /* no longer untuned either */
-        setUntuned(m_tuned.take(vm->id()), {});
+        const qint64 ended = m_tuned.take(vm->id());
+        m_udmabuf.remove(ended);
+        setUntuned(ended, {});
         if (m_front == vm->id()) {
             m_front.clear();
         }
@@ -447,17 +449,23 @@ void HostSettings::vmStateChanged(Vm *vm)
                pid > 0 && m_tuned.value(vm->id()) != pid) {
         /* a new run, started here or found running: tuned once */
         m_tuned[vm->id()] = pid;
-        tune(pid);
+        tune(pid, VmConfig::graphics(vm->runner()->runArgs()).nativeContext);
     }
 }
 
-void HostSettings::tune(qint64 pid)
+void HostSettings::tune(qint64 pid, bool udmabuf)
 {
+    if (udmabuf) {
+        m_udmabuf.insert(pid);
+    }
     if (!enabled()) {
         /* turned off meanwhile: the helper lets go of everything now */
         if (m_fd >= 0) {
             m_out += "release\n";
             flush();
+        }
+        if (m_udmabuf.contains(pid)) {
+            emit udmabufAnswered(pid, false, tr("host tuning is off"));
         }
         return;
     }
@@ -485,6 +493,10 @@ void HostSettings::queue(qint64 pid)
         const QString value = floor != "auto" ? floor : apus.contains(card) ? "auto" : "off";
         m_out += QString("gpu-floor %1 %2\n").arg(card, value).toLatin1();
     }
+    if (m_udmabuf.contains(pid)) {
+        m_out += ("udmabuf " + n + '\n').toLatin1();
+        m_udmabufAsked << pid;
+    }
     m_out += ("rt " + n + '\n').toLatin1();
 }
 
@@ -495,6 +507,15 @@ void HostSettings::preferencesChanged()
            queued for a helper still starting (its check or its "ready") */
         m_out.clear();
         m_expected.clear();
+        m_udmabufAsked.clear();
+        /* the udmabuf limits go back too, for the VMs that need them */
+        for (const qint64 pid : QSet(m_udmabuf)) {
+            if (alive(pid)) {
+                emit udmabufAnswered(pid, false, tr("host tuning is off"));
+            } else {
+                m_udmabuf.remove(pid);
+            }
+        }
         if (m_fd >= 0) {
             m_out = "release\n";
             flush();
@@ -770,6 +791,9 @@ void HostSettings::handleLine(const QString &line)
                 applyFront(vm);
             }
         }
+    } else if (line.startsWith("ok udmabuf ") || line.startsWith("skip udmabuf ") ||
+               line.startsWith("error udmabuf")) {
+        udmabufLine(line);
     } else if (word == "error" && (line.endsWith(": watch a QEMU first") ||
                                    line.endsWith(": watch the process first"))) {
         /* after a watch that failed: said already, if worth it */
@@ -777,6 +801,33 @@ void HostSettings::handleLine(const QString &line)
         /* "skip fair-server: kernel lockdown (integrity)" */
         say(tr("Host tuning: %1").arg(line.section(' ', 1)));
     }
+}
+
+void HostSettings::udmabufLine(const QString &line)
+{
+    /* "ok udmabuf PID: ...", "skip udmabuf PID: why", "error udmabuf PID: why" */
+    const QString word = line.section(' ', 0, 0);
+    bool numbered = false;
+    const qint64 pid = line.section(' ', 2, 2).section(':', 0, 0).toLongLong(&numbered);
+
+    if (numbered) {
+        m_udmabufAsked.removeOne(pid);
+        if (m_udmabuf.contains(pid)) {
+            emit udmabufAnswered(pid, word == "ok", word == "ok" ? QString()
+                                                                 : line.section(':', 1).trimmed());
+        }
+        return;
+    }
+    /* without a pid: the answer to the oldest request */
+    const qint64 oldest = m_udmabufAsked.isEmpty() ? 0 : m_udmabufAsked.takeFirst();
+    if (line.endsWith(": unknown request") && m_udmabuf.contains(oldest)) {
+        /* a helper installed before vitrine knew of udmabuf */
+        emit udmabufAnswered(oldest, false,
+                             tr("the installed vitrine-helper is older than Vitrine and cannot "
+                                "raise them: install it again"));
+    }
+    /* "watch the process first", "watch a QEMU first": its watch failed,
+       which leaves it untuned (setUntuned() answers) */
 }
 
 void HostSettings::flush()
@@ -828,6 +879,7 @@ void HostSettings::reap()
     closeHelper();
     m_out.clear();
     m_expected.clear();
+    m_udmabufAsked.clear();
     emit helperFinished();
     if (!ran) {
         /* pkexec refused it, though polkit said yes, or it could not start:
@@ -882,6 +934,7 @@ void HostSettings::deny(const Status &status, QSet<qint64> pids, bool always)
        ended at once is no news) */
     m_out.clear();
     m_expected.clear();
+    m_udmabufAsked.clear();
     for (qint64 pid : std::as_const(pids)) {
         if (alive(pid)) {
             setUntuned(pid, status);
@@ -982,6 +1035,9 @@ void HostSettings::setUntuned(qint64 pid, const Status &status)
         m_untuned.append({pid, status});
     }
     emit untunedChanged();
+    if (!status.active() && m_udmabuf.contains(pid)) {
+        emit udmabufAnswered(pid, false, status.why());
+    }
 }
 
 bool HostSettings::untuned() const

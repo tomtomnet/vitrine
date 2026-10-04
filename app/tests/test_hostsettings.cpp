@@ -30,6 +30,7 @@
 #include "core/vmstore.h"
 
 static const char kFair[] = "/sys/kernel/debug/sched/fair_server";
+static const char kUdmabuf[] = "/sys/module/udmabuf/parameters";
 
 /* What QCOMPARE prints of a Status */
 char *toString(const HostSettings::Status &status)
@@ -154,6 +155,22 @@ private:
         return readFile(m_root + kCard + "/power_dpm_force_performance_level");
     }
     QByteArray odTable() const { return readFile(m_root + kCard + "/pp_od_clk_voltage"); }
+    /* "list_limit/size_limit_mb" */
+    QString udmabuf() const
+    {
+        return QString("%1/%2").arg(readFile(m_root + kUdmabuf + "/list_limit"),
+                                    readFile(m_root + kUdmabuf + "/size_limit_mb"));
+    }
+    static bool answered(const QSignalSpy &spy, qint64 pid, bool raised, const QString &why)
+    {
+        for (const QList<QVariant> &args : spy) {
+            if (args.value(0).toLongLong() == pid && args.value(1).toBool() == raised &&
+                args.value(2).toString() == why) {
+                return true;
+            }
+        }
+        return false;
+    }
     /* A HostSettings on the fake tree, through the helper's test build */
     void fake(HostSettings &hs) const
     {
@@ -191,6 +208,9 @@ private slots:
         }
         amdCard(m_root + "/sys", "card1", 2);
         writeFile(m_root + "/sys/class/drm/card0/device/vendor", "0x8086\n");
+        /* the kernel's defaults */
+        writeFile(m_root + kUdmabuf + "/list_limit", "1024\n");
+        writeFile(m_root + kUdmabuf + "/size_limit_mb", "64\n");
         qputenv("VITRINE_HELPER_TEST_ROOT", m_root.toLocal8Bit());
     }
 
@@ -1569,6 +1589,114 @@ private slots:
         QCOMPARE(hs.untunedStatus().problem, P::Failed);
         other.kill();
         other.waitForFinished();
+    }
+
+    /*
+     * A QEMU whose GPU has native context gets the udmabuf limits raised
+     * too, while it runs; the others do not ask for them
+     */
+    void udmabufForNativeContext()
+    {
+        FakeQemu q1, q2;
+        HostSettings hs(nullptr);
+        QSignalSpy lines(&hs, &HostSettings::helperLine), notices(&hs, &HostSettings::notice),
+            answers(&hs, &HostSettings::udmabufAnswered), finished(&hs, &HostSettings::helperFinished);
+        fake(hs);
+        hs.tune(q1.pid(), true);
+        QTRY_VERIFY(saw(lines, QString("ok rt %1").arg(q1.pid())));
+        QVERIFY(saw(lines, QString("ok udmabuf %1: list_limit 65536 (was 1024), size_limit_mb 2048 "
+                                   "(was 64)").arg(q1.pid())));
+        QCOMPARE(answers.size(), 1);
+        QVERIFY(answered(answers, q1.pid(), true, QString()));
+        QCOMPARE(udmabuf(), QString("65536/2048"));
+        hs.tune(q2.pid());
+        QTRY_VERIFY(saw(lines, QString("ok rt %1").arg(q2.pid())));
+        QVERIFY(!saw(lines, QString("ok udmabuf %1").arg(q2.pid())));
+        QCOMPARE(answers.size(), 1);
+        /* the one that asked ends: back, while the other runs on */
+        q1.stop();
+        QTRY_VERIFY(saw(lines, "restored udmabuf: list_limit 1024, size_limit_mb 64"));
+        QCOMPARE(udmabuf(), QString("1024/64"));
+        QVERIFY(hs.helperRunning());
+        QCOMPARE(fair(0), QString("10000000/1000000"));
+        q2.stop();
+        QTRY_COMPARE(finished.size(), 1);
+        QVERIFY(notices.isEmpty());
+    }
+
+    /* Why they are not raised, for the start check; never a notice of its own */
+    void udmabufNotRaised()
+    {
+        FakeQemu q1, q2, q3;
+        {
+            /* the module not loaded: the helper skips them */
+            QDir(m_root + "/sys/module/udmabuf").removeRecursively();
+            HostSettings hs(nullptr);
+            QSignalSpy lines(&hs, &HostSettings::helperLine), notices(&hs, &HostSettings::notice),
+                answers(&hs, &HostSettings::udmabufAnswered);
+            fake(hs);
+            hs.tune(q1.pid(), true);
+            QTRY_VERIFY(saw(lines, QString("ok rt %1").arg(q1.pid())));
+            QVERIFY(answered(answers, q1.pid(), false, "the udmabuf module is not loaded"));
+            QVERIFY(notices.isEmpty());
+        }
+        {
+            /* a helper from before udmabuf: "unknown request", without a pid */
+            HostSettings hs(nullptr);
+            QSignalSpy notices(&hs, &HostSettings::notice),
+                answers(&hs, &HostSettings::udmabufAnswered);
+            hs.setSysRoot(m_root + "/sys");
+            hs.setHelperCommand(
+                {"/bin/sh", "-c",
+                 "echo 'ready 1'; while read -r verb arg rest; do case $verb in "
+                 "watch) echo \"ok watch $arg\";; "
+                 "fair-server) echo 'ok fair-server on: already 10 ms / 1 ms';; "
+                 "gpu-floor) echo \"ok gpu-floor $arg auto: already\";; "
+                 "rt) echo \"ok rt $arg: 1 of 1 threads real-time\";; "
+                 "*) echo \"error $verb: unknown request\";; esac; done"});
+            hs.tune(q2.pid(), true);
+            QTRY_COMPARE(answers.size(), 1);
+            QVERIFY(answered(answers, q2.pid(), false,
+                             "the installed vitrine-helper is older than Vitrine and cannot raise "
+                             "them: install it again"));
+            QVERIFY(notices.isEmpty());
+        }
+        {
+            /* tuning off: at once */
+            HostSettings::setEnabled(false);
+            HostSettings hs(nullptr);
+            QSignalSpy answers(&hs, &HostSettings::udmabufAnswered);
+            fake(hs);
+            hs.tune(q3.pid(), true);
+            QCOMPARE(answers.size(), 1);
+            QVERIFY(answered(answers, q3.pid(), false, "host tuning is off"));
+            QVERIFY(!hs.helperRunning());
+        }
+    }
+
+    /* Untuned for want of the group, then joined: not raised, then raised */
+    void udmabufUntunedThenTuned()
+    {
+        fakePolkit();
+        writeFile(m_root + "/answer", "2\n");
+        FakeQemu qemu;
+        HostSettings hs(nullptr);
+        QSignalSpy lines(&hs, &HostSettings::helperLine),
+            answers(&hs, &HostSettings::udmabufAnswered);
+        hs.setSysRoot(m_root + "/sys");
+        hs.tune(qemu.pid(), true);
+        QTRY_VERIFY(hs.untuned());
+        QVERIFY(answered(answers, qemu.pid(), false, hs.untunedStatus().why()));
+        QCOMPARE(udmabuf(), QString("1024/64"));
+        writeFile(m_root + "/answer", "0\n");
+        hs.recheck();
+        QTRY_VERIFY(answered(answers, qemu.pid(), true, QString()));
+        QCOMPARE(udmabuf(), QString("65536/2048"));
+        /* tuning turned off: back at once, and said */
+        HostSettings::setEnabled(false);
+        hs.preferencesChanged();
+        QVERIFY(answered(answers, qemu.pid(), false, "host tuning is off"));
+        QTRY_COMPARE(udmabuf(), QString("1024/64"));
     }
 
     void capabilityWithoutHelper()
