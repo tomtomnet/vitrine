@@ -951,6 +951,9 @@ void Renderer::run()
 
     uint64_t drawnUpdate = 0, seenScanout = 0;
     int lastScanout = -1;
+    // the scanout vote as last seen, and since when (see below)
+    int votedScanout = -1;
+    int64_t votedSinceNs = 0;
     std::shared_ptr<Scanout> scanout;
     GLuint fbo = 0;
     for (;;) {
@@ -1083,9 +1086,15 @@ void Renderer::run()
             st.sendZeroCopy(false);
             if (buf) {
                 own->commit(buf, w, h);
-                // direct scanout or not, when it changes (see Swapchain::scanout)
+                // direct scanout or not, when it changes (see Swapchain::scanout),
+                // once the vote held 2 s: at its majority's edge it flips with
+                // every frame
                 const int sc = own->scanout();
-                if (sc >= 0 && sc != lastScanout) {
+                const int64_t votedNs = nowNs();
+                if (sc != votedScanout) {
+                    votedScanout = sc;
+                    votedSinceNs = votedNs;
+                } else if (sc >= 0 && sc != lastScanout && votedNs - votedSinceNs >= 2000000000) {
                     lastScanout = sc;
                     fprintf(stderr, "swapchain: the compositor %s the window\n",
                             sc ? "scans out (direct)" : "composites");
