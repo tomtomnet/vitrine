@@ -5,8 +5,8 @@
 
 #include <QBackingStore>
 #include <QEvent>
-#include <QLoggingCategory>
 #include <QGuiApplication>
+#include <QLoggingCategory>
 #include <QOffscreenSurface>
 #include <QOpenGLContext>
 #include <QPainter>
@@ -19,6 +19,7 @@
 #include <wayland-egl.h>
 
 #include <cstring>
+#include <utility>
 
 Q_LOGGING_CATEGORY(lcViewSurface, "vitrine.viewsurface", QtWarningMsg)
 
