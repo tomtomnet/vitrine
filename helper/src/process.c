@@ -197,14 +197,37 @@ void unwatch(int i)
 }
 
 /*
+ * What a pass over a process's threads works with: the threads to leave as
+ * they are (real-time before this helper's first rt: QEMU's or a library's
+ * own choice), its counts, and the threads it collects
+ */
+struct pass {
+    const pid_t *kept;
+    int nkept;
+    int counts[3];
+    pid_t *found;
+    int nfound, maxfound;
+};
+
+static bool kept(const struct pass *p, pid_t tid)
+{
+    for (int i = 0; i < p->nkept; i++) {
+        if (p->kept[i] == tid) {
+            return true;
+        }
+    }
+    return false;
+}
+
+/*
  * Calls @fn on each thread of the process of /proc/<pid> @procfd until a
  * pass changes nothing: a thread started during a pass by a thread not yet
  * changed is caught by the next.  Returns the number of passes, or -errno
  * when the process is gone.
  */
 static int each_thread(int procfd, bool (*fn)(pid_t tid, int taskfd, const char *name,
-                                               int *counts),
-                       int *counts)
+                                               struct pass *p),
+                       struct pass *p)
 {
     for (int pass = 1; pass <= 8; pass++) {
         int taskfd = openat(procfd, "task", O_RDONLY | O_DIRECTORY | O_CLOEXEC);
@@ -223,7 +246,7 @@ static int each_thread(int procfd, bool (*fn)(pid_t tid, int taskfd, const char 
             unsigned long long tid;
 
             if (parse_uint(e->d_name, PID_LIMIT, &tid)) {
-                changed |= fn((pid_t)tid, dirfd(d), e->d_name, counts);
+                changed |= fn((pid_t)tid, dirfd(d), e->d_name, p);
             }
         }
         closedir(d);
@@ -280,8 +303,23 @@ static bool is_vcpu(int taskfd, const char *name)
     return sscanf(comm, "CPU %u/%15s", &n, accel) == 2;
 }
 
+/* The threads at SCHED_FIFO 1 now, into p->found: before this helper's
+   first rt, they are not its doing */
+static bool find_fifo1(pid_t tid, int taskfd, const char *name, struct pass *p)
+{
+    int policy, priority;
+
+    (void)taskfd;
+    (void)name;
+    if (p->nfound < p->maxfound && sys_getsched(tid, &policy, &priority) == 0 &&
+        policy == SCHED_FIFO && priority == 1) {
+        p->found[p->nfound++] = tid;
+    }
+    return false;
+}
+
 /* counts: [0] made real-time, [1] failed, [2] last error */
-static bool rt_thread(pid_t tid, int taskfd, const char *name, int *counts)
+static bool rt_thread(pid_t tid, int taskfd, const char *name, struct pass *p)
 {
     int policy, priority, err;
 
@@ -294,44 +332,45 @@ static bool rt_thread(pid_t tid, int taskfd, const char *name, int *counts)
     }
     err = set_thread(tid, taskfd, name, SCHED_FIFO, 1);
     if (err == 0) {
-        counts[0]++;
+        p->counts[0]++;
         return true;
     }
     if (err != -ESRCH) {
-        counts[1]++;
-        counts[2] = -err;
+        p->counts[1]++;
+        p->counts[2] = -err;
     }
     return false;
 }
 
-static bool count_thread(pid_t tid, int taskfd, const char *name, int *counts)
+/* counts: [0] threads, [1] real-time ones */
+static bool count_thread(pid_t tid, int taskfd, const char *name, struct pass *p)
 {
     int policy, priority;
 
     (void)taskfd;
     (void)name;
     if (sys_getsched(tid, &policy, &priority) == 0) {
-        counts[0]++;
-        counts[1] += policy == SCHED_FIFO || policy == SCHED_RR || policy == SCHED_DEADLINE;
+        p->counts[0]++;
+        p->counts[1] += policy == SCHED_FIFO || policy == SCHED_RR || policy == SCHED_DEADLINE;
     }
     return false;
 }
 
-/* counts: [0] back to SCHED_OTHER; only what rt set: FIFO 1 */
-static bool other_thread(pid_t tid, int taskfd, const char *name, int *counts)
+/* counts: [0] back to SCHED_OTHER; only what rt set: FIFO 1, not kept */
+static bool other_thread(pid_t tid, int taskfd, const char *name, struct pass *p)
 {
     int policy, priority;
 
-    if (sys_getsched(tid, &policy, &priority) == 0 && policy == SCHED_FIFO && priority == 1 &&
-        set_thread(tid, taskfd, name, SCHED_OTHER, 0) == 0) {
-        counts[0]++;
+    if (!kept(p, tid) && sys_getsched(tid, &policy, &priority) == 0 && policy == SCHED_FIFO &&
+        priority == 1 && set_thread(tid, taskfd, name, SCHED_OTHER, 0) == 0) {
+        p->counts[0]++;
         return true;
     }
     return false;
 }
 
 /* counts: [0] vCPUs at BEHIND_NICE now */
-static bool behind_vcpu(pid_t tid, int taskfd, const char *name, int *counts)
+static bool behind_vcpu(pid_t tid, int taskfd, const char *name, struct pass *p)
 {
     int nice;
 
@@ -340,20 +379,20 @@ static bool behind_vcpu(pid_t tid, int taskfd, const char *name, int *counts)
     }
     /* a nice the user or QEMU chose (other than the default) stays */
     if (nice == 0 && set_thread(tid, taskfd, name, -1, BEHIND_NICE) == 0) {
-        counts[0]++;
+        p->counts[0]++;
         return true;
     }
     return false;
 }
 
 /* counts: [0] vCPUs back from BEHIND_NICE to 0 */
-static bool unnice_vcpu(pid_t tid, int taskfd, const char *name, int *counts)
+static bool unnice_vcpu(pid_t tid, int taskfd, const char *name, struct pass *p)
 {
     int nice;
 
     if (is_vcpu(taskfd, name) && sys_getnice(tid, &nice) == 0 && nice == BEHIND_NICE &&
         set_thread(tid, taskfd, name, -1, 0) == 0) {
-        counts[0]++;
+        p->counts[0]++;
         return true;
     }
     return false;
@@ -375,14 +414,16 @@ static bool still_qemu(struct watched *w)
  * pthread_create (QEMU's threads, GLib's, PipeWire's) inherits by default.
  * So no polling: once a pass finds every thread real-time, every thread to
  * come will be.  Only the QEMU's own threads: the processes it started
- * (passt, at its start, before any of this) keep theirs.  And only with the
- * fair server's bound in place, without which a real-time vCPU that spins
- * keeps kernel workers off its CPU for up to 950 ms.
+ * (passt, at its start, before any of this) keep theirs; and threads
+ * real-time before (QEMU's or a library's choice) stay as they are, now
+ * and when put back.  And only with the fair server's bound in place,
+ * without which a real-time vCPU that spins keeps kernel workers off its
+ * CPU for up to 950 ms.
  */
 void rt_on(const char *arg)
 {
     struct watched *w = find_watched(arg);
-    int counts[3] = {0, 0, 0}, total[2] = {0, 0};
+    struct pass changes = {0}, total = {0};
     const char *why;
     int passes;
 
@@ -398,6 +439,14 @@ void rt_on(const char *arg)
         reply("skip rt %d: the fair server is not set: %s", (int)w->pid, why);
         return;
     }
+    if (!w->rt_once) {
+        /* before any change of this helper's: what is real-time already
+           (FIFO 1, the priority rt sets and puts back) is not its own */
+        struct pass found = {.found = w->kept, .maxfound = MAX_KEPT};
+
+        each_thread(w->procfd, find_fifo1, &found);
+        w->nkept = found.nfound;
+    }
     /* recorded first: a helper that dies leaves them to the next one */
     w->rt = true;
     if (!sched_hold(w)) {
@@ -405,21 +454,23 @@ void rt_on(const char *arg)
         reply("error rt %d: cannot record it: %s", (int)w->pid, strerror(errno));
         return;
     }
-    passes = each_thread(w->procfd, rt_thread, counts);
+    w->rt_once = true;
+    passes = each_thread(w->procfd, rt_thread, &changes);
     if (passes < 0) {
         reply("error rt %d: %s", (int)w->pid, strerror(-passes));
         return;
     }
-    each_thread(w->procfd, count_thread, total);
-    if (counts[1] && total[1] < total[0]) {
-        reply("error rt %d: %d of %d threads real-time: %s", (int)w->pid, total[1], total[0],
-              strerror(counts[2]));
+    each_thread(w->procfd, count_thread, &total);
+    if (changes.counts[1] && total.counts[1] < total.counts[0]) {
+        reply("error rt %d: %d of %d threads real-time: %s", (int)w->pid, total.counts[1],
+              total.counts[0], strerror(changes.counts[2]));
     } else {
-        reply("ok rt %d: %d of %d threads real-time", (int)w->pid, total[1], total[0]);
+        reply("ok rt %d: %d of %d threads real-time", (int)w->pid, total.counts[1],
+              total.counts[0]);
     }
-    if (counts[0]) {
-        sys_log("uid %u: SCHED_FIFO 1 on %d threads of pid %d", (unsigned)caller_uid, counts[0],
-                (int)w->pid);
+    if (changes.counts[0]) {
+        sys_log("uid %u: SCHED_FIFO 1 on %d threads of pid %d", (unsigned)caller_uid,
+                changes.counts[0], (int)w->pid);
     }
 }
 
@@ -428,14 +479,15 @@ void rt_on(const char *arg)
  * SCHED_OTHER - every one of them, not only the vCPUs, so that VMs busy in
  * the background cannot take every CPU at real-time priority - and, while
  * real-time threads run (the bound in place), its vCPUs at nice
- * BEHIND_NICE, a little ahead of ordinary tasks still.
+ * BEHIND_NICE, a little ahead of ordinary tasks still.  The nice needs a
+ * record (it is put back at the end); taking privilege away needs none.
  */
 void behind(const char *arg)
 {
     struct watched *w = find_watched(arg);
-    int others[1] = {0}, niced[1] = {0};
+    struct pass others = {.kept = NULL}, niced = {0};
     const char *why;
-    bool bound;
+    bool nice = false;
 
     if (!w) {
         reply("error behind: watch the process first");
@@ -445,25 +497,34 @@ void behind(const char *arg)
         reply("error behind %d: no longer a QEMU of uid %u", (int)w->pid, (unsigned)caller_uid);
         return;
     }
-    bound = settings_bound(&why);
     w->rt = false;
-    w->behind |= bound;
-    if ((w->held || w->behind) && !sched_hold(w)) {
-        reply("error behind %d: cannot record it: %s", (int)w->pid, strerror(errno));
-        return;
+    if (settings_bound(&why)) {
+        const bool was = w->behind;
+
+        w->behind = true;
+        nice = sched_hold(w);
+        w->behind = was || nice;
+    } else if (w->held) {
+        sched_hold(w);
     }
-    each_thread(w->procfd, other_thread, others);
-    if (bound) {
-        each_thread(w->procfd, behind_vcpu, niced);
+    /* only what this helper's rt made real-time: none before its first */
+    others.kept = w->kept;
+    others.nkept = w->nkept;
+    if (w->rt_once) {
+        each_thread(w->procfd, other_thread, &others);
     }
-    reply("ok behind %d: %d threads ordinary, %d vCPUs at nice %d", (int)w->pid, others[0],
-          niced[0], BEHIND_NICE);
+    if (nice) {
+        each_thread(w->procfd, behind_vcpu, &niced);
+    }
+    reply("ok behind %d: %d threads ordinary, %d vCPUs at nice %d", (int)w->pid,
+          others.counts[0], niced.counts[0], BEHIND_NICE);
 }
 
-void sched_restore(pid_t pid, unsigned long long start, bool niced, bool say)
+void sched_restore(pid_t pid, unsigned long long start, bool niced, const pid_t *keep,
+                   int nkeep, bool say)
 {
+    struct pass others = {.kept = keep, .nkept = nkeep}, unniced = {0};
     unsigned long long now;
-    int others[1] = {0}, unniced[1] = {0};
     char path[64];
     int procfd;
 
@@ -477,18 +538,18 @@ void sched_restore(pid_t pid, unsigned long long start, bool niced, bool say)
         close(procfd);
         return;
     }
-    each_thread(procfd, other_thread, others);
+    each_thread(procfd, other_thread, &others);
     if (niced) {
-        each_thread(procfd, unnice_vcpu, unniced);
+        each_thread(procfd, unnice_vcpu, &unniced);
     }
     close(procfd);
     if (say) {
-        reply("restored rt %d: %d threads back to SCHED_OTHER%s", (int)pid, others[0],
-              unniced[0] ? ", vCPUs back to nice 0" : "");
+        reply("restored rt %d: %d threads back to SCHED_OTHER%s", (int)pid, others.counts[0],
+              unniced.counts[0] ? ", vCPUs back to nice 0" : "");
     }
-    if (others[0] || unniced[0]) {
+    if (others.counts[0] || unniced.counts[0]) {
         sys_log("pid %d: %d threads back to SCHED_OTHER, %d vCPUs back to nice 0", (int)pid,
-                others[0], unniced[0]);
+                others.counts[0], unniced.counts[0]);
     }
 }
 

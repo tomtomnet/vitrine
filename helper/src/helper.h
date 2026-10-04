@@ -132,15 +132,21 @@ void sched_drop(struct watched *w);
 /* The caller: PKEXEC_UID, else SUDO_UID, else the real uid of a non-root run */
 extern uid_t caller_uid;
 
+/* Threads real-time before a helper's first rt, kept as they are: a few */
+#define MAX_KEPT 16
+
 struct watched {
     pid_t pid;
     int pidfd;   /* readable once the process has exited */
     int procfd;  /* /proc/<pid>, bound to that process */
     unsigned long long start;   /* its start time (/proc/<pid>/stat) */
     bool rt;     /* rt was asked for it: in front */
-    bool behind; /* behind was asked for it, after or without rt */
+    bool rt_once; /* rt made changes once: kept[] is known */
+    bool behind; /* its vCPUs were set to BEHIND_NICE */
     bool held;   /* sched_hold() holds its record */
     bool udmabuf; /* udmabuf was asked for it */
+    pid_t kept[MAX_KEPT];   /* threads at SCHED_FIFO 1 before its first rt */
+    int nkept;
 };
 #define MAX_WATCHED 64
 extern struct watched watched[MAX_WATCHED];
@@ -161,10 +167,11 @@ void unwatch(int i);
 /*
  * The threads of the QEMU @pid, if it is still the process that started at
  * @start, put back from what rt and behind made them (@niced: its vCPUs at
- * BEHIND_NICE): the record of a helper that let go, or died.  Replies how
- * many when @say.
+ * BEHIND_NICE), but the @nkeep threads of @keep, real-time before: the
+ * record of a helper that let go, or died.  Replies how many when @say.
  */
-void sched_restore(pid_t pid, unsigned long long start, bool niced, bool say);
+void sched_restore(pid_t pid, unsigned long long start, bool niced, const pid_t *keep,
+                   int nkeep, bool say);
 
 /* --- group.c: the vitrine group --- */
 

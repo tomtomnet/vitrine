@@ -8,7 +8,8 @@
  * manual only and a commit that fails while the maximum is 0 - so that the
  * order of the writes is tested, not just their values.  A file with a
  * sibling <file>.stuck takes writes without keeping them (for
- * pp_od_clk_voltage, its commits), for the read back.  Other files (the
+ * pp_od_clk_voltage, its commits), for the read back; a server's file with
+ * <file>.writes N takes N more writes, then refuses them.  Other files (the
  * udmabuf module's parameters) take any value, as the kernel's int
  * parameters do.  Every write, scheduler and nice
  * change and log line is appended to <root>/journal.  Schedulers and nice
@@ -176,6 +177,17 @@ static int fair_write(const char *path, const char *value, bool is_period)
     }
     if (cpu_offline(path)) {
         return -EBUSY;
+    }
+    /* <file>.writes N: N more writes taken, then refused */
+    snprintf(stuck, sizeof(stuck), "%s.writes", path);
+    if (access(stuck, F_OK) == 0) {
+        unsigned long long left;
+
+        if (!get_u64(stuck, &left) || left == 0) {
+            return -EACCES;
+        }
+        snprintf(text, sizeof(text), "%llu\n", left - 1);
+        put(stuck, text);
     }
     snprintf(stuck, sizeof(stuck), "%s.stuck", path);
     if (access(stuck, F_OK) == 0) {

@@ -203,12 +203,8 @@ static struct hold *hold_find(const char *key)
 }
 
 static void restore_key(const char *key);
+static void recover_pass(bool sched);
 
-/*
- * Under the lock: takes the hold of @key.  *@first tells whether no other
- * helper holds it: this helper then changes the setting, keeping LOCK_EX
- * until hold_share().
- */
 /* A free hold for @key: the QEMUs' records apart from the settings, eight
    cards at most among those */
 static struct hold *hold_free(const char *key)
@@ -230,6 +226,11 @@ static struct hold *hold_free(const char *key)
     return NULL;
 }
 
+/*
+ * Under the lock: takes the hold of @key.  *@first tells whether no other
+ * helper holds it: this helper then changes the setting, keeping LOCK_EX
+ * until hold_share().
+ */
 static struct hold *hold_take(const char *key, const char *value, bool *first)
 {
     struct hold *h = hold_free(key);
@@ -438,50 +439,48 @@ static int server_cpus(const struct server *srv, unsigned **out)
     return n;
 }
 
-/* The online CPUs (/sys/devices/system/cpu/online: "0-3,8-11"); all of
-   them when that cannot be read */
+/*
+ * The online CPUs, from /sys/devices/system/cpu/online ("0-3,8-11"): a
+ * bitmap of the CPU numbers the servers' folders may have (cpu0 to
+ * cpu65535); all of them when the list cannot be read, or not whole
+ */
 struct online {
-    unsigned lo[64], hi[64];
-    int n;
+    bool all;
+    unsigned char bits[65536 / 8];
 };
 
 static void online_read(struct online *o)
 {
-    char buf[1024], *save = NULL;
+    char buf[8192], *save = NULL;
+    int n = read_attr(CPUS_ONLINE, buf, sizeof(buf));
+    bool any = false;
 
-    o->n = 0;
-    if (read_attr(CPUS_ONLINE, buf, sizeof(buf)) <= 0) {
-        o->n = -1;
-        return;
-    }
-    for (char *t = strtok_r(buf, ",\n", &save); t; t = strtok_r(NULL, ",\n", &save)) {
+    memset(o->bits, 0, sizeof(o->bits));
+    o->all = n <= 0 || n >= (int)sizeof(buf) - 1;
+    for (char *t = o->all ? NULL : strtok_r(buf, ",\n", &save); t;
+         t = strtok_r(NULL, ",\n", &save)) {
         unsigned a, b;
         int got = sscanf(t, "%u-%u", &a, &b);
 
-        if (o->n == 64 || got < 1) {
-            /* more ranges than kept, or not a list: all of them */
-            o->n = -1;
+        if (got < 2) {
+            b = a;
+        }
+        if (got < 1 || b < a || b > 65535) {
+            /* not a list: all of them, as when unknown */
+            o->all = true;
             return;
         }
-        o->lo[o->n] = a;
-        o->hi[o->n++] = got == 2 ? b : a;
+        for (unsigned c = a; c <= b; c++) {
+            o->bits[c / 8] |= (unsigned char)(1u << (c % 8));
+        }
+        any = true;
     }
-    if (o->n == 0) {
-        o->n = -1;
-    }
+    o->all |= !any;
 }
 
 static bool online_has(const struct online *o, unsigned cpu)
 {
-    if (o->n < 0) {
-        return true;
-    }
-    for (int i = 0; i < o->n; i++) {
-        if (cpu >= o->lo[i] && cpu <= o->hi[i]) {
-            return true;
-        }
-    }
-    return false;
+    return o->all || (cpu < 65536 && (o->bits[cpu / 8] >> (cpu % 8) & 1));
 }
 
 /* A sched_ext scheduler runs (or is starting or stopping): its tasks are
@@ -610,23 +609,81 @@ static void server_restore(const struct server *srv)
             restored, period, runtime, left, failed);
 }
 
+/* The line of CPU @id in the state text @text ("cpuN p r np nr"), parsed */
+static bool state_line(const char *text, unsigned id, struct server_cpu *c)
+{
+    for (const char *l = text; l && *l; l = strchr(l, '\n') ? strchr(l, '\n') + 1 : NULL) {
+        if (sscanf(l, "cpu%u %llu %llu %llu %llu", &c->id, &c->period, &c->runtime,
+                   &c->new_period, &c->new_runtime) == 5 && c->id == id &&
+            c->runtime <= c->period) {
+            return true;
+        }
+    }
+    return false;
+}
+
+/*
+ * The state of @srv: the CPUs of @c that are recorded, then the lines of
+ * @before for CPUs not among them (offline ones a restore could not put
+ * back, kept for later).  Written, or removed when it records nothing.
+ */
+static bool server_record(const struct server *srv, const struct server_cpu *c, int n,
+                          const char *before)
+{
+    size_t size = (size_t)n * 96 + (before ? strlen(before) : 0) + 1;
+    char *text = malloc(size);
+    size_t len;
+    bool ok;
+
+    if (!text) {
+        errno = ENOMEM;
+        return false;
+    }
+    len = server_state(text, c, n);
+    for (const char *l = before; l && *l; l = strchr(l, '\n') ? strchr(l, '\n') + 1 : NULL) {
+        size_t llen = strcspn(l, "\n");
+        bool ours = false;
+        unsigned id;
+
+        if (sscanf(l, "cpu%u ", &id) != 1) {
+            continue;
+        }
+        for (int i = 0; i < n && !ours; i++) {
+            ours = c[i].id == id;
+        }
+        if (!ours) {
+            len += (size_t)sprintf(text + len, "%.*s\n", (int)llen, l);
+        }
+    }
+    if (len) {
+        ok = state_write(srv->key, text);
+    } else {
+        state_remove(srv->key);
+        ok = true;
+    }
+    free(text);
+    return ok;
+}
+
 /*
  * Under the lock, by the first holder: @srv at the target on every online
  * CPU, or nothing changed.  Offline CPUs run nothing (and the kernel
- * refuses their writes): left out.  A CPU at the target while others are
- * not is a leftover - a run cut short, its record lost - recorded with what
- * the others have (the kernel's default if they differ), to be put back
- * with them.  All of them at the target: another tool's, which may still
- * need it, or a leftover nobody can tell from that - left as found.
- * 0 with what was done, or -1 with why in @why.
+ * refuses their writes): left out, and a record a restore kept for them
+ * stays.  A CPU at the target while others are not is a leftover - a run
+ * cut short, its record lost - recorded with what the others have (the
+ * kernel's default if they differ), or with what a kept record says, to be
+ * put back with them.  All of them at the target: another tool's, which
+ * may still need it, or a leftover nobody can tell from that - left as
+ * found.  0 with what was done, or -1 with why in @why.
  */
 static int server_apply(const struct server *srv, char *why, size_t size, int *changed,
                         int *adopted, u64 *was_period, u64 *was_runtime)
 {
-    struct online online;
+    static struct online online;
     struct server_cpu *cpus = NULL;
     unsigned *ids = NULL;
-    char *text = NULL;
+    /* what a restore could not put back (hold_take() has just tried) */
+    char *before = state_read(srv->key);
     u64 base_p = 0, base_r = 0;
     bool base = false, mixed = false;
     int n, m = 0, rc = -1;
@@ -637,7 +694,7 @@ static int server_apply(const struct server *srv, char *why, size_t size, int *c
         snprintf(why, size, "%s: %s", srv->name, n < 0 ? strerror(-n) : "no cpus");
         goto out;
     }
-    if (!(cpus = calloc((size_t)n, sizeof(*cpus))) || !(text = malloc((size_t)n * 96 + 1))) {
+    if (!(cpus = calloc((size_t)n, sizeof(*cpus)))) {
         snprintf(why, size, "%s", strerror(ENOMEM));
         goto out;
     }
@@ -665,14 +722,19 @@ static int server_apply(const struct server *srv, char *why, size_t size, int *c
         base_r = FAIR_DEFAULT_RUNTIME_NS;
     }
     for (int i = 0; i < m; i++) {
-        struct server_cpu *c = &cpus[i];
+        struct server_cpu *c = &cpus[i], kept;
 
         if (c->period == FAIR_PERIOD_NS && c->runtime == FAIR_RUNTIME_NS) {
-            if (!base) {
+            if (before && state_line(before, c->id, &kept)) {
+                /* recorded already, by a helper that could not put it back */
+                c->period = kept.period;
+                c->runtime = kept.runtime;
+            } else if (base) {
+                c->period = base_p;
+                c->runtime = base_r;
+            } else {
                 continue;
             }
-            c->period = base_p;
-            c->runtime = base_r;
             c->adopted = true;
             (*adopted)++;
         }
@@ -680,12 +742,13 @@ static int server_apply(const struct server *srv, char *why, size_t size, int *c
         c->new_runtime = FAIR_RUNTIME_NS;
     }
     /* recorded before anything is written */
-    if (server_state(text, cpus, m) && !state_write(srv->key, text)) {
+    if (!server_record(srv, cpus, m, before)) {
         snprintf(why, size, "%s: %s", srv->name, strerror(errno));
         goto out;
     }
     for (int i = 0; i < m; i++) {
         struct server_cpu *c = &cpus[i];
+        u64 now_p, now_r;
         int err;
 
         if (!c->new_period || c->adopted) {
@@ -707,36 +770,38 @@ static int server_apply(const struct server *srv, char *why, size_t size, int *c
         } else {
             snprintf(why, size, "%s: cpu%u: %s", srv->name, c->id, strerror(-err));
         }
-        /* all or nothing: those written before it back; what cannot be put
-           back stays recorded, for a helper to try again */
-        c->new_period = 0;
+        /*
+         * All or nothing: those written before it back.  What is not as it
+         * was stays recorded, for a helper to put back - this CPU if its
+         * own undo failed, one that could not be put back, the leftovers
+         * found (no hold left on the record: the next helper's)
+         */
+        if (server_get(srv, c->id, &now_p, &now_r) && now_p == c->period &&
+            now_r == c->runtime) {
+            c->new_period = 0;
+        }
         for (int j = 0; j < i; j++) {
             struct server_cpu *b = &cpus[j];
 
-            if (!b->new_period || b->adopted ||
+            if (b->new_period && !b->adopted &&
                 server_set(srv, b->id, b->new_period, b->new_runtime, b->period, b->runtime) == 0) {
                 b->new_period = 0;
             }
         }
         for (int j = i + 1; j < m; j++) {
-            cpus[j].new_period = 0;
+            if (!cpus[j].adopted) {
+                cpus[j].new_period = 0;
+            }
         }
-        if (server_state(text, cpus, m)) {
-            state_write(srv->key, text);
-        } else {
-            state_remove(srv->key);
-        }
+        server_record(srv, cpus, m, before);
         *changed = *adopted = 0;
         goto out;
     }
-    if (!*changed && !*adopted) {
-        state_remove(srv->key);
-    }
     rc = 0;
 out:
+    free(before);
     free(ids);
     free(cpus);
-    free(text);
     return rc;
 }
 
@@ -796,7 +861,23 @@ void fair_server_on(void)
     const char *skip;
 
     if (hold_find(fair.key)) {
-        reply("ok fair-server on: already");
+        /* a sched_ext scheduler started since: its server too */
+        if (!sched_ext_active() || hold_find(ext.key)) {
+            reply("ok fair-server on: already");
+            return;
+        }
+        ext_needed = true;
+        if (!dir_exists(EXT_SERVER_DIR)) {
+            snprintf(bound_why, sizeof(bound_why),
+                     "a sched_ext scheduler runs, and this kernel has no server for its tasks");
+            reply("skip fair-server: %s", bound_why);
+        } else if (!server_on(&ext, ext_done, sizeof(ext_done), why, sizeof(why))) {
+            snprintf(bound_why, sizeof(bound_why), "%s", why);
+            reply("error fair-server: %s", why);
+        } else {
+            bound_why[0] = '\0';
+            reply("ok fair-server on: already; ext server: %s", ext_done);
+        }
         return;
     }
     if ((skip = fair_unavailable())) {
@@ -851,10 +932,18 @@ void fair_server_off(void)
 
 bool settings_bound(const char **why)
 {
-    if (hold_find(fair.key) && (!ext_needed || hold_find(ext.key))) {
+    /* a sched_ext scheduler started since the fair server was set needs
+       its server too: read again each time */
+    const bool scx = ext_needed || sched_ext_active();
+
+    if (hold_find(fair.key) && (!scx || hold_find(ext.key))) {
         return true;
     }
-    *why = bound_why[0] ? bound_why : "the fair server is not set";
+    if (hold_find(fair.key) && !bound_why[0]) {
+        *why = "a sched_ext scheduler started after it was set";
+    } else {
+        *why = bound_why[0] ? bound_why : "the fair server is not set";
+    }
     return false;
 }
 
@@ -1416,16 +1505,32 @@ void udmabuf_check(void)
 
 /* --- all of them --- */
 
-/* sched-<pid>'s record ("pid P start S niced N"): those threads put back */
+/* sched-<pid>'s record ("pid P start S niced N kept T,T..."): those threads
+   put back, but the ones kept */
 static void sched_state_restore(const char *key)
 {
-    char *text = state_read(key);
-    int pid, niced;
+    char *text = state_read(key), *list;
+    pid_t keep[MAX_KEPT];
+    int pid, niced, nkeep = 0;
     u64 start;
 
     if (text && sscanf(text, "pid %d start %llu niced %d", &pid, &start, &niced) == 3 &&
         pid > 1) {
-        sched_restore((pid_t)pid, start, niced != 0, true);
+        /* an older record has no "kept": none */
+        if ((list = strstr(text, " kept "))) {
+            for (char *t = list + 6; *t && *t != '\n' && nkeep < MAX_KEPT;) {
+                unsigned long long tid;
+                char num[16];
+                size_t len = strcspn(t, ",\n");
+
+                snprintf(num, sizeof(num), "%.*s", (int)(len < 15 ? len : 15), t);
+                if (parse_uint(num, 4194304, &tid)) {
+                    keep[nkeep++] = (pid_t)tid;
+                }
+                t += len + (t[len] == ',');
+            }
+        }
+        sched_restore((pid_t)pid, start, niced != 0, keep, nkeep, true);
     }
     free(text);
     state_remove(key);
@@ -1433,9 +1538,10 @@ static void sched_state_restore(const char *key)
 
 bool sched_hold(struct watched *w)
 {
-    char key[32], text[96];
+    char key[32], text[96 + MAX_KEPT * 12];
     struct hold *h;
     bool first = false, ok;
+    int len;
 
     snprintf(key, sizeof(key), "sched-%d", (int)w->pid);
     lock_all();
@@ -1443,9 +1549,15 @@ bool sched_hold(struct watched *w)
         unlock_all();
         return false;
     }
-    /* what to put back: threads made real-time (FIFO 1), vCPUs niced or not */
-    snprintf(text, sizeof(text), "pid %d start %llu niced %d\n", (int)w->pid, w->start,
-             w->behind ? 1 : 0);
+    /* what to put back: threads made real-time (FIFO 1) but those kept,
+       vCPUs niced or not */
+    len = snprintf(text, sizeof(text), "pid %d start %llu niced %d kept ", (int)w->pid, w->start,
+                   w->behind ? 1 : 0);
+    for (int i = 0; i < w->nkept; i++) {
+        len += snprintf(text + len, sizeof(text) - (size_t)len, "%s%d", i ? "," : "",
+                        (int)w->kept[i]);
+    }
+    snprintf(text + len, sizeof(text) - (size_t)len, "%s\n", w->nkept ? "" : "-");
     ok = state_write(key, text);
     if (!w->held && !ok) {
         hold_close(h, first);
@@ -1471,10 +1583,11 @@ void sched_drop(struct watched *w)
 
 static void restore_key(const char *key)
 {
-    if (strcmp(key, fair.key) == 0) {
-        server_restore(&fair);
-    } else if (strcmp(key, ext.key) == 0) {
-        server_restore(&ext);
+    if (strcmp(key, fair.key) == 0 || strcmp(key, ext.key) == 0) {
+        /* a dead helper's real-time threads go first, whoever lets the
+           bound go: they need it */
+        recover_pass(true);
+        server_restore(strcmp(key, fair.key) == 0 ? &fair : &ext);
     } else if (strncmp(key, "sched-", 6) == 0) {
         sched_state_restore(key);
     } else if (strncmp(key, "gpu-floor-", 10) == 0 && card_name_ok(key + 10)) {
@@ -1487,13 +1600,14 @@ static void restore_key(const char *key)
 }
 
 /*
- * Under the lock: the states no live helper holds.  The QEMUs' records
- * first: threads a dead helper made real-time go back to ordinary before
- * the bound they needed does.
+ * Under the lock: the states no live helper holds, the QEMUs' records
+ * (@sched) or the settings
  */
-static void recover(void)
+static void recover_pass(bool sched)
 {
-    int fd = dup(state_fd);
+    /* an open file of its own: a dup() would share the offset with the
+       passes around it (restore_key() runs one inside another) */
+    int fd = openat(state_fd, ".", O_RDONLY | O_DIRECTORY | O_CLOEXEC);
     struct dirent *e;
     DIR *d;
 
@@ -1503,33 +1617,41 @@ static void recover(void)
         }
         return;
     }
-    for (int pass = 0; pass < 2; pass++) {
-        rewinddir(d);
-        while ((e = readdir(d))) {
-            size_t len = strlen(e->d_name);
-            char key[32], name[48];
-            int hfd;
+    while ((e = readdir(d))) {
+        size_t len = strlen(e->d_name);
+        char key[32], name[48];
+        int hfd;
 
-            if (len <= 6 || len - 6 >= sizeof(key) ||
-                strcmp(e->d_name + len - 6, ".state") != 0) {
-                continue;
-            }
-            snprintf(key, sizeof(key), "%.*s", (int)(len - 6), e->d_name);
-            if ((strncmp(key, "sched-", 6) == 0) != (pass == 0)) {
-                continue;
-            }
-            snprintf(name, sizeof(name), "%s.hold", key);
-            hfd = openat(state_fd, name, O_RDWR | O_CREAT | O_CLOEXEC | O_NOFOLLOW, 0600);
-            if (hfd >= 0 && flock(hfd, LOCK_EX | LOCK_NB) == 0) {
-                restore_key(key);
-                hold_remove(key);
-            }
-            if (hfd >= 0) {
-                close(hfd);
-            }
+        if (len <= 6 || len - 6 >= sizeof(key) || strcmp(e->d_name + len - 6, ".state") != 0) {
+            continue;
+        }
+        snprintf(key, sizeof(key), "%.*s", (int)(len - 6), e->d_name);
+        if ((strncmp(key, "sched-", 6) == 0) != sched) {
+            continue;
+        }
+        snprintf(name, sizeof(name), "%s.hold", key);
+        /* LOCK_EX fails on a hold this helper has too: another open file */
+        hfd = openat(state_fd, name, O_RDWR | O_CREAT | O_CLOEXEC | O_NOFOLLOW, 0600);
+        if (hfd >= 0 && flock(hfd, LOCK_EX | LOCK_NB) == 0) {
+            restore_key(key);
+            hold_remove(key);
+        }
+        if (hfd >= 0) {
+            close(hfd);
         }
     }
     closedir(d);
+}
+
+/*
+ * Under the lock: everything no live helper holds.  The QEMUs' records
+ * first: threads a dead helper made real-time go back to ordinary before
+ * the bound they needed does.
+ */
+static void recover(void)
+{
+    recover_pass(true);
+    recover_pass(false);
 }
 
 bool settings_init(void)

@@ -758,6 +758,212 @@ private slots:
         QVERIFY(b.finished());
     }
 
+    /*
+     * Two helpers share the fair server; the one that made its QEMU's
+     * threads real-time dies.  The other, letting the bound go last, puts
+     * those threads back first: they need it.
+     */
+    void deadHelperRealtimeLiveRestorer()
+    {
+        FakeQemu q1, q2;
+        Helper a(m_root), b(m_root);
+        QVERIFY(a.ready());
+        QVERIFY(b.ready());
+        a.answer("watch " + q1.pidText());
+        b.answer("watch " + q2.pidText());
+        QVERIFY(a.answer("fair-server on").startsWith("ok fair-server on: 4 cpus"));
+        QVERIFY(b.answer("fair-server on").startsWith("ok fair-server on: set by another"));
+        QVERIFY(a.answer("rt " + q1.pidText()).startsWith("ok rt "));
+        a.kill();
+        q2.stop();
+        QVERIFY(b.finished());
+        const QStringList all = b.all();
+        const int rt = all.indexOf(QString("restored rt %1: 4 threads back to SCHED_OTHER").arg(q1.pid()));
+        const int fair = all.indexOf("restored fair-server: 4 cpus back to 1000 ms / 50 ms");
+        QVERIFY2(rt >= 0 && fair > rt, qPrintable(all.join(" | ")));
+        for (const QString &tid : tids(q1.pid())) {
+            QVERIFY(schedOf(tid).startsWith("0 0 "));
+        }
+        QCOMPARE(stateFiles(), QStringList({"lock"}));
+    }
+
+    /* A sched_ext scheduler started after the fair server was set: no more
+       real-time threads until its server is set too */
+    void schedExtLater()
+    {
+        FakeQemu qemu;
+        Helper h(m_root);
+        QVERIFY(h.ready());
+        h.answer("watch " + qemu.pidText());
+        QVERIFY(h.answer("fair-server on").startsWith("ok fair-server on: 4 cpus"));
+        writeFile(path("/sys/kernel/sched_ext/state"), "enabled\n");
+        QCOMPARE(h.answer("rt " + qemu.pidText()),
+                 QString("skip rt %1: the fair server is not set: a sched_ext scheduler started "
+                         "after it was set").arg(qemu.pid()));
+        /* a kernel without its server: said, still no real-time */
+        QCOMPARE(h.answer("fair-server on"),
+                 QString("skip fair-server: a sched_ext scheduler runs, and this kernel has no "
+                         "server for its tasks"));
+        QVERIFY(h.answer("rt " + qemu.pidText()).startsWith("skip rt "));
+        /* with it: set now, and real-time again */
+        for (int i = 0; i < m_cpus; i++) {
+            setExt(i, 1000000000, 50000000);
+        }
+        QCOMPARE(h.answer("fair-server on"),
+                 QString("ok fair-server on: already; ext server: 4 cpus at 10 ms / 1 ms (was "
+                         "1000 ms / 50 ms)"));
+        QVERIFY(h.answer("rt " + qemu.pidText()).startsWith("ok rt "));
+        h.ask("release");
+        QVERIFY(h.finished());
+        QVERIFY(fairAll("1000000000/50000000"));
+        QVERIFY(extAll("1000000000/50000000"));
+        QCOMPARE(stateFiles(), QStringList({"lock"}));
+    }
+
+    /* behind takes privilege away: without a record (its folder not
+       writable), the threads go ordinary all the same, without the nice */
+    void behindWithoutRecord()
+    {
+        FakeQemu qemu;
+        Helper h(m_root);
+        QVERIFY(h.ready());
+        h.answer("watch " + qemu.pidText());
+        QVERIFY(h.answer("fair-server on").startsWith("ok fair-server on"));
+        QVERIFY(h.answer("rt " + qemu.pidText()).startsWith("ok rt "));
+        const QString run = path("/run/vitrine-helper");
+        QVERIFY(QFile::setPermissions(run, QFileDevice::ReadOwner | QFileDevice::ExeOwner));
+        const auto back = qScopeGuard([run]() {
+            QFile::setPermissions(run, QFileDevice::ReadOwner | QFileDevice::WriteOwner |
+                                           QFileDevice::ExeOwner);
+        });
+        QCOMPARE(h.answer("behind " + qemu.pidText()),
+                 QString("ok behind %1: 4 threads ordinary, 0 vCPUs at nice -5").arg(qemu.pid()));
+        for (const QString &tid : tids(qemu.pid())) {
+            QCOMPARE(schedOf(tid), QString("0 0 0"));
+        }
+    }
+
+    /*
+     * A thread real-time before rt (QEMU's or a library's own choice, an
+     * older QEMU's own vCPU priority) is left as it is: by rt, behind, the
+     * release, and the next helper after a crash
+     */
+    void realtimeBeforeKept()
+    {
+        FakeQemu qemu;
+        const QString worker = tids(qemu.pid()).last();
+        writeFile(path("/sched"), worker.toLatin1() + " 1 1 0\n");
+        {
+            Helper a(m_root);
+            QVERIFY(a.ready());
+            a.answer("watch " + qemu.pidText());
+            QVERIFY(a.answer("fair-server on").startsWith("ok fair-server on"));
+            QVERIFY(a.answer("rt " + qemu.pidText()).startsWith("ok rt "));
+            QCOMPARE(a.answer("behind " + qemu.pidText()),
+                     QString("ok behind %1: 3 threads ordinary, 2 vCPUs at nice -5").arg(qemu.pid()));
+            QCOMPARE(schedOf(worker), QString("1 1 0"));
+            QVERIFY(readFile(path("/run/vitrine-helper/sched-" + qemu.pidText() + ".state"))
+                        .contains(" kept " + worker.toLatin1() + "\n"));
+            QVERIFY(a.answer("rt " + qemu.pidText()).startsWith("ok rt "));
+            a.kill();
+        }
+        Helper b(m_root);
+        QCOMPARE(b.line(), QString("restored rt %1: 3 threads back to SCHED_OTHER, vCPUs back to "
+                                   "nice 0").arg(qemu.pid()));
+        QVERIFY(b.ready());
+        QCOMPARE(schedOf(worker), QString("1 1 0"));
+        b.closeInput();
+        QVERIFY(b.finished());
+    }
+
+    /* A record kept for an offline CPU (a restore could not put it back)
+       stays through the next apply, until the CPU can be put back */
+    void keptRecordOffline()
+    {
+        {
+            FakeQemu qemu;
+            Helper a(m_root);
+            QVERIFY(a.ready());
+            a.answer("watch " + qemu.pidText());
+            QVERIFY(a.answer("fair-server on").startsWith("ok fair-server on: 4 cpus"));
+            a.kill();
+        }
+        /* cpu3 went offline meanwhile */
+        writeFile(path("/sys/devices/system/cpu/online"), "0-2\n");
+        FakeQemu qemu;
+        Helper b(m_root);
+        QCOMPARE(b.line(), QString("restored fair-server: 3 cpus back to 1000 ms / 50 ms (some "
+                                   "failed, kept for later)"));
+        QVERIFY(b.ready());
+        b.answer("watch " + qemu.pidText());
+        QVERIFY(b.answer("fair-server on").startsWith("ok fair-server on: 3 cpus"));
+        QVERIFY(readFile(path("/run/vitrine-helper/fair-server.state")).contains("cpu3 "));
+        qemu.stop();
+        QVERIFY(b.finished());
+        QVERIFY(readFile(path("/run/vitrine-helper/fair-server.state")).startsWith("cpu3 "));
+        QCOMPARE(fair(3), QString("10000000/1000000"));
+        /* online again: put back by the next helper */
+        writeFile(path("/sys/devices/system/cpu/online"), "0-3\n");
+        Helper c(m_root);
+        QCOMPARE(c.line(), QString("restored fair-server: 1 cpus back to 1000 ms / 50 ms"));
+        QVERIFY(c.ready());
+        QVERIFY(fairAll("1000000000/50000000"));
+        QCOMPARE(stateFiles(), QStringList({"lock"}));
+        c.closeInput();
+        QVERIFY(c.finished());
+    }
+
+    /* An online list of many ranges (every other CPU of a big host) */
+    void manyOnlineRanges()
+    {
+        QStringList even;
+        for (int i = 0; i <= 130; i += 2) {
+            even << QString::number(i);
+        }
+        writeFile(path("/sys/devices/system/cpu/online"), even.join(',').toLatin1() + '\n');
+        FakeQemu qemu;
+        Helper h(m_root);
+        QVERIFY(h.ready());
+        h.answer("watch " + qemu.pidText());
+        QCOMPARE(h.answer("fair-server on"),
+                 QString("ok fair-server on: 2 cpus at 10 ms / 1 ms (was 1000 ms / 50 ms)"));
+        QCOMPARE(fair(1), QString("1000000000/50000000"));
+        QCOMPARE(fair(2), QString("10000000/1000000"));
+    }
+
+    /* A CPU whose own undo failed (left half-way) stays recorded; so do the
+       leftovers found: the next helper puts them back */
+    void failedUndoRecorded()
+    {
+        setFair(3, 10000000, 1000000);
+        writeFile(path(QString("%1/cpu2/runtime.writes").arg(kFair)), "1\n");
+        QVERIFY(QFile::setPermissions(path(QString("%1/cpu2/period").arg(kFair)),
+                                      QFileDevice::ReadOwner));
+        {
+            FakeQemu qemu;
+            Helper a(m_root);
+            QVERIFY(a.ready());
+            a.answer("watch " + qemu.pidText());
+            QCOMPARE(a.answer("fair-server on"),
+                     QString("error fair-server: fair server: cpu2: Permission denied"));
+        }
+        QCOMPARE(fair(0), QString("1000000000/50000000"));
+        QCOMPARE(fair(2), QString("1000000000/1000000"));
+        const QByteArray state = readFile(path("/run/vitrine-helper/fair-server.state"));
+        QVERIFY2(state.contains("cpu2 ") && state.contains("cpu3 ") && !state.contains("cpu0 "),
+                 state.constData());
+        QFile::remove(path(QString("%1/cpu2/runtime.writes").arg(kFair)));
+        QVERIFY(QFile::setPermissions(path(QString("%1/cpu2/period").arg(kFair)),
+                                      QFileDevice::ReadOwner | QFileDevice::WriteOwner));
+        Helper b(m_root);
+        QCOMPARE(b.line(), QString("restored fair-server: 2 cpus back to 1000 ms / 50 ms"));
+        QVERIFY(b.ready());
+        QVERIFY(fairAll("1000000000/50000000"));
+        QCOMPARE(stateFiles(), QStringList({"lock"}));
+        b.closeInput();
+        QVERIFY(b.finished());
+    }
+
     /* The record of a process that is gone, its pid maybe another's now: nothing done */
     void staleSchedRecord()
     {
@@ -797,7 +1003,7 @@ private slots:
             QCOMPARE(schedOf(tid), QString("0 0 %1").arg(cpus.contains(tid) ? -5 : 0));
         }
         QVERIFY(readFile(path("/run/vitrine-helper/sched-" + qemu.pidText() + ".state"))
-                    .endsWith(" niced 1\n"));
+                    .contains(" niced 1 kept -\n"));
         /* again: nothing more to do */
         QCOMPARE(h.answer("behind " + qemu.pidText()),
                  QString("ok behind %1: 0 threads ordinary, 0 vCPUs at nice -5").arg(qemu.pid()));
