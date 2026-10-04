@@ -365,7 +365,8 @@ private slots:
         QVERIFY(journal().join('\n').contains("log fair server: 4 cpus back"));
     }
 
-    /* manual, s 0, s 1, c; back: r, c, the level it had */
+    /* manual, s 0, s 1, c; back: the table it had (never r, which resets a
+       user's whole overdrive table), c, the level it had */
     void gpuFloorAutoAndRelease()
     {
         FakeQemu qemu;
@@ -388,7 +389,8 @@ private slots:
         const QStringList all = h.all();
         QVERIFY(all.contains("restored gpu-floor card1: level auto"));
         QCOMPARE(all.last(), QString("bye"));
-        QCOMPARE(writes(), QStringList({QString(kCard) + "/pp_od_clk_voltage r",
+        QCOMPARE(writes(), QStringList({QString(kCard) + "/pp_od_clk_voltage s 0 800",
+                                        QString(kCard) + "/pp_od_clk_voltage s 1 2700",
                                         QString(kCard) + "/pp_od_clk_voltage c",
                                         QString(kCard) + "/power_dpm_force_performance_level auto"}));
         QCOMPARE(level(), QString("auto"));
@@ -977,8 +979,8 @@ private slots:
 
     /*
      * A helper killed in its own sequence of a GPU floor - manual, s 0,
-     * s 1, c; back: r, c, the level - leaves the level at manual: the next
-     * one puts it back, and a floor can be set again
+     * s 1, c; back: s 0, s 1, c, the level - leaves the level at manual:
+     * the next one puts it back, and a floor can be set again
      */
     void gpuFloorHalfWay_data()
     {
@@ -988,8 +990,9 @@ private slots:
         QTest::newRow("setting, after s 0") << 2 << false;
         QTest::newRow("setting, after s 1") << 3 << false;
         QTest::newRow("setting, after c") << 4 << false;
-        QTest::newRow("restoring, after r") << 5 << true;
-        QTest::newRow("restoring, after c") << 6 << true;
+        QTest::newRow("restoring, after s 0") << 5 << true;
+        QTest::newRow("restoring, after s 1") << 6 << true;
+        QTest::newRow("restoring, after c") << 7 << true;
     }
     void gpuFloorHalfWay()
     {
@@ -1024,6 +1027,53 @@ private slots:
         qemu.stop();
         QVERIFY(b.finished());
         QCOMPARE(level(), QString("auto"));
+        QCOMPARE(stateFiles(), QStringList({"lock"}));
+    }
+
+    /* A user's own table, under level auto: put back as it was, not reset */
+    void gpuFloorKeepsUserTable()
+    {
+        writeFile(path(QString(kCard) + "/pp_od_clk_voltage"), od(900, 2400));
+        FakeQemu qemu;
+        Helper h(m_root);
+        QVERIFY(h.ready());
+        h.answer("watch " + qemu.pidText());
+        QCOMPARE(h.answer("gpu-floor card1 auto"),
+                 QString("ok gpu-floor card1 1800 MHz (was 900 MHz, level auto)"));
+        h.ask("release");
+        QVERIFY(h.finished());
+        QVERIFY(writes().contains(QString(kCard) + "/pp_od_clk_voltage s 1 2400"));
+        QVERIFY(!writes().contains(QString(kCard) + "/pp_od_clk_voltage r"));
+        QCOMPARE(level(), QString("auto"));
+    }
+
+    /* What is written is read back: a floor the driver does not keep is undone */
+    void gpuFloorReadBack()
+    {
+        /* commits taken, not kept (the fake's <file>.stuck) */
+        writeFile(path(QString(kCard) + "/pp_od_clk_voltage.stuck"), "");
+        FakeQemu qemu;
+        Helper h(m_root);
+        QVERIFY(h.ready());
+        h.answer("watch " + qemu.pidText());
+        QCOMPARE(h.answer("gpu-floor card1 auto"),
+                 QString("error gpu-floor card1: the floor did not take (the lowest clock reads "
+                         "800 MHz)"));
+        QCOMPARE(level(), QString("auto"));
+        QVERIFY(!stateExists("gpu-floor-card1"));
+    }
+
+    /* A udmabuf limit the kernel does not keep: undone, said */
+    void udmabufReadBack()
+    {
+        writeFile(path(QString(kUdmabuf) + "/size_limit_mb.stuck"), "");
+        FakeQemu qemu;
+        Helper h(m_root);
+        QVERIFY(h.ready());
+        h.answer("watch " + qemu.pidText());
+        QCOMPARE(h.answer("udmabuf " + qemu.pidText()),
+                 QString("error udmabuf %1: a limit did not take").arg(qemu.pid()));
+        QCOMPARE(udmabuf(), QString("1024/64"));
         QCOMPARE(stateFiles(), QStringList({"lock"}));
     }
 

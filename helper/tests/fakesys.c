@@ -6,9 +6,9 @@
  * check at each write and their -EBUSY for a CPU that /sys/devices/system/
  * cpu/online leaves out, amdgpu's overdrive table that takes edits in
  * manual only and a commit that fails while the maximum is 0 - so that the
- * order of the writes is tested, not just their values.  A server's file
- * with a sibling <file>.stuck takes writes without keeping them, for the
- * read back.  Other files (the udmabuf module's parameters) take any value,
+ * order of the writes is tested, not just their values.  A file with a
+ * sibling <file>.stuck takes writes without keeping them (for
+ * pp_od_clk_voltage, its commits), for the read back.  Other files (the udmabuf module's parameters) take any value,
  * as the kernel's int parameters do.  Every write, scheduler and nice
  * change and log line is appended to <root>/journal.  Schedulers and nice
  * values are kept in <root>/sched (an unprivileged test cannot make threads
@@ -228,7 +228,7 @@ static const char *const levels[] = {"auto", "low", "high", "manual", "profile_s
 
 static int level_write(const char *path, const char *value)
 {
-    char before[32] = "", od_path[PATH_MAX], pending[PATH_MAX], text[40];
+    char before[32] = "", od_path[PATH_MAX], pending[PATH_MAX], text[160];
     struct od_table od;
     bool known = false;
 
@@ -286,11 +286,16 @@ static int od_write(const char *path, const char *value)
         min = od.range_lo;
         max = od.range_hi;
     } else if (strcmp(value, "c") == 0) {
+        char stuck[PATH_MAX];
+
         /* "minimum sclk ... greater than the setting maximum" */
         if (max == 0 || min > max) {
             return -EINVAL;
         }
-        od_put(path, min, max, od.range_lo, od.range_hi);
+        snprintf(stuck, sizeof(stuck), "%s.stuck", path);
+        if (access(stuck, F_OK) != 0) {
+            od_put(path, min, max, od.range_lo, od.range_hi);
+        }
     } else {
         return -EINVAL;
     }
@@ -316,7 +321,11 @@ int sys_write(const char *path, const char *value)
     } else if (strcmp(base, "pp_od_clk_voltage") == 0) {
         err = od_write(path, v);
     } else {
-        err = put(path, value);
+        char stuck[PATH_MAX];
+
+        snprintf(stuck, sizeof(stuck), "%s.stuck", path);
+        /* taken, not kept */
+        err = access(stuck, F_OK) == 0 ? 0 : put(path, value);
     }
     journal("write %s %s%s", rel, v, err ? " FAILED" : "");
     if (getenv("VITRINE_HELPER_TEST_KILL_AT") &&

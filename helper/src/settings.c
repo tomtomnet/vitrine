@@ -975,6 +975,37 @@ static const char *card_unavailable(const char *card, struct od_table *od)
     return NULL;
 }
 
+/*
+ * @card's overdrive clocks back to @min - @max, committed, then its level
+ * @level: what it had, exactly - never "r", which resets the whole
+ * overdrive table, a user's undervolt or memory clocks with it.  @min 0:
+ * the table is not known (a state of an older helper), "r" then.  0, or
+ * the first -errno (the level is written whatever came before).
+ */
+static int card_put_back(const char *card, unsigned min, unsigned max, const char *level)
+{
+    char cmd[48];
+    int err, lerr;
+
+    if (min) {
+        snprintf(cmd, sizeof(cmd), "s 0 %u\n", min);
+        err = card_write(card, "pp_od_clk_voltage", cmd);
+        if (!err) {
+            snprintf(cmd, sizeof(cmd), "s 1 %u\n", max);
+            err = card_write(card, "pp_od_clk_voltage", cmd);
+        }
+    } else {
+        err = card_write(card, "pp_od_clk_voltage", "r\n");
+    }
+    /* committed: edits not committed yet may hold the floor still */
+    if (!err) {
+        err = card_write(card, "pp_od_clk_voltage", "c\n");
+    }
+    snprintf(cmd, sizeof(cmd), "%s\n", level);
+    lerr = card_write(card, "power_dpm_force_performance_level", cmd);
+    return lerr ? lerr : err;
+}
+
 /* Under the lock, as the last holder or for a dead one */
 static void gpu_restore(const char *card)
 {
@@ -1009,21 +1040,12 @@ static void gpu_restore(const char *card)
         card_od(card, &od) &&
         ((od.min == min && od.max == max) ||
          (n == 5 && od.min == was_min && od.max == was_max))) {
-        char cmd[40];
-        int err, lerr;
+        char now[32];
+        int err = card_put_back(card, n == 5 ? was_min : 0, was_max, saved);
 
-        /* the driver's own range back (committed: a reset not committed
-           yet may hold the floor still), then the level it had */
-        err = card_write(card, "pp_od_clk_voltage", "r\n");
-        if (!err) {
-            err = card_write(card, "pp_od_clk_voltage", "c\n");
-        }
-        snprintf(cmd, sizeof(cmd), "%s\n", saved);
-        lerr = card_write(card, "power_dpm_force_performance_level", cmd);
-        reply("restored gpu-floor %s: level %s%s", card, saved,
-              err || lerr ? " (some writes failed)" : "");
+        reply("restored gpu-floor %s: level %s%s", card, saved, err ? " (some writes failed)" : "");
         sys_log("%s: clock floor %u MHz off, level %s", card, min, saved);
-        if (lerr) {
+        if (!card_level(card, now, sizeof(now)) || strcmp(now, "manual") == 0) {
             /* still manual: the next helper tries again */
             return;
         }
@@ -1045,7 +1067,7 @@ static bool card_name_ok(const char *card)
 
 void gpu_floor(const char *card, const char *value)
 {
-    struct od_table od;
+    struct od_table od, now = {0, 0, 0, 0};
     struct hold *h;
     const char *why;
     char key[32], level[32], text[96], cmd[48];
@@ -1157,15 +1179,21 @@ void gpu_floor(const char *card, const char *value)
     if (!err) {
         err = card_write(card, "pp_od_clk_voltage", "c\n");
     }
+    /* read back: the driver may take a value and keep another */
+    if (!err && (!card_od(card, &now) || now.min != mhz)) {
+        err = -EIO;
+    }
     if (err) {
-        card_write(card, "pp_od_clk_voltage", "r\n");
-        card_write(card, "pp_od_clk_voltage", "c\n");
-        snprintf(cmd, sizeof(cmd), "%s\n", level);
-        card_write(card, "power_dpm_force_performance_level", cmd);
+        card_put_back(card, od.min, od.max, level);
         state_remove(key);
         hold_close(h, true);
         unlock_all();
-        reply("error gpu-floor %s: %s", card, strerror(-err));
+        if (err == -EIO) {
+            reply("error gpu-floor %s: the floor did not take (the lowest clock reads %u MHz)",
+                  card, now.min);
+        } else {
+            reply("error gpu-floor %s: %s", card, strerror(-err));
+        }
         return;
     }
     hold_share(h);
@@ -1267,7 +1295,7 @@ void udmabuf_on(const char *arg)
 {
     struct watched *w = find_watched(arg);
     char path[PATH_MAX], text[128], said[160] = "", state[128] = "";
-    u64 was[NUDMABUF], wrote[NUDMABUF];
+    u64 was[NUDMABUF], wrote[NUDMABUF], now;
     const char *why = NULL;
     struct stat st;
     struct hold *h;
@@ -1328,7 +1356,13 @@ void udmabuf_on(const char *arg)
             continue;
         }
         udmabuf_path(path, sizeof(path), udmabuf_params[i].name);
-        if ((e = write_u64(path, wrote[i])) < 0) {
+        if ((e = write_u64(path, wrote[i])) == 0 && (!read_u64(path, &now) || now != wrote[i])) {
+            /* taken, not kept: back, and said */
+            write_u64(path, was[i]);
+            e = -EIO;
+            why = "a limit did not take";
+        }
+        if (e < 0) {
             err = -e;
             /* the ones written before it back: all or nothing */
             for (int j = 0; j < i; j++) {
