@@ -146,8 +146,9 @@ signals:
     void failed(const QString &error);
     /*
      * QEMU did not end after forceOff(): neither QMP quit nor SIGTERM ended
-     * it (or, its monitor closed, it did not end by itself).  It runs on
-     * (Stopping) until it ends or killQemu() ends it.
+     * it.  It runs on (Stopping) until it ends or killQemu() ends it.  A
+     * QEMU on its way out by itself (the guest shut down) is waited for
+     * without it, however long it takes, until forceOff().
      */
     void notResponding();
     /*

@@ -32,10 +32,12 @@ std::optional<bool> HostKvm::canHonorGuestPat()
     return (quirks & kQuirkIgnoreGuestPat) != 0;
 }
 
-ArgsFile HostKvm::withHostPat(const ArgsFile &args, std::optional<bool> canHonor, QString *note)
+ArgsFile HostKvm::withHostPat(const ArgsFile &args,
+                              const std::function<std::optional<bool>()> &canHonor, QString *note)
 {
-    if (canHonor.value_or(true) || !VmConfig::accel(args).startsWith("kvm") ||
-        VmConfig::accelProperty(args, "honor-guest-pat") != "on") {
+    /* /dev/kvm asked only when it matters */
+    if (!VmConfig::accel(args).startsWith("kvm") ||
+        VmConfig::accelProperty(args, "honor-guest-pat") != "on" || canHonor().value_or(true)) {
         return args;
     }
     ArgsFile out = args;

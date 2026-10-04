@@ -212,6 +212,7 @@ struct VmRunner::Private
     bool connecting = false;
     bool suspended = false;     // Paused by the guest's own suspend (S3)
     bool stopRequested = false; // the end of the run is no failure
+    bool forceRequested = false; // forceOff() was used in this run
     /* forceOff()'s steps: 0 none, 1 SIGTERM sent, 2 notResponding() said */
     int killStep = 0;
     int quitTimeoutMs = kQuitTimeoutMs;
@@ -474,11 +475,14 @@ void VmRunner::Private::tick()
     case Phase::Exiting:
         if (!alive(pid)) {
             exited();
-        } else if (clock.elapsed() > 2 * quitTimeoutMs && killStep < 2) {
+        } else if (forceRequested && clock.elapsed() > 2 * quitTimeoutMs && killStep < 2) {
             /*
-             * Its monitor closed and it runs on: stuck on its way out, or
-             * still writing.  Not Stopped while it runs (a new start would
-             * find its disks locked), and not killed: the user decides.
+             * Forced off, its monitor closed, and it runs on: stuck on its
+             * way out, or still writing.  Not killed: the user decides.
+             * Without Force Off (the guest shut down, say) it is waited
+             * for, quietly: QEMU may take long to write a large disk.
+             * Never Stopped while it runs: a new start would find its disks
+             * locked.
              */
             killTimer->stop();
             killStep = 2;
@@ -884,7 +888,7 @@ QStringList VmRunner::Private::commandLine(const ArgsFile &args, const QString &
 
     /* honor-guest-pat=on, which QEMU refuses where KVM cannot do it, as auto there */
     QString patNote;
-    const ArgsFile hostArgs = HostKvm::withHostPat(args, HostKvm::canHonorGuestPat(), &patNote);
+    const ArgsFile hostArgs = HostKvm::withHostPat(args, HostKvm::canHonorGuestPat, &patNote);
     if (!patNote.isEmpty() && problems) {
         *problems << patNote;
     }
@@ -1084,6 +1088,7 @@ void VmRunner::start(const ArgsFile &args)
 
     d->error.clear();
     d->stopRequested = false;
+    d->forceRequested = false;
     d->killStep = 0;
     d->args = args;
     d->qemu = qemu;
@@ -1224,6 +1229,7 @@ void VmRunner::attach(const ArgsFile &args)
     d->command.clear();
     d->error.clear();
     d->stopRequested = false;
+    d->forceRequested = false;
     d->killStep = 0;
     d->phase = Private::Phase::Attach;
     d->connecting = true;
@@ -1283,6 +1289,7 @@ void VmRunner::forceOff()
     if (!isActive()) {
         return;
     }
+    d->forceRequested = true;
     if (d->killStep == 2) {
         /* said already, and the user chose to wait: asked again */
         if (alive(d->pid)) {
@@ -1290,11 +1297,16 @@ void VmRunner::forceOff()
         }
         return;
     }
-    if (d->phase == Private::Phase::Exiting || d->killTimer->isActive()) {
-        /* on its way out, or quit / SIGTERM sent: the steps go on */
+    if (d->killTimer->isActive()) {
+        /* quit or SIGTERM sent: the steps go on */
         return;
     }
     d->stopRequested = true;
+    if (d->phase == Private::Phase::Exiting) {
+        /* its monitor closed and it runs on: SIGTERM, then the user */
+        d->escalate();
+        return;
+    }
     d->setState(State::Stopping);
     if (d->qmp->isReady()) {
         d->qmp->execute("quit");

@@ -51,10 +51,17 @@ private slots:
         QFETCH(bool, noted);
         QString note;
 
+        bool asked = false;
         const ArgsFile out = HostKvm::withHostPat(
-            ArgsFile::parse(args), canHonor < 0 ? std::nullopt : std::optional<bool>(canHonor == 1),
+            ArgsFile::parse(args),
+            [&]() {
+                asked = true;
+                return canHonor < 0 ? std::nullopt : std::optional<bool>(canHonor == 1);
+            },
             &note);
         QCOMPARE(out.toText(), expected);
+        /* /dev/kvm asked only for on with KVM */
+        QCOMPARE(asked, args.contains("kvm,honor-guest-pat=on"));
         QCOMPARE(!note.isEmpty(), noted);
         if (noted) {
             QVERIFY(note.startsWith("honor-guest-pat=on started as auto: "));

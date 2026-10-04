@@ -1059,8 +1059,11 @@ private slots:
         QVERIFY(read(runner.logPath()).contains("vitrine: QEMU killed (SIGKILL) at the user's request"));
     }
 
-    /* Its monitor closed and it runs on (stuck on its way out): not Stopped
-       while it runs, not killed, said */
+    /*
+     * Its monitor closed and it runs on (stuck on its way out, or writing a
+     * large disk): not Stopped while it runs, not killed, and not said
+     * unless the user forces it off - then SIGTERM, then the user decides
+     */
     void exitingButRunning()
     {
         const QStringList command = VmRunner(id, tmp.path()).commandLine({});
@@ -1085,9 +1088,13 @@ private slots:
         QTRY_COMPARE(runner.state(), VmRunner::State::Running);
         monitor.close();
         QTRY_COMPARE(runner.state(), VmRunner::State::Stopping);
-        QTRY_COMPARE(notResponding.size(), 1);
-        QTest::qWait(500);
+        QTest::qWait(1000);
+        QCOMPARE(notResponding.size(), 0);
         QCOMPARE(runner.state(), VmRunner::State::Stopping);
+        QVERIFY(!gone(qemuPid));
+        /* forced off: SIGTERM (ignored here), then the user is told */
+        runner.forceOff();
+        QTRY_COMPARE(notResponding.size(), 1);
         QVERIFY(!gone(qemuPid));
         /* it ends at last: stopped then */
         stopGroup(qemu);

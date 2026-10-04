@@ -3,6 +3,7 @@
 
 #include <QString>
 
+#include <functional>
 #include <optional>
 
 #include "core/argsfile.h"
@@ -24,10 +25,12 @@ namespace HostKvm {
 std::optional<bool> canHonorGuestPat();
 
 /*
- * @args as started on a host whose KVM can (@canHonor) or cannot honor the
- * guest's PAT: honor-guest-pat=on, which would make QEMU refuse to start
- * where it cannot, as auto, with why in @note; as they are otherwise
+ * @args as started on a host whose KVM can or cannot honor the guest's PAT
+ * (@canHonor, asked only for honor-guest-pat=on): on, which would make QEMU
+ * refuse to start where it cannot, as auto, with why in @note; as they are
+ * otherwise
  */
-ArgsFile withHostPat(const ArgsFile &args, std::optional<bool> canHonor, QString *note);
+ArgsFile withHostPat(const ArgsFile &args, const std::function<std::optional<bool>()> &canHonor,
+                     QString *note);
 
 }
