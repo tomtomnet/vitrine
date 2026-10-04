@@ -89,7 +89,8 @@ ctest --test-dir build --output-on-failure   # optional
 2. **Create a VM.** File > New… (Ctrl+N): name, system, memory, processors,
    disk, and optionally an ISO to install from. Machine > Start (Ctrl+Return)
    starts it. Each VM is its QEMU command line, which Machine > Settings
-   (Ctrl+S) edits.
+   (Ctrl+S) edits. A Linux VM whose 3D card lacks what new VMs get (native
+   context, the host vblank timing) offers Update… on its Details tab.
 3. **Guest tools** for Fedora 44 x86-64 guests (virtio-gpu driver, Mesa, KWin
    for Plasma 6.7.5, an agent). Build them from the checkout, in rootless
    podman (up to 10 GiB of memory; Mesa ~15-25 min, KWin ~10, tools ~1):
