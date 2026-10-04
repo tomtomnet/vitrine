@@ -199,10 +199,14 @@ limits and opens `/dev/udmabuf` as QEMU does. When they are too low (under
 16384 entries or 128 MB) and host tuning will not raise them, or the
 device does not open, it writes a `vitrine:` note in the VM's `qemu.log`,
 and the status bar says so until the VM stops or host tuning raises them
-(the first time in a run of vitrine, the explanation opens by itself).
+(with host tuning on, the first time in a run of vitrine, the explanation
+opens by itself). Limits high enough at the start only because another
+VM's host tuning holds them are read again while the VM runs.
 While a VM runs, vitrine also reads its `qemu.log` for buffers QEMU refused
-(`UDMABUF_CREATE_LIST: Invalid argument`, `ctrl 0x10c, error 0x1201`) and
-then shows "Guest windows copied", with the count in its tooltip.
+(`ctrl 0x10c, error 0x1201`) and then shows "Guest windows copied", with
+the count in its tooltip. It blames the limits only for a
+`UDMABUF_CREATE_LIST: Invalid argument` with more entries or bytes than
+they allow; for other refusals, `qemu.log` says why.
 
 ## Installing
 

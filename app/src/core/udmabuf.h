@@ -38,9 +38,10 @@ struct Limits {
     QString deviceError;        // its text
 
     bool known() const { return listLimit >= 0 && sizeLimitMb >= 0; }
-    /* Native context's windows would be refused: limits below the minimum,
-       not known, or no device */
-    bool low() const;
+    /* Below what native context needs, or not known */
+    bool tooLow() const;
+    /* Native context's windows would be refused: tooLow(), or no device */
+    bool low() const { return deviceErrno != 0 || tooLow(); }
     /* Host tuning could fix it: the device opens, its limits are there */
     bool raisable() const { return deviceError.isEmpty() && known(); }
 };
@@ -63,22 +64,30 @@ QString tmpfilesPath();
 QString tmpfilesContent();
 
 /*
- * The lines of qemu.log that say a guest buffer was refused: QEMU's
- * "UDMABUF_CREATE_LIST" warning and "ctrl 0x10c, error 0x1201" (the blob
- * refused), "refusing it" (with -d guest_errors), and virglrenderer's
- * "Couldn't find res_id" / "invalid res_id" for such a buffer used later
+ * The lines of qemu.log that say a guest buffer was refused: "ctrl 0x10c,
+ * error 0x1201" (RESOURCE_CREATE_BLOB refused) and "refusing it" (the same,
+ * with -d guest_errors).  QEMU refuses one whenever it cannot hand it to
+ * the host GPU; the udmabuf limits are one reason, told by QEMU's
+ * "UDMABUF_CREATE_LIST: Invalid argument (N entries, M bytes)" warning
+ * with more entries or bytes than the limits allow.
  */
 struct LogCount {
-    int createList = 0;
-    int outOfMemory = 0;
-    int refusing = 0;
-    int unknownResource = 0;
+    int blobRefused = 0;    // "ctrl 0x10c, error 0x1201"
+    int refusing = 0;       // "refusing it"
+    int createList = 0;     // UDMABUF_CREATE_LIST warnings, whatever the error
+    int overLimits = 0;     // those of them beyond the limits
 
-    /* One line of the log, without its newline */
-    void scan(QByteArrayView line);
-    bool any() const { return createList || outOfMemory || refusing || unknownResource; }
+    /*
+     * One line of the log, without its newline.  @limits: the limits as
+     * the line is read, for a udmabuf refused: beyond them, or (QEMU
+     * without the sizes in its warning) them too low for native context.
+     */
+    void scan(QByteArrayView line, const Limits &limits);
     /* Buffers refused: one refusal shows in several of these lines */
     int refusals() const;
+    bool any() const { return refusals() > 0; }
+    /* Of those, the ones the limits refused */
+    int limitRefusals() const;
     bool operator==(const LogCount &) const = default;
 };
 
@@ -88,9 +97,10 @@ struct LogCount {
  * For each VM of @store while it runs: at its start, when its GPU has
  * native context, the udmabuf limits are checked, and when they are too
  * low and host tuning will not raise them, the log gets a note saying so
- * and the VM an issue (limitsWhy); and its qemu.log is read as it grows
- * for buffers refused (refusals).  One issue per VM per run, gone when it
- * stops.
+ * and the VM an issue (limitsLow); limits high enough then, but not held
+ * by host tuning for it, are read again while it runs.  Its qemu.log is
+ * read as it grows for buffers refused (log), the limits blamed only for
+ * udmabufs beyond them.  One issue per VM per run, gone when it stops.
  */
 class UdmabufWatch : public QObject
 {
@@ -107,6 +117,14 @@ public:
         QString notRaised;          // why host tuning does not ("" if it cannot help)
         Udmabuf::LogCount log;      // what qemu.log said so far
         bool active() const { return limitsLow || log.any(); }
+        /* /dev/udmabuf did not open at the start check */
+        bool device() const { return limitsLow && limits.deviceErrno != 0; }
+        /* The udmabuf limits are to blame: too low at the start check, or
+           buffers refused for them */
+        bool limitsBlamed() const
+        {
+            return (limitsLow && !limits.deviceErrno) || log.limitRefusals() > 0;
+        }
         /* For the status: plain, one sentence without its period */
         QString text() const;
     };
@@ -134,9 +152,14 @@ private:
     struct Run {
         qint64 pid = 0;
         qint64 offset = 0;          // read up to there
+        QByteArray head;            // the log's first bytes: another log after a Clear
         QByteArray partial;         // a line not ended yet
         bool checked = false;       // the start check done (native context only)
-        bool noted = false;         // the note on the limits written
+        bool noted = false;         // the note on the limits written (in this run of QEMU)
+        /* Host tuning does not hold the limits for it, why: they were high
+           enough at its start check (another VM's hold, say), and are read
+           again at each poll() until they are not */
+        QString unheld;
         Issue issue;
     };
     struct Answer {
@@ -153,7 +176,10 @@ private:
     /* The limits too low and not raised, for @why: the note, the issue */
     void notRaised(Vm *vm, Run &run, const QString &why);
     void raised(Vm *vm, Run &run);
+    /* qemu.log read on from where it was */
     void read(Vm *vm, Run &run);
+    /* The limits read again for a run they are not held for */
+    void recheck(Vm *vm, Run &run);
     void updateTimer();
 
     VmStore *m_store;

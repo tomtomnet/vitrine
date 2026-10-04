@@ -23,6 +23,8 @@
 #include <cerrno>
 #include <memory>
 
+#include <unistd.h>
+
 #include "core/hostsettings.h"
 #include "core/paths.h"
 #include "core/udmabuf.h"
@@ -82,6 +84,50 @@ static QList<QMessageBox *> boxes()
     return list;
 }
 
+/* A VM found running with the stand-in QEMU, its GPU with native context */
+struct Running {
+    QTemporaryDir runtime{QDir::tempPath() + "/vn-XXXXXX"};
+    QTemporaryDir vms;
+    QProcess qemu;
+    std::unique_ptr<FakeQmp> qmp;
+    std::unique_ptr<VmStore> store;
+    Vm *vm = nullptr;
+
+    Running()
+    {
+        qputenv("XDG_RUNTIME_DIR", runtime.path().toLocal8Bit());
+        QDir(vms.path()).mkpath("native");
+        writeFile(vms.path() + "/native/vm.args",
+                  "-name Native\n-device virtio-vga-gl,blob=on,drm_native_context=on\n"
+                  "-display dbus,p2p=yes\n");
+        const QString run = Paths::vmRuntimeDir("native");
+        qemu.start(FAKE_QEMU,
+                   {"-qmp", QString("unix:%1/qmp.sock,server=on,wait=off").arg(run)});
+        qemu.waitForStarted();
+        writeFile(run + "/qemu.pid", QByteArray::number(qemu.processId()) + "\n");
+        qmp = std::make_unique<FakeQmp>(run + "/qmp.sock");
+        store = std::make_unique<VmStore>(vms.path());
+        vm = store->find("native");
+    }
+    ~Running() { stop(); }
+    void attach() { vm->runner()->attach(vm->args()); }
+    void log(const QByteArray &lines)
+    {
+        QFile f(vm->runner()->logPath());
+        if (f.open(QIODevice::WriteOnly | QIODevice::Append)) {
+            f.write(lines);
+        }
+    }
+    void stop()
+    {
+        qmp.reset();
+        if (qemu.state() != QProcess::NotRunning) {
+            qemu.kill();
+            qemu.waitForFinished();
+        }
+    }
+};
+
 class TestUdmabufNotifier : public QObject
 {
     Q_OBJECT
@@ -98,6 +144,27 @@ private:
         i.limits.listLimit = 1024;
         i.limits.sizeLimitMb = 64;
         return i;
+    }
+
+    void setLimits(qint64 list, qint64 sizeMb) const
+    {
+        writeFile(sys() + "/module/udmabuf/parameters/list_limit", QByteArray::number(list) + '\n');
+        writeFile(sys() + "/module/udmabuf/parameters/size_limit_mb",
+                  QByteArray::number(sizeMb) + '\n');
+    }
+    QString sys() const { return m_tmp.path() + "/" + QTest::currentTestFunction() + "/sys"; }
+    QString devicePath() const
+    {
+        return m_tmp.path() + "/" + QTest::currentTestFunction() + "/udmabuf";
+    }
+    static bool offers(QMessageBox *box, const QString &text)
+    {
+        for (QAbstractButton *b : box->buttons()) {
+            if (b->text() == text) {
+                return true;
+            }
+        }
+        return false;
     }
 
 private slots:
@@ -126,8 +193,16 @@ private slots:
         QVERIFY(text.contains("/etc/tmpfiles.d/udmabuf.conf"));
 
         HostSettings::setEnabled(false);
+        qputenv("VITRINE_HELPER", QCoreApplication::applicationFilePath().toLocal8Bit());
         text = UdmabufNotifier::explanation({one}, now);
-        QVERIFY(text.contains("while native-context VMs run: it is off."));
+        QVERIFY(text.contains("while native-context VMs run: it is off.</p>"));
+        /* off, and no helper: turning it on would not do */
+        qputenv("VITRINE_HELPER", "/nonexistent/vitrine-helper");
+        text = UdmabufNotifier::explanation({one}, now);
+        QVERIFY(text.contains("while native-context VMs run: it is off, and vitrine-helper is not "
+                              "installed (see Installing in <a href=\""));
+        QVERIFY(text.contains("docs/host-tuning.md#installing"));
+        qunsetenv("VITRINE_HELPER");
 
         /* raised since: said so */
         Udmabuf::Limits raised = now;
@@ -138,83 +213,103 @@ private slots:
                               "windows the guest makes from now on are not copied."));
         QVERIFY(!text.contains("Host tuning raises them"));
 
-        /* no device: host tuning and the limits are no help */
+        /* no device: host tuning and the limits are no help, the device
+           said once */
         now.deviceErrno = ENOENT;
         text = UdmabufNotifier::explanation({one}, now);
-        QVERIFY(text.contains("/dev/udmabuf does not exist"));
+        QCOMPARE(text.count("/dev/udmabuf does not exist"), 1);
         QVERIFY(!text.contains("grubby"));
+        QVERIFY(!text.contains("beyond its limits"));
+        UdmabufWatch::Issue noDevice = one;
+        noDevice.limits.deviceErrno = EACCES;
+        now.deviceErrno = EACCES;
+        text = UdmabufNotifier::explanation({noDevice}, now);
+        QCOMPARE(text.count("/dev/udmabuf is not open to you: it is open to the kvm group and to "
+                            "the user of the local desktop session"),
+                 1);
+        QVERIFY(text.contains("made through /dev/udmabuf: without it, the guest copies those "
+                              "windows at each change."));
+        QVERIFY(!text.contains("beyond its limits"));
+        QVERIFY(!text.contains("Host tuning raises them"));
+
+        /* refused for another reason: the limits are not blamed */
+        UdmabufWatch::Issue refused;
+        refused.vmId = "other";
+        refused.vmName = "Other";
+        refused.log.blobRefused = 3;
+        text = UdmabufNotifier::explanation({refused}, raised);
+        QVERIFY(text.contains("Other: Some guest windows are copied: QEMU refused their buffers, "
+                              "qemu.log says why (3 refused).</p>"));
+        QVERIFY(text.contains("The udmabuf limits, 65536 entries and 2048 MB, are not the reason"));
+        QVERIFY(!text.contains("grubby"));
+        QVERIFY(!text.contains("Host tuning raises them"));
     }
 
     /*
-     * The warning shows while a VM has an issue, opens its explanation by
-     * itself once per run, says "copied" once the log shows refusals, and
-     * goes with the VM's run
+     * The warning shows while a VM has an issue, says "copied" once the
+     * log shows refusals, and goes with the VM's run.  Host tuning off by
+     * choice: no explanation by itself; Turn On offered where the helper is
+     * installed.
      */
     void warning()
     {
         HostSettings::setEnabled(false);
-        QTemporaryDir runtime(QDir::tempPath() + "/vn-XXXXXX");
-        QTemporaryDir vms;
-        QVERIFY(runtime.isValid() && vms.isValid());
-        qputenv("XDG_RUNTIME_DIR", runtime.path().toLocal8Bit());
-        const QString sys = m_tmp.path() + "/sys", device = m_tmp.path() + "/udmabuf";
-        writeFile(sys + "/module/udmabuf/parameters/list_limit", "1024\n");
-        writeFile(sys + "/module/udmabuf/parameters/size_limit_mb", "64\n");
-        writeFile(device, QByteArray());
-        QDir(vms.path()).mkpath("native");
-        writeFile(vms.path() + "/native/vm.args",
-                  "-name Native\n-device virtio-vga-gl,blob=on,drm_native_context=on\n"
-                  "-display dbus,p2p=yes\n");
-        const QString run = Paths::vmRuntimeDir("native");
-        QProcess qemu;
-        qemu.start(FAKE_QEMU, {"-qmp", QString("unix:%1/qmp.sock,server=on,wait=off").arg(run)});
-        QVERIFY(qemu.waitForStarted());
-        writeFile(run + "/qemu.pid", QByteArray::number(qemu.processId()) + "\n");
-        auto qmp = std::make_unique<FakeQmp>(run + "/qmp.sock");
-
-        VmStore store(vms.path());
-        UdmabufWatch watch(&store, nullptr);
-        watch.setSysRoot(sys);
-        watch.setDevice(device);
+        qputenv("VITRINE_HELPER", QCoreApplication::applicationFilePath().toLocal8Bit());
+        setLimits(1024, 64);
+        writeFile(devicePath(), QByteArray());
+        Running vm;
+        UdmabufWatch watch(vm.store.get(), nullptr);
+        watch.setSysRoot(sys());
+        watch.setDevice(devicePath());
         watch.setPollInterval(100000);
         QWidget window;
         UdmabufNotifier notifier(&watch, nullptr, &window);
         QToolButton *button = notifier.button();
         QVERIFY(button->isHidden());
 
-        Vm *vm = store.find("native");
-        vm->runner()->attach(vm->args());
+        vm.attach();
         QTRY_VERIFY(!button->isHidden());
         QCOMPARE(button->text(), QString("udmabuf limits low"));
         QVERIFY(button->toolTip().startsWith("Native: Guest windows drawn by the CPU will be "
                                              "copied: the host's udmabuf limits are 1024 entries"));
         QVERIFY(button->toolTip().endsWith("\nClick for what to do."));
-        /* the first issue of the run: its explanation, by itself */
+        /* off by choice: the button says it, nothing opens by itself */
+        QTest::qWait(50);
+        QVERIFY(boxes().isEmpty());
+        button->click();
         QTRY_COMPARE(boxes().size(), 1);
         QMessageBox *box = boxes().first();
         QCOMPARE(box->windowTitle(), QString("udmabuf Limits Too Low"));
         QVERIFY(box->text().contains("grubby"));
         /* the limits as the watch reads them, not the host's */
         QVERIFY(box->text().contains("They are 1024 entries and 64 MB now."));
-        /* tuning is off here: the box offers to turn it on */
-        bool turnOn = false;
-        for (QAbstractButton *b : box->buttons()) {
-            turnOn |= b->text() == "&Turn On Host Tuning";
-        }
-        QVERIFY(turnOn);
+        QVERIFY(offers(box, "&Turn On Host Tuning"));
         /* Enter only closes it */
         QCOMPARE(static_cast<QAbstractButton *>(box->defaultButton()),
                  box->button(QMessageBox::Close));
         box->button(QMessageBox::Close)->click();
         QTRY_VERIFY(boxes().isEmpty());
 
-        /* refusals: "copied", and no box by itself again */
-        QFile log(vm->runner()->logPath());
-        QVERIFY(log.open(QIODevice::WriteOnly | QIODevice::Append));
-        log.write("virtio_gpu_virgl_process_cmd: ctrl 0x10c, error 0x1201\n");
-        log.close();
+        /* no helper: Turn On would not raise them, not offered */
+        qputenv("VITRINE_HELPER", "/nonexistent/vitrine-helper");
+        button->click();
+        QTRY_COMPARE(boxes().size(), 1);
+        QVERIFY(!offers(boxes().first(), "&Turn On Host Tuning"));
+        QVERIFY(boxes().first()->text().contains("vitrine-helper is not installed"));
+        boxes().first()->button(QMessageBox::Close)->click();
+        QTRY_VERIFY(boxes().isEmpty());
+        qunsetenv("VITRINE_HELPER");
+
+        /* refusals: "copied" */
+        vm.log("virtio_gpu_virgl_process_cmd: ctrl 0x10c, error 0x1201\n");
         watch.poll();
         QCOMPARE(button->text(), QString("Guest windows copied"));
+        QVERIFY(button->toolTip().contains("Some guest windows are copied: QEMU refused their "
+                                           "buffers, qemu.log says why (1 refused)."));
+        vm.log("qemu-system-x86_64: warning: virtio_gpu_create_udmabuf_fd: UDMABUF_CREATE_LIST: "
+               "Invalid argument (7473 entries, 32043008 bytes)\n"
+               "virtio_gpu_virgl_process_cmd: ctrl 0x10c, error 0x1201\n");
+        watch.poll();
         QVERIFY(button->toolTip().contains("Some guest windows are copied: the host's udmabuf "
                                            "limits are too low (1 refused)."));
         QTest::qWait(50);
@@ -226,10 +321,99 @@ private slots:
         boxes().first()->button(QMessageBox::Close)->click();
 
         /* the run ends: the warning goes */
-        qmp.reset();
-        qemu.kill();
-        qemu.waitForFinished();
+        vm.stop();
         QTRY_VERIFY(button->isHidden());
+    }
+
+    /* Host tuning on and the limits in the way: the explanation opens by
+       itself, once per run of vitrine */
+    void opensByItself()
+    {
+        setLimits(1024, 64);
+        writeFile(devicePath(), QByteArray());
+        Running vm;
+        UdmabufWatch watch(vm.store.get(), nullptr);
+        watch.setSysRoot(sys());
+        watch.setDevice(devicePath());
+        watch.setPollInterval(100000);
+        QWidget window;
+        UdmabufNotifier notifier(&watch, nullptr, &window);
+        vm.attach();
+        QTRY_COMPARE(boxes().size(), 1);
+        QMessageBox *box = boxes().first();
+        QCOMPARE(box->windowTitle(), QString("udmabuf Limits Too Low"));
+        QVERIFY(!offers(box, "&Turn On Host Tuning"));
+        box->button(QMessageBox::Close)->click();
+        QTRY_VERIFY(boxes().isEmpty());
+        /* refusals later: not again */
+        vm.log("qemu-system-x86_64: warning: virtio_gpu_create_udmabuf_fd: UDMABUF_CREATE_LIST: "
+               "Invalid argument (7473 entries, 32043008 bytes)\n"
+               "virtio_gpu_virgl_process_cmd: ctrl 0x10c, error 0x1201\n");
+        watch.poll();
+        QCOMPARE(notifier.button()->text(), QString("Guest windows copied"));
+        QTest::qWait(50);
+        QVERIFY(boxes().isEmpty());
+    }
+
+    /*
+     * Refusals the limits did not cause, or that they no longer would
+     * (in the log of a VM found running, raised since): the warning, not
+     * the explanation by itself
+     */
+    void quietWhenLimitsFine()
+    {
+        setLimits(65536, 2048);
+        writeFile(devicePath(), QByteArray());
+        Running vm;
+        vm.log("qemu-system-x86_64: warning: virtio_gpu_create_udmabuf_fd: UDMABUF_CREATE_LIST: "
+               "Invalid argument (7473 entries, 32043008 bytes)\n"
+               "virtio_gpu_virgl_process_cmd: ctrl 0x10c, error 0x1201\n");
+        UdmabufWatch watch(vm.store.get(), nullptr);
+        watch.setSysRoot(sys());
+        watch.setDevice(devicePath());
+        watch.setPollInterval(100000);
+        QWidget window;
+        UdmabufNotifier notifier(&watch, nullptr, &window);
+        vm.attach();
+        QTRY_VERIFY(!notifier.button()->isHidden());
+        QCOMPARE(notifier.button()->text(), QString("Guest windows copied"));
+        QTest::qWait(50);
+        QVERIFY(boxes().isEmpty());
+        notifier.button()->click();
+        QTRY_COMPARE(boxes().size(), 1);
+        QVERIFY(boxes().first()->text().contains("are not the reason"));
+        QVERIFY(!offers(boxes().first(), "&Turn On Host Tuning"));
+        boxes().first()->button(QMessageBox::Close)->click();
+        QTRY_VERIFY(boxes().isEmpty());
+    }
+
+    /* /dev/udmabuf not open to the user: said as such, not as limits */
+    void deviceUnavailable()
+    {
+        if (geteuid() == 0) {
+            QSKIP("root opens it anyway");
+        }
+        setLimits(65536, 2048);
+        writeFile(devicePath(), QByteArray());
+        QFile::setPermissions(devicePath(), QFileDevice::ReadOwner);
+        Running vm;
+        UdmabufWatch watch(vm.store.get(), nullptr);
+        watch.setSysRoot(sys());
+        watch.setDevice(devicePath());
+        watch.setPollInterval(100000);
+        QWidget window;
+        UdmabufNotifier notifier(&watch, nullptr, &window);
+        vm.attach();
+        QTRY_COMPARE(boxes().size(), 1);
+        QCOMPARE(notifier.button()->text(), QString("udmabuf unavailable"));
+        QMessageBox *box = boxes().first();
+        QCOMPARE(box->windowTitle(), QString("udmabuf Not Available"));
+        QCOMPARE(box->text().count("/dev/udmabuf is not open to you: it is open to the kvm group"),
+                 1);
+        QVERIFY(!box->text().contains("limits"));
+        QVERIFY(!offers(box, "&Turn On Host Tuning"));
+        box->button(QMessageBox::Close)->click();
+        QTRY_VERIFY(boxes().isEmpty());
     }
 };
 

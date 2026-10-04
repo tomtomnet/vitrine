@@ -15,10 +15,11 @@ class QWidget;
  * The udmabuf issues of the running VMs (UdmabufWatch) in the main window,
  * as host tuning's warning does it: a warning in the status bar while a
  * VM has one, its tooltip says which and why, a click explains it with
- * the fix - host tuning, or the limits raised at each boot.  The first
- * issue of a run of vitrine opens that explanation by itself, once, unless
- * host tuning's offer to set up the vitrine group (which raises them too)
- * came up in this run.
+ * the fix - host tuning, or the limits raised at each boot - where the
+ * limits are to blame.  The first issue of a run of vitrine that the
+ * limits or the device cause, and that they still would, opens that
+ * explanation by itself, once, with host tuning on, unless its offer to
+ * set up the vitrine group (which raises them too) came up in this run.
  */
 class UdmabufNotifier : public QObject
 {
@@ -44,5 +45,5 @@ private:
     QWidget *m_window;
     QToolButton *m_button;
     QPointer<QMessageBox> m_box;
-    bool m_explained = false;       // opened by itself in this run
+    bool m_explained = false;       // opened by itself in this run of vitrine
 };

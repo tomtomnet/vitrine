@@ -3,6 +3,7 @@
 
 #include <QFile>
 #include <QFileInfo>
+#include <QRegularExpression>
 #include <QTimer>
 
 #include <algorithm>
@@ -24,10 +25,9 @@ static QString tr(const char *text)
     return QObject::tr(text);
 }
 
-bool Limits::low() const
+bool Limits::tooLow() const
 {
-    return deviceErrno != 0 || !known() || listLimit < kMinListLimit ||
-           sizeLimitMb < kMinSizeLimitMb;
+    return !known() || listLimit < kMinListLimit || sizeLimitMb < kMinSizeLimitMb;
 }
 
 Limits read(const QString &sysRoot, const QString &device)
@@ -59,8 +59,8 @@ QString problem(const Limits &limits)
                   "is not loaded");
     }
     if (limits.deviceErrno == EACCES || limits.deviceErrno == EPERM) {
-        return tr("/dev/udmabuf is not open to you: systemd gives it to the user of the local "
-                  "desktop session");
+        return tr("/dev/udmabuf is not open to you: it is open to the kvm group and to the user "
+                  "of the local desktop session");
     }
     if (limits.deviceErrno) {
         return tr("/dev/udmabuf cannot be opened: %1").arg(limits.deviceError);
@@ -97,24 +97,47 @@ QString tmpfilesContent()
         .arg(kSizeLimitMb);
 }
 
-void LogCount::scan(QByteArrayView line)
+void LogCount::scan(QByteArrayView line, const Limits &limits)
 {
     /* vitrine's own notes */
     if (line.startsWith("vitrine:")) {
         return;
     }
-    createList += line.contains("UDMABUF_CREATE_LIST");
-    outOfMemory += line.contains("error 0x1201");
+    /* any error of RESOURCE_CREATE_BLOB, not only the udmabuf's */
+    blobRefused += line.contains("ctrl 0x10c, error 0x1201");
     refusing += line.contains("refusing it");
-    unknownResource += line.contains("Couldn't find res_id") || line.contains("invalid res_id");
+    if (!line.contains("UDMABUF_CREATE_LIST: ")) {
+        return;
+    }
+    createList++;
+    /* EINVAL is what the kernel answers beyond the limits, among other
+       things (a memfd without the seals it wants): the sizes tell */
+    static const QRegularExpression einval(
+        R"(UDMABUF_CREATE_LIST: Invalid argument(?: \((\d+) entries, (\d+) bytes\))?)");
+    const QRegularExpressionMatch m = einval.match(QString::fromUtf8(line));
+    if (!m.hasMatch()) {
+        return;
+    }
+    if (m.hasCaptured(1)) {
+        const qint64 entries = m.captured(1).toLongLong(), bytes = m.captured(2).toLongLong();
+        overLimits += !limits.known() || entries > limits.listLimit ||
+                      bytes > limits.sizeLimitMb * 1024 * 1024;
+    } else {
+        /* a QEMU without vitrine's patches: no sizes */
+        overLimits += limits.tooLow();
+    }
 }
 
 int LogCount::refusals() const
 {
-    /* a refusal: QEMU's warning, its error for the command, its guest
-       error with -d guest_errors - as many of each, whichever it logged */
-    const int refused = std::max({createList, outOfMemory, refusing});
-    return refused ? refused : unknownResource;
+    /* a refusal: QEMU's error for the command, its guest error with -d
+       guest_errors - as many of each, whichever it logged */
+    return std::max(blobRefused, refusing);
+}
+
+int LogCount::limitRefusals() const
+{
+    return std::min(overLimits, refusals());
 }
 
 } // namespace Udmabuf
@@ -123,19 +146,36 @@ using namespace Udmabuf;
 
 /* qemu.log of a VM found running: its last MiB is plenty */
 static const qint64 kTail = 1 << 20;
+/* the start of qemu.log kept, to tell another log after a Clear */
+static const qint64 kHead = 64;
 /* a read at most per VM and poll; the rest at the next */
 static const qint64 kBurst = 4 << 20;
 /* a line longer than this is no line of interest: dropped */
 static const qsizetype kMaxLine = 1 << 16;
 
+/* The end of the note's first line, which also tells it in the log */
+static QString noteEnd()
+{
+    return QObject::tr(": QEMU will refuse guest windows drawn by the CPU (Qt Widgets and GTK "
+                       "apps, cursors), which the guest then copies");
+}
+
 QString UdmabufWatch::Issue::text() const
 {
+    if (log.limitRefusals() > 0) {
+        return tr("Some guest windows are copied: the host's udmabuf limits are too low (%1 "
+                  "refused)")
+            .arg(log.limitRefusals());
+    }
     if (log.any()) {
-        const int n = log.refusals();
-        /* no device: not a matter of limits */
-        const QString cause = limits.deviceErrno ? problem(limits)
-                                                 : tr("the host's udmabuf limits are too low");
-        return tr("Some guest windows are copied: %1 (%2 refused)").arg(cause).arg(n);
+        /* no device at the start check: that; else QEMU's log says why */
+        return limits.deviceErrno
+                   ? tr("Some guest windows are copied: %1 (%2 refused)")
+                         .arg(problem(limits))
+                         .arg(log.refusals())
+                   : tr("Some guest windows are copied: QEMU refused their buffers, qemu.log "
+                        "says why (%1 refused)")
+                         .arg(log.refusals());
     }
     return tr("Guest windows drawn by the CPU will be copied: %1").arg(problem(limits));
 }
@@ -218,6 +258,11 @@ void UdmabufWatch::stateChanged(Vm *vm)
             run.offset = std::max<qint64>(0, QFileInfo(vm->runner()->logPath()).size() - kTail);
         }
         it = m_runs.insert(vm->id(), run);
+        if (state != VmRunner::State::Starting) {
+            /* now, before its start check: vitrine's note there already
+               (vitrine restarted while QEMU runs) is not written again */
+            read(vm, *it);
+        }
     }
     const qint64 pid = vm->runner()->pid();
     if (pid > 0 && !it->checked &&
@@ -234,21 +279,24 @@ void UdmabufWatch::stateChanged(Vm *vm)
 void UdmabufWatch::check(Vm *vm, Run &run)
 {
     const Answer answer = m_answers.take(run.pid);
+    /* why host tuning does not raise them for it: "" if it does, or until
+       it answers (answered()); it answered already if it was connected first */
+    const QString why = !m_host || !HostSettings::enabled() ? tr("host tuning is off")
+                        : answer.raised                     ? QString()
+                                                            : answer.why;
 
     run.issue.limits = Udmabuf::read(m_sysRoot, m_device);
     if (!run.issue.limits.low()) {
+        /* enough now: another VM's hold may let go of them, though */
+        run.unheld = why;
         return;
     }
     if (!run.issue.limits.raisable()) {
         /* no device, no limits to raise: host tuning cannot help */
         notRaised(vm, run, QString());
-    } else if (!m_host || !HostSettings::enabled()) {
-        notRaised(vm, run, tr("host tuning is off"));
-    } else if (!answer.raised && !answer.why.isEmpty()) {
-        /* host tuning answered already (it is connected first) */
-        notRaised(vm, run, answer.why);
+    } else if (!why.isEmpty()) {
+        notRaised(vm, run, why);
     }
-    /* else its answer comes: answered() */
 }
 
 void UdmabufWatch::answered(qint64 pid, bool raised, const QString &why)
@@ -258,13 +306,26 @@ void UdmabufWatch::answered(qint64 pid, bool raised, const QString &why)
             continue;
         }
         Vm *vm = m_store ? m_store->find(it.key()) : nullptr;
-        if (!vm || !it->issue.limits.low() || !it->issue.limits.raisable()) {
+        if (!vm) {
             return;
         }
         if (raised) {
-            this->raised(vm, *it);
-        } else {
+            it->unheld.clear();
+            if (it->issue.limits.low() && it->issue.limits.raisable()) {
+                this->raised(vm, *it);
+            }
+        } else if (!it->issue.limits.raisable()) {
+            /* no device: said at the start check, host tuning or not */
+        } else if (it->issue.limits.low()) {
             notRaised(vm, *it, why);
+        } else {
+            /*
+             * Enough at the start check, and not held for it now (tuning
+             * turned off, say): the helper puts them back after this,
+             * maybe, or another VM's hold still has them - read again at
+             * each poll()
+             */
+            it->unheld = why;
         }
         return;
     }
@@ -284,9 +345,7 @@ void UdmabufWatch::notRaised(Vm *vm, Run &run, const QString &why)
     run.issue.notRaised = why;
     if (!run.noted) {
         /* once per run, in the log, where the refusals will show */
-        QStringList note{problem(run.issue.limits) +
-                         tr(": QEMU will refuse guest windows drawn by the CPU (Qt Widgets and "
-                            "GTK apps, cursors), which the guest then copies")};
+        QStringList note{problem(run.issue.limits) + noteEnd()};
         if (run.issue.limits.raisable()) {
             note << tr("host tuning would raise them while VMs run: %1").arg(why)
                  << tr("to raise them at each boot: %1 (see docs/host-tuning.md)")
@@ -317,8 +376,24 @@ void UdmabufWatch::poll()
     for (auto it = m_runs.begin(); it != m_runs.end(); ++it) {
         if (Vm *vm = m_store ? m_store->find(it.key()) : nullptr) {
             read(vm, *it);
+            recheck(vm, *it);
         }
     }
+}
+
+void UdmabufWatch::recheck(Vm *vm, Run &run)
+{
+    if (run.unheld.isEmpty() || run.issue.limitsLow) {
+        return;
+    }
+    const Limits now = Udmabuf::read(m_sysRoot, m_device);
+    if (!now.low()) {
+        return;
+    }
+    const QString why = run.unheld;
+    run.unheld.clear();
+    run.issue.limits = now;
+    notRaised(vm, run, now.raisable() ? why : QString());
 }
 
 void UdmabufWatch::read(Vm *vm, Run &run)
@@ -328,11 +403,14 @@ void UdmabufWatch::read(Vm *vm, Run &run)
     if (!f.open(QIODevice::ReadOnly)) {
         return;
     }
-    if (f.size() < run.offset) {
-        /* emptied (the log view's Clear): QEMU goes on at the new end */
+    /* emptied (the log view's Clear): shorter, or written again since,
+       which its first bytes tell; QEMU goes on at the new end */
+    const QByteArray head = f.read(kHead);
+    if (f.size() < run.offset || !head.startsWith(run.head)) {
         run.offset = 0;
         run.partial.clear();
     }
+    run.head = head;
     if (f.size() == run.offset || !f.seek(run.offset)) {
         return;
     }
@@ -348,12 +426,20 @@ void UdmabufWatch::read(Vm *vm, Run &run)
         return;
     }
     const LogCount before = run.issue.log;
+    /* the limits now, for the udmabufs refused: beyond them or not */
+    const Limits limits = bytes.contains("UDMABUF_CREATE_LIST")
+                              ? Udmabuf::read(m_sysRoot, m_device) : Limits();
+    const QByteArray noted = noteEnd().toUtf8();
     for (qsizetype from = 0; from < end;) {
         qsizetype nl = bytes.indexOf('\n', from);
         if (nl < 0 || nl > end) {
             nl = end;
         }
-        run.issue.log.scan(QByteArrayView(bytes).sliced(from, nl - from));
+        const QByteArrayView line = QByteArrayView(bytes).sliced(from, nl - from);
+        if (line.startsWith("vitrine: ") && line.contains(noted)) {
+            run.noted = true;
+        }
+        run.issue.log.scan(line, limits);
         from = nl + 1;
     }
     if (run.issue.log != before) {

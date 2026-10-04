@@ -203,8 +203,9 @@ private slots:
             QFile::setPermissions(m_device, QFileDevice::ReadOwner);
             l = Udmabuf::read(m_sys, m_device);
             QCOMPARE(l.deviceErrno, EACCES);
-            QCOMPARE(Udmabuf::problem(l), QString("/dev/udmabuf is not open to you: systemd gives "
-                                                  "it to the user of the local desktop session"));
+            QCOMPARE(Udmabuf::problem(l), QString("/dev/udmabuf is not open to you: it is open to "
+                                                  "the kvm group and to the user of the local "
+                                                  "desktop session"));
         }
 
         /* no parameters: a module not loaded, or something not a number */
@@ -235,35 +236,86 @@ private slots:
 
     void logCount()
     {
+        Udmabuf::Limits low, high;
+        low.listLimit = 1024;
+        low.sizeLimitMb = 64;
+        high.listLimit = 65536;
+        high.sizeLimitMb = 2048;
+
         Udmabuf::LogCount count;
         for (const QByteArray &line : (kRefusal + kRefusal).split('\n')) {
-            count.scan(line);
+            count.scan(line, low);
         }
-        QCOMPARE(count.createList, 2);
-        QCOMPARE(count.outOfMemory, 2);
+        QCOMPARE(count.blobRefused, 2);
         QCOMPARE(count.refusing, 0);
-        QCOMPARE(count.unknownResource, 2);
+        QCOMPARE(count.createList, 2);
+        QCOMPARE(count.overLimits, 2);
         QCOMPARE(count.refusals(), 2);
+        QCOMPARE(count.limitRefusals(), 2);
 
         /* with -d guest_errors: one more line per refusal, still one refusal */
-        count.scan("virgl_cmd_resource_create_blob: no dma-buf for guest blob 388, refusing it");
-        count.scan("virgl_cmd_resource_create_blob: no dma-buf for guest blob 389, refusing it");
-        count.scan("virgl_cmd_resource_create_blob: no dma-buf for guest blob 390, refusing it");
+        count.scan("virgl_cmd_resource_create_blob: no dma-buf for guest blob 388, refusing it", low);
+        count.scan("virgl_cmd_resource_create_blob: no dma-buf for guest blob 389, refusing it", low);
+        count.scan("virgl_cmd_resource_create_blob: no dma-buf for guest blob 390, refusing it", low);
         QCOMPARE(count.refusals(), 3);
+        QCOMPARE(count.limitRefusals(), 2);
 
-        /* only the renderer's lines (Xe, an older QEMU) */
-        Udmabuf::LogCount xe;
-        xe.scan("drm: xe_ccmd_vm_bind:612: [3|kwin_wayland]: invalid res_id 52 in bind op 0");
-        QVERIFY(xe.any());
-        QCOMPARE(xe.refusals(), 1);
+        /* the same refusal with limits that take its 7473 entries and 32 MB:
+           another reason (a memfd without the seals udmabuf wants, say) */
+        Udmabuf::LogCount other;
+        for (const QByteArray &line : kRefusal.split('\n')) {
+            other.scan(line, high);
+        }
+        QCOMPARE(other.createList, 1);
+        QCOMPARE(other.overLimits, 0);
+        QCOMPARE(other.refusals(), 1);
+        QCOMPARE(other.limitRefusals(), 0);
 
-        /* vitrine's own notes, and the rest, count for nothing */
+        /* beyond one of them is enough; at the limit is not beyond it */
+        auto over = [](const char *line, const Udmabuf::Limits &limits) {
+            Udmabuf::LogCount c;
+            c.scan(line, limits);
+            return c.overLimits;
+        };
+        QCOMPARE(over("qemu-system-x86_64: warning: virtio_gpu_create_udmabuf_fd: "
+                      "UDMABUF_CREATE_LIST: Invalid argument (900 entries, 134217728 bytes)", low), 1);
+        QCOMPARE(over("qemu-system-x86_64: warning: virtio_gpu_create_udmabuf_fd: "
+                      "UDMABUF_CREATE_LIST: Invalid argument (1024 entries, 67108864 bytes)", low), 0);
+        QCOMPARE(over("qemu-system-x86_64: warning: virtio_gpu_create_udmabuf_fd: "
+                      "UDMABUF_CREATE_LIST: Invalid argument (1025 entries, 4096 bytes)", low), 1);
+        /* another error than EINVAL: never the limits */
+        QCOMPARE(over("qemu-system-x86_64: warning: virtio_gpu_create_udmabuf_fd: "
+                      "UDMABUF_CREATE_LIST: Bad file descriptor (9000 entries, 4096 bytes)", low), 0);
+        /* a QEMU without the sizes: the limits as they are */
+        QCOMPARE(over("qemu-system-x86_64: warning: virtio_gpu_create_udmabuf_fd: "
+                      "UDMABUF_CREATE_LIST: Invalid argument", low), 1);
+        QCOMPARE(over("qemu-system-x86_64: warning: virtio_gpu_create_udmabuf_fd: "
+                      "UDMABUF_CREATE_LIST: Invalid argument", high), 0);
+        /* limits not known: they may be */
+        QCOMPARE(over("qemu-system-x86_64: warning: virtio_gpu_create_udmabuf_fd: "
+                      "UDMABUF_CREATE_LIST: Invalid argument (10 entries, 40960 bytes)",
+                      Udmabuf::Limits()), 1);
+
+        /* a warning alone is no refusal: a GPU without native context goes on */
+        Udmabuf::LogCount virgl;
+        virgl.scan(kRefusal.split('\n').first(), low);
+        QCOMPARE(virgl.createList, 1);
+        QVERIFY(!virgl.any());
+        QCOMPARE(virgl.limitRefusals(), 0);
+
+        /* the renderer's lines, another command's error, vitrine's own
+           notes: no refusal */
         Udmabuf::LogCount none;
-        none.scan("vitrine: QEMU will refuse guest windows: UDMABUF_CREATE_LIST, error 0x1201");
-        none.scan("virtio_gpu_virgl_process_cmd: ctrl 0x102, error 0x1203");
-        none.scan("");
+        none.scan("drm: xe_ccmd_vm_bind:612: [3|kwin_wayland]: invalid res_id 52 in bind op 0", low);
+        none.scan("drm: amdgpu_get_object_from_res_id:203: [2|kwin_wayland]: Couldn't find res_id: "
+                  "388 [amdgpu_ccmd_bo_query_info]", low);
+        none.scan("virtio_gpu_virgl_process_cmd: ctrl 0x207, error 0x1201", low);
+        none.scan("vitrine: QEMU will refuse guest windows: UDMABUF_CREATE_LIST: Invalid argument, "
+                  "ctrl 0x10c, error 0x1201, refusing it", low);
+        none.scan("virtio_gpu_virgl_process_cmd: ctrl 0x102, error 0x1203", low);
+        none.scan("", low);
         QVERIFY(!none.any());
-        QCOMPARE(none.refusals(), 0);
+        QCOMPARE(none, Udmabuf::LogCount());
     }
 
     /*
@@ -330,7 +382,7 @@ private slots:
         QCOMPARE(changed.size(), seen);
         appendFile(nativeLog, "or 0x1201\n");
         watch.poll();
-        QCOMPARE(watch.issues()[0].log.outOfMemory, 3);
+        QCOMPARE(watch.issues()[0].log.blobRefused, 3);
         QCOMPARE(watch.issues()[0].log.refusals(), 3);
         /* the note once per run */
         QCOMPARE(readFile(nativeLog).count("vitrine: "), 3);
@@ -341,6 +393,12 @@ private slots:
         appendFile(virglLog, kRefusal);
         watch.poll();
         QCOMPARE(watch.issues()[1].log.refusals(), 2);
+        /* emptied and written again, more than was read, before the next
+           read: its start tells, not its size */
+        writeFile(virglLog, "qemu-system-x86_64: started again\n" + kRefusal + kRefusal);
+        watch.poll();
+        QCOMPARE(watch.issues()[1].log.refusals(), 4);
+        QCOMPARE(watch.issues()[1].log.blobRefused, 4);
 
         /* a run ends: its issue goes */
         native.stop();
@@ -371,6 +429,84 @@ private slots:
         QVERIFY(watch.issues().isEmpty());
         QVERIFY(changed.isEmpty());
         QVERIFY(readFile(store.find("native")->runner()->logPath()).isEmpty());
+    }
+
+    /*
+     * Refusals with the limits high enough for them: another reason, not
+     * the limits; nothing at the start check either
+     */
+    void watchRefusedOtherwise()
+    {
+        setLimits(65536, 2048);
+        QTemporaryDir runtime(QDir::tempPath() + "/vu-XXXXXX");
+        QTemporaryDir vms;
+        QVERIFY(runtime.isValid() && vms.isValid());
+        qputenv("XDG_RUNTIME_DIR", runtime.path().toLocal8Bit());
+        FakeVm native(vms.path(), "native", kNative);
+        VmStore store(vms.path());
+        UdmabufWatch watch(&store, nullptr);
+        watch.setSysRoot(m_sys);
+        watch.setDevice(m_device);
+        watch.setPollInterval(100000);
+        Vm *vm = store.find("native");
+        vm->runner()->attach(vm->args());
+        QTRY_COMPARE(vm->runner()->state(), VmRunner::State::Running);
+        QVERIFY(watch.issues().isEmpty());
+        appendFile(vm->runner()->logPath(), kRefusal + kRefusal);
+        watch.poll();
+        QCOMPARE(watch.issues().size(), 1);
+        const UdmabufWatch::Issue issue = watch.issues().first();
+        QCOMPARE(issue.log.refusals(), 2);
+        QVERIFY(!issue.limitsBlamed());
+        QCOMPARE(issue.text(), QString("Some guest windows are copied: QEMU refused their buffers, "
+                                       "qemu.log says why (2 refused)"));
+        /* the limits lowered since (by hand): what is refused now is theirs */
+        setLimits(1024, 64);
+        appendFile(vm->runner()->logPath(), kRefusal);
+        watch.poll();
+        QCOMPARE(watch.issues().first().log.limitRefusals(), 1);
+        QCOMPARE(watch.issues().first().text(),
+                 QString("Some guest windows are copied: the host's udmabuf limits are too low (1 "
+                         "refused)"));
+    }
+
+    /*
+     * vitrine restarted while a VM runs: the note of the run is in its log
+     * already, not written again; the refusals in its last MiB are counted
+     */
+    void watchAgainAfterRestart()
+    {
+        QTemporaryDir runtime(QDir::tempPath() + "/vu-XXXXXX");
+        QTemporaryDir vms;
+        QVERIFY(runtime.isValid() && vms.isValid());
+        qputenv("XDG_RUNTIME_DIR", runtime.path().toLocal8Bit());
+        FakeVm native(vms.path(), "native", kNative);
+        QString log;
+        {
+            VmStore store(vms.path());
+            UdmabufWatch watch(&store, nullptr);
+            watch.setSysRoot(m_sys);
+            watch.setDevice(m_device);
+            Vm *vm = store.find("native");
+            vm->runner()->attach(vm->args());
+            QTRY_COMPARE(watch.issues().size(), 1);
+            log = vm->runner()->logPath();
+        }
+        QCOMPARE(readFile(log).count("vitrine: "), 3);
+        appendFile(log, kRefusal);
+
+        VmStore store(vms.path());
+        UdmabufWatch watch(&store, nullptr);
+        watch.setSysRoot(m_sys);
+        watch.setDevice(m_device);
+        watch.setPollInterval(100000);
+        Vm *vm = store.find("native");
+        vm->runner()->attach(vm->args());
+        QTRY_COMPARE(vm->runner()->state(), VmRunner::State::Running);
+        QCOMPARE(watch.issues().size(), 1);
+        QVERIFY(watch.issues().first().limitsLow);
+        QCOMPARE(watch.issues().first().log.limitRefusals(), 1);
+        QCOMPARE(readFile(log).count("vitrine: "), 3);
     }
 
     /* No device: said, whatever host tuning does (it cannot help) */

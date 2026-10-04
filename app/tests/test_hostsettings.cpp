@@ -18,6 +18,7 @@
 
 #include <csignal>
 #include <memory>
+#include <vector>
 
 #include <grp.h>
 #include <pwd.h>
@@ -1778,6 +1779,90 @@ private slots:
         qmp.reset();
         qemu.stop();
         QTRY_COMPARE(vm->runner()->state(), VmRunner::State::Stopped);
+        QTRY_COMPARE(udmabuf(), QString("1024/64"));
+        QTRY_VERIFY(!hs.helperRunning());
+    }
+
+    /*
+     * A native-context VM whose start check finds the limits raised by
+     * another one's hold: tuning turned off, the helper puts them back
+     * after it answered, and the next read of the logs sees them low - a
+     * note and an issue for it too
+     */
+    void udmabufWatchHeldByAnother()
+    {
+        QTemporaryDir runtime(QDir::tempPath() + "/vt-XXXXXX");
+        QTemporaryDir vms;
+        QVERIFY(runtime.isValid() && vms.isValid());
+        qputenv("XDG_RUNTIME_DIR", runtime.path().toLocal8Bit());
+        const QByteArray args = "-device virtio-vga-gl,blob=on,drm_native_context=on\n"
+                                "-display dbus,p2p=yes\n";
+        QList<std::shared_ptr<FakeQemu>> qemus;
+        std::vector<std::unique_ptr<FakeQmp>> qmps;
+        auto running = [&](const QString &id) {
+            QDir(vms.path()).mkpath(id);
+            writeFile(vms.path() + "/" + id + "/vm.args", "-name " + id.toLatin1() + "\n" + args);
+            const QString run = Paths::vmRuntimeDir(id);
+            qemus << std::make_shared<FakeQemu>(
+                QStringList{"-qmp", QString("unix:%1/qmp.sock,server=on,wait=off").arg(run)});
+            writeFile(run + "/qemu.pid", QByteArray::number(qemus.last()->pid()) + "\n");
+            qmps.push_back(std::make_unique<FakeQmp>(run + "/qmp.sock"));
+            return qemus.last()->pid();
+        };
+        const QString device = m_root + "/udmabuf-device";
+        writeFile(device, QByteArray());
+
+        const qint64 a = running("a");
+        VmStore store(vms.path());
+        HostSettings hs(&store);
+        UdmabufWatch watch(&store, &hs);
+        watch.setSysRoot(m_root + "/sys");
+        watch.setDevice(device);
+        watch.setPollInterval(100000);
+        QSignalSpy lines(&hs, &HostSettings::helperLine);
+        fake(hs);
+        store.find("a")->runner()->attach(store.find("a")->args());
+        QTRY_VERIFY(saw(lines, QString("ok udmabuf %1: list_limit 65536").arg(a)));
+        QTRY_VERIFY(saw(lines, QString("ok rt %1").arg(a)));
+        QCOMPARE(udmabuf(), QString("65536/2048"));
+
+        /* the second one, found running while the first one's hold has them */
+        const qint64 b = running("b");
+        store.reload();
+        QTRY_VERIFY(store.find("b"));
+        store.find("b")->runner()->attach(store.find("b")->args());
+        QTRY_VERIFY(saw(lines, QString("ok udmabuf %1: already").arg(b)));
+        QTRY_VERIFY(saw(lines, QString("ok rt %1").arg(b)));
+        watch.poll();
+        QVERIFY(watch.issues().isEmpty());
+
+        HostSettings::setEnabled(false);
+        hs.preferencesChanged();
+        QTRY_COMPARE(udmabuf(), QString("1024/64"));
+        watch.poll();
+        QCOMPARE(watch.issues().size(), 2);
+        for (const UdmabufWatch::Issue &issue : watch.issues()) {
+            QVERIFY(issue.limitsLow);
+            QCOMPARE(issue.notRaised, QString("host tuning is off"));
+            QCOMPARE(issue.limits.listLimit, qint64(1024));
+        }
+        QFile log(store.find("b")->runner()->logPath());
+        QVERIFY(log.open(QIODevice::ReadOnly));
+        const QString note = QString::fromUtf8(log.readAll());
+        log.close();
+        QVERIFY(note.startsWith("vitrine: the host's udmabuf limits are 1024 entries and 64 MB"));
+        QCOMPARE(note.count("vitrine: "), 3);
+
+        /* on again: raised, both issues gone */
+        HostSettings::setEnabled(true);
+        hs.preferencesChanged();
+        QTRY_VERIFY(watch.issues().isEmpty());
+        QCOMPARE(udmabuf(), QString("65536/2048"));
+
+        qmps.clear();
+        for (const auto &q : qemus) {
+            q->stop();
+        }
         QTRY_COMPARE(udmabuf(), QString("1024/64"));
         QTRY_VERIFY(!hs.helperRunning());
     }
