@@ -1115,13 +1115,27 @@ static const QStringList kSdlEnvironment = {
     "QEMU_SDL_ZC_TILED=explicit",
 };
 
+/*
+ * Every QEMU: no real-time from RTKit for its PipeWire audio.  QEMU has no
+ * capability (CAP_SYS_NICE) of its own, so PipeWire's module-rt asks RTKit,
+ * or the realtime portal, for its audio thread, and for that sets the whole
+ * process's RLIMIT_RTTIME to RTKit's RTTimeUSecMax: 200 ms, soft and hard.
+ * Once vitrine-helper has made the threads of the VM in front real-time, a
+ * vCPU that runs 200 ms without sleeping - any busy guest - has the kernel
+ * SIGKILL QEMU, which ends without a word in its log.  The threads'
+ * scheduling is the helper's alone: in front, the audio thread is real-time
+ * with the others.  PipeWire takes the variable's presence, whatever its
+ * value, for off.
+ */
+static const char kNoRtkit[] = "DISABLE_RTKIT=1";
+
 QStringList VmRunner::environment(const ArgsFile &args)
 {
-    QStringList env;
+    QStringList env{kNoRtkit};
 
     if (VmConfig::screen(args) == VmConfig::Screen::OwnWindow &&
         VmConfig::graphics(args).display != "gtk") {
-        env = kSdlEnvironment;
+        env += kSdlEnvironment;
     }
     for (const VmConfig::EnvVar &var : VmConfig::environment(args)) {
         env.removeIf([&var](const QString &s) { return s.startsWith(var.name + '='); });

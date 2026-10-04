@@ -68,7 +68,9 @@ public:
         const ArgsFile &args, const std::function<QStringList(const QString &driver)> &propertiesOf);
     /*
      * The environment variables QEMU gets on top of the manager's, as
-     * NAME=VALUE: those of the display, then the #env directives
+     * NAME=VALUE: DISABLE_RTKIT=1 (PipeWire's RTKit fallback would give
+     * QEMU a real-time time limit that kills it once the helper makes its
+     * threads real-time), those of the display, then the #env directives
      */
     static QStringList environment(const ArgsFile &args);
     /*
