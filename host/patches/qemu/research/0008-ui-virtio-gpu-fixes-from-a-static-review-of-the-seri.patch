@@ -1,0 +1,351 @@
+From 9daebb3d1ace783fb6a026e259a7c36331870df5 Mon Sep 17 00:00:00 2001
+From: tomtomnet <tompere8000@proton.me>
+Date: Sun, 4 Oct 2026 04:55:09 +0200
+Subject: [PATCH] ui, virtio-gpu: fixes from a static review of the series
+
+- ui/sdl2-swapchain: qemu_dmabuf_free() closes the planes' fds (upstream
+  aa793e47): the swapchain closed them a second time and fd 0 up to three
+  times per buffer (the unused slots hold 0) on every resize or full-screen
+  toggle.
+- ui/dmabuf-layout: qemu_dmabuf_layout_fits(), the compositor's own bounds
+  checks; a guest buffer described taller than its dma-buf is copied instead
+  of attached (SDL) or advertised for zero copy (D-Bus): KWin answers such a
+  buffer with an out_of_bounds protocol error, which ended the window and
+  powered the VM off.
+- virtio-gpu: the vblank tick's next time in one step (the loop over the
+  periods grew with the time since the last presentation: a hidden window,
+  a paused VM, a screen off); Presented's period and time are validated.
+- ui/sdl2-swapchain: the guest's held flushes are released from a bottom
+  half: releasing them while the window draws made virglrenderer switch to
+  its own GL context in the middle of the copy, the menu and glDelete*.
+- virtio-gpu: a deferred flush no longer pops itself (its command was not
+  queued yet: the fence went out and the command never completed); held
+  fences are dropped on reset.
+- ui/dbus-listener: the layout outlives the block that fills it; zc_fd
+  starts at -1 (a failed setup closed fd 0).
+- ui/sdl2: the refresh rate known at window creation reaches the guest (the
+  dma-buf probe's window recorded it first, so the real window's report was
+  a no-op until the next size change).
+---
+ hw/display/virtio-gpu-base.c | 53 ++++++++++++++++++++++++++++--
+ include/ui/dmabuf-layout.h   |  8 +++++
+ ui/dbus-listener.c           |  8 +++--
+ ui/dmabuf-layout.c           | 28 ++++++++++++++++
+ ui/sdl2-swapchain.c          | 63 +++++++++++++++++++++++++++++++-----
+ ui/sdl2.c                    |  9 ++++++
+ 6 files changed, 156 insertions(+), 13 deletions(-)
+
+diff --git a/hw/display/virtio-gpu-base.c b/hw/display/virtio-gpu-base.c
+index 5911acd4e..7abbcee02 100644
+--- a/hw/display/virtio-gpu-base.c
++++ b/hw/display/virtio-gpu-base.c
+@@ -35,6 +35,19 @@ virtio_gpu_base_reset(VirtIOGPUBase *g)
+         g->scanout[i].x = 0;
+         g->scanout[i].y = 0;
+         g->scanout[i].ds = NULL;
++        /*
++         * Held flush fences: their commands went with the reset, so they are
++         * dropped, not fenced (a stale fence id would complete the new boot's
++         * commands early); what the display proved about the old guest's
++         * fences does not hold for the next one
++         */
++        g->scanout[i].nheld = 0;
++        g->scanout[i].flush_pending = false;
++        g->scanout[i].pending_token = 0;
++        g->scanout[i].flush_fenced = false;
++        if (g->scanout[i].deferred_fence_timer) {
++            timer_del(g->scanout[i].deferred_fence_timer);
++        }
+     }
+ }
+ 
+@@ -218,8 +231,13 @@ static void virtio_gpu_vblank_tick(void *opaque)
+     /* the next tick, one period on, on the presentation grid minus the lead */
+     virtio_gpu_vblank_next_lead(g, s, get_clock());
+     next = s->vblank_phase_ns - s->vblank_lead_ns;
+-    while (next <= now) {
+-        next += s->vblank_period_ns;
++    if (next <= now) {
++        /*
++         * In one step: the phase moves only with presentation feedback, so
++         * after a long time without any (window hidden, VM paused, screen
++         * off) a loop over the periods would grow without bound
++         */
++        next += ((now - next) / s->vblank_period_ns + 1) * s->vblank_period_ns;
+     }
+     s->vblank_next_ns = next;
+     timer_mod_ns(s->vblank_timer, next);
+@@ -406,6 +424,18 @@ virtio_gpu_gl_presented(void *opaque, uint32_t head, int64_t when_ns,
+         return;
+     }
+     s = &g->scanout[head];
++    /*
++     * The display's word (a D-Bus client's among them): a refresh between
++     * 1 and 1000 Hz, a presentation not in the future - a tiny period would
++     * make the tick timer fire without pause, a future one would stop it
++     */
++    if (period_ns > 0 && (period_ns < SCALE_MS || period_ns > NANOSECONDS_PER_SECOND)) {
++        return;
++    }
++    if (when_ns > qemu_clock_get_ns(QEMU_CLOCK_REALTIME) +
++                  (period_ns > 0 ? period_ns : s->vblank_period_ns)) {
++        return;
++    }
+     s->vblank_phase_ns = when_ns;
+     if (period_ns > 0) {
+         s->vblank_period_ns = period_ns;
+@@ -580,8 +610,24 @@ bool virtio_gpu_defer_flush_fence(VirtIOGPUBase *g, uint32_t head,
+         return false;
+     }
+     s->flush_pending = false;
++    /*
++     * What is done already goes out first, and the new entry is never popped
++     * here: its command is not queued yet, so its fence would be created now
++     * and the command, queued as deferred afterwards, never completed (the
++     * guest's flip or reader fence would wait forever)
++     */
++    while (s->nheld && s->held[0].done) {
++        virtio_gpu_held_pop(g, head, s->held[0].token ? "released" : "in order");
++    }
+     if (s->nheld == VIRTIO_GPU_HELD_FENCES) {
+         virtio_gpu_held_pop(g, head, "full");
++        while (s->nheld && s->held[0].done) {
++            virtio_gpu_held_pop(g, head, s->held[0].token ? "released" : "in order");
++        }
++    }
++    if (!pending && !s->nheld) {
++        virtio_gpu_held_arm(g, head);
++        return false;       /* nothing left to wait behind: fenced as usual */
+     }
+     s->held[s->nheld].fence = fence_id;
+     s->held[s->nheld].token = pending ? s->pending_token : 0;
+@@ -594,7 +640,8 @@ bool virtio_gpu_defer_flush_fence(VirtIOGPUBase *g, uint32_t head,
+                                                virtio_gpu_deferred_fence_timeout, s);
+     }
+     trace_virtio_gpu_flush_fence_deferred(head, fence_id);
+-    virtio_gpu_held_process(g, head);
++    /* behind a held entry not done yet, or not done itself: it waits */
++    virtio_gpu_held_arm(g, head);
+     return true;
+ }
+ 
+diff --git a/include/ui/dmabuf-layout.h b/include/ui/dmabuf-layout.h
+index 59148951e..0e4422a3d 100644
+--- a/include/ui/dmabuf-layout.h
++++ b/include/ui/dmabuf-layout.h
+@@ -49,6 +49,14 @@ bool qemu_dmabuf_layout_get(int drm_fd, int dmabuf_fd, uint32_t width,
+                             const uint64_t *accepted, int n_accepted,
+                             bool dcc, QemuDmabufLayout *l);
+ 
++/*
++ * Whether @l fits @dmabuf_fd for a buffer @height rows high - the checks a
++ * Wayland compositor makes on linux-dmabuf params (out of bounds there is a
++ * protocol error, which ends the client's connection)
++ */
++bool qemu_dmabuf_layout_fits(int dmabuf_fd, const QemuDmabufLayout *l,
++                             uint32_t height);
++
+ /* A render-node fd of the device of QEMU's EGL display, or -1 */
+ int qemu_dmabuf_layout_open_device(void);
+ 
+diff --git a/ui/dbus-listener.c b/ui/dbus-listener.c
+index abc24ab8b..2330c0d79 100644
+--- a/ui/dbus-listener.c
++++ b/ui/dbus-listener.c
+@@ -390,6 +390,8 @@ static void dbus_scanout_dmabuf_v2(DBusDisplayListener *ddl,
+     const uint32_t *offsets = qemu_dmabuf_get_offsets(dmabuf, &noffsets);
+     const uint32_t *strides = qemu_dmabuf_get_strides(dmabuf, &nstrides);
+     uint32_t num_planes = qemu_dmabuf_get_num_planes(dmabuf);
++    /* the zero-copy layout: offsets/strides may point into it until the call */
++    QemuDmabufLayout l;
+ 
+     assert(nfds >= num_planes);
+     assert(noffsets >= num_planes);
+@@ -430,12 +432,12 @@ static void dbus_scanout_dmabuf_v2(DBusDisplayListener *ddl,
+     ddl->zc_token = 0;
+     if (ddl->zero_copy && num_planes == 1 && num_fds == 1 && !y0_top &&
+         graphic_hw_gl_flush_fenced(ddl->dcl.con)) {
+-        QemuDmabufLayout l;
+         struct stat st;
+ 
+         if (fstat(fds[0], &st) == 0 &&
+             qemu_dmabuf_layout_get(ddl->zc_fd, fds[0], backing_width,
+-                                   offsets[0], strides[0], NULL, 0, false, &l)) {
++                                   offsets[0], strides[0], NULL, 0, false, &l) &&
++            qemu_dmabuf_layout_fits(fds[0], &l, backing_height)) {
+             ddl->zc_token = st.st_ino;
+             modifier = l.modifier;
+             num_planes = l.planes;
+@@ -1096,6 +1098,8 @@ dbus_display_listener_class_init(DBusDisplayListenerClass *klass)
+ static void
+ dbus_display_listener_init(DBusDisplayListener *ddl)
+ {
++    /* dispose closes it: an early failure of _new() must not close fd 0 */
++    ddl->zc_fd = -1;
+ #ifdef CONFIG_PIXMAN
+     pixman_region32_init(&ddl->gl_damage);
+ #endif
+diff --git a/ui/dmabuf-layout.c b/ui/dmabuf-layout.c
+index 9b3ccee1a..2fc3ca54a 100644
+--- a/ui/dmabuf-layout.c
++++ b/ui/dmabuf-layout.c
+@@ -225,6 +225,34 @@ bool qemu_dmabuf_layout_get(int drm_fd, int dmabuf_fd, uint32_t width,
+                                      accepted, n_accepted, dcc, l);
+ }
+ 
++bool qemu_dmabuf_layout_fits(int dmabuf_fd, const QemuDmabufLayout *l,
++                             uint32_t height)
++{
++    off_t size = lseek(dmabuf_fd, 0, SEEK_END);
++    int i;
++
++    if (!height || l->planes < 1 || l->planes > 3) {
++        return false;
++    }
++    for (i = 0; i < l->planes; i++) {
++        uint64_t row_end = (uint64_t)l->offsets[i] + l->strides[i];
++        uint64_t end = i ? row_end :
++                       (uint64_t)l->offsets[0] + (uint64_t)l->strides[0] * height;
++
++        if (row_end > UINT32_MAX || end > UINT32_MAX) {
++            return false;
++        }
++        if (size < 0) {
++            continue;       /* no seeking on this buffer: the compositor cannot tell either */
++        }
++        if (l->offsets[i] >= (uint64_t)size || row_end > (uint64_t)size ||
++            end > (uint64_t)size) {
++            return false;
++        }
++    }
++    return true;
++}
++
+ int qemu_dmabuf_layout_open_device(void)
+ {
+     EGLDeviceEXT device = EGL_NO_DEVICE_EXT;
+diff --git a/ui/sdl2-swapchain.c b/ui/sdl2-swapchain.c
+index eecf66b0c..c84eb7f3e 100644
+--- a/ui/sdl2-swapchain.c
++++ b/ui/sdl2-swapchain.c
+@@ -336,13 +336,7 @@ static void buffer_destroy(SwapBuffer *b)
+     if (b->dmabuf) {
+         egl_fb_destroy(&b->fb);
+         egl_dmabuf_release_texture(b->dmabuf);
+-        for (int i = 0; i < 4; i++) {
+-            int fd = qemu_dmabuf_get_fds(b->dmabuf, NULL)[i];
+-
+-            if (fd >= 0) {
+-                close(fd);
+-            }
+-        }
++        /* closes the planes' fds (the unused slots hold 0: no loop over 4 here) */
+         qemu_dmabuf_free(b->dmabuf);
+         b->dmabuf = NULL;
+     }
+@@ -709,6 +703,7 @@ static void guest_buffer_refuse(struct sdl2_swapchain *sc, ino_t ino, int why)
+     if (!warned) {
+         warned = true;
+         warn_report("sdl2: zero copy %s; copying instead",
++                    why == -3 ? "of a guest buffer smaller than its description" :
+                     why == -2 ? "of a guest buffer that the compositor does not take" :
+                     why == -1 ? "needs linear guest scanout buffers (the host driver "
+                                 "cannot tell the layout; QEMU_SDL_ZERO_COPY=force attaches anyway)" :
+@@ -929,6 +924,48 @@ static void guest_buffer_verify_release(struct sdl2_swapchain *sc, GuestBuffer *
+ }
+ 
+ /* @gb is free for the guest: the flush that waits for it completes */
++/*
++ * The guest's flushes held for a buffer go out from the main loop, never
++ * from here: these releases come while the window draws (a dispatch, a
++ * round trip, a buffer freed), and virglrenderer creates the fence on its
++ * own GL context (virgl_renderer_force_ctx_0) - the copy, the menu and the
++ * glDelete* of a guest buffer that follow would then run on that context,
++ * whose framebuffer and texture names are vrend's
++ */
++typedef struct {
++    QemuConsole *con;
++    uint64_t token;
++} HeldRelease;
++
++static GArray *held_releases;
++static QEMUBH *held_releases_bh;
++
++static void held_releases_run(void *opaque)
++{
++    g_autoptr(GArray) now = held_releases;
++
++    held_releases = NULL;
++    for (guint i = 0; now && i < now->len; i++) {
++        HeldRelease *r = &g_array_index(now, HeldRelease, i);
++
++        graphic_hw_gl_flush_done(r->con, r->token);
++    }
++}
++
++static void held_release_later(QemuConsole *con, uint64_t token)
++{
++    HeldRelease r = { .con = con, .token = token };
++
++    if (!held_releases) {
++        held_releases = g_array_new(FALSE, FALSE, sizeof(HeldRelease));
++    }
++    g_array_append_val(held_releases, r);
++    if (!held_releases_bh) {
++        held_releases_bh = qemu_bh_new(held_releases_run, NULL);
++    }
++    qemu_bh_schedule(held_releases_bh);
++}
++
+ static void guest_buffer_released(GuestBuffer *gb)
+ {
+     if (gb->reads_fd >= 0) {
+@@ -937,7 +974,7 @@ static void guest_buffer_released(GuestBuffer *gb)
+         gb->reads_fd = -1;
+     }
+     if (gb->sc) {
+-        graphic_hw_gl_flush_done(gb->sc->scon->dcl.con, (uint64_t)gb->ino);
++        held_release_later(gb->sc->scon->dcl.con, (uint64_t)gb->ino);
+     }
+ }
+ 
+@@ -1060,6 +1097,16 @@ static GuestBuffer *guest_buffer_get(struct sdl2_swapchain *sc, QemuDmaBuf *dmab
+                                  offsets[0], strides[0], &layout)) {
+         return NULL;
+     }
++    if (!qemu_dmabuf_layout_fits(fds[0], &layout,
++                                 qemu_dmabuf_get_backing_height(dmabuf))) {
++        /*
++         * The guest's scanout checks cover only its rectangle: a buffer
++         * shorter than its backing height is a protocol error for the
++         * compositor (out_of_bounds), which would end the window - copied
++         */
++        guest_buffer_refuse(sc, st.st_ino, -3);
++        return NULL;
++    }
+     /* a free slot, else the one used longest ago that the compositor does not hold */
+     for (i = 0; i < GUEST_BUFFERS; i++) {
+         if (!guest_bufs[i].buffer) {
+diff --git a/ui/sdl2.c b/ui/sdl2.c
+index ecae76967..4ca180c51 100644
+--- a/ui/sdl2.c
++++ b/ui/sdl2.c
+@@ -111,6 +111,15 @@ static void sdl2_set_refresh_rate(struct sdl2_console *scon,
+     if (refresh_rate == scon->refresh_rate) {
+         return;
+     }
++    if (!scon->dcl.con) {
++        /*
++         * A window before its console (the hidden one of the dma-buf probe):
++         * nothing can be told yet, and recording the rate here would make the
++         * real window's report of the same rate a no-op - the guest would boot
++         * with the EDID's default refresh until the next size change
++         */
++        return;
++    }
+     scon->refresh_rate = refresh_rate;
+ 
+     if (!qemu_console_ui_info_supported(scon->dcl.con)) {
+-- 
+2.55.0
+

@@ -17,7 +17,7 @@ in this order:
    with `git format-patch`. Do not edit them: export them again (below).
 2. `qemu/research/`: the research series, verbatim from the research export
    (`~/Documents/qemu-gui-experimental/qemu/patches/`, exported
-   2026-10-03), made on the fork at `49fd5067`. Keep them byte-identical to
+   2026-10-04), made on the fork at `49fd5067`. Keep them byte-identical to
    it.
 3. `qemu/vitrine/`: Vitrine's own changes, as new files here rather than
    edits of the others.
@@ -76,8 +76,9 @@ not apply`).
 ### `qemu/research/`
 
 0005-0007 are plain diffs (no `diff --git` headers): they were uncommitted
-in the fork, so these files are the only copy. On upstream with
-`qemu/fork/` they apply to the same tree as on the fork.
+in the fork, so these files are the only copy. 0008 (2026-10-04, the
+fixes of the research side's static review) goes on top of them. On
+upstream with `qemu/fork/` they apply to the same tree as on the fork.
 
 | sha256 | patch |
 |---|---|
@@ -88,6 +89,7 @@ in the fork, so these files are the only copy. On upstream with
 | `db9294a8d7f3d3b7f58577d00be0c5b2d7cd945f429c07d7a69e84c29998ec34` | `0005-zero-copy-that-holds.patch`: zero copy with held flush fences |
 | `b720bb1a5400594737462850853c00a2df148a170ccef9ebce94d1f79d55d683` | `0006-zero-copy-default-full-screen-tiled.patch`: zero copy by default in full screen, tiled buffers with explicit modifiers, `x-vblank-swap-target-zc` |
 | `ca271b7d73b18402c826de59b28125c518e2ec574881a9370b1b70c956d4ee8e` | `0007-ui-dbus-zero-copy.patch`: zero copy for the D-Bus display (`Listener.Unix.ZeroCopy`, `ScanoutDMABUF2`) |
+| `d067663b85667b28f5c1dd5929cc56eaf6651f6f325e8dfa713630cafb95f86d` | `0008-ui-virtio-gpu-fixes-from-a-static-review-of-the-seri.patch`: fixes from a static review: a guest buffer described larger than its dma-buf is copied, not attached (SDL) or offered for zero copy (D-Bus), as the compositor would end the window with a protocol error; the vblank tick's catch-up in one step; held flushes released from a bottom half, not while the SDL window draws; a deferred flush no longer strands its command; held fences dropped on reset; SDL's swapchain no longer closes plane fds twice (and fd 0); the D-Bus listener's layout lifetime and fd 0; the refresh rate known at the SDL window's creation reaches the guest |
 
 ### `qemu/vitrine/`
 
