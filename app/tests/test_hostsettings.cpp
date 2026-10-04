@@ -564,7 +564,8 @@ private slots:
         QVERIFY(notices.isEmpty());
     }
 
-    /* What cannot apply here is said, once */
+    /* What cannot apply here is said, once: under lockdown no fair server,
+       and so no real-time threads (said with it) */
     void skipSaid()
     {
         writeFile(m_root + "/sys/kernel/security/lockdown", "none [integrity] confidentiality\n");
@@ -573,9 +574,10 @@ private slots:
         QSignalSpy lines(&hs, &HostSettings::helperLine), notices(&hs, &HostSettings::notice);
         fake(hs);
         hs.tune(q1.pid());
-        QTRY_VERIFY(saw(lines, QString("ok rt %1").arg(q1.pid())));
+        QTRY_VERIFY(saw(lines, QString("skip rt %1").arg(q1.pid())));
         hs.tune(q2.pid());
-        QTRY_VERIFY(saw(lines, QString("ok rt %1").arg(q2.pid())));
+        QTRY_VERIFY(saw(lines, QString("skip rt %1").arg(q2.pid())));
+        QVERIFY(saw(lines, "ok gpu-floor card1 1800 MHz"));
         QCOMPARE(notices.size(), 1);
         QCOMPARE(notices.first().first().toString(),
                  QString("Host tuning: fair-server: kernel lockdown (integrity)"));

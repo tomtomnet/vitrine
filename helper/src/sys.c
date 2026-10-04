@@ -16,6 +16,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <sys/resource.h>
 #include <sys/wait.h>
 #include <sys/xattr.h>
 #include <syslog.h>
@@ -95,6 +96,25 @@ int sys_setsched(pid_t tid, int policy, int priority)
     struct sched_param sp = {.sched_priority = priority};
 
     return sched_setscheduler(tid, policy, &sp) < 0 ? -errno : 0;
+}
+
+int sys_getnice(pid_t tid, int *nice)
+{
+    int n;
+
+    /* -1 is a nice value too: errno tells */
+    errno = 0;
+    n = getpriority(PRIO_PROCESS, (id_t)tid);
+    if (n == -1 && errno) {
+        return -errno;
+    }
+    *nice = n;
+    return 0;
+}
+
+int sys_setnice(pid_t tid, int nice)
+{
+    return setpriority(PRIO_PROCESS, (id_t)tid, nice) < 0 ? -errno : 0;
 }
 
 int sys_set_file_cap(int fd, const char *path)

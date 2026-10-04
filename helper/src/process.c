@@ -63,6 +63,34 @@ static bool owned_by(int procfd, uid_t uid)
            e == uid && s == uid && f == uid;
 }
 
+/* Its start time, field 22 of /proc/<pid>/stat: with the pid, it names the
+   process for good.  False for a process that has ended (a zombie). */
+static bool start_time(int procfd, unsigned long long *start)
+{
+    char state;
+    char buf[1024];
+    const char *end;
+    ssize_t n;
+    int fd = openat(procfd, "stat", O_RDONLY | O_CLOEXEC);
+
+    if (fd < 0) {
+        return false;
+    }
+    n = read(fd, buf, sizeof(buf) - 1);
+    close(fd);
+    if (n <= 0) {
+        return false;
+    }
+    buf[n] = '\0';
+    /* after the command's ")", which may hold spaces and parentheses: the
+       state is field 3, the start time field 22 */
+    if (!(end = strrchr(buf, ')'))) {
+        return false;
+    }
+    return sscanf(end + 1, " %c %*d %*d %*d %*d %*d %*u %*u %*u %*u %*u %*u %*u %*d %*d %*d "
+                           "%*d %*d %*d %llu", &state, start) == 2 && state != 'Z' && state != 'X';
+}
+
 /* The basename is qemu-system-<arch> (or RHEL's qemu-kvm); @exe gets the
    executable's path */
 static bool runs_qemu(int procfd, char *exe, size_t size)
@@ -113,7 +141,7 @@ struct watched *find_watched(const char *arg)
 
 bool watch(const char *arg)
 {
-    unsigned long long v;
+    unsigned long long v, start;
     char path[64], exe[PATH_MAX];
     int pidfd, procfd;
     pid_t pid;
@@ -148,10 +176,11 @@ bool watch(const char *arg)
         reply("error watch %d: not a process of uid %u", (int)pid, (unsigned)caller_uid);
     } else if (!runs_qemu(procfd, exe, sizeof(exe))) {
         reply("error watch %d: not a QEMU (qemu-system-*, qemu-kvm)", (int)pid);
-    } else if (!pidfd_alive(pidfd)) {
+    } else if (!start_time(procfd, &start) || !pidfd_alive(pidfd)) {
         reply("error watch %d: it has exited", (int)pid);
     } else {
-        watched[nwatched++] = (struct watched){pid, pidfd, procfd, false, false};
+        watched[nwatched++] = (struct watched){.pid = pid, .pidfd = pidfd, .procfd = procfd,
+                                               .start = start};
         reply("ok watch %d", (int)pid);
         return true;
     }
@@ -162,22 +191,25 @@ bool watch(const char *arg)
 
 void unwatch(int i)
 {
+    /* its record goes: nothing left to put back in a process that ended */
+    sched_drop(&watched[i]);
     close(watched[i].pidfd);
     close(watched[i].procfd);
     watched[i] = watched[--nwatched];
 }
 
 /*
- * Calls @fn on each thread of @w until a pass changes nothing: a thread
- * started during a pass by a thread not yet changed is caught by the next.
- * Returns the number of passes, or -errno when the process is gone.
+ * Calls @fn on each thread of the process of /proc/<pid> @procfd until a
+ * pass changes nothing: a thread started during a pass by a thread not yet
+ * changed is caught by the next.  Returns the number of passes, or -errno
+ * when the process is gone.
  */
-static int each_thread(struct watched *w, bool (*fn)(pid_t tid, int taskfd, const char *name,
-                                                     int *counts),
+static int each_thread(int procfd, bool (*fn)(pid_t tid, int taskfd, const char *name,
+                                               int *counts),
                        int *counts)
 {
     for (int pass = 1; pass <= 8; pass++) {
-        int taskfd = openat(w->procfd, "task", O_RDONLY | O_DIRECTORY | O_CLOEXEC);
+        int taskfd = openat(procfd, "task", O_RDONLY | O_DIRECTORY | O_CLOEXEC);
         bool changed = false;
         struct dirent *e;
         DIR *d;
@@ -205,13 +237,14 @@ static int each_thread(struct watched *w, bool (*fn)(pid_t tid, int taskfd, cons
 }
 
 /*
- * Sets one thread's policy.  The thread's /proc folder, opened first, stays
- * bound to that thread: if it can still be read after the change, the tid
- * was that thread's all along.  If the thread ended in between, its tid
- * cannot have gone to another task yet: Linux hands pids out in turn up to
- * pid_max (4194304 here) before it reuses one.
+ * Sets one thread's policy, or its nice value (@policy < 0).  The thread's
+ * /proc folder, opened first, stays bound to that thread: if it can still
+ * be read after the change, the tid was that thread's all along.  If the
+ * thread ended in between, its tid cannot have gone to another task yet:
+ * Linux hands pids out in turn up to pid_max (4194304 here) before it
+ * reuses one.
  */
-static int set_thread(pid_t tid, int taskfd, const char *name, int policy, int priority)
+static int set_thread(pid_t tid, int taskfd, const char *name, int policy, int value)
 {
     int tidfd = openat(taskfd, name, O_RDONLY | O_DIRECTORY | O_CLOEXEC);
     int err;
@@ -219,12 +252,34 @@ static int set_thread(pid_t tid, int taskfd, const char *name, int policy, int p
     if (tidfd < 0) {
         return -ESRCH;
     }
-    err = sys_setsched(tid, policy, priority);
+    err = policy < 0 ? sys_setnice(tid, value) : sys_setsched(tid, policy, value);
     if (!err && faccessat(tidfd, "stat", F_OK, 0) < 0) {
         err = -ESRCH;
     }
     close(tidfd);
     return err;
+}
+
+/* A vCPU thread: QEMU names them "CPU <n>/KVM" with debug-threads=on (and
+   without it, every thread has the process's name) */
+static bool is_vcpu(int taskfd, const char *name)
+{
+    char path[64], comm[32], accel[16];
+    unsigned n;
+    ssize_t len;
+    int fd;
+
+    snprintf(path, sizeof(path), "%s/comm", name);
+    if ((fd = openat(taskfd, path, O_RDONLY | O_CLOEXEC)) < 0) {
+        return false;
+    }
+    len = read(fd, comm, sizeof(comm) - 1);
+    close(fd);
+    if (len <= 0) {
+        return false;
+    }
+    comm[len] = '\0';
+    return sscanf(comm, "CPU %u/%15s", &n, accel) == 2;
 }
 
 /* counts: [0] made real-time, [1] failed, [2] last error */
@@ -264,40 +319,84 @@ static bool count_thread(pid_t tid, int taskfd, const char *name, int *counts)
     return false;
 }
 
+/* counts: [0] back to SCHED_OTHER; only what rt set: FIFO 1 */
+static bool other_thread(pid_t tid, int taskfd, const char *name, int *counts)
+{
+    int policy, priority;
+
+    if (sys_getsched(tid, &policy, &priority) == 0 && policy == SCHED_FIFO && priority == 1 &&
+        set_thread(tid, taskfd, name, SCHED_OTHER, 0) == 0) {
+        counts[0]++;
+        return true;
+    }
+    return false;
+}
+
+/* counts: [0] vCPUs back from BEHIND_NICE to 0 */
+static bool unnice_vcpu(pid_t tid, int taskfd, const char *name, int *counts)
+{
+    int nice;
+
+    if (is_vcpu(taskfd, name) && sys_getnice(tid, &nice) == 0 && nice == BEHIND_NICE &&
+        set_thread(tid, taskfd, name, -1, 0) == 0) {
+        counts[0]++;
+        return true;
+    }
+    return false;
+}
+
+/* Still the caller's QEMU: it may have exec'ed something else since watch,
+   a setuid program for one */
+static bool still_qemu(struct watched *w)
+{
+    char exe[PATH_MAX];
+
+    return owned_by(w->procfd, caller_uid) && runs_qemu(w->procfd, exe, sizeof(exe)) &&
+           pidfd_alive(w->pidfd);
+}
+
 /*
- * SCHED_FIFO 1 on every thread.  Threads started later inherit it: Linux
- * gives a new thread its creator's policy, and pthread_create (QEMU's
- * threads, GLib's, PipeWire's) inherits by default.  So no polling: once
- * a pass finds every thread real-time, every thread to come will be.
+ * SCHED_FIFO 1 on every thread: the VM in front.  Threads started later
+ * inherit it: Linux gives a new thread its creator's policy, and
+ * pthread_create (QEMU's threads, GLib's, PipeWire's) inherits by default.
+ * So no polling: once a pass finds every thread real-time, every thread to
+ * come will be.  Only the QEMU's own threads: the processes it started
+ * (passt, at its start, before any of this) keep theirs.  And only with the
+ * fair server's bound in place, without which a real-time vCPU that spins
+ * keeps kernel workers off its CPU for up to 950 ms.
  */
 void rt_on(const char *arg)
 {
     struct watched *w = find_watched(arg);
     int counts[3] = {0, 0, 0}, total[2] = {0, 0};
+    const char *why;
     int passes;
 
     if (!w) {
         reply("error rt: watch the process first");
         return;
     }
-    /* still the caller's QEMU: it may have exec'ed something else since
-       watch, a setuid program for one */
-    {
-        char exe[PATH_MAX];
-
-        if (!owned_by(w->procfd, caller_uid) || !runs_qemu(w->procfd, exe, sizeof(exe)) ||
-            !pidfd_alive(w->pidfd)) {
-            reply("error rt %d: no longer a QEMU of uid %u", (int)w->pid, (unsigned)caller_uid);
-            return;
-        }
+    if (!still_qemu(w)) {
+        reply("error rt %d: no longer a QEMU of uid %u", (int)w->pid, (unsigned)caller_uid);
+        return;
     }
-    passes = each_thread(w, rt_thread, counts);
+    if (!settings_bound(&why)) {
+        reply("skip rt %d: the fair server is not set: %s", (int)w->pid, why);
+        return;
+    }
+    /* recorded first: a helper that dies leaves them to the next one */
+    w->rt = true;
+    if (!sched_hold(w)) {
+        w->rt = false;
+        reply("error rt %d: cannot record it: %s", (int)w->pid, strerror(errno));
+        return;
+    }
+    passes = each_thread(w->procfd, rt_thread, counts);
     if (passes < 0) {
         reply("error rt %d: %s", (int)w->pid, strerror(-passes));
         return;
     }
-    w->rt = true;
-    each_thread(w, count_thread, total);
+    each_thread(w->procfd, count_thread, total);
     if (counts[1] && total[1] < total[0]) {
         reply("error rt %d: %d of %d threads real-time: %s", (int)w->pid, total[1], total[0],
               strerror(counts[2]));
@@ -310,30 +409,44 @@ void rt_on(const char *arg)
     }
 }
 
-/* counts: [0] put back */
-static bool other_thread(pid_t tid, int taskfd, const char *name, int *counts)
+void sched_restore(pid_t pid, unsigned long long start, bool niced, bool say)
 {
-    int policy, priority;
+    unsigned long long now;
+    int others[1] = {0}, unniced[1] = {0};
+    char path[64];
+    int procfd;
 
-    /* only what rt set: FIFO 1 */
-    if (sys_getsched(tid, &policy, &priority) == 0 && policy == SCHED_FIFO && priority == 1 &&
-        set_thread(tid, taskfd, name, SCHED_OTHER, 0) == 0) {
-        counts[0]++;
-        return true;
+    snprintf(path, sizeof(path), "/proc/%d", (int)pid);
+    /* that process still, not one that got its pid since: the folder stays
+       bound to the process it was opened for */
+    if ((procfd = open(path, O_RDONLY | O_DIRECTORY | O_CLOEXEC)) < 0) {
+        return;
     }
-    return false;
+    if (!start_time(procfd, &now) || now != start) {
+        close(procfd);
+        return;
+    }
+    each_thread(procfd, other_thread, others);
+    if (niced) {
+        each_thread(procfd, unnice_vcpu, unniced);
+    }
+    close(procfd);
+    if (say) {
+        reply("restored rt %d: %d threads back to SCHED_OTHER%s", (int)pid, others[0],
+              unniced[0] ? ", vCPUs back to nice 0" : "");
+    }
+    if (others[0] || unniced[0]) {
+        sys_log("pid %d: %d threads back to SCHED_OTHER, %d vCPUs back to nice 0", (int)pid,
+                others[0], unniced[0]);
+    }
 }
 
 void rt_off_all(void)
 {
     for (int i = 0; i < nwatched; i++) {
-        int counts[1] = {0};
-
-        if (!watched[i].rt || each_thread(&watched[i], other_thread, counts) < 0) {
-            continue;
-        }
-        watched[i].rt = false;
-        reply("restored rt %d: %d threads back to SCHED_OTHER", (int)watched[i].pid, counts[0]);
+        /* the last holder of its record puts the threads back */
+        sched_drop(&watched[i]);
+        watched[i].rt = watched[i].behind = false;
     }
 }
 

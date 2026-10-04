@@ -23,11 +23,14 @@
  * Session requests, each answered by one line or more:
  *   watch PID              a QEMU of the caller's (same uids, qemu-system-*
  *                          or qemu-kvm executable), watched through a pidfd
- *   fair-server on|off     the kernel's fair server at 10 ms / 1 ms on every CPU
+ *   fair-server on|off     the kernel's fair server (and the ext server under
+ *                          sched_ext) at 10 ms / 1 ms on every online CPU, all
+ *                          or nothing, read back: the bound rt needs
  *   gpu-floor CARD MHZ|auto|off
  *                          an amdgpu card's lowest gfx clock (auto: 1800 MHz on
  *                          APUs whose minimum is lower)
- *   rt PID                 SCHED_FIFO 1 on every thread of a watched QEMU
+ *   rt PID                 SCHED_FIFO 1 on every thread of a watched QEMU,
+ *                          once the fair server is set
  *   udmabuf PID            the udmabuf limits raised (65536 entries, 2048 MB)
  *                          while that watched QEMU runs: one with a
  *                          native-context GPU

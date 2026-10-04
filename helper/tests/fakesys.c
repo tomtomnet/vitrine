@@ -2,13 +2,17 @@
 /*
  * The test build's system access (vitrine-helper-fake): the attribute
  * files live in a fake tree under $VITRINE_HELPER_TEST_ROOT, where this
- * file plays the kernel's part - the fair server's runtime <= period check
- * at each write, amdgpu's overdrive table that takes edits in manual only
- * and a commit that fails while the maximum is 0 - so that the order of the
- * writes is tested, not just their values.  Other files (the udmabuf
- * module's parameters) take any value, as the kernel's int parameters do.  Every write, scheduler change,
- * capability and log line is appended to <root>/journal.  Schedulers are
- * kept in memory (an unprivileged test cannot make threads real-time); the
+ * file plays the kernel's part - the fair and ext servers' runtime <= period
+ * check at each write and their -EBUSY for a CPU that /sys/devices/system/
+ * cpu/online leaves out, amdgpu's overdrive table that takes edits in
+ * manual only and a commit that fails while the maximum is 0 - so that the
+ * order of the writes is tested, not just their values.  A server's file
+ * with a sibling <file>.stuck takes writes without keeping them, for the
+ * read back.  Other files (the udmabuf module's parameters) take any value,
+ * as the kernel's int parameters do.  Every write, scheduler and nice
+ * change and log line is appended to <root>/journal.  Schedulers and nice
+ * values are kept in <root>/sched (an unprivileged test cannot make threads
+ * real-time nor lower their nice), where the next helper finds them; the
  * processes and /proc are real.  The group database is <root>/etc/group
  * (name:x:gid:members lines); the users are the real ones.  This build
  * refuses to run as root, and the installed helper has no test root at all.
@@ -26,6 +30,8 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <sys/file.h>
+#include <sys/resource.h>
 #include <unistd.h>
 
 #include "../src/helper.h"
@@ -123,10 +129,33 @@ static bool get_u64(const char *path, unsigned long long *v)
     return parse_uint(buf, ~0ULL, v);
 }
 
-/* debugfs sched/fair_server/cpuN/{period,runtime}: sched_fair_server_write() */
+/* The CPU of a server file's path ".../cpuN/period" is offline: the
+   fake tree's /sys/devices/system/cpu/online leaves it out */
+static bool cpu_offline(const char *path)
+{
+    char online[PATH_MAX], text[256], *save = NULL;
+    const char *c = strstr(path, "/cpu");
+    unsigned cpu;
+
+    snprintf(online, sizeof(online), "%s" CPUS_ONLINE, root);
+    if (!c || sscanf(c, "/cpu%u/", &cpu) != 1 || sys_read(online, text, sizeof(text)) <= 0) {
+        return false;
+    }
+    for (char *t = strtok_r(text, ",\n", &save); t; t = strtok_r(NULL, ",\n", &save)) {
+        unsigned a, b;
+        int got = sscanf(t, "%u-%u", &a, &b);
+
+        if (got >= 1 && cpu >= a && cpu <= (got == 2 ? b : a)) {
+            return false;
+        }
+    }
+    return true;
+}
+
+/* debugfs sched/{fair,ext}_server/cpuN/{period,runtime}: sched_server_write_common() */
 static int fair_write(const char *path, const char *value, bool is_period)
 {
-    char other[PATH_MAX], text[32];
+    char other[PATH_MAX], text[32], stuck[PATH_MAX];
     unsigned long long v, p, r;
 
     if (!parse_uint(value, ~0ULL, &v)) {
@@ -143,6 +172,14 @@ static int fair_write(const char *path, const char *value, bool is_period)
     }
     if (r > p || p < 100000ULL || p > (1ULL << 22) * 1000ULL) {
         return -EINVAL;
+    }
+    if (cpu_offline(path)) {
+        return -EBUSY;
+    }
+    snprintf(stuck, sizeof(stuck), "%s.stuck", path);
+    if (access(stuck, F_OK) == 0) {
+        /* taken, not kept */
+        return 0;
     }
     snprintf(text, sizeof(text), "%llu\n", v);
     return put(path, text);
@@ -270,7 +307,8 @@ int sys_write(const char *path, const char *value)
 
     snprintf(v, sizeof(v), "%s", value);
     v[strcspn(v, "\n")] = '\0';
-    if (strncmp(rel, FAIR_SERVER_DIR "/", sizeof(FAIR_SERVER_DIR)) == 0 &&
+    if ((strncmp(rel, FAIR_SERVER_DIR "/", sizeof(FAIR_SERVER_DIR)) == 0 ||
+         strncmp(rel, EXT_SERVER_DIR "/", sizeof(EXT_SERVER_DIR)) == 0) &&
         (strcmp(base, "period") == 0 || strcmp(base, "runtime") == 0)) {
         err = fair_write(path, v, strcmp(base, "period") == 0);
     } else if (strcmp(base, "power_dpm_force_performance_level") == 0) {
@@ -289,54 +327,196 @@ int sys_write(const char *path, const char *value)
     return err;
 }
 
-/* --- schedulers, in memory --- */
+/* --- schedulers and nice values, in <root>/sched --- */
 
-static struct {
+/*
+ * "tid policy priority nice" lines: what the kernel would have, for the
+ * threads changed here - kept in the fake tree, so that the next helper (a
+ * crash recovery) sees what an earlier one set.  flock(LOCK_EX) around each
+ * change, helpers running side by side in some tests.
+ */
+struct sched_entry {
     pid_t tid;
-    int policy, priority;
-} sched[4096];
+    int policy, priority, nice;
+};
+static struct sched_entry sched[4096];
 static int nsched;
+static int sched_fd = -1;
 
-int sys_getsched(pid_t tid, int *policy, int *priority)
+static void sched_lock(void)
 {
-    struct sched_param sp;
-    int p;
+    char path[PATH_MAX];
 
-    for (int i = 0; i < nsched; i++) {
-        if (sched[i].tid == tid) {
-            *policy = sched[i].policy;
-            *priority = sched[i].priority;
-            return 0;
-        }
+    snprintf(path, sizeof(path), "%s/sched", root);
+    sched_fd = open(path, O_RDWR | O_CREAT | O_CLOEXEC, 0600);
+    if (sched_fd >= 0) {
+        flock(sched_fd, LOCK_EX);
     }
-    if ((p = sched_getscheduler(tid)) < 0 || sched_getparam(tid, &sp) < 0) {
-        return -errno;
-    }
-    *policy = p & ~SCHED_RESET_ON_FORK;
-    *priority = sp.sched_priority;
-    return 0;
 }
 
-int sys_setsched(pid_t tid, int policy, int priority)
+static void sched_load(void)
 {
-    int i;
+    char text[65536], *save = NULL;
+    ssize_t n;
+
+    nsched = 0;
+    if (sched_fd < 0 || lseek(sched_fd, 0, SEEK_SET) < 0 ||
+        (n = read(sched_fd, text, sizeof(text) - 1)) <= 0) {
+        return;
+    }
+    text[n] = '\0';
+    for (char *l = strtok_r(text, "\n", &save); l && nsched < 4096; l = strtok_r(NULL, "\n", &save)) {
+        struct sched_entry e;
+
+        if (sscanf(l, "%d %d %d %d", &e.tid, &e.policy, &e.priority, &e.nice) == 4) {
+            sched[nsched++] = e;
+        }
+    }
+}
+
+static void sched_save(void)
+{
+    char line[64];
+
+    if (sched_fd < 0 || ftruncate(sched_fd, 0) < 0 || lseek(sched_fd, 0, SEEK_SET) < 0) {
+        return;
+    }
+    for (int i = 0; i < nsched; i++) {
+        int len = snprintf(line, sizeof(line), "%d %d %d %d\n", (int)sched[i].tid,
+                           sched[i].policy, sched[i].priority, sched[i].nice);
+        if (write(sched_fd, line, (size_t)len) != len) {
+            return;
+        }
+    }
+}
+
+static void sched_unlock(void)
+{
+    if (sched_fd >= 0) {
+        close(sched_fd);
+        sched_fd = -1;
+    }
+}
+
+/* The entry of @tid, made from what the kernel has; -1 when full */
+static int sched_find(pid_t tid)
+{
+    struct sched_param sp;
+    int i, p;
+
+    for (i = 0; i < nsched && sched[i].tid != tid; i++) {
+    }
+    if (i < nsched) {
+        return i;
+    }
+    if (nsched == (int)(sizeof(sched) / sizeof(sched[0]))) {
+        return -1;
+    }
+    p = sched_getscheduler(tid);
+    sched[i].tid = tid;
+    sched[i].policy = p < 0 ? SCHED_OTHER : p & ~SCHED_RESET_ON_FORK;
+    sched[i].priority = p >= 0 && sched_getparam(tid, &sp) == 0 ? sp.sched_priority : 0;
+    errno = 0;
+    sched[i].nice = getpriority(PRIO_PROCESS, (id_t)tid);
+    if (errno) {
+        sched[i].nice = 0;
+    }
+    nsched++;
+    return i;
+}
+
+/* @tid's entry, read (@change: changed through @fn, saved) under the lock */
+static int sched_with(pid_t tid, bool change, void (*fn)(struct sched_entry *e, void *data),
+                      void *data)
+{
+    int i, err = 0;
 
     if (kill(tid, 0) < 0 && errno == ESRCH) {
         return -ESRCH;
     }
-    for (i = 0; i < nsched && sched[i].tid != tid; i++) {
-    }
-    if (i == nsched) {
-        if (nsched == (int)(sizeof(sched) / sizeof(sched[0]))) {
-            return -ENOMEM;
+    sched_lock();
+    sched_load();
+    if ((i = sched_find(tid)) < 0) {
+        err = -ENOMEM;
+    } else {
+        fn(&sched[i], data);
+        if (change) {
+            sched_save();
         }
-        nsched++;
     }
-    sched[i].tid = tid;
-    sched[i].policy = policy;
-    sched[i].priority = priority;
-    journal("sched %d %s %d", (int)tid, policy == SCHED_FIFO ? "fifo" : "other", priority);
-    return 0;
+    sched_unlock();
+    return err;
+}
+
+struct sched_args {
+    int policy, priority, nice;
+};
+
+static void get_entry(struct sched_entry *e, void *data)
+{
+    struct sched_args *a = data;
+
+    a->policy = e->policy;
+    a->priority = e->priority;
+    a->nice = e->nice;
+}
+
+static void set_policy(struct sched_entry *e, void *data)
+{
+    const struct sched_args *a = data;
+
+    e->policy = a->policy;
+    e->priority = a->priority;
+}
+
+static void set_nice(struct sched_entry *e, void *data)
+{
+    e->nice = ((const struct sched_args *)data)->nice;
+}
+
+int sys_getsched(pid_t tid, int *policy, int *priority)
+{
+    struct sched_args a;
+    int err = sched_with(tid, false, get_entry, &a);
+
+    if (!err) {
+        *policy = a.policy;
+        *priority = a.priority;
+    }
+    return err;
+}
+
+int sys_setsched(pid_t tid, int policy, int priority)
+{
+    struct sched_args a = {policy, priority, 0};
+    int err = sched_with(tid, true, set_policy, &a);
+
+    if (!err) {
+        journal("sched %d %s %d", (int)tid, policy == SCHED_FIFO ? "fifo" : "other", priority);
+    }
+    return err;
+}
+
+int sys_getnice(pid_t tid, int *nice)
+{
+    struct sched_args a;
+    int err = sched_with(tid, false, get_entry, &a);
+
+    if (!err) {
+        *nice = a.nice;
+    }
+    return err;
+}
+
+int sys_setnice(pid_t tid, int nice)
+{
+    struct sched_args a = {0, 0, nice};
+    int err = sched_with(tid, true, set_nice, &a);
+
+    if (!err) {
+        journal("nice %d %d", (int)tid, nice);
+    }
+    return err;
 }
 
 int sys_set_file_cap(int fd, const char *path)

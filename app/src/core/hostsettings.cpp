@@ -797,6 +797,8 @@ void HostSettings::handleLine(const QString &line)
     } else if (word == "error" && (line.endsWith(": watch a QEMU first") ||
                                    line.endsWith(": watch the process first"))) {
         /* after a watch that failed: said already, if worth it */
+    } else if (line.startsWith("skip rt ")) {
+        /* no real-time threads without the fair server: its own line says why */
     } else if (word == "skip" || word == "error") {
         /* "skip fair-server: kernel lockdown (integrity)" */
         say(tr("Host tuning: %1").arg(line.section(' ', 1)));
