@@ -20,7 +20,9 @@
 # host booted with them), the test lowers them to 32768 entries / 1024 MB
 # first, so that the helper has something to raise - values that still
 # take any guest window, for VMs running meanwhile - and the exit trap puts
-# back the values found.
+# back the values found.  They are kept in .dev/helper-e2e/udmabuf-before
+# until then: a run killed before its trap (SIGKILL, an OOM in its scope)
+# leaves the file, and the next run puts those values back first.
 #
 # Needs password-less sudo, the research export's QEMU and the KDE base
 # image (an overlay is made in .dev; the base is never written).  Not part
@@ -70,6 +72,26 @@ set_udma() {  # LIST SIZE_MB
 	echo "$1" | sudo tee $udma/list_limit > /dev/null
 	echo "$2" | sudo tee $udma/size_limit_mb > /dev/null
 }
+
+# --- what a run killed before its exit trap left ---
+# its helpers' states first: a new helper puts them back at its start
+out=$(sudo -n "$helper" session < /dev/null 2>&1 | grep -v '^ready \|^bye$')
+[ -z "$out" ] || { echo "left by an earlier run, put back:"; echo "$out" | sed 's/^/       /'; }
+# then the udmabuf limits it lowered (that helper's state put back the lowered ones)
+udma_saved=$dev/udmabuf-before
+if [ -e "$udma_saved" ]; then
+	read -r l s < "$udma_saved"
+	if [[ "$l $s" =~ ^[0-9]+\ [0-9]+$ ]] && [ -d $udma ]; then
+		echo "an earlier run did not end: the udmabuf limits back to the $l $s it found (they were $(udma_now))"
+		set_udma "$l" "$s"
+		rm -f "$udma_saved"
+	else
+		echo "$udma_saved: '$l $s' is not two numbers; put the limits back by hand:" >&2
+		echo "  echo VALUE | sudo tee $udma/list_limit; echo VALUE | sudo tee $udma/size_limit_mb" >&2
+		exit 2
+	fi
+fi
+
 fair_before=$(fair_now)
 gpu_before=$(gpu_now)
 udma_before=$(udma_now)
@@ -139,6 +161,7 @@ cleanup() {
 	else
 		echo "HOST SETTINGS NOT RESTORED:"; diff <(host_before) <(host_now)
 	fi
+	[ "$(udma_now)" = "$udma_before" ] && rm -f "$udma_saved"
 }
 trap cleanup EXIT
 
@@ -212,7 +235,11 @@ kill -0 $vm 2> /dev/null || { echo "QEMU did not start:"; cat "$dev/qemu.log"; e
 echo "  VM $name: QEMU $vm"
 
 # shellcheck disable=SC2086
-[ -n "$udma_before" ] && set_udma $udma_low
+if [ -n "$udma_before" ]; then
+	# for the next run, should this one end without its exit trap
+	echo "$udma_before" > "$udma_saved"
+	set_udma $udma_low
+fi
 start_helper "session 1"
 say "watch $vm"; expect "watch" "ok watch $vm"
 say "fair-server on"
