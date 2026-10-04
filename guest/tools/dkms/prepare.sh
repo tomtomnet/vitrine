@@ -22,8 +22,14 @@ headers="virtgpu_drv.h virtgpu_trace.h"
 
 say() { echo "vitrine-virtio-gpu: $*"; }
 
-fetch() {  # fetch FILE DEST -> 0 on success
-	curl -sS -f --connect-timeout 10 --max-time 60 -o "$2" "$url/$1?h=$tag"
+fetch() {  # fetch FILE DEST -> 0 on success, else says why
+	# kernel.org's cgit answers 429 or 503 now and then, and a guest's
+	# network may come up late: three more tries before giving up
+	curl -sS -f --connect-timeout 10 --max-time 60 --retry 3 --retry-all-errors \
+		--retry-delay 2 -o "$2" "$url/$1?h=$tag" && return 0
+	rc=$?
+	say "ERROR: could not fetch $1 of $tag from kernel.org (curl exit status $rc, 4 tries)" >&2
+	return 1
 }
 
 # The driver's source files, from its Makefile (a file added upstream is
@@ -84,7 +90,7 @@ sources_from_vendor() {
 
 sources_from_cache || sources_from_upstream || sources_from_vendor || {
 	say "ERROR: no driver sources for kernel $kver (tag $tag): none cached in $cache,"
-	say "ERROR: kernel.org could not be reached, and the vendored copy is of"
+	say "ERROR: the fetch from kernel.org failed (see above), and the vendored copy is of"
 	say "ERROR: $(cat vendor/VERSION 2> /dev/null || echo 'no version'), not $base. This kernel keeps the stock virtio-gpu"
 	say "ERROR: driver. Connect the guest to the network, then: sudo dkms autoinstall -k $kver"
 	exit 1

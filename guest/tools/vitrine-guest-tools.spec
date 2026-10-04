@@ -2,7 +2,7 @@
 # exact version, and dnf takes an installed one of the same version as done.
 Name:           vitrine-guest-tools
 Version:        0.1.0
-Release:        12%{?dist}
+Release:        13%{?dist}
 Summary:        vitrine guest tools: patched virtio-gpu driver, settings and agent
 
 # the driver's sources (dkms/vendor, dkms/patches) are the kernel's: MIT
@@ -137,6 +137,10 @@ fi
 %dir %{_sharedstatedir}/%{name}
 
 %changelog
+* Sun Oct 04 2026 vitrine <noreply@anthropic.com> - 0.1.0-13
+- the driver's sources fetched from kernel.org with retries (three more
+  tries, 2 s apart, on any error), and a failed fetch says which file and
+  why
 * Sun Oct 04 2026 vitrine <noreply@anthropic.com> - 0.1.0-12
 - clipboard sharing with the host: spice-vdagent, and the bridge that passes
   Wayland copies on to its X11 clipboard (from the qemu-gui fork), started
