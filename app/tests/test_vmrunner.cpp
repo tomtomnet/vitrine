@@ -9,6 +9,7 @@
 #include <QLocalServer>
 #include <QLocalSocket>
 #include <QProcess>
+#include <QRegularExpression>
 #include <QScopeGuard>
 #include <QSignalSpy>
 #include <QStandardPaths>
@@ -56,6 +57,16 @@ static bool gone(qint64 pid)
         return true;
     }
     return ::kill(pid_t(pid), 0) != 0 && errno == ESRCH;
+}
+
+/* A process's real-time time limit (RLIMIT_RTTIME), "soft hard" as
+   /proc/PID/limits has it: "unlimited unlimited", "200000 200000" */
+static QString realtimeTimeout(qint64 pid)
+{
+    static const QRegularExpression line("^Max realtime timeout\\s+(\\S+)\\s+(\\S+)",
+                                         QRegularExpression::MultilineOption);
+    const QRegularExpressionMatch m = line.match(read(QString("/proc/%1/limits").arg(pid)));
+    return m.hasMatch() ? m.captured(1) + ' ' + m.captured(2) : QString();
 }
 
 /*
@@ -389,20 +400,20 @@ private slots:
                  QStringList({"-device", "virtio-gpu-gl-pci,x-vblank-swap-target=6000"}));
     }
 
-    /* QEMU's environment: the SDL window's settings, then #env */
+    /* QEMU's environment: no RTKit, the SDL window's settings, then #env */
     void environment()
     {
         QCOMPARE(VmRunner::environment(ArgsFile::parse("-display sdl,gl=on\n")),
-                 QStringList({"QEMU_SDL_POLL_FOCUSED=1", "QEMU_SDL_ZERO_COPY=1",
-                              "QEMU_SDL_ZC_TILED=explicit"}));
+                 QStringList({"DISABLE_RTKIT=1", "QEMU_SDL_POLL_FOCUSED=1",
+                              "QEMU_SDL_ZERO_COPY=1", "QEMU_SDL_ZC_TILED=explicit"}));
         QCOMPARE(VmRunner::environment(ArgsFile::parse(
                      "-display sdl,gl=on\n#env QEMU_SDL_ZERO_COPY=0\n#env A=b\n")),
-                 QStringList({"QEMU_SDL_POLL_FOCUSED=1", "QEMU_SDL_ZC_TILED=explicit",
-                              "QEMU_SDL_ZERO_COPY=0", "A=b"}));
+                 QStringList({"DISABLE_RTKIT=1", "QEMU_SDL_POLL_FOCUSED=1",
+                              "QEMU_SDL_ZC_TILED=explicit", "QEMU_SDL_ZERO_COPY=0", "A=b"}));
         QCOMPARE(VmRunner::environment(ArgsFile::parse("-display dbus,p2p=yes,gl=on\n")),
-                 QStringList());
+                 QStringList({"DISABLE_RTKIT=1"}));
         QCOMPARE(VmRunner::environment(ArgsFile::parse("-display gtk\n#env A=b\n")),
-                 QStringList({"A=b"}));
+                 QStringList({"DISABLE_RTKIT=1", "A=b"}));
     }
 
     /* The environment as the log and Show Command Line print it: a shell
@@ -415,7 +426,8 @@ private slots:
         const QStringList assignments = VmRunner::shellAssignments(env);
 
         QCOMPARE(assignments,
-                 QStringList({"PULSE_PROP='media.role=game application.name=vm'", "EMPTY=''",
+                 QStringList({"DISABLE_RTKIT=1",
+                              "PULSE_PROP='media.role=game application.name=vm'", "EMPTY=''",
                               "TILDE='~/x'", "QUOTE='it'\\''s $HOME'", "PLAIN=1"}));
         QProcess sh;
         sh.start("/bin/sh", {"-c", assignments.join(' ') +
@@ -818,6 +830,56 @@ private slots:
         QVERIFY2(error.contains("nonexistent") && error.contains("-device"), qPrintable(error));
         QCOMPARE(runner.state(), VmRunner::State::Stopped);
         QCOMPARE(runner.errorString(), error);
+    }
+
+    /*
+     * No real-time time limit for a QEMU with PipeWire audio: QEMU has no
+     * capability, so PipeWire's module-rt asks RTKit (or the realtime
+     * portal) for its audio thread and sets RLIMIT_RTTIME to RTKit's 200 ms
+     * for the whole process; the kernel then SIGKILLs QEMU, without a word
+     * in its log, as soon as a thread the helper made real-time runs that
+     * long without sleeping - a busy vCPU.  The runner's QEMU must keep it
+     * unlimited.  The same QEMU started as is shows whether this host's
+     * PipeWire sets it at all (it needs PipeWire, and RTKit or the portal).
+     */
+    void noRealtimeTimeLimit()
+    {
+        const QStringList audio{"-audiodev", "pipewire,id=snd0"};
+        QProcess plain;
+        plain.setProcessChannelMode(QProcess::ForwardedChannels);
+        plain.start(testQemu(), QString(kHeadless).split(QRegularExpression("\\s+"),
+                                                         Qt::SkipEmptyParts) + audio);
+        QVERIFY(plain.waitForStarted());
+        const auto stopPlain = qScopeGuard([&plain]() {
+            plain.terminate();
+            if (!plain.waitForFinished(5000)) {
+                plain.kill();
+                plain.waitForFinished();
+            }
+        });
+        QElapsedTimer clock;
+        clock.start();
+        QString limit;
+        while (plain.state() == QProcess::Running && clock.elapsed() < 5000 &&
+               (limit = realtimeTimeout(plain.processId())) == "unlimited unlimited") {
+            QTest::qWait(20);
+        }
+        if (plain.state() != QProcess::Running) {
+            QSKIP("QEMU does not run with PipeWire audio here (no PipeWire?)");
+        }
+        if (limit == "unlimited unlimited") {
+            QSKIP("PipeWire sets no real-time time limit here (no RTKit, no portal)");
+        }
+        const qint64 waited = clock.elapsed();
+
+        VmRunner runner(id, tmp.path());
+        runner.start(ArgsFile::parse(QByteArray(kHeadless) + "-audiodev pipewire,id=snd0\n"));
+        QTRY_COMPARE_WITH_TIMEOUT(runner.state(), VmRunner::State::Running, 20000);
+        /* PipeWire sets it from a thread of its own, a moment after it starts */
+        QTest::qWait(int(waited) + 1000);
+        QCOMPARE(realtimeTimeout(runner.pid()), QString("unlimited unlimited"));
+        runner.forceOff();
+        QTRY_COMPARE_WITH_TIMEOUT(runner.state(), VmRunner::State::Stopped, 15000);
     }
 
     void unexpectedExit()

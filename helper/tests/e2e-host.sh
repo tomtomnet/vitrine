@@ -9,9 +9,10 @@
 # (the next one restores them), vitrine gone while the VM runs (stdin
 # closed), two helpers, a udmabuf limit changed by hand meanwhile (left as
 # it is), focus priority on a real QEMU's threads (rt for the VM in front,
-# behind for the others: vCPUs at nice -5), the capability an older vitrine
-# gave its QEMU taken back by the app, and the app's HostSettings driving
-# this helper.
+# behind for the others: vCPUs at nice -5), a QEMU with a real-time time
+# limit (PipeWire's, through RTKit) that survives a vCPU spinning at
+# SCHED_FIFO, the capability an older vitrine gave its QEMU taken back by
+# the app, and the app's HostSettings driving this helper.
 #
 #   helper/tests/e2e-host.sh [BUILD_DIR]
 #
@@ -502,6 +503,37 @@ fi
 check "getcap shows none" '[ -z "$(getcap "$stackbin/qemu-system-x86_64")" ]'
 kill $q4b; wait $q4b 2> /dev/null
 rm -rf "$dev/data"
+
+echo "== 4c. a real-time time limit on QEMU: rt lifts it before a spinning vCPU is real-time"
+# PipeWire's module-rt sets RTKit's 200 ms on QEMU's process (no CAP_SYS_NICE);
+# with it, the kernel SIGKILLs QEMU once a SCHED_FIFO thread runs that long
+# without sleeping.  The guest: a boot sector that spins (jmp $), its vCPU
+# never halts (on a disk of 1 MiB: SeaBIOS boots none of 512 bytes).
+printf '\xeb\xfe' > "$dev/spin.img"
+truncate -s 510 "$dev/spin.img"
+printf '\x55\xaa' >> "$dev/spin.img"
+truncate -s 1M "$dev/spin.img"
+"$qemu" -L "$pcbios" -name e2e-rttime,debug-threads=on -machine q35 -accel kvm -smp 1 -m 64M \
+	-display none -drive file="$dev/spin.img",format=raw,if=ide > "$dev/q4c.log" 2>&1 &
+q4c=$!
+pids+=("$q4c")
+sleep 1
+rttime() { awk '/^Max realtime timeout/ {print $4 " " $5}' "/proc/$1/limits"; }
+prlimit --pid "$q4c" --rttime=200000:200000
+check "QEMU with PipeWire's limit: $(rttime $q4c)" '[ "$(rttime $q4c)" = "200000 200000" ]'
+start_helper "session 4c"
+say "watch $q4c"; expect "watch" "ok watch $q4c"
+say "fair-server on"; expect "fair server" "ok fair-server on: .*"
+say "rt $q4c"; expect "rt" "ok rt $q4c: ([0-9]+) of ([0-9]+) threads real-time"
+check "the limit lifted: $(rttime $q4c)" '[ "$(rttime $q4c)" = "unlimited unlimited" ]'
+sleep 1.5
+check "QEMU alive after its vCPU spun 1.5 s at SCHED_FIFO" '! gone $q4c'
+say "release"
+wait_for "release puts the threads back" "restored rt $q4c: [0-9]+ threads back to SCHED_OTHER"
+wait_for "helper ends" "bye"
+check "fair server as found" '[ "$(fair_now)" = "$fair_after" ]'
+kill $q4c; wait $q4c 2> /dev/null
+rm -f "$dev/spin.img"
 
 # ======================================================================
 echo "== 5. the app's side: HostSettings with this helper through sudo"

@@ -14,7 +14,8 @@
  * parameters do.  Every write, scheduler and nice
  * change and log line is appended to <root>/journal.  Schedulers and nice
  * values are kept in <root>/sched (an unprivileged test cannot make threads
- * real-time nor lower their nice), where the next helper finds them; the
+ * real-time nor lower their nice), where the next helper finds them, and
+ * real-time time limits in <root>/rttime-<pid> (see sys_getrttime); the
  * processes and /proc are real.  The group database is <root>/etc/group
  * (name:x:gid:members lines); the users are the real ones.  This build
  * refuses to run as root, and the installed helper has no test root at all.
@@ -540,6 +541,94 @@ int sys_setnice(pid_t tid, int nice)
         journal("nice %d %d", (int)tid, nice);
     }
     return err;
+}
+
+/*
+ * Real-time time limits: an unprivileged test cannot raise a hard limit, so
+ * a process's, once set here, is kept in <root>/rttime-<pid> ("soft hard",
+ * "unlimited" for none); before that, the process's own.  With a file
+ * <root>/rttime.refuse, setting one fails with EPERM.
+ */
+static void rttime_path(char *path, size_t size, pid_t pid)
+{
+    snprintf(path, size, "%s/rttime-%d", root, (int)pid);
+}
+
+static bool rttime_parse(const char *word, rlim_t *v)
+{
+    unsigned long long n;
+    char *end;
+
+    if (strcmp(word, "unlimited") == 0) {
+        *v = RLIM_INFINITY;
+        return true;
+    }
+    errno = 0;
+    n = strtoull(word, &end, 10);
+    if (errno || end == word || *end) {
+        return false;
+    }
+    *v = (rlim_t)n;
+    return true;
+}
+
+static const char *rttime_word(rlim_t v, char *buf, size_t size)
+{
+    if (v == RLIM_INFINITY) {
+        return "unlimited";
+    }
+    snprintf(buf, size, "%llu", (unsigned long long)v);
+    return buf;
+}
+
+int sys_getrttime(pid_t pid, rlim_t *soft, rlim_t *hard)
+{
+    char path[PATH_MAX], text[64], a[32], b[32];
+    struct rlimit own;
+    int fd;
+
+    rttime_path(path, sizeof(path), pid);
+    if ((fd = open(path, O_RDONLY | O_CLOEXEC)) >= 0) {
+        ssize_t n = read(fd, text, sizeof(text) - 1);
+
+        close(fd);
+        text[n > 0 ? n : 0] = '\0';
+        if (sscanf(text, "%31s %31s", a, b) == 2 && rttime_parse(a, soft) &&
+            rttime_parse(b, hard)) {
+            return 0;
+        }
+        return -EIO;
+    }
+    if (prlimit(pid, RLIMIT_RTTIME, NULL, &own) < 0) {
+        return -errno;
+    }
+    *soft = own.rlim_cur;
+    *hard = own.rlim_max;
+    return 0;
+}
+
+int sys_setrttime(pid_t pid, rlim_t soft, rlim_t hard)
+{
+    char path[PATH_MAX], a[32], b[32];
+    const char *sw = rttime_word(soft, a, sizeof(a)), *hw = rttime_word(hard, b, sizeof(b));
+    int fd;
+
+    if (kill(pid, 0) < 0 && errno == ESRCH) {
+        return -ESRCH;
+    }
+    snprintf(path, sizeof(path), "%s/rttime.refuse", root);
+    if (access(path, F_OK) == 0) {
+        return -EPERM;
+    }
+    rttime_path(path, sizeof(path), pid);
+    fd = open(path, O_WRONLY | O_CREAT | O_TRUNC | O_CLOEXEC, 0600);
+    if (fd < 0) {
+        return -errno;
+    }
+    dprintf(fd, "%s %s\n", sw, hw);
+    close(fd);
+    journal("rttime %d %s %s", (int)pid, sw, hw);
+    return 0;
 }
 
 void sys_log(const char *fmt, ...)

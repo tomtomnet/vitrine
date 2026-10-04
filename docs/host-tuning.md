@@ -91,7 +91,7 @@ for them. It does only this, for the user who started it:
 | `watch PID` | Watches a QEMU until it exits | The process belongs to the caller (all its uids) and runs a `qemu-system-*` (or `qemu-kvm`) executable; held through a pidfd, so a reused pid cannot slip in |
 | `fair-server on` | 10 ms / 1 ms on every online CPU, read back; under sched_ext the ext server too | Fixed values; only `cpuN` folders; nothing to choose. All or nothing: a refused write puts the others back and says which CPU and why |
 | `gpu-floor CARD MHZ\|auto` | An AMD GPU's lowest gfx clock | `cardN` of vendor 0x1002 driven by amdgpu; the clock within the GPU's own overdrive range; only when its performance level is `auto` |
-| `rt PID` | SCHED_FIFO 1 on every thread of a watched QEMU (the VM in front) | Only once `fair-server on` holds; watched first, and checked again to be the caller's QEMU (it may have run another program since); real-time threads it finds are left as they are; its child processes (passt) are not touched |
+| `rt PID` | SCHED_FIFO 1 on every thread of a watched QEMU (the VM in front), its real-time time limit (`RLIMIT_RTTIME`) lifted first | Only once `fair-server on` holds; watched first, and checked again to be the caller's QEMU (it may have run another program since); no thread made real-time if the limit cannot be lifted; real-time threads it finds are left as they are; its child processes (passt) are not touched |
 | `behind PID` | The threads `rt` made real-time back to SCHED_OTHER, its vCPU threads (`CPU n/KVM`) at nice -5 (a VM behind the one in front) | The same checks as `rt`; nice -5 only while the fair server holds, and only for vCPUs at nice 0 |
 | `udmabuf PID` | The udmabuf module's `list_limit` at 65536 and `size_limit_mb` at 2048, while that watched QEMU runs | A watched QEMU (its GPU is not checked: vitrine asks only for native-context ones); fixed values; raised only, a higher value stays; skipped when the module is not loaded; put back after the last QEMU that asked for it |
 | `setup-group` | The caller in the `vitrine` group, the group created (`groupadd --system`) if there is none | See below |
@@ -123,7 +123,13 @@ What this amounts to:
   (as their owner: no password), and the helper does the scheduling. The
   one thing QEMU loses is amdgpu's high-priority GPU contexts, which the
   guest's compositor asks for and falls back from; no difference was
-  measured.
+  measured. Without the capability, PipeWire (the VM's sound) asks RTKit
+  for a real-time audio thread, and sets for that a real-time time limit
+  of 200 ms on the whole QEMU: the kernel kills QEMU, silently, once a
+  real-time vCPU runs that long without a pause. vitrine starts QEMU with
+  `DISABLE_RTKIT=1`, so its audio thread is real-time only with the VM's
+  other threads, and the helper lifts such a limit before it makes threads
+  real-time.
 
 `setup-group` takes no argument: the group is `vitrine` and the user is
 the caller (pkexec's `PKEXEC_UID`, looked up in the user database),

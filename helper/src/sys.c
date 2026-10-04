@@ -114,6 +114,25 @@ int sys_setnice(pid_t tid, int nice)
     return setpriority(PRIO_PROCESS, (id_t)tid, nice) < 0 ? -errno : 0;
 }
 
+int sys_getrttime(pid_t pid, rlim_t *soft, rlim_t *hard)
+{
+    struct rlimit old;
+
+    if (prlimit(pid, RLIMIT_RTTIME, NULL, &old) < 0) {
+        return -errno;
+    }
+    *soft = old.rlim_cur;
+    *hard = old.rlim_max;
+    return 0;
+}
+
+int sys_setrttime(pid_t pid, rlim_t soft, rlim_t hard)
+{
+    const struct rlimit limit = {.rlim_cur = soft, .rlim_max = hard};
+
+    return prlimit(pid, RLIMIT_RTTIME, &limit, NULL) < 0 ? -errno : 0;
+}
+
 void sys_log(const char *fmt, ...)
 {
     va_list ap;

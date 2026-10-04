@@ -29,7 +29,8 @@
  *                          an amdgpu card's lowest gfx clock (auto: 1800 MHz on
  *                          APUs whose minimum is lower)
  *   rt PID                 SCHED_FIFO 1 on every thread of a watched QEMU,
- *                          once the fair server is set: the VM in front
+ *                          once the fair server is set and the process's
+ *                          real-time time limit lifted: the VM in front
  *   behind PID             those threads back to SCHED_OTHER, its vCPUs at
  *                          nice -5: a VM behind the one in front
  *   udmabuf PID            the udmabuf limits raised (65536 entries, 2048 MB)
