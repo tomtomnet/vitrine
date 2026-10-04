@@ -70,11 +70,14 @@ private:
     void consoleChanged(VmConsole *console);
     /* Who has the keyboard, in the status bar */
     void updateInput();
-    /*
-     * The keys to the screen of the VM shown, without a click on it; after
-     * the window came to the front (@activated), unless a click in it did
-     */
-    void focusScreen(bool activated);
+    /* Why the screen of the VM shown may take the keys (focusScreen()) */
+    enum class FocusCause {
+        Activated,  // the window came to the front
+        Shown,      // the screen appeared, its VM runs again, its tab was chosen
+        Switched,   // another VM was selected
+    };
+    /* The keys to the screen of the VM shown, without a click on it */
+    void focusScreen(FocusCause cause);
     /* No screen in full screen, none grabbing: before a dialog */
     void leaveScreens();
 
@@ -137,6 +140,8 @@ private:
     QSet<QString> m_shutDownOnceUp;
     /* Since the last mouse press in the window */
     QElapsedTimer m_lastPress;
+    /* Since the last key press in the list of VMs */
+    QElapsedTimer m_lastListKey;
 
     QAction *m_new;
     QAction *m_import;

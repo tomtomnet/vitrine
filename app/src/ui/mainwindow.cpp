@@ -298,9 +298,12 @@ MainWindow::MainWindow(VmStore *store, QWidget *parent)
     connect(m_pane, &VmPane::startFromSnapshot, this, &MainWindow::startFrom);
     connect(m_pane, &VmPane::tabChanged, this, [this](VmPane::Tab tab) {
         if (tab == VmPane::Console) {
-            focusScreen(false);
+            focusScreen(FocusCause::Shown);
         }
     });
+    /* a click on the VM shown already: its screen, as a click on another */
+    connect(m_list, &QListWidget::itemClicked, this,
+            [this]() { focusScreen(FocusCause::Switched); });
     connect(store, &VmStore::added, this, &MainWindow::addVm);
     connect(store, &VmStore::removed, this, &MainWindow::removeItem);
     connect(QemuDocs::preferred(), &QemuDocs::changed, this, &MainWindow::updateStatus);
@@ -751,6 +754,8 @@ void MainWindow::showCurrent()
     m_details->setError(vm ? m_errors.value(vm->id()) : QString());
     updateActions();
     updateInput();
+    /* once the stack shows the console: a hidden widget takes no focus */
+    QTimer::singleShot(0, this, [this]() { focusScreen(FocusCause::Switched); });
 }
 
 VmConsole *MainWindow::consoleOf(Vm *vm)
@@ -773,7 +778,7 @@ VmConsole *MainWindow::consoleOf(Vm *vm)
     connect(console, &VmConsole::changed, this, [this, console]() { consoleChanged(console); });
     connect(console, &VmConsole::screenReady, this, [this, console]() {
         if (console == currentConsole()) {
-            focusScreen(false);
+            focusScreen(FocusCause::Shown);
         }
     });
     return console;
@@ -854,9 +859,13 @@ bool MainWindow::eventFilter(QObject *watched, QEvent *event)
         static_cast<QWidget *>(watched)->window() == this) {
         m_lastPress.start();
     }
+    /* the arrows, Home, End... going through the list of VMs */
+    if (event->type() == QEvent::KeyPress && watched == m_list) {
+        m_lastListKey.start();
+    }
     /* once Qt gave the focus back to the widget that had it */
     if (watched == this && event->type() == QEvent::WindowActivate) {
-        QTimer::singleShot(0, this, [this]() { focusScreen(true); });
+        QTimer::singleShot(0, this, [this]() { focusScreen(FocusCause::Activated); });
     }
     return QMainWindow::eventFilter(watched, event);
 }
@@ -864,13 +873,16 @@ bool MainWindow::eventFilter(QObject *watched, QEvent *event)
 /*
  * As soon as the window is in front, the keys go to the screen of the VM it
  * shows, as after a click on it: when the window comes to the front, when
- * the screen appears or its VM runs again, when the Console tab is chosen.
- * Not when a click in the window brought it to the front (the click chose
- * where the keys go, the screen itself taking them on its own), nor from a
- * text field that has them.  A VM's list and tabs take the focus back as
- * usual: clicked, or by Release Input.
+ * the screen appears or its VM runs again, when the Console tab is chosen,
+ * and when another VM is selected - clicked in the list, or the one shown
+ * clicked again.  Not when a click in the window brought it to the front
+ * (the click chose where the keys go, the screen itself taking them on its
+ * own), nor while the keys go through the list of VMs (its arrows select the
+ * next one), nor from a text field that has them.  The list and the tabs
+ * take the focus back as usual: Release Input, or the keys after a click on
+ * the list's empty part.
  */
-void MainWindow::focusScreen(bool activated)
+void MainWindow::focusScreen(FocusCause cause)
 {
     VmConsole *console = currentConsole();
     const VmView *view = console ? console->view() : nullptr;
@@ -880,7 +892,11 @@ void MainWindow::focusScreen(bool activated)
         view->hasKeyboard()) {
         return;
     }
-    if (activated && m_lastPress.isValid() && m_lastPress.elapsed() < 500) {
+    if (cause == FocusCause::Activated && m_lastPress.isValid() && m_lastPress.elapsed() < 500) {
+        return;
+    }
+    if (cause == FocusCause::Switched && m_list->hasFocus() && m_lastListKey.isValid() &&
+        m_lastListKey.elapsed() < 500) {
         return;
     }
     const QWidget *focus = QApplication::focusWidget();
