@@ -9,11 +9,13 @@
 #include <QFileDialog>
 #include <QFileInfo>
 #include <QFontDatabase>
+#include <QGridLayout>
 #include <QHBoxLayout>
 #include <QHeaderView>
 #include <QInputDialog>
 #include <QLabel>
 #include <QLineEdit>
+#include <QListWidget>
 #include <QMap>
 #include <QMessageBox>
 #include <QPushButton>
@@ -22,13 +24,14 @@
 #include <QSlider>
 #include <QSpinBox>
 #include <QSplitter>
-#include <QStandardItemModel>
 #include <QTableWidget>
 #include <QThread>
 #include <QTreeWidget>
 #include <QTreeWidgetItemIterator>
 #include <QUrl>
 #include <QVBoxLayout>
+
+#include <algorithm>
 
 #include "core/firmware.h"
 #include "core/firmwarefiles.h"
@@ -365,11 +368,14 @@ bool DisplayPage::isModified() const
 StoragePage::StoragePage(const QString &vmDir, QWidget *parent)
     : SettingsPage(parent), m_vmDir(vmDir), m_table(new QTableWidget(0, 4)),
       m_disc(new QPushButton(tr("Choose &Disc…"))), m_eject(new QPushButton(tr("&Eject"))),
-      m_resize(new QPushButton(tr("Si&ze…"))), m_remove(new QPushButton(tr("&Remove")))
+      m_resize(new QPushButton(tr("Si&ze…"))), m_remove(new QPushButton(tr("&Remove"))),
+      m_boot(new QListWidget), m_bootUp(new QPushButton(tr("Move &Up"))),
+      m_bootDown(new QPushButton(tr("Move Dow&n"))), m_bootHint(Widgets::hint())
 {
-    auto *layout = new QVBoxLayout(this);
-    auto *tableRow = new QHBoxLayout;
+    /* the boot order's buttons in the column of the disks' */
+    auto *layout = new QGridLayout(this);
     auto *buttons = new QVBoxLayout;
+    auto *bootButtons = new QVBoxLayout;
     auto *addDisk = new QPushButton(tr("Add Hard Dis&k…"));
     auto *addCdrom = new QPushButton(tr("Add &CD/DVD Drive"));
 
@@ -385,8 +391,13 @@ StoragePage::StoragePage(const QString &vmDir, QWidget *parent)
     m_table->setEditTriggers(QAbstractItemView::NoEditTriggers);
     m_table->setWordWrap(false);
 
+    /* each button of the column with its icon, not some */
     addDisk->setIcon(Icons::themed({"drive-harddisk", "list-add"}, QStyle::SP_DriveHDIcon));
     addCdrom->setIcon(Icons::themed({"drive-optical", "list-add"}, QStyle::SP_DriveCDIcon));
+    m_disc->setIcon(Icons::themed({"document-open"}, QStyle::SP_DialogOpenButton));
+    m_eject->setIcon(Icons::themed({"media-eject"}, QStyle::SP_ArrowUp));
+    m_resize->setIcon(Icons::themed({"transform-scale", "document-edit"},
+                                    QStyle::SP_FileDialogDetailedView));
     m_remove->setIcon(Icons::themed({"list-remove", "edit-delete"}, QStyle::SP_TrashIcon));
     /* beside the table, as a row under it would not fit a narrow window */
     buttons->addWidget(addDisk);
@@ -397,13 +408,30 @@ StoragePage::StoragePage(const QString &vmDir, QWidget *parent)
     buttons->addWidget(m_resize);
     buttons->addWidget(m_remove);
     buttons->addStretch();
-    tableRow->addWidget(m_table, 1);
-    tableRow->addLayout(buttons);
 
+    /* the devices to start from, as virt-manager has them: checked and in order */
+    m_boot->setObjectName("bootOrder");
+    m_boot->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Fixed);
+    m_bootUp->setObjectName("bootUp");
+    m_bootDown->setObjectName("bootDown");
+    m_bootUp->setIcon(Icons::themed({"go-up", "arrow-up"}, QStyle::SP_ArrowUp));
+    m_bootDown->setIcon(Icons::themed({"go-down", "arrow-down"}, QStyle::SP_ArrowDown));
+    bootButtons->addWidget(m_bootUp);
+    bootButtons->addWidget(m_bootDown);
+    bootButtons->addStretch();
+
+    layout->setColumnStretch(0, 1);
     layout->addWidget(Widgets::note(tr("The disks and CD/DVD drives of the VM. New disks are "
                                        "created in the VM folder when you apply; removing a "
-                                       "disk takes it out of the VM, but its file stays.")));
-    layout->addLayout(tableRow, 1);
+                                       "disk takes it out of the VM, but its file stays.")),
+                      0, 0, 1, 2);
+    layout->addWidget(m_table, 1, 0);
+    layout->addLayout(buttons, 1, 1);
+    layout->setRowStretch(1, 1);
+    layout->addWidget(Widgets::heading(tr("Boot order")), 2, 0, 1, 2);
+    layout->addWidget(m_boot, 3, 0, Qt::AlignTop);
+    layout->addLayout(bootButtons, 3, 1);
+    layout->addWidget(m_bootHint, 4, 0, 1, 2);
 
     connect(addDisk, &QPushButton::clicked, this, &StoragePage::addDisk);
     connect(addCdrom, &QPushButton::clicked, this, &StoragePage::addCdrom);
@@ -420,6 +448,9 @@ StoragePage::StoragePage(const QString &vmDir, QWidget *parent)
         if (i < 0) {
             return;
         }
+        /* out of the boot order too */
+        const int id = m_entries[i].id;
+        m_bootItems.removeIf([id](const BootItem &item) { return item.entry == id; });
         if (m_entries[i].disk.line < 0) {
             m_entries.removeAt(i);
         } else {
@@ -427,6 +458,10 @@ StoragePage::StoragePage(const QString &vmDir, QWidget *parent)
         }
         fill();
     });
+    connect(m_boot, &QListWidget::itemChanged, this, &StoragePage::bootChanged);
+    connect(m_boot, &QListWidget::currentRowChanged, this, &StoragePage::updateButtons);
+    connect(m_bootUp, &QPushButton::clicked, this, [this]() { moveBoot(-1); });
+    connect(m_bootDown, &QPushButton::clicked, this, [this]() { moveBoot(1); });
     connect(m_table, &QTableWidget::currentCellChanged, this, &StoragePage::updateButtons);
     connect(m_table, &QTableWidget::cellDoubleClicked, this, [this]() {
         if (m_disc->isEnabled()) {
@@ -444,10 +479,34 @@ QIcon StoragePage::icon() const
 
 void StoragePage::load(const ArgsFile &args)
 {
+    QStringList cards;
+
     m_virt = VmConfig::machineType(args).startsWith("virt");
     m_entries.clear();
     for (const VmConfig::Disk &d : VmConfig::disks(args)) {
-        m_entries << Entry{d, d.file, m_pending.value(d.file), false};
+        m_entries << Entry{d, d.file, m_pending.value(d.file), false, m_nextId++};
+    }
+    /* the network cards, as VmConfig counts them: devices of a -netdev */
+    for (int i : args.indexesOf("device")) {
+        if (args.valueAt(i).has("netdev")) {
+            cards << args.valueAt(i).implied();
+        }
+    }
+    m_bootSet = VmConfig::hasBootOrder(args);
+    m_bootChanged = false;
+    m_bootItems.clear();
+    for (const VmConfig::BootEntry &b : VmConfig::bootOrder(args)) {
+        BootItem item;
+        item.kind = b.kind;
+        item.on = b.on;
+        item.editable = b.editable;
+        if (b.kind == VmConfig::BootEntry::Network) {
+            item.nic = b.index;
+            item.card = cards.value(b.index);
+        } else {
+            item.entry = m_entries.value(b.index).id;
+        }
+        m_bootItems << item;
     }
     fill();
 }
@@ -487,11 +546,36 @@ void StoragePage::save(ArgsFile &args)
             }
         }
     }
+    if (m_bootChanged) {
+        /* the disks now: those kept, then those added, as the page lists them */
+        QList<int> ids;
+        QList<VmConfig::BootEntry> order;
+        for (const Entry &e : std::as_const(m_entries)) {
+            if (!e.removed) {
+                ids << e.id;
+            }
+        }
+        for (const BootItem &item : std::as_const(m_bootItems)) {
+            VmConfig::BootEntry b;
+            b.kind = item.kind;
+            b.index = item.kind == VmConfig::BootEntry::Network ? item.nic
+                                                                 : int(ids.indexOf(item.entry));
+            b.on = item.on;
+            b.editable = item.editable;
+            if (b.index >= 0) {
+                order << b;
+            }
+        }
+        VmConfig::setBootOrder(args, order);
+    }
     load(args);
 }
 
 bool StoragePage::isModified() const
 {
+    if (m_bootChanged) {
+        return true;
+    }
     for (const Entry &e : m_entries) {
         if (e.removed || e.disk.line < 0 || e.file != e.disk.file ||
             (e.newGiB > 0 && e.newGiB != m_pending.value(e.file))) {
@@ -574,7 +658,128 @@ void StoragePage::fill()
     if (n > 0) {
         m_table->setCurrentCell(qBound(0, row, n - 1), 0);
     }
+    fillBoot();
     updateButtons();
+}
+
+/*
+ * A disk added on the page: in the firmware's own order (none set), with
+ * the others of its kind, on; in an order set, off at the end, which is
+ * what the VM does with it until the order changes
+ */
+void StoragePage::addBootItem(const Entry &entry)
+{
+    BootItem item;
+
+    item.kind = entry.disk.cdrom ? VmConfig::BootEntry::Cdrom : VmConfig::BootEntry::HardDisk;
+    item.entry = entry.id;
+    if (m_bootSet || m_bootChanged) {
+        m_bootItems << item;
+        return;
+    }
+    item.on = true;
+    /* after the last of its kind, or before the first of a kind that comes after */
+    qsizetype at = m_bootItems.size();
+    for (qsizetype i = 0; i < m_bootItems.size(); i++) {
+        if (m_bootItems[i].kind > item.kind || !m_bootItems[i].on) {
+            at = i;
+            break;
+        }
+    }
+    m_bootItems.insert(at, item);
+}
+
+/* The boot order's list from m_bootItems: checked, unchecked, or greyed */
+void StoragePage::fillBoot()
+{
+    const QSignalBlocker block(m_boot);
+    const int row = m_boot->currentRow();
+
+    m_boot->clear();
+    for (qsizetype i = 0; i < m_bootItems.size(); i++) {
+        const BootItem &b = m_bootItems[i];
+        QString text;
+        QIcon icon;
+
+        if (b.kind == VmConfig::BootEntry::Network) {
+            icon = Icons::themed({"network-wired"}, QStyle::SP_DriveNetIcon);
+            text = tr("Network (PXE): %1").arg(b.card);
+        } else {
+            const auto e = std::find_if(m_entries.cbegin(), m_entries.cend(),
+                                        [&b](const Entry &e) { return e.id == b.entry; });
+            if (e == m_entries.cend() || e->removed) {
+                continue;
+            }
+            const bool cdrom = b.kind == VmConfig::BootEntry::Cdrom;
+            const QString file = QFileInfo(e->file).fileName();
+            icon = Icons::themed({cdrom ? "drive-optical" : "drive-harddisk"},
+                                 cdrom ? QStyle::SP_DriveCDIcon : QStyle::SP_DriveHDIcon);
+            text = cdrom ? (file.isEmpty() ? tr("CD/DVD: empty") : tr("CD/DVD: %1").arg(file))
+                         : tr("Hard disk: %1").arg(file);
+        }
+        auto *item = new QListWidgetItem(icon, text, m_boot);
+        item->setData(Qt::UserRole, int(i));
+        if (b.editable) {
+            item->setFlags(Qt::ItemIsEnabled | Qt::ItemIsSelectable | Qt::ItemIsUserCheckable);
+            item->setCheckState(b.on ? Qt::Checked : Qt::Unchecked);
+        } else {
+            /* -drive if=scsi, or a -blockdev without its -device */
+            item->setFlags(Qt::NoItemFlags);
+            item->setCheckState(Qt::Unchecked);
+            item->setToolTip(tr("Set up by hand: see the Arguments page"));
+        }
+    }
+    /* as high as its rows: a few devices, never scrolled */
+    int height = 2 * m_boot->frameWidth();
+    for (int i = 0; i < m_boot->count(); i++) {
+        height += m_boot->sizeHintForRow(i);
+    }
+    m_boot->setFixedHeight(qMax(height, m_boot->fontMetrics().height() + 2 * m_boot->frameWidth()));
+    if (m_boot->count() > 0) {
+        m_boot->setCurrentRow(qBound(0, row, m_boot->count() - 1));
+    }
+    m_bootHint->setText(m_bootSet || m_bootChanged
+                            ? tr("The VM starts from the first checked device it can start "
+                                 "from. The others stay in the VM, but it never starts from "
+                                 "them.")
+                            : tr("No order is set: the firmware starts from the devices in an "
+                                 "order of its own. Changing the list sets one."));
+}
+
+/* A device checked or unchecked: one stays checked, to start from */
+void StoragePage::bootChanged(QListWidgetItem *item)
+{
+    const int i = item->data(Qt::UserRole).toInt();
+    const bool on = item->checkState() == Qt::Checked;
+
+    if (i < 0 || i >= m_bootItems.size() || m_bootItems[i].on == on) {
+        return;
+    }
+    if (!on && std::count_if(m_bootItems.cbegin(), m_bootItems.cend(),
+                             [](const BootItem &b) { return b.on; }) <= 1) {
+        const QSignalBlocker block(m_boot);
+        item->setCheckState(Qt::Checked);
+        return;
+    }
+    m_bootItems[i].on = on;
+    m_bootChanged = true;
+    fillBoot();
+}
+
+void StoragePage::moveBoot(int by)
+{
+    QListWidgetItem *item = m_boot->currentItem();
+    const int row = m_boot->currentRow();
+
+    if (!item || row + by < 0 || row + by >= m_boot->count()) {
+        return;
+    }
+    const int from = item->data(Qt::UserRole).toInt();
+    const int to = m_boot->item(row + by)->data(Qt::UserRole).toInt();
+    m_bootItems.swapItemsAt(from, to);
+    m_bootChanged = true;
+    fillBoot();
+    m_boot->setCurrentRow(row + by);
 }
 
 void StoragePage::updateButtons()
@@ -582,11 +787,18 @@ void StoragePage::updateButtons()
     const int i = current();
     const bool editable = i >= 0 && m_entries[i].disk.editable;
     const bool cdrom = editable && m_entries[i].disk.cdrom;
+    const int boot = m_boot->currentRow();
+    const QListWidgetItem *item = m_boot->currentItem();
+    /* the devices set up by hand stay where they are: last, off */
+    const bool movable = item && item->flags() & Qt::ItemIsEnabled;
 
     m_disc->setEnabled(cdrom);
     m_eject->setEnabled(cdrom && !m_entries[i].file.isEmpty());
     m_resize->setEnabled(editable && m_entries[i].newGiB > 0);
     m_remove->setEnabled(editable);
+    m_bootUp->setEnabled(movable && boot > 0);
+    m_bootDown->setEnabled(movable && boot + 1 < m_boot->count() &&
+                           m_boot->item(boot + 1)->flags() & Qt::ItemIsEnabled);
 }
 
 QString StoragePage::newDiskName() const
@@ -657,7 +869,7 @@ void StoragePage::addDisk()
     };
     connect(group, &QButtonGroup::buttonToggled, &dialog, update);
     update();
-    dialog.resize(560, dialog.sizeHint().height());
+    Widgets::resizeToWidth(&dialog, 560);
 
     while (dialog.exec() == QDialog::Accepted) {
         Entry e;
@@ -673,7 +885,9 @@ void StoragePage::addDisk()
                             tr("Choose the disk image to use."));
             continue;
         }
+        e.id = m_nextId++;
         m_entries << e;
+        addBootItem(e);
         fill();
         m_table->setCurrentCell(m_table->rowCount() - 1, 0);
         return;
@@ -686,7 +900,9 @@ void StoragePage::addCdrom()
 
     e.disk.cdrom = true;
     e.disk.bus = m_virt ? VmConfig::Disk::Scsi : VmConfig::Disk::Sata;
+    e.id = m_nextId++;
     m_entries << e;
+    addBootItem(e);
     fill();
     m_table->setCurrentCell(m_table->rowCount() - 1, 0);
     chooseDisc();
@@ -788,6 +1004,7 @@ SharesPage::SharesPage(QWidget *parent)
     m_table->setWordWrap(false);
 
     add->setIcon(Icons::themed({"list-add"}, QStyle::SP_FileDialogNewFolder));
+    m_edit->setIcon(Icons::themed({"document-edit"}, QStyle::SP_FileDialogDetailedView));
     m_remove->setIcon(Icons::themed({"list-remove", "edit-delete"}, QStyle::SP_TrashIcon));
     buttons->addWidget(add);
     buttons->addWidget(m_edit);
@@ -1075,7 +1292,7 @@ ShareDialog::ShareDialog(const VmConfig::Share &share, const QStringList &otherT
     connect(buttons, &QDialogButtonBox::rejected, this, &QDialog::reject);
     describeCache();
     validate();
-    resize(560, sizeHint().height());
+    Widgets::resizeToWidth(this, 560);
 }
 
 VmConfig::Share ShareDialog::share() const
@@ -1741,23 +1958,14 @@ bool MachinePage::isModified() const
 BootPage::BootPage(Vm *vm, QWidget *parent)
     : SettingsPage(parent), m_vm(vm), m_firmware(new QComboBox),
       m_firmwareInfo(Widgets::hint()), m_resetVars(new QPushButton(tr("&Reset UEFI Variables…"))),
-      m_bootMenu(new QCheckBox(tr("Show the boot men&u when the VM starts"))),
-      m_bootDevice(new QComboBox)
+      m_bootMenu(new QCheckBox(tr("Show the boot men&u when the VM starts")))
 {
     auto *layout = new QVBoxLayout(this);
     auto *form = Widgets::form();
     auto *resetRow = new QHBoxLayout;
 
     m_firmware->setObjectName("firmware");
-    m_bootDevice->setObjectName("bootDevice");
     m_bootMenu->setObjectName("bootMenu");
-    m_bootDevice->addItem(tr("The first bootable device, the firmware's default"),
-                          int(VmConfig::BootDevice::Default));
-    m_bootDevice->addItem(tr("The hard disk"), int(VmConfig::BootDevice::Disk));
-    m_bootDevice->addItem(tr("The CD/DVD drive"), int(VmConfig::BootDevice::Cdrom));
-    m_bootDevice->addItem(tr("The network (PXE)"), int(VmConfig::BootDevice::Network));
-    m_bootDevice->setToolTip(tr("Sets bootindex=1 on its device, which both SeaBIOS and "
-                                "UEFI follow"));
     /* for a system that no longer starts, its variables damaged */
     m_resetVars->setObjectName("resetVars");
     resetRow->addWidget(m_resetVars);
@@ -1770,7 +1978,9 @@ BootPage::BootPage(Vm *vm, QWidget *parent)
     form->addRow(tr("F&irmware:"), m_firmware);
     form->addRow(QString(), m_firmwareInfo);
     form->addRow(QString(), resetRow);
-    form->addRow(tr("&Start from:"), m_bootDevice);
+    /* one place for it: with the devices */
+    form->addRow(tr("Start from:"), Widgets::note(tr("The devices checked in the boot order "
+                                                     "of the Storage page, in that order.")));
     form->addRow(QString(), m_bootMenu);
     layout->addLayout(form);
     layout->addStretch();
@@ -1785,8 +1995,6 @@ QIcon BootPage::icon() const
 void BootPage::load(const ArgsFile &args)
 {
     using VmConfig::FirmwareKind;
-    const QList<VmConfig::Disk> disks = VmConfig::disks(args);
-    bool disk = false, cdrom = false, nic = false;
 
     m_machine = VmConfig::machineType(args);
     const bool virt = m_machine.startsWith("virt");
@@ -1813,21 +2021,6 @@ void BootPage::load(const ArgsFile &args)
 
     m_loadedBootMenu = VmConfig::bootMenu(args);
     m_bootMenu->setChecked(m_loadedBootMenu);
-
-    for (const VmConfig::Disk &d : disks) {
-        (d.cdrom ? cdrom : disk) |= d.editable;
-    }
-    for (int i : args.indexesOf("device")) {
-        nic |= args.valueAt(i).has("netdev");
-    }
-    m_loadedBootDevice = VmConfig::firstBootDevice(args);
-    if (auto *model = qobject_cast<QStandardItemModel *>(m_bootDevice->model())) {
-        const bool present[] = {true, disk, cdrom, nic};
-        for (int i = 0; i < model->rowCount(); i++) {
-            model->item(i)->setEnabled(present[i] || i == int(m_loadedBootDevice));
-        }
-    }
-    m_bootDevice->setCurrentIndex(m_bootDevice->findData(int(m_loadedBootDevice)));
     describeFirmware();
     updateResetVars();
 }
@@ -1869,7 +2062,6 @@ void BootPage::save(ArgsFile &args)
 {
     using VmConfig::FirmwareKind;
     const auto kind = FirmwareKind(m_firmware->currentData().toInt());
-    const auto device = VmConfig::BootDevice(m_bootDevice->currentData().toInt());
 
     if (kind != m_loadedFirmware && kind != FirmwareKind::Custom) {
         if (kind == FirmwareKind::Bios) {
@@ -1885,17 +2077,12 @@ void BootPage::save(ArgsFile &args)
         VmConfig::setBootMenu(args, m_bootMenu->isChecked());
         m_loadedBootMenu = m_bootMenu->isChecked();
     }
-    if (device != m_loadedBootDevice) {
-        VmConfig::setFirstBootDevice(args, device);
-        m_loadedBootDevice = device;
-    }
 }
 
 bool BootPage::isModified() const
 {
     return m_firmware->currentData().toInt() != int(m_loadedFirmware) ||
-           m_bootMenu->isChecked() != m_loadedBootMenu ||
-           m_bootDevice->currentData().toInt() != int(m_loadedBootDevice);
+           m_bootMenu->isChecked() != m_loadedBootMenu;
 }
 
 void BootPage::describeFirmware()

@@ -15,6 +15,7 @@
 #include <QSpinBox>
 #include <QSplitter>
 #include <QStyle>
+#include <QToolButton>
 
 Form::Form()
 {
@@ -106,6 +107,17 @@ int em(const QWidget *widget)
     return widget->fontMetrics().height();
 }
 
+void resizeToWidth(QWidget *window, int width)
+{
+    window->ensurePolished();
+    if (QLayout *layout = window->layout()) {
+        layout->activate();
+    }
+    width = qBound(window->minimumWidth(), width, window->maximumWidth());
+    window->resize(width, window->hasHeightForWidth() ? window->heightForWidth(width)
+                                                      : window->sizeHint().height());
+}
+
 QLabel *heading(const QString &text)
 {
     auto *label = new QLabel(text);
@@ -120,16 +132,25 @@ QLabel *heading(const QString &text)
 }
 
 bool confirm(QWidget *parent, QMessageBox::Icon icon, const QString &title,
-             const QString &text, const QString &action)
+             const QString &text, const QString &action, const QIcon &actionIcon)
 {
     QMessageBox box(icon, title, text, QMessageBox::Cancel, parent);
     QPushButton *yes = box.addButton(action, QMessageBox::DestructiveRole);
+
+    setButtonIcon(yes, actionIcon);
 
     /* the KDE dialog would make the action the default button */
     box.setOption(QMessageBox::Option::DontUseNativeDialog);
     box.setDefaultButton(QMessageBox::Cancel);
     box.exec();
     return box.clickedButton() == yes;
+}
+
+void setButtonIcon(QAbstractButton *button, const QIcon &icon)
+{
+    if (button->style()->styleHint(QStyle::SH_DialogButtonBox_ButtonsHaveIcons, nullptr, button)) {
+        button->setIcon(icon);
+    }
 }
 
 QMessageBox *messageBox(QMessageBox::Icon icon, const QString &title, const QString &text,
@@ -196,6 +217,21 @@ QLabel *hint(const QString &text)
     palette.setColor(QPalette::WindowText, palette.color(QPalette::PlaceholderText));
     label->setPalette(palette);
     return label;
+}
+
+QToolButton *statusButton(const QString &name, const QIcon &icon, const QString &text)
+{
+    auto *button = new QToolButton;
+    const int size = button->style()->pixelMetric(QStyle::PM_SmallIconSize, nullptr, button);
+
+    button->setObjectName(name);
+    button->setAutoRaise(true);
+    button->setToolButtonStyle(Qt::ToolButtonTextBesideIcon);
+    button->setIcon(icon);
+    button->setIconSize(QSize(size, size));
+    button->setText(text);
+    button->hide();
+    return button;
 }
 
 QWidget *browseRow(QLineEdit *edit, const QString &title, const QString &filter, bool folder)

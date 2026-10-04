@@ -359,7 +359,7 @@ void SnapshotView::take()
         if (s.name == name &&
             !Widgets::confirm(this, QMessageBox::Question, tr("Replace %1?").arg(name),
                               tr("A snapshot of this name exists: the new one replaces it."),
-                              tr("&Replace"))) {
+                              tr("&Replace"), m_take->icon())) {
             return;
         }
     }
@@ -380,7 +380,7 @@ void SnapshotView::restore()
                                     "taken: what it did since is lost.")
                                : tr("The disks go back to what they held when the snapshot "
                                     "was taken: what was written since is lost."),
-                          tr("&Restore"))) {
+                          tr("&Restore"), m_restore->icon())) {
         return;
     }
     busy(tr("Going back to %1…").arg(name));
@@ -395,7 +395,7 @@ void SnapshotView::remove()
         !Widgets::confirm(this, QMessageBox::Question, tr("Delete %1?").arg(name),
                           tr("The VM can no longer go back to it. The space it takes in the "
                              "qcow2 files is reused."),
-                          tr("&Delete"))) {
+                          tr("&Delete"), m_delete->icon())) {
         return;
     }
     busy(tr("Deleting %1…").arg(name));

@@ -135,7 +135,7 @@ NewVmDialog::NewVmDialog(VmStore *store, QWidget *parent)
 
     applyDefaults();
     updateDisk();
-    resize(620, sizeHint().height());
+    Widgets::resizeToWidth(this, 620);
 }
 
 void NewVmDialog::applyDefaults()

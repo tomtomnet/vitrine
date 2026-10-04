@@ -10,8 +10,10 @@
 #include <QRadioButton>
 #include <QSpinBox>
 #include <QStandardPaths>
+#include <QTableWidget>
 #include <QTemporaryDir>
 #include <QTest>
+#include <QTimer>
 
 #include "core/argsfile.h"
 #include "core/paths.h"
@@ -304,6 +306,111 @@ private slots:
         QVERIFY2(saved.contains("-smp 2"), saved.constData());
         /* the letter itself did not go into the text */
         QVERIFY(!editor->toPlainText().contains("-smp 2s"));
+    }
+
+    /* The boot order on the Storage page: checked devices, in order; Apply writes it */
+    void storagePageBootOrder()
+    {
+        QTemporaryDir dir;
+        StoragePage page(dir.path());
+        auto *list = page.findChild<QListWidget *>("bootOrder");
+        auto *up = page.findChild<QPushButton *>("bootUp");
+        auto *down = page.findChild<QPushButton *>("bootDown");
+        QVERIFY(list && up && down);
+        auto rows = [list]() {
+            QStringList rows;
+            for (int i = 0; i < list->count(); i++) {
+                const QListWidgetItem *item = list->item(i);
+                rows << (!(item->flags() & Qt::ItemIsEnabled) ? "-"
+                         : item->checkState() == Qt::Checked  ? "+"
+                                                               : "o") +
+                            item->text();
+            }
+            return rows.join(" | ");
+        };
+
+        /* no order of its own: the firmware's, all checked */
+        ArgsFile args = ArgsFile::parse("-machine q35\n"
+                                        "-drive file=x.iso,media=cdrom,readonly=on\n"
+                                        "-drive file=disk.qcow2,format=qcow2,if=virtio\n"
+                                        "-drive file=old.img,if=scsi\n"
+                                        "-netdev user,id=net0\n"
+                                        "-device virtio-net-pci,netdev=net0\n");
+        page.load(args);
+        QCOMPARE(rows(), "+Hard disk: disk.qcow2 | +CD/DVD: x.iso | "
+                         "+Network (PXE): virtio-net-pci | -Hard disk: old.img");
+        QVERIFY(!page.isModified());
+
+        /* the CD/DVD drive first, the network never */
+        list->setCurrentRow(1);
+        QVERIFY(up->isEnabled());
+        up->click();
+        QCOMPARE(list->currentRow(), 0);
+        list->item(2)->setCheckState(Qt::Unchecked);
+        QCOMPARE(rows(), "+CD/DVD: x.iso | +Hard disk: disk.qcow2 | "
+                         "oNetwork (PXE): virtio-net-pci | -Hard disk: old.img");
+        /* the one set up by hand stays last */
+        list->setCurrentRow(2);
+        QVERIFY(!down->isEnabled());
+        QVERIFY(page.isModified());
+        page.save(args);
+        QCOMPARE(text(args), "-machine q35\n"
+                             "-boot strict=on\n"
+                             "-drive file=x.iso,media=cdrom,readonly=on,if=none,id=cd0\n"
+                             "-device ide-cd,drive=cd0,bootindex=1\n"
+                             "-drive file=disk.qcow2,format=qcow2,if=none,id=disk0\n"
+                             "-device virtio-blk-pci,drive=disk0,bootindex=2\n"
+                             "-drive file=old.img,if=scsi\n"
+                             "-netdev user,id=net0\n"
+                             "-device virtio-net-pci,netdev=net0\n");
+        /* read again as written */
+        QVERIFY(!page.isModified());
+        QCOMPARE(rows(), "+CD/DVD: x.iso | +Hard disk: disk.qcow2 | "
+                         "oNetwork (PXE): virtio-net-pci | -Hard disk: old.img");
+
+        /* one stays checked: the VM needs one to start from */
+        list->item(1)->setCheckState(Qt::Unchecked);
+        list->item(0)->setCheckState(Qt::Unchecked);
+        QCOMPARE(list->item(0)->checkState(), Qt::Checked);
+        list->item(1)->setCheckState(Qt::Checked);
+
+        /* removed: out of the order */
+        page.findChild<QTableWidget *>("disks")->setCurrentCell(1, 0);
+        const auto buttons = page.findChildren<QPushButton *>();
+        for (QPushButton *b : buttons) {
+            if (b->text() == "&Remove") {
+                b->click();
+            }
+        }
+        QCOMPARE(rows(), "+CD/DVD: x.iso | oNetwork (PXE): virtio-net-pci | "
+                         "-Hard disk: old.img");
+        page.save(args);
+        QCOMPARE(text(args), "-machine q35\n"
+                             "-boot strict=on\n"
+                             "-drive file=x.iso,media=cdrom,readonly=on,if=none,id=cd0\n"
+                             "-device ide-cd,drive=cd0,bootindex=1\n"
+                             "-drive file=old.img,if=scsi\n"
+                             "-netdev user,id=net0\n"
+                             "-device virtio-net-pci,netdev=net0\n");
+
+        /* a drive added, with no disc: in an order set, last of those it
+           can take, unchecked, as the VM would leave it */
+        QTimer::singleShot(0, []() {
+            if (QWidget *dialog = QApplication::activeModalWidget()) {
+                dialog->close();
+            }
+        });
+        for (QPushButton *b : page.findChildren<QPushButton *>()) {
+            if (b->text() == "Add &CD/DVD Drive") {
+                b->click();
+            }
+        }
+        QCOMPARE(rows(), "+CD/DVD: x.iso | oNetwork (PXE): virtio-net-pci | "
+                         "-Hard disk: old.img | oCD/DVD: empty");
+        QVERIFY(page.isModified());
+        page.save(args);
+        QVERIFY2(text(args).contains("-drive media=cdrom,readonly=on\n"), qPrintable(text(args)));
+        QCOMPARE(text(args).count("bootindex"), 1);
     }
 };
 

@@ -6,10 +6,13 @@
 #include <QSplitter>
 #include <QString>
 
+class QAbstractButton;
+class QIcon;
 class QLabel;
 class QLineEdit;
 class QSlider;
 class QSpinBox;
+class QToolButton;
 class QWidget;
 
 /*
@@ -52,7 +55,12 @@ namespace Widgets {
 
 /* Asks before a destructive @action, which Enter does not trigger */
 bool confirm(QWidget *parent, QMessageBox::Icon icon, const QString &title,
-             const QString &text, const QString &action);
+             const QString &text, const QString &action, const QIcon &actionIcon);
+/*
+ * @button of a dialog's buttons with @icon where the style puts icons on
+ * them: as the standard buttons beside it (OK, Cancel, Close) have theirs
+ */
+void setButtonIcon(QAbstractButton *button, const QIcon &icon);
 
 /*
  * A message box Qt draws itself.  With KDE's platform theme a QMessageBox
@@ -69,6 +77,13 @@ void warn(QWidget *parent, const QString &title, const QString &text);
 Form *form();
 /* The height of a line of @widget's text: widths of fields go by it */
 int em(const QWidget *widget);
+/*
+ * @window @width wide (its minimum width at least) and as high as its
+ * content is at that width.  A window shown without a size takes the
+ * height of the width it prefers, which wrapped text shorter there makes
+ * too high at a wider width: the layout spreads the rest in the window.
+ */
+void resizeToWidth(QWidget *window, int width);
 /* The title of a part of a page, flat: no frame around the part */
 QLabel *heading(const QString &text);
 /* A form label whose mnemonic focuses @buddy, for fields that are layouts */
@@ -77,6 +92,12 @@ QLabel *label(const QString &text, QWidget *buddy);
 QLabel *note(const QString &text = {});
 /* A note in a smaller, dimmer font, under a field */
 QLabel *hint(const QString &text = {});
+/*
+ * A notice of the status bar, hidden until there is something to say: an
+ * icon and a text, which a click explains.  The notices all look alike,
+ * their icons the style's small size beside their text.
+ */
+QToolButton *statusButton(const QString &name, const QIcon &icon, const QString &text = {});
 /* @edit with a Browse button for a file, or for a folder if @folder */
 QWidget *browseRow(QLineEdit *edit, const QString &title, const QString &filter = {},
                    bool folder = false);

@@ -177,16 +177,44 @@ void useBios(ArgsFile &args);
 bool bootMenu(const ArgsFile &args);
 void setBootMenu(ArgsFile &args, bool on);
 
-enum class BootDevice { Default, Disk, Cdrom, Network };
-/* The device with the lowest bootindex, else -boot order= */
-BootDevice firstBootDevice(const ArgsFile &args);
+/* A disk, CD/DVD drive or network card the VM can start from */
+struct BootEntry {
+    enum Kind { HardDisk, Cdrom, Network };
+    Kind kind = HardDisk;
+    /* Its place among disks(), or among the network cards (-device ...,netdev=) */
+    int index = -1;
+    /* The VM starts from it: it is in the boot order */
+    bool on = false;
+    /*
+     * Its bootindex can be set: a disk with a -device, or one that
+     * -drive if=virtio|ide, -hdX or -cdrom can be made into, and a network
+     * card.  The others (-drive if=scsi, a -blockdev without its -device)
+     * stay out of the order, off.
+     */
+    bool editable = true;
+
+    bool operator==(const BootEntry &) const = default;
+};
+/* The VM has a boot order of its own: a bootindex, or -boot order= */
+bool hasBootOrder(const ArgsFile &args);
 /*
- * bootindex=1 on the first disk, CD/DVD drive or network card, which both
- * SeaBIOS and OVMF follow, and no bootindex on the others; -boot order=
- * goes.  A disk given by -drive if=virtio|ide, -hdX or -cdrom becomes an
- * if=none drive and its -device, where bootindex goes.  False when there
- * is no such device to boot from.
+ * Its disks, CD/DVD drives and network cards in their boot order: those
+ * with a bootindex by it, then the others, off, as the command line has
+ * them, those that cannot be on last.  With -boot order= instead, the
+ * kinds it names in its order; with neither, the firmware's own order: all
+ * on, the disks, the CD/DVD drives, then the network cards.
  */
-bool setFirstBootDevice(ArgsFile &args, BootDevice device);
+QList<BootEntry> bootOrder(const ArgsFile &args);
+/*
+ * The VM starts from the entries of @order that are on, in that order
+ * (bootindex=1, 2...), and never from the others: -boot strict=on when
+ * some are off, which SeaBIOS needs, as it tries the devices without a
+ * bootindex after the others (OVMF drops them from its boot order when
+ * one of the order matches).  -boot order= goes: OVMF does not follow it,
+ * and bootindex wins over it.  Disks given by -drive if=virtio|ide, -hdX
+ * or -cdrom become if=none drives with their -device, where bootindex
+ * goes.  With none on, the order goes, and the firmware's own applies.
+ */
+void setBootOrder(ArgsFile &args, const QList<BootEntry> &order);
 
 }

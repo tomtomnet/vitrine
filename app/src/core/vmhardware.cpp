@@ -11,6 +11,7 @@
 #include <QRegularExpression>
 #include <QSet>
 
+#include <algorithm>
 #include <climits>
 
 #include "core/firmware.h"
@@ -703,6 +704,25 @@ QList<Disk> disks(const ArgsFile &args)
             d.file = v.get("filename");
             d.bus = Disk::Other;
             d.editable = false;
+            /* its -device, by its node or the format's over it: the boot
+               order's, not the page's */
+            QString node = v.get("node-name");
+            for (int j : args.indexesOf("blockdev")) {
+                const OptionValue format = args.valueAt(j);
+                if (!node.isEmpty() && format.get("file") == node && format.has("node-name")) {
+                    node = format.get("node-name");
+                }
+            }
+            for (int j : args.indexesOf("device")) {
+                const OptionValue dev = args.valueAt(j);
+                if (!node.isEmpty() && dev.get("drive") == node) {
+                    d.deviceLine = j;
+                    d.cdrom = dev.implied().endsWith("-cd");
+                    if (dev.has("bootindex")) {
+                        d.bootindex = dev.get("bootindex").toInt();
+                    }
+                }
+            }
         } else {
             continue;
         }
@@ -1274,43 +1294,128 @@ void setNetwork(ArgsFile &args, const Network &n)
     args.lines.insert(at + 1, optionLine("device", card + ",netdev=" + id));
 }
 
-BootDevice firstBootDevice(const ArgsFile &args)
+/* The kinds of devices -boot order= names, in its order: c, d, n... */
+static QString bootKinds(const ArgsFile &args)
 {
-    BootDevice device = BootDevice::Default;
-    int best = INT_MAX;
+    const int line = lastIndex(args, "boot");
 
+    if (line < 0) {
+        return {};
+    }
+    const OptionValue v = args.valueAt(line);
+    /* -boot d: the order, implied */
+    return v.has("order") ? v.get("order") : v.implied();
+}
+
+/* @d's bootindex can be set: on its -device, or the one splitDrive() gives it */
+static bool bootable(const ArgsFile &args, const Disk &d)
+{
+    const ArgsFile::Line &line = args.lines[d.line];
+
+    if (d.deviceLine >= 0) {
+        return true;
+    }
+    if (line.name == "drive") {
+        const QString iface = OptionValue(line.value).get("if", "ide");
+        return iface == "virtio" || iface == "ide";
+    }
+    return kHardDisks.contains(line.name) || line.name == "cdrom";
+}
+
+bool hasBootOrder(const ArgsFile &args)
+{
     for (const Disk &d : disks(args)) {
-        if (d.bootindex >= 0 && d.bootindex < best) {
-            best = d.bootindex;
-            device = d.cdrom ? BootDevice::Cdrom : BootDevice::Disk;
+        if (d.bootindex >= 0) {
+            return true;
         }
     }
     for (int i : nicLines(args)) {
-        const OptionValue v = args.valueAt(i);
-        if (v.has("bootindex") && v.get("bootindex").toInt() < best) {
-            best = v.get("bootindex").toInt();
-            device = BootDevice::Network;
+        if (args.valueAt(i).has("bootindex")) {
+            return true;
         }
     }
-    if (device != BootDevice::Default) {
-        return device;
+    return !bootKinds(args).isEmpty();
+}
+
+QList<BootEntry> bootOrder(const ArgsFile &args)
+{
+    struct Found {
+        BootEntry entry;
+        int bootindex = -1;
+    };
+    const QList<Disk> list = disks(args);
+    const QList<int> nics = nicLines(args);
+    QList<Found> found;
+    QList<BootEntry> order;
+    bool indexed = false;
+
+    for (int i = 0; i < list.size(); i++) {
+        Found f;
+        f.entry.kind = list[i].cdrom ? BootEntry::Cdrom : BootEntry::HardDisk;
+        f.entry.index = i;
+        f.entry.editable = bootable(args, list[i]);
+        f.bootindex = f.entry.editable ? list[i].bootindex : -1;
+        indexed |= f.bootindex >= 0;
+        found << f;
+    }
+    for (int i = 0; i < nics.size(); i++) {
+        const OptionValue v = args.valueAt(nics[i]);
+        Found f;
+        f.entry.kind = BootEntry::Network;
+        f.entry.index = i;
+        f.bootindex = v.has("bootindex") ? v.get("bootindex").toInt() : -1;
+        indexed |= f.bootindex >= 0;
+        found << f;
     }
 
-    const int line = lastIndex(args, "boot");
-    if (line >= 0) {
-        const OptionValue v = args.valueAt(line);
-        const QString order = v.has("order") ? v.get("order") : v.implied();
-        if (order.startsWith('c')) {
-            return BootDevice::Disk;
+    /* the entries of @kind, on, in the order of the command line */
+    auto take = [&](BootEntry::Kind kind) {
+        for (Found &f : found) {
+            if (f.entry.kind == kind && f.entry.editable && !f.entry.on) {
+                f.entry.on = true;
+                order << f.entry;
+            }
         }
-        if (order.startsWith('d')) {
-            return BootDevice::Cdrom;
+    };
+    if (indexed) {
+        QList<int> on;
+        for (int i = 0; i < found.size(); i++) {
+            if (found[i].bootindex >= 0) {
+                on << i;
+            }
         }
-        if (order.startsWith('n')) {
-            return BootDevice::Network;
+        std::stable_sort(on.begin(), on.end(), [&found](int a, int b) {
+            return found[a].bootindex < found[b].bootindex;
+        });
+        for (int i : std::as_const(on)) {
+            found[i].entry.on = true;
+            order << found[i].entry;
+        }
+    } else if (const QString kinds = bootKinds(args); !kinds.isEmpty()) {
+        for (const QChar kind : kinds) {
+            if (kind == 'c') {
+                take(BootEntry::HardDisk);
+            } else if (kind == 'd') {
+                take(BootEntry::Cdrom);
+            } else if (kind == 'n') {
+                take(BootEntry::Network);
+            }
+        }
+    } else {
+        /* the firmware's own */
+        take(BootEntry::HardDisk);
+        take(BootEntry::Cdrom);
+        take(BootEntry::Network);
+    }
+    /* then the others, off: those that can be on, then those set up by hand */
+    for (const bool editable : {true, false}) {
+        for (const Found &f : std::as_const(found)) {
+            if (!f.entry.on && f.entry.editable == editable) {
+                order << f.entry;
+            }
         }
     }
-    return BootDevice::Default;
+    return order;
 }
 
 /* Makes @d an if=none drive with a -device; returns the device's line */
@@ -1352,67 +1457,102 @@ static int splitDrive(ArgsFile &args, const Disk &d)
     return d.line + 1;
 }
 
-bool setFirstBootDevice(ArgsFile &args, BootDevice device)
+/* -boot without order= (or an implied order), with strict=on or not */
+static void setBootStrict(ArgsFile &args, bool strict)
 {
-    for (const Disk &d : disks(args)) {
-        if (d.deviceLine >= 0 && d.bootindex >= 0) {
-            setKey(args, d.deviceLine, "bootindex", {});
+    const int line = lastIndex(args, "boot");
+
+    if (line < 0) {
+        if (strict) {
+            insertAfter(args, {"accel", "machine"}, "boot", "strict=on", true);
         }
+        return;
     }
-    for (int i : nicLines(args)) {
-        if (args.valueAt(i).has("bootindex")) {
-            setKey(args, i, "bootindex", {});
+    const OptionValue was = args.valueAt(line);
+    OptionValue v;
+    for (const OptionValue::Item &item : was.items()) {
+        if (item.key.isEmpty() || item.key == "order" || item.key == "strict") {
+            continue;
         }
-    }
-    const int boot = lastIndex(args, "boot");
-    if (boot >= 0) {
-        OptionValue v = args.valueAt(boot);
-        const QString implied = v.implied();
-        v.remove("order");
-        /* -boot d: the implied order */
-        if (!implied.isEmpty()) {
-            OptionValue rest;
-            for (const OptionValue::Item &item : v.items()) {
-                if (item.key.isEmpty()) {
-                    continue;
-                }
-                if (item.bare) {
-                    rest.setFlag(item.key, true);
-                } else {
-                    rest.set(item.key, item.value);
-                }
-            }
-            v = rest;
-        }
-        if (v.isEmpty()) {
-            args.removeAt(boot);
+        if (item.bare) {
+            v.setFlag(item.key, true);
         } else {
-            args.setValueAt(boot, v);
+            v.set(item.key, item.value);
+        }
+    }
+    if (strict) {
+        v.set("strict", "on");
+    }
+    if (v.isEmpty()) {
+        args.removeAt(line);
+    } else {
+        args.setValueAt(line, v);
+    }
+}
+
+void setBootOrder(ArgsFile &args, const QList<BootEntry> &order)
+{
+    QList<Disk> list = disks(args);
+    QList<int> split;
+
+    /* the drives that get a -device for their bootindex, from the bottom
+       up: the lines above stay where they are */
+    for (const BootEntry &e : order) {
+        if (e.on && e.editable && e.kind != BootEntry::Network && e.index >= 0 &&
+            e.index < list.size() && list[e.index].deviceLine < 0 &&
+            bootable(args, list[e.index])) {
+            split << e.index;
+        }
+    }
+    std::sort(split.begin(), split.end(),
+              [&list](int a, int b) { return list[a].line > list[b].line; });
+    for (int i : std::as_const(split)) {
+        splitDrive(args, list[i]);
+    }
+    list = disks(args);
+    const QList<int> nics = nicLines(args);
+
+    /* no bootindex but the order's; those of other devices stay, untaken */
+    QSet<int> ours, taken;
+    for (const Disk &d : std::as_const(list)) {
+        if (d.deviceLine >= 0) {
+            ours << d.deviceLine;
+        }
+    }
+    for (int i : nics) {
+        ours << i;
+    }
+    for (int i : args.indexesOf("device")) {
+        const OptionValue v = args.valueAt(i);
+        if (!v.has("bootindex")) {
+            continue;
+        }
+        if (ours.contains(i)) {
+            setKey(args, i, "bootindex", {});
+        } else {
+            taken << v.get("bootindex").toInt();
         }
     }
 
-    if (device == BootDevice::Default) {
-        return true;
-    }
-    if (device == BootDevice::Network) {
-        const QList<int> nics = nicLines(args);
-        if (nics.isEmpty()) {
-            return false;
+    int next = 1, on = 0;
+    for (const BootEntry &e : order) {
+        int line = -1;
+        if (e.kind == BootEntry::Network) {
+            line = nics.value(e.index, -1);
+        } else if (e.index >= 0 && e.index < list.size()) {
+            line = list[e.index].deviceLine;
         }
-        setKey(args, nics.first(), "bootindex", "1");
-        return true;
-    }
-    for (const Disk &d : disks(args)) {
-        if (d.cdrom != (device == BootDevice::Cdrom) || !d.editable) {
+        if (!e.on || !e.editable || line < 0) {
             continue;
         }
-        const int dev = d.deviceLine >= 0 ? d.deviceLine : splitDrive(args, d);
-        if (dev >= 0) {
-            setKey(args, dev, "bootindex", "1");
-            return true;
+        while (taken.contains(next)) {
+            next++;
         }
+        setKey(args, line, "bootindex", QString::number(next++));
+        on++;
     }
-    return false;
+    /* the others never: SeaBIOS would try them after (bootorder's HALT) */
+    setBootStrict(args, on > 0 && on < list.size() + nics.size());
 }
 
 }

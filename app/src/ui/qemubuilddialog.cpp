@@ -12,6 +12,7 @@
 #include <QVBoxLayout>
 
 #include "core/paths.h"
+#include "ui/icons.h"
 #include "ui/widgets.h"
 
 /* The repository's page, from its git URL */
@@ -109,6 +110,10 @@ QemuBuildDialog::QemuBuildDialog(QWidget *parent)
     m_build = buttons->addButton(tr("Build"), QDialogButtonBox::ActionRole);
     m_cancel = buttons->addButton(tr("Stop"), QDialogButtonBox::ActionRole);
     m_build->setDefault(true);
+    /* as File > Build QEMU, and as Force Off */
+    Widgets::setButtonIcon(m_build, Icons::themed({"run-build", "run-build-install"},
+                                                  QStyle::SP_BrowserReload));
+    Widgets::setButtonIcon(m_cancel, Icons::themed({"process-stop"}, QStyle::SP_BrowserStop));
     layout->addWidget(buttons);
 
     connect(buttons, &QDialogButtonBox::rejected, this, &QDialog::close);
@@ -162,6 +167,7 @@ void QemuBuildDialog::started()
 void QemuBuildDialog::stepStarted(int step, int total, const QString &text)
 {
     m_step->setText(tr("Step %1 of %2: %3").arg(step).arg(total).arg(text));
+    m_step->show();
     /* busy until ninja tells how far it is */
     m_progress->setMaximum(0);
     m_progress->setValue(0);
@@ -220,4 +226,6 @@ void QemuBuildDialog::updateState()
     m_build->setEnabled(!running && state != StackBuilder::State::NoSources);
     m_cancel->setVisible(running);
     m_background->setVisible(running);
+    /* no empty line before a build: the step's, under way or done */
+    m_step->setVisible(!m_step->text().isEmpty());
 }

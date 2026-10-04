@@ -15,13 +15,10 @@
 static const char kDocs[] = "https://github.com/tomtomnet/vitrine/blob/main/docs/host-tuning.md";
 
 UdmabufNotifier::UdmabufNotifier(UdmabufWatch *watch, HostSettings *host, QWidget *window)
-    : QObject(window), m_watch(watch), m_host(host), m_window(window), m_button(new QToolButton)
+    : QObject(window), m_watch(watch), m_host(host), m_window(window),
+      m_button(Widgets::statusButton(
+          "udmabuf", Icons::themed({"dialog-warning"}, QStyle::SP_MessageBoxWarning)))
 {
-    m_button->setObjectName("udmabuf");
-    m_button->setAutoRaise(true);
-    m_button->setToolButtonStyle(Qt::ToolButtonTextBesideIcon);
-    m_button->setIcon(Icons::themed({"dialog-warning"}, QStyle::SP_MessageBoxWarning));
-    m_button->hide();
     connect(m_button, &QToolButton::clicked, this, &UdmabufNotifier::explain);
     connect(watch, &UdmabufWatch::changed, this, &UdmabufNotifier::update);
     update();

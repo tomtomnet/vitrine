@@ -18,6 +18,8 @@
 #include <QSignalBlocker>
 #include <QSpinBox>
 #include <QStackedWidget>
+#include <QStyleOptionViewItem>
+#include <QStylePainter>
 #include <QTabWidget>
 #include <QTimer>
 #include <QToolButton>
@@ -56,10 +58,102 @@ public:
     }
 };
 
+/*
+ * Advanced, under the simple pages: shows and hides the advanced ones.
+ * Drawn as a row of the lists of pages, its arrow where their icons are
+ * and its name where theirs are; a tool button centres both.
+ */
+class SectionButton : public QToolButton
+{
+public:
+    explicit SectionButton(const QListWidget *list) : m_list(list)
+    {
+        setCheckable(true);
+        setAutoRaise(true);
+        setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Fixed);
+    }
+
+    QSize sizeHint() const override
+    {
+        QRect icon, text;
+        rowParts(QRect(0, 0, QWIDGETSIZE_MAX / 2, rowHeight()), &icon, &text);
+        return QSize(text.left() + fontMetrics().horizontalAdvance(this->text()) +
+                         textMargin() + m_list->spacing(),
+                     rowHeight());
+    }
+
+protected:
+    void paintEvent(QPaintEvent *) override
+    {
+        QStylePainter painter(this);
+        QStyleOptionToolButton panel;
+        QStyleOption arrow;
+        QRect icon, text;
+
+        /* its hover and focus as a tool button's, not sunken while open */
+        initStyleOption(&panel);
+        panel.state &= ~QStyle::State_On;
+        panel.text.clear();
+        panel.icon = QIcon();
+        panel.features &= ~QStyleOptionToolButton::Arrow;
+        painter.drawComplexControl(QStyle::CC_ToolButton, panel);
+
+        rowParts(QRect(m_list->spacing(), 0, width() - 2 * m_list->spacing(), height()), &icon,
+                 &text);
+        arrow.initFrom(this);
+        arrow.rect = icon;
+        painter.drawPrimitive(isChecked()        ? QStyle::PE_IndicatorArrowDown
+                              : isRightToLeft() ? QStyle::PE_IndicatorArrowLeft
+                                                : QStyle::PE_IndicatorArrowRight,
+                              arrow);
+        /* inside its rectangle as the style draws an item's text */
+        painter.drawItemText(text.adjusted(textMargin(), 0, -textMargin(), 0),
+                             Qt::AlignLeft | Qt::AlignVCenter, m_list->palette(), isEnabled(),
+                             this->text(), QPalette::Text);
+    }
+
+private:
+    /* Between an item's text and the sides of its text rectangle (QCommonStyle's) */
+    int textMargin() const
+    {
+        return m_list->style()->pixelMetric(QStyle::PM_FocusFrameHMargin, nullptr, m_list) + 1;
+    }
+
+    /* A row of the list as high as its items, with their spacing */
+    int rowHeight() const
+    {
+        return (m_list->count() > 0 ? m_list->sizeHintForRow(0) : QToolButton::sizeHint().height()) +
+               2 * m_list->spacing();
+    }
+
+    /* Where an item of the list in @row has its icon and its text */
+    void rowParts(const QRect &row, QRect *icon, QRect *text) const
+    {
+        QStyleOptionViewItem item;
+
+        item.initFrom(m_list);
+        item.widget = m_list;
+        item.rect = row;
+        item.features = QStyleOptionViewItem::HasDisplay | QStyleOptionViewItem::HasDecoration;
+        item.decorationSize = m_list->iconSize();
+        item.decorationPosition = QStyleOptionViewItem::Left;
+        item.decorationAlignment = Qt::AlignCenter;
+        item.displayAlignment = Qt::AlignLeft | Qt::AlignVCenter;
+        item.text = this->text();
+        item.font = m_list->font();
+        item.fontMetrics = QFontMetrics(item.font);
+        item.direction = layoutDirection();
+        *icon = m_list->style()->subElementRect(QStyle::SE_ItemViewItemDecoration, &item, m_list);
+        *text = m_list->style()->subElementRect(QStyle::SE_ItemViewItemText, &item, m_list);
+    }
+
+    const QListWidget *m_list;
+};
+
 VmPane::VmPane(QWidget *parent)
     : QWidget(parent), m_check(new QTimer(this)), m_tabs(new QTabWidget),
       m_console(new QWidget), m_details(new VmDetails), m_side(new QWidget),
-      m_list(new QListWidget), m_more(new QToolButton), m_advanced(new QListWidget),
+      m_list(new QListWidget), m_more(new SectionButton(m_list)), m_advanced(new QListWidget),
       m_title(new QLabel),
       m_stack(new QStackedWidget), m_snapshots(new SnapshotView), m_log(new LogView), m_running(new Banner(Banner::Information)),
       /* no mnemonic: the pages use D */
@@ -91,8 +185,10 @@ VmPane::VmPane(QWidget *parent)
     m_list->setObjectName("pages");
     m_advanced->setObjectName("advancedPages");
     m_stack->setObjectName("pageStack");
+    /* the pages' icons between the small and the large size: the toolbar's */
+    const int icons = style()->pixelMetric(QStyle::PM_ToolBarIconSize, nullptr, this);
     for (QListWidget *list : {m_list, m_advanced}) {
-        list->setIconSize(QSize(22, 22));
+        list->setIconSize(QSize(icons, icons));
         list->setSpacing(1);
         list->setSizePolicy(QSizePolicy::Fixed, QSizePolicy::Fixed);
         list->setFrameShape(QFrame::NoFrame);
@@ -104,18 +200,14 @@ VmPane::VmPane(QWidget *parent)
     m_more->setText(tr("Advanced"));
     m_more->setToolTip(tr("The machine, its boot, PCI devices, and the QEMU command line "
                           "itself"));
-    m_more->setCheckable(true);
-    m_more->setAutoRaise(true);
-    m_more->setToolButtonStyle(Qt::ToolButtonTextBesideIcon);
-    m_more->setArrowType(Qt::RightArrow);
-    m_more->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Fixed);
     m_advanced->hide();
     {
         auto *side = new QVBoxLayout(m_side);
         side->setContentsMargins(0, 0, 0, 0);
         side->setSpacing(0);
         side->addWidget(m_list);
-        side->addSpacing(side->spacing() + 6);
+        /* apart from the simple pages, as the groups of a layout are */
+        side->addSpacing(style()->pixelMetric(QStyle::PM_LayoutVerticalSpacing, nullptr, this));
         side->addWidget(m_more);
         side->addWidget(m_advanced);
         side->addStretch();
@@ -279,6 +371,8 @@ void VmPane::buildPages()
                               2 * m_list->frameWidth() + 16;
             m_list->setFixedWidth(width);
             m_advanced->setFixedWidth(width);
+            /* a row as high as the lists' now that they have some */
+            m_more->updateGeometry();
             m_side->setFixedWidth(qMax(width, m_more->sizeHint().width()));
             fitHeight(m_list);
             fitHeight(m_advanced);
@@ -328,7 +422,6 @@ void VmPane::selectPage(int page)
 void VmPane::showAdvanced(bool on)
 {
     m_advanced->setVisible(on);
-    m_more->setArrowType(on ? Qt::DownArrow : Qt::RightArrow);
 }
 
 VmPane::Tab VmPane::tab() const
@@ -413,6 +506,10 @@ bool VmPane::confirmChanges(const QString &question)
                     QMessageBox::NoButton, window());
     QPushButton *apply = box.addButton(tr("&Apply"), QMessageBox::AcceptRole);
     QPushButton *discard = box.addButton(tr("&Discard"), QMessageBox::DestructiveRole);
+
+    /* as the page's own Apply and Discard */
+    Widgets::setButtonIcon(apply, m_apply->icon());
+    Widgets::setButtonIcon(discard, m_discard->icon());
 
     box.addButton(QMessageBox::Cancel);
     box.setInformativeText(question);

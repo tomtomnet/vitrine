@@ -67,10 +67,11 @@ VmConsole::VmConsole(Vm *vm, QWidget *parent)
         auto *column = new QVBoxLayout(home);
         auto *header = new QHBoxLayout;
         auto *titles = new QVBoxLayout;
-        auto *icon = new QLabel;
+        const int large = style()->pixelMetric(QStyle::PM_LargeIconSize, nullptr, this);
+        /* at the head of the page: twice a large icon */
+        auto *icon = new IconLabel(Icons::themed({"computer"}, QStyle::SP_ComputerIcon), 2 * large);
         auto *settings = new QLabel(QString("<a href=\"settings\">%1</a>").arg(tr("Settings")));
 
-        icon->setPixmap(Icons::themed({"computer"}, QStyle::SP_ComputerIcon).pixmap(64, 64));
         m_name->setFont(scaled(m_name->font(), 1.6));
         m_name->setTextInteractionFlags(Qt::TextSelectableByMouse);
         titles->setSpacing(0);
@@ -89,7 +90,7 @@ VmConsole::VmConsole(Vm *vm, QWidget *parent)
         m_start->setObjectName("consoleStart");
         m_start->setText(tr("Start"));
         m_start->setIcon(Icons::themed({"media-playback-start"}, QStyle::SP_MediaPlay));
-        m_start->setIconSize(QSize(32, 32));
+        m_start->setIconSize(QSize(large, large));
         m_start->setFont(scaled(m_start->font(), 1.3));
         m_start->setMinimumHeight(56);
         m_start->setMinimumWidth(200);

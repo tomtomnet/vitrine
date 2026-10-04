@@ -10,6 +10,7 @@
 #include <QVBoxLayout>
 
 #include "ui/icons.h"
+#include "ui/widgets.h"
 
 TextDialog::TextDialog(QWidget *parent, const QString &title)
     : QDialog(parent), m_text(new QPlainTextEdit)
@@ -26,7 +27,7 @@ TextDialog::TextDialog(QWidget *parent, const QString &title)
     layout->addWidget(m_text);
     layout->addWidget(buttons);
 
-    copy->setIcon(Icons::themed({"edit-copy"}, QStyle::SP_FileIcon));
+    Widgets::setButtonIcon(copy, Icons::themed({"edit-copy"}, QStyle::SP_FileIcon));
     connect(copy, &QPushButton::clicked, this, [this]() {
         QApplication::clipboard()->setText(m_text->toPlainText());
     });

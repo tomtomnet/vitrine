@@ -33,15 +33,12 @@ static QString untunedText(int count, const QString &why)
 }
 
 HostTuningNotifier::HostTuningNotifier(HostSettings *host, QWidget *window)
-    : QObject(window), m_host(host), m_window(window), m_button(new QToolButton)
+    : QObject(window), m_host(host), m_window(window),
+      /* tuning is on (the user's choice): it does not take effect */
+      m_button(Widgets::statusButton(
+          "hostTuning", Icons::themed({"dialog-warning"}, QStyle::SP_MessageBoxWarning),
+          tr("Host tuning inactive")))
 {
-    m_button->setObjectName("hostTuning");
-    m_button->setAutoRaise(true);
-    m_button->setToolButtonStyle(Qt::ToolButtonTextBesideIcon);
-    m_button->setIcon(Icons::themed({"dialog-warning"}, QStyle::SP_MessageBoxWarning));
-    /* tuning is on (the user's choice): it does not take effect */
-    m_button->setText(tr("Host tuning inactive"));
-    m_button->hide();
     connect(m_button, &QToolButton::clicked, this, &HostTuningNotifier::explain);
     connect(host, &HostSettings::untunedChanged, this, &HostTuningNotifier::update);
     connect(host, &HostSettings::groupSetupSuggested, this, &HostTuningNotifier::ask);

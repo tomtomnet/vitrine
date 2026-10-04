@@ -13,7 +13,6 @@
 #include <QMenuBar>
 #include <QMessageBox>
 #include <QPainter>
-#include <QPainterPath>
 #include <QPushButton>
 #include <QSettings>
 #include <QSplitter>
@@ -66,7 +65,11 @@
 
 enum { IdRole = Qt::UserRole, StateRole, StateColorRole };
 
-/* A computer with a badge for the state */
+/*
+ * A computer with a badge for the state, drawn at the size and pixel ratio
+ * the list asks: pixmaps made beforehand for 1, 2 and 3 came out scaled,
+ * and blurred, at 1.25 or 1.5
+ */
 static QIcon vmIcon(VmRunner::State state)
 {
     static QHash<int, QIcon> cache;
@@ -75,51 +78,23 @@ static QIcon vmIcon(VmRunner::State state)
     if (state == VmRunner::State::Stopped) {
         return base;
     }
-    if (cache.contains(int(state))) {
-        return cache.value(int(state));
-    }
-
-    QIcon icon;
-    for (qreal dpr : {1.0, 2.0, 3.0}) {
-        QPixmap pixmap = base.pixmap(QSize(32, 32), dpr);
-        QPainter p(&pixmap);
-        /* in the corner, its outline inside the icon too */
-        const qreal outline = 1.5;
-        const QRectF badge(32 - 15 - outline / 2, 32 - 15 - outline / 2, 15, 15);
-        const QPointF c = badge.center();
-        QColor color(0x3d, 0xae, 0xe9);
-
-        if (state == VmRunner::State::Running) {
-            color = QColor(0x27, 0xae, 0x60);
-        } else if (state == VmRunner::State::Paused) {
-            color = QColor(0xf6, 0x74, 0x00);
+    if (!cache.contains(int(state))) {
+        switch (state) {
+        case VmRunner::State::Running:
+            cache.insert(int(state),
+                         Icons::badged(base, QColor(0x27, 0xae, 0x60), Icons::Badge::Play));
+            break;
+        case VmRunner::State::Paused:
+            cache.insert(int(state),
+                         Icons::badged(base, QColor(0xf6, 0x74, 0x00), Icons::Badge::Pause));
+            break;
+        default:
+            cache.insert(int(state),
+                         Icons::badged(base, QColor(0x3d, 0xae, 0xe9), Icons::Badge::Busy));
+            break;
         }
-        p.setRenderHint(QPainter::Antialiasing);
-        p.setPen(QPen(Qt::white, outline));
-        p.setBrush(color);
-        p.drawEllipse(badge);
-        p.setPen(Qt::NoPen);
-        p.setBrush(Qt::white);
-        if (state == VmRunner::State::Paused) {
-            p.drawRect(QRectF(c.x() - 3.0, c.y() - 3.5, 2.2, 7));
-            p.drawRect(QRectF(c.x() + 0.8, c.y() - 3.5, 2.2, 7));
-        } else if (state == VmRunner::State::Running) {
-            QPainterPath play;
-            play.moveTo(c + QPointF(-2.5, -4));
-            play.lineTo(c + QPointF(4, 0));
-            play.lineTo(c + QPointF(-2.5, 4));
-            play.closeSubpath();
-            p.drawPath(play);
-        } else {
-            for (int i = -1; i <= 1; i++) {
-                p.drawEllipse(c + QPointF(i * 3.7, 0), 1.1, 1.1);
-            }
-        }
-        p.end();
-        icon.addPixmap(pixmap);
     }
-    cache.insert(int(state), icon);
-    return icon;
+    return cache.value(int(state));
 }
 
 /* QEMU shows the running VM in a window of its own: SDL or GTK, its default being one of them */
@@ -211,7 +186,9 @@ MainWindow::MainWindow(VmStore *store, QWidget *parent)
     GuestToolsDialog::setStarter([this](Vm *vm) { select(vm->id()); start(); });
 
     m_list->setObjectName("vms");
-    m_list->setIconSize(QSize(32, 32));
+    /* a large icon beside the two lines of each VM */
+    const int large = style()->pixelMetric(QStyle::PM_LargeIconSize, nullptr, m_list);
+    m_list->setIconSize(QSize(large, large));
     m_list->setItemDelegate(new VmItemDelegate(m_list));
     m_list->setContextMenuPolicy(Qt::CustomContextMenu);
     m_list->setMinimumWidth(200);
@@ -264,7 +241,7 @@ MainWindow::MainWindow(VmStore *store, QWidget *parent)
        the host settings, which raise its limits and say so first */
     statusBar()->addPermanentWidget(
         (new UdmabufNotifier(new UdmabufWatch(store, host, this), host, this))->button());
-    statusBar()->addPermanentWidget(new MemoryMonitor(store, this));
+    statusBar()->addPermanentWidget((new MemoryMonitor(store, this))->button());
     statusBar()->addPermanentWidget(m_qemuStatus);
 
     connect(create, &QPushButton::clicked, m_new, &QAction::trigger);
@@ -1164,7 +1141,7 @@ void MainWindow::reset()
 
     if (vm && Widgets::confirm(this, QMessageBox::Warning, tr("Reset %1?").arg(vm->name()),
                       tr("The VM restarts at once: the guest loses its unsaved work."),
-                      tr("&Reset"))) {
+                      tr("&Reset"), m_reset->icon())) {
         vm->runner()->reset();
     }
 }
@@ -1184,7 +1161,7 @@ void MainWindow::forceOff()
     if (Widgets::confirm(this, QMessageBox::Warning, tr("Force Off %1?").arg(vm->name()),
                 tr("The VM stops at once, as when pulling the plug: the guest loses its "
                    "unsaved work."),
-                tr("&Force Off"))) {
+                tr("&Force Off"), m_forceOff->icon())) {
         vm->runner()->forceOff();
     }
 }
@@ -1219,7 +1196,7 @@ void MainWindow::remove()
         text += ' ' + tr("The changes to its settings that are not applied are lost.");
     }
     if (Widgets::confirm(this, QMessageBox::Question, tr("Remove %1?").arg(vm->name()), text,
-                         tr("&Move to Trash")) &&
+                         tr("&Move to Trash"), m_remove->icon()) &&
         !m_store->remove(vm, &error)) {
         Widgets::warn(this, tr("Cannot Remove the VM"), error);
     }
