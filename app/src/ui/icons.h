@@ -14,6 +14,15 @@ namespace Icons {
 QIcon themed(const QStringList &names, QStyle::StandardPixmap fallback);
 QIcon app();
 
+/* What a badge shows in its circle */
+enum class Badge { Play, Pause, Busy };
+/*
+ * @base with a round badge of @color in its bottom right corner, drawn
+ * for each size and pixel ratio it is asked at, rather than scaled from
+ * pixmaps made beforehand for a few ratios
+ */
+QIcon badged(const QIcon &base, const QColor &color, Badge badge);
+
 /*
  * @icon at @size (logical pixels) with its middle at @centre, on whole
  * device pixels of @painter's device: a pixmap made for that device's

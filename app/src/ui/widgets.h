@@ -6,10 +6,12 @@
 #include <QSplitter>
 #include <QString>
 
+class QIcon;
 class QLabel;
 class QLineEdit;
 class QSlider;
 class QSpinBox;
+class QToolButton;
 class QWidget;
 
 /*
@@ -84,6 +86,12 @@ QLabel *label(const QString &text, QWidget *buddy);
 QLabel *note(const QString &text = {});
 /* A note in a smaller, dimmer font, under a field */
 QLabel *hint(const QString &text = {});
+/*
+ * A notice of the status bar, hidden until there is something to say: an
+ * icon and a text, which a click explains.  The notices all look alike,
+ * their icons the style's small size beside their text.
+ */
+QToolButton *statusButton(const QString &name, const QIcon &icon, const QString &text = {});
 /* @edit with a Browse button for a file, or for a folder if @folder */
 QWidget *browseRow(QLineEdit *edit, const QString &title, const QString &filter = {},
                    bool folder = false);

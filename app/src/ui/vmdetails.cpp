@@ -79,7 +79,7 @@ static QString link(const QString &path)
 }
 
 VmDetails::VmDetails(QWidget *parent)
-    : QWidget(parent), m_icon(new QLabel), m_name(new QLabel), m_state(new QLabel),
+    : QWidget(parent), m_icon(new IconLabel), m_name(new QLabel), m_state(new QLabel),
       m_note(new Banner(Banner::Information)), m_error(new Banner(Banner::Warning)),
       m_text(new QTextBrowser), m_growing(new QTimer(this)), m_contexts(new GpuContexts(this)),
       m_contextsNote(new Banner(Banner::Warning)), m_card(new CardUpdateBanner)
@@ -93,7 +93,9 @@ VmDetails::VmDetails(QWidget *parent)
     font.setPointSizeF(font.pointSizeF() * 1.4);
     m_name->setFont(font);
     m_name->setTextInteractionFlags(Qt::TextSelectableByMouse);
-    m_icon->setPixmap(Icons::themed({"computer"}, QStyle::SP_ComputerIcon).pixmap(48, 48));
+    /* beside the name and the state: a large icon and a half */
+    m_icon->setIcon(Icons::themed({"computer"}, QStyle::SP_ComputerIcon));
+    m_icon->setIconSize(style()->pixelMetric(QStyle::PM_LargeIconSize, nullptr, this) * 3 / 2);
     /* the name and the state together, beside the middle of the icon */
     titles->setSpacing(0);
     titles->addStretch();

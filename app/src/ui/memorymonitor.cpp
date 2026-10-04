@@ -1,16 +1,17 @@
 // SPDX-License-Identifier: GPL-2.0-or-later
 #include "memorymonitor.h"
 
-#include <QHBoxLayout>
-#include <QLabel>
+#include <QMessageBox>
 #include <QStyle>
 #include <QTimer>
+#include <QToolButton>
 
 #include "core/hostmemory.h"
 #include "core/vmconfig.h"
 #include "core/vmrunner.h"
 #include "core/vmstore.h"
 #include "ui/icons.h"
+#include "ui/widgets.h"
 
 static QString gib(qint64 mib)
 {
@@ -18,19 +19,19 @@ static QString gib(qint64 mib)
                       : QObject::tr("%1 GiB").arg(double(mib) / 1024, 0, 'f', 1);
 }
 
-MemoryMonitor::MemoryMonitor(VmStore *store, QWidget *parent)
-    : QWidget(parent), m_store(store), m_icon(new QLabel), m_text(new QLabel(tr("Memory is short"))),
+MemoryMonitor::MemoryMonitor(VmStore *store, QWidget *window)
+    : QObject(window), m_store(store), m_window(window),
+      m_button(Widgets::statusButton(
+          "memoryMonitor", Icons::themed({"dialog-warning"}, QStyle::SP_MessageBoxWarning),
+          tr("Memory is short"))),
       m_timer(new QTimer(this))
 {
-    auto *layout = new QHBoxLayout(this);
-    const int size = style()->pixelMetric(QStyle::PM_SmallIconSize);
-
-    setObjectName("memoryMonitor");
-    layout->setContentsMargins(0, 0, 0, 0);
-    m_icon->setPixmap(
-        Icons::themed({"dialog-warning"}, QStyle::SP_MessageBoxWarning).pixmap(size));
-    layout->addWidget(m_icon);
-    layout->addWidget(m_text);
+    connect(m_button, &QToolButton::clicked, this, [this]() {
+        auto *box = Widgets::messageBox(QMessageBox::Warning, tr("Memory Is Short"),
+                                        m_button->toolTip(), QMessageBox::Close, m_window);
+        box->setAttribute(Qt::WA_DeleteOnClose);
+        box->open();
+    });
 
     /* the guests take their memory as they go */
     m_timer->setInterval(3000);
@@ -40,7 +41,6 @@ MemoryMonitor::MemoryMonitor(VmStore *store, QWidget *parent)
         watch(vm);
     }
     connect(store, &VmStore::added, this, &MemoryMonitor::watch);
-    hide();
     refresh();
 }
 
@@ -67,12 +67,12 @@ void MemoryMonitor::refresh()
 
     const bool tight = !vms.isEmpty() && HostMemory::tight(host, vms);
     if (tight) {
-        setToolTip(tr("<p>The running VMs have %1 of RAM, and hold %2 of it so far; the host "
+        m_button->setToolTip(tr("<p>The running VMs have %1 of RAM, and hold %2 of it so far; the host "
                       "has %3 free out of %4. As the guests take all of theirs, the host can "
                       "run out, and the kernel then stops a program to free memory, often "
                       "QEMU: its guest loses its unsaved work.</p>"
                       "<p>Close programs or VMs, or give the VMs less memory.</p>")
                        .arg(gib(guest), gib(held), gib(host.availableMiB), gib(host.totalMiB)));
     }
-    setVisible(tight);
+    m_button->setVisible(tight);
 }

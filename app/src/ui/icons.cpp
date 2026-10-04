@@ -2,7 +2,9 @@
 #include "icons.h"
 
 #include <QApplication>
+#include <QIconEngine>
 #include <QPainter>
+#include <QPainterPath>
 
 #include <cmath>
 
@@ -22,6 +24,105 @@ QIcon themed(const QStringList &names, QStyle::StandardPixmap fallback)
 QIcon app()
 {
     return QIcon(":/icons/vitrine.svg");
+}
+
+namespace {
+
+/* The base icon with its badge, at whatever size and ratio is asked */
+class BadgeEngine : public QIconEngine
+{
+public:
+    BadgeEngine(const QIcon &base, const QColor &color, Badge badge)
+        : m_base(base), m_color(color), m_badge(badge)
+    {
+    }
+
+    void paint(QPainter *painter, const QRect &rect, QIcon::Mode mode,
+               QIcon::State state) override
+    {
+        /* the ratio of the device, as Qt's own engines take it */
+        const qreal ratio = painter->device() ? painter->device()->devicePixelRatio() : 1.0;
+        painter->drawPixmap(rect, scaledPixmap(rect.size(), mode, state, ratio));
+    }
+
+    QPixmap pixmap(const QSize &size, QIcon::Mode mode, QIcon::State state) override
+    {
+        return scaledPixmap(size, mode, state, 1.0);
+    }
+
+    /* @size in logical pixels (Qt 6.8 on), the pixmap @scale times as large */
+    QPixmap scaledPixmap(const QSize &size, QIcon::Mode mode, QIcon::State state,
+                         qreal scale) override
+    {
+        QPixmap pixmap = m_base.pixmap(size, scale, mode, state);
+
+        if (pixmap.isNull()) {
+            return pixmap;
+        }
+        /* drawn in the icon's logical pixels, whatever the ratio of the pixmap */
+        const QSizeF logical = pixmap.deviceIndependentSize();
+        /* as designed at 32 pixels: in the corner, its outline inside the icon too */
+        const qreal unit = qMin(logical.width(), logical.height()) / 32.0;
+        const qreal outline = 1.5 * unit;
+        const qreal diameter = 15 * unit;
+        const QRectF badge(logical.width() - diameter - outline / 2,
+                           logical.height() - diameter - outline / 2, diameter, diameter);
+        const QPointF c = badge.center();
+        QPainter p(&pixmap);
+
+        p.setRenderHint(QPainter::Antialiasing);
+        p.setPen(QPen(Qt::white, outline));
+        p.setBrush(m_color);
+        p.drawEllipse(badge);
+        p.setPen(Qt::NoPen);
+        p.setBrush(Qt::white);
+        switch (m_badge) {
+        case Badge::Pause:
+            p.drawRect(QRectF(c.x() - 3.0 * unit, c.y() - 3.5 * unit, 2.2 * unit, 7 * unit));
+            p.drawRect(QRectF(c.x() + 0.8 * unit, c.y() - 3.5 * unit, 2.2 * unit, 7 * unit));
+            break;
+        case Badge::Play: {
+            QPainterPath play;
+            play.moveTo(c + QPointF(-2.5, -4) * unit);
+            play.lineTo(c + QPointF(4, 0) * unit);
+            play.lineTo(c + QPointF(-2.5, 4) * unit);
+            play.closeSubpath();
+            p.drawPath(play);
+            break;
+        }
+        case Badge::Busy:
+            for (int i = -1; i <= 1; i++) {
+                p.drawEllipse(c + QPointF(i * 3.7, 0) * unit, 1.1 * unit, 1.1 * unit);
+            }
+            break;
+        }
+        return pixmap;
+    }
+
+    QSize actualSize(const QSize &size, QIcon::Mode mode, QIcon::State state) override
+    {
+        return m_base.actualSize(size, mode, state);
+    }
+
+    QList<QSize> availableSizes(QIcon::Mode mode, QIcon::State state) override
+    {
+        return m_base.availableSizes(mode, state);
+    }
+
+    QIconEngine *clone() const override { return new BadgeEngine(m_base, m_color, m_badge); }
+    QString key() const override { return QStringLiteral("vitrine-badge"); }
+
+private:
+    QIcon m_base;
+    QColor m_color;
+    Badge m_badge;
+};
+
+}
+
+QIcon badged(const QIcon &base, const QColor &color, Badge badge)
+{
+    return QIcon(new BadgeEngine(base, color, badge));
 }
 
 void paint(QPainter *painter, const QIcon &icon, int size, const QPointF &centre,

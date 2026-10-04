@@ -15,6 +15,7 @@
 #include <QSpinBox>
 #include <QSplitter>
 #include <QStyle>
+#include <QToolButton>
 
 Form::Form()
 {
@@ -207,6 +208,21 @@ QLabel *hint(const QString &text)
     palette.setColor(QPalette::WindowText, palette.color(QPalette::PlaceholderText));
     label->setPalette(palette);
     return label;
+}
+
+QToolButton *statusButton(const QString &name, const QIcon &icon, const QString &text)
+{
+    auto *button = new QToolButton;
+    const int size = button->style()->pixelMetric(QStyle::PM_SmallIconSize, nullptr, button);
+
+    button->setObjectName(name);
+    button->setAutoRaise(true);
+    button->setToolButtonStyle(Qt::ToolButtonTextBesideIcon);
+    button->setIcon(icon);
+    button->setIconSize(QSize(size, size));
+    button->setText(text);
+    button->hide();
+    return button;
 }
 
 QWidget *browseRow(QLineEdit *edit, const QString &title, const QString &filter, bool folder)

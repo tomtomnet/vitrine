@@ -7,6 +7,7 @@
 class Banner;
 class CardUpdateBanner;
 class GpuContexts;
+class IconLabel;
 class QemuDocs;
 class QLabel;
 class QTextBrowser;
@@ -34,7 +35,7 @@ private:
 
     QPointer<Vm> m_vm;
     QemuDocs *m_docs = nullptr;
-    QLabel *m_icon;
+    IconLabel *m_icon;
     QLabel *m_name;
     QLabel *m_state;
     Banner *m_note;

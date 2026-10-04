@@ -91,8 +91,10 @@ VmPane::VmPane(QWidget *parent)
     m_list->setObjectName("pages");
     m_advanced->setObjectName("advancedPages");
     m_stack->setObjectName("pageStack");
+    /* the pages' icons between the small and the large size: the toolbar's */
+    const int icons = style()->pixelMetric(QStyle::PM_ToolBarIconSize, nullptr, this);
     for (QListWidget *list : {m_list, m_advanced}) {
-        list->setIconSize(QSize(22, 22));
+        list->setIconSize(QSize(icons, icons));
         list->setSpacing(1);
         list->setSizePolicy(QSizePolicy::Fixed, QSizePolicy::Fixed);
         list->setFrameShape(QFrame::NoFrame);

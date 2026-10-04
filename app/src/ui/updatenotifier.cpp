@@ -45,18 +45,15 @@ static QSettings settings()
 
 UpdateNotifier::UpdateNotifier(QWidget *window)
     : QObject(window), m_window(window), m_check(new UpdateCheck(this)),
-      m_button(new QToolButton), m_daily(new QTimer(this))
+      m_button(Widgets::statusButton("updates",
+                                     Icons::themed({"update-high", "system-software-update"},
+                                                   QStyle::SP_BrowserReload),
+                                     tr("Updates"))),
+      m_daily(new QTimer(this))
 {
     const QList<UpdateCheck::Project> running = projects();
     const QSettings s = settings();
 
-    m_button->setObjectName("updates");
-    m_button->setAutoRaise(true);
-    m_button->setToolButtonStyle(Qt::ToolButtonTextBesideIcon);
-    m_button->setIcon(Icons::themed({"update-high", "system-software-update"},
-                                    QStyle::SP_BrowserReload));
-    m_button->setText(tr("Updates"));
-    m_button->hide();
     connect(m_button, &QToolButton::clicked, this, &UpdateNotifier::showResults);
     connect(m_check, &UpdateCheck::finished, this, &UpdateNotifier::finished);
 
