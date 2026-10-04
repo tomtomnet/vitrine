@@ -154,9 +154,9 @@ struct Writer {
  * default.  Those of vitrine's QEMU that @known lacks stay out, as QEMU
  * refuses unknown properties.
  */
-static QString gpuDevice(const std::optional<QStringList> &known)
+const QList<std::pair<QString, QString>> &cardProperties()
 {
-    static const char *const properties[][2] = {
+    static const QList<std::pair<QString, QString>> properties = {
         {"hostmem", "4G"},
         {"blob", "on"},
         {"drm_native_context", "on"},
@@ -164,11 +164,16 @@ static QString gpuDevice(const std::optional<QStringList> &known)
         {"x-vblank-lead", "3000"},
         {"x-vblank-lead-auto", "on"},
     };
+    return properties;
+}
+
+static QString gpuDevice(const std::optional<QStringList> &known)
+{
     QString value = "virtio-gpu-gl-pci";
 
-    for (const auto &p : properties) {
-        if (!known || known->contains(p[0])) {
-            value += QString(",%1=%2").arg(p[0], p[1]);
+    for (const auto &[key, v] : cardProperties()) {
+        if (!known || known->contains(key)) {
+            value += QString(",%1=%2").arg(key, v);
         }
     }
     return value;

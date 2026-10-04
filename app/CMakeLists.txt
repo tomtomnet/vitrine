@@ -6,6 +6,8 @@ find_package(Qt6 6.4 REQUIRED COMPONENTS Core Concurrent DBus Gui Network Widget
 qt_add_library(vitrine_core STATIC
     src/core/argsfile.cpp
     src/core/argsfile.h
+    src/core/cardupdate.cpp
+    src/core/cardupdate.h
     src/core/diskinfo.cpp
     src/core/diskinfo.h
     src/core/firmware.cpp
@@ -267,6 +269,7 @@ if(BUILD_TESTING)
     endfunction()
     foreach(name
             argsfile
+            cardupdate
             diskinfo
             firmware
             firmwarefiles

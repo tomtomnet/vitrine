@@ -6,6 +6,7 @@
 
 #include <functional>
 #include <optional>
+#include <utility>
 
 #include "core/argsfile.h"
 
@@ -90,6 +91,13 @@ bool hasVga(const QString &arch = {});
 bool hasPasst(const QemuInfo *info, const QString &chosen);
 /* The properties of virtio-gpu-gl-pci; not set for vitrine's QEMU */
 std::optional<QStringList> gpuProperties(const QemuInfo *info, const QString &chosen);
+
+/*
+ * The properties the 3D card of Linux on a PC gets, KEY and VALUE in the
+ * order the template writes them, when the QEMU has them all: what
+ * CardUpdate offers VMs made before
+ */
+const QList<std::pair<QString, QString>> &cardProperties();
 
 /*
  * The arguments, in sections.  @addFirmware is called where the firmware
