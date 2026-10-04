@@ -2,6 +2,8 @@
 #include "udmabuf.h"
 
 #include <QFile>
+#include <QFileInfo>
+#include <QTimer>
 
 #include <algorithm>
 #include <cerrno>
@@ -95,18 +97,54 @@ QString tmpfilesContent()
         .arg(kSizeLimitMb);
 }
 
+void LogCount::scan(QByteArrayView line)
+{
+    /* vitrine's own notes */
+    if (line.startsWith("vitrine:")) {
+        return;
+    }
+    createList += line.contains("UDMABUF_CREATE_LIST");
+    outOfMemory += line.contains("error 0x1201");
+    refusing += line.contains("refusing it");
+    unknownResource += line.contains("Couldn't find res_id") || line.contains("invalid res_id");
+}
+
+int LogCount::refusals() const
+{
+    /* a refusal: QEMU's warning, its error for the command, its guest
+       error with -d guest_errors - as many of each, whichever it logged */
+    const int refused = std::max({createList, outOfMemory, refusing});
+    return refused ? refused : unknownResource;
+}
+
 } // namespace Udmabuf
 
 using namespace Udmabuf;
 
+/* qemu.log of a VM found running: its last MiB is plenty */
+static const qint64 kTail = 1 << 20;
+/* a read at most per VM and poll; the rest at the next */
+static const qint64 kBurst = 4 << 20;
+/* a line longer than this is no line of interest: dropped */
+static const qsizetype kMaxLine = 1 << 16;
+
 QString UdmabufWatch::Issue::text() const
 {
+    if (log.any()) {
+        const int n = log.refusals();
+        /* no device: not a matter of limits */
+        const QString cause = limits.deviceErrno ? problem(limits)
+                                                 : tr("the host's udmabuf limits are too low");
+        return tr("Some guest windows are copied: %1 (%2 refused)").arg(cause).arg(n);
+    }
     return tr("Guest windows drawn by the CPU will be copied: %1").arg(problem(limits));
 }
 
 UdmabufWatch::UdmabufWatch(VmStore *store, HostSettings *host, QObject *parent)
-    : QObject(parent), m_store(store), m_host(host)
+    : QObject(parent), m_store(store), m_host(host), m_timer(new QTimer(this))
 {
+    m_timer->setInterval(2000);
+    connect(m_timer, &QTimer::timeout, this, &UdmabufWatch::poll);
     if (host) {
         connect(host, &HostSettings::udmabufAnswered, this, &UdmabufWatch::answered);
     }
@@ -116,11 +154,17 @@ UdmabufWatch::UdmabufWatch(VmStore *store, HostSettings *host, QObject *parent)
             if (m_runs.take(id).issue.active()) {
                 emit changed();
             }
+            updateTimer();
         });
         for (Vm *vm : store->vms()) {
             watchVm(vm);
         }
     }
+}
+
+void UdmabufWatch::setPollInterval(int ms)
+{
+    m_timer->setInterval(ms);
 }
 
 QList<UdmabufWatch::Issue> UdmabufWatch::issues() const
@@ -161,12 +205,18 @@ void UdmabufWatch::stateChanged(Vm *vm)
                 emit changed();
             }
         }
+        updateTimer();
         return;
     }
     if (it == m_runs.end()) {
         Run run;
         run.issue.vmId = vm->id();
         run.issue.vmName = vm->name();
+        /* starting: the runner emptied the log first, all of it is this
+           run's; found running: what QEMU wrote so far */
+        if (state != VmRunner::State::Starting) {
+            run.offset = std::max<qint64>(0, QFileInfo(vm->runner()->logPath()).size() - kTail);
+        }
         it = m_runs.insert(vm->id(), run);
     }
     const qint64 pid = vm->runner()->pid();
@@ -178,6 +228,7 @@ void UdmabufWatch::stateChanged(Vm *vm)
             check(vm, *it);
         }
     }
+    updateTimer();
 }
 
 void UdmabufWatch::check(Vm *vm, Run &run)
@@ -259,4 +310,62 @@ void UdmabufWatch::raised(Vm *vm, Run &run)
                                     "from now on are not copied"));
     }
     emit changed();
+}
+
+void UdmabufWatch::poll()
+{
+    for (auto it = m_runs.begin(); it != m_runs.end(); ++it) {
+        if (Vm *vm = m_store ? m_store->find(it.key()) : nullptr) {
+            read(vm, *it);
+        }
+    }
+}
+
+void UdmabufWatch::read(Vm *vm, Run &run)
+{
+    QFile f(vm->runner()->logPath());
+
+    if (!f.open(QIODevice::ReadOnly)) {
+        return;
+    }
+    if (f.size() < run.offset) {
+        /* emptied (the log view's Clear): QEMU goes on at the new end */
+        run.offset = 0;
+        run.partial.clear();
+    }
+    if (f.size() == run.offset || !f.seek(run.offset)) {
+        return;
+    }
+    QByteArray bytes = f.read(std::min(f.size() - run.offset, kBurst));
+    run.offset += bytes.size();
+    bytes.prepend(run.partial);
+    const qsizetype end = bytes.lastIndexOf('\n');
+    run.partial = bytes.mid(end + 1);
+    if (run.partial.size() > kMaxLine) {
+        run.partial.clear();
+    }
+    if (end < 0) {
+        return;
+    }
+    const LogCount before = run.issue.log;
+    for (qsizetype from = 0; from < end;) {
+        qsizetype nl = bytes.indexOf('\n', from);
+        if (nl < 0 || nl > end) {
+            nl = end;
+        }
+        run.issue.log.scan(QByteArrayView(bytes).sliced(from, nl - from));
+        from = nl + 1;
+    }
+    if (run.issue.log != before) {
+        emit changed();
+    }
+}
+
+void UdmabufWatch::updateTimer()
+{
+    if (m_runs.isEmpty()) {
+        m_timer->stop();
+    } else if (!m_timer->isActive()) {
+        m_timer->start();
+    }
 }

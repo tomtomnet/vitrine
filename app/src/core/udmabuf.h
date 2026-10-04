@@ -1,12 +1,14 @@
 // SPDX-License-Identifier: GPL-2.0-or-later
 #pragma once
 
+#include <QByteArrayView>
 #include <QHash>
 #include <QObject>
 #include <QPointer>
 #include <QString>
 
 class HostSettings;
+class QTimer;
 class Vm;
 class VmStore;
 
@@ -60,13 +62,35 @@ QString grubbyCommand();
 QString tmpfilesPath();
 QString tmpfilesContent();
 
+/*
+ * The lines of qemu.log that say a guest buffer was refused: QEMU's
+ * "UDMABUF_CREATE_LIST" warning and "ctrl 0x10c, error 0x1201" (the blob
+ * refused), "refusing it" (with -d guest_errors), and virglrenderer's
+ * "Couldn't find res_id" / "invalid res_id" for such a buffer used later
+ */
+struct LogCount {
+    int createList = 0;
+    int outOfMemory = 0;
+    int refusing = 0;
+    int unknownResource = 0;
+
+    /* One line of the log, without its newline */
+    void scan(QByteArrayView line);
+    bool any() const { return createList || outOfMemory || refusing || unknownResource; }
+    /* Buffers refused: one refusal shows in several of these lines */
+    int refusals() const;
+    bool operator==(const LogCount &) const = default;
+};
+
 } // namespace Udmabuf
 
 /*
  * For each VM of @store while it runs: at its start, when its GPU has
  * native context, the udmabuf limits are checked, and when they are too
  * low and host tuning will not raise them, the log gets a note saying so
- * and the VM an issue.  One issue per VM per run, gone when it stops.
+ * and the VM an issue (limitsWhy); and its qemu.log is read as it grows
+ * for buffers refused (refusals).  One issue per VM per run, gone when it
+ * stops.
  */
 class UdmabufWatch : public QObject
 {
@@ -81,7 +105,8 @@ public:
         bool limitsLow = false;
         Udmabuf::Limits limits;     // read then
         QString notRaised;          // why host tuning does not ("" if it cannot help)
-        bool active() const { return limitsLow; }
+        Udmabuf::LogCount log;      // what qemu.log said so far
+        bool active() const { return limitsLow || log.any(); }
         /* For the status: plain, one sentence without its period */
         QString text() const;
     };
@@ -92,9 +117,12 @@ public:
     /* The VMs running with an issue, by name */
     QList<Issue> issues() const;
 
-    /* Tests: where /sys and the device are */
+    /* Tests: where /sys and the device are, how often the logs are read */
     void setSysRoot(const QString &root) { m_sysRoot = root; }
     void setDevice(const QString &device) { m_device = device; }
+    void setPollInterval(int ms);
+    /* The logs read now */
+    void poll();
 
 signals:
     /* issues() changed */
@@ -103,6 +131,8 @@ signals:
 private:
     struct Run {
         qint64 pid = 0;
+        qint64 offset = 0;          // read up to there
+        QByteArray partial;         // a line not ended yet
         bool checked = false;       // the start check done (native context only)
         bool noted = false;         // the note on the limits written
         Issue issue;
@@ -121,11 +151,14 @@ private:
     /* The limits too low and not raised, for @why: the note, the issue */
     void notRaised(Vm *vm, Run &run, const QString &why);
     void raised(Vm *vm, Run &run);
+    void read(Vm *vm, Run &run);
+    void updateTimer();
 
     VmStore *m_store;
     QPointer<HostSettings> m_host;
     QString m_sysRoot = QStringLiteral("/sys");
     QString m_device = QStringLiteral("/dev/udmabuf");
+    QTimer *m_timer;
     QHash<QString, Run> m_runs;     // VM id -> its run
     QHash<qint64, Answer> m_answers;  // host tuning's, for QEMUs not checked yet
 };

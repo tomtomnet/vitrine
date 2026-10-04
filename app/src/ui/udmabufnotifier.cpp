@@ -6,6 +6,8 @@
 #include <QTimer>
 #include <QToolButton>
 
+#include <algorithm>
+
 #include "ui/hosttuningnotifier.h"
 #include "ui/icons.h"
 #include "ui/widgets.h"
@@ -83,12 +85,14 @@ void UdmabufNotifier::update()
 {
     const QList<UdmabufWatch::Issue> issues = m_watch->issues();
     QStringList lines;
+    bool refused = false;
 
     for (const UdmabufWatch::Issue &issue : issues) {
         lines << tr("%1: %2.").arg(issue.vmName, issue.text());
+        refused |= issue.log.any();
     }
     if (!issues.isEmpty()) {
-        m_button->setText(tr("udmabuf limits low"));
+        m_button->setText(refused ? tr("Guest windows copied") : tr("udmabuf limits low"));
         m_button->setToolTip(lines.join('\n') + '\n' + tr("Click for what to do."));
     }
     m_button->setVisible(!issues.isEmpty());
@@ -120,7 +124,10 @@ void UdmabufNotifier::explain()
         m_box->raise();
         return;
     }
-    auto *box = Widgets::messageBox(QMessageBox::Warning, tr("udmabuf Limits Too Low"),
+    const bool refused = std::any_of(issues.begin(), issues.end(),
+                                     [](const UdmabufWatch::Issue &issue) { return issue.log.any(); });
+    auto *box = Widgets::messageBox(QMessageBox::Warning,
+                                    refused ? tr("Guest Windows Copied") : tr("udmabuf Limits Too Low"),
                                     explanation(issues, Udmabuf::read()), QMessageBox::Close,
                                     m_window);
     const HostSettings::Status status = m_host ? m_host->untunedStatus() : HostSettings::Status();

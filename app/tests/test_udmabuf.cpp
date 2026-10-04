@@ -1,7 +1,8 @@
 // SPDX-License-Identifier: GPL-2.0-or-later
 /*
- * The udmabuf limits as read for this user, and UdmabufWatch on VMs found
- * running (a stand-in QEMU and its monitor) without host tuning.
+ * The udmabuf limits as read for this user, the lines of qemu.log that say
+ * a guest buffer was refused, and UdmabufWatch on VMs found running (a
+ * stand-in QEMU and its monitor) without host tuning.
  */
 #include <QDir>
 #include <QFile>
@@ -32,6 +33,12 @@ static bool writeFile(const QString &path, const QByteArray &data)
     QDir().mkpath(QFileInfo(path).path());
     QFile f(path);
     return f.open(QIODevice::WriteOnly | QIODevice::Truncate) && f.write(data) == data.size();
+}
+
+static bool appendFile(const QString &path, const QByteArray &data)
+{
+    QFile f(path);
+    return f.open(QIODevice::WriteOnly | QIODevice::Append) && f.write(data) == data.size();
 }
 
 static QString readFile(const QString &path)
@@ -111,6 +118,16 @@ private:
 static const QByteArray kNative = "-device virtio-vga-gl,blob=on,drm_native_context=on\n"
                                   "-display dbus,p2p=yes\n";
 static const QByteArray kVirgl = "-device virtio-vga-gl\n-display dbus,p2p=yes\n";
+
+/* From a refused 4K window (QEMU with vitrine's patches, amdgpu native context) */
+static const QByteArray kRefusal =
+    "2026-10-03T23:16:05.596504Z qemu-system-x86_64: warning: virtio_gpu_create_udmabuf_fd: "
+    "UDMABUF_CREATE_LIST: Invalid argument (7473 entries, 32043008 bytes)\n"
+    "virtio_gpu_virgl_process_cmd: ctrl 0x10c, error 0x1201\n"
+    "drm: amdgpu_get_object_from_res_id:203: [2|kwin_wayland]: Couldn't find res_id: 388 "
+    "[amdgpu_ccmd_bo_query_info]\n"
+    "drm: amdgpu_ccmd_bo_query_info:718: [2|kwin_wayland]: Cannot find object\n"
+    "virtio_gpu_virgl_process_cmd: ctrl 0x102, error 0x1203\n";
 
 class TestUdmabuf : public QObject
 {
@@ -216,10 +233,44 @@ private slots:
                          "w /sys/module/udmabuf/parameters/size_limit_mb - - - - 2048\n"));
     }
 
+    void logCount()
+    {
+        Udmabuf::LogCount count;
+        for (const QByteArray &line : (kRefusal + kRefusal).split('\n')) {
+            count.scan(line);
+        }
+        QCOMPARE(count.createList, 2);
+        QCOMPARE(count.outOfMemory, 2);
+        QCOMPARE(count.refusing, 0);
+        QCOMPARE(count.unknownResource, 2);
+        QCOMPARE(count.refusals(), 2);
+
+        /* with -d guest_errors: one more line per refusal, still one refusal */
+        count.scan("virgl_cmd_resource_create_blob: no dma-buf for guest blob 388, refusing it");
+        count.scan("virgl_cmd_resource_create_blob: no dma-buf for guest blob 389, refusing it");
+        count.scan("virgl_cmd_resource_create_blob: no dma-buf for guest blob 390, refusing it");
+        QCOMPARE(count.refusals(), 3);
+
+        /* only the renderer's lines (Xe, an older QEMU) */
+        Udmabuf::LogCount xe;
+        xe.scan("drm: xe_ccmd_vm_bind:612: [3|kwin_wayland]: invalid res_id 52 in bind op 0");
+        QVERIFY(xe.any());
+        QCOMPARE(xe.refusals(), 1);
+
+        /* vitrine's own notes, and the rest, count for nothing */
+        Udmabuf::LogCount none;
+        none.scan("vitrine: QEMU will refuse guest windows: UDMABUF_CREATE_LIST, error 0x1201");
+        none.scan("virtio_gpu_virgl_process_cmd: ctrl 0x102, error 0x1203");
+        none.scan("");
+        QVERIFY(!none.any());
+        QCOMPARE(none.refusals(), 0);
+    }
+
     /*
      * VMs found running without host tuning: the native-context one gets
      * the start check (limits too low: a note in its log, an issue), the
-     * other none; an issue goes with its VM's run
+     * other none; refusals in any VM's log are counted as they come; an
+     * issue goes with its VM's run
      */
     void watchWithoutTuning()
     {
@@ -232,6 +283,7 @@ private slots:
         UdmabufWatch watch(&store, nullptr);
         watch.setSysRoot(m_sys);
         watch.setDevice(m_device);
+        watch.setPollInterval(100000);
         QSignalSpy changed(&watch, &UdmabufWatch::changed);
         for (Vm *vm : store.vms()) {
             vm->runner()->attach(vm->args());
@@ -261,12 +313,43 @@ private slots:
                          " (see docs/host-tuning.md)\n"));
         QVERIFY(readFile(virglLog).isEmpty());
 
+        /* the refusals, as QEMU writes them; a line not ended yet waits */
+        appendFile(nativeLog, kRefusal + kRefusal + "virtio_gpu_virgl_process_cmd: ctrl 0x10c, err");
+        appendFile(virglLog, kRefusal);
+        watch.poll();
+        issues = watch.issues();
+        QCOMPARE(issues.size(), 2);
+        QCOMPARE(issues[0].log.refusals(), 2);
+        QCOMPARE(issues[0].text(), QString("Some guest windows are copied: the host's udmabuf "
+                                           "limits are too low (2 refused)"));
+        QCOMPARE(issues[1].vmId, QString("virgl"));
+        QVERIFY(!issues[1].limitsLow);
+        QCOMPARE(issues[1].log.refusals(), 1);
+        const int seen = int(changed.size());
+        watch.poll();
+        QCOMPARE(changed.size(), seen);
+        appendFile(nativeLog, "or 0x1201\n");
+        watch.poll();
+        QCOMPARE(watch.issues()[0].log.outOfMemory, 3);
+        QCOMPARE(watch.issues()[0].log.refusals(), 3);
+        /* the note once per run */
+        QCOMPARE(readFile(nativeLog).count("vitrine: "), 3);
+
+        /* the log emptied (the log view's Clear): read again from its start */
+        writeFile(virglLog, QByteArray());
+        watch.poll();
+        appendFile(virglLog, kRefusal);
+        watch.poll();
+        QCOMPARE(watch.issues()[1].log.refusals(), 2);
+
         /* a run ends: its issue goes */
         native.stop();
         QTRY_COMPARE(store.find("native")->runner()->state(), VmRunner::State::Stopped);
-        QVERIFY(watch.issues().isEmpty());
-        QCOMPARE(changed.size(), 2);
+        issues = watch.issues();
+        QCOMPARE(issues.size(), 1);
+        QCOMPARE(issues[0].vmId, QString("virgl"));
         virgl.stop();
+        QTRY_VERIFY(watch.issues().isEmpty());
     }
 
     /* Limits high enough, or tuning that raised them: nothing to say */

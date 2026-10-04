@@ -138,7 +138,8 @@ private slots:
 
     /*
      * The warning shows while a VM has an issue, opens its explanation by
-     * itself once per run, and goes with the VM's run
+     * itself once per run, says "copied" once the log shows refusals, and
+     * goes with the VM's run
      */
     void warning()
     {
@@ -166,6 +167,7 @@ private slots:
         UdmabufWatch watch(&store, nullptr);
         watch.setSysRoot(sys);
         watch.setDevice(device);
+        watch.setPollInterval(100000);
         QWidget window;
         UdmabufNotifier notifier(&watch, nullptr, &window);
         QToolButton *button = notifier.button();
@@ -195,12 +197,21 @@ private slots:
         box->button(QMessageBox::Close)->click();
         QTRY_VERIFY(boxes().isEmpty());
 
-        /* no box by itself again */
+        /* refusals: "copied", and no box by itself again */
+        QFile log(vm->runner()->logPath());
+        QVERIFY(log.open(QIODevice::WriteOnly | QIODevice::Append));
+        log.write("virtio_gpu_virgl_process_cmd: ctrl 0x10c, error 0x1201\n");
+        log.close();
+        watch.poll();
+        QCOMPARE(button->text(), QString("Guest windows copied"));
+        QVERIFY(button->toolTip().contains("Some guest windows are copied: the host's udmabuf "
+                                           "limits are too low (1 refused)."));
         QTest::qWait(50);
         QVERIFY(boxes().isEmpty());
         /* a click: the explanation again */
         button->click();
         QTRY_COMPARE(boxes().size(), 1);
+        QCOMPARE(boxes().first()->windowTitle(), QString("Guest Windows Copied"));
         boxes().first()->button(QMessageBox::Close)->click();
 
         /* the run ends: the warning goes */
