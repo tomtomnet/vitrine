@@ -5,6 +5,8 @@
 #include <QFocusEvent>
 #include <QLabel>
 #include <QListWidget>
+#include <QPlainTextEdit>
+#include <QPushButton>
 #include <QRadioButton>
 #include <QSpinBox>
 #include <QStandardPaths>
@@ -14,6 +16,7 @@
 #include "core/argsfile.h"
 #include "core/paths.h"
 #include "core/vmstore.h"
+#include "ui/argseditor.h"
 #include "ui/settingspages.h"
 #include "ui/vmpane.h"
 
@@ -260,6 +263,47 @@ private slots:
         QCOMPARE(pane.page(), VmPane::Machine);
         pages->setCurrentRow(VmPane::Display);
         QCOMPARE(pane.page(), VmPane::Display);
+    }
+
+    /* Ctrl+S in the Arguments page's editor applies the changes, as Apply does */
+    void ctrlSApplies()
+    {
+        QTemporaryDir dir;
+        QFile args(dir.filePath("vm.args"));
+        QVERIFY(args.open(QIODevice::WriteOnly) && args.write("-m 1G\n") > 0);
+        args.close();
+        Vm vm(dir.path());
+        VmPane pane;
+        auto *apply = pane.findChild<QPushButton *>("apply");
+        QVERIFY(apply);
+
+        pane.setVm(&vm);
+        pane.setTab(VmPane::Settings);
+        pane.setPage(VmPane::Arguments);
+        pane.show();
+        /* shortcuts go to the active window */
+        pane.activateWindow();
+        QVERIFY(QTest::qWaitForWindowActive(&pane));
+        auto *editor = pane.findChild<ArgsEditor *>();
+        QVERIFY(editor && editor->isVisible());
+        editor->setFocus();
+        QTRY_VERIFY(editor->hasFocus());
+
+        /* nothing to apply: nothing happens */
+        QTest::keyClick(editor, Qt::Key_S, Qt::ControlModifier);
+        QVERIFY(!apply->isEnabled());
+
+        editor->moveCursor(QTextCursor::End);
+        QTest::keyClicks(editor, "-smp 2");
+        QTRY_VERIFY(apply->isEnabled());
+        QTest::keyClick(editor, Qt::Key_S, Qt::ControlModifier);
+        QTRY_VERIFY(!pane.isModified());
+        QVERIFY(!apply->isEnabled());
+        QVERIFY(args.open(QIODevice::ReadOnly));
+        const QByteArray saved = args.readAll();
+        QVERIFY2(saved.contains("-smp 2"), saved.constData());
+        /* the letter itself did not go into the text */
+        QVERIFY(!editor->toPlainText().contains("-smp 2s"));
     }
 };
 

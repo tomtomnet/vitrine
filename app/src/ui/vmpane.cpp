@@ -14,6 +14,7 @@
 #include <QPushButton>
 #include <QScrollArea>
 #include <QScrollBar>
+#include <QShortcut>
 #include <QSignalBlocker>
 #include <QSpinBox>
 #include <QStackedWidget>
@@ -172,6 +173,14 @@ VmPane::VmPane(QWidget *parent)
     }
     connect(m_more, &QToolButton::toggled, this, &VmPane::showAdvanced);
     connect(m_apply, &QPushButton::clicked, this, &VmPane::apply);
+    /* Ctrl+S on the settings, the Arguments page's editor among them: Apply */
+    auto *save = new QShortcut(QKeySequence::Save, settings);
+    save->setContext(Qt::WidgetWithChildrenShortcut);
+    connect(save, &QShortcut::activated, this, [this]() {
+        if (m_apply->isEnabled()) {
+            m_apply->click();
+        }
+    });
     connect(m_discard, &QPushButton::clicked, this, &VmPane::discard);
     connect(m_snapshots, &SnapshotView::startRequested, this, &VmPane::startFromSnapshot);
     updateFooter();
