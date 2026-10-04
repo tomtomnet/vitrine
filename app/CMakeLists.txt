@@ -328,6 +328,21 @@ if(BUILD_TESTING)
         add_test(NAME ${name} COMMAND test_${name})
         vitrine_test_env(${name} QT_QPA_PLATFORM=offscreen)
     endforeach()
+    # the windows at every scale Wayland gives (n/120, tests/scales.h), one
+    # after the other: Qt's global factor, QT_SCALE_FACTOR's, is private
+    foreach(name
+            banner)
+        qt_add_executable(test_${name} tests/test_${name}.cpp tests/scales.h)
+        target_link_libraries(test_${name} PRIVATE vitrine_ui Qt6::GuiPrivate Qt6::Test)
+        target_compile_options(test_${name} PRIVATE -Wall -Wextra)
+        add_test(NAME ${name} COMMAND test_${name})
+        vitrine_test_env(${name} QT_QPA_PLATFORM=offscreen)
+        # and a few set at start by QT_SCALE_FACTOR, as a user would: the same
+        foreach(scale 1.15 1.3 1.7 2.35)
+            add_test(NAME ${name}-${scale} COMMAND test_${name})
+            vitrine_test_env(${name}-${scale} QT_QPA_PLATFORM=offscreen QT_SCALE_FACTOR=${scale})
+        endforeach()
+    endforeach()
     # the helper's test build on a fake tree, and its QEMU stand-in (helper/)
     target_compile_definitions(test_hostsettings PRIVATE
         HELPER_FAKE="$<TARGET_FILE:vitrine-helper-fake>"

@@ -139,6 +139,8 @@ GuestToolsDialog::GuestToolsDialog(Vm *vm, QWidget *parent)
     layout->addWidget(m_snapshot);
     layout->addWidget(m_progress);
     m_progress->hide();
+    /* room to spare under the text, not between its lines */
+    layout->addStretch();
 
     m_install = m_buttons->addButton(running ? tr("&Restart and Install") : tr("&Install"),
                                      QDialogButtonBox::AcceptRole);
@@ -170,6 +172,7 @@ GuestToolsDialog::GuestToolsDialog(Vm *vm, QWidget *parent)
         }
     });
     setMinimumWidth(Widgets::em(this) * 34);
+    Widgets::resizeToWidth(this, sizeHint().width());
 }
 
 void GuestToolsDialog::go(bool medium)

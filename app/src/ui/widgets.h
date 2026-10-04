@@ -69,6 +69,13 @@ void warn(QWidget *parent, const QString &title, const QString &text);
 Form *form();
 /* The height of a line of @widget's text: widths of fields go by it */
 int em(const QWidget *widget);
+/*
+ * @window @width wide (its minimum width at least) and as high as its
+ * content is at that width.  A window shown without a size takes the
+ * height of the width it prefers, which wrapped text shorter there makes
+ * too high at a wider width: the layout spreads the rest in the window.
+ */
+void resizeToWidth(QWidget *window, int width);
 /* The title of a part of a page, flat: no frame around the part */
 QLabel *heading(const QString &text);
 /* A form label whose mnemonic focuses @buddy, for fields that are layouts */

@@ -106,6 +106,17 @@ int em(const QWidget *widget)
     return widget->fontMetrics().height();
 }
 
+void resizeToWidth(QWidget *window, int width)
+{
+    window->ensurePolished();
+    if (QLayout *layout = window->layout()) {
+        layout->activate();
+    }
+    width = qBound(window->minimumWidth(), width, window->maximumWidth());
+    window->resize(width, window->hasHeightForWidth() ? window->heightForWidth(width)
+                                                      : window->sizeHint().height());
+}
+
 QLabel *heading(const QString &text)
 {
     auto *label = new QLabel(text);
