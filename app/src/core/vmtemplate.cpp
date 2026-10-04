@@ -151,8 +151,7 @@ struct Writer {
  * The research launcher's card: DRM native context, blob resources in a
  * 4 GiB window, and the guest's vblank ticked 3 ms before the host's,
  * following what the host's compositor needs.  No Venus, which is off by
- * default.  Those of vitrine's QEMU that @known lacks stay out, as QEMU
- * refuses unknown properties.
+ * default.
  */
 const QList<std::pair<QString, QString>> &cardProperties()
 {
@@ -167,6 +166,7 @@ const QList<std::pair<QString, QString>> &cardProperties()
     return properties;
 }
 
+/* Those of vitrine's QEMU that @known lacks stay out, as QEMU refuses unknown properties */
 static QString gpuDevice(const std::optional<QStringList> &known)
 {
     QString value = "virtio-gpu-gl-pci";
