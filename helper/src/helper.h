@@ -18,10 +18,20 @@
 #define FAIR_RUNTIME_NS 1000000ULL
 /* The GPU clock floor "auto" sets on AMD APUs whose minimum is lower */
 #define GPU_FLOOR_AUTO_MHZ 1800
+/*
+ * The udmabuf limits while a VM with a native-context GPU runs: QEMU gives
+ * each blob of guest memory a udmabuf, made of one entry per contiguous
+ * piece of guest RAM - a maximized 4K window is ~32 MB in 1,200 to 8,000
+ * pieces - and the kernel's defaults (1024 entries, 64 MB) refuse those.
+ * Raised only, never lowered.
+ */
+#define UDMABUF_LIST_LIMIT 65536ULL
+#define UDMABUF_SIZE_LIMIT_MB 2048ULL
 
 #define FAIR_SERVER_DIR "/sys/kernel/debug/sched/fair_server"
 #define LOCKDOWN_FILE "/sys/kernel/security/lockdown"
 #define DRM_DIR "/sys/class/drm"
+#define UDMABUF_DIR "/sys/module/udmabuf/parameters"
 #define STATE_DIR "/run/vitrine-helper"
 
 /* --- system access: sys.c on the real system, tests/fakesys.c on a fake tree --- */
@@ -78,6 +88,12 @@ void fair_server_on(void);
 void fair_server_off(void);
 /* @card: "cardN"; @value: a clock in MHz, "auto" or "off" */
 void gpu_floor(const char *card, const char *value);
+/* The protocol's udmabuf <pid>: the udmabuf limits raised while that
+   watched QEMU runs */
+void udmabuf_on(const char *arg);
+/* After a watched QEMU exits: the limits let go when none of those still
+   watched asked for them */
+void udmabuf_check(void);
 /* Drops every setting this helper holds, restoring those it was the last
    one to hold */
 void settings_release(void);
@@ -92,6 +108,7 @@ struct watched {
     int pidfd;   /* readable once the process has exited */
     int procfd;  /* /proc/<pid>, bound to that process */
     bool rt;     /* rt was asked for it */
+    bool udmabuf; /* udmabuf was asked for it */
 };
 #define MAX_WATCHED 64
 extern struct watched watched[MAX_WATCHED];

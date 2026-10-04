@@ -1,9 +1,10 @@
 /* SPDX-License-Identifier: GPL-2.0-or-later */
 /*
- * The global settings: the kernel's fair server and an AMD GPU's clock
- * floor.  They belong to the whole machine, so several helpers (vitrine
- * restarted while its VMs run, other users' sessions) coordinate through
- * /run/vitrine-helper, a root-only tmpfs folder that a reboot empties:
+ * The global settings: the kernel's fair server, an AMD GPU's clock floor
+ * and the udmabuf limits.  They belong to the whole machine, so several
+ * helpers (vitrine restarted while its VMs run, other users' sessions)
+ * coordinate through /run/vitrine-helper, a root-only tmpfs folder that a
+ * reboot empties:
  *
  *   lock           flock(LOCK_EX) around every change of a hold
  *   <key>.hold     flock(LOCK_SH) by every helper holding the setting, for
@@ -39,7 +40,7 @@ static int state_fd = -1;
 static int lock_fd = -1;
 
 struct hold {
-    char key[32];       /* fair-server, gpu-floor-cardN; empty when free */
+    char key[32];       /* fair-server, gpu-floor-cardN, udmabuf; empty when free */
     int fd;             /* <key>.hold */
     char value[16];     /* what was asked: on, auto or MHz */
 };
@@ -902,6 +903,211 @@ void gpu_floor(const char *card, const char *value)
     reply("ok gpu-floor %s %u MHz (was %u MHz, level %s)", card, mhz, od.min, level);
 }
 
+/* --- udmabuf limits --- */
+
+/*
+ * The module's parameters, read by the kernel at each UDMABUF_CREATE_LIST:
+ * a change counts for the next blob, nothing to restart.  Both are ints
+ * (mode 0644), and /dev/udmabuf itself is the desktop user's already
+ * (systemd's uaccess): raising them only lets that user's udmabufs be
+ * bigger, in pages they own anyway.
+ */
+static const struct {
+    const char *name;
+    u64 target;
+} udmabuf_params[] = {
+    {"list_limit", UDMABUF_LIST_LIMIT},
+    {"size_limit_mb", UDMABUF_SIZE_LIMIT_MB},
+};
+#define NUDMABUF (int)(sizeof(udmabuf_params) / sizeof(udmabuf_params[0]))
+
+static void udmabuf_path(char *out, size_t size, const char *name)
+{
+    snprintf(out, size, UDMABUF_DIR "/%s", name);
+}
+
+static int udmabuf_index(const char *name)
+{
+    for (int i = 0; i < NUDMABUF; i++) {
+        if (strcmp(udmabuf_params[i].name, name) == 0) {
+            return i;
+        }
+    }
+    return -1;
+}
+
+/* @what with ", " before it if @text has something already */
+static void append(char *text, size_t size, const char *what)
+{
+    size_t len = strlen(text);
+
+    snprintf(text + len, size - len, "%s%s", len ? ", " : "", what);
+}
+
+/* Under the lock, as the last holder or for a dead one: the state back */
+static void udmabuf_restore(void)
+{
+    char *text = state_read("udmabuf"), *line, *save = NULL;
+    char back[128] = "", left[64] = "";
+    bool failed = false;
+
+    if (!text) {
+        return;
+    }
+    /* "NAME WAS WROTE" per parameter it raised */
+    for (line = strtok_r(text, "\n", &save); line; line = strtok_r(NULL, "\n", &save)) {
+        char name[16], path[PATH_MAX], what[48];
+        u64 was, wrote, now;
+
+        if (sscanf(line, "%15s %llu %llu", name, &was, &wrote) != 3 || udmabuf_index(name) < 0) {
+            continue;
+        }
+        udmabuf_path(path, sizeof(path), name);
+        snprintf(what, sizeof(what), "%s %llu", name, was);
+        if (!read_u64(path, &now)) {
+            failed = true;
+        } else if (now == wrote) {
+            if (write_u64(path, was) == 0) {
+                append(back, sizeof(back), what);
+            } else {
+                failed = true;
+            }
+        } else if (now == was) {
+            /* killed before writing it: nothing to undo */
+            append(back, sizeof(back), what);
+        } else {
+            append(left, sizeof(left), name);
+        }
+    }
+    free(text);
+    state_remove("udmabuf");
+    if (back[0] || failed) {
+        reply("restored udmabuf: %s%s", back[0] ? back : "nothing", failed ? " (some failed)" : "");
+    }
+    if (left[0]) {
+        reply("left udmabuf: %s changed by someone else since", left);
+    }
+    sys_log("udmabuf: back to %s%s%s%s", back[0] ? back : "nothing",
+            left[0] ? "; left as changed since: " : "", left, failed ? "; some failed" : "");
+}
+
+void udmabuf_on(const char *arg)
+{
+    struct watched *w = find_watched(arg);
+    char path[PATH_MAX], text[128], said[160] = "", state[128] = "";
+    u64 was[NUDMABUF], wrote[NUDMABUF];
+    const char *why = NULL;
+    struct stat st;
+    struct hold *h;
+    bool first;
+    int changed = 0, err = 0;
+
+    if (!w) {
+        reply("error udmabuf: watch the process first");
+        return;
+    }
+    if (hold_find("udmabuf")) {
+        w->udmabuf = true;
+        reply("ok udmabuf %d: already", (int)w->pid);
+        return;
+    }
+    /* built in (Fedora) or loaded: /sys/module/udmabuf/parameters; a module
+       not loaded yet has none, and QEMU then gets the defaults it loads with */
+    if (!rooted(path, sizeof(path), UDMABUF_DIR) || stat(path, &st) < 0) {
+        reply("skip udmabuf %d: the udmabuf module is not loaded", (int)w->pid);
+        return;
+    }
+    lock_all();
+    if (!(h = hold_take("udmabuf", "on", &first))) {
+        err = errno;
+        unlock_all();
+        reply("error udmabuf %d: cannot take the hold: %s", (int)w->pid, strerror(err));
+        return;
+    }
+    if (!first) {
+        unlock_all();
+        w->udmabuf = true;
+        reply("ok udmabuf %d: set by another vitrine session", (int)w->pid);
+        return;
+    }
+    /* what they are, saved before anything is written; raised only, a
+       higher value (the kernel's command line, say) stays */
+    for (int i = 0; i < NUDMABUF; i++) {
+        udmabuf_path(path, sizeof(path), udmabuf_params[i].name);
+        wrote[i] = 0;
+        if (!read_u64(path, &was[i])) {
+            why = "cannot read its limits";
+            goto fail;
+        }
+        if (was[i] < udmabuf_params[i].target) {
+            wrote[i] = udmabuf_params[i].target;
+            snprintf(text, sizeof(text), "%s %llu %llu\n", udmabuf_params[i].name, was[i], wrote[i]);
+            strcat(state, text);
+        }
+    }
+    if (state[0] && !state_write("udmabuf", state)) {
+        err = errno;
+        goto fail;
+    }
+    for (int i = 0; i < NUDMABUF; i++) {
+        int e;
+
+        if (!wrote[i]) {
+            continue;
+        }
+        udmabuf_path(path, sizeof(path), udmabuf_params[i].name);
+        if ((e = write_u64(path, wrote[i])) < 0) {
+            err = -e;
+            /* the ones written before it back: all or nothing */
+            for (int j = 0; j < i; j++) {
+                if (wrote[j]) {
+                    udmabuf_path(path, sizeof(path), udmabuf_params[j].name);
+                    write_u64(path, was[j]);
+                }
+            }
+            goto fail;
+        }
+        changed++;
+    }
+    hold_share(h);
+    unlock_all();
+    w->udmabuf = true;
+    for (int i = 0; i < NUDMABUF; i++) {
+        if (wrote[i]) {
+            snprintf(text, sizeof(text), "%s %llu (was %llu)", udmabuf_params[i].name, wrote[i],
+                     was[i]);
+        } else {
+            snprintf(text, sizeof(text), "%s %llu already", udmabuf_params[i].name, was[i]);
+        }
+        append(said, sizeof(said), text);
+    }
+    if (changed) {
+        sys_log("uid %u: udmabuf %s", (unsigned)caller_uid, said);
+    }
+    reply("ok udmabuf %d: %s", (int)w->pid, said);
+    return;
+fail:
+    state_remove("udmabuf");
+    hold_close(h, true);
+    unlock_all();
+    reply("error udmabuf %d: %s", (int)w->pid, why ? why : strerror(err ? err : EIO));
+}
+
+void udmabuf_check(void)
+{
+    struct hold *h = hold_find("udmabuf");
+
+    if (!h) {
+        return;
+    }
+    for (int i = 0; i < nwatched; i++) {
+        if (watched[i].udmabuf) {
+            return;
+        }
+    }
+    hold_drop(h);
+}
+
 /* --- all of them --- */
 
 static void restore_key(const char *key)
@@ -910,6 +1116,8 @@ static void restore_key(const char *key)
         fair_restore();
     } else if (strncmp(key, "gpu-floor-", 10) == 0 && card_name_ok(key + 10)) {
         gpu_restore(key + 10);
+    } else if (strcmp(key, "udmabuf") == 0) {
+        udmabuf_restore();
     } else {
         state_remove(key);
     }

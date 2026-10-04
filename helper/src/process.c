@@ -151,7 +151,7 @@ bool watch(const char *arg)
     } else if (!pidfd_alive(pidfd)) {
         reply("error watch %d: it has exited", (int)pid);
     } else {
-        watched[nwatched++] = (struct watched){pid, pidfd, procfd, false};
+        watched[nwatched++] = (struct watched){pid, pidfd, procfd, false, false};
         reply("ok watch %d", (int)pid);
         return true;
     }

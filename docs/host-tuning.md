@@ -13,6 +13,13 @@ A desktop VM stays smooth under host load when the host gives it a hand:
   lowest clock, where copying a 4K frame takes about 1 ms. With the lowest
   gfx clock at 1800 MHz a Radeon 780M showed new images at 94-95 % of the
   refreshes during window animations instead of 87-90 %, for about 0.3 W.
+- **Higher udmabuf limits** (VMs whose GPU has native context): QEMU
+  hands the host GPU each guest buffer in guest memory as a udmabuf, one
+  entry per contiguous piece of guest RAM. A maximized 4K window drawn by
+  the CPU (Qt Widgets and GTK apps, cursors) is about 32 MB in 1,200 to
+  8,000 pieces; the kernel's defaults, 1024 entries and 64 MB, refuse it,
+  and the guest's compositor then copies that window at each change. The
+  helper raises them to 65536 entries and 2048 MB.
 
 These need root. vitrine applies them through a small helper,
 `vitrine-helper`, when a VM starts, and the helper puts everything back
@@ -74,6 +81,7 @@ for them. It does only this, for the user who started it:
 | `fair-server on` | 10 ms / 1 ms on every CPU | Fixed values; only `cpuN` folders; nothing to choose |
 | `gpu-floor CARD MHZ\|auto` | An AMD GPU's lowest gfx clock | `cardN` of vendor 0x1002 driven by amdgpu; the clock within the GPU's own overdrive range; only when its performance level is `auto` |
 | `rt PID` | SCHED_FIFO 1 on every thread of a watched QEMU | Watched first, and checked again to be the caller's QEMU (it may have run another program since); real-time threads it finds are left as they are |
+| `udmabuf PID` | The udmabuf module's `list_limit` at 65536 and `size_limit_mb` at 2048, while that watched QEMU runs | Fixed values; raised only, a higher value stays; skipped when the module is not loaded; put back after the last QEMU that asked for it |
 | `setcap PATH` | `cap_sys_nice=ep` on vitrine's QEMU build | See below |
 | `setup-group` | The caller in the `vitrine` group, the group created (`groupadd --system`) if there is none | See below |
 
@@ -87,7 +95,12 @@ What this amounts to:
   no proof of anything, and a guest's own code runs on those vCPUs: think of
   the group as `rtprio 1` in `limits.conf`. The shorter fair-server period
   keeps ordinary tasks running beside them.
-- Two host-wide settings changed while your VMs run, and put back after.
+- Three host-wide settings changed while your VMs run, and put back after.
+- Bigger udmabufs. `/dev/udmabuf` is open to the user at the desktop
+  already (systemd's `uaccess` rule): anyone there can turn their own
+  memory into a udmabuf. The limits only set how many pieces and bytes
+  one udmabuf may have, and it is memory its owner has anyway. While they
+  are raised, they are raised for every user of the host.
 - `cap_sys_nice` on a QEMU you built: QEMU may then make its vCPUs real-time
   (vitrine's focus priority) and ask amdgpu for high-priority GPU contexts.
   vitrine builds that QEMU from sources in your home folder, so the content
@@ -176,3 +189,6 @@ configuring: `cmake --install --prefix` with another prefix is refused.
   written: no fair-server change there, the rest still applies.
 - GPUs other than AMD APUs get no automatic floor. A discrete AMD GPU needs
   the overdrive bit of `amdgpu.ppfeaturemask` for any floor.
+- `cat /sys/module/udmabuf/parameters/list_limit /sys/module/udmabuf/parameters/size_limit_mb`
+  shows the udmabuf limits. Where udmabuf is a module that is not loaded
+  yet, the helper cannot raise them (it does not load modules).
