@@ -137,13 +137,16 @@ def kernels():
 def driver():
     taint = read("/sys/module/virtio_gpu/taint")
     params = {}
-    for name in ("blob_flush_fence", "tiled_scanout", "host_vblank", "flip_grace_us"):
+    for name in ("blob_flush_fence", "tiled_scanout", "host_vblank", "flip_grace_us", "import_3d"):
         value = read(f"/sys/module/virtio_gpu/parameters/{name}")
         if value is not None:
             params[name] = value
     # a virtio GPU in the VM (virtio device id 16), driven or not
     present = any(read(d) == "0x0010" for d in glob.glob("/sys/bus/virtio/devices/*/device"))
-    return {"present": present, "loaded": taint is not None, "patched": "O" in (taint or ""),
+    # ours: out of tree, with a parameter only vitrine's patches add (another
+    # out-of-tree virtio-gpu taints O as well)
+    patched = "O" in (taint or "") and "blob_flush_fence" in params
+    return {"present": present, "loaded": taint is not None, "patched": patched,
             "taint": taint, "params": params,
             "vblankoffdelay": read("/sys/module/drm/parameters/vblankoffdelay")}
 

@@ -1,0 +1,41 @@
+From: Vitrine
+Subject: [PATCH] xe: sync-only execs (no batch buffer) pass again
+
+The single-batch check that 0001 gained on 2026-10-04 refuses
+num_batch_buffer 0 as well, which Mesa's xe drivers send for execs that
+only signal (Mesa 26.2: xe_queue_get_syncobj_for_idle() in
+src/intel/common/xe/intel_queue.c, and ANV's is_queue_wait_idle
+submissions in src/intel/vulkan/xe/anv_batch_chain.c):
+
+- ANV, for vkQueueWaitIdle (the runtime's empty submission with one
+  signal) and before destroying a queue: the refused exec sets the queue
+  lost, so a Vulkan application gets VK_ERROR_DEVICE_LOST;
+- iris, before destroying the exec queue of every GL context: refused,
+  it destroys the queue without waiting, and frees buffers the GPU may
+  still use.
+
+The kernel reads `address` only for batch buffers on a parallel exec
+queue (xe_exec.c: num_batch_buffer && xe_exec_queue_is_parallel()), and
+takes its sync-only path for 0, so 0 needs no refusal. Vitrine's own
+patch, for the research side to take over.
+---
+ src/drm/xe/xe_ccmd.c | 6 ++++--
+ 1 file changed, 4 insertions(+), 2 deletions(-)
+
+diff --git a/src/drm/xe/xe_ccmd.c b/src/drm/xe/xe_ccmd.c
+--- a/src/drm/xe/xe_ccmd.c
++++ b/src/drm/xe/xe_ccmd.c
+@@ -328,9 +328,11 @@
+     * With more than one batch buffer (a parallel exec queue) the kernel
+     * reads an array of addresses from the user pointer in `address`: the
+     * guest's value would be a pointer into this host process.  Single-batch
+-    * submissions only (all that Mesa's xe driver sends for the guest).
++    * submissions only (all that Mesa's xe driver sends for the guest), and
++    * sync-only ones: without a batch buffer the kernel does not read
++    * `address`, and Mesa sends those to wait for a queue to go idle.
+     */
+-   if (req->num_batch_buffer != 1) {
++   if (req->num_batch_buffer > 1) {
+       drm_err("num_batch_buffer %u: only single-batch submissions",
+               req->num_batch_buffer);
+       rsp->ret = EINVAL;

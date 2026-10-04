@@ -115,6 +115,9 @@ ctest --test-dir build --output-on-failure   # optional
    starts the VM with the medium alone: open VITRINETOOL in the guest's file
    manager, then run `sudo bash /run/media/$USER/VITRINETOOL/install`.
 
+   After an update of vitrine, run both scripts again (they rebuild only the
+   packages whose sources changed): VMs with older tools then offer Update….
+
 Keys: Ctrl+Alt+G gives the keyboard and mouse to the VM or takes them back,
 Ctrl+Alt+F toggles full screen, F9 shows or hides the VM list, Ctrl+H asks
 the guest to shut down, Ctrl+L shows QEMU's log. Closing vitrine can leave

@@ -257,7 +257,8 @@ Thanks to cmspam for them. The repository has three patches:
 
 - `virglrenderer-xe-native-context.patch`, for the host: an Xe renderer in
   virglrenderer (`-Ddrm-renderers=xe-experimental`). Vitrine's QEMU build
-  applies it, rebased, as `host/patches/virglrenderer/0001-xe-native-context.patch`.
+  applies it, rebased and with multi-batch submissions refused, as
+  `host/patches/virglrenderer/0001-xe-native-context.patch`.
 - `mesa-01-xe-native-context-plus-iris-upload-fix.patch`, for the guest: Xe
   in Mesa's Intel virtio layer, which iris (OpenGL) and ANV (Vulkan) share,
   and a fix for slow uploads. It goes on Mesa 26.1 or later, built with

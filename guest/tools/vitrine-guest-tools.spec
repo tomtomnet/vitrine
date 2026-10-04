@@ -2,7 +2,7 @@
 # exact version, and dnf takes an installed one of the same version as done.
 Name:           vitrine-guest-tools
 Version:        0.1.0
-Release:        13%{?dist}
+Release:        14%{?dist}
 Summary:        vitrine guest tools: patched virtio-gpu driver, settings and agent
 
 # the driver's sources (dkms/vendor, dkms/patches) are the kernel's: MIT
@@ -137,6 +137,16 @@ fi
 %dir %{_sharedstatedir}/%{name}
 
 %changelog
+* Sun Oct 04 2026 vitrine <noreply@anthropic.com> - 0.1.0-14
+- the driver on Linux 7.2.9 and 7.3: they refuse again the import of other
+  devices' dma-bufs on a 3D device, which native contexts need (KWin's zero
+  copy of wl_shm buffers); a patch allows it again where the host offers
+  native contexts (parameter import_3d), applied to sources with that revert
+- the driver's patches apply without fuzz, and what kernel.org sends must be
+  kernel sources: a page answered with status 200 (a bot check) is refused,
+  and a cache holding one is fetched again
+- the boot check and the agent recognize the driver by its own parameter,
+  not only by the out-of-tree taint
 * Sun Oct 04 2026 vitrine <noreply@anthropic.com> - 0.1.0-13
 - the driver's sources fetched from kernel.org with retries (three more
   tries, 2 s apart, on any error), and a failed fetch says which file and

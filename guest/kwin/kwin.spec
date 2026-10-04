@@ -1,6 +1,6 @@
 Name:    kwin
 Version: 6.7.5
-Release: 1.21%{?dist}
+Release: 1.22%{?dist}
 Summary: KDE Window manager
 
 License: BSD-2-Clause AND BSD-3-Clause AND CC0-1.0 AND GPL-2.0-only AND GPL-2.0-or-later AND GPL-3.0-only AND GPL-3.0-or-later AND LGPL-2.0-only AND LGPL-2.0-or-later AND LGPL-2.1-only AND LGPL-2.1-or-later AND LGPL-3.0-only AND (GPL-2.0-only OR GPL-3.0-only) AND (LGPL-2.1-only OR LGPL-3.0-only) AND MIT
@@ -322,6 +322,9 @@ ln -sr %{buildroot}%{_kf6_bindir}/kwin_wayland %{buildroot}%{_bindir}/kwin
 
 
 %changelog
+* Sun Oct 04 2026 tomtomnet <tompere8000@proton.me> - 6.7.5-1.22
+- kwin-late-frame-scheduling: read the commit's scheduledLate() before the commit ioctl (after it, the main thread may handle the page flip and clear the commit's frames: a data race, found by static review)
+
 * Fri Oct 02 2026 tomtomnet <tompere8000@proton.me> - 6.7.5-1.21
 - KWIN_FRAME_SLACK_US: the slack before a frame's estimate and margin, and a timerfd composite timer that keeps the planned time
 

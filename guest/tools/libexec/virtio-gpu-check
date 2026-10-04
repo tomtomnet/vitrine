@@ -2,8 +2,10 @@
 # vitrine guest tools: is the patched virtio-gpu driver the one running?
 #
 # modinfo only says what modprobe would load; the driver in use comes from
-# the initramfs.  The taint field is the honest answer: O (out of tree) is
-# ours.  Then it sets blob_flush_fence for the KWin installed (below).
+# the initramfs.  The taint field is the honest answer: O (out of tree), with
+# a parameter only vitrine's patches add (another out-of-tree virtio-gpu
+# taints O as well), is ours.  Then it sets blob_flush_fence for the KWin
+# installed (below).
 # Runs at boot, before the display manager; the
 # journal has its findings (journalctl -b -u vitrine-virtio-gpu-check).
 set -u
@@ -39,9 +41,18 @@ if [ ! -d /sys/module/virtio_gpu ]; then
 	exit 1
 fi
 
+ours=no
 case "$taint" in
-*O*)
+*O*) [ -e /sys/module/virtio_gpu/parameters/blob_flush_fence ] && ours=yes ;;
+esac
+
+case "$ours$taint" in
+yes*)
 	echo "the patched virtio-gpu driver runs (taint $taint)"
+	;;
+*O*)
+	echo "<4>an out-of-tree virtio-gpu driver runs (taint $taint), not the guest tools' one: install the guest tools again"
+	rc=1
 	;;
 *)
 	if secure_boot; then
