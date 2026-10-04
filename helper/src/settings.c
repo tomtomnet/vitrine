@@ -1563,10 +1563,13 @@ bool settings_init(void)
 
 void settings_release(void)
 {
-    /* the QEMUs' records (the last slots) before the bound */
-    for (int i = MAX_HOLDS - 1; i >= 0; i--) {
-        if (holds[i].key[0]) {
-            hold_drop(&holds[i]);
+    /* the QEMUs' records (the last slots) before the bound, then the
+       settings in the order they were taken */
+    for (int i = MAX_SETTINGS; i < MAX_HOLDS + MAX_SETTINGS; i++) {
+        struct hold *h = &holds[i % MAX_HOLDS];
+
+        if (h->key[0]) {
+            hold_drop(h);
         }
     }
     snprintf(bound_why, sizeof(bound_why), "the settings were let go");
