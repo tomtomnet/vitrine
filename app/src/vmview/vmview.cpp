@@ -414,7 +414,12 @@ void VmView::destroyWindow()
         m_window->setHostActive(false);
     }
     if (m_renderer) {
-        /* before its window: it draws into it */
+        /* before its window: it draws into it.  The window forgets it first:
+           its destruction hides it, and the expose that follows went to the
+           deleted renderer */
+        if (m_window) {
+            m_window->setRenderer(nullptr);
+        }
         m_renderer->stop();
         delete m_renderer;
         m_renderer = nullptr;
