@@ -61,6 +61,23 @@ static bool gone(qint64 pid)
 
 /* A process's real-time time limit (RLIMIT_RTTIME), "soft hard" as
    /proc/PID/limits has it: "unlimited unlimited", "200000 200000" */
+/*
+ * Whether a PipeWire client here finds its server: the socket in the first of
+ * PIPEWIRE_RUNTIME_DIR, XDG_RUNTIME_DIR and USERPROFILE that is set, as
+ * PipeWire looks for it (ctest gives each test an XDG_RUNTIME_DIR of its own)
+ */
+static bool pipewireReachable()
+{
+    for (const char *var : {"PIPEWIRE_RUNTIME_DIR", "XDG_RUNTIME_DIR", "USERPROFILE"}) {
+        const QString dir = qEnvironmentVariable(var);
+        if (!dir.isEmpty()) {
+            const QString remote = qEnvironmentVariable("PIPEWIRE_REMOTE", "pipewire-0");
+            return QFileInfo::exists(remote.startsWith('/') ? remote : dir + '/' + remote);
+        }
+    }
+    return false;
+}
+
 static QString realtimeTimeout(qint64 pid)
 {
     static const QRegularExpression line("^Max realtime timeout\\s+(\\S+)\\s+(\\S+)",
@@ -844,6 +861,11 @@ private slots:
      */
     void noRealtimeTimeLimit()
     {
+        /* without its server, PipeWire's module-rt still asks RTKit (on the
+           system bus), then QEMU ends: nothing to compare */
+        if (!pipewireReachable()) {
+            QSKIP("no PipeWire server reachable here");
+        }
         const QStringList audio{"-audiodev", "pipewire,id=snd0"};
         QProcess plain;
         plain.setProcessChannelMode(QProcess::ForwardedChannels);
@@ -864,7 +886,10 @@ private slots:
                (limit = realtimeTimeout(plain.processId())) == "unlimited unlimited") {
             QTest::qWait(20);
         }
-        if (plain.state() != QProcess::Running) {
+        /* no limits to read: QEMU ended already, which QProcess may not know
+           yet (it does when PipeWire cannot be reached, e.g. under ctest,
+           whose XDG_RUNTIME_DIR is the test's own) */
+        if (plain.state() != QProcess::Running || limit.isEmpty()) {
             QSKIP("QEMU does not run with PipeWire audio here (no PipeWire?)");
         }
         if (limit == "unlimited unlimited") {
@@ -874,7 +899,8 @@ private slots:
 
         VmRunner runner(id, tmp.path());
         runner.start(ArgsFile::parse(QByteArray(kHeadless) + "-audiodev pipewire,id=snd0\n"));
-        QTRY_COMPARE_WITH_TIMEOUT(runner.state(), VmRunner::State::Running, 20000);
+        QTRY_VERIFY2_WITH_TIMEOUT(runner.state() == VmRunner::State::Running,
+                                  qPrintable(runner.errorString()), 20000);
         /* PipeWire sets it from a thread of its own, a moment after it starts */
         QTest::qWait(int(waited) + 1000);
         QCOMPARE(realtimeTimeout(runner.pid()), QString("unlimited unlimited"));
