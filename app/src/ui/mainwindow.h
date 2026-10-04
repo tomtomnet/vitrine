@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: GPL-2.0-or-later
 #pragma once
 
+#include <QElapsedTimer>
 #include <QHash>
 #include <QMainWindow>
 #include <QPointer>
@@ -69,6 +70,11 @@ private:
     void consoleChanged(VmConsole *console);
     /* Who has the keyboard, in the status bar */
     void updateInput();
+    /*
+     * The keys to the screen of the VM shown, without a click on it; after
+     * the window came to the front (@activated), unless a click in it did
+     */
+    void focusScreen(bool activated);
     /* No screen in full screen, none grabbing: before a dialog */
     void leaveScreens();
 
@@ -129,6 +135,8 @@ private:
     QSet<QString> m_closeAfter;
     /* Of those, the VMs still starting when asked: asked once they run */
     QSet<QString> m_shutDownOnceUp;
+    /* Since the last mouse press in the window */
+    QElapsedTimer m_lastPress;
 
     QAction *m_new;
     QAction *m_import;

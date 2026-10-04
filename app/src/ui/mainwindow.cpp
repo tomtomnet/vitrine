@@ -296,6 +296,11 @@ MainWindow::MainWindow(VmStore *store, QWidget *parent)
     });
     connect(m_details, &VmDetails::showLog, this, &MainWindow::showLog);
     connect(m_pane, &VmPane::startFromSnapshot, this, &MainWindow::startFrom);
+    connect(m_pane, &VmPane::tabChanged, this, [this](VmPane::Tab tab) {
+        if (tab == VmPane::Console) {
+            focusScreen(false);
+        }
+    });
     connect(store, &VmStore::added, this, &MainWindow::addVm);
     connect(store, &VmStore::removed, this, &MainWindow::removeItem);
     connect(QemuDocs::preferred(), &QemuDocs::changed, this, &MainWindow::updateStatus);
@@ -766,6 +771,11 @@ VmConsole *MainWindow::consoleOf(Vm *vm)
     connect(console, &VmConsole::showWindowRequested, this, &MainWindow::showWindow);
     connect(console, &VmConsole::showLogRequested, this, &MainWindow::showLog);
     connect(console, &VmConsole::changed, this, [this, console]() { consoleChanged(console); });
+    connect(console, &VmConsole::screenReady, this, [this, console]() {
+        if (console == currentConsole()) {
+            focusScreen(false);
+        }
+    });
     return console;
 }
 
@@ -839,7 +849,45 @@ bool MainWindow::eventFilter(QObject *watched, QEvent *event)
             leaveScreens();
         }
     }
+    /* a click on a widget of the window (the screen is a window of its own) */
+    if (event->type() == QEvent::MouseButtonPress && watched->isWidgetType() &&
+        static_cast<QWidget *>(watched)->window() == this) {
+        m_lastPress.start();
+    }
+    /* once Qt gave the focus back to the widget that had it */
+    if (watched == this && event->type() == QEvent::WindowActivate) {
+        QTimer::singleShot(0, this, [this]() { focusScreen(true); });
+    }
     return QMainWindow::eventFilter(watched, event);
+}
+
+/*
+ * As soon as the window is in front, the keys go to the screen of the VM it
+ * shows, as after a click on it: when the window comes to the front, when
+ * the screen appears or its VM runs again, when the Console tab is chosen.
+ * Not when a click in the window brought it to the front (the click chose
+ * where the keys go, the screen itself taking them on its own), nor from a
+ * text field that has them.  A VM's list and tabs take the focus back as
+ * usual: clicked, or by Release Input.
+ */
+void MainWindow::focusScreen(bool activated)
+{
+    VmConsole *console = currentConsole();
+    const VmView *view = console ? console->view() : nullptr;
+
+    if (!view || !isActiveWindow() || QApplication::activePopupWidget() ||
+        !console->isVisible() || !view->inputEnabled() || view->isFullScreen() ||
+        view->hasKeyboard()) {
+        return;
+    }
+    if (activated && m_lastPress.isValid() && m_lastPress.elapsed() < 500) {
+        return;
+    }
+    const QWidget *focus = QApplication::focusWidget();
+    if (focus && focus->window() == this && focus->testAttribute(Qt::WA_InputMethodEnabled)) {
+        return;
+    }
+    console->focusScreen();
 }
 
 void MainWindow::toggleFullScreen()

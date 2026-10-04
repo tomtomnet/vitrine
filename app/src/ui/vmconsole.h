@@ -61,6 +61,8 @@ signals:
     void showLogRequested();
     /* The page, the screen, its grab or keyboard focus, or full screen changed */
     void changed();
+    /* The screen takes the guest's input now: it appeared, or the VM runs again */
+    void screenReady();
     void statsChanged();
 
 private:

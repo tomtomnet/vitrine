@@ -77,6 +77,8 @@ public:
 signals:
     /* Start From It, on the Snapshots tab */
     void startFromSnapshot(const QString &name);
+    /* Another tab shows, chosen or set */
+    void tabChanged(Tab tab);
 
 private:
     void buildPages();

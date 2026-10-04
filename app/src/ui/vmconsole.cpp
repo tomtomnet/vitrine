@@ -285,8 +285,12 @@ void VmConsole::update()
 
     if (!runner->displaySocket().isEmpty()) {
         if (m_view) {
+            const bool took = m_view->inputEnabled();
             m_view->setInputEnabled(takesInput(runner));
             setPage(Page::Screen);
+            if (!took && m_view->inputEnabled()) {
+                emit screenReady();
+            }
         } else if (!m_retry->isActive()) {
             m_attempts = 0;
             attach();
@@ -388,6 +392,9 @@ void VmConsole::attach()
     m_statsTimer->start();
     setPage(Page::Screen);
     emit changed();
+    if (m_view && m_view->inputEnabled()) {
+        emit screenReady();
+    }
 }
 
 void VmConsole::detach()

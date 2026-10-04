@@ -150,6 +150,8 @@ VmPane::VmPane(QWidget *parent)
     layout->setContentsMargins(0, 0, 0, 0);
     layout->addWidget(m_tabs);
     (new QVBoxLayout(m_console))->setContentsMargins(0, 0, 0, 0);
+    connect(m_tabs, &QTabWidget::currentChanged, this,
+            [this](int index) { emit tabChanged(Tab(qMax(0, index))); });
 
     /* Apply is for when there is something to apply */
     m_check->setSingleShot(true);
