@@ -305,10 +305,66 @@ private slots:
         QCOMPARE(changes(vm("virtio-gpu-gl-pci,hostmem=4G,blob=on,drm_native_context=on,"
                             "x-host-vblank=on,x-vblank-lead=3000")),
                  QList<Change>({add("x-vblank-lead-auto", "on")}));
-        /* the host's vblank set with -global: left to it, the lead too */
+        /* with -global too, where the card's line wins */
+        QCOMPARE(changes(vm("virtio-gpu-gl-pci,hostmem=4G,blob=on,drm_native_context=on,"
+                            "x-host-vblank=on",
+                            "-global virtio-gpu-gl-pci.x-vblank-lead=5000\n")),
+                 QList<Change>());
+        QCOMPARE(changes(vm("virtio-gpu-gl-pci,hostmem=4G,blob=on,drm_native_context=on,"
+                            "x-host-vblank=on",
+                            "-global driver=virtio-gpu-base,property=x-vblank-lead,"
+                            "value=2000\n")),
+                 QList<Change>());
+        QCOMPARE(changes(vm("virtio-gpu-gl-pci,hostmem=4G,blob=on,drm_native_context=on,"
+                            "x-host-vblank=on",
+                            "-global virtio-gpu-gl-pci.x-vblank-lead=3000\n")),
+                 QList<Change>({add("x-vblank-lead-auto", "on")}));
+        QCOMPARE(changes(vm("virtio-gpu-gl-pci,hostmem=4G,blob=on,drm_native_context=on,"
+                            "x-host-vblank=on,x-vblank-lead=3000",
+                            "-global virtio-gpu-gl-pci.x-vblank-lead=5000\n")),
+                 QList<Change>({add("x-vblank-lead-auto", "on")}));
+        const ArgsFile globalLead =
+            vm("virtio-gpu-gl-pci,hostmem=4G,blob=on,drm_native_context=on,x-host-vblank=on",
+               "-global virtio-gpu-gl-pci.x-vblank-lead=3000\n"
+               "-global virtio-gpu-gl-pci.x-vblank-lead=5000\n");
+        QCOMPARE(changes(globalLead), QList<Change>());
+        QCOMPARE(apply(globalLead, {add("x-vblank-lead-auto", "on")}).toText(),
+                 vm("virtio-gpu-gl-pci,hostmem=4G,blob=on,drm_native_context=on,"
+                    "x-host-vblank=on,x-vblank-lead-auto=on",
+                    "-global virtio-gpu-gl-pci.x-vblank-lead=3000\n"
+                    "-global virtio-gpu-gl-pci.x-vblank-lead=5000\n")
+                     .toText());
+        /* the host's vblank on in any form, QEMU's default: the lead goes with it */
+        const QList<Change> lead = {add("x-vblank-lead", "3000"),
+                                    add("x-vblank-lead-auto", "on")};
+        for (const QString &on : {QString("x-host-vblank"), QString("x-host-vblank=yes"),
+                                  QString("x-host-vblank=off,x-host-vblank=on")}) {
+            QCOMPARE(changes(vm("virtio-gpu-gl-pci,hostmem=4G,blob=on,drm_native_context=on," +
+                                on)),
+                     lead);
+        }
         QCOMPARE(changes(vm("virtio-gpu-gl-pci,hostmem=4G,blob=on,drm_native_context=on",
                             "-global virtio-gpu-gl-pci.x-host-vblank=on\n")),
+                 lead);
+        /* and off in any form: no lead */
+        for (const QString &off : {QString("nox-host-vblank"), QString("x-host-vblank=no"),
+                                   QString("x-host-vblank=on,x-host-vblank=false")}) {
+            QCOMPARE(changes(vm("virtio-gpu-gl-pci,hostmem=4G,blob=on,drm_native_context=on," +
+                                off)),
+                     QList<Change>());
+        }
+        QCOMPARE(changes(vm("virtio-gpu-gl-pci,hostmem=4G,blob=on,drm_native_context=on",
+                            "-global virtio-gpu-gl-pci.x-host-vblank=off\n")),
                  QList<Change>());
+        QCOMPARE(changes(vm("virtio-gpu-gl-pci,hostmem=4G,blob=on,drm_native_context=on",
+                            "-global driver=virtio-gpu-base,property=x-host-vblank,"
+                            "value=off\n")),
+                 QList<Change>());
+        /* the card's line wins over -global */
+        QCOMPARE(changes(vm("virtio-gpu-gl-pci,hostmem=4G,blob=on,drm_native_context=on,"
+                            "x-host-vblank=on",
+                            "-global virtio-gpu-gl-pci.x-host-vblank=off\n")),
+                 lead);
         /* Venus on is the user's */
         const ArgsFile venus = vm("virtio-gpu-gl-pci,venus=on,hostmem=4G,blob=on");
         QCOMPARE(changes(venus), QList<Change>({add("drm_native_context", "on")}) + vblank());
@@ -409,6 +465,12 @@ private slots:
         for (const QString &memory :
              {QString("-machine q35,memory-backend=mem\n"
                       "-object memory-backend-memfd,id=mem,size=4G,share=off\n"),
+              QString("-machine q35,memory-backend=mem\n"
+                      "-object memory-backend-ram,id=mem,size=4G,share=off,prealloc=on\n"),
+              QString("-machine q35,memory-backend=mem\n"
+                      "-object memory-backend-ram,id=mem,size=4G,share=on\n"),
+              QString("-machine q35,memory-backend=mem\n"
+                      "-object memory-backend-ram,id=mem,size=4G,noshare\n"),
               QString("-machine q35,memory-backend=mem\n"
                       "-object memory-backend-file,id=mem,size=4G,mem-path=/dev/hugepages\n"),
               QString("-machine q35\n-m 4G\n-mem-path /dev/hugepages\n"),

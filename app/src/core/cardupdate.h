@@ -65,8 +65,9 @@ std::optional<Offers> offers(const ArgsFile &args);
  * directive; without it, one without Hyper-V enlightenments) on a PC with
  * a single virtio-gpu card with OpenGL (virtio-gpu-gl-pci, virtio-vga-gl,
  * virtio-gpu-gl), in the order to show them; none otherwise.  The vblank
- * lead goes with the host vblank, which must not be off; venus=off goes
- * only with other changes.
+ * lead goes with the host vblank, which must not be off (in any form, on
+ * the card or with -global), and its auto mode not with a lead of another
+ * value; venus=off goes only with other changes.
  */
 QList<Change> changes(const ArgsFile &args, const Offers &offers);
 /* With offers(): none when the VM's QEMU does not answer */

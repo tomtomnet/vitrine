@@ -107,30 +107,64 @@ static bool hasKey(const OptionValue &v, const QString &key)
     return false;
 }
 
-/* The items that turn Venus off: venus=off (or no, false, n), novenus */
-static bool isVenusOff(const OptionValue::Item &item)
+/* A boolean's off, as QEMU's qapi_bool_parse() takes it */
+static bool isOff(const QString &value)
 {
     static const QStringList off = {"off", "no", "false", "n"};
 
-    return (item.key == "venus" && !item.bare && off.contains(item.value.toLower())) ||
+    return off.contains(value.toLower());
+}
+
+/* The items that turn Venus off: venus=off (or no, false, n), novenus */
+static bool isVenusOff(const OptionValue::Item &item)
+{
+    return (item.key == "venus" && !item.bare && isOff(item.value)) ||
            (item.key == "novenus" && item.bare);
 }
 
-/* The properties -global sets, for any driver: the card's types take them too */
-static QStringList globalProperties(const ArgsFile &args)
+/*
+ * The properties -global sets, for any driver (the card's types take them
+ * too), with their values: the last one counts, as QEMU applies them in order
+ */
+static QHash<QString, QString> globalProperties(const ArgsFile &args)
 {
-    QStringList out;
+    QHash<QString, QString> out;
 
     for (int i : args.indexesOf("global")) {
         const OptionValue g = args.valueAt(i);
         if (g.has("property")) {
-            out << g.get("property");
+            out.insert(g.get("property"), g.get("value"));
         } else if (!g.items().isEmpty()) {
             /* DRIVER.PROPERTY=VALUE, split at the first dot as QEMU does */
-            out << g.items().first().key.section('.', 1);
+            const OptionValue::Item &item = g.items().first();
+            out.insert(item.key.section('.', 1), item.value);
         }
     }
     return out;
+}
+
+/*
+ * The value @key is set to: on the card, where a bare KEY is on and noKEY
+ * off and the last one counts, else with -global (the card's line wins
+ * over it in QEMU); none when neither sets it
+ */
+static std::optional<QString> valueOf(const OptionValue &card,
+                                      const QHash<QString, QString> &global,
+                                      const QString &key)
+{
+    std::optional<QString> value;
+
+    for (const OptionValue::Item &item : card.items()) {
+        if (item.key == key) {
+            value = item.bare ? QString("on") : item.value;
+        } else if (item.bare && item.key == "no" + key) {
+            value = QString("off");
+        }
+    }
+    if (!value && global.contains(key)) {
+        value = global.value(key);
+    }
+    return value;
 }
 
 /* The -object line of guest RAM's backend, or -1 */
@@ -157,10 +191,11 @@ static int ramBackend(const ArgsFile &args)
 }
 
 /*
- * Guest RAM to move to a shared memfd: QEMU's own (-m), or a RAM backend.
- * A memfd or file backend set up otherwise is left as written (share=off
- * on purpose, huge pages), as are NUMA nodes, which take backends of their
- * own, -mem-path, and a size left to QEMU, which the backend would change.
+ * Guest RAM to move to a shared memfd: QEMU's own (-m), or a RAM backend
+ * that leaves share out.  One with share set either way, or a memfd or
+ * file backend set up otherwise, is left as written (share=off on purpose,
+ * huge pages), as are NUMA nodes, which take backends of their own,
+ * -mem-path, and a size left to QEMU, which the backend would change.
  */
 static bool offersSharedMemory(const ArgsFile &args)
 {
@@ -170,7 +205,11 @@ static bool offersSharedMemory(const ArgsFile &args)
         args.indexOf("numa") >= 0 || args.indexOf("mem-path") >= 0) {
         return false;
     }
-    return backend < 0 || args.valueAt(backend).implied() == "memory-backend-ram";
+    if (backend < 0) {
+        return true;
+    }
+    const OptionValue v = args.valueAt(backend);
+    return v.implied() == "memory-backend-ram" && !hasKey(v, "share");
 }
 
 QList<Change> changes(const ArgsFile &args, const Offers &offers)
@@ -182,10 +221,13 @@ QList<Change> changes(const ArgsFile &args, const Offers &offers)
         return {};
     }
     const OptionValue card = args.valueAt(line);
-    const QStringList global = globalProperties(args);
+    const QHash<QString, QString> global = globalProperties(args);
     const auto known = [&offers](const QString &key) {
         return !offers.card || offers.card->contains(key);
     };
+    /* set by hand, on the card or with -global; else QEMU's default or the update's */
+    const std::optional<QString> hostVblank = valueOf(card, global, "x-host-vblank");
+    const std::optional<QString> handLead = valueOf(card, global, "x-vblank-lead");
     QString lead;
 
     for (const auto &[key, value] : VmTemplate::cardProperties()) {
@@ -198,16 +240,12 @@ QList<Change> changes(const ArgsFile &args, const Offers &offers)
             continue;
         }
         if (key.startsWith("x-vblank-")) {
-            /* the lead of the host's vblank: with it on, and not off by hand */
-            const bool hostVblank =
-                card.flag("x-host-vblank") ||
-                out.contains(Change{Change::AddProperty, "x-host-vblank", "on"});
-            if (!hostVblank) {
+            /* the lead of the host's vblank, which is on unless turned off by hand */
+            if (hostVblank && isOff(*hostVblank)) {
                 continue;
             }
-            /* a lead of its own, fixed by hand, stays fixed */
-            if (key == "x-vblank-lead-auto" && hasKey(card, "x-vblank-lead") &&
-                card.get("x-vblank-lead") != lead) {
+            /* a lead of its own, fixed by hand, stays fixed: auto would replace it */
+            if (key == "x-vblank-lead-auto" && handLead && *handLead != lead) {
                 continue;
             }
         }
