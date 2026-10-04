@@ -288,7 +288,7 @@ QList<Change> changes(const ArgsFile &args, const Offers &offers)
                                   : Paths::hostArch() == "x86_64";
     if (accel == "kvm" && pat &&
         (accelLine < 0 || !hasKey(args.valueAt(accelLine), "honor-guest-pat"))) {
-        out << Change{Change::HonorGuestPat, "honor-guest-pat", "on"};
+        out << Change{Change::HonorGuestPat, "honor-guest-pat", "auto"};
     }
     if (offersSharedMemory(args)) {
         out << Change{Change::SharedMemory, {}, {}};
@@ -433,7 +433,7 @@ QString describe(const Change &change)
         break;
     case Change::HonorGuestPat:
         what = tr("KVM honors how the guest caches its GPU mappings, which Intel GPUs need");
-        argument = tr("honor-guest-pat=on on -accel");
+        argument = tr("honor-guest-pat=auto on -accel");
         break;
     case Change::SharedMemory:
         what = tr("Guest memory in a shared memfd, which the 3D card needs for resources "

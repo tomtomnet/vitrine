@@ -92,8 +92,7 @@ ctest --test-dir build --output-on-failure   # optional
    display in vitrine's window and for 3D. Until it is built, they use the
    system's QEMU, if there is one, except those that use what it lacks,
    such as the native context of new Linux VMs: these wait for the build.
-   `host/build.sh` does the same build by hand, without the root helper's
-   real-time setup for that QEMU.
+   `host/build.sh` does the same build by hand.
 2. **Create a VM.** File > New… (Ctrl+N): name, system, memory, processors,
    disk, and optionally an ISO to install from. Machine > Start (Ctrl+Return)
    starts it. Each VM is its QEMU command line, which Machine > Settings

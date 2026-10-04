@@ -8,8 +8,10 @@
 # must be back as it was.  Then: a helper killed while holding the settings
 # (the next one restores them), vitrine gone while the VM runs (stdin
 # closed), two helpers, a udmabuf limit changed by hand meanwhile (left as
-# it is), and the file capability on a copy of QEMU, with x-vcpu-priority
-# through it, and the app's HostSettings driving this helper.
+# it is), focus priority on a real QEMU's threads (rt for the VM in front,
+# behind for the others: vCPUs at nice -5), the capability an older vitrine
+# gave its QEMU taken back by the app, and the app's HostSettings driving
+# this helper.
 #
 #   helper/tests/e2e-host.sh [BUILD_DIR]
 #
@@ -99,6 +101,16 @@ ncpu=$(echo "$fair_before" | wc -l)
 # the cpus the helper changes, and puts back: those not at 10 ms / 1 ms (a
 # tool may have left some there)
 fair_todo=$(echo "$fair_before" | awk '$2 != 10000000 || $3 != 1000000' | wc -l)
+# what the helper leaves after its runs: cpus at 10 ms / 1 ms beside others
+# that are not are an earlier run's leftovers, put back with them (to their
+# value, or the kernel's 1 s / 50 ms if they differ); all of them there stay
+fair_base=$(echo "$fair_before" | awk '$2 != 10000000 || $3 != 1000000 {print $2 " " $3}' | sort -u)
+[ "$(echo "$fair_base" | wc -l)" = 1 ] || fair_base="1000000000 50000000"
+if [ "$fair_todo" -gt 0 ] && [ "$fair_todo" -lt "$ncpu" ]; then
+	fair_after=$(echo "$fair_before" | awk -v b="$fair_base" '{if ($2 == 10000000 && $3 == 1000000) print $1 " " b; else print}')
+else
+	fair_after=$fair_before
+fi
 echo "host: $ncpu cpus, fair server $(echo "$fair_before" | head -1 | cut -d' ' -f2-), gpu ${card:-none} level $(echo "$gpu_before" | head -1)"
 echo "udmabuf before: ${udma_before:-no parameters} (list_limit size_limit_mb)"
 # what the helper raises from in this test, both below host tuning's values
@@ -108,8 +120,10 @@ if [ -n "$udma_before" ]; then
 	if [ "$l" -lt 65536 ] && [ "$s" -lt 2048 ]; then udma_low=$udma_before; else udma_low="32768 1024"; fi
 fi
 udma_raised() { local l s; read -r l s <<< "$(udma_now)"; [ "$l" -ge 65536 ] && [ "$s" -ge 2048 ]; }
-[ "$fair_todo" = "$ncpu" ] ||
-	echo "  note: $((ncpu - fair_todo)) cpus have the fair server at 10 ms / 1 ms already (another tool?): left as they are"
+[ "$fair_todo" = "$ncpu" ] || [ "$fair_todo" = 0 ] ||
+	echo "  note: $((ncpu - fair_todo)) cpus have the fair server at 10 ms / 1 ms already, others not: leftovers, the helper puts them back to $fair_base"
+[ "$fair_todo" = 0 ] &&
+	echo "  note: every cpu has the fair server at 10 ms / 1 ms already (another tool?): left as it is"
 
 pids=()          # processes started here, stopped by the trap
 helpers=()       # sudo pids of helpers
@@ -123,7 +137,7 @@ restore_by_hand() {
 		else
 			echo "$p" | sudo tee $fs/$c/period > /dev/null; echo "$r" | sudo tee $fs/$c/runtime > /dev/null
 		fi
-	done <<< "$fair_before"
+	done <<< "$fair_after"
 	if [ -n "$card" ] && [ "$(cat /sys/class/drm/$card/device/power_dpm_force_performance_level)" = manual ] &&
 		[ "$(echo "$gpu_before" | head -1)" != manual ]; then
 		echo r | sudo tee /sys/class/drm/$card/device/pp_od_clk_voltage > /dev/null
@@ -134,7 +148,7 @@ restore_by_hand() {
 	[ "$(udma_now)" = "$udma_before" ] || set_udma $udma_before
 }
 host_now() { fair_now; gpu_now; echo "udmabuf $(udma_now)"; }
-host_before() { echo "$fair_before"; echo "$gpu_before"; echo "udmabuf $udma_before"; }
+host_before() { echo "$fair_after"; echo "$gpu_before"; echo "udmabuf $udma_before"; }
 cleanup() {
 	local p c
 	for p in "${helpers[@]}"; do
@@ -203,10 +217,18 @@ wait_gone() {   # pid, seconds: whether it ended in time
 	gone "$1"
 }
 
+# a thread's stat field N (N >= 3), counted after its name, which may hold
+# spaces ("CPU 0/KVM"): awk's $41 would be off by one there
+stat_field() {   # stat-file N
+	local s
+	s=$(cat "$1" 2> /dev/null) || return 1
+	# after "pid (name) ": field 3 first
+	echo "${s##*) }" | awk -v n="$(($2 - 2))" '{print $n}'
+}
 threads_rt() {   # pid: "rt total" counts of the threads' policies (stat field 41: 1 = FIFO, 2 = RR)
 	local t rt=0 all=0 pol
 	for t in /proc/"$1"/task/*; do
-		pol=$(awk '{print $41}' "$t/stat" 2> /dev/null) || continue
+		pol=$(stat_field "$t/stat" 41) || continue
 		all=$((all + 1)); [ "$pol" = 1 ] || [ "$pol" = 2 ] && rt=$((rt + 1))
 	done
 	echo "$rt $all"
@@ -302,7 +324,7 @@ if ! gone $vm; then
 fi
 wait_for "QEMU exit seen" "exited $vm"
 [ -n "$udma_before" ] && wait_for "udmabuf restored" "restored udmabuf: list_limit ${udma_low% *}, size_limit_mb ${udma_low#* }"
-[ "$fair_todo" -gt 0 ] && wait_for "fair server restored" "restored fair-server: $fair_todo cpus back to [0-9]+ ms / [0-9]+ ms"
+[ "$fair_todo" -gt 0 ] && wait_for "fair server restored" "restored fair-server: [0-9]+ cpus back to [0-9]+ ms / [0-9]+ ms"
 [ -n "$card" ] && wait_for "gpu restored" "restored gpu-floor $card: level auto"
 wait_for "helper ends" "bye"
 if ! wait_gone "$H_PID" 15; then
@@ -313,7 +335,7 @@ if ! wait_gone "$H_PID" 15; then
 	wait_gone "$H_PID" 10
 fi
 gone "$H_PID" && wait "$H_PID" 2> /dev/null
-check "fair server as found" '[ "$(fair_now)" = "$fair_before" ]'
+check "fair server as found" '[ "$(fair_now)" = "$fair_after" ]'
 check "gpu as found" '[ "$(gpu_now)" = "$gpu_before" ]'
 [ -n "$udma_before" ] && check "udmabuf back to $udma_low" '[ "$(udma_now)" = "$udma_low" ]'
 check "nothing left in /run/vitrine-helper but its lock" '[ "$(sudo ls /run/vitrine-helper)" = lock ]'
@@ -343,7 +365,7 @@ check "helper killed: settings still applied" 'fair_all "10000000 1000000"'
 out=$(sudo -n "$helper" session < /dev/null)
 echo "$out" | sed 's/^/       /'
 [ "$fair_todo" -gt 0 ] && check "the next helper restores them at its start" 'echo "$out" | grep -q "^restored fair-server"'
-check "fair server as found" '[ "$(fair_now)" = "$fair_before" ]'
+check "fair server as found" '[ "$(fair_now)" = "$fair_after" ]'
 check "gpu as found" '[ "$(gpu_now)" = "$gpu_before" ]'
 if [ -n "$udma_before" ]; then
 	check "the next helper restores udmabuf too" 'echo "$out" | grep -q "^restored udmabuf"'
@@ -377,7 +399,7 @@ H_IN=$B_IN H_OUT=$B_OUT H_PID=$B_PID
 [ -n "$udma_before" ] && wait_for "B restores udmabuf" "restored udmabuf: .*"
 [ "$fair_todo" -gt 0 ] && wait_for "B restores" "restored fair-server: .*"
 wait_for "B ends" "bye"
-check "fair server as found" '[ "$(fair_now)" = "$fair_before" ]'
+check "fair server as found" '[ "$(fair_now)" = "$fair_after" ]'
 [ -n "$udma_before" ] && check "udmabuf back to $udma_low" '[ "$(udma_now)" = "$udma_low" ]'
 
 # ======================================================================
@@ -402,36 +424,83 @@ if [ -n "$udma_before" ]; then
 fi
 
 # ======================================================================
-echo "== 4. setcap on a copy of QEMU in a stack layout, x-vcpu-priority through it"
-stackbin=$dev/data/vitrine/stack/e2e0000000000000/bin
-mkdir -p "$stackbin"
-cp "$qemu" "$stackbin/qemu-system-x86_64"
-out=$(sudo -n "$helper" setcap "$stackbin/qemu-system-x86_64")
-check "setcap: $out" '[ "$out" = "ok setcap $stackbin/qemu-system-x86_64: cap_sys_nice=ep, mode 0700" ]'
-check "getcap shows cap_sys_nice=ep" 'getcap "$stackbin/qemu-system-x86_64" | grep -q "cap_sys_nice=ep"'
-out=$(sudo -n "$helper" setcap "$qemu")
-check "setcap refuses the export's QEMU: $out" 'echo "$out" | grep -q "^error setcap .*: not a QEMU of vitrine.s stack"'
-out=$(sudo -n "$helper" setcap /usr/bin/python3)
-check "setcap refuses a system file: $out" 'echo "$out" | grep -q "^error setcap /usr/bin/python3: not in the caller.s home folder"'
-"$stackbin/qemu-system-x86_64" -L "$pcbios" -name e2e-cap,debug-threads=on -machine q35 -accel kvm -smp 2 -m 256M -display none -S \
-	-qmp unix:"$dev/q4.sock",server=on,wait=off > "$dev/q4.log" 2>&1 &
+if [ "$fair_todo" = "$ncpu" ] && [ "$(echo "$fair_base" | wc -l)" = 1 ]; then
+	echo "== 3c. an earlier run's leftovers: two cpus at 10 ms / 1 ms, no record"
+	"$qemu" -machine none -display none -S > /dev/null 2>&1 &
+	q3c=$!
+	pids+=("$q3c")
+	sleep 1
+	# as a run cut short would leave them; the others as found
+	for c in cpu0 cpu1; do
+		echo 1000000 | sudo tee $fs/$c/runtime > /dev/null
+		echo 10000000 | sudo tee $fs/$c/period > /dev/null
+	done
+	start_helper "helper D"
+	say "watch $q3c"; expect "D watch" "ok watch $q3c"
+	say "fair-server on"
+	expect "D finds them" "ok fair-server on: $((ncpu - 2)) cpus at 10 ms / 1 ms \(was [0-9]+ ms / [0-9]+ ms\); 2 cpus found at 10 ms / 1 ms without a record, put back after with the others"
+	say "release"
+	wait_for "D puts every cpu back" "restored fair-server: $ncpu cpus back to [0-9]+ ms / [0-9]+ ms"
+	wait_for "D ends" "bye"
+	check "every cpu as found, the leftovers too" '[ "$(fair_now)" = "$fair_before" ]'
+	kill $q3c; wait $q3c 2> /dev/null
+fi
+
+# ======================================================================
+echo "== 4. focus priority on a real QEMU: rt in front, behind (vCPUs at nice -5), back"
+"$qemu" -L "$pcbios" -name e2e-focus,debug-threads=on -machine q35 -accel kvm -smp 2 -m 256M \
+	-display none -S > "$dev/q4.log" 2>&1 &
 q4=$!
 pids+=("$q4")
 sleep 1
-check "the capable QEMU runs" 'kill -0 $q4'
-check "it has CAP_SYS_NICE effective" '[ $(( 0x$(awk "/^CapEff/ {print \$2}" /proc/$q4/status) >> 23 & 1 )) = 1 ]'
-qmp() { printf '{"execute":"qmp_capabilities"}\n%s\n' "$1" | socat -t 2 - UNIX-CONNECT:"$dev/q4.sock" | tail -1 | tr -d '\r'; }
-r=$(qmp '{"execute":"x-vcpu-priority","arguments":{"realtime":true}}')
-check "x-vcpu-priority realtime: $r" '[ "$r" = "{\"return\": {}}" ]'
-vcpus_fifo() { local t n=0; for t in /proc/$q4/task/*; do grep -q "^CPU" $t/comm || continue; chrt -p ${t##*/} | grep -q "policy: SCHED_FIFO" || return 1; n=$((n + 1)); done; [ $n -gt 0 ]; }
-check "its vCPUs SCHED_FIFO" vcpus_fifo
-r=$(qmp '{"execute":"x-vcpu-priority","arguments":{"realtime":false}}')
-check "x-vcpu-priority back to ordinary (nice -5): $r" '[ "$r" = "{\"return\": {}}" ] && ! vcpus_fifo'
-check "and back to real-time again (needs the capability)" '[ "$(qmp "{\"execute\":\"x-vcpu-priority\",\"arguments\":{\"realtime\":true}}")" = "{\"return\": {}}" ] && vcpus_fifo'
+# "policy nice" of a thread: /proc/PID/task/TID/stat fields 41 and 19
+thread_sched() { echo "$(stat_field "/proc/$q4/task/$1/stat" 41) $(stat_field "/proc/$q4/task/$1/stat" 19)"; }
+vcpus4() { local t; for t in /proc/$q4/task/*; do grep -q "^CPU [0-9]*/KVM" "$t/comm" && echo "${t##*/}"; done; }
+others4() { local t; for t in /proc/$q4/task/*; do grep -q "^CPU [0-9]*/KVM" "$t/comm" || echo "${t##*/}"; done; }
+all_threads() {   # expected "policy nice" for the vCPUs, then for the others
+	local t
+	for t in $(vcpus4); do [ "$(thread_sched "$t")" = "$1" ] || return 1; done
+	for t in $(others4); do [ "$(thread_sched "$t")" = "$2" ] || return 1; done
+	[ -n "$(vcpus4)" ]
+}
+check "QEMU's vCPU threads named CPU n/KVM: $(vcpus4 | wc -l)" '[ "$(vcpus4 | wc -l)" = 2 ]'
+start_helper "session 4"
+say "watch $q4"; expect "watch" "ok watch $q4"
+say "fair-server on"; expect "fair server" "ok fair-server on: .*"
+say "rt $q4"; expect "rt (in front)" "ok rt $q4: ([0-9]+) of ([0-9]+) threads real-time"
+check "in front: every thread SCHED_FIFO" 'all_threads "1 0" "1 0"'
+say "behind $q4"; expect "behind" "ok behind $q4: [0-9]+ threads ordinary, 2 vCPUs at nice -5"
+check "behind: vCPUs SCHED_OTHER nice -5, the others SCHED_OTHER nice 0" 'all_threads "0 -5" "0 0"'
+say "rt $q4"; expect "rt (in front again)" "ok rt $q4: .*"
+check "in front again: every thread SCHED_FIFO" 'all_threads "1 -5" "1 0"'
+say "behind $q4"; expect "behind again" "ok behind $q4: .*"
+say "release"
+wait_for "release puts the threads back" "restored rt $q4: [0-9]+ threads back to SCHED_OTHER, vCPUs back to nice 0"
+wait_for "helper ends" "bye"
+check "released: every thread SCHED_OTHER nice 0" 'all_threads "0 0" "0 0"'
+check "fair server as found" '[ "$(fair_now)" = "$fair_after" ]'
 kill $q4; wait $q4 2> /dev/null
-# a write drops the capability, as the kernel does on every write
-cat "$qemu" > "$stackbin/qemu-system-x86_64"
-check "rewritten: the capability is gone" '[ -z "$(getcap "$stackbin/qemu-system-x86_64")" ]'
+
+echo "== 4b. the capability an older vitrine gave its QEMU: taken back by the app"
+stackbin=$dev/data/vitrine/stack/e2e0000000000000/bin
+mkdir -p "$stackbin"
+cp "$qemu" "$stackbin/qemu-system-x86_64"
+sudo -n setcap cap_sys_nice=ep "$stackbin/qemu-system-x86_64"
+check "set by hand, as an older helper did: $(getcap "$stackbin/qemu-system-x86_64")" \
+	'getcap "$stackbin/qemu-system-x86_64" | grep -q "cap_sys_nice=ep"'
+# a VM running from it meanwhile: the capability goes all the same (no write)
+"$stackbin/qemu-system-x86_64" -L "$pcbios" -machine none -display none -S > /dev/null 2>&1 &
+q4b=$!
+pids+=("$q4b")
+sleep 1
+if [ -x "$build/app/test_hostsettings" ]; then
+	out=$(VITRINE_TEST_CAP_STACK=$dev/data/vitrine/stack "$build/app/test_hostsettings" capabilityStripped 2>&1)
+	check "the app took it back" 'echo "$out" | grep -q "^PASS   : TestHostSettings::capabilityStripped()"'
+else
+	echo "  (no $build/app/test_hostsettings: skipped)"
+fi
+check "getcap shows none" '[ -z "$(getcap "$stackbin/qemu-system-x86_64")" ]'
+kill $q4b; wait $q4b 2> /dev/null
 rm -rf "$dev/data"
 
 # ======================================================================
@@ -440,7 +509,7 @@ if [ -x "$build/app/test_hostsettings" ]; then
 	out=$(VITRINE_HELPER_E2E=$helper VITRINE_TEST_QEMU=$qemu "$build/app/test_hostsettings" realHost 2>&1)
 	echo "$out" | grep -E "helper:|FAIL|Loc:|Actual|Expected" | sed 's/^/       /'
 	check "HostSettings applied and reverted on the real host" 'echo "$out" | grep -q "^PASS   : TestHostSettings::realHost()"'
-	check "fair server as found" '[ "$(fair_now)" = "$fair_before" ]'
+	check "fair server as found" '[ "$(fair_now)" = "$fair_after" ]'
 	check "gpu as found" '[ "$(gpu_now)" = "$gpu_before" ]'
 	[ -n "$udma_before" ] && check "udmabuf back to $udma_low" '[ "$(udma_now)" = "$udma_low" ]'
 else
@@ -448,5 +517,6 @@ else
 fi
 
 echo
+echo "fair server now: $(fair_now | awk '{print $2 "/" $3}' | sort | uniq -c | tr '\n' ' ')"
 if [ "$fails" = 0 ]; then echo "PASS"; else echo "$fails FAILED"; fi
 exit $((fails > 0))

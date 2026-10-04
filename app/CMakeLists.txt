@@ -22,6 +22,8 @@ qt_add_library(vitrine_core STATIC
     src/core/guesttools.h
     src/core/hostdevices.cpp
     src/core/hostdevices.h
+    src/core/hostkvm.cpp
+    src/core/hostkvm.h
     src/core/hostmemory.cpp
     src/core/hostmemory.h
     src/core/hostsettings.cpp
@@ -168,6 +170,8 @@ qt_add_library(vitrine_ui STATIC
     src/ui/icons.h
     src/ui/importdialog.cpp
     src/ui/importdialog.h
+    src/ui/killprompt.cpp
+    src/ui/killprompt.h
     src/ui/logview.cpp
     src/ui/logview.h
     src/ui/mainwindow.cpp
@@ -285,6 +289,7 @@ if(BUILD_TESTING)
             guestagent
             guesttools
             hostdevices
+            hostkvm
             hostmemory
             hostsettings
             importer

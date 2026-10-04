@@ -10,17 +10,17 @@
   helper refuses a run without one (pkexec would use its generic action).
 
   - session: the kernel's fair server, an AMD GPU's clock floor, the
-    udmabuf limits and real-time threads for the caller's QEMU while
-    vitrine's VMs run, all put back after the last one;
-  - setcap: cap_sys_nice on vitrine's own QEMU build;
+    udmabuf limits and the scheduling of the caller's QEMU threads
+    (real-time for the VM in front) while vitrine's VMs run, all put back
+    after the last one;
   - setup-group: the caller in the vitrine group, created if need be.
 
   An administrator's password by default.  49-vitrine.rules lets members of
-  the vitrine group run session and setcap without one, never setup-group:
-  a lasting change of /etc/group, which a rule granting the helper to more
-  people (or with auth_self) must not bring along.  vitrine asks polkit
-  first and runs session and setcap only when no password is wanted;
-  setup-group only when the user clicks Set Up.
+  the vitrine group run session without one, never setup-group: a lasting
+  change of /etc/group, which a rule granting the helper to more people (or
+  with auth_self) must not bring along.  vitrine asks polkit first and runs
+  session only when no password is wanted; setup-group only when the user
+  clicks Set Up.
 -->
 <policyconfig>
   <vendor>vitrine</vendor>
@@ -35,17 +35,6 @@
     </defaults>
     <annotate key="org.freedesktop.policykit.exec.path">@VITRINE_HELPER_PATH@</annotate>
     <annotate key="org.freedesktop.policykit.exec.argv1">session</annotate>
-  </action>
-  <action id="org.vitrine.helper.setcap">
-    <description>Let vitrine's QEMU make its threads real-time</description>
-    <message>Authentication is required to let your QEMU build make its threads real-time</message>
-    <defaults>
-      <allow_any>auth_admin</allow_any>
-      <allow_inactive>auth_admin</allow_inactive>
-      <allow_active>auth_admin</allow_active>
-    </defaults>
-    <annotate key="org.freedesktop.policykit.exec.path">@VITRINE_HELPER_PATH@</annotate>
-    <annotate key="org.freedesktop.policykit.exec.argv1">setcap</annotate>
   </action>
   <action id="org.vitrine.helper.setup-group">
     <description>Add you to the vitrine group</description>

@@ -220,8 +220,8 @@ std::optional<Result> importScript(const QString &script, const QString &baseDir
        with the guest's caching, write-combining, which KVM ignores without it */
     if (VmConfig::graphics(args).nativeContext && VmConfig::accel(args).startsWith("kvm") &&
         VmConfig::accelProperty(args, "honor-guest-pat").isEmpty()) {
-        VmConfig::setAccelProperty(args, "honor-guest-pat", "on");
-        result.notes << tr("honor-guest-pat=on was added to -accel, for DRM native context.");
+        VmConfig::setAccelProperty(args, "honor-guest-pat", "auto");
+        result.notes << tr("honor-guest-pat=auto was added to -accel, for DRM native context.");
     }
 
     /* QEMU runs in the VM folder: the paths from the script's become absolute */

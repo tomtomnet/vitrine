@@ -13,9 +13,21 @@
 /* The protocol's version, in the "ready" line */
 #define HELPER_PROTOCOL 1
 
-/* What the kernel's fair server gets while VMs run: 1 ms every 10 ms */
+/*
+ * What the kernel's fair server gets while VMs run: 1 ms every 10 ms.  It is
+ * the only bound on how long real-time threads keep ordinary ones (kernel
+ * workers among them) off a CPU - 950 ms at the kernel's 50 ms every 1 s -
+ * so threads are made real-time only once it is in place.  Under a sched_ext
+ * scheduler, ordinary tasks are its own, served by the ext server, which
+ * gets the same.
+ */
 #define FAIR_PERIOD_NS 10000000ULL
 #define FAIR_RUNTIME_NS 1000000ULL
+/* The kernel's own, for a server found at the target with no record */
+#define FAIR_DEFAULT_PERIOD_NS 1000000000ULL
+#define FAIR_DEFAULT_RUNTIME_NS 50000000ULL
+/* The nice value of the vCPU threads of a VM behind the one in front */
+#define BEHIND_NICE (-5)
 /* The GPU clock floor "auto" sets on AMD APUs whose minimum is lower */
 #define GPU_FLOOR_AUTO_MHZ 1800
 /*
@@ -29,6 +41,9 @@
 #define UDMABUF_SIZE_LIMIT_MB 2048ULL
 
 #define FAIR_SERVER_DIR "/sys/kernel/debug/sched/fair_server"
+#define EXT_SERVER_DIR "/sys/kernel/debug/sched/ext_server"
+#define SCHED_EXT_STATE "/sys/kernel/sched_ext/state"
+#define CPUS_ONLINE "/sys/devices/system/cpu/online"
 #define LOCKDOWN_FILE "/sys/kernel/security/lockdown"
 #define DRM_DIR "/sys/class/drm"
 #define UDMABUF_DIR "/sys/module/udmabuf/parameters"
@@ -48,8 +63,9 @@ int sys_write(const char *path, const char *value);
 /* A thread's scheduling policy and real-time priority: 0 or -errno */
 int sys_getsched(pid_t tid, int *policy, int *priority);
 int sys_setsched(pid_t tid, int policy, int priority);
-/* cap_sys_nice=ep on the open file @fd (@path for messages): 0 or -errno */
-int sys_set_file_cap(int fd, const char *path);
+/* A thread's nice value: 0 or -errno */
+int sys_getnice(pid_t tid, int *nice);
+int sys_setnice(pid_t tid, int nice);
 /* An entry in the system log (the journal), for the record of what root did */
 void sys_log(const char *fmt, ...) __attribute__((format(printf, 1, 2)));
 /* The group @name in the user database: 1 with its gid in @gid, 0 if there
@@ -84,8 +100,12 @@ bool od_parse(const char *text, struct od_table *od);
 /* Opens /run/vitrine-helper and restores what a crashed helper left; false
    when the state folder is unusable */
 bool settings_init(void);
+/* The fair server (and the ext server under sched_ext) at the target on
+   every online CPU, all or nothing */
 void fair_server_on(void);
 void fair_server_off(void);
+/* That bound is in place, held by this helper; else why not in @why */
+bool settings_bound(const char **why);
 /* @card: "cardN"; @value: a clock in MHz, "auto" or "off" */
 void gpu_floor(const char *card, const char *value);
 /* The protocol's udmabuf <pid>: the udmabuf limits raised while that
@@ -98,17 +118,35 @@ void udmabuf_check(void);
    one to hold */
 void settings_release(void);
 
-/* --- process.c: QEMU processes, real-time threads, file capability --- */
+/* The record of a QEMU whose threads this helper made real-time or ordinary
+   at nice BEHIND_NICE (rt- and behind-), for the next helper to put back
+   should this one die: taken (or updated) before the change; false when it
+   cannot be, and then nothing is changed */
+struct watched;
+bool sched_hold(struct watched *w);
+/* Lets go of it: the threads put back by the last holder, if still there */
+void sched_drop(struct watched *w);
+
+/* --- process.c: QEMU processes and their threads' scheduling --- */
 
 /* The caller: PKEXEC_UID, else SUDO_UID, else the real uid of a non-root run */
 extern uid_t caller_uid;
+
+/* Threads real-time before a helper's first rt, kept as they are: a few */
+#define MAX_KEPT 16
 
 struct watched {
     pid_t pid;
     int pidfd;   /* readable once the process has exited */
     int procfd;  /* /proc/<pid>, bound to that process */
-    bool rt;     /* rt was asked for it */
+    unsigned long long start;   /* its start time (/proc/<pid>/stat) */
+    bool rt;     /* rt was asked for it: in front */
+    bool rt_once; /* rt made changes once: kept[] is known */
+    bool behind; /* its vCPUs were set to BEHIND_NICE */
+    bool held;   /* sched_hold() holds its record */
     bool udmabuf; /* udmabuf was asked for it */
+    pid_t kept[MAX_KEPT];   /* threads at SCHED_FIFO 1 before its first rt */
+    int nkept;
 };
 #define MAX_WATCHED 64
 extern struct watched watched[MAX_WATCHED];
@@ -118,15 +156,22 @@ extern int nwatched;
 bool watch(const char *arg);
 /* The watched process with this pid, or NULL */
 struct watched *find_watched(const char *arg);
-/* The protocol's rt <pid> */
+/* The protocol's rt <pid>: the VM in front */
 void rt_on(const char *arg);
-/* Back to SCHED_OTHER for the threads rt made real-time, of the processes
-   still running */
+/* The protocol's behind <pid>: a VM behind the one in front */
+void behind(const char *arg);
+/* Every watched QEMU's threads as they were before rt and behind */
 void rt_off_all(void);
 /* Forgets watched[i], which has exited */
 void unwatch(int i);
-/* vitrine-helper setcap PATH: the exit status */
-int setcap(const char *path);
+/*
+ * The threads of the QEMU @pid, if it is still the process that started at
+ * @start, put back from what rt and behind made them (@niced: its vCPUs at
+ * BEHIND_NICE), but the @nkeep threads of @keep, real-time before: the
+ * record of a helper that let go, or died.  Replies how many when @say.
+ */
+void sched_restore(pid_t pid, unsigned long long start, bool niced, const pid_t *keep,
+                   int nkeep, bool say);
 
 /* --- group.c: the vitrine group --- */
 

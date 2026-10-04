@@ -93,21 +93,21 @@ private slots:
         QVERIFY(VmConfig::qemuBinary(r->args).isEmpty());
     }
 
-    /* Native context with KVM gets honor-guest-pat=on, as from the Display page */
+    /* Native context with KVM gets honor-guest-pat=auto, as from the Display page */
     void nativeContextPat()
     {
         const QString card = "-device virtio-vga-gl,blob=on,hostmem=4G,drm_native_context=on";
         std::optional<Result> r = importScript("qemu-system-x86_64 -accel kvm -m 4G " + card, "/");
 
         QVERIFY(r);
-        QCOMPARE(r->args.toText(), "-accel kvm,honor-guest-pat=on\n-m 4G\n"
+        QCOMPARE(r->args.toText(), "-accel kvm,honor-guest-pat=auto\n-m 4G\n"
                                    "-device virtio-vga-gl,blob=on,hostmem=4G,drm_native_context=on\n");
-        QVERIFY(r->notes.join('\n').contains("honor-guest-pat=on was added"));
+        QVERIFY(r->notes.join('\n').contains("honor-guest-pat=auto was added"));
 
         /* -enable-kvm moves to -accel, which alone takes properties */
         r = importScript("qemu-system-x86_64 -enable-kvm " + card, "/");
         QVERIFY(r);
-        QCOMPARE(VmConfig::accelProperty(r->args, "honor-guest-pat"), "on");
+        QCOMPARE(VmConfig::accelProperty(r->args, "honor-guest-pat"), "auto");
 
         /* set by hand, TCG, or no native context: as it is */
         for (const QString &script : {"qemu-system-x86_64 -accel kvm,honor-guest-pat=off " + card,
@@ -115,7 +115,7 @@ private slots:
                                       QString("qemu-system-x86_64 -accel kvm -device virtio-vga-gl")}) {
             r = importScript(script, "/");
             QVERIFY(r);
-            QVERIFY2(!r->args.toText().contains("honor-guest-pat=on"), qPrintable(script));
+            QVERIFY2(!r->args.toText().contains("honor-guest-pat=auto"), qPrintable(script));
             QVERIFY(!r->notes.join('\n').contains("honor-guest-pat"));
         }
     }

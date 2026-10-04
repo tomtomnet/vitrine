@@ -30,7 +30,7 @@ static Change add(const QString &key, const QString &value)
 }
 
 static const Change kVenus{Change::RemoveVenus, "venus", "off"};
-static const Change kPat{Change::HonorGuestPat, "honor-guest-pat", "on"};
+static const Change kPat{Change::HonorGuestPat, "honor-guest-pat", "auto"};
 static const Change kMemory{Change::SharedMemory, {}, {}};
 
 /* The vblank properties, which the user's VM lacks */
@@ -165,7 +165,7 @@ private slots:
         QCOMPARE(found, vblank() << kVenus << kPat);
         const ArgsFile after = apply(args, found);
         QString expected = before;
-        expected.replace("-accel kvm\n", "-accel kvm,honor-guest-pat=on\n");
+        expected.replace("-accel kvm\n", "-accel kvm,honor-guest-pat=auto\n");
         expected.replace("-device virtio-gpu-gl-pci,hostmem=4G,blob=on,venus=off,"
                          "drm_native_context=on\n",
                          QString("-device %1\n").arg(kFullCard));
@@ -177,7 +177,7 @@ private slots:
         QCOMPARE(d.before, QStringList({"-accel kvm",
                                         "-device virtio-gpu-gl-pci,hostmem=4G,blob=on,venus=off,"
                                         "drm_native_context=on"}));
-        QCOMPARE(d.after, QStringList({"-accel kvm,honor-guest-pat=on",
+        QCOMPARE(d.after, QStringList({"-accel kvm,honor-guest-pat=auto",
                                        QString("-device %1").arg(kFullCard)}));
     }
 
@@ -236,7 +236,7 @@ private slots:
                                                        "-accel kvm\n"));
         QCOMPARE(changes(args), QList<Change>({kVenus, kPat}));
         QCOMPARE(apply(args, changes(args)).toText(),
-                 QString(before).replace(",venus=off", ""));
+                 QString(before).replace(",venus=off", "").replace("pat=on", "pat=auto"));
     }
 
     /* Each property the card lacks, and none it sets, whatever to */
@@ -387,7 +387,7 @@ private slots:
                                                      "-accel kvm"));
         QCOMPARE(changes(args), vblank() << kVenus << kPat);
         QCOMPARE(apply(args, changes(args)).toText(),
-                 vm(kFullCard, "-m 4G\n").toText());
+                 vm(kFullCard, "-m 4G\n").toText().replace("pat=on", "pat=auto"));
 
         /* every form of off, and nothing else */
         args = vm("virtio-gpu-gl-pci,novenus,venus=no,blob=on,id=gpu");
@@ -410,22 +410,22 @@ private slots:
         ArgsFile args = withAccel("-machine q35,memory-backend=mem\n-accel kvm\n");
         QCOMPARE(changes(args), QList<Change>({kPat}));
         QCOMPARE(apply(args, changes(args)).toText(),
-                 withAccel("-machine q35,memory-backend=mem\n-accel kvm,honor-guest-pat=on\n")
+                 withAccel("-machine q35,memory-backend=mem\n-accel kvm,honor-guest-pat=auto\n")
                      .toText());
         /* -enable-kvm and -machine accel=: -accel takes over */
         args = withAccel("-machine q35,memory-backend=mem\n-enable-kvm\n");
         QCOMPARE(changes(args), QList<Change>({kPat}));
         QCOMPARE(apply(args, changes(args)).toText(),
-                 withAccel("-machine q35,memory-backend=mem\n-accel kvm,honor-guest-pat=on\n")
+                 withAccel("-machine q35,memory-backend=mem\n-accel kvm,honor-guest-pat=auto\n")
                      .toText());
         args = withAccel("-machine q35,accel=kvm,memory-backend=mem\n");
         QCOMPARE(apply(args, changes(args)).toText(),
-                 withAccel("-machine q35,memory-backend=mem\n-accel kvm,honor-guest-pat=on\n")
+                 withAccel("-machine q35,memory-backend=mem\n-accel kvm,honor-guest-pat=auto\n")
                      .toText());
         args = withAccel("-machine q35,memory-backend=mem\n-accel kvm,kernel-irqchip=split\n");
         QCOMPARE(apply(args, changes(args)).toText(),
                  withAccel("-machine q35,memory-backend=mem\n"
-                           "-accel kvm,kernel-irqchip=split,honor-guest-pat=on\n")
+                           "-accel kvm,kernel-irqchip=split,honor-guest-pat=auto\n")
                      .toText());
 
         /* set by hand, either way; or no KVM */
@@ -662,7 +662,7 @@ private slots:
             QVERIFY2(text.size() > key.size() + value.size() + 10, qPrintable(text));
         }
         QVERIFY(describe(kVenus).contains("venus=off"));
-        QVERIFY(describe(kPat).contains("honor-guest-pat=on"));
+        QVERIFY(describe(kPat).contains("honor-guest-pat=auto"));
         QVERIFY(describe(kMemory).contains("memfd"));
     }
 

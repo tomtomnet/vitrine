@@ -20,9 +20,12 @@
 #include <memory>
 #include <vector>
 
+#include <cerrno>
+
 #include <grp.h>
 #include <pwd.h>
 #include <sys/prctl.h>
+#include <sys/xattr.h>
 #include <unistd.h>
 
 #include "core/hostsettings.h"
@@ -564,7 +567,8 @@ private slots:
         QVERIFY(notices.isEmpty());
     }
 
-    /* What cannot apply here is said, once */
+    /* What cannot apply here is said, once: under lockdown no fair server,
+       and so no real-time threads (said with it) */
     void skipSaid()
     {
         writeFile(m_root + "/sys/kernel/security/lockdown", "none [integrity] confidentiality\n");
@@ -573,12 +577,93 @@ private slots:
         QSignalSpy lines(&hs, &HostSettings::helperLine), notices(&hs, &HostSettings::notice);
         fake(hs);
         hs.tune(q1.pid());
-        QTRY_VERIFY(saw(lines, QString("ok rt %1").arg(q1.pid())));
+        QTRY_VERIFY(saw(lines, QString("skip rt %1").arg(q1.pid())));
         hs.tune(q2.pid());
-        QTRY_VERIFY(saw(lines, QString("ok rt %1").arg(q2.pid())));
+        QTRY_VERIFY(saw(lines, QString("skip rt %1").arg(q2.pid())));
+        QVERIFY(saw(lines, "ok gpu-floor card1 1800 MHz"));
         QCOMPARE(notices.size(), 1);
-        QCOMPARE(notices.first().first().toString(),
-                 QString("Host tuning: fair-server: kernel lockdown (integrity)"));
+        const QString off = "Real-time QEMU threads are off: the kernel's lockdown (Secure Boot) blocks "
+                            "the fair server.";
+        QCOMPARE(notices.first().first().toString(), off);
+        QCOMPARE(hs.realtimeOff(), off);
+    }
+
+    /* A refusal is said as it came: real-time off, and why */
+    void realtimeOffRefused()
+    {
+        QFile::setPermissions(QString("%1%2/cpu1/period").arg(m_root, kFair), QFileDevice::ReadOwner);
+        FakeQemu qemu;
+        HostSettings hs(nullptr);
+        QSignalSpy lines(&hs, &HostSettings::helperLine), notices(&hs, &HostSettings::notice);
+        fake(hs);
+        hs.tune(qemu.pid());
+        QTRY_VERIFY(saw(lines, QString("skip rt %1").arg(qemu.pid())));
+        const QString off = "Real-time QEMU threads are off: the fair server could not be set (fair "
+                            "server: cpu1: Permission denied).";
+        QCOMPARE(hs.realtimeOff(), off);
+        QCOMPARE(notices.size(), 1);
+        QCOMPARE(notices.first().first().toString(), off);
+        QCOMPARE(fair(0), QString("1000000000/50000000"));
+    }
+
+    /* Set: nothing to say, whatever the kernel looks like from here */
+    void realtimeOn()
+    {
+        FakeQemu qemu;
+        HostSettings hs(nullptr);
+        QSignalSpy lines(&hs, &HostSettings::helperLine);
+        fake(hs);
+        QCOMPARE(hs.realtimeOff(), HostSettings::realtimeLimit(m_root + "/sys"));
+        hs.tune(qemu.pid());
+        QTRY_VERIFY(saw(lines, QString("ok rt %1").arg(qemu.pid())));
+        QCOMPARE(hs.realtimeOff(), QString());
+    }
+
+    /* What can be told without root, before any VM ran */
+    void realtimeLimit_data()
+    {
+        QTest::addColumn<QByteArray>("lockdown");   // empty: no such file
+        QTest::addColumn<QByteArray>("schedExt");   // empty: no such file
+        QTest::addColumn<QString>("release");
+        QTest::addColumn<QString>("why");
+
+        const QByteArray none = "[none] integrity confidentiality\n";
+        QTest::newRow("this laptop") << none << QByteArray("disabled\n") << "7.2.7-200.fc44.x86_64"
+                                     << "";
+        QTest::newRow("Secure Boot") << QByteArray("none [integrity] confidentiality\n")
+                                     << QByteArray() << "7.2.7"
+                                     << "the kernel's lockdown (Secure Boot) blocks the fair server";
+        QTest::newRow("confidentiality") << QByteArray("none integrity [confidentiality]\n")
+                                         << QByteArray() << "6.17.0"
+                                         << "the kernel's lockdown (Secure Boot) blocks the fair server";
+        QTest::newRow("6.11") << none << QByteArray() << "6.11.4"
+                              << "this kernel has no fair server to keep them from starving the "
+                                 "host (Linux 6.12 and later have one)";
+        QTest::newRow("6.12") << none << QByteArray() << "6.12.48+deb13-amd64" << "";
+        QTest::newRow("sched_ext, 6.17") << none << QByteArray("enabled\n") << "6.17.1"
+                                         << "a sched_ext scheduler runs, and this kernel has no "
+                                            "server to keep them from starving its tasks (Linux "
+                                            "7.0 and later have one)";
+        QTest::newRow("sched_ext, 7.0") << none << QByteArray("enabled\n") << "7.0.3" << "";
+        QTest::newRow("no files") << QByteArray() << QByteArray() << "7.2.7" << "";
+        QTest::newRow("release unknown") << QByteArray() << QByteArray() << "custom" << "";
+    }
+    void realtimeLimit()
+    {
+        QFETCH(QByteArray, lockdown);
+        QFETCH(QByteArray, schedExt);
+        QFETCH(QString, release);
+        QFETCH(QString, why);
+        const QString sys = m_root + "/limit";
+
+        if (!lockdown.isEmpty()) {
+            writeFile(sys + "/kernel/security/lockdown", lockdown);
+        }
+        if (!schedExt.isEmpty()) {
+            writeFile(sys + "/kernel/sched_ext/state", schedExt);
+        }
+        QCOMPARE(HostSettings::realtimeLimit(sys, release),
+                 why.isEmpty() ? QString() : "Real-time QEMU threads are off: " + why + ".");
     }
 
     /* A VM gone before the helper could watch it: no news, and the helper ends */
@@ -739,52 +824,48 @@ private slots:
         QCOMPARE(fair(0), QString("10000000/1000000"));
         QVERIFY(notices.isEmpty());
 
-        /* "one" in front: "two" ordinary (nice 0: the stand-in has no
-           CAP_SYS_NICE), "one" real-time again through the helper */
+        /* "one" in front: real-time, the others behind (the helper's
+           behind), "four" (SDL) left as it is */
         lines.clear();
         hs.setFront("one");
         QTRY_VERIFY(saw(lines, QString("ok rt %1").arg(qemus[0]->pid())));
-        auto priority = [](const FakeQmp &qmp) {
-            for (const QJsonObject &c : qmp.commands) {
-                if (c["execute"] == "x-vcpu-priority") {
-                    return QJsonDocument(c["arguments"].toObject()).toJson(QJsonDocument::Compact);
-                }
-            }
-            return QByteArray();
-        };
-        QTRY_COMPARE(priority(*qmps[1]), QByteArray(R"({"nice":0,"realtime":false})"));
-        QCOMPARE(priority(*qmps[0]), QByteArray());
+        QTRY_VERIFY(saw(lines, QString("ok behind %1: 4 threads ordinary, 2 vCPUs at nice -5")
+                                   .arg(qemus[1]->pid())));
+        QVERIFY(!saw(lines, QString("ok behind %1").arg(qemus[3]->pid())));
         /* the same again: nothing */
         lines.clear();
         hs.setFront("one");
         QTest::qWait(100);
         QVERIFY(lines.isEmpty());
-        /* a VM started meanwhile: behind once the helper's rt is done with it */
+        /* a VM started meanwhile: behind from the start, never real-time */
         store.find("three")->runner()->attach(store.find("three")->args());
-        QTRY_VERIFY(saw(lines, QString("ok rt %1").arg(qemus[2]->pid())));
-        QTRY_COMPARE(priority(*qmps[2]), QByteArray(R"({"nice":0,"realtime":false})"));
-        /* SDL: left as it is */
-        QCOMPARE(priority(*qmps[3]), QByteArray());
+        QTRY_VERIFY(saw(lines, QString("ok behind %1").arg(qemus[2]->pid())));
+        QVERIFY(!saw(lines, QString("ok rt %1").arg(qemus[2]->pid())));
         /* "two" in front */
+        lines.clear();
         hs.setFront("two");
         QTRY_VERIFY(saw(lines, QString("ok rt %1").arg(qemus[1]->pid())));
-        QTRY_COMPARE(priority(*qmps[0]), QByteArray(R"({"nice":0,"realtime":false})"));
-        QCOMPARE(priority(*qmps[3]), QByteArray());
+        QTRY_VERIFY(saw(lines, QString("ok behind %1").arg(qemus[0]->pid())));
+        QTRY_VERIFY(saw(lines, QString("ok behind %1").arg(qemus[2]->pid())));
+        QVERIFY(!saw(lines, QString("ok behind %1").arg(qemus[3]->pid())));
         /* unknown VMs change nothing */
         hs.setFront("five");
         hs.setFront(QString());
-
-        /* tuning turned off: QEMU's own priorities back to ordinary too */
+        /* QEMU is asked nothing: the helper does it all */
         for (const auto &qmp : qmps) {
-            qmp->commands.clear();
+            for (const QJsonObject &c : qmp->commands) {
+                QVERIFY(c["execute"] != "x-vcpu-priority");
+            }
         }
+
+        /* tuning turned off: every thread back, by the helper's release */
+        lines.clear();
         HostSettings::setEnabled(false);
         hs.preferencesChanged();
-        for (int i : {0, 1, 2}) {
-            QTRY_COMPARE(priority(*qmps[i]), QByteArray(R"({"nice":0,"realtime":false})"));
-        }
-        QCOMPARE(priority(*qmps[3]), QByteArray());
         QTRY_VERIFY(!hs.helperRunning());
+        for (const auto &qemu : qemus) {
+            QVERIFY(saw(lines, QString("restored rt %1: ").arg(qemu->pid())));
+        }
 
         for (auto &qemu : qemus) {
             qemu->stop();
@@ -881,65 +962,50 @@ private slots:
     }
 
     /*
-     * vitrine's QEMU without its capability (built before the group was
-     * joined, or with tuning off): given at the start, without a word when
-     * polkit says no (a VM start says it), once per run
+     * QEMU gets no capability any more: nothing asked of polkit for it, a
+     * stack's QEMU there or not; one without a capability is left as it is
      */
-    void capabilityCatchUp()
+    void noCapabilityAsked()
     {
         const QString stack = Paths::stackDir();
         const QString bin = stack + "/0123abcd/bin";
-        /* the helper's rule: a QEMU in the caller's home folder */
-        const struct passwd *pw = getpwuid(getuid());
-        if (!pw || !QFileInfo(stack).absoluteFilePath().startsWith(
-                       QDir(pw->pw_dir).canonicalPath() + '/')) {
-            QSKIP("the test's data folder is not in the home folder");
-        }
         const QString qemu = bin + "/" + Paths::qemuSystemName();
         QDir(stack).removeRecursively();
         QVERIFY(QDir().mkpath(bin));
         QVERIFY(QFile::copy(FAKE_QEMU, qemu));
-        QFile::setPermissions(qemu, QFileDevice::ReadOwner | QFileDevice::WriteOwner |
-                                        QFileDevice::ExeOwner);
         QVERIFY(QFile::link("0123abcd", stack + "/current"));
-        QCOMPARE(Paths::stackQemu(), QFileInfo(qemu).canonicalFilePath());
+        const QFileDevice::Permissions mode = QFileInfo(qemu).permissions();
         fakePolkit();
-        auto setcaps = [this]() {
-            return QString::fromUtf8(readFile(m_root + "/journal")).split('\n').filter("setcap ");
-        };
-
-        writeFile(m_root + "/answer", "2\n");
-        {
-            HostSettings hs(nullptr);
-            QSignalSpy notices(&hs, &HostSettings::notice);
-            QTRY_COMPARE(polkitLog("pkcheck").size(), 1);
-            /* the action pkexec would use: a rule may grant it apart */
-            QVERIFY(polkitLog("pkcheck").first().startsWith(
-                "--action-id org.vitrine.helper.setcap --process "));
-            QTest::qWait(200);
-            QVERIFY(polkitLog("pkexec").isEmpty());
-            QVERIFY(notices.isEmpty());
-        }
         writeFile(m_root + "/answer", "0\n");
         {
             HostSettings hs(nullptr);
-            QSignalSpy notices(&hs, &HostSettings::notice);
-            QTRY_COMPARE(polkitLog("pkexec").size(), 1);
-            QCOMPARE(polkitLog("pkexec").first(),
-                     "--disable-internal-agent " VITRINE_HELPER_PATH " setcap " +
-                         QFileInfo(qemu).canonicalFilePath());
-            /* the helper's test build set it, in its journal: not on the file */
-            QTRY_COMPARE(setcaps().size(), 1);
-            QVERIFY(notices.isEmpty());
-            /* turned off and on again: tried once per run */
-            HostSettings::setEnabled(false);
-            hs.preferencesChanged();
-            HostSettings::setEnabled(true);
-            hs.preferencesChanged();
-            QTest::qWait(200);
-            QCOMPARE(polkitLog("pkexec").size(), 1);
+            QTest::qWait(300);
+            QVERIFY(polkitLog("pkcheck").isEmpty());
+            QVERIFY(polkitLog("pkexec").isEmpty());
         }
+        QVERIFY(HostSettings::stripCapabilities(stack).isEmpty());
+        QCOMPARE(QFileInfo(qemu).permissions(), mode);
         QDir(stack).removeRecursively();
+    }
+
+    /*
+     * The capability an older vitrine gave its QEMU builds, taken back by
+     * their owner, also from a QEMU that runs.  helper/tests/e2e-host.sh
+     * sets one on a copy of QEMU in a stack's layout (root needed) and
+     * names that stack in VITRINE_TEST_CAP_STACK; skipped otherwise.
+     */
+    void capabilityStripped()
+    {
+        const QString stack = qEnvironmentVariable("VITRINE_TEST_CAP_STACK");
+        if (stack.isEmpty()) {
+            QSKIP("for helper/tests/e2e-host.sh");
+        }
+        const QStringList stripped = HostSettings::stripCapabilities(stack);
+        QCOMPARE(stripped.size(), 1);
+        char value[64];
+        QVERIFY(getxattr(QFile::encodeName(stripped.first()).constData(), "security.capability",
+                         value, sizeof(value)) < 0 && errno == ENODATA);
+        QVERIFY(HostSettings::stripCapabilities(stack).isEmpty());
     }
 
     /* polkit's answers and the user database, as the state they make */
@@ -1867,13 +1933,6 @@ private slots:
         QTRY_VERIFY(!hs.helperRunning());
     }
 
-    void capabilityWithoutHelper()
-    {
-        qputenv("VITRINE_HELPER", "/nonexistent/vitrine-helper");
-        QString error = "unset";
-        HostSettings::grantCapability(FAKE_QEMU, this, [&](const QString &e) { error = e; });
-        QCOMPARE(error, QString("vitrine-helper is not installed"));
-    }
 };
 
 QTEST_GUILESS_MAIN(TestHostSettings)

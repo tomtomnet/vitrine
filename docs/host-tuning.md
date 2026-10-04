@@ -2,13 +2,23 @@
 
 A desktop VM stays smooth under host load when the host gives it a hand:
 
-- **Real-time QEMU threads** (SCHED_FIFO priority 1): the guest's vCPUs and
-  QEMU's display and I/O threads run before ordinary host tasks.
+- **Real-time QEMU threads** (SCHED_FIFO priority 1) for the VM in front -
+  its console or full-screen window has the keyboard: the guest's vCPUs and
+  QEMU's display and I/O threads run before ordinary host tasks. The other
+  VMs' threads stay ordinary, their vCPUs at nice -5, so that VMs busy in
+  the background cannot take every CPU at real-time priority. VMs in QEMU's
+  own window (SDL) keep real-time threads: which window is in front is not
+  known there.
 - **A shorter fair-server period**: the kernel keeps some CPU time for
   ordinary tasks while real-time ones run, 50 ms per second by default. An
   ordinary task stuck behind a real-time vCPU (a kernel worker pushing GPU
   jobs, say) could then wait up to 950 ms; at 1 ms every 10 ms it waits
-  under ~9 ms.
+  under ~9 ms. This is the only bound the kernel has on real-time threads
+  (real-time throttling went in Linux 6.12, except with real-time group
+  scheduling, which Fedora's kernel leaves out), so where it cannot be
+  set, QEMU's threads stay ordinary: see below. Under a sched_ext
+  scheduler, ordinary tasks wait for the ext server instead, which gets the
+  same.
 - **A GPU clock floor** (AMD APUs): at moderate load the GPU stays at its
   lowest clock, where copying a 4K frame takes about 1 ms. With the lowest
   gfx clock at 1800 MHz a Radeon 780M showed new images at 94-95 % of the
@@ -25,7 +35,8 @@ These need root. vitrine applies them through a small helper,
 `vitrine-helper`, when a VM starts, and the helper puts everything back
 after the last VM stops - crash included, and even if vitrine has quit
 while the VMs run on. There is no service: the helper runs only while VMs
-run. Nothing is applied while no VM runs.
+run. Nothing is applied while no VM runs. QEMU itself gets no privilege:
+the helper sets its threads' scheduling.
 
 ## Allowing it without a password
 
@@ -78,11 +89,11 @@ for them. It does only this, for the user who started it:
 | Request | What it does | Checks |
 | --- | --- | --- |
 | `watch PID` | Watches a QEMU until it exits | The process belongs to the caller (all its uids) and runs a `qemu-system-*` (or `qemu-kvm`) executable; held through a pidfd, so a reused pid cannot slip in |
-| `fair-server on` | 10 ms / 1 ms on every CPU | Fixed values; only `cpuN` folders; nothing to choose |
+| `fair-server on` | 10 ms / 1 ms on every online CPU, read back; under sched_ext the ext server too | Fixed values; only `cpuN` folders; nothing to choose. All or nothing: a refused write puts the others back and says which CPU and why |
 | `gpu-floor CARD MHZ\|auto` | An AMD GPU's lowest gfx clock | `cardN` of vendor 0x1002 driven by amdgpu; the clock within the GPU's own overdrive range; only when its performance level is `auto` |
-| `rt PID` | SCHED_FIFO 1 on every thread of a watched QEMU | Watched first, and checked again to be the caller's QEMU (it may have run another program since); real-time threads it finds are left as they are |
+| `rt PID` | SCHED_FIFO 1 on every thread of a watched QEMU (the VM in front) | Only once `fair-server on` holds; watched first, and checked again to be the caller's QEMU (it may have run another program since); real-time threads it finds are left as they are; its child processes (passt) are not touched |
+| `behind PID` | The threads `rt` made real-time back to SCHED_OTHER, its vCPU threads (`CPU n/KVM`) at nice -5 (a VM behind the one in front) | The same checks as `rt`; nice -5 only while the fair server holds, and only for vCPUs at nice 0 |
 | `udmabuf PID` | The udmabuf module's `list_limit` at 65536 and `size_limit_mb` at 2048, while that watched QEMU runs | A watched QEMU (its GPU is not checked: vitrine asks only for native-context ones); fixed values; raised only, a higher value stays; skipped when the module is not loaded; put back after the last QEMU that asked for it |
-| `setcap PATH` | `cap_sys_nice=ep` on vitrine's QEMU build | See below |
 | `setup-group` | The caller in the `vitrine` group, the group created (`groupadd --system`) if there is none | See below |
 
 The settings need a watched QEMU, and each value is put back only if it
@@ -91,33 +102,28 @@ its change.
 
 What this amounts to:
 
-- Real-time priority 1 for your own processes. The `qemu-system-*` name is
-  no proof of anything, and a guest's own code runs on those vCPUs: think of
-  the group as `rtprio 1` in `limits.conf`. The shorter fair-server period
-  keeps ordinary tasks running beside them.
+- Real-time priority 1 for your own processes, and nice -5 for their
+  threads named as vCPUs. The `qemu-system-*` name is no proof of
+  anything, and a guest's own code runs on those vCPUs: think of the group
+  as `rtprio 1` in `limits.conf`. The shorter fair-server period keeps
+  ordinary tasks running beside them, and without it there is no
+  real-time priority.
 - Three host-wide settings changed while your VMs run, and put back after.
 - Bigger udmabufs. `/dev/udmabuf` is open to the user at the desktop
   already (systemd's `uaccess` rule), and to the `kvm` group: they can turn
   their own memory into a udmabuf. The limits only set how many pieces and bytes
   one udmabuf may have, and it is memory its owner has anyway. While they
   are raised, they are raised for every user of the host.
-- `cap_sys_nice` on a QEMU you built: QEMU may then make its vCPUs real-time
-  (vitrine's focus priority) and ask amdgpu for high-priority GPU contexts.
-  vitrine builds that QEMU from sources in your home folder, so the content
-  is yours: the capability amounts to CAP_SYS_NICE for a program of yours,
-  which can change the priority and CPU affinity of other users' processes.
-  It cannot read or change their data. The helper makes sure the file stays
-  yours alone: an absolute path in your home folder of the shape
-  `.../vitrine/stack/<build>/bin/qemu-system-<arch>`, walked without
-  following links, every folder from your home down writable only by you
-  (or root), a regular file of yours with one link and no setuid bit, an
-  ELF executable for this machine, on a file system that honours file
-  capabilities. It sets the file's mode to 0700 first, so no one else can
-  run it. Any write to the file drops the capability (the kernel does
-  that): each build needs it again, and vitrine asks the helper after each
-  build, and when it starts or tuning is turned on again if its QEMU lacks
-  it (built before you joined the group, say). A VM gets it at its next
-  start.
+- Nothing for QEMU itself. Earlier versions gave vitrine's QEMU build the
+  `cap_sys_nice` file capability, so that QEMU could switch its vCPUs
+  itself; that also gave a guest that escaped into QEMU the scheduling of
+  every host process, turned off `LD_LIBRARY_PATH`, `LD_PRELOAD` and
+  `TMPDIR` for QEMU, and kept core dumps and debuggers away from it.
+  vitrine now takes that capability back from its builds when it starts
+  (as their owner: no password), and the helper does the scheduling. The
+  one thing QEMU loses is amdgpu's high-priority GPU contexts, which the
+  guest's compositor asks for and falls back from; no difference was
+  measured.
 
 `setup-group` takes no argument: the group is `vitrine` and the user is
 the caller (pkexec's `PKEXEC_UID`, looked up in the user database),
@@ -140,10 +146,9 @@ Rename that group, or add yourself to it by hand if that is what you want.
 
 Each verb of the helper has a polkit action of its own, named by its
 first argument: `org.vitrine.helper` (`session`, the settings while VMs
-run), `org.vitrine.helper.setcap` and `org.vitrine.helper.setup-group`.
-The group's rule grants the first two only: setup-group always wants an
-administrator's password, from members too, and its dialog says it adds
-you to the vitrine group. A rule of your own that gives the helper to more
+run) and `org.vitrine.helper.setup-group`. The group's rule grants the
+first only: setup-group always wants an administrator's password, from
+members too, and its dialog says it adds you to the vitrine group. A rule of your own that gives the helper to more
 people, or lets them use their own password, does not bring a lasting
 change of `/etc/group` along unless it names setup-group's action.
 (pkexec takes the first action whose path matches and whose first
@@ -236,12 +241,23 @@ configuring: `cmake --install --prefix` with another prefix is refused.
   applies only in a local, active desktop session (not over ssh or
   waypipe, not from a session switched away from), and only once
   `49-vitrine.rules` is where polkit reads rules (see Installing).
-- Its state is in `/run/vitrine-helper` (root only; gone at the next boot).
-  A helper that died while holding settings leaves its state there: the next
-  helper puts them back when it starts. To do it now:
-  `sudo /usr/libexec/vitrine-helper session < /dev/null`.
+- Its state is in `/run/vitrine-helper` (root only; gone at the next boot,
+  like the values it records). A helper that died while holding settings
+  leaves its state there: the next helper puts them back when it starts -
+  the threads it made real-time first, then the fair server they needed.
+  A CPU it could not put back (offline, say) stays recorded for the next
+  one. To do it now: `sudo /usr/libexec/vitrine-helper session < /dev/null`.
+- CPUs whose fair server is at 10 ms / 1 ms while the others are not, with
+  no record, are taken for a run cut short: the next VM's helper records
+  them with the others' value and puts them back after. All of them at
+  10 ms / 1 ms with no record are left as found (another tool may hold them
+  for a VM of its own).
 - Hosts with Secure Boot run the kernel in lockdown, where debugfs cannot be
-  written: no fair-server change there, the rest still applies.
+  written: no fair-server change there, and so no real-time QEMU threads;
+  the rest still applies. The same without a fair server (Linux before
+  6.12) or under a sched_ext scheduler on a kernel without an ext server
+  (before 7.0). Preferences says so ("Real-time QEMU threads are off:
+  ..."), and the status bar at the first VM start.
 - GPUs other than AMD APUs get no automatic floor. A discrete AMD GPU needs
   the overdrive bit of `amdgpu.ppfeaturemask` for any floor.
 - `cat /sys/module/udmabuf/parameters/list_limit /sys/module/udmabuf/parameters/size_limit_mb`

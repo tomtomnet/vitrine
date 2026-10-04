@@ -60,9 +60,9 @@ bool HostTuningNotifier::eventFilter(QObject *watched, QEvent *event)
 
 QString HostTuningNotifier::summary()
 {
-    return tr("Real-time QEMU threads, a shorter kernel fair-server period, a GPU clock floor "
-              "and, for native-context VMs, higher udmabuf limits while VMs run, put back after "
-              "the last one.");
+    return tr("Real-time QEMU threads for the VM in front, a shorter kernel fair-server period, "
+              "a GPU clock floor and, for native-context VMs, higher udmabuf limits while VMs "
+              "run, put back after the last one.");
 }
 
 QString HostTuningNotifier::fix(const HostSettings::Status &status)

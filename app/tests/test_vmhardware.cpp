@@ -445,7 +445,7 @@ private slots:
         g.nativeContext = true;
         setGraphics(a, g);
         QCOMPARE(text(a), "-machine q35,memory-backend=mem\n"
-                          "-accel kvm,honor-guest-pat=on\n"
+                          "-accel kvm,honor-guest-pat=auto\n"
                           "-device virtio-vga-gl,drm_native_context=on,blob=on,hostmem=4G\n"
                           "-display sdl,gl=on\n");
 

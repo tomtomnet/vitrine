@@ -7,27 +7,31 @@
  *
  *   vitrine-helper session        one session: requests on stdin, one per
  *                                 line (org.vitrine.helper)
- *   vitrine-helper setcap PATH    cap_sys_nice=ep on vitrine's QEMU build, then
- *                                 exit (org.vitrine.helper.setcap)
  *   vitrine-helper setup-group    the caller in the vitrine group (created if
  *                                 need be), then exit
  *                                 (org.vitrine.helper.setup-group)
  *
- * session and setcap: no password for members of the vitrine group in their
- * local, active session (49-vitrine.rules); vitrine asks polkit first and
- * never runs them when it would want one.  setup-group: an administrator's
+ * session: no password for members of the vitrine group in their local,
+ * active session (49-vitrine.rules); vitrine asks polkit first and never
+ * runs it when it would want one.  setup-group: an administrator's
  * password, always - vitrine runs it only when the user clicks Set Up.
  * Nothing is installed as a service and nothing stays applied once the VMs
- * are gone.
+ * are gone.  QEMU itself gets no privilege: the threads' scheduling is set
+ * here.
  *
  * Session requests, each answered by one line or more:
  *   watch PID              a QEMU of the caller's (same uids, qemu-system-*
  *                          or qemu-kvm executable), watched through a pidfd
- *   fair-server on|off     the kernel's fair server at 10 ms / 1 ms on every CPU
+ *   fair-server on|off     the kernel's fair server (and the ext server under
+ *                          sched_ext) at 10 ms / 1 ms on every online CPU, all
+ *                          or nothing, read back: the bound rt needs
  *   gpu-floor CARD MHZ|auto|off
  *                          an amdgpu card's lowest gfx clock (auto: 1800 MHz on
  *                          APUs whose minimum is lower)
- *   rt PID                 SCHED_FIFO 1 on every thread of a watched QEMU
+ *   rt PID                 SCHED_FIFO 1 on every thread of a watched QEMU,
+ *                          once the fair server is set: the VM in front
+ *   behind PID             those threads back to SCHED_OTHER, its vCPUs at
+ *                          nice -5: a VM behind the one in front
  *   udmabuf PID            the udmabuf limits raised (65536 entries, 2048 MB)
  *                          while that watched QEMU runs: one with a
  *                          native-context GPU
@@ -202,7 +206,8 @@ static bool request(char *line)
         fair_server_off();
     } else if (IS("gpu-floor", 2) && strcmp(words[2], "off") == 0) {
         gpu_floor(words[1], words[2]);
-    } else if ((IS("fair-server", 1) || IS("gpu-floor", 2) || IS("rt", 1) || IS("udmabuf", 1)) &&
+    } else if ((IS("fair-server", 1) || IS("gpu-floor", 2) || IS("rt", 1) || IS("behind", 1) ||
+                IS("udmabuf", 1)) &&
                !nwatched) {
         /* nothing applied while no VM runs */
         reply("error %s: watch a QEMU first", words[0]);
@@ -212,6 +217,8 @@ static bool request(char *line)
         gpu_floor(words[1], words[2]);
     } else if (IS("rt", 1)) {
         rt_on(words[1]);
+    } else if (IS("behind", 1)) {
+        behind(words[1]);
     } else if (IS("udmabuf", 1)) {
         udmabuf_on(words[1]);
     } else {
@@ -350,14 +357,11 @@ int main(int argc, char **argv)
     if (argc == 2 && strcmp(argv[1], "session") == 0) {
         return session();
     }
-    if (argc == 3 && strcmp(argv[1], "setcap") == 0) {
-        return setcap(argv[2]);
-    }
     /* no argument: the group and the user are not the caller's to choose */
     if (argc == 2 && strcmp(argv[1], "setup-group") == 0) {
         return setup_group();
     }
     /* none at all included: pkexec would run that under its generic action */
-    fprintf(stderr, "usage: vitrine-helper session | setcap PATH | setup-group\n");
+    fprintf(stderr, "usage: vitrine-helper session | setup-group\n");
     return 2;
 }
