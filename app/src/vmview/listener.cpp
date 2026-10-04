@@ -6,6 +6,7 @@
 #include <gio/gio.h>
 #include <gio/gunixfdlist.h>
 #include <cstring>
+#include <fcntl.h>
 #include <pthread.h>
 #include <sys/socket.h>
 
@@ -362,7 +363,9 @@ void Listener::handleCall(const char *m, GVariant *p, GDBusMethodInvocation *inv
                 g_variant_get_child(fds, i, "h", &hdl);
                 fd = takeFd(inv, hdl);
             } else if (!s->planes.empty()) {
-                fd = dup(s->planes[0].fd); // planes may share one buffer
+                // planes may share one buffer; not inherited by a child (a VM
+                // vitrine starts later, say)
+                fd = fcntl(s->planes[0].fd, F_DUPFD_CLOEXEC, 0);
             }
             s->planes.push_back({fd, ov[i], sv[i]});
         }
