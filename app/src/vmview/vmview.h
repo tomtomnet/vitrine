@@ -21,6 +21,7 @@ class DBusDisplay;
 class DisplayWindow;
 class Listener;
 class Renderer;
+class ViewSurface;
 class VmClipboard;
 class WaylandExtras;
 
@@ -126,6 +127,7 @@ private:
     VmClipboard *m_clipboard = nullptr;
     Renderer *m_renderer = nullptr;
     DisplayWindow *m_window = nullptr;
+    ViewSurface *m_surface = nullptr;   // where m_renderer draws, on Wayland
     QPointer<QWidget> m_host;           // what widget() returns
     QWidget *m_container = nullptr;     // embeds m_window, in m_host
     QLabel *m_placeholder = nullptr;    // in m_host while full screen

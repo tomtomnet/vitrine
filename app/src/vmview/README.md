@@ -13,7 +13,9 @@ version taken. The few changes vitrine needs before the research side has
 them are listed under Local changes below, to make again after a copy.
 vitrine's own code is `vmview.{h,cpp}`: it attaches to a
 running QEMU and puts the display in a widget, or in a window of its own
-for full screen; and `vmclipboard.{h,cpp}`: the host clipboard shared
+for full screen; `viewsurface.{h,cpp}`: the Wayland surface the frames go
+to, vitrine's own, a subsurface of the display's window that Qt never
+touches; and `vmclipboard.{h,cpp}`: the host clipboard shared
 with the guest through the display's org.qemu.Display1.Clipboard.
 
 | file | what it does |
@@ -35,4 +37,6 @@ with the guest through the display's org.qemu.Display1.Clipboard.
 |---|---|---|
 | `renderer.cpp` | the "swapchain: the compositor scans out / composites the window" line is printed once the scanout vote held 2 s | at the edge of its majority the vote flips with every frame, which filled the app's log |
 | `renderer.cpp` | wp_presentation is bound at version 2 when the compositor offers it (was 1) | under a variable refresh rate (VRR) a version 1 client gets refresh 0 in its presentation feedback (KWin: presentationtime.cpp), so QEMU never learns the period and keeps its default; version 2 gets the mode's rate |
+| `renderer.{h,cpp}` | `Renderer::setRenderTarget()`: a surface of the caller's own (vitrine's `ViewSurface`) through which the render thread makes its context current, gets its size in buffer pixels, presents the Qt-swap fallback (the first frames, no own swapchain) and lets go at its end; with one set, `setWayland()` changes nothing and the window's own surface is never used | the render thread committed on Qt's surface of the window with nothing in step with Qt (qt-client.md F3): Qt's hide (attach NULL, commit), its re-creation of the surface (re-parenting, destroy) and its configures raced the frames |
+| `renderer.cpp` | with a render target, a guest buffer on the surface is taken off it (attach NULL) while the window is not exposed | Qt's hide did that on its own surface; on a surface of the caller's, the compositor would keep the buffer, and QEMU the guest's flushes of it until they time out (8 refreshes each) |
 | `displaywindow.cpp` | the pointer lock (grab of a guest with a relative mouse) is taken on the top-level window's surface, as the confinement is, not on the view's own | KWin honours pointer constraints only on a window's main surface: embedded in vitrine's window, the view is a subsurface, and a lock on it never took effect (the pointer left the view) |

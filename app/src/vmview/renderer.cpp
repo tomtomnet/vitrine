@@ -859,8 +859,20 @@ void Renderer::setExposed(bool exposed)
 
 void Renderer::setWayland(wl_display *display, wl_surface *surface)
 {
+    if (m_target) {
+        return; // the target's surface, not the window's
+    }
     m_wlDisplay = display;
     m_wlSurface = surface;
+}
+
+void Renderer::setRenderTarget(RenderTarget *target)
+{
+    m_target = target;
+    if (target) {
+        m_wlDisplay = target->display();
+        m_wlSurface = target->surface();
+    }
 }
 
 void Renderer::setPresentationSink(GDBusConnection *conn, const QByteArray &consolePath)
@@ -903,7 +915,11 @@ void Renderer::run()
         }
         m_mb->cond.wait_for(lk, std::chrono::milliseconds(20));
     }
-    if (!ctx.makeCurrent(m_window)) {
+    QSize targetSize; // with a target: the size of its surface
+    auto makeCurrent = [&] {
+        return m_target ? m_target->makeCurrent(&ctx, &targetSize) : ctx.makeCurrent(m_window);
+    };
+    if (!makeCurrent()) {
         Q_EMIT failed(QStringLiteral("cannot make the OpenGL context current"));
         return;
     }
@@ -1007,12 +1023,17 @@ void Renderer::run()
         }
 
         if (redraw && m_exposed) {
-            ctx.makeCurrent(m_window);
+            makeCurrent();
             // the EGL surface size is authoritative (fractional scales round there)
             EGLint w = 0, h = 0;
-            EGLSurface surf = eglGetCurrentSurface(EGL_DRAW);
-            eglQuerySurface(eglDpy, surf, EGL_WIDTH, &w);
-            eglQuerySurface(eglDpy, surf, EGL_HEIGHT, &h);
+            if (m_target) {
+                w = targetSize.width();
+                h = targetSize.height();
+            } else {
+                EGLSurface surf = eglGetCurrentSurface(EGL_DRAW);
+                eglQuerySurface(eglDpy, surf, EGL_WIDTH, &w);
+                eglQuerySurface(eglDpy, surf, EGL_HEIGHT, &h);
+            }
             // zero copy: the guest's buffer itself, when it fills the view 1:1
             GuestBuffer *gb = nullptr;
             if (st.zcSupported && scanout && scanout->kind == Scanout::Dmabuf &&
@@ -1102,6 +1123,8 @@ void Renderer::run()
                     fprintf(stderr, "swapchain: the compositor %s the window\n",
                             sc ? "scans out (direct)" : "composites");
                 }
+            } else if (m_target) {
+                m_target->swapBuffers(&ctx);
             } else {
                 ctx.swapBuffers(m_window);
             }
@@ -1115,6 +1138,16 @@ void Renderer::run()
             }
             m_stats->frameDrawn(update != drawnUpdate ? recvNs : 0, t, imported);
             m_stats->trace('D', update, t);
+        }
+        // not shown: Qt's hide took the guest's buffer off the window's
+        // surface, nothing does off a target's - the compositor would keep it,
+        // and QEMU the guest's flushes of it until they time out
+        if (!m_exposed && m_target && st.attached) {
+            wl_surface_attach(m_wlSurface, nullptr, 0, 0);
+            wl_surface_commit(m_wlSurface);
+            wl_display_flush(m_wlDisplay);
+            std::lock_guard g(st.lock);
+            st.attached = nullptr; // released when the compositor lets it go
         }
         drawnUpdate = update;
         // zero copy: the buffers of the updates this pass did not show
@@ -1139,7 +1172,7 @@ void Renderer::run()
         }
         m_mb->deferredReplies.clear();
     }
-    ctx.makeCurrent(m_window);
+    makeCurrent();
     st.destroyCache();
     // the buffers' proxies go before the queue, with nobody reading it
     st.stopReaderThread();
@@ -1148,4 +1181,7 @@ void Renderer::run()
     own.reset();
     st.finiWayland();
     ctx.doneCurrent();
+    if (m_target) {
+        m_target->done(&ctx);
+    }
 }

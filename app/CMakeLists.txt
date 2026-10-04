@@ -81,17 +81,19 @@ find_package(Qt6 6.5 REQUIRED COMPONENTS Gui GuiPrivate Widgets)
 find_package(PkgConfig REQUIRED)
 pkg_check_modules(GIO REQUIRED IMPORTED_TARGET gio-2.0 gio-unix-2.0)
 pkg_check_modules(EGL REQUIRED IMPORTED_TARGET egl)
-pkg_check_modules(WAYLAND REQUIRED IMPORTED_TARGET wayland-client)
+pkg_check_modules(WAYLAND REQUIRED IMPORTED_TARGET wayland-client wayland-egl)
 pkg_check_modules(GBM REQUIRED IMPORTED_TARGET gbm libdrm)
 pkg_get_variable(WAYLAND_PROTOCOLS_DIR wayland-protocols pkgdatadir)
 find_program(WAYLAND_SCANNER wayland-scanner REQUIRED)
 
 # Wayland protocols Qt does not expose: presentation feedback, dma-buf
 # feedback, shortcut inhibition (keyboard grab), pointer lock and relative
-# motion (mouse grab for guests without a tablet).
+# motion (mouse grab for guests without a tablet), and the viewport of the
+# view's own surface.
 set(VMVIEW_PROTOCOLS
     stable/presentation-time/presentation-time.xml
     stable/linux-dmabuf/linux-dmabuf-v1.xml
+    stable/viewporter/viewporter.xml
     unstable/keyboard-shortcuts-inhibit/keyboard-shortcuts-inhibit-unstable-v1.xml
     unstable/pointer-constraints/pointer-constraints-unstable-v1.xml
     unstable/relative-pointer/relative-pointer-unstable-v1.xml)
@@ -129,6 +131,8 @@ qt_add_library(vitrine_vmview STATIC
     src/vmview/swapchain.h
     src/vmview/vmclipboard.cpp
     src/vmview/vmclipboard.h
+    src/vmview/viewsurface.cpp
+    src/vmview/viewsurface.h
     src/vmview/vmview.cpp
     src/vmview/vmview.h
     src/vmview/waylandextras.cpp
@@ -144,7 +148,7 @@ target_link_libraries(vitrine_vmview
 target_compile_definitions(vitrine_vmview PRIVATE QT_NO_KEYWORDS)
 # vitrine's own files there; the research side's build as they come
 set_source_files_properties(src/vmview/vmview.cpp src/vmview/vmclipboard.cpp
-    PROPERTIES COMPILE_OPTIONS "-Wall;-Wextra")
+    src/vmview/viewsurface.cpp PROPERTIES COMPILE_OPTIONS "-Wall;-Wextra")
 
 # The windows, a library of their own so that tests can use them
 qt_add_library(vitrine_ui STATIC

@@ -6,6 +6,7 @@
 #include "listener.h"
 #include "qmp.h"
 #include "renderer.h"
+#include "viewsurface.h"
 #include "vmclipboard.h"
 #include "waylandextras.h"
 
@@ -318,6 +319,11 @@ void VmView::createWindow(bool fullScreen)
     m_opts.toplevel = fullScreen;
     m_opts.fullscreen = fullScreen;
     m_window = new DisplayWindow(m_dbus, m_wayland, m_opts);
+    /* the frames on a surface of their own, which Qt does not touch (Wayland;
+       elsewhere they go to the window's own, as the research client has them) */
+    if (m_wayland) {
+        m_surface = ViewSurface::create(m_window);
+    }
     if (!m_guestSize.isEmpty()) {
         m_window->setGuestSize(uint32_t(m_guestSize.width()), uint32_t(m_guestSize.height()));
     }
@@ -365,6 +371,7 @@ void VmView::createWindow(bool fullScreen)
 
     m_renderer = new Renderer(m_window, &m_mailbox, m_stats.get(), m_opts);
     m_renderer->setObjectName(QStringLiteral("render"));   // the thread's name in /proc
+    m_renderer->setRenderTarget(m_surface);
     m_renderer->setPresentationSink(m_dbus->connection(), m_dbus->consolePath().toUtf8());
     connect(m_renderer, &Renderer::failed, this,
             [this, renderer = m_renderer](const QString &message) {
@@ -412,6 +419,8 @@ void VmView::destroyWindow()
         delete m_renderer;
         m_renderer = nullptr;
     }
+    /* once the render thread is done with it, before the window it is on */
+    delete std::exchange(m_surface, nullptr);
     /*
      * Out of reach before they go: ~QWindowContainer deletes the window
      * first, then ~QWidget clears the focus, which sends the container
