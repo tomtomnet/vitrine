@@ -22,6 +22,7 @@
 #include <mutex>
 #include <poll.h>
 #include <thread>
+#include <sys/eventfd.h>
 #include <sys/ioctl.h>
 #include <sys/stat.h>
 #include <linux/dma-buf.h>
@@ -125,6 +126,9 @@ public:
     bool init(QOpenGLContext *ctx, QString *err);
     void initWaylandQueue(wl_display *display);
     void initWayland(wl_display *display);
+    // the reader thread, with or without Wayland: the read fences need it
+    void startReader();
+    void wakeReader();
     void stopReaderThread();
     void finiWayland();
     // Returns the framebuffer to blit from; sets imported when a new EGLImage was made.
@@ -165,6 +169,7 @@ public:
     std::mutex lock;
     std::thread reader;
     std::atomic<bool> stopReader{false};
+    int wakeFd = -1;    // eventfd: a fence to poll, or the end (wakeReader)
     wl_surface *surfaceWrapper = nullptr; // the window's surface, on our queue
     wl_surface *wrappedSurface = nullptr;
     Swapchain *swapchain = nullptr; // the window's own buffers (its globals on our queue)
@@ -343,6 +348,7 @@ void RenderState::guestReleased(GuestBuffer *g)
         pollfd pfd = {arg.fd, POLLIN, 0};
         if (poll(&pfd, 1, 0) != 1) {
             pendingReads.emplace_back(arg.fd, g->inode); // the reader thread polls it
+            wakeReader();
             return;
         }
         close(arg.fd);
@@ -353,7 +359,8 @@ void RenderState::guestReleased(GuestBuffer *g)
 // After our copy of the buffer: once the GL work queued so far is done
 void RenderState::releaseAfterGpu(uint64_t inode)
 {
-    if (createSync && dupFenceFd && destroySync) {
+    // the fence's fd only for a thread that polls it: else a GPU wait
+    if (createSync && dupFenceFd && destroySync && reader.joinable()) {
         const EGLint attrs[] = {EGL_SYNC_NATIVE_FENCE_FD_ANDROID, EGL_NO_NATIVE_FENCE_FD_ANDROID,
                                 EGL_NONE};
         EGLSyncKHR sync = createSync(dpy, EGL_SYNC_NATIVE_FENCE_ANDROID, attrs);
@@ -364,6 +371,7 @@ void RenderState::releaseAfterGpu(uint64_t inode)
             if (fd >= 0) {
                 std::lock_guard g(lock);
                 pendingReads.emplace_back(fd, inode);
+                wakeReader();
                 return;
             }
         }
@@ -494,17 +502,22 @@ void RenderState::destroyGuests()
 // one each prepare, poll and read or cancel.
 void RenderState::readEvents()
 {
-    const int fd = wl_display_get_fd(wlDisplay);
+    // without Wayland (a window without the handles, X11) the fences alone:
+    // the copies' fences go nowhere else, and Released waits for them
+    const int fd = wlDisplay ? wl_display_get_fd(wlDisplay) : -1;
     while (!stopReader) {
-        {
-            std::lock_guard g(lock);
-            while (wl_display_prepare_read_queue(wlDisplay, queue) != 0) {
-                wl_display_dispatch_queue_pending(wlDisplay, queue);
+        if (wlDisplay) {
+            {
+                std::lock_guard g(lock);
+                while (wl_display_prepare_read_queue(wlDisplay, queue) != 0) {
+                    wl_display_dispatch_queue_pending(wlDisplay, queue);
+                }
             }
+            wl_display_flush(wlDisplay);
         }
-        wl_display_flush(wlDisplay);
-        // and the read fences of released guest buffers (zero copy)
-        std::vector<pollfd> pfds{{fd, POLLIN, 0}};
+        // and the read fences of released guest buffers (zero copy), and the
+        // wake-up when one is queued: polled at once, not at the next event
+        std::vector<pollfd> pfds{{fd, POLLIN, 0}, {wakeFd, POLLIN, 0}};
         std::vector<std::pair<int, uint64_t>> pending;
         {
             std::lock_guard g(lock);
@@ -514,21 +527,29 @@ void RenderState::readEvents()
             pfds.push_back({sfd, POLLIN, 0});
         }
         int r = poll(pfds.data(), pfds.size(), 100);
-        if (r > 0 && (pfds[0].revents & POLLIN)) {
-            wl_display_read_events(wlDisplay);
-        } else {
-            wl_display_cancel_read(wlDisplay);
+        if (wlDisplay) {
+            if (r > 0 && (pfds[0].revents & POLLIN)) {
+                wl_display_read_events(wlDisplay);
+            } else {
+                wl_display_cancel_read(wlDisplay);
+            }
+        }
+        if (pfds[1].revents & POLLIN) {
+            eventfd_t n;
+            eventfd_read(wakeFd, &n);
         }
         std::lock_guard g(lock);
-        for (size_t k = 1; k < pfds.size(); k++) {
+        for (size_t k = 2; k < pfds.size(); k++) {
             if (pfds[k].revents & (POLLIN | POLLERR | POLLHUP | POLLNVAL)) {
-                const uint64_t inode = pending[k - 1].second;
-                std::erase(pendingReads, pending[k - 1]);
+                const uint64_t inode = pending[k - 2].second;
+                std::erase(pendingReads, pending[k - 2]);
                 close(pfds[k].fd);
                 released(inode);
             }
         }
-        wl_display_dispatch_queue_pending(wlDisplay, queue);
+        if (wlDisplay) {
+            wl_display_dispatch_queue_pending(wlDisplay, queue);
+        }
     }
 }
 
@@ -589,14 +610,33 @@ void RenderState::initWayland(wl_display *display)
     } else if (clockId != CLOCK_MONOTONIC) {
         qWarning("compositor presentation clock %u is not CLOCK_MONOTONIC", clockId);
     }
+    startReader();
+}
+
+void RenderState::startReader()
+{
+    if (reader.joinable()) {
+        return;
+    }
+    if (wakeFd < 0) {
+        wakeFd = eventfd(0, EFD_CLOEXEC | EFD_NONBLOCK);
+    }
     stopReader = false;
     reader = std::thread([this] { readEvents(); });
+}
+
+void RenderState::wakeReader()
+{
+    if (wakeFd >= 0) {
+        eventfd_write(wakeFd, 1);
+    }
 }
 
 void RenderState::stopReaderThread()
 {
     if (reader.joinable()) {
         stopReader = true;
+        wakeReader();
         reader.join();
     }
 }
@@ -621,6 +661,10 @@ void RenderState::finiWayland()
     if (queue) {
         wl_event_queue_destroy(queue);
         queue = nullptr;
+    }
+    if (wakeFd >= 0) {
+        close(wakeFd);
+        wakeFd = -1;
     }
 }
 
@@ -965,6 +1009,10 @@ void Renderer::run()
                 own.reset();
             }
         }
+    }
+    // the fences of the copies of buffers QEMU holds, without Wayland too
+    if (st.zcSupported) {
+        st.startReader();
     }
     EGLDisplay eglDpy = st.dpy;
 

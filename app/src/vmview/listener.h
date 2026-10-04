@@ -14,6 +14,7 @@
 #include <functional>
 #include <thread>
 
+typedef struct _GCancellable GCancellable;
 typedef struct _GMainContext GMainContext;
 typedef struct _GMainLoop GMainLoop;
 typedef struct _GDBusConnection GDBusConnection;
@@ -54,6 +55,7 @@ private:
     std::thread m_thread;
     GMainContext *m_ctx = nullptr;
     GMainLoop *m_loop = nullptr;
+    GCancellable *m_cancel = nullptr; // the connection's handshake, by stop()
     GDBusConnection *m_conn = nullptr;
     uint64_t m_serial = 0;
     uint32_t m_lastW = 0, m_lastH = 0;

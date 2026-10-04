@@ -123,11 +123,10 @@ public:
                 g_dbus_method_invocation_return_dbus_error(inv, "org.qemu.Error", "gone");
             }
             m_held.clear();
-            for (GDBusConnection *conn : {m_listener.load(), m_conn}) {
-                if (conn) {
-                    g_dbus_connection_close_sync(conn, nullptr, nullptr);
-                    g_object_unref(conn);
-                }
+            for (GDBusConnection *conn : std::exchange(m_open, {})) {
+                g_signal_handlers_disconnect_by_data(conn, this);
+                g_dbus_connection_close_sync(conn, nullptr, nullptr);
+                g_object_unref(conn);
             }
             while (g_main_context_iteration(m_ctx, FALSE)) {
             }
@@ -178,6 +177,8 @@ public:
     int answered() const { return m_answered; }
     /* The view's listener is registered and connected */
     bool listening() const { return m_listener.load() != nullptr; }
+    /* How many listeners connected so far */
+    int listeners() const { return m_listeners; }
     /* A guest buffer (any file will do: its inode is the token) as the scanout */
     void scanout(int fd, uint32_t width, uint32_t height)
     {
@@ -298,6 +299,7 @@ private:
                 auto *d = static_cast<FakeDisplay *>(self);
                 d->m_conn = g_dbus_connection_new_finish(res, nullptr);
                 if (d->m_conn) {
+                    d->keep(d->m_conn);
                     d->registerObjects();
                     g_dbus_connection_start_message_processing(d->m_conn);
                 }
@@ -305,6 +307,24 @@ private:
             delete peer;
             return G_SOURCE_REMOVE;
         }, new Peer{this, fd});
+    }
+
+    /* Until the view closes it, as QEMU keeps a client's connections */
+    void keep(GDBusConnection *conn)
+    {
+        m_open.push_back(conn);
+        g_signal_connect(conn, "closed",
+                         G_CALLBACK(+[](GDBusConnection *c, gboolean, GError *, gpointer self) {
+            auto *d = static_cast<FakeDisplay *>(self);
+            std::erase(d->m_open, c);
+            GDBusConnection *current = c;
+            d->m_listener.compare_exchange_strong(current, nullptr);
+            if (d->m_conn == c) {
+                d->m_conn = nullptr;
+            }
+            g_signal_handlers_disconnect_by_data(c, self);
+            g_object_unref(c);
+        }), this);
     }
 
     void registerObjects()
@@ -339,7 +359,10 @@ private:
             auto *conn = G_DBUS_CONNECTION(source);
             if (GVariant *ret = g_dbus_connection_call_finish(conn, res, nullptr)) {
                 g_variant_unref(ret);
-                static_cast<FakeDisplay *>(self)->m_listener = conn;
+                auto *d = static_cast<FakeDisplay *>(self);
+                d->keep(conn);
+                d->m_listener = conn;
+                d->m_listeners++;
             } else {
                 g_object_unref(conn);
             }
@@ -409,6 +432,8 @@ private:
     GMainLoop *m_loop;
     GDBusConnection *m_conn = nullptr;              // bus thread
     std::atomic<GDBusConnection *> m_listener{nullptr};
+    std::atomic<int> m_listeners{0};
+    std::vector<GDBusConnection *> m_open;          // bus thread
     std::vector<GDBusMethodInvocation *> m_held;    // bus thread
     mutable std::mutex m_lock;
     QStringList m_calls;
@@ -738,6 +763,61 @@ private Q_SLOTS:
         QTRY_COMPARE(qemu.callsTo("UIInfo.Apply").size(), 3);
         QCOMPARE(applied.size(), 1);
         delete view;
+    }
+
+    /*
+     * A view attached and detached while QEMU runs leaves no file behind:
+     * each listener stopped while QEMU was connected kept an eventfd (its
+     * GLib context, which the closed connection's queued signal held), and
+     * vitrine runs for days with the views of VMs coming and going
+     */
+    void noFdsLeft()
+    {
+        FakeDisplay qemu(socketPath());
+        auto open = []() {
+            return QDir("/proc/self/fd").entryList(QDir::System | QDir::Files |
+                                                   QDir::NoDotAndDotDot).size();
+        };
+        int attached = 0;
+        auto cycle = [&]() {
+            auto *view = new VmView;
+            QString error;
+            QVERIFY2(view->attach(socketPath(), &error), qPrintable(error));
+            const int expected = ++attached;
+            QTRY_COMPARE(qemu.listeners(), expected);
+            delete view;
+            QTest::qWait(50);
+        };
+        cycle();    // what stays for good (GLib's worker, Qt's)
+        const qsizetype before = open();
+        for (int i = 0; i < 5; i++) {
+            cycle();
+        }
+        if (open() != before) {
+            /* which, for the log */
+            for (const QFileInfo &fd : QDir("/proc/self/fd").entryInfoList(
+                     QDir::System | QDir::Files | QDir::NoDotAndDotDot)) {
+                qWarning("fd %s -> %s", qPrintable(fd.fileName()), qPrintable(fd.symLinkTarget()));
+            }
+        }
+        QCOMPARE(open(), before);
+    }
+
+    /*
+     * A view taken down as soon as it attached (its VM stopped at once):
+     * its listener's thread may still be in its handshake with QEMU, where
+     * the quit of Listener::stop() was lost and the join waited for ever
+     */
+    void deleteRightAfterAttach()
+    {
+        FakeDisplay qemu(socketPath());
+        for (int i = 0; i < 5; i++) {
+            auto *view = new VmView;
+            QString error;
+            QVERIFY2(view->attach(socketPath(), &error), qPrintable(error));
+            delete view;
+        }
+        QTest::qWait(100);
     }
 
     /* The view shares the clipboard on its connection; it may go before
