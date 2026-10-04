@@ -56,8 +56,15 @@ static QByteArray od(int min, int max, int lo = 800, int hi = 2700)
 class FakeQemu
 {
 public:
-    FakeQemu(const QString &program = FAKE_QEMU)
+    FakeQemu(const QString &program = FAKE_QEMU, const QStringList &extraEnv = {})
     {
+        if (!extraEnv.isEmpty()) {
+            QProcessEnvironment env = QProcessEnvironment::systemEnvironment();
+            for (const QString &e : extraEnv) {
+                env.insert(e.section('=', 0, 0), e.section('=', 1));
+            }
+            m_process.setProcessEnvironment(env);
+        }
         m_process.start(program, program.endsWith("sleep") ? QStringList{"300"} : QStringList{});
         m_process.waitForStarted();
         /* its threads */
@@ -1675,6 +1682,74 @@ private slots:
         for (const QString &tid : tids) {
             QVERIFY(journal().contains("sched " + tid + " other 0"));
         }
+    }
+
+    /*
+     * A real-time time limit on the QEMU - PipeWire's module-rt sets RTKit's
+     * 200 ms for QEMU's whole process when RTKit gives its audio thread
+     * real-time - goes before any thread is made real-time: the kernel would
+     * SIGKILL QEMU the first time a vCPU runs that long without sleeping.
+     * Never put back: behind and the release leave it as rt made it.
+     */
+    void rtLiftsRealtimeTimeLimit()
+    {
+        FakeQemu qemu(FAKE_QEMU, {"FAKE_QEMU_RTTIME=200000"});
+        QTRY_VERIFY(QString::fromLatin1(readFile(QString("/proc/%1/limits").arg(qemu.pid())))
+                        .contains(QRegularExpression("Max realtime timeout +200000 +200000 ")));
+        Helper h(m_root);
+        QVERIFY(h.ready());
+        h.answer("watch " + qemu.pidText());
+        QVERIFY(h.answer("fair-server on").startsWith("ok fair-server on"));
+        clearJournal();
+        QCOMPARE(h.answer("rt " + qemu.pidText()),
+                 QString("ok rt %1: 4 of 4 threads real-time").arg(qemu.pid()));
+        const QStringList j = journal();
+        const qsizetype lifted =
+            j.indexOf(QString("rttime %1 unlimited unlimited").arg(qemu.pid()));
+        QVERIFY2(lifted >= 0, qPrintable(j.join('\n')));
+        const QStringList fifo = j.filter(QRegularExpression("^sched \\d+ fifo 1$"));
+        QCOMPARE(fifo.size(), 4);
+        QVERIFY(lifted < j.indexOf(fifo.first()));
+        QVERIFY(!j.filter(QString("log uid %1: real-time time limit of pid %2 lifted (soft "
+                                  "200000 us, hard 200000 us)")
+                              .arg(getuid()).arg(qemu.pid())).isEmpty());
+        /* lifted already: nothing to do the next time */
+        clearJournal();
+        QVERIFY(h.answer("behind " + qemu.pidText()).startsWith("ok behind "));
+        QVERIFY(h.answer("rt " + qemu.pidText()).startsWith("ok rt "));
+        QVERIFY(journal().filter("rttime ").isEmpty());
+        h.ask("release");
+        QVERIFY(h.finished());
+        QVERIFY(journal().filter("rttime ").isEmpty());
+    }
+
+    /* A limit that cannot be lifted: no thread is made real-time */
+    void rtWithoutLiftNoRealtime()
+    {
+        FakeQemu qemu(FAKE_QEMU, {"FAKE_QEMU_RTTIME=200000"});
+        writeFile(path("/rttime.refuse"), "");
+        Helper h(m_root);
+        QVERIFY(h.ready());
+        h.answer("watch " + qemu.pidText());
+        QVERIFY(h.answer("fair-server on").startsWith("ok fair-server on"));
+        QCOMPARE(h.answer("rt " + qemu.pidText()),
+                 QString("error rt %1: its real-time time limit cannot be lifted, which would "
+                         "end it: Operation not permitted")
+                     .arg(qemu.pid()));
+        QVERIFY(journal().filter("sched ").isEmpty());
+        QVERIFY(!QFile::exists(path("/run/vitrine-helper/sched-" + qemu.pidText() + ".state")));
+    }
+
+    /* A QEMU without one (as vitrine starts it): nothing to lift */
+    void rtWithoutTimeLimit()
+    {
+        FakeQemu qemu;
+        Helper h(m_root);
+        QVERIFY(h.ready());
+        h.answer("watch " + qemu.pidText());
+        QVERIFY(h.answer("fair-server on").startsWith("ok fair-server on"));
+        QVERIFY(h.answer("rt " + qemu.pidText()).startsWith("ok rt "));
+        QVERIFY(journal().filter("rttime ").isEmpty());
     }
 
     /* A QEMU that has exec'ed another program since watch: no rt for it */

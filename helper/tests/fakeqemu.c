@@ -3,7 +3,10 @@
  * A stand-in for QEMU in the tests: named qemu-system-x86_64, a few idle
  * threads - two named as QEMU names its vCPUs with debug-threads=on, "CPU
  * 0/KVM" and "CPU 1/KVM" - runs until signalled or until its stdin ends;
- * SIGUSR1 makes it exec sleep, a program that is no QEMU.
+ * SIGUSR1 makes it exec sleep, a program that is no QEMU.  With
+ * FAKE_QEMU_RTTIME=US, it sets its own real-time time limit (RLIMIT_RTTIME)
+ * to US first, as PipeWire's module-rt does in QEMU when RTKit gives its
+ * audio thread real-time.
  *
  * Its stdin is the pipe of the test's QProcess, whose write end only the
  * test holds: it ends when the test does, crash included, where the
@@ -14,7 +17,9 @@
 #include <errno.h>
 #include <pthread.h>
 #include <stdio.h>
+#include <stdlib.h>
 #include <signal.h>
+#include <sys/resource.h>
 #include <unistd.h>
 
 static void become_sleep(int sig)
@@ -34,10 +39,17 @@ static void *idle(void *arg)
 
 int main(void)
 {
+    const char *rttime = getenv("FAKE_QEMU_RTTIME");
     pthread_t t;
     ssize_t n;
     char c;
 
+    if (rttime) {
+        const rlim_t us = (rlim_t)strtoull(rttime, NULL, 10);
+        const struct rlimit limit = {.rlim_cur = us, .rlim_max = us};
+
+        setrlimit(RLIMIT_RTTIME, &limit);
+    }
     signal(SIGUSR1, become_sleep);
     for (int i = 0; i < 3; i++) {
         char name[16];

@@ -408,6 +408,55 @@ static bool still_qemu(struct watched *w)
            pidfd_alive(w->pidfd);
 }
 
+/* A limit as the log says it */
+static const char *rttime_text(rlim_t v, char *buf, size_t size)
+{
+    if (v == RLIM_INFINITY) {
+        return "none";
+    }
+    snprintf(buf, size, "%llu us", (unsigned long long)v);
+    return buf;
+}
+
+/*
+ * No real-time time limit (RLIMIT_RTTIME) on the process, before any of its
+ * threads is made real-time: with one, the kernel SIGKILLs the whole process
+ * once a real-time thread of it runs that long without sleeping - a vCPU
+ * does whenever the guest is busy - and QEMU ends without a word.  Libraries
+ * set one for a real-time thread of their own: PipeWire's module-rt, for
+ * its audio thread when it gets real-time from RTKit or the realtime portal
+ * (QEMU has no CAP_SYS_NICE), sets RTKit's RTTimeUSecMax, 200 ms, for all of
+ * QEMU.  What keeps real-time threads from starving the host is the fair
+ * server's bound.  Lifted for the process's lifetime, never put back: the
+ * real-time threads kept (a library's own) then run as they did in a QEMU
+ * with CAP_SYS_NICE, where PipeWire sets no limit.  Read back.  0 or -errno.
+ */
+static int rttime_lift(struct watched *w)
+{
+    char was_soft[32], was_hard[32];
+    rlim_t soft, hard, s, h;
+    int err;
+
+    if ((err = sys_getrttime(w->pid, &soft, &hard)) < 0) {
+        return err;
+    }
+    if (soft == RLIM_INFINITY && hard == RLIM_INFINITY) {
+        return 0;
+    }
+    if ((err = sys_setrttime(w->pid, RLIM_INFINITY, RLIM_INFINITY)) < 0 ||
+        (err = sys_getrttime(w->pid, &s, &h)) < 0) {
+        return err;
+    }
+    if (s != RLIM_INFINITY || h != RLIM_INFINITY) {
+        return -EIO;
+    }
+    sys_log("uid %u: real-time time limit of pid %d lifted (soft %s, hard %s): its threads "
+            "are made real-time",
+            (unsigned)caller_uid, (int)w->pid, rttime_text(soft, was_soft, sizeof(was_soft)),
+            rttime_text(hard, was_hard, sizeof(was_hard)));
+    return 0;
+}
+
 /*
  * SCHED_FIFO 1 on every thread: the VM in front.  Threads started later
  * inherit it: Linux gives a new thread its creator's policy, and
@@ -418,14 +467,15 @@ static bool still_qemu(struct watched *w)
  * real-time before (QEMU's or a library's choice) stay as they are, now
  * and when put back.  And only with the fair server's bound in place,
  * without which a real-time vCPU that spins keeps kernel workers off its
- * CPU for up to 950 ms.
+ * CPU for up to 950 ms, and without a real-time time limit on the process
+ * (rttime_lift), which would end QEMU the first time the guest is busy.
  */
 void rt_on(const char *arg)
 {
     struct watched *w = find_watched(arg);
     struct pass changes = {0}, total = {0};
     const char *why;
-    int passes;
+    int passes, err;
 
     if (!w) {
         reply("error rt: watch the process first");
@@ -437,6 +487,11 @@ void rt_on(const char *arg)
     }
     if (!settings_bound(&why)) {
         reply("skip rt %d: the fair server is not set: %s", (int)w->pid, why);
+        return;
+    }
+    if ((err = rttime_lift(w)) < 0) {
+        reply("error rt %d: its real-time time limit cannot be lifted, which would end it: %s",
+              (int)w->pid, strerror(-err));
         return;
     }
     if (!w->rt_once) {

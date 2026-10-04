@@ -8,6 +8,7 @@
 
 #include <stdbool.h>
 #include <stddef.h>
+#include <sys/resource.h>
 #include <sys/types.h>
 
 /* The protocol's version, in the "ready" line */
@@ -66,6 +67,13 @@ int sys_setsched(pid_t tid, int policy, int priority);
 /* A thread's nice value: 0 or -errno */
 int sys_getnice(pid_t tid, int *nice);
 int sys_setnice(pid_t tid, int nice);
+/*
+ * A process's real-time time limit (RLIMIT_RTTIME, in us, RLIM_INFINITY for
+ * none): how long a real-time thread of it may run without sleeping before
+ * the kernel kills the process.  0 or -errno.
+ */
+int sys_getrttime(pid_t pid, rlim_t *soft, rlim_t *hard);
+int sys_setrttime(pid_t pid, rlim_t soft, rlim_t hard);
 /* An entry in the system log (the journal), for the record of what root did */
 void sys_log(const char *fmt, ...) __attribute__((format(printf, 1, 2)));
 /* The group @name in the user database: 1 with its gid in @gid, 0 if there
