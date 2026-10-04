@@ -6,6 +6,7 @@
 #include "listener.h"
 #include "qmp.h"
 #include "renderer.h"
+#include "viewsurface.h"
 #include "vmclipboard.h"
 #include "waylandextras.h"
 
@@ -118,6 +119,20 @@ VmView::VmView(QObject *parent) : QObject(parent)
     m_undrawn = new QTimer(this);
     m_undrawn->setInterval(50);
     connect(m_undrawn, &QTimer::timeout, this, &VmView::releaseUndrawn);
+    /* a move to another screen changes the screen, the pixel ratio and the
+       size at once: one UIInfo for them, and the guest's cursor at the new
+       pixel ratio */
+    m_uiInfo = new QTimer(this);
+    m_uiInfo->setSingleShot(true);
+    m_uiInfo->setInterval(100);
+    connect(m_uiInfo, &QTimer::timeout, this, [this]() {
+        if (m_window) {
+            m_window->sendUiInfo();
+            if (!m_cursor.isNull()) {
+                m_window->setGuestCursor(m_cursor, m_cursorHotX, m_cursorHotY);
+            }
+        }
+    });
 }
 
 VmView::~VmView()
@@ -126,7 +141,7 @@ VmView::~VmView()
     delete m_host;
 }
 
-bool VmView::attach(const QString &monitorSocket, QString *error)
+bool VmView::attach(const QString &monitorSocket, QString *error, bool guestWaits)
 {
     if (m_dbus) {
         return true;
@@ -225,7 +240,12 @@ bool VmView::attach(const QString &monitorSocket, QString *error)
         detach();
         return false;
     }
-    m_window->sendUiInfo();
+    connect(m_dbus, &DBusDisplay::uiInfoApplied, this, [this]() {
+        if (!std::exchange(m_uiInfoApplied, true)) {
+            Q_EMIT screenInfoApplied();
+        }
+    });
+    sendFirstUiInfo(guestWaits);
     /*
      * Last: QEMU reads the clipboard object's properties as it takes the
      * Register, with its main loop stopped until this thread answers them,
@@ -250,6 +270,8 @@ void VmView::detach()
     /* before the connection closes: QEMU's calls to it end here */
     delete std::exchange(m_clipboard, nullptr);
     if (m_dbus) {
+        /* the answers of its calls still to come are not the view's */
+        disconnect(m_dbus, nullptr, this, nullptr);
         retire(std::exchange(m_dbus, nullptr), std::move(m_stats));
     }
     if (m_wayland) {
@@ -297,6 +319,11 @@ void VmView::createWindow(bool fullScreen)
     m_opts.toplevel = fullScreen;
     m_opts.fullscreen = fullScreen;
     m_window = new DisplayWindow(m_dbus, m_wayland, m_opts);
+    /* the frames on a surface of their own, which Qt does not touch (Wayland;
+       elsewhere they go to the window's own, as the research client has them) */
+    if (m_wayland) {
+        m_surface = ViewSurface::create(m_window);
+    }
     if (!m_guestSize.isEmpty()) {
         m_window->setGuestSize(uint32_t(m_guestSize.width()), uint32_t(m_guestSize.height()));
     }
@@ -305,12 +332,21 @@ void VmView::createWindow(bool fullScreen)
     }
     m_window->setGuestCursorVisible(m_cursorVisible);
     connect(m_window, &DisplayWindow::grabChanged, this, &VmView::checkGrab);
-    /* the grab its keys and clicks take, and in full screen its closing */
+    /* the guest's mode follows the window's size (DisplayWindow), and its
+       screen: the refresh rate and the pixel ratio (event filter) */
+    connect(m_window, &QWindow::screenChanged, this, &VmView::screenChanged);
+    watchScreen();
+    /* its first expose, and the grab its keys and clicks take */
     m_window->installEventFilter(this);
     /* queued: Ctrl+Alt+F comes from the window's own key handler, and the
        switch deletes the window */
     connect(m_window, &DisplayWindow::fullScreenToggled, this,
             [this]() { setFullScreen(!m_fullScreen); }, Qt::QueuedConnection);
+    /* the full-screen window closed by the desktop, e.g. from the task bar
+       (the window ignores the close, which would take the app down): back
+       to the widget, queued as above */
+    connect(m_window, &DisplayWindow::closeRequested, this,
+            [this]() { setFullScreen(false); }, Qt::QueuedConnection);
 
     if (fullScreen) {
         m_window->setTitle(m_dbus->vmName());
@@ -335,6 +371,7 @@ void VmView::createWindow(bool fullScreen)
 
     m_renderer = new Renderer(m_window, &m_mailbox, m_stats.get(), m_opts);
     m_renderer->setObjectName(QStringLiteral("render"));   // the thread's name in /proc
+    m_renderer->setRenderTarget(m_surface);
     m_renderer->setPresentationSink(m_dbus->connection(), m_dbus->consolePath().toUtf8());
     connect(m_renderer, &Renderer::failed, this,
             [this, renderer = m_renderer](const QString &message) {
@@ -370,16 +407,25 @@ void VmView::createWindow(bool fullScreen)
 void VmView::destroyWindow()
 {
     m_undrawn->stop();
+    m_uiInfo->stop();
+    disconnect(m_refreshWatch);
     if (m_window) {
         /* key releases to the guest, and the desktop's shortcuts back */
         m_window->setHostActive(false);
     }
     if (m_renderer) {
-        /* before its window: it draws into it */
+        /* before its window: it draws into it.  The window forgets it first:
+           its destruction hides it, and the expose that follows went to the
+           deleted renderer */
+        if (m_window) {
+            m_window->setRenderer(nullptr);
+        }
         m_renderer->stop();
         delete m_renderer;
         m_renderer = nullptr;
     }
+    /* once the render thread is done with it, before the window it is on */
+    delete std::exchange(m_surface, nullptr);
     /*
      * Out of reach before they go: ~QWindowContainer deletes the window
      * first, then ~QWidget clears the focus, which sends the container
@@ -467,6 +513,10 @@ void VmView::setInputEnabled(bool on)
         /* off: the keys held go up and the grab goes, as when the window
            loses the keyboard - Ctrl+Alt+G could not release it now */
         updateHostActive();
+        /* what the window says of the keyboard follows it (the state's
+           change may have been told before the view took it, as when a
+           guest paused for its screen starts) */
+        Q_EMIT grabChanged();
     }
 }
 
@@ -525,20 +575,13 @@ bool VmView::eventFilter(QObject *watched, QEvent *event)
                 }
             }
             break;
-        case QEvent::Close:
-            if (!m_fullScreen) {
-                break;
-            }
-            /* closed by the desktop, e.g. from the task bar: back to the widget,
-               not from the window's own event handler, which the switch deletes */
-            event->ignore();
-            QMetaObject::invokeMethod(this, [this]() { setFullScreen(false); },
-                                      Qt::QueuedConnection);
-            return true;
         case QEvent::KeyPress:
         case QEvent::MouseButtonPress:
             /* once the window has handled it */
             QMetaObject::invokeMethod(this, &VmView::checkGrab, Qt::QueuedConnection);
+            break;
+        case QEvent::DevicePixelRatioChange:
+            screenChanged();
             break;
         default:
             break;
@@ -611,6 +654,50 @@ void VmView::releaseUndrawn()
     }
     for (const auto &[invocation, received] : deferred) {
         g_dbus_method_invocation_return_value(invocation, nullptr);
+    }
+}
+
+/*
+ * The guest's screen before the window has a size, which it has once the
+ * layout gets to it: a guest started paused for it (VmRunner::
+ * waitsForDisplay) waits for QEMU's answer, and has the host's refresh rate
+ * from its first frame on.  Until the window has a size of its own, which
+ * it sends then, the window around the view's: the guest reads the size
+ * only when its driver starts, seconds later.  A guest that runs keeps its
+ * mode until the window has a size.
+ */
+void VmView::sendFirstUiInfo(bool guestWaits)
+{
+    const QWidget *top = m_host->window();
+    const QScreen *screen = top->screen();
+    const QSize size = top->size() * top->devicePixelRatio();
+
+    if (!guestWaits || !m_window->physicalSize().isEmpty() || size.isEmpty()) {
+        m_window->sendUiInfo();
+        return;
+    }
+    m_dbus->applyUiInfo(uint32_t(size.width()), uint32_t(size.height()),
+                        uint32_t(qRound((screen ? screen->refreshRate() : 60.0) * 1000)), 0, 0);
+}
+
+/*
+ * The window's screen, its refresh rate or its pixel ratio changed, as when
+ * the window moves to another monitor: the guest's mode and refresh rate
+ * follow, which a size in logical pixels that stays the same would not tell
+ * DisplayWindow (qt-client.md F13)
+ */
+void VmView::screenChanged()
+{
+    watchScreen();
+    m_uiInfo->start();
+}
+
+void VmView::watchScreen()
+{
+    disconnect(m_refreshWatch);
+    if (QScreen *screen = m_window ? m_window->screen() : nullptr) {
+        m_refreshWatch = connect(screen, &QScreen::refreshRateChanged, this,
+                                 &VmView::screenChanged);
     }
 }
 

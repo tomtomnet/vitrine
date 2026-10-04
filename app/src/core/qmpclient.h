@@ -31,6 +31,8 @@ public:
     /* Queued until ready; the callback gets an error if the connection drops */
     void execute(const QString &command, const QJsonObject &arguments = {},
                  Callback callback = {});
+    /* What was sent goes out now, not from the event loop: before the client goes */
+    void flush();
 
 signals:
     void ready();

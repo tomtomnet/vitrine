@@ -22,6 +22,7 @@
 #include <mutex>
 #include <poll.h>
 #include <thread>
+#include <sys/eventfd.h>
 #include <sys/ioctl.h>
 #include <sys/stat.h>
 #include <linux/dma-buf.h>
@@ -125,6 +126,9 @@ public:
     bool init(QOpenGLContext *ctx, QString *err);
     void initWaylandQueue(wl_display *display);
     void initWayland(wl_display *display);
+    // the reader thread, with or without Wayland: the read fences need it
+    void startReader();
+    void wakeReader();
     void stopReaderThread();
     void finiWayland();
     // Returns the framebuffer to blit from; sets imported when a new EGLImage was made.
@@ -165,6 +169,7 @@ public:
     std::mutex lock;
     std::thread reader;
     std::atomic<bool> stopReader{false};
+    int wakeFd = -1;    // eventfd: a fence to poll, or the end (wakeReader)
     wl_surface *surfaceWrapper = nullptr; // the window's surface, on our queue
     wl_surface *wrappedSurface = nullptr;
     Swapchain *swapchain = nullptr; // the window's own buffers (its globals on our queue)
@@ -239,11 +244,14 @@ const wp_presentation_listener kPresentationListener = {
 };
 
 const wl_registry_listener kRegistryListener = {
-    [](void *data, wl_registry *reg, uint32_t name, const char *iface, uint32_t) {
+    [](void *data, wl_registry *reg, uint32_t name, const char *iface, uint32_t version) {
         auto *s = static_cast<RenderState *>(data);
         if (strcmp(iface, wp_presentation_interface.name) == 0) {
-            s->presentation = static_cast<wp_presentation *>(
-                wl_registry_bind(reg, name, &wp_presentation_interface, 1));
+            // version 2 when there is one: under a variable refresh rate a
+            // version 1 client gets refresh 0, so QEMU keeps its default
+            s->presentation = static_cast<wp_presentation *>(wl_registry_bind(
+                reg, name, &wp_presentation_interface,
+                std::min(version, uint32_t(wp_presentation_interface.version))));
             wp_presentation_add_listener(s->presentation, &kPresentationListener, s);
         } else if (strcmp(iface, zwp_linux_dmabuf_v1_interface.name) == 0) {
             if (s->swapchain) {
@@ -340,6 +348,7 @@ void RenderState::guestReleased(GuestBuffer *g)
         pollfd pfd = {arg.fd, POLLIN, 0};
         if (poll(&pfd, 1, 0) != 1) {
             pendingReads.emplace_back(arg.fd, g->inode); // the reader thread polls it
+            wakeReader();
             return;
         }
         close(arg.fd);
@@ -350,7 +359,8 @@ void RenderState::guestReleased(GuestBuffer *g)
 // After our copy of the buffer: once the GL work queued so far is done
 void RenderState::releaseAfterGpu(uint64_t inode)
 {
-    if (createSync && dupFenceFd && destroySync) {
+    // the fence's fd only for a thread that polls it: else a GPU wait
+    if (createSync && dupFenceFd && destroySync && reader.joinable()) {
         const EGLint attrs[] = {EGL_SYNC_NATIVE_FENCE_FD_ANDROID, EGL_NO_NATIVE_FENCE_FD_ANDROID,
                                 EGL_NONE};
         EGLSyncKHR sync = createSync(dpy, EGL_SYNC_NATIVE_FENCE_ANDROID, attrs);
@@ -361,6 +371,7 @@ void RenderState::releaseAfterGpu(uint64_t inode)
             if (fd >= 0) {
                 std::lock_guard g(lock);
                 pendingReads.emplace_back(fd, inode);
+                wakeReader();
                 return;
             }
         }
@@ -491,17 +502,22 @@ void RenderState::destroyGuests()
 // one each prepare, poll and read or cancel.
 void RenderState::readEvents()
 {
-    const int fd = wl_display_get_fd(wlDisplay);
+    // without Wayland (a window without the handles, X11) the fences alone:
+    // the copies' fences go nowhere else, and Released waits for them
+    const int fd = wlDisplay ? wl_display_get_fd(wlDisplay) : -1;
     while (!stopReader) {
-        {
-            std::lock_guard g(lock);
-            while (wl_display_prepare_read_queue(wlDisplay, queue) != 0) {
-                wl_display_dispatch_queue_pending(wlDisplay, queue);
+        if (wlDisplay) {
+            {
+                std::lock_guard g(lock);
+                while (wl_display_prepare_read_queue(wlDisplay, queue) != 0) {
+                    wl_display_dispatch_queue_pending(wlDisplay, queue);
+                }
             }
+            wl_display_flush(wlDisplay);
         }
-        wl_display_flush(wlDisplay);
-        // and the read fences of released guest buffers (zero copy)
-        std::vector<pollfd> pfds{{fd, POLLIN, 0}};
+        // and the read fences of released guest buffers (zero copy), and the
+        // wake-up when one is queued: polled at once, not at the next event
+        std::vector<pollfd> pfds{{fd, POLLIN, 0}, {wakeFd, POLLIN, 0}};
         std::vector<std::pair<int, uint64_t>> pending;
         {
             std::lock_guard g(lock);
@@ -511,21 +527,29 @@ void RenderState::readEvents()
             pfds.push_back({sfd, POLLIN, 0});
         }
         int r = poll(pfds.data(), pfds.size(), 100);
-        if (r > 0 && (pfds[0].revents & POLLIN)) {
-            wl_display_read_events(wlDisplay);
-        } else {
-            wl_display_cancel_read(wlDisplay);
+        if (wlDisplay) {
+            if (r > 0 && (pfds[0].revents & POLLIN)) {
+                wl_display_read_events(wlDisplay);
+            } else {
+                wl_display_cancel_read(wlDisplay);
+            }
+        }
+        if (pfds[1].revents & POLLIN) {
+            eventfd_t n;
+            eventfd_read(wakeFd, &n);
         }
         std::lock_guard g(lock);
-        for (size_t k = 1; k < pfds.size(); k++) {
+        for (size_t k = 2; k < pfds.size(); k++) {
             if (pfds[k].revents & (POLLIN | POLLERR | POLLHUP | POLLNVAL)) {
-                const uint64_t inode = pending[k - 1].second;
-                std::erase(pendingReads, pending[k - 1]);
+                const uint64_t inode = pending[k - 2].second;
+                std::erase(pendingReads, pending[k - 2]);
                 close(pfds[k].fd);
                 released(inode);
             }
         }
-        wl_display_dispatch_queue_pending(wlDisplay, queue);
+        if (wlDisplay) {
+            wl_display_dispatch_queue_pending(wlDisplay, queue);
+        }
     }
 }
 
@@ -586,14 +610,33 @@ void RenderState::initWayland(wl_display *display)
     } else if (clockId != CLOCK_MONOTONIC) {
         qWarning("compositor presentation clock %u is not CLOCK_MONOTONIC", clockId);
     }
+    startReader();
+}
+
+void RenderState::startReader()
+{
+    if (reader.joinable()) {
+        return;
+    }
+    if (wakeFd < 0) {
+        wakeFd = eventfd(0, EFD_CLOEXEC | EFD_NONBLOCK);
+    }
     stopReader = false;
     reader = std::thread([this] { readEvents(); });
+}
+
+void RenderState::wakeReader()
+{
+    if (wakeFd >= 0) {
+        eventfd_write(wakeFd, 1);
+    }
 }
 
 void RenderState::stopReaderThread()
 {
     if (reader.joinable()) {
         stopReader = true;
+        wakeReader();
         reader.join();
     }
 }
@@ -618,6 +661,10 @@ void RenderState::finiWayland()
     if (queue) {
         wl_event_queue_destroy(queue);
         queue = nullptr;
+    }
+    if (wakeFd >= 0) {
+        close(wakeFd);
+        wakeFd = -1;
     }
 }
 
@@ -856,8 +903,20 @@ void Renderer::setExposed(bool exposed)
 
 void Renderer::setWayland(wl_display *display, wl_surface *surface)
 {
+    if (m_target) {
+        return; // the target's surface, not the window's
+    }
     m_wlDisplay = display;
     m_wlSurface = surface;
+}
+
+void Renderer::setRenderTarget(RenderTarget *target)
+{
+    m_target = target;
+    if (target) {
+        m_wlDisplay = target->display();
+        m_wlSurface = target->surface();
+    }
 }
 
 void Renderer::setPresentationSink(GDBusConnection *conn, const QByteArray &consolePath)
@@ -900,7 +959,11 @@ void Renderer::run()
         }
         m_mb->cond.wait_for(lk, std::chrono::milliseconds(20));
     }
-    if (!ctx.makeCurrent(m_window)) {
+    QSize targetSize; // with a target: the size of its surface
+    auto makeCurrent = [&] {
+        return m_target ? m_target->makeCurrent(&ctx, &targetSize) : ctx.makeCurrent(m_window);
+    };
+    if (!makeCurrent()) {
         Q_EMIT failed(QStringLiteral("cannot make the OpenGL context current"));
         return;
     }
@@ -946,6 +1009,10 @@ void Renderer::run()
                 own.reset();
             }
         }
+    }
+    // the fences of the copies of buffers QEMU holds, without Wayland too
+    if (st.zcSupported) {
+        st.startReader();
     }
     EGLDisplay eglDpy = st.dpy;
 
@@ -1004,12 +1071,17 @@ void Renderer::run()
         }
 
         if (redraw && m_exposed) {
-            ctx.makeCurrent(m_window);
+            makeCurrent();
             // the EGL surface size is authoritative (fractional scales round there)
             EGLint w = 0, h = 0;
-            EGLSurface surf = eglGetCurrentSurface(EGL_DRAW);
-            eglQuerySurface(eglDpy, surf, EGL_WIDTH, &w);
-            eglQuerySurface(eglDpy, surf, EGL_HEIGHT, &h);
+            if (m_target) {
+                w = targetSize.width();
+                h = targetSize.height();
+            } else {
+                EGLSurface surf = eglGetCurrentSurface(EGL_DRAW);
+                eglQuerySurface(eglDpy, surf, EGL_WIDTH, &w);
+                eglQuerySurface(eglDpy, surf, EGL_HEIGHT, &h);
+            }
             // zero copy: the guest's buffer itself, when it fills the view 1:1
             GuestBuffer *gb = nullptr;
             if (st.zcSupported && scanout && scanout->kind == Scanout::Dmabuf &&
@@ -1099,6 +1171,8 @@ void Renderer::run()
                     fprintf(stderr, "swapchain: the compositor %s the window\n",
                             sc ? "scans out (direct)" : "composites");
                 }
+            } else if (m_target) {
+                m_target->swapBuffers(&ctx);
             } else {
                 ctx.swapBuffers(m_window);
             }
@@ -1112,6 +1186,16 @@ void Renderer::run()
             }
             m_stats->frameDrawn(update != drawnUpdate ? recvNs : 0, t, imported);
             m_stats->trace('D', update, t);
+        }
+        // not shown: Qt's hide took the guest's buffer off the window's
+        // surface, nothing does off a target's - the compositor would keep it,
+        // and QEMU the guest's flushes of it until they time out
+        if (!m_exposed && m_target && st.attached) {
+            wl_surface_attach(m_wlSurface, nullptr, 0, 0);
+            wl_surface_commit(m_wlSurface);
+            wl_display_flush(m_wlDisplay);
+            std::lock_guard g(st.lock);
+            st.attached = nullptr; // released when the compositor lets it go
         }
         drawnUpdate = update;
         // zero copy: the buffers of the updates this pass did not show
@@ -1136,7 +1220,7 @@ void Renderer::run()
         }
         m_mb->deferredReplies.clear();
     }
-    ctx.makeCurrent(m_window);
+    makeCurrent();
     st.destroyCache();
     // the buffers' proxies go before the queue, with nobody reading it
     st.stopReaderThread();
@@ -1145,4 +1229,7 @@ void Renderer::run()
     own.reset();
     st.finiWayland();
     ctx.doneCurrent();
+    if (m_target) {
+        m_target->done(&ctx);
+    }
 }

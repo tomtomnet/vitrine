@@ -42,6 +42,11 @@ const zwp_locked_pointer_v1_listener kLocked = {
     [](void *data, zwp_locked_pointer_v1 *) { static_cast<WaylandExtras *>(data)->onLocked(false); },
 };
 
+const zwp_confined_pointer_v1_listener kConfined = {
+    [](void *data, zwp_confined_pointer_v1 *) { static_cast<WaylandExtras *>(data)->onConfined(true); },
+    [](void *data, zwp_confined_pointer_v1 *) { static_cast<WaylandExtras *>(data)->onConfined(false); },
+};
+
 const zwp_relative_pointer_v1_listener kRelative = {
     [](void *data, zwp_relative_pointer_v1 *, uint32_t, uint32_t, wl_fixed_t, wl_fixed_t,
        wl_fixed_t dxUnaccel, wl_fixed_t dyUnaccel) {
@@ -61,6 +66,9 @@ WaylandExtras::~WaylandExtras()
     }
     if (m_locked) {
         zwp_locked_pointer_v1_destroy(m_locked);
+    }
+    if (m_confined) {
+        zwp_confined_pointer_v1_destroy(m_confined);
     }
     if (m_inhibitor) {
         zwp_keyboard_shortcuts_inhibitor_v1_destroy(m_inhibitor);
@@ -144,7 +152,7 @@ bool WaylandExtras::setPointerLocked(QWindow *window, bool on)
     auto *app = qGuiApp->nativeInterface<QNativeInterface::QWaylandApplication>();
     m_pointer = app ? app->pointer() : m_pointer;
     wl_surface *surface = surfaceOf(window);
-    if (!hasPointerLock() || !surface || !m_pointer || m_locked) {
+    if (!hasPointerLock() || !surface || !m_pointer || m_locked || m_confined) {
         return m_locked;
     }
     m_locked = zwp_pointer_constraints_v1_lock_pointer(
@@ -154,5 +162,31 @@ bool WaylandExtras::setPointerLocked(QWindow *window, bool on)
     m_relative = zwp_relative_pointer_manager_v1_get_relative_pointer(m_relativeManager, m_pointer);
     zwp_relative_pointer_v1_add_listener(m_relative, &kRelative, this);
     wl_display_flush(m_display);
+    return true;
+}
+
+bool WaylandExtras::setPointerConfined(QWindow *window, bool on)
+{
+    if (!on) {
+        if (m_confined) {
+            zwp_confined_pointer_v1_destroy(m_confined);
+            m_confined = nullptr;
+            wl_display_flush(m_display);
+            onConfined(false);
+        }
+        return true;
+    }
+    auto *app = qGuiApp->nativeInterface<QNativeInterface::QWaylandApplication>();
+    m_pointer = app ? app->pointer() : m_pointer;
+    wl_surface *surface = surfaceOf(window);
+    if (!m_constraints || !surface || !m_pointer || m_confined || m_locked) {
+        return m_confined;
+    }
+    // no region: the surface's input region, the whole window
+    m_confined = zwp_pointer_constraints_v1_confine_pointer(
+        m_constraints, surface, m_pointer, nullptr,
+        ZWP_POINTER_CONSTRAINTS_V1_LIFETIME_PERSISTENT);
+    zwp_confined_pointer_v1_add_listener(m_confined, &kConfined, this);
+    wl_display_flush(m_display); // before the button press the user is about to make
     return true;
 }

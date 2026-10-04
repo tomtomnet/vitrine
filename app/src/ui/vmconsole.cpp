@@ -193,6 +193,7 @@ VmConsole::VmConsole(Vm *vm, QWidget *parent)
         connect(vm, &Vm::changed, this, &VmConsole::updateHome);
         connect(vm->runner(), &VmRunner::stateChanged, this, &VmConsole::update);
         connect(vm->runner(), &VmRunner::suspendedChanged, this, &VmConsole::update);
+        connect(vm->runner(), &VmRunner::waitsForDisplayChanged, this, &VmConsole::update);
     }
     update();
 }
@@ -264,9 +265,17 @@ void VmConsole::update()
         setPage(Page::Home);
         return;
     case VmRunner::State::Starting:
-        detach();
-        showMessage(tr("Starting…"), {});
-        return;
+        /*
+         * Paused for its screen (VmRunner::waitsForDisplay): the view
+         * attaches and tells QEMU the screen's size and refresh rate before
+         * the guest runs; a view up stays up until the guest runs
+         */
+        if (!runner->waitsForDisplay() && !m_view) {
+            detach();
+            showMessage(tr("Starting…"), {});
+            return;
+        }
+        break;
     case VmRunner::State::Running:
     case VmRunner::State::Paused:
         /* paused, the screen keeps its last frame: the list and the status
@@ -350,13 +359,17 @@ void VmConsole::attach()
     /* a new view each time: a failed attach leaves the view half set up */
     auto *view = new VmView(this);
     m_screenLayout->addWidget(view->widget(), 1);
-    if (!view->attach(socket, &error)) {
+    if (!view->attach(socket, &error, m_vm->runner()->waitsForDisplay())) {
         delete view;
         if (++m_attempts < kAttachTries) {
             showMessage(tr("Connecting to the screen…"), {});
             m_retry->start();
         } else {
             showMessage(tr("Cannot show the screen"), error, tr("&Try Again"));
+            /* no screen to wait for */
+            if (m_vm) {
+                m_vm->runner()->displayReady();
+            }
         }
         return;
     }
@@ -366,6 +379,12 @@ void VmConsole::attach()
     view->setInputEnabled(takesInput(m_vm->runner()));
     connect(view, &VmView::grabChanged, this, &VmConsole::changed);
     connect(view, &VmView::fullScreenChanged, this, &VmConsole::changed);
+    /* a guest paused for its screen runs once QEMU has the screen's size and refresh rate */
+    connect(view, &VmView::screenInfoApplied, this, [this]() {
+        if (m_vm) {
+            m_vm->runner()->displayReady();
+        }
+    });
     m_statsTimer->start();
     setPage(Page::Screen);
     emit changed();

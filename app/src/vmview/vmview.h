@@ -21,6 +21,7 @@ class DBusDisplay;
 class DisplayWindow;
 class Listener;
 class Renderer;
+class ViewSurface;
 class VmClipboard;
 class WaylandExtras;
 
@@ -48,7 +49,13 @@ public:
     /* Detaches */
     ~VmView() override;
 
-    bool attach(const QString &monitorSocket, QString *error);
+    /*
+     * @guestWaits: the guest waits, paused, for its screen (VmRunner::
+     * waitsForDisplay): QEMU gets a size and the refresh rate at once, the
+     * size of the window around the view until it has its own.  Else only
+     * once the view has a size: a running guest keeps its mode until then.
+     */
+    bool attach(const QString &monitorSocket, QString *error, bool guestWaits = false);
     bool isAttached() const;
 
     /* Where the screen shows, but in full screen; owned by the view */
@@ -81,9 +88,15 @@ public:
     QString vmName() const;
 
 Q_SIGNALS:
-    /* grabbed(), grabState() or hasKeyboard() changed */
+    /* grabbed(), grabState(), hasKeyboard() or inputEnabled() changed */
     void grabChanged();
     void fullScreenChanged(bool on);
+    /*
+     * QEMU answered the first size and refresh rate of the screen the view
+     * gave it for the guest (UIInfo.Apply), taken or refused: once per
+     * attach().  A guest paused until then may run (VmRunner::displayReady).
+     */
+    void screenInfoApplied();
 
 protected:
     bool eventFilter(QObject *watched, QEvent *event) override;
@@ -98,6 +111,11 @@ private:
     /* grabChanged() if the grab changed: DisplayWindow does not signal the
        grab it takes or leaves itself (Ctrl+Alt+G, a click with a relative mouse) */
     void checkGrab();
+    /* The first size and refresh rate for the guest, before the window has a size */
+    void sendFirstUiInfo(bool guestWaits);
+    /* The window's screen, its refresh rate or its pixel ratio changed */
+    void screenChanged();
+    void watchScreen();
 
     Options m_opts;
     /* on the heap: it outlives the view while D-Bus calls complete (detach) */
@@ -109,6 +127,7 @@ private:
     VmClipboard *m_clipboard = nullptr;
     Renderer *m_renderer = nullptr;
     DisplayWindow *m_window = nullptr;
+    ViewSurface *m_surface = nullptr;   // where m_renderer draws, on Wayland
     QPointer<QWidget> m_host;           // what widget() returns
     QWidget *m_container = nullptr;     // embeds m_window, in m_host
     QLabel *m_placeholder = nullptr;    // in m_host while full screen
@@ -120,6 +139,10 @@ private:
     QTimer *m_undrawn = nullptr;
     bool m_exposedOnce = false;
     bool m_renderFailed = false;
+    /* UIInfo again once the screen settled (screenChanged()) */
+    QTimer *m_uiInfo = nullptr;
+    QMetaObject::Connection m_refreshWatch;  // the window's screen's refresh rate
+    bool m_uiInfoApplied = false;   // screenInfoApplied() was signalled
     QString m_grabState;    // as last signalled
     /* what the guest said last, for a new window */
     QSize m_guestSize;

@@ -6,6 +6,7 @@
 #include <gio/gio.h>
 #include <gio/gunixfdlist.h>
 #include <cstring>
+#include <fcntl.h>
 #include <pthread.h>
 #include <sys/socket.h>
 
@@ -117,6 +118,7 @@ int Listener::start(QString *err)
     }
     m_ctx = g_main_context_new();
     m_loop = g_main_loop_new(m_ctx, FALSE);
+    m_cancel = g_cancellable_new();
     m_thread = std::thread([this, fd = sv[0]]() { run(fd); });
     return sv[1];
 }
@@ -124,7 +126,14 @@ int Listener::start(QString *err)
 void Listener::stop()
 {
     if (m_thread.joinable()) {
-        g_main_loop_quit(m_loop);
+        // through the thread's context: a quit before its loop runs (in the
+        // handshake still) was lost, and the join waited for ever; and a
+        // handshake QEMU does not answer ends
+        g_cancellable_cancel(m_cancel);
+        g_main_context_invoke(m_ctx, [](gpointer loop) {
+            g_main_loop_quit(static_cast<GMainLoop *>(loop));
+            return G_SOURCE_REMOVE;
+        }, m_loop);
         m_thread.join();
     }
     if (m_loop) {
@@ -134,6 +143,10 @@ void Listener::stop()
     if (m_ctx) {
         g_main_context_unref(m_ctx);
         m_ctx = nullptr;
+    }
+    if (m_cancel) {
+        g_object_unref(m_cancel);
+        m_cancel = nullptr;
     }
 }
 
@@ -151,10 +164,12 @@ void Listener::run(int fd)
         G_IO_STREAM(sconn), nullptr,
         GDBusConnectionFlags(G_DBUS_CONNECTION_FLAGS_AUTHENTICATION_CLIENT |
                              G_DBUS_CONNECTION_FLAGS_DELAY_MESSAGE_PROCESSING),
-        nullptr, nullptr, &err);
+        nullptr, m_cancel, &err);
     g_object_unref(sconn);
     if (!m_conn) {
-        qWarning("listener connection: %s", err->message);
+        if (!g_error_matches(err, G_IO_ERROR, G_IO_ERROR_CANCELLED)) {
+            qWarning("listener connection: %s", err->message);
+        }
         g_error_free(err);
         g_main_context_pop_thread_default(m_ctx);
         return;
@@ -178,6 +193,17 @@ void Listener::run(int fd)
     g_main_loop_run(m_loop);
 
     g_dbus_connection_close_sync(m_conn, nullptr, nullptr);
+    // The close queues the connection's "closed" signal on this thread's
+    // context, which nothing runs after the loop: its source kept the
+    // connection, and the connection the context (an eventfd), for every
+    // listener stopped while QEMU was connected.  Run it here (GDBus marks
+    // the connection closed, and queues the signal, from its worker, maybe
+    // after close_sync returned).
+    for (int i = 0; i < 1000 && !g_dbus_connection_is_closed(m_conn); i++) {
+        g_usleep(100);
+    }
+    while (g_main_context_iteration(m_ctx, FALSE)) {
+    }
     g_object_unref(m_conn);
     m_conn = nullptr;
     g_main_context_pop_thread_default(m_ctx);
@@ -337,7 +363,9 @@ void Listener::handleCall(const char *m, GVariant *p, GDBusMethodInvocation *inv
                 g_variant_get_child(fds, i, "h", &hdl);
                 fd = takeFd(inv, hdl);
             } else if (!s->planes.empty()) {
-                fd = dup(s->planes[0].fd); // planes may share one buffer
+                // planes may share one buffer; not inherited by a child (a VM
+                // vitrine starts later, say)
+                fd = fcntl(s->planes[0].fd, F_DUPFD_CLOEXEC, 0);
             }
             s->planes.push_back({fd, ov[i], sv[i]});
         }

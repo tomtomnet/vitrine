@@ -229,6 +229,13 @@ bool QmpClient::isReady() const
     return d->ready;
 }
 
+void QmpClient::flush()
+{
+    if (d->socket) {
+        d->socket->flush();
+    }
+}
+
 void QmpClient::execute(const QString &command, const QJsonObject &arguments,
                         Callback callback)
 {

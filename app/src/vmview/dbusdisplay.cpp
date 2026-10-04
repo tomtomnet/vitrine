@@ -36,10 +36,17 @@ void callDone(GObject *source, GAsyncResult *res, gpointer user)
 }
 } // namespace
 
-DBusDisplay::DBusDisplay(Stats *stats, QObject *parent) : QObject(parent), m_stats(stats) {}
+DBusDisplay::DBusDisplay(Stats *stats, QObject *parent)
+    : QObject(parent), m_stats(stats), m_cancel(g_cancellable_new())
+{
+}
 
 DBusDisplay::~DBusDisplay()
 {
+    // the completions of the calls in flight see G_IO_ERROR_CANCELLED, even
+    // those whose answer is in already
+    g_cancellable_cancel(m_cancel);
+    g_object_unref(m_cancel);
     if (m_conn) {
         if (m_signalId) {
             g_dbus_connection_signal_unsubscribe(m_conn, m_signalId);
@@ -177,13 +184,15 @@ bool DBusDisplay::registerListener(int peerFd, QString *err)
     // with our listener thread, which must not be blocked by this call.
     g_dbus_connection_call_with_unix_fd_list(
         m_conn, nullptr, p.constData(), "org.qemu.Display1.Console", "RegisterListener",
-        g_variant_new("(h)", 0), nullptr, G_DBUS_CALL_FLAGS_NONE, -1, fds, nullptr,
+        g_variant_new("(h)", 0), nullptr, G_DBUS_CALL_FLAGS_NONE, -1, fds, m_cancel,
         [](GObject *src, GAsyncResult *res, gpointer) {
             GError *e = nullptr;
             GVariant *r = g_dbus_connection_call_with_unix_fd_list_finish(
                 G_DBUS_CONNECTION(src), nullptr, res, &e);
             if (!r) {
-                qWarning("RegisterListener failed: %s", e->message);
+                if (!g_error_matches(e, G_IO_ERROR, G_IO_ERROR_CANCELLED)) {
+                    qWarning("RegisterListener failed: %s", e->message);
+                }
                 g_error_free(e);
             } else {
                 g_variant_unref(r);
@@ -204,7 +213,7 @@ void DBusDisplay::call(const char *iface, const char *method, GVariant *args, bo
     QByteArray p = m_path.toLatin1();
     auto *d = new CallData{measure ? m_stats : nullptr, nowNs(), method};
     g_dbus_connection_call(m_conn, nullptr, p.constData(), iface, method, args, nullptr,
-                           G_DBUS_CALL_FLAGS_NONE, -1, nullptr, callDone, d);
+                           G_DBUS_CALL_FLAGS_NONE, -1, m_cancel, callDone, d);
 }
 
 void DBusDisplay::applyUiInfo(uint32_t width, uint32_t height, uint32_t refreshMilliHz,
@@ -224,10 +233,14 @@ void DBusDisplay::applyUiInfo(uint32_t width, uint32_t height, uint32_t refreshM
     QByteArray p = m_path.toLatin1();
     g_dbus_connection_call(
         m_conn, nullptr, p.constData(), "org.qemu.Display1.UIInfo", "Apply",
-        g_variant_new("(a{sv})", &b), nullptr, G_DBUS_CALL_FLAGS_NONE, -1, nullptr,
+        g_variant_new("(a{sv})", &b), nullptr, G_DBUS_CALL_FLAGS_NONE, -1, m_cancel,
         [](GObject *src, GAsyncResult *res, gpointer user) {
             GError *e = nullptr;
             GVariant *r = g_dbus_connection_call_finish(G_DBUS_CONNECTION(src), res, &e);
+            if (!r && g_error_matches(e, G_IO_ERROR, G_IO_ERROR_CANCELLED)) {
+                g_error_free(e); // the display is gone: user is too
+                return;
+            }
             auto *self = static_cast<DBusDisplay *>(user);
             if (r) {
                 g_variant_unref(r);
