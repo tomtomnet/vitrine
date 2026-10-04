@@ -467,7 +467,8 @@ private slots:
     /*
      * polkit is asked before each start of the helper, its answer never
      * kept: the group joined while vitrine runs counts at the next VM
-     * start, and left again means no pkexec - which would bring the
+     * start, for the VMs that ran untuned until then too, and left again
+     * means no pkexec - which would bring the
      * desktop's password dialog at a VM start
      */
     void polkitEachTime()
@@ -498,8 +499,11 @@ private slots:
         /* the installed helper, the one the action names, and its verb */
         QCOMPARE(polkitLog("pkexec").first(),
                  QString("--disable-internal-agent " VITRINE_HELPER_PATH " session"));
-        /* the one started before still runs untuned */
-        QCOMPARE(hs.untunedCount(), 1);
+        /* the one started before, untuned until now, with it */
+        QTRY_VERIFY(saw(lines, QString("ok rt %1").arg(q1.pid())));
+        QTRY_VERIFY(!hs.untuned());
+        QCOMPARE(polkitLog("pkexec").size(), 1);
+        q1.stop();
         q2.stop();
         QTRY_COMPARE(finished.size(), 1);
 
@@ -507,7 +511,7 @@ private slots:
         writeFile(m_root + "/answer", "2\n");
         hs.tune(q3.pid());
         QTRY_COMPARE(polkitLog("pkcheck").size(), 3);
-        QTRY_COMPARE(hs.untunedCount(), 2);
+        QTRY_COMPARE(hs.untunedCount(), 1);
         QVERIFY(notices.isEmpty());
         QTest::qWait(200);
         QVERIFY(!hs.helperRunning());
@@ -1266,21 +1270,36 @@ private slots:
         hs.setUpGroup(into(r));
         QTRY_VERIFY(r.called);
         QCOMPARE(r.result, HostSettings::Setup::Cancelled);
-        /* the manual's dismissed */
+        /* dismissed (GNOME Shell's agent): 126, and pkexec says so */
+        script("pkexec", "#!/bin/sh\necho 'Error executing command as another user: "
+                         "Request dismissed' >&2\nexit 126\n");
+        r = {};
+        hs.setUpGroup(into(r));
+        QTRY_VERIFY(r.called);
+        QCOMPARE(r.result, HostSettings::Setup::Cancelled);
+        QVERIFY(r.error.isEmpty());
         script("pkexec", "#!/bin/sh\nexit 126\n");
         r = {};
         hs.setUpGroup(into(r));
         QTRY_VERIFY(r.called);
         QCOMPARE(r.result, HostSettings::Setup::Cancelled);
-        /* no polkit agent */
+        /* no polkit agent (ssh, waypipe): why, as a clause of the box's sentence */
         script("pkexec", "#!/bin/sh\necho 'Error executing command as another user: "
                          "No authentication agent found.'\nexit 127\n");
         r = {};
         hs.setUpGroup(into(r));
         QTRY_VERIFY(r.called);
         QCOMPARE(r.result, HostSettings::Setup::Failed);
-        QCOMPARE(r.error, QString("Error executing command as another user: No authentication "
-                                  "agent found."));
+        QCOMPARE(r.error, QString("No authentication agent found"));
+        /* the group tools' error, without its period */
+        script("pkexec", "#!/bin/sh\necho 'error setup-group: cannot add the user to the group: "
+                         "gpasswd: cannot lock /etc/group; try again later.'\nexit 1\n");
+        r = {};
+        hs.setUpGroup(into(r));
+        QTRY_VERIFY(r.called);
+        QCOMPARE(r.result, HostSettings::Setup::Failed);
+        QCOMPARE(r.error, QString("cannot add the user to the group: gpasswd: cannot lock "
+                                  "/etc/group; try again later"));
         /* the helper's own error */
         fakePolkit();
         writeFile(m_root + "/etc/group", "vitrine:x:977:\n");
@@ -1303,6 +1322,253 @@ private slots:
         QVERIFY(r.called);
         QCOMPARE(r.error, QString("vitrine-helper is not installed"));
         QVERIFY(!hs.settingUpGroup());
+    }
+
+    /*
+     * The helper installed while a VM runs untuned: the warning's reason
+     * follows when vitrine asks again (the window back in front), with the
+     * offer to set up the group; and a VM started later brings the earlier
+     * ones' reason up to date too
+     */
+    void installedMeanwhile()
+    {
+        using P = HostSettings::Problem;
+        qputenv("VITRINE_HELPER", "/nonexistent/vitrine-helper");
+        FakeQemu q1, q2;
+        HostSettings hs(nullptr);
+        QSignalSpy suggested(&hs, &HostSettings::groupSetupSuggested);
+        hs.setSysRoot(m_root + "/sys");
+        hs.tune(q1.pid());
+        QTRY_VERIFY(hs.untuned());
+        QCOMPARE(hs.untunedStatus().problem, P::NotInstalled);
+        QVERIFY(suggested.isEmpty());
+
+        /* sudo cmake --install: installed, no group yet */
+        fakePolkit();
+        writeFile(m_root + "/answer", "2\n");
+        qputenv("VITRINE_GROUP", "vitrine-test-no-such-group");
+        hs.recheck();
+        QTRY_COMPARE(hs.untunedStatus().problem, P::NoGroup);
+        QCOMPARE(suggested.size(), 1);
+        QCOMPARE(polkitLog("pkcheck").size(), 1);
+        /* again: asked, nothing new, not offered twice */
+        hs.recheck();
+        QTRY_COMPARE(polkitLog("pkcheck").size(), 2);
+        QTest::qWait(100);
+        QCOMPARE(suggested.size(), 1);
+        QVERIFY(polkitLog("pkexec").isEmpty());
+        /* one recheck at a time, when nobody waits for its answer */
+        hs.recheck();
+        hs.recheck();
+        QTRY_COMPARE(polkitLog("pkcheck").size(), 3);
+        QTest::qWait(200);
+        QCOMPARE(polkitLog("pkcheck").size(), 3);
+
+        /* no recheck: a VM start says it for the VMs running already */
+        HostSettings hs2(nullptr);
+        hs2.setSysRoot(m_root + "/sys");
+        qputenv("VITRINE_HELPER", "/nonexistent/vitrine-helper");
+        hs2.tune(q1.pid());
+        QTRY_VERIFY(hs2.untuned());
+        fakePolkit();
+        hs2.tune(q2.pid());
+        QTRY_COMPARE(hs2.untunedCount(), 2);
+        QTRY_COMPARE(hs2.untunedStatus().problem, P::NoGroup);
+        q2.stop();
+        QTRY_COMPARE(hs2.untunedCount(), 1);
+        QCOMPARE(hs2.untunedStatus().problem, P::NoGroup);
+    }
+
+    /*
+     * The group joined by hand (a terminal) while VMs run untuned: tuned as
+     * soon as vitrine asks again - Preferences opened, or the next VM start,
+     * which takes the earlier ones along
+     */
+    void joinedByHand()
+    {
+        fakePolkit();
+        writeFile(m_root + "/answer", "2\n");
+        qputenv("VITRINE_GROUP", "vitrine-test-no-such-group");
+        FakeQemu q1, q2, q3;
+        {
+            HostSettings hs(nullptr);
+            QSignalSpy lines(&hs, &HostSettings::helperLine);
+            hs.setSysRoot(m_root + "/sys");
+            hs.tune(q1.pid());
+            QTRY_VERIFY(hs.untuned());
+            /* sudo groupadd; sudo usermod -aG: polkit says yes now */
+            writeFile(m_root + "/answer", "0\n");
+            /* Preferences: the state it shows is the status bar's */
+            HostSettings::Status shown{HostSettings::Problem::Failed, "no answer"};
+            hs.recheck(this, [&](const HostSettings::Status &now) { shown = now; });
+            QTRY_VERIFY(shown.active());
+            QTRY_VERIFY(saw(lines, QString("ok rt %1").arg(q1.pid())));
+            QTRY_VERIFY(!hs.untuned());
+            QCOMPARE(polkitLog("pkexec").size(), 1);
+        }
+        QFile::remove(m_root + "/pkexec.log");
+        writeFile(m_root + "/answer", "2\n");
+        {
+            HostSettings hs(nullptr);
+            QSignalSpy lines(&hs, &HostSettings::helperLine);
+            hs.setSysRoot(m_root + "/sys");
+            hs.tune(q2.pid());
+            QTRY_VERIFY(hs.untuned());
+            writeFile(m_root + "/answer", "0\n");
+            hs.tune(q3.pid());
+            QTRY_VERIFY(saw(lines, QString("ok rt %1").arg(q3.pid())));
+            QTRY_VERIFY(saw(lines, QString("ok rt %1").arg(q2.pid())));
+            QTRY_VERIFY(!hs.untuned());
+            QCOMPARE(polkitLog("pkexec").size(), 1);
+        }
+    }
+
+    /*
+     * recheck(): without an answer to give, nothing while no VM runs
+     * untuned (or tuning is off); with one, always asked, the answer only
+     * to a context still there
+     */
+    void recheckRules()
+    {
+        fakePolkit();
+        writeFile(m_root + "/answer", "2\n");
+        qputenv("VITRINE_GROUP", "vitrine-test-no-such-group");
+        HostSettings hs(nullptr);
+        QSignalSpy suggested(&hs, &HostSettings::groupSetupSuggested),
+            changed(&hs, &HostSettings::untunedChanged);
+        hs.setSysRoot(m_root + "/sys");
+        hs.recheck();
+        QTest::qWait(200);
+        QVERIFY(polkitLog("pkcheck").isEmpty());
+
+        HostSettings::Status shown;
+        bool answered = false;
+        hs.recheck(this, [&](const HostSettings::Status &now) {
+            shown = now;
+            answered = true;
+        });
+        QTRY_VERIFY(answered);
+        QCOMPARE(shown.problem, HostSettings::Problem::NoGroup);
+        QVERIFY(!hs.untuned());
+        QVERIFY(suggested.isEmpty());
+        QVERIFY(changed.isEmpty());
+
+        auto called = std::make_shared<bool>(false);
+        {
+            QObject gone;
+            hs.recheck(&gone, [called](const HostSettings::Status &) { *called = true; });
+        }
+        QTRY_COMPARE(polkitLog("pkcheck").size(), 2);
+        QTest::qWait(200);
+        QVERIFY(!*called);
+
+        /* tuning off: a VM untuned is no warning, and nothing is asked */
+        FakeQemu qemu;
+        hs.tune(qemu.pid());
+        QTRY_VERIFY(hs.untuned());
+        HostSettings::setEnabled(false);
+        hs.preferencesChanged();
+        const int asked = int(polkitLog("pkcheck").size());
+        hs.recheck();
+        QTest::qWait(200);
+        QCOMPARE(int(polkitLog("pkcheck").size()), asked);
+    }
+
+    /*
+     * The warning's explanation or Preferences show the state with their
+     * own Set Up: no question on top of them, nor when they close and the
+     * window comes back to the front
+     */
+    void noOfferOverOwnSetUp()
+    {
+        qputenv("VITRINE_HELPER", "/nonexistent/vitrine-helper");
+        FakeQemu qemu;
+        HostSettings hs(nullptr);
+        QSignalSpy suggested(&hs, &HostSettings::groupSetupSuggested);
+        hs.setSysRoot(m_root + "/sys");
+        hs.tune(qemu.pid());
+        QTRY_VERIFY(hs.untuned());
+        /* installed since, no group */
+        fakePolkit();
+        writeFile(m_root + "/answer", "2\n");
+        qputenv("VITRINE_GROUP", "vitrine-test-no-such-group");
+        HostSettings::Status shown;
+        bool answered = false;
+        hs.recheck(this, [&](const HostSettings::Status &now) {
+            shown = now;
+            answered = true;
+        });
+        QTRY_VERIFY(answered);
+        QCOMPARE(shown.problem, HostSettings::Problem::NoGroup);
+        QCOMPARE(hs.untunedStatus().problem, HostSettings::Problem::NoGroup);
+        QVERIFY(suggested.isEmpty());
+        hs.recheck();
+        QTRY_COMPARE(polkitLog("pkcheck").size(), 2);
+        QTest::qWait(100);
+        QVERIFY(suggested.isEmpty());
+    }
+
+    /*
+     * Set Up clicked (Preferences) before the first VM start: that start's
+     * offer would come on top of the password dialog, and its Set Up fail
+     * as one is under way.  Not offered then, nor later in the run.
+     */
+    void noOfferDuringSetUp()
+    {
+        fakePolkit();
+        writeFile(m_root + "/answer", "2\n");
+        qputenv("VITRINE_GROUP", "vitrine-test-no-such-group");
+        /* a password dialog open for a second, then dismissed */
+        script("pkexec", QString("#!/bin/sh\necho \"$*\" >> %1/pkexec.log\nsleep 1\nexit 126\n")
+                             .arg(m_root).toUtf8());
+        FakeQemu qemu;
+        HostSettings hs(nullptr);
+        QSignalSpy suggested(&hs, &HostSettings::groupSetupSuggested);
+        hs.setSysRoot(m_root + "/sys");
+        SetupResult r;
+        hs.setUpGroup(into(r));
+        hs.tune(qemu.pid());
+        QTRY_VERIFY(hs.untuned());
+        QVERIFY(hs.settingUpGroup());
+        QTRY_VERIFY(r.called);
+        QCOMPARE(r.result, HostSettings::Setup::Cancelled);
+        hs.recheck();
+        QTRY_COMPARE(polkitLog("pkcheck").size(), 2);
+        QTest::qWait(100);
+        QVERIFY(suggested.isEmpty());
+        QVERIFY(hs.untuned());
+    }
+
+    /* The warning's reason: one Set Up fixes, before a VM's own */
+    void untunedStatusPrefersGroup()
+    {
+        using P = HostSettings::Problem;
+        fakePolkit();
+        writeFile(m_root + "/answer", "0\n");
+        /* not a QEMU: the helper will not take it */
+        QProcess other;
+        other.start("sleep", {"300"});
+        QVERIFY(other.waitForStarted());
+        FakeQemu qemu;
+        HostSettings hs(nullptr);
+        QSignalSpy finished(&hs, &HostSettings::helperFinished);
+        hs.setSysRoot(m_root + "/sys");
+        hs.tune(other.processId());
+        QTRY_VERIFY(hs.untuned());
+        QCOMPARE(hs.untunedStatus().problem, P::Failed);
+        QTRY_COMPARE(finished.size(), 1);
+
+        writeFile(m_root + "/answer", "2\n");
+        qputenv("VITRINE_GROUP", "vitrine-test-no-such-group");
+        hs.tune(qemu.pid());
+        QTRY_COMPARE(hs.untunedCount(), 2);
+        QCOMPARE(hs.untunedStatus().problem, P::NoGroup);
+        /* the refused one keeps its own reason */
+        qemu.stop();
+        QTRY_COMPARE(hs.untunedCount(), 1);
+        QCOMPARE(hs.untunedStatus().problem, P::Failed);
+        other.kill();
+        other.waitForFinished();
     }
 
     void capabilityWithoutHelper()

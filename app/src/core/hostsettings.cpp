@@ -16,6 +16,7 @@
 #include <cerrno>
 #include <csignal>
 #include <cstring>
+#include <optional>
 #include <vector>
 
 #include <fcntl.h>
@@ -452,9 +453,6 @@ void HostSettings::vmStateChanged(Vm *vm)
 
 void HostSettings::tune(qint64 pid)
 {
-    const QString n = QString::number(pid);
-    const QString floor = gpuFloor();
-
     if (!enabled()) {
         /* turned off meanwhile: the helper lets go of everything now */
         if (m_fd >= 0) {
@@ -469,6 +467,15 @@ void HostSettings::tune(qint64 pid)
         }
         return;
     }
+    queue(pid);
+    start();
+}
+
+void HostSettings::queue(qint64 pid)
+{
+    const QString n = QString::number(pid);
+    const QString floor = gpuFloor();
+
     m_expected.insert(pid);
     m_out += ("watch " + n + "\nfair-server on\n").toLatin1();
     /* auto: on APUs only (measured on a Radeon 780M), none on the other
@@ -479,7 +486,6 @@ void HostSettings::tune(qint64 pid)
         m_out += QString("gpu-floor %1 %2\n").arg(card, value).toLatin1();
     }
     m_out += ("rt " + n + '\n').toLatin1();
-    start();
 }
 
 void HostSettings::preferencesChanged()
@@ -602,7 +608,13 @@ void HostSettings::start()
             deny(status, m_expected);
             return;
         }
-        /* the group joined since vitrine started, say */
+        /* the group joined since vitrine started, say: the VMs that ran
+           untuned until now too, and vitrine's QEMU's capability */
+        for (const auto &entry : QList(m_untuned)) {
+            if (!m_expected.contains(entry.first) && alive(entry.first)) {
+                queue(entry.first);
+            }
+        }
         ensureCapability();
         if (!m_out.isEmpty()) {
             spawn({"pkexec", "--disable-internal-agent", VITRINE_HELPER_PATH, "session"});
@@ -805,11 +817,13 @@ void HostSettings::reap()
        reported.") */
     QString why = m_foreign.isEmpty() ? tr("vitrine-helper did not start") : m_foreign.first();
     for (const QString &line : std::as_const(m_foreign)) {
-        if (line.startsWith("Error executing command")) {
+        if (line.startsWith(kPkexecError)) {
             why = line;
             break;
         }
     }
+    /* a reason in a sentence: "...: No authentication agent found." */
+    why = clause(why);
     m_pid = 0;
     closeHelper();
     m_out.clear();
@@ -873,12 +887,74 @@ void HostSettings::deny(const Status &status, QSet<qint64> pids, bool always)
             setUntuned(pid, status);
         }
     }
+    /* the VMs untuned before: the state is what it is now for them too (the
+       helper installed since, say) */
+    restate(status);
     /* the group would do: offered at the first VM start of the run that
        lacks it, and only then - several VMs starting at once share the check
        that got here (start() waits for it), later ones do not ask again */
-    if (status.needsGroup() && !m_groupSuggested && enabled() && untuned()) {
+    offerGroup(status);
+}
+
+void HostSettings::restate(const Status &now)
+{
+    using enum Problem;
+
+    /* Failed: this VM's own (the helper would not take it), or this start's */
+    if (now.active() || now.problem == Failed) {
+        return;
+    }
+    for (const auto &[pid, status] : QList(m_untuned)) {
+        if (status.problem != Failed && alive(pid)) {
+            setUntuned(pid, now);
+        }
+    }
+}
+
+void HostSettings::offerGroup(const Status &status)
+{
+    if (status.needsGroup() && !m_groupSuggested && !m_settingUp && enabled() && untuned()) {
         m_groupSuggested = true;
         emit groupSetupSuggested(status);
+    }
+}
+
+void HostSettings::recheck(QObject *context, const std::function<void(const Status &)> &done)
+{
+    const bool answer = context && done;
+    QPointer<QObject> guard(context);
+
+    if (!answer && (m_rechecks > 0 || !enabled() || !untuned())) {
+        return;
+    }
+    m_rechecks++;
+    check(this, [this, answer, guard, done](const Status &now) {
+        m_rechecks--;
+        /* a caller that shows the state offers Set Up itself: not a
+           question on top of its box, nor one when it closes */
+        apply(now, !answer);
+        if (answer && now.needsGroup() && enabled() && untuned()) {
+            m_groupSuggested = true;
+        }
+        if (answer && guard) {
+            done(now);
+        }
+    });
+}
+
+void HostSettings::apply(const Status &now, bool offer)
+{
+    /* a VM start's check, or Set Up's, does the same with its own answer */
+    if (!enabled() || !untuned() || m_access == Access::Checking || m_settingUp) {
+        return;
+    }
+    if (now.active()) {
+        retune();
+        return;
+    }
+    restate(now);
+    if (offer) {
+        offerGroup(now);
     }
 }
 
@@ -924,12 +1000,20 @@ int HostSettings::untunedCount() const
 
 HostSettings::Status HostSettings::untunedStatus() const
 {
+    std::optional<Status> first;
+
+    /* one Set Up fixes before a VM's own reason: what the warning offers */
     for (const auto &[pid, status] : m_untuned) {
         if (alive(pid)) {
-            return status;
+            if (status.needsGroup()) {
+                return status;
+            }
+            if (!first) {
+                first = status;
+            }
         }
     }
-    return {};
+    return first.value_or(Status());
 }
 
 void HostSettings::retune()
@@ -960,6 +1044,8 @@ void HostSettings::setUpGroup(const std::function<void(Setup, const QString &, c
         return;
     }
     m_settingUp = true;
+    /* offered: the VM start's question would come on top of this one */
+    m_groupSuggested = true;
     auto *run = new QProcess(this);
     run->setProcessChannelMode(QProcess::MergedChannels);
     connect(run, &QProcess::finished, this, [this, run, done](int code, QProcess::ExitStatus exit) {
@@ -971,10 +1057,10 @@ void HostSettings::setUpGroup(const std::function<void(Setup, const QString &, c
         for (const QString &line : lines) {
             ok |= line.startsWith("ok setup-group: ");
             if (line.startsWith("error setup-group: ")) {
-                error = line.section(':', 1).trimmed();
-            } else if (error.isEmpty() && line.startsWith("Error executing command")) {
+                error = clause(line.section(':', 1));
+            } else if (error.isEmpty() && line.startsWith(kPkexecError)) {
                 /* pkexec's: not authorized, no polkit agent... */
-                error = line.trimmed();
+                error = clause(line.mid(int(strlen(kPkexecError))));
             }
         }
         if (exit == QProcess::NormalExit && code == 0 && ok) {
@@ -985,28 +1071,24 @@ void HostSettings::setUpGroup(const std::function<void(Setup, const QString &, c
                     retune();
                 } else {
                     /* what the VMs wait for now */
-                    for (const auto &[pid, status] : QList(m_untuned)) {
-                        if (status.needsGroup()) {
-                            setUntuned(pid, now);
-                        }
-                    }
+                    restate(now);
                 }
                 done(Setup::Done, QString(), now);
             });
             return;
         }
         m_settingUp = false;
-        /* pkexec: 126 when the password dialog was dismissed, says its
-           manual; KDE's agent gives "Not authorized" (127) for Cancel, as
-           for a password that did not do */
+        /* pkexec: 126 when the password dialog was dismissed ("Request
+           dismissed", GNOME Shell's agent); KDE's agent gives "Not
+           authorized" (127) for Cancel, as for a password that did not do.
+           The helper never exits with 126. */
         if (exit == QProcess::NormalExit &&
-            ((error.isEmpty() && code == 126) ||
-             (code == 127 && error.endsWith(": Not authorized")))) {
+            (code == 126 || (code == 127 && error == "Not authorized"))) {
             done(Setup::Cancelled, QString(), {});
             return;
         }
         if (error.isEmpty()) {
-            error = lines.isEmpty() ? tr("vitrine-helper failed") : lines.first().trimmed();
+            error = lines.isEmpty() ? tr("vitrine-helper failed") : clause(lines.first());
         }
         done(Setup::Failed, error, {});
     });

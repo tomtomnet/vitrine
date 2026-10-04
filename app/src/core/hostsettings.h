@@ -26,7 +26,9 @@ class VmStore;
  * everyone else gets their VMs untuned, never a password dialog at each
  * start: the status bar shows that VMs run untuned and why (untuned()), and
  * the first such start of a run offers to set up the group once
- * (groupSetupSuggested(), setUpGroup()).  The helper watches the QEMU
+ * (groupSetupSuggested(), setUpGroup()).  A change made elsewhere while VMs
+ * run untuned - the helper installed, the group joined by hand - counts
+ * when vitrine asks again (recheck()).  The helper watches the QEMU
  * processes and puts everything back after the last one, crash included,
  * even after vitrine has quit (VMs outlive it).  See docs/host-tuning.md.
  */
@@ -140,9 +142,28 @@ public:
      * helper could not run, or did not take it).  Never while tuning is off.
      */
     bool untuned() const;
-    /* Why, while untuned(): that of the VM untuned first */
+    /* Why, while untuned(): one the vitrine group would fix if any VM has
+       it (needsGroup()), else that of the VM untuned first */
     Status untunedStatus() const;
     int untunedCount() const;
+
+    /*
+     * The state asked again (pkcheck, the user database), for a change made
+     * elsewhere while VMs run untuned: the helper installed, the group
+     * joined by hand.  Active now: those VMs tuned.  Else their reason
+     * brought up to date (not a VM's own, Failed).  Nothing of this while a
+     * VM start's check or setUpGroup() is under way: they do it themselves.
+     *
+     * Without @done (the window back in front): only while untuned(), not
+     * while another such recheck runs, and groupSetupSuggested() if the
+     * group is what it takes now and was not offered yet in this run.
+     * With @done (the warning's explanation, Preferences): always asked,
+     * the state to @done (if @context is still there) after it was
+     * applied; the caller shows it with its own Set Up, which counts as
+     * the offer of the run while VMs run untuned.
+     */
+    void recheck(QObject *context = nullptr,
+                 const std::function<void(const Status &now)> &done = {});
 
     /* What came of setUpGroup() */
     enum class Setup {
@@ -207,6 +228,16 @@ private:
     void deny(const Status &status, QSet<qint64> pids, bool always = false);
     /* @pid runs untuned for @status, or (None) is tuned or gone */
     void setUntuned(qint64 pid, const Status &status);
+    /* @now, the state just asked, for every VM running untuned for a
+       reason of the same kind (not their own, Failed) */
+    void restate(const Status &now);
+    /* recheck()'s answer, applied; @offer: groupSetupSuggested() if due */
+    void apply(const Status &now, bool offer);
+    /* groupSetupSuggested(), if @status needs the group, it was not offered
+       in this run, and no Set Up runs */
+    void offerGroup(const Status &status);
+    /* The requests that tune @pid, queued for the helper */
+    void queue(qint64 pid);
     /* Each VM running untuned tuned again (the group set up, say) */
     void retune();
     /* grantCapability() for the stack's QEMU if it has none, once per run
@@ -226,6 +257,7 @@ private:
     QList<QPair<qint64, Status>> m_untuned;   // QEMUs running untuned, the first first
     bool m_groupSuggested = false;
     bool m_settingUp = false;
+    int m_rechecks = 0;                 // recheck()s under way
     QSet<QString> m_capabilityTried;    // ensureCapability(): QEMUs asked for
     int m_restarts = 0;
 
