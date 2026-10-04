@@ -362,7 +362,7 @@ QString describe(const Change &change)
         argument = QString("%1=%2").arg(change.key, change.value);
         break;
     case Change::RemoveVenus:
-        what = tr("Removes venus=off, which is QEMU's default");
+        what = tr("No venus=off, which is QEMU's default anyway");
         break;
     case Change::HonorGuestPat:
         what = tr("KVM honors how the guest caches its GPU mappings, which Intel GPUs need");

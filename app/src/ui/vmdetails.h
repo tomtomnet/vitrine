@@ -5,6 +5,7 @@
 #include <QWidget>
 
 class Banner;
+class CardUpdateBanner;
 class GpuContexts;
 class QemuDocs;
 class QLabel;
@@ -43,6 +44,8 @@ private:
     /* whether the guest uses the native context it was given */
     GpuContexts *m_contexts;
     Banner *m_contextsNote;
+    /* vitrine's 3D card offered to a VM made before */
+    CardUpdateBanner *m_card;
 };
 
 /* "Running", "Powered off"... */

@@ -150,6 +150,8 @@ qt_add_library(vitrine_ui STATIC
     src/ui/argseditor.h
     src/ui/banner.cpp
     src/ui/banner.h
+    src/ui/cardupdatedialog.cpp
+    src/ui/cardupdatedialog.h
     src/ui/clonedialog.cpp
     src/ui/clonedialog.h
     src/ui/firmwarerepair.cpp
@@ -300,6 +302,7 @@ if(BUILD_TESTING)
     endforeach()
     # the windows': widgets that are never shown, so no screen either
     foreach(name
+            cardupdatedialog
             newvmdialog
             settingspages
             stackbanner)

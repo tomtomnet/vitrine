@@ -16,6 +16,7 @@
 #include "core/vmrunner.h"
 #include "core/vmstore.h"
 #include "ui/banner.h"
+#include "ui/cardupdatedialog.h"
 #include "ui/guesttoolsdialog.h"
 #include "ui/icons.h"
 #include "ui/vmdetails.h"
@@ -105,6 +106,9 @@ VmConsole::VmConsole(Vm *vm, QWidget *parent)
         auto *tools = new GuestToolsBanner;
         tools->setVm(vm);
         column->addWidget(tools);
+        auto *card = new CardUpdateBanner;
+        card->setVm(vm);
+        column->addWidget(card);
         column->addSpacing(16);
         column->addWidget(m_start, 0, Qt::AlignLeft);
         column->addSpacing(16);
