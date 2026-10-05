@@ -4,7 +4,9 @@
  * sysfs/debugfs tree, a stand-in QEMU, and the preferences.
  */
 #include <QDir>
+#include <QElapsedTimer>
 #include <QFile>
+#include <QFileInfo>
 #include <QJsonDocument>
 #include <QJsonObject>
 #include <QLocalServer>
@@ -15,6 +17,7 @@
 #include <QStandardPaths>
 #include <QTemporaryDir>
 #include <QTest>
+#include <QThread>
 
 #include <csignal>
 #include <memory>
@@ -125,6 +128,19 @@ public:
         m_process.start(FAKE_QEMU, arguments);
         m_process.waitForStarted();
         m_pid = m_process.processId();
+        /*
+         * Until it runs its program: waitForStarted() may return while the
+         * kernel still sets it up (a vfork'ed child lets its parent go at
+         * exec), and the helper takes only a process it sees run a QEMU -
+         * under load, it saw the test's own program and refused it
+         */
+        const QString exe = QFileInfo(FAKE_QEMU).canonicalFilePath();
+        QElapsedTimer clock;
+        clock.start();
+        while (QFileInfo(QString("/proc/%1/exe").arg(m_pid)).canonicalFilePath() != exe &&
+               clock.elapsed() < 5000) {
+            QThread::msleep(5);
+        }
     }
     ~FakeQemu() { stop(); }
     qint64 pid() const { return m_pid; }
