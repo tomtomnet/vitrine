@@ -13,10 +13,13 @@ version taken. The few changes vitrine needs before the research side has
 them are listed under Local changes below, to make again after a copy.
 vitrine's own code is `vmview.{h,cpp}`: it attaches to a
 running QEMU and puts the display in a widget, or in a window of its own
-for full screen; `viewsurface.{h,cpp}`: the Wayland surface the frames go
-to, vitrine's own, a subsurface of the display's window that Qt never
-touches; and `vmclipboard.{h,cpp}`: the host clipboard shared
-with the guest through the display's org.qemu.Display1.Clipboard.
+for full screen (embedded, the display's window takes no input: the
+keyboard and the pointer come to the widget, as to any other of the main
+window, and VmView hands them to it); `viewsurface.{h,cpp}`: the Wayland
+surface the frames go to, vitrine's own, a subsurface of the display's
+window that Qt never touches; and `vmclipboard.{h,cpp}`: the host
+clipboard shared with the guest through the display's
+org.qemu.Display1.Clipboard.
 
 | file | what it does |
 |---|---|
