@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: GPL-2.0-or-later
 #pragma once
 
+#include <QElapsedTimer>
 #include <QList>
 #include <QPointer>
 #include <QWidget>
@@ -24,7 +25,7 @@ class VmConsole;
  *
  * The statistics are as wide as the window lets them be: the last ones
  * are left out of a window too narrow for them, rather than keeping it
- * wide.  Each keeps the widest it was since its VM was selected, so that
+ * wide.  Each keeps a place as wide as the widest it was lately, so that
  * what follows does not move with each new value.
  */
 class StatusStats : public QWidget
@@ -56,6 +57,9 @@ public:
     QLabel *label(Stat stat) const { return m_labels[stat]; }
     /* What the sampler reads now, for tests */
     VmStats::Sampler::Sources sources() const;
+    /* Tests: how long a statistic stays narrower than its place before the
+       place shrinks (10 s) */
+    static void setShrinkDelay(int ms);
 
     QSize sizeHint() const override;
     QSize minimumSizeHint() const override;
@@ -92,7 +96,10 @@ private:
     QLabel *m_labels[kStats];
     QAction *m_actions[kStats];
     QString m_names[kStats];        // the actions' text, without a note
-    int m_widths[kStats] = {};      // the widest each was for this VM
+    int m_widths[kStats] = {};      // the place of each: the widest it was lately
+    qint64 m_narrowSince[kStats];   // since when it is narrower, or -1
+    int m_widestSince[kStats] = {};   // the widest it was since
+    QElapsedTimer m_clock;
     QSize m_hint;                   // the size hint the status bar has
     QToolButton *m_button;
     QMenu *m_menu;

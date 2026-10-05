@@ -34,6 +34,8 @@ static const char *const kKeys[StatusStats::kStats] = {"cpu", "memory", "disk", 
                                                        "gpu", "frames", "mainloop"};
 /* What shows at first: the CPU and memory, and what the status bar had before */
 static const bool kDefaults[StatusStats::kStats] = {true, true, false, false, false, true, true};
+/* A statistic narrower than its place this long gets a narrower place */
+static int shrinkMs = 10000;
 
 static QString settingKey(const QString &key)
 {
@@ -100,6 +102,8 @@ StatusStats::StatusStats(QWidget *parent)
     /* apart from what follows, as the status bar's other labels are */
     setContentsMargins(0, 0, gap(), 0);
     setSizePolicy(QSizePolicy::Preferred, QSizePolicy::Preferred);
+    std::fill(std::begin(m_narrowSince), std::end(m_narrowSince), -1);
+    m_clock.start();
 
     /* the end of the status bar: an icon, no text, the menu at a click */
     m_button->setToolButtonStyle(Qt::ToolButtonIconOnly);
@@ -121,6 +125,7 @@ void StatusStats::setVm(Vm *vm, VmConsole *console)
     if (vm != m_vm) {
         /* another VM, other numbers: as wide as they need */
         std::fill(std::begin(m_widths), std::end(m_widths), 0);
+        std::fill(std::begin(m_narrowSince), std::end(m_narrowSince), -1);
     }
     if (m_console) {
         disconnect(m_console, nullptr, this, nullptr);
@@ -332,15 +337,41 @@ int StatusStats::gap() const
     return fontMetrics().averageCharWidth() * 3;
 }
 
+void StatusStats::setShrinkDelay(int ms)
+{
+    shrinkMs = ms;
+}
+
 void StatusStats::refresh()
 {
     const VmStats::Snapshot s = snapshot();
+    const qint64 now = m_clock.elapsed();
 
     for (int i = 0; i < kStats; i++) {
         const QString t = isShown(Stat(i)) ? text(Stat(i), s) : QString();
         m_labels[i]->setText(t);
-        if (!t.isEmpty()) {
-            m_widths[i] = qMax(m_widths[i], m_labels[i]->sizeHint().width());
+        if (t.isEmpty()) {
+            continue;
+        }
+        /*
+         * Its place grows at once, and shrinks to the widest it was once
+         * narrower for a while: what follows moves once in a while, not
+         * at each new value, and keeps no gap for long after a value too
+         * wide for once
+         */
+        const int need = m_labels[i]->sizeHint().width();
+        if (need >= m_widths[i]) {
+            m_widths[i] = need;
+            m_narrowSince[i] = -1;
+        } else if (m_narrowSince[i] < 0) {
+            m_narrowSince[i] = now;
+            m_widestSince[i] = need;
+        } else {
+            m_widestSince[i] = qMax(m_widestSince[i], need);
+            if (now - m_narrowSince[i] >= shrinkMs) {
+                m_widths[i] = m_widestSince[i];
+                m_narrowSince[i] = -1;
+            }
         }
     }
     /* never a window of its own */
@@ -456,12 +487,7 @@ void StatusStats::updateMenu()
 
 /* --- tooltips --- */
 
-static QString row(const QString &label, const QString &value, const QString &note = {})
-{
-    return QString("<tr><td>%1</td><td align=\"right\">&nbsp;&nbsp;%2</td>"
-                   "<td>&nbsp;&nbsp;%3</td></tr>")
-        .arg(label.toHtmlEscaped(), value.toHtmlEscaped(), note.toHtmlEscaped());
-}
+using PerfStats::tableRow;
 
 /* % of one CPU, as host CPUs: "1.7 CPUs" */
 static QString cpus(double percent)
@@ -477,28 +503,28 @@ static QString cpuDetails(const VmStats::Snapshot &s)
     QString html = StatusStats::tr("<b>CPU</b>, over the last second") + "<table>";
 
     if (p.vcpus.threads) {
-        html += row(StatusStats::tr("Guest"),
-                    PerfStats::formatPercent(p.vcpus.cpu / p.vcpus.threads),
-                    StatusStats::tr("of its %n vCPU(s): %1 of the host's", nullptr,
-                                    p.vcpus.threads)
-                        .arg(cpus(p.vcpus.cpu)));
+        html += tableRow(StatusStats::tr("Guest"),
+                         PerfStats::formatPercent(p.vcpus.cpu / p.vcpus.threads),
+                         StatusStats::tr("of its %n vCPU(s): %1 of the host's", nullptr,
+                                         p.vcpus.threads)
+                             .arg(cpus(p.vcpus.cpu)));
     }
-    html += row(StatusStats::tr("QEMU besides"), cpus(besides),
-                StatusStats::tr("main loop %1, %n other thread(s) %2: GPU, I/O, audio…",
-                                nullptr, p.others.threads)
-                    .arg(PerfStats::formatPercent(p.mainLoop.cpu),
-                         PerfStats::formatPercent(p.others.cpu)));
+    html += tableRow(StatusStats::tr("QEMU besides"), cpus(besides),
+                     StatusStats::tr("main loop %1, %n other thread(s) %2", nullptr,
+                                     p.others.threads)
+                         .arg(PerfStats::formatPercent(p.mainLoop.cpu),
+                              PerfStats::formatPercent(p.others.cpu)));
     if (s.hostCpus > 0) {
-        html += row(StatusStats::tr("In all"), cpus(total),
-                    StatusStats::tr("%1 of the host's %n CPU(s)", nullptr, s.hostCpus)
-                        .arg(PerfStats::formatPercent(total / s.hostCpus)));
+        html += tableRow(StatusStats::tr("In all"), cpus(total),
+                         StatusStats::tr("%1 of the host's %n CPU(s)", nullptr, s.hostCpus)
+                             .arg(PerfStats::formatPercent(total / s.hostCpus)));
     }
     html += "</table>";
     if (!s.busiest.isEmpty()) {
         html += StatusStats::tr("<b>Busiest threads</b>") + "<table>";
         for (const VmStats::ThreadUse &t : s.busiest) {
-            html += row(t.name.isEmpty() ? StatusStats::tr("thread %1").arg(t.tid) : t.name,
-                        PerfStats::formatPercent(t.cpu));
+            html += tableRow(t.name.isEmpty() ? StatusStats::tr("thread %1").arg(t.tid) : t.name,
+                             PerfStats::formatPercent(t.cpu));
         }
         html += "</table>";
     }
@@ -515,31 +541,33 @@ static QString memoryDetails(const VmStats::Snapshot &s, qint64 ramMiB,
     const VmStats::Memory &m = s.qemuMemory;
     QString html = StatusStats::tr("<b>Memory</b> of the host that QEMU holds") + "<table>";
 
-    html += row(StatusStats::tr("Resident"), formatBytes(m.resident),
-                ramMiB > 0 ? StatusStats::tr("the guest has %1 of RAM")
-                                 .arg(formatBytes(ramMiB * 1024 * 1024))
-                           : QString());
+    html += tableRow(StatusStats::tr("Resident"), formatBytes(m.resident),
+                     ramMiB > 0 ? StatusStats::tr("the guest has %1 of RAM")
+                                      .arg(formatBytes(ramMiB * 1024 * 1024))
+                                : QString());
     if (m.shmem > 0) {
-        html += row(StatusStats::tr("Shared"), formatBytes(m.shmem),
-                    StatusStats::tr("the guest's RAM, as far as it has used it"));
+        html += tableRow(StatusStats::tr("Shared"), formatBytes(m.shmem),
+                         StatusStats::tr("the guest's RAM, as far as it has used it"));
     }
-    html += row(StatusStats::tr("Private"), formatBytes(m.anon),
-                m.shmem > 0 ? StatusStats::tr("QEMU's own: its heap and buffers")
-                            : StatusStats::tr("the guest's RAM and QEMU's own"));
-    html += row(StatusStats::tr("Files"), formatBytes(m.file),
-                StatusStats::tr("QEMU's program and libraries"));
+    html += tableRow(StatusStats::tr("Private"), formatBytes(m.anon),
+                     m.shmem > 0 ? StatusStats::tr("QEMU's own: its heap and buffers")
+                                 : StatusStats::tr("the guest's RAM and QEMU's own"));
+    html += tableRow(StatusStats::tr("Files"), formatBytes(m.file),
+                     StatusStats::tr("QEMU's program and libraries"));
     if (m.swap > 0) {
-        html += row(StatusStats::tr("Swapped out"), formatBytes(m.swap));
+        html += tableRow(StatusStats::tr("Swapped out"), formatBytes(m.swap));
     }
     if (m.proportional >= 0) {
-        html += row(StatusStats::tr("Proportional"), formatBytes(m.proportional),
-                    StatusStats::tr("PSS: pages shared with passt or virtiofsd counted in part"));
+        html += tableRow(StatusStats::tr("Proportional"), formatBytes(m.proportional),
+                         StatusStats::tr("PSS: pages shared with passt or virtiofsd "
+                                         "counted in part"));
     }
     html += "</table>";
     if (s.guestMemory) {
         html += StatusStats::tr("<b>The guest</b>, by the guest tools") + "<table>" +
-                row(StatusStats::tr("In use"), formatBytes(s.guestTotal - s.guestAvailable),
-                    StatusStats::tr("of %1, its caches left out").arg(formatBytes(s.guestTotal))) +
+                tableRow(StatusStats::tr("In use"), formatBytes(s.guestTotal - s.guestAvailable),
+                         StatusStats::tr("of %1, its caches left out")
+                             .arg(formatBytes(s.guestTotal))) +
                 "</table>";
     } else if (guest == VmStats::GuestSource::NoAgent) {
         html += StatusStats::tr("<i>What the guest itself uses needs the guest tools.</i>");
@@ -553,16 +581,19 @@ static QString diskDetails(const VmStats::Snapshot &s)
 {
     using VmStats::formatBytes;
     using VmStats::formatRate;
-    QString html = StatusStats::tr("<b>Disks</b>, over the last second") + "<table>";
+    QString html = StatusStats::tr("<b>Disks</b>, over the last second; in all since QEMU "
+                                   "started") +
+                   "<table>";
 
     for (const VmStats::DeviceRate &d : s.diskUse.devices) {
         if (d.readTotal == 0 && d.writtenTotal == 0) {
             continue;       // an empty drive
         }
-        html += row(d.name,
-                    StatusStats::tr("R %1 · W %2").arg(formatRate(d.read), formatRate(d.written)),
-                    StatusStats::tr("%1 read and %2 written since QEMU started")
-                        .arg(formatBytes(d.readTotal), formatBytes(d.writtenTotal)));
+        html += tableRow(d.name,
+                         StatusStats::tr("R %1 · W %2")
+                             .arg(formatRate(d.read), formatRate(d.written)),
+                         StatusStats::tr("in all %1 read, %2 written")
+                             .arg(formatBytes(d.readTotal), formatBytes(d.writtenTotal)));
     }
     return html + "</table>";
 }
@@ -571,17 +602,18 @@ static QString networkDetails(const VmStats::Snapshot &s)
 {
     using VmStats::formatBytes;
     using VmStats::formatRate;
-    QString html = StatusStats::tr("<b>Network</b>, by the guest's own counters (guest tools)") +
+    QString html = StatusStats::tr("<b>Network</b>, by the guest's own counters (guest tools); "
+                                   "in all since the guest started") +
                    "<table>";
 
     for (const VmStats::InterfaceRate &i : s.net.interfaces) {
-        html += row(i.name,
-                    StatusStats::tr("↓ %1 · ↑ %2").arg(formatRate(i.rx), formatRate(i.tx)),
-                    StatusStats::tr("%1 received and %2 sent since the guest started")
-                        .arg(formatBytes(i.rxTotal), formatBytes(i.txTotal)));
+        html += tableRow(i.name,
+                         StatusStats::tr("↓ %1 · ↑ %2").arg(formatRate(i.rx), formatRate(i.tx)),
+                         StatusStats::tr("in all %1 received, %2 sent")
+                             .arg(formatBytes(i.rxTotal), formatBytes(i.txTotal)));
     }
     if (s.net.interfaces.isEmpty()) {
-        html += row(StatusStats::tr("No network card"), QString());
+        html += tableRow(StatusStats::tr("No network card"), QString());
     }
     return html + "</table>";
 }
@@ -610,7 +642,7 @@ static QString gpuDetails(const VmStats::Snapshot &s)
                     .arg(g.pdev.toHtmlEscaped(), g.driver.toHtmlEscaped()) +
                 "<table>";
         for (const VmStats::EngineUse &e : g.engines) {
-            html += row(e.name, PerfStats::formatPercent(e.busy));
+            html += tableRow(e.name, PerfStats::formatPercent(e.busy));
         }
         for (const VmStats::RegionUse &r : g.regions) {
             QString note = regionNote(r.name);
@@ -618,7 +650,7 @@ static QString gpuDetails(const VmStats::Snapshot &s)
                 note += (note.isEmpty() ? QString() : StatusStats::tr(", ")) +
                         StatusStats::tr("%1 allocated").arg(VmStats::formatBytes(r.total));
             }
-            html += row(r.name, VmStats::formatBytes(r.resident), note);
+            html += tableRow(r.name, VmStats::formatBytes(r.resident), note);
         }
         html += "</table>";
         html += StatusStats::tr("<i>QEMU is %n client(s) of it: its display and the guest's 3D "
@@ -647,25 +679,25 @@ static QString screenDetails(const PerfStats::Snapshot &s, const Stats::Summary 
         html += StatusStats::tr(" (%1)").arg(about.join(StatusStats::tr(", ")));
     }
     html += "<table>";
-    html += row(StatusStats::tr("Frames on screen"),
-                StatusStats::tr("%1/s").arg(qRound(d.presented)),
-                StatusStats::tr("of %1 updates from QEMU").arg(qRound(d.flushes)));
+    html += tableRow(StatusStats::tr("Frames on screen"),
+                     StatusStats::tr("%1/s").arg(qRound(d.presented)),
+                     StatusStats::tr("of %1 updates from QEMU").arg(qRound(d.flushes)));
     if (d.frame.samples) {
-        html += row(StatusStats::tr("Frame latency"), PerfStats::formatMs(d.frame.median),
-                    StatusStats::tr("p99 %1: %2")
-                        .arg(PerfStats::formatMs(d.frame.p99),
-                             swap ? StatusStats::tr("update to buffer swap, without the "
-                                                    "compositor")
-                                  : StatusStats::tr("update to on screen")));
+        html += tableRow(StatusStats::tr("Frame latency"), PerfStats::formatMs(d.frame.median),
+                         StatusStats::tr("p99 %1: %2")
+                             .arg(PerfStats::formatMs(d.frame.p99),
+                                  swap ? StatusStats::tr("update to buffer swap, without the "
+                                                         "compositor")
+                                       : StatusStats::tr("update to on screen")));
     }
     if (d.interval.samples) {
-        html += row(StatusStats::tr("Frame interval"), PerfStats::formatMs(d.interval.median),
-                    StatusStats::tr("p99 %1").arg(PerfStats::formatMs(d.interval.p99)));
+        html += tableRow(StatusStats::tr("Frame interval"), PerfStats::formatMs(d.interval.median),
+                         StatusStats::tr("p99 %1").arg(PerfStats::formatMs(d.interval.p99)));
     }
     if (v.inputs) {
-        html += row(StatusStats::tr("Input"), PerfStats::formatMs(v.inputUsP50 / 1000),
-                    StatusStats::tr("p99 %1: a key or the mouse to QEMU and back")
-                        .arg(PerfStats::formatMs(v.inputUsP99 / 1000)));
+        html += tableRow(StatusStats::tr("Input"), PerfStats::formatMs(v.inputUsP50 / 1000),
+                         StatusStats::tr("p99 %1: a key or the mouse to QEMU and back")
+                             .arg(PerfStats::formatMs(v.inputUsP99 / 1000)));
     }
     html += "</table>";
     if (swap) {

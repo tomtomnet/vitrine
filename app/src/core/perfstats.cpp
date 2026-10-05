@@ -207,9 +207,14 @@ QString mainLoopSummary(const Snapshot &s)
 /* A row of plain text: values like "< 0.1 %" are no markup */
 static QString row(const QString &label, const QString &value, const QString &note = {})
 {
-    return QString("<tr><td>%1</td><td align=\"right\">&nbsp;&nbsp;%2</td>"
-                   "<td>&nbsp;&nbsp;%3</td></tr>")
+    return QString("<tr><td nowrap>%1</td><td nowrap align=\"right\">&nbsp;&nbsp;%2</td>"
+                   "<td nowrap>&nbsp;&nbsp;%3</td></tr>")
         .arg(label.toHtmlEscaped(), value.toHtmlEscaped(), note.toHtmlEscaped());
+}
+
+QString tableRow(const QString &label, const QString &value, const QString &note)
+{
+    return row(label, value, note);
 }
 
 static QString p99(const Latency &l)
@@ -300,7 +305,8 @@ QString hostDetails(const Snapshot &s)
         html += row(QObject::tr("Main loop"),
                     QObject::tr("%1 CPU").arg(formatPercent(s.mainLoop.cpu)),
                     QObject::tr("waited %1 of the time for a CPU, %2 per run")
-                        .arg(formatPercent(s.mainLoop.wait), formatMs(s.mainLoop.waitPerRunMs)));
+                        .arg(formatPercent(s.mainLoop.wait),
+                             formatMs(s.mainLoop.waitPerRunMs)));
         if (s.vcpus.threads) {
             html += row(QObject::tr("%n vCPU(s)", nullptr, s.vcpus.threads),
                         QObject::tr("%1 CPU").arg(formatPercent(s.vcpus.cpu)),
@@ -309,7 +315,8 @@ QString hostDetails(const Snapshot &s)
         if (s.others.threads) {
             html += row(QObject::tr("Other threads"),
                         QObject::tr("%1 CPU").arg(formatPercent(s.others.cpu)),
-                        QObject::tr("%n thread(s): GPU, I/O, audio…", nullptr, s.others.threads));
+                        QObject::tr("%n thread(s): GPU, I/O, audio…", nullptr,
+                                    s.others.threads));
         }
         html += "</table>";
     }
@@ -324,7 +331,8 @@ QString hostDetails(const Snapshot &s)
                     QObject::tr("I/O and MMIO: emulated devices"));
         if (s.haltPollSuccess >= 0) {
             html += row(QObject::tr("Halt polling"),
-                        QObject::tr("%1 successful").arg(formatPercent(100 * s.haltPollSuccess)),
+                        QObject::tr("%1 successful")
+                            .arg(formatPercent(100 * s.haltPollSuccess)),
                         QObject::tr("%1 of a CPU polling").arg(formatPercent(s.haltPollCpu)));
         }
         html += "</table>";

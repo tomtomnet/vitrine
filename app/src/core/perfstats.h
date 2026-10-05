@@ -100,6 +100,13 @@ QString details(const Snapshot &s);
 /* Those of QEMU's threads and KVM: details() without the display */
 QString hostDetails(const Snapshot &s);
 
+/*
+ * A row of a tooltip's table, its cells plain text (values like "< 0.1 %"
+ * are no markup) that do not wrap: a word-wrapped tooltip is laid out 80
+ * characters wide, which the table would be squeezed into
+ */
+QString tableRow(const QString &label, const QString &value, const QString &note = {});
+
 /* Milliseconds, to two significant digits or so: "0.35 ms", "6.1 ms", "21 ms" */
 QString formatMs(double ms);
 /* A percentage in tooltips: "< 0.1 %", "0.4 %", "12 %" */

@@ -73,11 +73,16 @@ public:
     }
 
     QHash<QString, int> asked;
+    bool idle = false;      // the disk's counters stay
 
 private:
     QByteArray answer(const QString &command)
     {
-        const int n = ++asked[command];
+        int n = ++asked[command];
+        if (command == "query-blockstats") {
+            m_disk = idle ? m_disk : n;
+            n = m_disk;
+        }
         if (command == "query-status") {
             return R"({"running": true, "status": "running"})";
         }
@@ -97,6 +102,7 @@ private:
 
     QLocalServer m_server;
     QByteArray m_buffer;
+    int m_disk = 0;
 };
 
 /* A VM found running: the stand-in QEMU (threads "CPU 0/KVM", "CPU 1/KVM")
@@ -344,6 +350,35 @@ private slots:
             }
         }
         Scales::set(120);
+    }
+
+    /* A statistic narrower for a while gets a narrower place, at once wider */
+    void shrink()
+    {
+        Running vm;
+        QTRY_COMPARE(vm.vm->runner()->state(), VmRunner::State::Running);
+        StatusStats::setShrinkDelay(1500);
+        Window w;
+        w.stats->setShown(StatusStats::Disk, true);
+        w.stats->setVm(vm.vm);
+        Scales::settle(&w.window);
+        QLabel *disk = w.stats->label(StatusStats::Disk);
+        QTRY_VERIFY(disk->isVisible() && disk->text().contains("MiB/s"));
+        const int wide = disk->width();
+        const int memory = w.stats->label(StatusStats::Memory)->x();
+
+        vm.qmp->idle = true;
+        QTRY_COMPARE(disk->text(), "Disk R 0 B/s · W 0 B/s");
+        /* its place kept for now, what comes before it where it was */
+        QCOMPARE(disk->width(), wide);
+        QTRY_VERIFY_WITH_TIMEOUT(disk->width() < wide, 8000);
+        QCOMPARE(disk->width(), disk->sizeHint().width());
+        QCOMPARE(w.stats->label(StatusStats::Memory)->x(), memory);
+        /* busy again: as wide as it needs at once */
+        vm.qmp->idle = false;
+        QTRY_VERIFY(disk->text().contains("MiB/s"));
+        QVERIFY(disk->width() >= disk->sizeHint().width());
+        StatusStats::setShrinkDelay(10000);
     }
 
     /* An item of the status bar the menu hides */
