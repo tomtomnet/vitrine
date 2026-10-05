@@ -95,8 +95,9 @@ ctest --test-dir build --output-on-failure   # optional
    system's QEMU, if there is one, except those that use what it lacks,
    such as the native context of new Linux VMs: these wait for the build.
    `host/build.sh` does the same build by hand.
-2. **Create a VM.** File > New… (Ctrl+N): name, system, memory, processors,
-   disk, and optionally an ISO to install from. Machine > Start (Ctrl+Return)
+2. **Create a VM.** File > New… (Ctrl+N): name, optionally an ISO to install
+   from, the system (detected from the ISO's label or file name, or chosen
+   from a list), memory, processors, disk. Machine > Start (Ctrl+Return)
    starts it. Each VM is its QEMU command line, which Machine > Settings
    (Ctrl+S) edits. A Linux VM whose 3D card lacks what new VMs get (native
    context, the host vblank timing) offers Update… on its Details tab.
@@ -109,7 +110,8 @@ ctest --test-dir build --output-on-failure   # optional
    guest/build-medium.sh
    ```
 
-   Then Machine > Install Guest Tools… > Install starts the VM with the tools
+   They are offered for VMs whose system is Fedora (Settings > General).
+   Machine > Install Guest Tools… > Install starts the VM with the tools
    medium (Restart and Install restarts a running one); the guest installs
    them before its desktop starts, then restarts once more. It needs the
    network and Secure Boot off (the driver is not signed). Attach Medium Only
