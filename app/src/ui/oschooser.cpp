@@ -7,6 +7,7 @@
 #include <QKeyEvent>
 #include <QLineEdit>
 #include <QMap>
+#include <QPainter>
 #include <QScreen>
 #include <QSortFilterProxyModel>
 #include <QStandardItemModel>
@@ -67,6 +68,23 @@ private:
 };
 
 namespace {
+
+/* The list's frame: a line around it, which a popup of the style's own
+   (a combo box's, a menu's) gets from the style, and a QFrame does not */
+class PopupFrame : public QFrame
+{
+public:
+    using QFrame::QFrame;
+
+protected:
+    void paintEvent(QPaintEvent *event) override
+    {
+        QFrame::paintEvent(event);
+        QPainter p(this);
+        p.setPen(palette().color(QPalette::Mid));
+        p.drawRect(rect().adjusted(0, 0, -1, -1));
+    }
+};
 
 /* The families of the list, in its order */
 enum Family { Linux, Windows, Bsd, MacOs, Others, Families };
@@ -172,9 +190,8 @@ void OsChooser::makePopup()
     if (m_popup) {
         return;
     }
-    m_popup = new QFrame(this, Qt::Popup);
+    m_popup = new PopupFrame(this, Qt::Popup);
     m_popup->setObjectName("systems");
-    m_popup->setFrameShape(QFrame::StyledPanel);
     /* the click that closes it on the field does not open it again */
     m_popup->setAttribute(Qt::WA_NoMouseReplay);
     m_search = new QLineEdit;
@@ -228,7 +245,8 @@ void OsChooser::fill()
         if (os.distro.isEmpty()) {
             continue;
         }
-        const QString distro = catalogue.distroName(os.distro);
+        /* Windows NT 3.x and 4.0 are Windows too */
+        const QString distro = catalogue.distroName(os.distro == "winnt" ? "win" : os.distro);
         auto &group = groups[familyOf(os.family)][distro.toLower()];
         group.first = distro;
         group.second << os;
@@ -257,6 +275,10 @@ void OsChooser::fill()
                 QStandardItem *row =
                     systemRow(releases.first(), distro, familyName(Family(f)), today);
                 row->setIcon(icon);
+                /* "Zorin OS", rather than its other release among none */
+                if (releases.first().isGeneric()) {
+                    row->setText(distro);
+                }
                 family->appendRow(row);
                 continue;
             }

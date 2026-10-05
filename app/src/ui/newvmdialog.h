@@ -48,6 +48,8 @@ private:
     void systemChanged();
     /* The VM named after its system, unless the user named it */
     void nameAfterSystem();
+    /* What detect() found, under the system; the window as high as it then needs */
+    void tell(const QString &text);
     VmTemplate::Os templateOs() const;
     bool create(Vm *vm, QString *error);
 

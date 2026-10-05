@@ -144,7 +144,7 @@ NewVmDialog::NewVmDialog(VmStore *store, QWidget *parent)
         /* chosen: the disc no longer decides */
         const QSignalBlocker block(m_detect);
         m_detect->setChecked(false);
-        m_detected->hide();
+        tell({});
         systemChanged();
         nameAfterSystem();
     });
@@ -177,25 +177,34 @@ void NewVmDialog::detect()
     const QString iso = m_iso->text().trimmed();
 
     if (!m_detect->isChecked() || iso.isEmpty() || !QFileInfo(iso).isFile()) {
-        m_detected->hide();
+        tell({});
         return;
     }
     const GuestOs::Detection d = GuestOs::detect(iso);
     if (d.id.isEmpty()) {
-        m_detected->setText(tr("Not recognized from the disc: choose the system."));
-        m_detected->show();
+        tell(tr("Not recognized from the disc: choose the system."));
         return;
     }
     m_os->setSystem(d.id);
     if (!d.desktop.isEmpty() && m_desktop->findData(d.desktop) >= 0) {
         m_desktop->setCurrentIndex(m_desktop->findData(d.desktop));
     }
-    m_detected->setText(d.by == "osinfo"
-                            ? tr("Detected from the disc's label, with libosinfo's database.")
-                            : tr("Detected from the disc's label or file name."));
-    m_detected->show();
+    tell(d.by == "osinfo" ? tr("Detected from the disc's label, with libosinfo's database.")
+                          : tr("Detected from the disc's label or file name."));
     systemChanged();
     nameAfterSystem();
+}
+
+void NewVmDialog::tell(const QString &text)
+{
+    const bool shown = !m_detected->isHidden();
+
+    m_detected->setText(text);
+    m_detected->setVisible(!text.isEmpty());
+    /* a row more or less: the others keep their height, the window changes */
+    if (shown != !text.isEmpty() && isVisible()) {
+        Widgets::resizeToWidth(this, width());
+    }
 }
 
 void NewVmDialog::systemChanged()

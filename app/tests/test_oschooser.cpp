@@ -100,6 +100,11 @@ private slots:
                          "<short-id>debian12</short-id><short-id>debianbookworm</short-id>"
                          "<name>Debian 12</name><version>12</version><distro>debian</distro>" +
                              family)));
+        QVERIFY(write(db + "/os/microsoft.com/winnt-4.0.xml",
+                      os("http://microsoft.com/winnt/4.0",
+                         "<short-id>winnt4.0</short-id><name>Microsoft Windows NT Server 4.0</name>"
+                         "<version>4.0</version><family>winnt</family><distro>winnt</distro>"
+                         "<eol-date>2004-12-31</eol-date>")));
         QVERIFY(write(db + "/os/libosinfo.org/linux-2024.xml",
                       os("http://libosinfo.org/linux/2024",
                          "<short-id>linux2024</short-id><name>Generic Linux 2024</name>"
@@ -168,9 +173,18 @@ private slots:
         QVERIFY(ids.contains("family:linux"));
         QVERIFY(ids.contains("family:windows"));
         QVERIFY(ids.contains("family:other"));
-        /* Windows, one distribution: its releases right under it */
+        /* Windows, one distribution (NT 4.0's too): its releases right under it */
         const QModelIndex windows = tree->model()->index(1, 0);
         QCOMPARE(tree->model()->index(0, 0, windows).data(OsChooser::IdRole).toString(), "win11");
+        /* a distribution of one row, which stands for all its releases */
+        bool zorin = false;
+        for (int r = 0; r < tree->model()->rowCount(tree->model()->index(0, 0)); r++) {
+            const QModelIndex i = tree->model()->index(r, 0, tree->model()->index(0, 0));
+            if (i.data(OsChooser::IdRole).toString() == "zorin-unknown") {
+                zorin = i.data().toString() == "Zorin OS";
+            }
+        }
+        QVERIFY(zorin);
         /* the one shown, current, its distribution open */
         QCOMPARE(tree->currentIndex().data(OsChooser::IdRole).toString(), "fedora43");
         QVERIFY(tree->isExpanded(tree->currentIndex().parent()));
