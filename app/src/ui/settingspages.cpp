@@ -122,8 +122,10 @@ void GeneralPage::updateDesktop()
 VmConfig::Guest GeneralPage::shown() const
 {
     const QString os = m_os->currentData().toString();
-    /* a desktop for Linux, or a system not known */
-    return {os, m_desktop->isEnabled() ? m_desktop->currentData().toString() : QString()};
+    /* a desktop for Linux, or a system not known; the precise system while
+       the family is the same */
+    return {os, m_desktop->isEnabled() ? m_desktop->currentData().toString() : QString(),
+            os == m_loadedGuest.os ? m_loadedGuest.id : QString()};
 }
 
 void GeneralPage::load(const ArgsFile &args)
@@ -136,6 +138,7 @@ void GeneralPage::load(const ArgsFile &args)
     fillChoices(m_desktop, kDesktops, guest.desktop);
     updateDesktop();
     /* as the page shows it, so that an untouched page writes nothing */
+    m_loadedGuest = guest;
     m_loadedGuest = shown();
 }
 

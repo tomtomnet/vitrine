@@ -18,6 +18,8 @@ qt_add_library(vitrine_core STATIC
     src/core/gpucontexts.h
     src/core/guestagent.cpp
     src/core/guestagent.h
+    src/core/guestos.cpp
+    src/core/guestos.h
     src/core/guesttools.cpp
     src/core/guesttools.h
     src/core/hostdevices.cpp
@@ -291,6 +293,7 @@ if(BUILD_TESTING)
             firmwarefiles
             gpucontexts
             guestagent
+            guestos
             guesttools
             hostdevices
             hostkvm

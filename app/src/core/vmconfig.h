@@ -36,14 +36,17 @@ QList<EnvVar> environment(const ArgsFile &args);
 bool isEnvAssignment(const QString &line);
 
 /*
- * What runs in the VM, the #guest directive: "#guest linux,desktop=kde".
- * QEMU never sees it; vitrine picks devices and timings by it, e.g. the
- * swap targets of the 3D card at start.  Both are lowercase words, empty
- * when unknown.
+ * What runs in the VM, the #guest directive:
+ * "#guest linux,id=fedora44,desktop=kde".  QEMU never sees it; vitrine
+ * picks devices and timings by it, e.g. the swap targets of the 3D card at
+ * start, and shows the system (its icon, whether the guest tools are for
+ * it).  Lowercase words, empty when unknown; files written before the id
+ * have the family alone.
  */
 struct Guest {
-    QString os;             // linux, windows or other
+    QString os;             // the family: linux, windows or other
     QString desktop;        // e.g. kde, gnome; for Linux
+    QString id;             // the system, as GuestOs knows it: fedora44, win11
 };
 Guest guest(const ArgsFile &args);
 /* Keeps the directive's other keys; an empty @guest removes it */

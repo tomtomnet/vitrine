@@ -63,10 +63,12 @@ sudo dnf install podman dosfstools mtools createrepo_c
 
 Running VMs: UEFI firmware (else new VMs use BIOS), passt for the NAT network
 (else QEMU's user-mode one), virtiofsd for shared folders, Qt's Wayland and SVG
-plugins (Plasma has them):
+plugins (Plasma has them), and optionally libosinfo's database for the list of
+systems and their detection from installation discs (else vitrine's shorter
+list):
 
 ```
-sudo dnf install edk2-ovmf passt virtiofsd qt6-qtwayland qt6-qtsvg
+sudo dnf install edk2-ovmf passt virtiofsd qt6-qtwayland qt6-qtsvg osinfo-db
 ```
 
 ## Build

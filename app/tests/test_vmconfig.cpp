@@ -311,6 +311,31 @@ private slots:
         a = ArgsFile();
         setGuest(a, {"other", ""});
         QCOMPARE(a.toText(), "#guest other\n");
+
+        /* the system, after the family; files written before it have none */
+        a = ArgsFile::parse("-name F\n#guest linux,desktop=kde\n");
+        QCOMPARE(guest(a).id, "");
+        setGuest(a, {"linux", "kde", "fedora44"});
+        QCOMPARE(a.toText(), "-name F\n#guest linux,id=fedora44,desktop=kde\n");
+        QCOMPARE(guest(a).os, "linux");
+        QCOMPARE(guest(a).desktop, "kde");
+        QCOMPARE(guest(a).id, "fedora44");
+        setGuest(a, {"linux", "kde"});
+        QCOMPARE(a.toText(), "-name F\n#guest linux,desktop=kde\n");
+        a = ArgsFile::parse("#guest windows,id=Win11,tools=1\n");
+        QCOMPARE(guest(a).id, "win11");
+        setGuest(a, {"windows", "", "win10"});
+        QCOMPARE(a.toText(), "#guest windows,id=win10,tools=1\n");
+        setGuest(a, {"", "", "win10"});
+        QCOMPARE(a.toText(), "#guest id=win10,tools=1\n");
+        QCOMPARE(guest(a).os, "");
+        setGuest(a, {});
+        QCOMPARE(a.toText(), "");
+        /* ids with the characters options escape */
+        a = ArgsFile();
+        setGuest(a, {"linux", "", "nixos-25.05"});
+        QCOMPARE(a.toText(), "#guest linux,id=nixos-25.05\n");
+        QCOMPARE(guest(a).id, "nixos-25.05");
     }
 
     /* The Processors of the Hardware page: the topology keeps its shape */
