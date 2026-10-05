@@ -233,8 +233,9 @@ MainWindow::MainWindow(VmStore *store, QWidget *parent)
     connect(host, &HostSettings::notice, this,
             [this](const QString &text) { statusBar()->showMessage(text, 15000); });
     /* the statistics of the selected VM, and the labels the user may hide
-       from their menu */
-    statusBar()->addPermanentWidget(m_stats->optional("running", tr("Running VMs"), m_running));
+       from their menu: not the running count, which says what a closing
+       window waits for */
+    statusBar()->addPermanentWidget(m_running);
     statusBar()->addPermanentWidget(m_stats->optional("keyboard", tr("Keyboard"), m_input));
     statusBar()->addPermanentWidget(m_stats);
     statusBar()->addPermanentWidget(m_updates->button());

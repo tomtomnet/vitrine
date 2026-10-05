@@ -450,7 +450,8 @@ GuestToolsMonitor::GuestToolsMonitor(Vm *vm)
     connect(m_socket, &QLocalSocket::readyRead, this, &GuestToolsMonitor::read);
     connect(m_socket, &QLocalSocket::connected, this, [this]() { requestStatus(); });
     connect(m_socket, &QLocalSocket::disconnected, this, [this]() {
-        agentGone();
+        /* an answer that will not come */
+        m_statsId = -1;
         if (m_in.running) {
             m_retry->start();
         }

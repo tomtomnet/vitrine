@@ -25,9 +25,9 @@ class Vm;
  * - CPU: QEMU's threads, from /proc/PID/task (PerfStats), its vCPUs by
  *   their names ("CPU 0/KVM", QEMU's -name debug-threads=on) or else by
  *   the thread ids QMP gives;
- * - memory: QEMU's resident memory, /proc/PID/status, its proportional
- *   share (PSS, smaps_rollup) on demand; the guest's own view from the
- *   guest tools' agent;
+ * - memory: QEMU's resident memory, /proc/PID/status; its proportional
+ *   share (PSS, smaps_rollup) and the guest's own view (the guest tools'
+ *   agent) while the details show;
  * - disk: QMP's query-blockstats, the guest's reads and writes;
  * - network: the guest's own counters, from the guest tools' agent.  QEMU
  *   counts nothing: passt over vhost-user moves the packets itself, and
@@ -43,11 +43,15 @@ namespace VmStats {
 
 /* The vCPU of a thread QEMU named (debug-threads=on: "CPU 3/KVM"), else -1 */
 int vcpuIndex(const QString &threadName);
+/* The vCPUs' threads of a query-cpus-fast reply, each once: TCG's
+   single-threaded mode runs them all in one */
+QList<qint64> parseVcpuThreads(const QJsonArray &reply);
 /*
- * The names of the threads of process @pid by thread id, from their comm:
- * those of @known taken as they are, so that a thread's name is read once
+ * The names of threads @tids of process @pid, from their comm: those of
+ * @known taken as they are, so that a thread's name is read once
  */
-QHash<qint64, QString> readThreadNames(qint64 pid, const QHash<qint64, QString> &known = {},
+QHash<qint64, QString> readThreadNames(qint64 pid, const QList<qint64> &tids,
+                                       const QHash<qint64, QString> &known = {},
                                        const QString &proc = "/proc");
 
 /* A thread's share of a CPU between two readings */
@@ -181,10 +185,16 @@ struct EngineUse {
     QString name;
     double busy = 0;            // % of the time, of the engine's capacity
 };
+/*
+ * A region's memory, in bytes, of all the clients of a GPU: what each
+ * holds alone, and what they share counted once.  Their own buffers, which
+ * the guest's contexts and QEMU's display import from one another, are in
+ * each one's drm-shared; the largest of those stands for all of them.
+ */
 struct RegionUse {
     QString name;
-    qint64 resident = 0;        // bytes
-    qint64 total = 0;
+    qint64 resident = 0;
+    qint64 total = 0;           // allocated, resident or not
 };
 /* What the clients of one GPU took */
 struct GpuUse {
@@ -195,6 +205,7 @@ struct GpuUse {
     QList<EngineUse> engines;   // by name
     QList<RegionUse> regions;   // those with some memory
     qint64 memory = 0;          // resident, all regions
+    bool shared = false;        // some of it shared between clients
 };
 /*
  * Per GPU, from two readings @elapsedNs apart; a client in one reading
@@ -251,8 +262,10 @@ enum class GuestSource {
  * Polls the VM once a second while it runs, for the parts asked
  * (setSources()), and tells when the snapshot changed.  The display's
  * statistics from QEMU (SDL) are asked only with Display, the KVM counters
- * with Kvm, PSS with Pss: the status bar asks for those while their
- * details show.  Nothing is polled while no VM runs or nothing is asked.
+ * with Kvm, PSS and the guest's memory with MemoryDetails: the status bar
+ * asks for those while their details show.  The guest's counters go when
+ * the agent has not answered for a few seconds (the VM paused, the guest
+ * restarting).  Nothing is polled while no VM runs or nothing is asked.
  */
 class Sampler : public QObject
 {
@@ -267,7 +280,7 @@ public:
         Gpu = 0x10,
         Display = 0x20,     // x-query-display-stats
         Kvm = 0x40,         // query-stats
-        Pss = 0x80,         // with Memory
+        MemoryDetails = 0x80,   // with Memory: PSS and the guest's own memory
     };
     Q_DECLARE_FLAGS(Sources, Source)
 
@@ -302,6 +315,8 @@ private:
     void askKvm();
     void readKvm(const QJsonArray &reply, qint64 now);
     void guestCounters(const QJsonObject &stats);
+    /* No answer of the agent for a while: no counters of the guest */
+    void dropGuestCounters();
 
     QPointer<Vm> m_vm;
     QPointer<GuestToolsMonitor> m_agent;
@@ -331,6 +346,7 @@ private:
     QList<DrmClient> m_drm;
     qint64 m_drmAt = 0;
     GuestCounters m_guest;
+    qint64 m_guestAt = 0;           // when they came, by our clock
     Snapshot m_snapshot;
 };
 

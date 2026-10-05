@@ -29,6 +29,24 @@
 
 using namespace VmStats;
 
+/* Waits on QEMU's stand-in and on the sampler's polls, a second apart:
+   long, for a host busy with the other tests (ctest -j) */
+static const int kSlow = 20000;
+
+/*
+ * @process once its exec is done: QProcess says started as soon as vfork
+ * lets the parent go on, before the kernel has set the new command line
+ * (/proc/PID/cmdline is empty, or the test's own, for a moment), and the
+ * runner knows its QEMU by that command line
+ */
+static bool waitExec(const QProcess &process, const QString &argument)
+{
+    return QTest::qWaitFor([&]() {
+        QFile f(QString("/proc/%1/cmdline").arg(process.processId()));
+        return f.open(QIODevice::ReadOnly) && f.readAll().contains(argument.toLocal8Bit());
+    }, kSlow);
+}
+
 static bool writeFile(const QString &path, const QByteArray &data)
 {
     QDir().mkpath(QFileInfo(path).path());
@@ -247,6 +265,8 @@ public:
         m_server.listen(path);
         connect(&m_server, &QLocalServer::newConnection, this, [this]() {
             QLocalSocket *peer = m_server.nextPendingConnection();
+            connections++;
+            m_buffer.clear();
             connect(peer, &QLocalSocket::readyRead, this, [this, peer]() {
                 m_buffer += peer->readAll();
                 qsizetype nl;
@@ -265,12 +285,25 @@ public:
     }
 
     int stats = 0;          // asked
+    int connections = 0;
+    bool silent = false;    // asked, and no answer
+
+    /* the host's end dropped, as when QEMU's socket closes */
+    void drop()
+    {
+        for (QLocalSocket *peer : m_server.findChildren<QLocalSocket *>()) {
+            peer->disconnectFromServer();
+        }
+    }
 
 private:
     void answer(QLocalSocket *peer, const QJsonObject &command)
     {
         QJsonObject reply{{"id", command["id"]}};
         stats += command["cmd"] == "stats";
+        if (silent) {
+            return;
+        }
         if (command["cmd"] == "stats" && m_protocol >= 2) {
             /* a second of the guest's clock between two */
             const QJsonObject card{{"name", "enp0s3"},
@@ -316,9 +349,10 @@ struct Running {
         QDir(vms.path()).mkpath("busy");
         writeFile(vms.path() + "/busy/vm.args", "-name Busy\n-m 1G\n-display none\n");
         const QString run = Paths::vmRuntimeDir("busy");
-        qemu.start(FAKE_QEMU,
-                   {"-qmp", QString("unix:%1/qmp.sock,server=on,wait=off").arg(run)});
+        const QString qmpArg = QString("unix:%1/qmp.sock,server=on,wait=off").arg(run);
+        qemu.start(FAKE_QEMU, {"-qmp", qmpArg});
         qemu.waitForStarted();
+        waitExec(qemu, qmpArg);
         writeFile(run + "/qemu.pid", QByteArray::number(qemu.processId()) + "\n");
         qmp = std::make_unique<FakeQmp>(run + "/qmp.sock");
         if (agentProtocol > 0) {
@@ -327,6 +361,31 @@ struct Running {
         store = std::make_unique<VmStore>(vms.path());
         vm = store->find("busy");
         vm->runner()->attach(vm->args());
+    }
+    /* Running, or why not, for a failing test to tell */
+    bool waitRunning()
+    {
+        if (QTest::qWaitFor([this]() { return vm->runner()->state() == VmRunner::State::Running; },
+                            kSlow)) {
+            return true;
+        }
+        const QString run = Paths::vmRuntimeDir("busy");
+        QFile pid(run + "/qemu.pid"), cmd(QString("/proc/%1/cmdline").arg(qemu.processId()));
+        (void)pid.open(QIODevice::ReadOnly);
+        (void)cmd.open(QIODevice::ReadOnly);
+        QStringList asked;
+        for (auto it = qmp->asked.cbegin(); it != qmp->asked.cend(); ++it) {
+            asked << QString("%1=%2").arg(it.key()).arg(it.value());
+        }
+        qWarning("state %d, error '%s'; stand-in pid %lld state %d exit %d/%d; pid file '%s'; "
+                 "cmdline '%s'; qmp.sock %d; asked %s; XDG_RUNTIME_DIR %s",
+                 int(vm->runner()->state()), qPrintable(vm->runner()->errorString()),
+                 qemu.processId(), int(qemu.state()), qemu.exitCode(), int(qemu.exitStatus()),
+                 pid.readAll().trimmed().constData(),
+                 cmd.readAll().replace('\0', ' ').constData(),
+                 int(QFileInfo::exists(run + "/qmp.sock")), qPrintable(asked.join(' ')),
+                 qgetenv("XDG_RUNTIME_DIR").constData());
+        return false;
     }
     ~Running() { stop(); }
     void stop()
@@ -366,7 +425,7 @@ private slots:
         writeFile(proc.filePath("100/task/101/comm"), "CPU 0/KVM\n");
         writeFile(proc.filePath("100/task/102/comm"), "IO iodisk\n");
 
-        QHash<qint64, QString> names = readThreadNames(100, {}, proc.path());
+        QHash<qint64, QString> names = readThreadNames(100, {100, 101, 102}, {}, proc.path());
         QCOMPARE(names.size(), 3);
         QCOMPARE(names.value(100), "qemu-system-x86");
         QCOMPARE(names.value(101), "CPU 0/KVM");
@@ -374,15 +433,28 @@ private slots:
 
         /* known names are not read again; a thread gone is dropped */
         QDir(proc.filePath("100/task/102")).removeRecursively();
-        names = readThreadNames(100, {{101, "known"}, {102, "gone"}}, proc.path());
+        names = readThreadNames(100, {100, 101}, {{101, "known"}, {102, "gone"}}, proc.path());
         QCOMPARE(names.size(), 2);
         QCOMPARE(names.value(101), "known");
         QVERIFY(!names.contains(102));
+        /* one that went between the two readings: no name */
+        QCOMPARE(readThreadNames(100, {100, 102}, {}, proc.path()).size(), 1);
 
-        QVERIFY(readThreadNames(0, {}, proc.path()).isEmpty());
-        QVERIFY(readThreadNames(200, {}, proc.path()).isEmpty());
-        /* this process: its main thread at least */
-        QVERIFY(!readThreadNames(QCoreApplication::applicationPid()).isEmpty());
+        QVERIFY(readThreadNames(0, {0}, {}, proc.path()).isEmpty());
+        QVERIFY(readThreadNames(200, {200}, {}, proc.path()).isEmpty());
+        /* this process: its main thread */
+        const qint64 self = QCoreApplication::applicationPid();
+        QVERIFY(!readThreadNames(self, {self}).value(self).isEmpty());
+
+        /* without names, QMP's thread ids: each once */
+        QCOMPARE(parseVcpuThreads(jsonArray(R"([{"cpu-index": 0, "thread-id": 11},
+                                                {"cpu-index": 1, "thread-id": 12}])")),
+                 QList<qint64>({11, 12}));
+        QCOMPARE(parseVcpuThreads(jsonArray(R"([{"cpu-index": 0, "thread-id": 7},
+                                                {"cpu-index": 1, "thread-id": 7},
+                                                {"cpu-index": 2, "thread-id": 7}])")),
+                 QList<qint64>({7}));
+        QVERIFY(parseVcpuThreads(QJsonArray()).isEmpty());
     }
 
     void busiest()
@@ -633,9 +705,14 @@ private slots:
         QCOMPARE(engine(amd, "gfx")->busy, 37.0);
         QCOMPARE(engine(amd, "compute")->busy, 2.0);
         QCOMPARE(amd.busy, 37.0);
-        /* both clients' memory, regions with none left out */
+        /* both clients' memory, regions with none left out, what they share
+           (91096 KiB of VRAM each) once */
         QCOMPARE(amd.regions.size(), 2);
-        QCOMPARE(amd.memory, 2 * (qint64(310488) + 34880) * 1024);
+        QCOMPARE(amd.regions[1].name, "vram");
+        QCOMPARE(amd.regions[1].resident, (2 * (qint64(310488) - 91096) + 91096) * 1024);
+        QCOMPARE(amd.regions[0].resident, 2 * qint64(34880) * 1024);
+        QCOMPARE(amd.memory, amd.regions[0].resident + amd.regions[1].resident);
+        QVERIFY(amd.shared);
 
         /* an engine whose time went back counts nothing, and its higher time stays */
         QList<DrmClient> later{client(bump(kAmdgpu, "drm-engine-gfx", -5000))};
@@ -668,7 +745,9 @@ private slots:
         /* bcs and vecs without a reading of their total since: idle */
         QCOMPARE(engine(use[0], "bcs")->busy, 0.0);
         QCOMPARE(use[0].busy, 50.0);
+        /* 16 MiB of its VRAM shared: one client, all counted */
         QCOMPARE(use[0].memory, qint64(192 + 23992) * 1024);
+        QVERIFY(use[0].shared);
 
         /* i915: time over the engines of the class */
         QByteArray i915 = bump(QByteArray(kI915), "drm-engine-video", 500000000);
@@ -678,6 +757,7 @@ private slots:
         QCOMPARE(engine(use[0], "render")->busy, 10.0);
         QCOMPARE(use[0].busy, 25.0);
         QCOMPARE(use[0].memory, 0);
+        QVERIFY(!use[0].shared);
 
         /* two GPUs: the busier first */
         use = gpuUse({client(kI915), client(kAmdgpu)},
@@ -747,7 +827,7 @@ private slots:
     void sampler()
     {
         Running vm(2);
-        QTRY_COMPARE(vm.vm->runner()->state(), VmRunner::State::Running);
+        QVERIFY(vm.waitRunning());
         Sampler sampler;
         sampler.setInterval(100);
         QSignalSpy changed(&sampler, &Sampler::changed);
@@ -781,9 +861,8 @@ private slots:
         QCOMPARE(s.net.rx, 10000000.0);
         QCOMPARE(s.net.tx, 1000000.0);
         QCOMPARE(s.net.interfaces.value(0).name, "enp0s3");
-        QVERIFY(s.guestMemory);
-        QCOMPARE(s.guestTotal, qint64(4) << 30);
-        QCOMPARE(s.guestAvailable, qint64(3) << 30);
+        /* the guest's memory with the memory's details only */
+        QVERIFY(!s.guestMemory);
         /* no GPU in the stand-in */
         QCOMPARE(s.drmClients, 0);
         QVERIFY(!s.gpu);
@@ -793,22 +872,40 @@ private slots:
         QCOMPARE(vm.qmp->asked.value("query-stats"), 0);
         QVERIFY(!changed.isEmpty());
 
-        /* the memory hidden: the network's rates go on from the same counters */
-        sampler.setSources(sampler.sources() & ~Sampler::Memory);
+        /* KVM, PSS and the guest's memory while their details show */
+        sampler.setSources(sampler.sources() | Sampler::Kvm | Sampler::MemoryDetails);
+        QTRY_VERIFY(s.qemuMemory.proportional > 0);
+        QTRY_VERIFY(s.guestMemory);
+        QCOMPARE(s.guestTotal, qint64(4) << 30);
+        QCOMPARE(s.guestAvailable, qint64(3) << 30);
+        QTRY_VERIFY(vm.qmp->asked.value("query-stats") >= 2);
+        QVERIFY(vm.qmp->asked.value("query-commands") == 1);
+
+        /* the details hidden: the network's rates go on from the same counters */
+        sampler.setSources(sampler.sources() & ~Sampler::MemoryDetails);
         QVERIFY(s.network);
         QVERIFY(!s.guestMemory);
-        QVERIFY(!s.memory);
-        const int asked = vm.agent->stats;
+        QCOMPARE(s.qemuMemory.proportional, -1);
+        int asked = vm.agent->stats;
         QTRY_VERIFY(vm.agent->stats > asked);
         QVERIFY(s.network);
         QCOMPARE(s.net.rx, 10000000.0);
-        sampler.setSources(sampler.sources() | Sampler::Memory);
 
-        /* KVM and PSS while their details show */
-        sampler.setSources(sampler.sources() | Sampler::Kvm | Sampler::Pss);
-        QTRY_VERIFY(s.qemuMemory.proportional > 0);
-        QTRY_VERIFY(vm.qmp->asked.value("query-stats") >= 2);
-        QVERIFY(vm.qmp->asked.value("query-commands") == 1);
+        /* the agent's socket dropped: still the agent it was, no "older agent" */
+        vm.agent->drop();
+        QTest::qWait(300);
+        QCOMPARE(sampler.guestSource(), GuestSource::Agent);
+        QTRY_VERIFY_WITH_TIMEOUT(vm.agent->connections == 2, 8000);
+        asked = vm.agent->stats;
+        QTRY_VERIFY(vm.agent->stats > asked + 1);
+        QVERIFY(s.network);
+
+        /* no more answers (the guest paused or restarting): no counters soon */
+        vm.agent->silent = true;
+        QTRY_VERIFY_WITH_TIMEOUT(!s.network, 6000);
+        QCOMPARE(sampler.guestSource(), GuestSource::Agent);
+        vm.agent->silent = false;
+        QTRY_VERIFY_WITH_TIMEOUT(s.network, 8000);
 
         /* hidden again: no more queries, the parts forgotten */
         sampler.setSources({});
@@ -835,7 +932,7 @@ private slots:
     void olderAgent()
     {
         Running vm(1);
-        QTRY_COMPARE(vm.vm->runner()->state(), VmRunner::State::Running);
+        QVERIFY(vm.waitRunning());
         Sampler sampler;
         sampler.setInterval(100);
         sampler.setVm(vm.vm);
@@ -852,7 +949,7 @@ private slots:
     void noAgent()
     {
         Running vm;
-        QTRY_COMPARE(vm.vm->runner()->state(), VmRunner::State::Running);
+        QVERIFY(vm.waitRunning());
         Sampler sampler;
         sampler.setInterval(100);
         QCOMPARE(sampler.guestSource(), GuestSource::None);

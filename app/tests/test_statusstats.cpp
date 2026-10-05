@@ -40,6 +40,24 @@
 
 using Sampler = VmStats::Sampler;
 
+/* Waits on QEMU's stand-in and on the sampler's polls, a second apart:
+   long, for a host busy with the other tests (ctest -j) */
+static const int kSlow = 20000;
+
+/*
+ * @process once its exec is done: QProcess says started as soon as vfork
+ * lets the parent go on, before the kernel has set the new command line
+ * (/proc/PID/cmdline is empty, or the test's own, for a moment), and the
+ * runner knows its QEMU by that command line
+ */
+static bool waitExec(const QProcess &process, const QString &argument)
+{
+    return QTest::qWaitFor([&]() {
+        QFile f(QString("/proc/%1/cmdline").arg(process.processId()));
+        return f.open(QIODevice::ReadOnly) && f.readAll().contains(argument.toLocal8Bit());
+    }, kSlow);
+}
+
 static bool writeFile(const QString &path, const QByteArray &data)
 {
     QDir().mkpath(QFileInfo(path).path());
@@ -124,14 +142,40 @@ struct Running {
         QDir(vms.path()).mkpath("busy");
         writeFile(vms.path() + "/busy/vm.args", "-name Busy\n-m 1G\n-display none\n");
         const QString run = Paths::vmRuntimeDir("busy");
-        qemu.start(FAKE_QEMU,
-                   {"-qmp", QString("unix:%1/qmp.sock,server=on,wait=off").arg(run)});
+        const QString qmpArg = QString("unix:%1/qmp.sock,server=on,wait=off").arg(run);
+        qemu.start(FAKE_QEMU, {"-qmp", qmpArg});
         qemu.waitForStarted();
+        waitExec(qemu, qmpArg);
         writeFile(run + "/qemu.pid", QByteArray::number(qemu.processId()) + "\n");
         qmp = std::make_unique<FakeQmp>(run + "/qmp.sock");
         store = std::make_unique<VmStore>(vms.path());
         vm = store->find("busy");
         vm->runner()->attach(vm->args());
+    }
+    /* Running, or why not, for a failing test to tell */
+    bool waitRunning()
+    {
+        if (QTest::qWaitFor([this]() { return vm->runner()->state() == VmRunner::State::Running; },
+                            kSlow)) {
+            return true;
+        }
+        const QString run = Paths::vmRuntimeDir("busy");
+        QFile pid(run + "/qemu.pid"), cmd(QString("/proc/%1/cmdline").arg(qemu.processId()));
+        (void)pid.open(QIODevice::ReadOnly);
+        (void)cmd.open(QIODevice::ReadOnly);
+        QStringList asked;
+        for (auto it = qmp->asked.cbegin(); it != qmp->asked.cend(); ++it) {
+            asked << QString("%1=%2").arg(it.key()).arg(it.value());
+        }
+        qWarning("state %d, error '%s'; stand-in pid %lld state %d exit %d/%d; pid file '%s'; "
+                 "cmdline '%s'; qmp.sock %d; asked %s; XDG_RUNTIME_DIR %s",
+                 int(vm->runner()->state()), qPrintable(vm->runner()->errorString()),
+                 qemu.processId(), int(qemu.state()), qemu.exitCode(), int(qemu.exitStatus()),
+                 pid.readAll().trimmed().constData(),
+                 cmd.readAll().replace('\0', ' ').constData(),
+                 int(QFileInfo::exists(run + "/qmp.sock")), qPrintable(asked.join(' ')),
+                 qgetenv("XDG_RUNTIME_DIR").constData());
+        return false;
     }
     ~Running()
     {
@@ -248,7 +292,7 @@ private slots:
     void sources()
     {
         Running vm;
-        QTRY_COMPARE(vm.vm->runner()->state(), VmRunner::State::Running);
+        QVERIFY(vm.waitRunning());
         Window w;
         w.stats->setVm(vm.vm);
         QCOMPARE(w.stats->sources(), Sampler::Sources());   // the window is hidden
@@ -268,12 +312,12 @@ private slots:
         w.stats->setShown(StatusStats::Frames, false);
         QVERIFY(!(w.stats->sources() & Sampler::Display));
 
-        /* the memory's tooltip: PSS too, while it shows */
-        QTRY_VERIFY(w.stats->label(StatusStats::Memory)->isVisible());
+        /* the memory's tooltip: PSS and the guest's memory too, while it shows */
+        QTRY_VERIFY_WITH_TIMEOUT(w.stats->label(StatusStats::Memory)->isVisible(), kSlow);
         QLabel *memory = w.stats->label(StatusStats::Memory);
         QHelpEvent tip(QEvent::ToolTip, QPoint(2, 2), memory->mapToGlobal(QPoint(2, 2)));
         QApplication::sendEvent(memory, &tip);
-        QVERIFY(w.stats->sources() & Sampler::Pss);
+        QVERIFY(w.stats->sources() & Sampler::MemoryDetails);
         QToolTip::hideText();
 
         w.window.hide();
@@ -288,7 +332,7 @@ private slots:
     void labels()
     {
         Running vm;
-        QTRY_COMPARE(vm.vm->runner()->state(), VmRunner::State::Running);
+        QVERIFY(vm.waitRunning());
         const QList<int> scales = qEnvironmentVariableIsSet("QT_SCALE_FACTOR")
                                       ? Scales::list()
                                       : QList<int>{120, 150, 180};
@@ -302,8 +346,8 @@ private slots:
                 s->setVm(vm.vm);
                 Scales::settle(&w.window);
                 QTRY_VERIFY(s->isVisible());
-                QTRY_VERIFY(s->label(StatusStats::Cpu)->isVisible());
-                QTRY_VERIFY(s->label(StatusStats::Disk)->isVisible());
+                QTRY_VERIFY_WITH_TIMEOUT(s->label(StatusStats::Cpu)->isVisible(), kSlow);
+                QTRY_VERIFY_WITH_TIMEOUT(s->label(StatusStats::Disk)->isVisible(), kSlow);
                 QVERIFY(s->label(StatusStats::Memory)->isVisible());
                 QVERIFY(s->label(StatusStats::Cpu)->text().startsWith("CPU "));
                 QVERIFY(s->label(StatusStats::Cpu)->text().endsWith(" %"));
@@ -343,7 +387,7 @@ private slots:
                 QCOMPARE(s->minimumSizeHint().width(), 0);
                 w.window.resize(1400, 400);
                 Scales::settle(&w.window);
-                QTRY_VERIFY(s->label(StatusStats::MainLoop)->isVisible());
+                QTRY_VERIFY_WITH_TIMEOUT(s->label(StatusStats::MainLoop)->isVisible(), kSlow);
 
                 /* each tooltip on the lines it has: laid out word-wrapped, as QToolTip
                    does, no taller than without wrapping */
@@ -386,7 +430,7 @@ private slots:
     void shrink()
     {
         Running vm;
-        QTRY_COMPARE(vm.vm->runner()->state(), VmRunner::State::Running);
+        QVERIFY(vm.waitRunning());
         StatusStats::setShrinkDelay(1500);
         Window w;
         w.stats->setShown(StatusStats::Disk, true);
@@ -482,14 +526,14 @@ private slots:
     void notes()
     {
         Running vm;
-        QTRY_COMPARE(vm.vm->runner()->state(), VmRunner::State::Running);
+        QVERIFY(vm.waitRunning());
         Window w;
         w.stats->setShown(StatusStats::Gpu, true);
         w.stats->setShown(StatusStats::Network, true);
         w.stats->setVm(vm.vm);
         Scales::settle(&w.window);
         /* read once at least: the stand-in has no GPU, and no guest tools */
-        QTRY_VERIFY(w.stats->label(StatusStats::Cpu)->isVisible());
+        QTRY_VERIFY_WITH_TIMEOUT(w.stats->label(StatusStats::Cpu)->isVisible(), kSlow);
         QTest::qWait(1200);
         QMetaObject::invokeMethod(w.stats->menu(), "aboutToShow");
         QCOMPARE(w.stats->action(StatusStats::Network)->text(),

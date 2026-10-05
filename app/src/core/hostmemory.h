@@ -18,6 +18,9 @@ struct Info {
     qint64 swapFreeMiB = 0;
 };
 Info read(const QString &meminfo = "/proc/meminfo");
+/* The "Name:   1234 kB" line of a /proc file (meminfo, PID/status,
+   PID/smaps_rollup), in KiB; -1 if it has none */
+qint64 fieldKiB(const QString &text, const QString &name);
 /* The resident memory of process @pid, 0 if unknown */
 qint64 residentMiB(qint64 pid, const QString &proc = "/proc");
 

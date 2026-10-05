@@ -218,6 +218,8 @@ public:
      */
     bool reportsStats() const;
     void requestStats();
+    /* The protocol of the agent's hello since the guest started, 0 if none */
+    int agentProtocol() const { return m_in.agentSeen ? m_protocol : 0; }
     /* The agent installs from the medium attached to the VM */
     void installFromMedium();
     /* The agent restarts the guest */
@@ -243,7 +245,7 @@ private:
     void guestRestarted();
     /* The id the command went with */
     qint64 send(const QString &command);
-    /* The agent that said hello went: its protocol with it */
+    /* The guest restarted or stopped: its agent's protocol is no longer known */
     void agentGone();
     /* The runner's shutdown handler: the agent powers the guest off at once */
     bool shutDownThroughAgent();
@@ -272,7 +274,8 @@ private:
     QTimer *m_shutdownFallback;
     /* how long an older agent's report is taken as before the bootstrap */
     QTimer *m_bootstrapTimer;
-    /* the hello's protocol, 0 until one came */
+    /* the hello's protocol, 0 until one came; kept while the socket is
+       connected again, as the agent is the same until the guest restarts */
     int m_protocol = 0;
     /* the stats asked and not answered yet, and when */
     qint64 m_statsId = -1;

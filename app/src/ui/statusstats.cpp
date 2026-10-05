@@ -12,6 +12,7 @@
 #include <QScreen>
 #include <QSettings>
 #include <QStatusBar>
+#include <QTimer>
 #include <QToolButton>
 #include <QToolTip>
 
@@ -55,7 +56,7 @@ static void setSetting(const QString &key, bool on)
 }
 
 StatusStats::StatusStats(QWidget *parent)
-    : QWidget(parent), m_sampler(new Sampler(this)),
+    : QWidget(parent), m_sampler(new Sampler(this)), m_refresh(new QTimer(this)),
       m_button(Widgets::statusButton(
           "statsMenu",
           Icons::themed({"view-statistics", "office-chart-bar", "utilities-system-monitor"},
@@ -113,7 +114,12 @@ StatusStats::StatusStats(QWidget *parent)
     /* shown once in the status bar: without a parent it would be a window */
     m_button->installEventFilter(this);
 
-    connect(m_sampler, &Sampler::changed, this, &StatusStats::refresh);
+    /* the sampler's readers and the screen tell one by one: one refresh
+       for those of a moment */
+    m_refresh->setSingleShot(true);
+    m_refresh->setInterval(0);
+    connect(m_refresh, &QTimer::timeout, this, &StatusStats::refresh);
+    connect(m_sampler, &Sampler::changed, m_refresh, qOverload<>(&QTimer::start));
     hide();
     if (parent) {
         watchWindow();
@@ -129,11 +135,12 @@ void StatusStats::setVm(Vm *vm, VmConsole *console)
     }
     if (m_console) {
         disconnect(m_console, nullptr, this, nullptr);
+        disconnect(m_console, nullptr, m_refresh, nullptr);
     }
     m_vm = vm;
     m_console = console;
     if (console) {
-        connect(console, &VmConsole::statsChanged, this, &StatusStats::refresh);
+        connect(console, &VmConsole::statsChanged, m_refresh, qOverload<>(&QTimer::start));
         /* its screen came or went: the frames from it, or from QEMU */
         connect(console, &VmConsole::changed, this, &StatusStats::updateSources);
     }
@@ -234,7 +241,7 @@ void StatusStats::updateSources()
         sources |= Sampler::Kvm;
     }
     if (m_tip == Memory) {
-        sources |= Sampler::Pss;
+        sources |= Sampler::MemoryDetails;
     }
     m_sampler->setSources(sources);
 }
@@ -657,6 +664,9 @@ static QString gpuDetails(const VmStats::Snapshot &s)
         html += StatusStats::tr("<i>QEMU is %n client(s) of it: its display and the guest's 3D "
                                 "contexts.</i><br>",
                                 nullptr, g.clients);
+        if (g.shared) {
+            html += StatusStats::tr("<i>The buffers they share are counted once.</i><br>");
+        }
     }
     return html;
 }

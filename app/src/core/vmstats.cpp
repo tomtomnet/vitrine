@@ -17,6 +17,7 @@
 #include <unistd.h>
 
 #include "core/guesttools.h"
+#include "core/hostmemory.h"
 #include "core/qmpclient.h"
 #include "core/vmrunner.h"
 #include "core/vmstore.h"
@@ -29,6 +30,8 @@ static const int kPollMs = 1000;
 /* PSS walks all of QEMU's page tables (its guest's RAM among them): every
    few polls, and only while asked */
 static const int kPssEvery = 3;
+/* The guest's counters this old: the agent no longer answers */
+static const qint64 kGuestStaleNs = 3500000000;
 /* The KVM counters worth a look */
 static const QStringList kKvmStats{"exits", "halt_exits", "io_exits", "mmio_exits",
                                    "halt_attempted_poll", "halt_successful_poll",
@@ -57,27 +60,33 @@ int vcpuIndex(const QString &threadName)
     return m.hasMatch() ? m.captured(1).toInt() : -1;
 }
 
-QHash<qint64, QString> readThreadNames(qint64 pid, const QHash<qint64, QString> &known,
-                                       const QString &proc)
+QList<qint64> parseVcpuThreads(const QJsonArray &reply)
+{
+    QList<qint64> tids;
+
+    for (const QJsonValue &cpu : reply) {
+        const qint64 tid = cpu["thread-id"].toInteger();
+        if (tid > 0 && !tids.contains(tid)) {
+            tids << tid;
+        }
+    }
+    return tids;
+}
+
+QHash<qint64, QString> readThreadNames(qint64 pid, const QList<qint64> &tids,
+                                       const QHash<qint64, QString> &known, const QString &proc)
 {
     QHash<qint64, QString> names;
-    const QDir tasks(QString("%1/%2/task").arg(proc).arg(pid));
 
     if (pid <= 0) {
         return names;
     }
-    for (const QString &entry : tasks.entryList(QDir::Dirs | QDir::NoDotAndDotDot)) {
-        bool ok = false;
-        const qint64 tid = entry.toLongLong(&ok);
-
-        if (!ok) {
-            continue;
-        }
+    for (const qint64 tid : tids) {
         if (const auto it = known.constFind(tid); it != known.cend()) {
             names.insert(tid, *it);
             continue;
         }
-        const QByteArray comm = readFile(tasks.filePath(entry + "/comm"));
+        const QByteArray comm = readFile(QString("%1/%2/task/%3/comm").arg(proc).arg(pid).arg(tid));
         if (!comm.isEmpty()) {
             names.insert(tid, QString::fromUtf8(comm).trimmed());
         }
@@ -113,57 +122,33 @@ QList<ThreadUse> busiestThreads(const QHash<qint64, PerfStats::Thread> &before,
 
 /* --- memory --- */
 
-/* "   123456 kB" in bytes; -1 if not a number */
-static qint64 kilobytes(const QByteArray &value)
-{
-    const QList<QByteArray> parts = value.simplified().split(' ');
-    bool ok = false;
-    const qint64 n = parts.value(0).toLongLong(&ok);
-
-    if (!ok) {
-        return -1;
-    }
-    return parts.value(1) == "kB" ? n * 1024 : n;
-}
-
-/* The "Key:  value" lines of a /proc file */
-static QHash<QByteArray, QByteArray> keyValues(const QByteArray &text)
-{
-    QHash<QByteArray, QByteArray> values;
-
-    for (const QByteArray &line : text.split('\n')) {
-        const qsizetype colon = line.indexOf(':');
-        if (colon > 0) {
-            values.insert(line.left(colon).trimmed(), line.mid(colon + 1).trimmed());
-        }
-    }
-    return values;
-}
-
 Memory parseStatus(const QByteArray &text)
 {
-    const QHash<QByteArray, QByteArray> values = keyValues(text);
+    const QString status = QString::fromLatin1(text);
+    /* in bytes; 0 if not there */
+    auto field = [&status](const char *name) {
+        return qMax<qint64>(0, HostMemory::fieldKiB(status, name)) * 1024;
+    };
     Memory m;
 
-    if (values.contains("VmRSS")) {
-        m.resident = qMax<qint64>(0, kilobytes(values.value("VmRSS")));
+    if (HostMemory::fieldKiB(status, "VmRSS") >= 0) {
+        m.resident = field("VmRSS");
     }
-    m.anon = qMax<qint64>(0, kilobytes(values.value("RssAnon")));
-    m.file = qMax<qint64>(0, kilobytes(values.value("RssFile")));
-    m.shmem = qMax<qint64>(0, kilobytes(values.value("RssShmem")));
-    m.swap = qMax<qint64>(0, kilobytes(values.value("VmSwap")));
+    m.anon = field("RssAnon");
+    m.file = field("RssFile");
+    m.shmem = field("RssShmem");
+    m.swap = field("VmSwap");
     return m;
 }
 
 bool parseSmapsRollup(const QByteArray &text, Memory *memory)
 {
-    const QHash<QByteArray, QByteArray> values = keyValues(text);
-    const qint64 pss = values.contains("Pss") ? kilobytes(values.value("Pss")) : -1;
+    const qint64 pss = HostMemory::fieldKiB(QString::fromLatin1(text), "Pss");
 
     if (pss < 0) {
         return false;
     }
-    memory->proportional = pss;
+    memory->proportional = pss * 1024;
     return true;
 }
 
@@ -414,9 +399,11 @@ QList<DrmClient> readDrmClients(qint64 pid, const QString &proc, QString *error)
     DIR *dir = pid > 0 ? opendir(fdDir.constData()) : nullptr;
 
     if (!dir) {
+        /* before anything else can change it */
+        const int why = errno;
         if (error) {
             *error = pid > 0 ? QObject::tr("cannot read the files QEMU has open (%1)")
-                                   .arg(QString::fromLocal8Bit(strerror(errno)))
+                                   .arg(QString::fromLocal8Bit(strerror(why)))
                              : QString();
         }
         return clients;
@@ -457,12 +444,19 @@ QList<DrmClient> readDrmClients(qint64 pid, const QString &proc, QString *error)
 QList<GpuUse> gpuUse(const QList<DrmClient> &before, const QList<DrmClient> &after,
                      qint64 elapsedNs)
 {
+    /* a region's own memory, all the clients', and the most one shares */
+    struct Region {
+        qint64 ownResident = 0;
+        qint64 ownTotal = 0;
+        qint64 sharedResident = 0;
+        qint64 sharedTotal = 0;
+    };
     struct Sums {
         GpuUse use;
         QMap<QString, double> busyNs;       // engines with time
         QMap<QString, double> cycleShare;   // engines with cycles
         QMap<QString, int> capacity;
-        QMap<QString, RegionUse> regions;
+        QMap<QString, Region> regions;
     };
     QHash<QString, DrmClient> earlier;
     QMap<QString, Sums> gpus;               // by device
@@ -503,11 +497,14 @@ QList<GpuUse> gpuUse(const QList<DrmClient> &before, const QList<DrmClient> &aft
             }
         }
         for (auto r = a.regions.cbegin(); r != a.regions.cend(); ++r) {
-            RegionUse &u = s.regions[r.key()];
-            const qint64 resident = r->resident >= 0 ? r->resident : qMax<qint64>(0, r->total);
-            u.name = r.key();
-            u.resident += resident;
-            u.total += qMax<qint64>(0, r->total);
+            Region &u = s.regions[r.key()];
+            const qint64 total = qMax<qint64>(0, r->total);
+            const qint64 resident = r->resident >= 0 ? r->resident : total;
+            const qint64 shared = qMax<qint64>(0, r->shared);
+            u.ownResident += resident - qMin(shared, resident);
+            u.ownTotal += total - qMin(shared, total);
+            u.sharedResident = qMax(u.sharedResident, qMin(shared, resident));
+            u.sharedTotal = qMax(u.sharedTotal, qMin(shared, total));
         }
     }
 
@@ -526,10 +523,13 @@ QList<GpuUse> gpuUse(const QList<DrmClient> &before, const QList<DrmClient> &aft
         }
         std::sort(s.use.engines.begin(), s.use.engines.end(),
                   [](const EngineUse &x, const EngineUse &y) { return x.name < y.name; });
-        for (const RegionUse &r : std::as_const(s.regions)) {
-            if (r.resident > 0 || r.total > 0) {
-                s.use.regions << r;
-                s.use.memory += r.resident;
+        for (auto r = s.regions.cbegin(); r != s.regions.cend(); ++r) {
+            const RegionUse use{r.key(), r->ownResident + r->sharedResident,
+                                r->ownTotal + r->sharedTotal};
+            if (use.resident > 0 || use.total > 0) {
+                s.use.regions << use;
+                s.use.memory += use.resident;
+                s.use.shared |= r->sharedResident > 0;
             }
         }
         list << s.use;
@@ -646,10 +646,10 @@ void Sampler::setSources(Sources sources)
     }
     if (dropped & Memory) {
         m_snapshot.memory = false;
-        m_snapshot.guestMemory = false;
     }
-    if (dropped & Pss) {
+    if (dropped & MemoryDetails) {
         m_snapshot.qemuMemory.proportional = -1;
+        m_snapshot.guestMemory = false;
         m_pssCountdown = 0;
     }
     if (dropped & Disk) {
@@ -660,7 +660,7 @@ void Sampler::setSources(Sources sources)
         m_snapshot.network = false;
     }
     /* the guest's counters, for either */
-    if (!(sources & (Network | Memory))) {
+    if (!(sources & (Network | MemoryDetails))) {
         m_guest = {};
     }
     if (dropped & Gpu) {
@@ -688,7 +688,10 @@ GuestSource Sampler::guestSource() const
     if (!m_agent || !m_agent->hasAgent()) {
         return GuestSource::NoAgent;
     }
-    return m_agent->reportsStats() ? GuestSource::Agent : GuestSource::OldAgent;
+    /* by its hello: not after a socket dropped, or a refusal while installing */
+    const int protocol = m_agent->agentProtocol();
+    return protocol > 0 && protocol < GuestTools::kStatsProtocol ? GuestSource::OldAgent
+                                                                 : GuestSource::Agent;
 }
 
 void Sampler::setInterval(int ms)
@@ -721,6 +724,7 @@ void Sampler::reset()
     m_drm.clear();
     m_drmAt = 0;
     m_guest = {};
+    m_guestAt = 0;
     m_snapshot = {};
 }
 
@@ -774,8 +778,13 @@ void Sampler::poll()
         readGpu(now);
     }
     /* the guest's counters: the answer comes back as statsReceived() */
-    if ((m_sources & (Network | Memory)) && m_agent && m_agent->reportsStats()) {
-        m_agent->requestStats();
+    if (m_sources & (Network | MemoryDetails)) {
+        if (m_agent && m_agent->reportsStats()) {
+            m_agent->requestStats();
+        }
+        if (m_guest.time >= 0 && now - m_guestAt > kGuestStaleNs) {
+            dropGuestCounters();
+        }
     }
     if (!qmp || !qmp->isReady()) {
         return;
@@ -828,10 +837,7 @@ void Sampler::askVcpus()
         if (!self || self->m_generation != generation || !error.isEmpty()) {
             return;
         }
-        self->m_qmpVcpus.clear();
-        for (const QJsonValue &cpu : result.toArray()) {
-            self->m_qmpVcpus << cpu["thread-id"].toInteger();
-        }
+        self->m_qmpVcpus = parseVcpuThreads(result.toArray());
     });
 }
 
@@ -843,7 +849,7 @@ void Sampler::readThreads(qint64 now)
     if (threads.isEmpty()) {
         return;             // not ours to read
     }
-    m_names = readThreadNames(m_pid, m_names);
+    m_names = readThreadNames(m_pid, threads.keys(), m_names);
     for (auto it = threads.cbegin(); it != threads.cend(); ++it) {
         if (vcpuIndex(m_names.value(it.key())) >= 0) {
             vcpus << it.key();
@@ -892,7 +898,7 @@ void Sampler::readMemory()
         return;             // gone
     }
     m.proportional = m_snapshot.qemuMemory.proportional;
-    if (m_sources & Pss) {
+    if (m_sources & MemoryDetails) {
         if (m_pssCountdown-- <= 0) {
             parseSmapsRollup(readFile(proc + "smaps_rollup"), &m);
             m_pssCountdown = kPssEvery - 1;
@@ -1047,7 +1053,7 @@ void Sampler::guestCounters(const QJsonObject &stats)
 {
     const GuestCounters c = parseGuestCounters(stats);
 
-    if (!m_pid || !(m_sources & (Network | Memory))) {
+    if (!m_pid || !(m_sources & (Network | MemoryDetails))) {
         return;
     }
     if (c.time < m_guest.time) {
@@ -1061,12 +1067,21 @@ void Sampler::guestCounters(const QJsonObject &stats)
             m_hasData = true;
         }
     }
-    if ((m_sources & Memory) && c.memoryTotal > 0) {
+    if ((m_sources & MemoryDetails) && c.memoryTotal > 0) {
         m_snapshot.guestMemory = true;
         m_snapshot.guestTotal = c.memoryTotal;
         m_snapshot.guestAvailable = qMax<qint64>(0, c.memoryAvailable);
     }
     m_guest = c;
+    m_guestAt = m_clock.nsecsElapsed();
+    emit changed();
+}
+
+void Sampler::dropGuestCounters()
+{
+    m_guest = {};
+    m_snapshot.network = false;
+    m_snapshot.guestMemory = false;
     emit changed();
 }
 

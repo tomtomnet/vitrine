@@ -11,6 +11,7 @@
 class QAction;
 class QLabel;
 class QMenu;
+class QTimer;
 class QToolButton;
 class Vm;
 class VmConsole;
@@ -91,6 +92,7 @@ private:
     int gap() const;
 
     VmStats::Sampler *m_sampler;
+    QTimer *m_refresh;
     QPointer<Vm> m_vm;
     QPointer<VmConsole> m_console;
     QLabel *m_labels[kStats];
