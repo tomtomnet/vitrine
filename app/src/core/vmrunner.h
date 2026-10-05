@@ -88,8 +88,9 @@ public:
     QString displaySocket() const;
     /* The socket of the vitrine agent's port (guest tools), while active */
     QString agentSocket() const;
-    /* The socket of QEMU's guest agent port (qemu-ga), while active, if the
-       run has the port the runner adds */
+    /* The socket of the port of QEMU's guest agent (qemu-ga) that Shut Down
+       uses, while active: the one the runner adds, or the VM's own; empty
+       without */
     QString guestAgentSocket() const;
     /*
      * A VM shown in vitrine's window starts paused (QEMU's -S) and waits

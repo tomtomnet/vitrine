@@ -500,6 +500,46 @@ private slots:
         QCOMPARE(runner.guestAgentSocket(), "");    // not running
     }
 
+    /*
+     * Shut Down asks qemu-ga through the VM's own port when it has one: the
+     * socket QEMU listens on, a relative path in the VM's folder.  Closed in
+     * the guest (no guest here): the power button at once, not after
+     * qemu-ga's silence
+     */
+    void ownGuestAgent()
+    {
+        using Way = GuestShutdown::Way;
+        auto *runner = new VmRunner(id, tmp.path());
+        QList<Way> ways;
+        connect(runner, &VmRunner::shutdownWayChanged, this, [&ways](Way way) { ways << way; });
+        const QString socket = tmp.filePath(id + "-ga.sock");
+        const auto removeSocket = qScopeGuard([&socket]() { QFile::remove(socket); });
+
+        runner->start(ArgsFile::parse(QString(kHeadless) +
+                                      "-chardev socket,id=myga,path=" + id +
+                                      "-ga.sock,server=on,wait=off\n"
+                                      "-device virtio-serial-pci\n"
+                                      "-device virtserialport,chardev=myga,"
+                                      "name=org.qemu.guest_agent.0\n"));
+        QTRY_COMPARE_WITH_TIMEOUT(runner->state(), VmRunner::State::Running, 20000);
+        QCOMPARE(runner->guestAgentSocket(), socket);
+        QVERIFY(QFileInfo::exists(socket));
+        QVERIFY(!read(runner->logPath()).contains("vitrine-ga"));
+
+        QElapsedTimer clock;
+        clock.start();
+        runner->powerdown();
+        QTRY_COMPARE(runner->shutdownWay(), Way::PowerButton);
+        QVERIFY2(clock.elapsed() < 2000, qPrintable(QString::number(clock.elapsed())));
+        QCOMPARE(ways, QList<Way>{Way::PowerButton});
+
+        runner->forceOff();
+        QTRY_COMPARE_WITH_TIMEOUT(runner->state(), VmRunner::State::Stopped, 15000);
+        QCOMPARE(runner->guestAgentSocket(), "");
+        QCOMPARE(runner->shutdownWay(), Way::None);
+        delete runner;
+    }
+
     /* systemd in the guest mounts what it reads from SMBIOS, as if in /etc/fstab */
     void fstabCredential()
     {
