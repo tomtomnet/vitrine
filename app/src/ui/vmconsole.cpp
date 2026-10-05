@@ -19,6 +19,7 @@
 #include "ui/cardupdatedialog.h"
 #include "ui/guesttoolsdialog.h"
 #include "ui/icons.h"
+#include "ui/systems.h"
 #include "ui/vmdetails.h"
 #include "vmview/vmview.h"
 
@@ -68,8 +69,9 @@ VmConsole::VmConsole(Vm *vm, QWidget *parent)
         auto *header = new QHBoxLayout;
         auto *titles = new QVBoxLayout;
         const int large = style()->pixelMetric(QStyle::PM_LargeIconSize, nullptr, this);
-        /* at the head of the page: twice a large icon */
+        /* at the head of the page: twice a large icon, the system's (updateHome) */
         auto *icon = new IconLabel(Icons::themed({"computer"}, QStyle::SP_ComputerIcon), 2 * large);
+        icon->setObjectName("systemIcon");
         auto *settings = new QLabel(QString("<a href=\"settings\">%1</a>").arg(tr("Settings")));
 
         m_name->setFont(scaled(m_name->font(), 1.6));
@@ -323,7 +325,17 @@ void VmConsole::updateHome()
     m_name->setText(m_vm->name());
     m_state->setText(stateText(m_vm));
     m_start->setEnabled(m_vm->runner()->state() == VmRunner::State::Stopped);
+    const VmConfig::Guest guest = VmConfig::guest(args);
+    /* an IconLabel, which has no Q_OBJECT for findChild<IconLabel *> */
+    static_cast<IconLabel *>(findChild<QWidget *>("systemIcon"))->setIcon(Systems::icon(guest));
 
+    /* Fedora Linux 44, KDE Plasma, 8 GiB of memory... */
+    if (const QString system = Systems::name(guest); !system.isEmpty()) {
+        parts << system;
+        if (guest.os == "linux" && !guest.desktop.isEmpty() && guest.desktop != "other") {
+            parts << Systems::desktopName(guest.desktop);
+        }
+    }
     if (mib > 0) {
         parts << tr("%1 of memory").arg(memoryText(mib));
     }
