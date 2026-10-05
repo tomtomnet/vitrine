@@ -646,6 +646,7 @@ void Sampler::setSources(Sources sources)
     }
     if (dropped & Memory) {
         m_snapshot.memory = false;
+        m_snapshot.guestMemory = false;
     }
     if (dropped & Pss) {
         m_snapshot.qemuMemory.proportional = -1;
@@ -655,10 +656,12 @@ void Sampler::setSources(Sources sources)
         m_blocks.clear();
         m_snapshot.disk = false;
     }
-    if (dropped & (Network | Memory)) {
-        m_guest = {};
+    if (dropped & Network) {
         m_snapshot.network = false;
-        m_snapshot.guestMemory = false;
+    }
+    /* the guest's counters, for either */
+    if (!(sources & (Network | Memory))) {
+        m_guest = {};
     }
     if (dropped & Gpu) {
         m_drm.clear();

@@ -793,6 +793,17 @@ private slots:
         QCOMPARE(vm.qmp->asked.value("query-stats"), 0);
         QVERIFY(!changed.isEmpty());
 
+        /* the memory hidden: the network's rates go on from the same counters */
+        sampler.setSources(sampler.sources() & ~Sampler::Memory);
+        QVERIFY(s.network);
+        QVERIFY(!s.guestMemory);
+        QVERIFY(!s.memory);
+        const int asked = vm.agent->stats;
+        QTRY_VERIFY(vm.agent->stats > asked);
+        QVERIFY(s.network);
+        QCOMPARE(s.net.rx, 10000000.0);
+        sampler.setSources(sampler.sources() | Sampler::Memory);
+
         /* KVM and PSS while their details show */
         sampler.setSources(sampler.sources() | Sampler::Kvm | Sampler::Pss);
         QTRY_VERIFY(s.qemuMemory.proportional > 0);
