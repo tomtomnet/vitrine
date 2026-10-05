@@ -366,8 +366,14 @@ void VmView::createWindow(bool fullScreen)
          * 6.7, seat.cpp: notifyPointerMotion), so a drag begun beside the
          * screen - the splitter between the list of VMs and the screen -
          * stopped where the screen begins, its moves and its release going to
-         * the guest, and the guest's own drags stopped at its edge.  In the
-         * window, Qt keeps a drag with the widget that took its press.
+         * the guest; and a drag begun in the guest (a window held by its title
+         * bar) was let go at the screen's edge, as the window took that Leave
+         * for the pointer taken away and released the guest's buttons.  In
+         * the window, Qt keeps a drag with the widget that took its press,
+         * and the compositor keeps the pointer with the window: the container
+         * gets the moves past its edge (the guest's pointer stays at it) and
+         * the release, and a Leave with a button down only when the pointer
+         * is really taken away (the compositor's grab, a screen lock).
          */
         m_window->setFlag(Qt::WindowTransparentForInput);
         m_container = QWidget::createWindowContainer(m_window, m_host);
