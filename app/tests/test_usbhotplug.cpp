@@ -426,6 +426,18 @@ private slots:
         QCOMPARE(vm.qemu->executed("device_del").last()["arguments"].toObject(),
                  QJsonObject({{"id", anon.path}}));
         QTRY_VERIFY(!hotplug->has(stick));
+
+        /* one without a name: its IDs, once */
+        anon.vendor = 0xdead;
+        anon.product = 0xbeef;
+        vm.qemu->devices = {anon};
+        hotplug->refresh();
+        const UsbDevice nameless = host("99-2");
+        QTRY_VERIFY(hotplug->has(nameless));
+        QCOMPARE(wait([&](const UsbHotplug::Done &done) { hotplug->detach(nameless, done); }),
+                 QString());
+        QVERIFY(readFile(vm.runner.logPath())
+                    .contains("vitrine: USB: took back dead:beef (" + anon.path + ")\n"));
     }
 
     /* Taken back elsewhere (QEMU's monitor, the SDL menu): DEVICE_DELETED */

@@ -32,6 +32,16 @@ static const QRegularExpression &ownId()
     return re;
 }
 
+/* For the log: "SanDisk Cruzer Blade (0781:5567)", or the IDs alone */
+static QString described(const UsbDevice &host)
+{
+    const QString name = QString("%1 %2").arg(host.manufacturer, host.product).simplified();
+    const QString ids = QString("%1:%2")
+                            .arg(host.vendorId, 4, 16, QChar('0'))
+                            .arg(host.productId, 4, 16, QChar('0'));
+    return name.isEmpty() ? ids : QString("%1 (%2)").arg(name, ids);
+}
+
 bool UsbHotplug::Device::isOwn() const
 {
     return ownId().match(id).hasMatch();
@@ -410,7 +420,7 @@ void UsbHotplug::attach(const UsbDevice &host, const Done &done)
     const QJsonObject arguments{{"driver", "usb-host"}, {"id", id}, {"hostbus", host.bus},
                                 {"hostaddr", host.device}};
     const QString what = tr("%1 at bus %2, address %3")
-                             .arg(host.displayName()).arg(host.bus).arg(host.device);
+                             .arg(described(host)).arg(host.bus).arg(host.device);
     const QPointer<UsbHotplug> self(this);
     client->execute("device_add", arguments,
                     [self, what, id, done](const QJsonValue &, const QString &error) {
@@ -445,7 +455,7 @@ void UsbHotplug::detach(const UsbDevice &host, const Done &done)
     };
     auto state = std::make_shared<State>();
     const QPointer<UsbHotplug> self(this);
-    const QString name = host.displayName();
+    const QString name = described(host);
     for (const Device &d : list) {
         /* one of the arguments, without an id, by its path */
         const QString which = d.id.isEmpty() ? d.path : d.id;
