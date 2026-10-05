@@ -189,7 +189,7 @@ for t in "${targets[@]}"; do
 			echo "the end of its log ($log):" >&2
 			tail -n 25 "$log" >&2
 		fi
-		die "building $t failed (status $rc): see $log"
+		die "building $t failed (status $rc)"
 	fi
 done
 echo

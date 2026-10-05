@@ -569,8 +569,7 @@ private slots:
 
         qputenv("FAKE_CONTAINER", "fail-mesa");
         const QString error = build(b);
-        QVERIFY2(error.startsWith("Building mesa failed (status 1): see " + rpms + "/mesa.log"),
-                 qPrintable(error));
+        QCOMPARE(error, "Building mesa failed (status 1)");
         QCOMPARE(b.error(), error);
         QVERIFY(!b.wasStopped());
         QVERIFY(built.isEmpty());

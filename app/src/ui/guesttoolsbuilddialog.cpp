@@ -69,7 +69,7 @@ QString GuestToolsBuildDialog::describe()
     if (tools.endsWith(release)) {
         tools.chop(release.size());
     }
-    parts << tr("guest tools %1").arg(tools);
+    parts << "vitrine-guest-tools " + tools;
     if (!medium.mesa.isEmpty()) {
         parts << tr("Mesa %1").arg(medium.mesa.section('-', 0, 0));
     }
@@ -105,9 +105,9 @@ QString GuestToolsBuildDialog::progressText(const GuestToolsBuilder *builder, bo
     QString text;
 
     if (builder->step() < 1) {
-        return tr("Starting");
+        return tr("starting");
     }
-    text = tr("Step %1 of %2: %3")
+    text = tr("step %1 of %2: %3")
                .arg(builder->step())
                .arg(builder->steps().size())
                .arg(builder->stepText());
@@ -207,6 +207,7 @@ GuestToolsBuildDialog::GuestToolsBuildDialog(QWidget *parent)
                                                   QStyle::SP_BrowserReload));
     Widgets::setButtonIcon(m_cancel, Icons::themed({"process-stop"}, QStyle::SP_BrowserStop));
     m_memory->button()->setText(tr("Build Anyway"));
+    m_memory->button()->show();
     m_memory->button()->setToolTip(tr("Start it now: the host may run short of memory, and "
                                       "the kernel stop a program to free some, a VM maybe"));
     layout->addWidget(buttons);
@@ -278,7 +279,9 @@ void GuestToolsBuildDialog::showStep()
         return;
     }
     /* the bar beside it tells how far */
-    m_step->setText(progressText(m_builder, false));
+    QString text = progressText(m_builder, false);
+    text[0] = text[0].toUpper();
+    m_step->setText(text);
     m_step->show();
 }
 
@@ -339,8 +342,11 @@ void GuestToolsBuildDialog::showMemory()
 
     if (!m_builder->isWaiting()) {
         m_memory->hide();
+        m_progress->setVisible(m_builder->isRunning());
         return;
     }
+    /* nothing moves meanwhile */
+    m_progress->hide();
     m_memory->setText(tr("<b>Waiting for memory.</b> Building %1 takes up to %2 GiB, and %3 GiB "
                          "is free: close VMs or other programs. The build goes on by itself once "
                          "%4 GiB is free, what the host keeps free included.")
@@ -431,10 +437,10 @@ void GuestToolsBuildBanner::refresh()
         } else if (state == State::Outdated) {
             shown = m_note;
             text = builtOn().isEmpty()
-                       ? tr("<b>The guest tools are out of date:</b> this version of Vitrine has "
-                            "other guest tools sources than the medium.")
-                       : tr("<b>The guest tools are out of date:</b> this version of Vitrine has "
-                            "other guest tools sources than the medium of %1.")
+                       ? tr("<b>The guest tools medium is out of date:</b> this version of "
+                            "Vitrine has other guest tools sources.")
+                       : tr("<b>The guest tools medium is out of date:</b> this version of "
+                            "Vitrine has other guest tools sources than the medium made on %1.")
                              .arg(builtOn());
             button = tr("Update…");
         } else if (state == State::NoSources && !GuestTools::medium().isValid()) {

@@ -31,11 +31,11 @@ public:
 
     /* "Build Guest Tools", or "Update Guest Tools" when out of date */
     static QString title(GuestToolsBuilder::State state);
-    /* "Built on 5 October 2026: guest tools 0.1.0-14, Mesa 26.2.3, KWin 6.7.5" */
+    /* "Built on 5 October 2026: vitrine-guest-tools 0.1.0-14, Mesa 26.2.3, KWin 6.7.5" */
     static QString describe();
     /* What the state means for the user, in a sentence or two */
     static QString explain(GuestToolsBuilder::State state);
-    /* "Step 2 of 4: building Mesa 26.2.3 (compiling, 35%)" of the build running */
+    /* "step 2 of 4: building Mesa 26.2.3 (compiling, 35%)" of the build running */
     static QString progressText(const GuestToolsBuilder *builder, bool percent = true);
 
 private:
