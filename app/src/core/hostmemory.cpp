@@ -6,12 +6,18 @@
 
 namespace HostMemory {
 
-/* "Name:   1234 kB" in /proc files */
-static qint64 fieldMiB(const QString &text, const QString &name)
+qint64 fieldKiB(const QString &text, const QString &name)
 {
     const QRegularExpression re("^" + QRegularExpression::escape(name) + ":\\s+(\\d+) kB",
                                 QRegularExpression::MultilineOption);
-    return re.match(text).captured(1).toLongLong() / 1024;
+    const QRegularExpressionMatch m = re.match(text);
+
+    return m.hasMatch() ? m.captured(1).toLongLong() : -1;
+}
+
+static qint64 fieldMiB(const QString &text, const QString &name)
+{
+    return qMax<qint64>(0, fieldKiB(text, name)) / 1024;
 }
 
 Info read(const QString &meminfo)

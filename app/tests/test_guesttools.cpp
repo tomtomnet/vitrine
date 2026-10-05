@@ -407,7 +407,19 @@ private slots:
         QCOMPARE(parseMessage("not json").type, Message::Type::Invalid);
         QCOMPARE(parseMessage("").type, Message::Type::Invalid);
 
+        /* the guest's counters, for the status bar (protocol 2) */
+        m = parseMessage(R"({"type":"stats","id":9,"stats":{"time":12.5,"net":[{"name":"enp0s3",)"
+                         R"("rxBytes":100,"txBytes":50}],"memory":{"total":4,"available":3}}})");
+        QCOMPARE(m.type, Message::Type::Stats);
+        QCOMPARE(m.id, 9);
+        QCOMPARE(m.stats["time"].toDouble(), 12.5);
+        QCOMPARE(m.stats["net"].toArray().size(), 1);
+        QCOMPARE(m.stats["memory"].toObject()["available"].toInt(), 3);
+        QCOMPARE(parseMessage(R"({"type":"hello","protocol":2,"status":{}})").protocol, 2);
+        QCOMPARE(kStatsProtocol, 2);
+
         QCOMPARE(commandLine("status", 3), QByteArray("{\"cmd\":\"status\",\"id\":3}\n"));
+        QCOMPARE(commandLine("stats", 8), QByteArray("{\"cmd\":\"stats\",\"id\":8}\n"));
         QCOMPARE(commandLine("install-from-medium", 4),
                  QByteArray("{\"cmd\":\"install-from-medium\",\"id\":4}\n"));
 

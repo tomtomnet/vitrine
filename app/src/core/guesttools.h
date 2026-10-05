@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: GPL-2.0-or-later
 #pragma once
 
+#include <QElapsedTimer>
 #include <QHash>
 #include <QJsonObject>
 #include <QObject>
@@ -137,9 +138,12 @@ struct Report {
 };
 Report parseReport(const QJsonObject &status);
 
+/* The protocol of agents that answer "stats" (the guest's own counters) */
+extern const int kStatsProtocol;
+
 /* A line of the agent */
 struct Message {
-    enum class Type { Invalid, Hello, Status, Progress, Result, Error };
+    enum class Type { Invalid, Hello, Status, Progress, Result, Error, Stats };
     Type type = Type::Invalid;
     qint64 id = -1;
     int protocol = 0;
@@ -151,9 +155,10 @@ struct Message {
     bool ok = false;
     QString error;          // Result, Error
     bool rebootNeeded = false;
+    QJsonObject stats;      // Stats: the guest's counters (VmStats::parseGuestCounters)
 };
 Message parseMessage(const QByteArray &line);
-/* A command line for the agent: status, install-from-medium, request-reboot, shutdown */
+/* A command line for the agent: status, stats, install-from-medium, request-reboot, shutdown */
 QByteArray commandLine(const QString &command, qint64 id);
 
 /* How the guest is doing, for the banner (MesaNotActive comes from QEMU,
@@ -225,6 +230,15 @@ public:
     QString text() const;
 
     void requestStatus();
+    /*
+     * The agent answers "stats" (protocol 2 and later): the guest's network
+     * counters and memory, for the status bar.  requestStats() asks for
+     * them, one request at a time; statsReceived() brings them.
+     */
+    bool reportsStats() const;
+    void requestStats();
+    /* The protocol of the agent's hello since the guest started, 0 if none */
+    int agentProtocol() const { return m_in.agentSeen ? m_protocol : 0; }
     /* The agent installs from the medium attached to the VM */
     void installFromMedium();
     /* The agent restarts the guest */
@@ -237,6 +251,8 @@ signals:
     void installFinished(bool ok, const QString &error, bool rebootNeeded);
     /* The agent's answer to a command: install-from-medium, request-reboot, shutdown */
     void commandFinished(const QString &command, bool ok, const QString &error);
+    /* The agent's answer to requestStats(), without changed() */
+    void statsReceived(const QJsonObject &stats);
 
 private:
     explicit GuestToolsMonitor(Vm *vm);
@@ -246,7 +262,10 @@ private:
     void handle(const GuestTools::Message &m);
     void qmpEvent(const QString &name, const QJsonObject &data);
     void guestRestarted();
-    void send(const QString &command);
+    /* The id the command went with */
+    qint64 send(const QString &command);
+    /* The guest restarted or stopped: its agent's protocol is no longer known */
+    void agentGone();
     /* The runner's shutdown handler: the agent powers the guest off at once;
        @answer says whether it took the request */
     bool shutDownThroughAgent(const std::function<void(bool took)> &answer);
@@ -280,4 +299,12 @@ private:
     bool m_pendingAsked = false;
     /* how long an older agent's report is taken as before the bootstrap */
     QTimer *m_bootstrapTimer;
+    /* the hello's protocol, 0 until one came; kept while the socket is
+       connected again, as the agent is the same until the guest restarts */
+    int m_protocol = 0;
+    /* the stats asked and not answered yet, and when */
+    qint64 m_statsId = -1;
+    QElapsedTimer m_statsAsked;
+    /* the agent answered stats with an error: not asked again until its next hello */
+    bool m_statsRefused = false;
 };

@@ -62,6 +62,8 @@ qt_add_library(vitrine_core STATIC
     src/core/vmhardware.h
     src/core/vmrunner.cpp
     src/core/vmrunner.h
+    src/core/vmstats.cpp
+    src/core/vmstats.h
     src/core/vmstore.cpp
     src/core/vmstore.h
     src/core/vmtemplate.cpp
@@ -192,8 +194,6 @@ qt_add_library(vitrine_ui STATIC
     src/ui/newvmdialog.h
     src/ui/oschooser.cpp
     src/ui/oschooser.h
-    src/ui/perfmonitor.cpp
-    src/ui/perfmonitor.h
     src/ui/preferencesdialog.cpp
     src/ui/preferencesdialog.h
     src/ui/qemubuilddialog.cpp
@@ -212,6 +212,8 @@ qt_add_library(vitrine_ui STATIC
     src/ui/systems.h
     src/ui/stackbanner.cpp
     src/ui/stackbanner.h
+    src/ui/statusstats.cpp
+    src/ui/statusstats.h
     src/ui/textdialog.cpp
     src/ui/textdialog.h
     src/ui/udmabufnotifier.cpp
@@ -353,6 +355,7 @@ if(BUILD_TESTING)
             vmconfig
             vmhardware
             vmrunner
+            vmstats
             vmstore
             vmtemplate)
         qt_add_executable(test_${name} tests/test_${name}.cpp)
@@ -386,6 +389,7 @@ if(BUILD_TESTING)
             dialogs
             icons
             mainwindow
+            statusstats
             systems)
         qt_add_executable(test_${name} tests/test_${name}.cpp tests/scales.h)
         target_link_libraries(test_${name} PRIVATE vitrine_ui Qt6::GuiPrivate Qt6::Test)
@@ -416,6 +420,10 @@ if(BUILD_TESTING)
     add_dependencies(test_usbmenu fake-qemu)
     target_compile_definitions(test_udmabuf PRIVATE FAKE_QEMU="$<TARGET_FILE:fake-qemu>")
     add_dependencies(test_udmabuf fake-qemu)
+    target_compile_definitions(test_vmstats PRIVATE FAKE_QEMU="$<TARGET_FILE:fake-qemu>")
+    add_dependencies(test_vmstats fake-qemu)
+    target_compile_definitions(test_statusstats PRIVATE FAKE_QEMU="$<TARGET_FILE:fake-qemu>")
+    add_dependencies(test_statusstats fake-qemu)
     target_compile_definitions(test_udmabufnotifier PRIVATE FAKE_QEMU="$<TARGET_FILE:fake-qemu>")
     add_dependencies(test_udmabufnotifier fake-qemu)
 

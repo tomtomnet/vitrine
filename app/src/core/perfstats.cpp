@@ -4,21 +4,11 @@
 #include <QDir>
 #include <QFile>
 #include <QJsonValue>
-#include <QTimer>
 
 #include <cmath>
 
-#include "core/qmpclient.h"
-#include "core/vmrunner.h"
-
 namespace PerfStats {
 
-/* Polling twice a second: the display's statistics cover the last second */
-static const int kPollMs = 500;
-/* The KVM counters worth a look */
-static const QStringList kKvmStats{"exits", "halt_exits", "io_exits", "mmio_exits",
-                                   "halt_attempted_poll", "halt_successful_poll",
-                                   "halt_poll_success_ns", "halt_poll_fail_ns"};
 /* What a VM exit costs on the Ryzen host, with its branch predictor flush */
 static const double kExitCostUs = 4;
 
@@ -156,7 +146,7 @@ QString formatMs(double ms)
     return QObject::tr("%1 ms").arg(qRound(ms));
 }
 
-static QString percent(double p)
+QString formatPercent(double p)
 {
     if (p < 0.05) {
         return QObject::tr("< 0.1 %");
@@ -176,6 +166,14 @@ static QString perSecond(double n)
 }
 
 QString summary(const Snapshot &s)
+{
+    QStringList parts{displaySummary(s), mainLoopSummary(s)};
+
+    parts.removeAll(QString());
+    return parts.join(QObject::tr(" · "));
+}
+
+QString displaySummary(const Snapshot &s)
 {
     QStringList parts;
 
@@ -197,18 +195,28 @@ QString summary(const Snapshot &s)
             parts << QObject::tr("input %1").arg(formatMs(d.input.median));
         }
     }
-    if (s.threads) {
-        parts << QObject::tr("main loop wait %1").arg(percent(s.mainLoop.wait));
-    }
     return parts.join(QObject::tr(" · "));
+}
+
+QString mainLoopSummary(const Snapshot &s)
+{
+    return s.threads ? QObject::tr("main loop wait %1").arg(formatPercent(s.mainLoop.wait))
+                     : QString();
 }
 
 /* A row of plain text: values like "< 0.1 %" are no markup */
 static QString row(const QString &label, const QString &value, const QString &note = {})
 {
-    return QString("<tr><td>%1</td><td align=\"right\">&nbsp;&nbsp;%2</td>"
-                   "<td>&nbsp;&nbsp;%3</td></tr>")
+    /* white-space in CSS: Qt's rich text ignores td's nowrap */
+    return QString("<tr><td style=\"white-space:nowrap\">%1</td>"
+                   "<td style=\"white-space:nowrap\" align=\"right\">&nbsp;&nbsp;%2</td>"
+                   "<td style=\"white-space:nowrap\">&nbsp;&nbsp;%3</td></tr>")
         .arg(label.toHtmlEscaped(), value.toHtmlEscaped(), note.toHtmlEscaped());
+}
+
+QString tableRow(const QString &label, const QString &value, const QString &note)
+{
+    return row(label, value, note);
 }
 
 static QString p99(const Latency &l)
@@ -296,18 +304,21 @@ QString hostDetails(const Snapshot &s)
 
     if (s.threads) {
         html += QObject::tr("<b>QEMU on the host</b>") + "<table>";
-        html += row(QObject::tr("Main loop"), QObject::tr("%1 CPU").arg(percent(s.mainLoop.cpu)),
+        html += row(QObject::tr("Main loop"),
+                    QObject::tr("%1 CPU").arg(formatPercent(s.mainLoop.cpu)),
                     QObject::tr("waited %1 of the time for a CPU, %2 per run")
-                        .arg(percent(s.mainLoop.wait), formatMs(s.mainLoop.waitPerRunMs)));
+                        .arg(formatPercent(s.mainLoop.wait),
+                             formatMs(s.mainLoop.waitPerRunMs)));
         if (s.vcpus.threads) {
             html += row(QObject::tr("%n vCPU(s)", nullptr, s.vcpus.threads),
-                        QObject::tr("%1 CPU").arg(percent(s.vcpus.cpu)),
-                        QObject::tr("waited %1 for a CPU").arg(percent(s.vcpus.wait)));
+                        QObject::tr("%1 CPU").arg(formatPercent(s.vcpus.cpu)),
+                        QObject::tr("waited %1 for a CPU").arg(formatPercent(s.vcpus.wait)));
         }
         if (s.others.threads) {
             html += row(QObject::tr("Other threads"),
-                        QObject::tr("%1 CPU").arg(percent(s.others.cpu)),
-                        QObject::tr("%n thread(s): GPU, I/O, audio…", nullptr, s.others.threads));
+                        QObject::tr("%1 CPU").arg(formatPercent(s.others.cpu)),
+                        QObject::tr("%n thread(s): GPU, I/O, audio…", nullptr,
+                                    s.others.threads));
         }
         html += "</table>";
     }
@@ -316,235 +327,19 @@ QString hostDetails(const Snapshot &s)
         html += QObject::tr("<b>KVM</b>") + "<table>";
         html += row(QObject::tr("VM exits"), perSecond(s.exits),
                     QObject::tr("≈ %1 of a CPU at %2 µs each")
-                        .arg(percent(s.exits * kExitCostUs / 1e4)).arg(kExitCostUs));
+                        .arg(formatPercent(s.exits * kExitCostUs / 1e4)).arg(kExitCostUs));
         html += row(QObject::tr("Halt exits"), perSecond(s.haltExits));
         html += row(QObject::tr("Device exits"), perSecond(s.deviceExits),
                     QObject::tr("I/O and MMIO: emulated devices"));
         if (s.haltPollSuccess >= 0) {
             html += row(QObject::tr("Halt polling"),
-                        QObject::tr("%1 successful").arg(percent(100 * s.haltPollSuccess)),
-                        QObject::tr("%1 of a CPU polling").arg(percent(s.haltPollCpu)));
+                        QObject::tr("%1 successful")
+                            .arg(formatPercent(100 * s.haltPollSuccess)),
+                        QObject::tr("%1 of a CPU polling").arg(formatPercent(s.haltPollCpu)));
         }
         html += "</table>";
     }
     return html;
-}
-
-Sampler::Sampler(QObject *parent) : QObject(parent), m_timer(new QTimer(this))
-{
-    m_timer->setInterval(kPollMs);
-    connect(m_timer, &QTimer::timeout, this, &Sampler::poll);
-    m_clock.start();
-}
-
-void Sampler::setRunner(VmRunner *runner)
-{
-    if (runner == m_runner) {
-        return;
-    }
-    reset();
-    m_runner = runner;
-    if (runner) {
-        m_timer->start();
-        poll();
-    } else {
-        m_timer->stop();
-    }
-    emit changed();
-}
-
-void Sampler::reset()
-{
-    m_generation++;
-    m_qmp = nullptr;
-    m_pid = 0;
-    m_hasData = false;
-    m_asked = false;
-    m_hasDisplayStats = false;
-    m_hasKvmStats = false;
-    m_busy = false;
-    m_kvmBusy = false;
-    m_vcpus.clear();
-    m_threads.clear();
-    m_threadsAt = 0;
-    m_kvm.clear();
-    m_kvmAt = 0;
-    m_snapshot = {};
-}
-
-void Sampler::poll()
-{
-    const qint64 pid = m_runner ? m_runner->pid() : 0;
-    QmpClient *qmp = m_runner ? m_runner->qmp() : nullptr;
-
-    if (pid != m_pid || qmp != m_qmp) {
-        /* stopped, or another run */
-        const bool had = m_hasData;
-        const QPointer<VmRunner> runner = m_runner;
-        reset();
-        m_runner = runner;
-        m_pid = pid;
-        m_qmp = qmp;
-        if (had) {
-            emit changed();
-        }
-    }
-    if (!pid || !qmp || !qmp->isReady()) {
-        return;
-    }
-    if (!m_asked) {
-        askCommands();
-        return;
-    }
-
-    const qint64 now = m_clock.nsecsElapsed();
-    const int generation = m_generation;
-    const QPointer<Sampler> self(this);
-
-    readHost(now);
-    if (m_hasDisplayStats && !m_busy) {
-        m_busy = true;
-        qmp->execute("x-query-display-stats", {},
-                     [self, generation](const QJsonValue &result, const QString &error) {
-            if (!self || self->m_generation != generation) {
-                return;
-            }
-            self->m_busy = false;
-            if (error.isEmpty()) {
-                self->m_snapshot.display =
-                    parseDisplay(result.toObject(), &self->m_snapshot.screen,
-                                 &self->m_snapshot.displayType);
-                self->m_hasData = true;
-                emit self->changed();
-            }
-        });
-    }
-    if (m_hasKvmStats && !m_kvmBusy) {
-        QJsonArray names;
-        for (const QString &name : kKvmStats) {
-            names.append(name);
-        }
-        m_kvmBusy = true;
-        qmp->execute("query-stats",
-                     {{"target", "vcpu"},
-                      {"providers", QJsonArray{QJsonObject{{"provider", "kvm"},
-                                                           {"names", names}}}}},
-                     [self, generation](const QJsonValue &result, const QString &error) {
-            if (!self || self->m_generation != generation) {
-                return;
-            }
-            self->m_kvmBusy = false;
-            if (error.isEmpty()) {
-                self->readKvm(result.toArray(), self->m_clock.nsecsElapsed());
-            } else {
-                self->m_hasKvmStats = false;
-            }
-        });
-    }
-}
-
-/* Which of the commands this QEMU has, then the threads of its vCPUs */
-void Sampler::askCommands()
-{
-    const int generation = m_generation;
-    const QPointer<Sampler> self(this);
-
-    m_asked = true;
-    m_qmp->execute("query-commands", {},
-                   [self, generation](const QJsonValue &result, const QString &error) {
-        if (!self || self->m_generation != generation || !error.isEmpty()) {
-            return;
-        }
-        for (const QJsonValue &command : result.toArray()) {
-            const QString name = command["name"].toString();
-            self->m_hasDisplayStats |= name == "x-query-display-stats";
-            self->m_hasKvmStats |= name == "query-stats";
-        }
-        self->askVcpus();
-    });
-}
-
-void Sampler::askVcpus()
-{
-    const int generation = m_generation;
-    const QPointer<Sampler> self(this);
-
-    if (!m_qmp) {
-        return;
-    }
-    m_qmp->execute("query-cpus-fast", {},
-                   [self, generation](const QJsonValue &result, const QString &error) {
-        if (!self || self->m_generation != generation || !error.isEmpty()) {
-            return;
-        }
-        self->m_vcpus.clear();
-        for (const QJsonValue &cpu : result.toArray()) {
-            self->m_vcpus << cpu["thread-id"].toInteger();
-        }
-        self->poll();
-    });
-}
-
-void Sampler::readHost(qint64 now)
-{
-    const QHash<qint64, Thread> threads = readThreads(m_pid);
-    QList<qint64> others;
-
-    if (threads.isEmpty()) {
-        return;             // not ours to read
-    }
-    for (auto it = threads.cbegin(); it != threads.cend(); ++it) {
-        if (it.key() != m_pid && !m_vcpus.contains(it.key())) {
-            others << it.key();
-        }
-    }
-    if (!m_threads.isEmpty()) {
-        const qint64 elapsed = now - m_threadsAt;
-        m_snapshot.threads = true;
-        m_snapshot.mainLoop = load(m_threads, threads, {m_pid}, elapsed);
-        m_snapshot.vcpus = load(m_threads, threads, m_vcpus, elapsed);
-        m_snapshot.others = load(m_threads, threads, others, elapsed);
-        m_hasData = true;
-        emit changed();
-    }
-    m_threads = threads;
-    m_threadsAt = now;
-    /* vCPUs plugged or unplugged */
-    for (const qint64 tid : std::as_const(m_vcpus)) {
-        if (!threads.contains(tid)) {
-            askVcpus();
-            break;
-        }
-    }
-}
-
-void Sampler::readKvm(const QJsonArray &reply, qint64 now)
-{
-    const QHash<QString, double> kvm = sumKvmStats(reply);
-
-    if (kvm.isEmpty()) {
-        return;             // TCG
-    }
-    if (!m_kvm.isEmpty() && now > m_kvmAt) {
-        const double seconds = (now - m_kvmAt) / 1e9;
-        auto rate = [&](const char *name) {
-            return qMax(0.0, kvm.value(name) - m_kvm.value(name)) / seconds;
-        };
-        const double attempted = rate("halt_attempted_poll");
-
-        m_snapshot.kvm = true;
-        m_snapshot.exits = rate("exits");
-        m_snapshot.haltExits = rate("halt_exits");
-        m_snapshot.deviceExits = rate("io_exits") + rate("mmio_exits");
-        m_snapshot.haltPollSuccess = attempted > 0 ? rate("halt_successful_poll") / attempted
-                                                   : -1;
-        m_snapshot.haltPollCpu =
-            (rate("halt_poll_success_ns") + rate("halt_poll_fail_ns")) / 1e7;
-        m_hasData = true;
-        emit changed();
-    }
-    m_kvm = kvm;
-    m_kvmAt = now;
 }
 
 }

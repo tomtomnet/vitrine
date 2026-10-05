@@ -13,7 +13,6 @@ class MainBar;
 class QAction;
 class QComboBox;
 class QMenu;
-class PerfMonitor;
 class QemuBuildDialog;
 class QLabel;
 class QListWidget;
@@ -22,6 +21,7 @@ class QSplitter;
 class UpdateNotifier;
 class UsbMenu;
 class QStackedWidget;
+class StatusStats;
 class Vm;
 class VmConsole;
 class VmDetails;
@@ -126,8 +126,8 @@ private:
     QHash<QString, VmConsole *> m_consoleOf;
     /* Whether the keys go to the VM */
     QLabel *m_input;
-    /* How smoothly the selected VM runs */
-    PerfMonitor *m_perf;
+    /* What the selected VM takes of the host, how smoothly it runs */
+    StatusStats *m_stats;
     /* Why the last run of a VM ended with an error, by id */
     QHash<QString, QString> m_errors;
     /* The state of each VM before its latest change */

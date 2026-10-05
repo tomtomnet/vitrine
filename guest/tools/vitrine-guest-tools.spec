@@ -2,7 +2,7 @@
 # exact version, and dnf takes an installed one of the same version as done.
 Name:           vitrine-guest-tools
 Version:        0.1.0
-Release:        14%{?dist}
+Release:        15%{?dist}
 Summary:        vitrine guest tools: patched virtio-gpu driver, settings and agent
 
 # the driver's sources (dkms/vendor, dkms/patches) are the kernel's: MIT
@@ -137,6 +137,10 @@ fi
 %dir %{_sharedstatedir}/%{name}
 
 %changelog
+* Mon Oct 05 2026 vitrine <noreply@anthropic.com> - 0.1.0-15
+- the agent answers stats (protocol 2): the guest's network cards' byte
+  counters and its memory, for vitrine's status bar; QEMU counts no network
+  traffic when passt moves the packets
 * Sun Oct 04 2026 vitrine <noreply@anthropic.com> - 0.1.0-14
 - the driver on Linux 7.2.9 and 7.3: they refuse again the import of other
   devices' dma-bufs on a 3D device, which native contexts need (KWin's zero

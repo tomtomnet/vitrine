@@ -1,20 +1,15 @@
 // SPDX-License-Identifier: GPL-2.0-or-later
 #pragma once
 
-#include <QElapsedTimer>
 #include <QHash>
 #include <QJsonArray>
 #include <QJsonObject>
-#include <QObject>
-#include <QPointer>
+#include <QList>
 #include <QString>
 
-class QmpClient;
-class QTimer;
-class VmRunner;
-
 /*
- * How smoothly a running VM goes, for the status bar:
+ * How smoothly a running VM goes, for the status bar (VmStats::Sampler
+ * reads them):
  * - its display, from QEMU (x-query-display-stats, qemu-gui's SDL display):
  *   frames on screen, how long they take to get there, input latency;
  * - QEMU's threads on the host, from /proc/PID/task/TID/schedstat: the CPU
@@ -96,60 +91,25 @@ struct Snapshot {
 
 /* "240 fps · frame 6.1 ms · input 11 ms · main loop wait 0.4 %" */
 QString summary(const Snapshot &s);
+/* Its parts: "240 fps · frame 6.1 ms · input 11 ms", or "display idle" */
+QString displaySummary(const Snapshot &s);
+/* "main loop wait 0.4 %" */
+QString mainLoopSummary(const Snapshot &s);
 /* The details, as rich text */
 QString details(const Snapshot &s);
 /* Those of QEMU's threads and KVM: details() without the display */
 QString hostDetails(const Snapshot &s);
 
+/*
+ * A row of a tooltip's table, its cells plain text (values like "< 0.1 %"
+ * are no markup) that do not wrap: a word-wrapped tooltip is laid out 80
+ * characters wide, which the table would be squeezed into
+ */
+QString tableRow(const QString &label, const QString &value, const QString &note = {});
+
 /* Milliseconds, to two significant digits or so: "0.35 ms", "6.1 ms", "21 ms" */
 QString formatMs(double ms);
-
-/*
- * Polls the VM of a VmRunner twice a second while it runs, and tells when
- * the snapshot changed.
- */
-class Sampler : public QObject
-{
-    Q_OBJECT
-
-public:
-    explicit Sampler(QObject *parent = nullptr);
-
-    /* nullptr to stop */
-    void setRunner(VmRunner *runner);
-    const Snapshot &snapshot() const { return m_snapshot; }
-    /* The runner runs, and at least one reading came in */
-    bool hasData() const { return m_hasData; }
-
-signals:
-    void changed();
-
-private:
-    void reset();
-    void poll();
-    void askCommands();
-    void askVcpus();
-    void readHost(qint64 now);
-    void readKvm(const QJsonArray &reply, qint64 now);
-
-    QPointer<VmRunner> m_runner;
-    QPointer<QmpClient> m_qmp;
-    qint64 m_pid = 0;               // of the run polled
-    QTimer *m_timer;
-    QElapsedTimer m_clock;
-    int m_generation = 0;
-    bool m_hasData = false;
-    bool m_asked = false;           // for the commands QEMU has
-    bool m_hasDisplayStats = false;
-    bool m_hasKvmStats = false;
-    bool m_busy = false;            // a display query is out
-    bool m_kvmBusy = false;
-    QList<qint64> m_vcpus;          // thread ids
-    QHash<qint64, Thread> m_threads;
-    qint64 m_threadsAt = 0;
-    QHash<QString, double> m_kvm;
-    qint64 m_kvmAt = 0;
-    Snapshot m_snapshot;
-};
+/* A percentage in tooltips: "< 0.1 %", "0.4 %", "12 %" */
+QString formatPercent(double p);
 
 }
