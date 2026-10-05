@@ -63,13 +63,25 @@ public:
     bool remove(Vm *vm, QString *error = nullptr);
     /* Picks up folders added or removed outside the manager */
     void reload();
+    /*
+     * The VMs of another folder, as found there: those of the old folder
+     * leave the list, but the running ones, which leave it once they stop.
+     * Nothing is moved, deleted or forgotten: going back to the old folder
+     * finds them as they were.
+     */
+    void setDir(const QString &dir);
 
 signals:
     void added(Vm *vm);
     /* The Vm object is deleted later */
     void removed(const QString &id);
+    void dirChanged(const QString &dir);
 
 private:
+    /* @forgetGone: what is known of a VM whose folder went goes with it */
+    void sync(bool forgetGone);
+    /* In the list, its vm.args watched */
+    void adopt(Vm *vm);
     QString m_dir;
     QList<Vm *> m_vms;
     QFileSystemWatcher *m_watcher;

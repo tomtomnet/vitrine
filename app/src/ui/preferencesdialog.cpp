@@ -4,6 +4,7 @@
 #include <QCheckBox>
 #include <QSettings>
 #include <QDialogButtonBox>
+#include <QFileDialog>
 #include <QDir>
 #include <QFileInfo>
 #include <QHBoxLayout>
@@ -39,15 +40,15 @@ PreferencesDialog::PreferencesDialog(QWidget *parent)
       m_qemuStatus(Widgets::hint()), m_virtiofsd(new QLineEdit),
       m_virtiofsdStatus(Widgets::hint()),
       m_updates(new QCheckBox(tr("Check GitHub for &updates once a day"))),
-      m_timer(new QTimer(this))
+      m_vmsDir(Paths::vmsDir()), m_vmsDirLabel(new QLabel), m_vmsDirState(Widgets::hint()),
+      m_vmsDirDefault(new QPushButton(tr("&Default"))), m_timer(new QTimer(this))
 {
     auto *layout = new QVBoxLayout(this);
     auto *form = Widgets::form();
     auto *stackRow = new QHBoxLayout;
     auto *buttons = new QDialogButtonBox(QDialogButtonBox::Ok | QDialogButtonBox::Cancel);
-    auto *vms = new QLabel(QString("<a href=\"%1\">%2</a>")
-                               .arg(QUrl::fromLocalFile(Paths::vmsDir()).toString(),
-                                    QDir::toNativeSeparators(Paths::vmsDir()).toHtmlEscaped()));
+    auto *vmsRow = new QHBoxLayout;
+    auto *vmsChange = new QPushButton(tr("C&hange…"));
     const QString custom = Paths::customQemuBinary();
     const QString virtiofsd = Paths::virtiofsd();
 
@@ -66,7 +67,13 @@ PreferencesDialog::PreferencesDialog(QWidget *parent)
     m_qemu->setText(custom);
     /* empty when automatic */
     m_virtiofsd->setText(virtiofsd == autoVirtiofsd() ? QString() : virtiofsd);
-    vms->setOpenExternalLinks(true);
+    m_vmsDirLabel->setObjectName("vmsDir");
+    m_vmsDirLabel->setOpenExternalLinks(true);
+    m_vmsDirLabel->setWordWrap(true);
+    vmsChange->setObjectName("vmsDirChange");
+    m_vmsDirDefault->setObjectName("vmsDirDefault");
+    vmsChange->setToolTip(tr("A folder holding VMs, each a folder with its vm.args: Vitrine "
+                             "lists the VMs it finds there, and makes new ones there"));
     m_updates->setObjectName("checkUpdates");
     m_updates->setChecked(QSettings(Paths::settingsPath(), QSettings::IniFormat)
                               .value("updates/check", true).toBool());
@@ -82,7 +89,11 @@ PreferencesDialog::PreferencesDialog(QWidget *parent)
     form->addRow(Widgets::label(tr("&virtiofsd:"), m_virtiofsd),
                  Widgets::browseRow(m_virtiofsd, tr("virtiofsd Binary")));
     form->addRow(QString(), m_virtiofsdStatus);
-    form->addRow(tr("Virtual machines:"), vms);
+    vmsRow->addWidget(m_vmsDirLabel, 1);
+    vmsRow->addWidget(vmsChange, 0, Qt::AlignTop);
+    vmsRow->addWidget(m_vmsDirDefault, 0, Qt::AlignTop);
+    form->addRow(tr("Virtual machines:"), vmsRow);
+    form->addRow(QString(), m_vmsDirState);
     form->addRow(QString(), m_updates);
     form->addRow(QString(), Widgets::hint(tr("Of Vitrine itself: one request to GitHub.")));
     /* the host's settings while VMs run: HostSettings' entries */
@@ -111,6 +122,18 @@ PreferencesDialog::PreferencesDialog(QWidget *parent)
     });
     connect(StackBuilder::instance(), &StackBuilder::finished, this,
             &PreferencesDialog::updateStack);
+    connect(vmsChange, &QPushButton::clicked, this, [this]() {
+        const QString dir = QFileDialog::getExistingDirectory(this, tr("Folder of the VMs"),
+                                                              m_vmsDir);
+        if (!dir.isEmpty()) {
+            m_vmsDir = QDir(dir).absolutePath();
+            updateVmsDir();
+        }
+    });
+    connect(m_vmsDirDefault, &QPushButton::clicked, this, [this]() {
+        m_vmsDir = Paths::defaultVmsDir();
+        updateVmsDir();
+    });
     connect(buttons, &QDialogButtonBox::accepted, this, &QDialog::accept);
     connect(buttons, &QDialogButtonBox::rejected, this, &QDialog::reject);
 
@@ -118,6 +141,7 @@ PreferencesDialog::PreferencesDialog(QWidget *parent)
     updateStack();
     checkQemu();
     checkVirtiofsd();
+    updateVmsDir();
     Widgets::resizeToWidth(this, 640);
 }
 
@@ -204,6 +228,39 @@ void PreferencesDialog::accept()
         .setValue("updates/check", m_updates->isChecked());
     Paths::setQemuBinary(m_custom->isChecked() ? m_qemu->text().trimmed() : QString());
     Paths::setVirtiofsd(m_virtiofsd->text().trimmed());
+    Paths::setVmsDir(m_vmsDir);
     QemuDocs::reloadPreferred();
     QDialog::accept();
+}
+
+void PreferencesDialog::updateVmsDir()
+{
+    const QDir dir(m_vmsDir);
+    int count = 0;
+
+    m_vmsDirLabel->setText(QString("<a href=\"%1\">%2</a>")
+                               .arg(QUrl::fromLocalFile(m_vmsDir).toString(),
+                                    QDir::toNativeSeparators(m_vmsDir).toHtmlEscaped()));
+    m_vmsDirDefault->setEnabled(QDir(Paths::defaultVmsDir()).absolutePath() !=
+                                dir.absolutePath());
+    for (const QString &id : dir.entryList(QDir::Dirs | QDir::NoDotAndDotDot)) {
+        if (QFileInfo::exists(dir.filePath(id) + "/vm.args")) {
+            count++;
+        }
+    }
+    if (m_vmsDir == Paths::vmsDir()) {
+        m_vmsDirState->clear();
+        m_vmsDirState->hide();
+        return;
+    }
+    if (!QFileInfo(m_vmsDir).isWritable() && dir.exists()) {
+        m_vmsDirState->setText(tr("%n VM(s) found there. The folder is read-only: new VMs "
+                                  "cannot be made there, and VMs may not start.", nullptr,
+                                  count));
+    } else {
+        m_vmsDirState->setText(tr("%n VM(s) found there. The VMs of the folder used until "
+                                  "now stay where they are; running ones stay listed until "
+                                  "they stop.", nullptr, count));
+    }
+    m_vmsDirState->show();
 }

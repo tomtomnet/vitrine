@@ -6,6 +6,7 @@
 #include <QCloseEvent>
 #include <QDesktopServices>
 #include <QDialog>
+#include <QDir>
 #include <QFileInfo>
 #include <QLabel>
 #include <QListWidget>
@@ -371,7 +372,13 @@ void MainWindow::createActions()
     m_preferences->setShortcut(QKeySequence::Preferences);
     connect(m_preferences, &QAction::triggered, this, [this]() {
         PreferencesDialog dialog(this);
-        dialog.exec();
+        if (dialog.exec() == QDialog::Accepted && m_store->dir() != Paths::vmsDir()) {
+            /* the VMs found in the folder chosen, no import needed */
+            m_store->setDir(Paths::vmsDir());
+            statusBar()->showMessage(tr("%n VM(s) in %1", nullptr, int(m_store->vms().size()))
+                                         .arg(QDir::toNativeSeparators(m_store->dir())),
+                                     8000);
+        }
     });
     m_reference = new QAction(Icons::themed({"help-contents", "documentation"},
                                             QStyle::SP_DialogHelpButton),

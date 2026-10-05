@@ -27,6 +27,8 @@ private:
     void updateStack();
     void checkQemu();
     void checkVirtiofsd();
+    /* The VM folder chosen, and how many VMs it holds */
+    void updateVmsDir();
 
     QLabel *m_stack;
     QLabel *m_stackState;
@@ -38,6 +40,11 @@ private:
     QLineEdit *m_virtiofsd;
     QLabel *m_virtiofsdStatus;
     QCheckBox *m_updates;
+    /* The folder of the VMs, as chosen here until OK */
+    QString m_vmsDir;
+    QLabel *m_vmsDirLabel;
+    QLabel *m_vmsDirState;
+    QPushButton *m_vmsDirDefault;
     QTimer *m_timer;
     QProcess *m_version = nullptr;
 };

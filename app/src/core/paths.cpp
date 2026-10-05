@@ -41,7 +41,19 @@ QString dataDir()
 
 QString vmsDir()
 {
+    const QString chosen = setting("vms/dir");
+    return chosen.isEmpty() ? defaultVmsDir() : chosen;
+}
+
+QString defaultVmsDir()
+{
     return dataDir() + "/vms";
+}
+
+void setVmsDir(const QString &dir)
+{
+    const QString path = dir.isEmpty() ? QString() : QDir(dir).absolutePath();
+    setSetting("vms/dir", path == QDir(defaultVmsDir()).absolutePath() ? QString() : path);
 }
 
 QString cacheDir()
