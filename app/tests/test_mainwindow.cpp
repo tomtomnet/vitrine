@@ -674,7 +674,9 @@ private slots:
         }
         action(&w, "Show Library")->trigger();
         layOut();
-        QVERIFY(!chooser(&w)->isEnabled());
+        QComboBox *vms = chooser(&w);
+        QVERIFY2(vms, "no VMs in the bar");
+        QVERIFY(!vms->isEnabled());
         QVERIFY(barProblems(&w, "no VMs").isEmpty());
         action(&w, "Show Library")->trigger();
     }
