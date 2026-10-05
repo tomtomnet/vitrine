@@ -99,13 +99,13 @@ ctest --test-dir build --output-on-failure   # optional
    (Ctrl+S) edits. A Linux VM whose 3D card lacks what new VMs get (native
    context, the host vblank timing) offers Update… on its Details tab.
 3. **Guest tools** for Fedora 44 x86-64 guests (virtio-gpu driver, Mesa, KWin
-   for Plasma 6.7.5, an agent). Build them from the checkout, in rootless
-   podman (up to 10 GiB of memory; Mesa ~15-25 min, KWin ~10, tools ~1):
-
-   ```
-   guest/build-rpms.sh
-   guest/build-medium.sh
-   ```
+   for Plasma 6.7.5, an agent). File > Build Guest Tools… (also Build… in
+   Machine > Install Guest Tools… and in Preferences) builds them in a Fedora
+   container with rootless podman, then makes the medium VMs install them
+   from: 20 to 40 minutes the first time (Mesa ~15-25 min, KWin ~10, tools
+   ~1), up to 10 GiB of memory. Mesa and KWin wait until that much is free,
+   unless told to build anyway. `guest/build-rpms.sh` then
+   `guest/build-medium.sh` do the same by hand.
 
    Then Machine > Install Guest Tools… > Install starts the VM with the tools
    medium (Restart and Install restarts a running one); the guest installs
@@ -114,8 +114,9 @@ ctest --test-dir build --output-on-failure   # optional
    starts the VM with the medium alone: open VITRINETOOL in the guest's file
    manager, then run `sudo bash /run/media/$USER/VITRINETOOL/install`.
 
-   After an update of vitrine, run both scripts again (they rebuild only the
-   packages whose sources changed): VMs with older tools then offer Update….
+   After an update of vitrine, the guest tools medium may be out of date:
+   Update… rebuilds only the packages whose sources changed, and VMs with
+   older tools then offer Update….
 
 Keys: Ctrl+Alt+G gives the keyboard and mouse to the VM or takes them back,
 Ctrl+Alt+F toggles full screen, F9 shows or hides the VM list, Ctrl+H asks
@@ -146,10 +147,11 @@ sudo cmake --install build
 ```
 
 This installs `vitrine` (also in the application menu), `host/` for building
-its QEMU, and the optional root helper with its polkit files (polkit reads
-actions only from `/usr/share/polkit-1/actions`, hence the `/usr` prefix).
-To update: `git pull`, build and install again; vitrine then offers to
-update its QEMU if needed.
+its QEMU, `guest/` for building the guest tools, and the optional root helper
+with its polkit files (polkit reads actions only from
+`/usr/share/polkit-1/actions`, hence the `/usr` prefix). To update: `git pull`,
+build and install again; vitrine then offers to update its QEMU and the guest
+tools if needed.
 
 The helper tunes the host while VMs run, for members of the `vitrine` group
 ([docs/host-tuning.md](docs/host-tuning.md)); without it, VMs run untuned

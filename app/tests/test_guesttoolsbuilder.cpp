@@ -399,6 +399,34 @@ private slots:
                  QStringList({"tools", "mesa", "kwin"}));
     }
 
+    /* guest/ found as host/ is: chosen, installed with the app, or the source tree's */
+    void findsTheScripts()
+    {
+        const QString installed = m_tmp.filePath("inst");
+        const QString binary = installed + "/bin/vitrine-test";
+        const auto guestOf = [&binary](const QString &chosen) {
+            QProcessEnvironment env = QProcessEnvironment::systemEnvironment();
+            env.insert("BUILDER_PRINT_GUEST", "1");
+            if (!chosen.isNull()) {
+                env.insert("VITRINE_GUEST_DIR", chosen);
+            }
+            return run(binary, {}, nullptr, env).trimmed();
+        };
+
+        /* a copy, not a link: the app's folder is its binary's, links resolved */
+        QVERIFY(QDir().mkpath(installed + "/bin"));
+        QVERIFY(QFile::copy(QCoreApplication::applicationFilePath(), binary));
+        QCOMPARE(guestOf({}), QFileInfo(GUEST_SOURCE_DIR).canonicalFilePath());
+        for (const char *script : {"build-rpms.sh", "build-medium.sh", "rpm-build-inside.sh"}) {
+            QVERIFY(write(installed + "/share/vitrine/guest/" + script, "#!/bin/bash\n", true));
+        }
+        QCOMPARE(guestOf({}), installed + "/share/vitrine/guest");
+        const QString chosen = guestDir("chosen-guest");
+        QCOMPARE(guestOf(chosen), chosen);
+        /* that one or none */
+        QCOMPARE(guestOf(m_tmp.filePath("nowhere")), "");
+    }
+
     /* Out of date by the inputs the medium records, as the scripts tell them */
     void states()
     {
@@ -872,6 +900,12 @@ private slots:
 int main(int argc, char **argv)
 {
     QCoreApplication app(argc, argv);
+
+    /* findsTheScripts()'s copy of the app */
+    if (qEnvironmentVariableIsSet("BUILDER_PRINT_GUEST")) {
+        printf("%s\n", qPrintable(GuestToolsBuilder::guestDir()));
+        return 0;
+    }
 
     /* stopsWhenVitrineDies()'s vitrine: it builds until killed */
     if (const QString guest = qEnvironmentVariable("BUILDER_CHILD"); !guest.isEmpty()) {
