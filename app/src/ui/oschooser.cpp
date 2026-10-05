@@ -414,9 +414,12 @@ bool OsChooser::eventFilter(QObject *watched, QEvent *event)
     }
     const int key = static_cast<QKeyEvent *>(event)->key();
     if (key == Qt::Key_Return || key == Qt::Key_Enter) {
-        /* the row the keys are on, else the first the search found */
+        /* the row the keys are on, else the first the search found; with
+           neither, nothing: not the first of the whole list */
         const QModelIndex current = m_tree->currentIndex();
-        activate(current.isValid() ? current : firstSystem());
+        activate(current.isValid()             ? current
+                 : m_search->text().isEmpty() ? QModelIndex()
+                                              : firstSystem());
         return true;
     }
     if (watched == m_search &&

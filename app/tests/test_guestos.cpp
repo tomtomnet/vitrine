@@ -209,6 +209,11 @@ class TestGuestOs : public QObject
                           "<short-id>fedora44</short-id><name>Fedora Linux 44</name>"
                           "<version>44</version><family>linux</family><distro>fedora</distro>"
                           "<release-date>2026-04-28</release-date>"));
+        /* no family, as elementary 5.0 in the database: its distribution's */
+        ok &= write(system + "/os/debian.org/debian-11.xml",
+                    osXml("http://debian.org/debian/11",
+                          "<short-id>debian11</short-id><name>Debian 11</name>"
+                          "<version>11</version><distro>debian</distro>"));
         /* a file that is not XML is passed over */
         ok &= write(system + "/os/broken.org/broken.xml", "<libosinfo><os id=\"x\"><short-id>");
         return ok ? QStringList{system, local, user} : QStringList();
@@ -266,7 +271,8 @@ private slots:
         const Catalogue c(dirs);
         const Os fedora = c.find("fedora43");
 
-        QCOMPARE(c.fromDatabase(), 8);
+        QCOMPARE(c.fromDatabase(), 9);
+        QCOMPARE(c.find("debian11").family, "linux");
         QCOMPARE(fedora.name, "Fedora Linux 43");
         QCOMPARE(fedora.version, "43");
         QCOMPARE(fedora.family, "linux");

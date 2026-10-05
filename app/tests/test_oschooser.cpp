@@ -206,6 +206,8 @@ private slots:
         QTest::newRow("family alone") << "another distribution"
                                       << QStringList({"family:linux"});
         QTest::newRow("nothing") << "zzz" << QStringList();
+        /* Enter with no search and no row: not the first of the whole list */
+        QTest::newRow("no search") << "" << QStringList();
     }
 
     void search()
@@ -217,7 +219,9 @@ private slots:
 
         chooser.showPopup();
         QTest::keyClicks(chooser.searchField(), text);
-        QCOMPARE(shown(chooser.tree()), ids);
+        if (!text.isEmpty()) {
+            QCOMPARE(shown(chooser.tree()), ids);
+        }
         /* Enter: the first found */
         QTest::keyClick(chooser.searchField(), Qt::Key_Return);
         if (ids.isEmpty()) {

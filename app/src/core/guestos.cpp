@@ -419,6 +419,16 @@ Catalogue::Catalogue(const QStringList &dirs)
         m_systems << os;
     }
 
+    /* a system without a family, as some of the database's are (elementary
+       5.0): its distribution's */
+    for (Os &os : m_systems) {
+        for (qsizetype i = 0; os.family.isEmpty() && !os.distro.isEmpty() && i < m_systems.size();
+             i++) {
+            if (m_systems[i].distro == os.distro) {
+                os.family = m_systems[i].family;
+            }
+        }
+    }
     for (qsizetype i = 0; i < m_systems.size(); i++) {
         m_byRelease << i;
     }
