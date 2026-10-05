@@ -14,14 +14,17 @@
 #include "pointer-constraints-unstable-v1-client-protocol.h"
 #include "relative-pointer-unstable-v1-client-protocol.h"
 
+#include <QEnterEvent>
 #include <QGuiApplication>
 #include <QJsonObject>
 #include <QKeyEvent>
 #include <QLabel>
 #include <QMetaObject>
+#include <QMouseEvent>
 #include <QScreen>
 #include <QTimer>
 #include <QVBoxLayout>
+#include <QWheelEvent>
 #include <QWidget>
 
 #include <cerrno>
@@ -355,8 +358,26 @@ void VmView::createWindow(bool fullScreen)
         }
         m_placeholder->show();
     } else {
+        /*
+         * The pointer comes to the container, as to any widget of the window,
+         * and from it to the window (forwardPointer()): the window's surface
+         * takes none.  On Wayland the compositor gives the pointer to a
+         * subsurface as soon as it is over it, a button held or not (KWin
+         * 6.7, seat.cpp: notifyPointerMotion), so a drag begun beside the
+         * screen - the splitter between the list of VMs and the screen -
+         * stopped where the screen begins, its moves and its release going to
+         * the guest, and the guest's own drags stopped at its edge.  In the
+         * window, Qt keeps a drag with the widget that took its press.
+         */
+        m_window->setFlag(Qt::WindowTransparentForInput);
         m_container = QWidget::createWindowContainer(m_window, m_host);
         m_container->setFocusPolicy(Qt::StrongFocus);
+        /* the moves without a button too (an absolute pointer), the right
+           button the guest's, not a context menu's */
+        m_container->setMouseTracking(true);
+        m_container->setContextMenuPolicy(Qt::PreventContextMenu);
+        /* the guest's cursor, which the window has (eventFilter()) */
+        m_container->setCursor(m_window->cursor());
         /* Wayland gives the keyboard to the top-level surface, never to the
            screen's subsurface: its keys come to the container */
         m_container->installEventFilter(this);
@@ -583,11 +604,20 @@ bool VmView::eventFilter(QObject *watched, QEvent *event)
         case QEvent::DevicePixelRatioChange:
             screenChanged();
             break;
+        case QEvent::CursorChange:
+            /* the pointer is on the container, not on the window */
+            if (m_container) {
+                m_container->setCursor(m_window->cursor());
+            }
+            break;
         default:
             break;
         }
     }
     if (watched == m_container && m_window) {
+        if (forwardPointer(event)) {
+            return true;
+        }
         switch (event->type()) {
         case QEvent::ShortcutOverride:
             if (!m_inputEnabled) {
@@ -613,6 +643,57 @@ bool VmView::eventFilter(QObject *watched, QEvent *event)
         }
     }
     return QObject::eventFilter(watched, event);
+}
+
+/*
+ * The container's pointer events, to the embedded window as its own
+ * (createWindow()), at the same positions: the window covers the container.
+ * The second press of a double click comes to a widget as a double click
+ * alone (QWidgetWindow, QTBUG-25831), to a window as a press: the guest gets
+ * both presses.  Enter and leave go on to the container as well.
+ */
+bool VmView::forwardPointer(QEvent *event)
+{
+    switch (event->type()) {
+    case QEvent::MouseButtonPress:
+    case QEvent::MouseButtonRelease:
+    case QEvent::MouseButtonDblClick:
+    case QEvent::MouseMove: {
+        const auto *mouse = static_cast<QMouseEvent *>(event);
+        QMouseEvent forward(event->type() == QEvent::MouseButtonDblClick ? QEvent::MouseButtonPress
+                                                                         : event->type(),
+                            mouse->position(), mouse->position(), mouse->globalPosition(),
+                            mouse->button(), mouse->buttons(), mouse->modifiers(),
+                            mouse->pointingDevice());
+        forward.setTimestamp(mouse->timestamp());
+        QCoreApplication::sendEvent(m_window, &forward);
+        return true;
+    }
+    case QEvent::Wheel: {
+        const auto *wheel = static_cast<QWheelEvent *>(event);
+        QWheelEvent forward(wheel->position(), wheel->globalPosition(), wheel->pixelDelta(),
+                            wheel->angleDelta(), wheel->buttons(), wheel->modifiers(),
+                            wheel->phase(), wheel->inverted(), Qt::MouseEventNotSynthesized,
+                            wheel->pointingDevice());
+        forward.setTimestamp(wheel->timestamp());
+        QCoreApplication::sendEvent(m_window, &forward);
+        return true;
+    }
+    case QEvent::Enter: {
+        const auto *enter = static_cast<QEnterEvent *>(event);
+        QEnterEvent forward(enter->position(), enter->position(), enter->globalPosition(),
+                            enter->pointingDevice());
+        QCoreApplication::sendEvent(m_window, &forward);
+        return false;
+    }
+    case QEvent::Leave: {
+        QEvent forward(QEvent::Leave);
+        QCoreApplication::sendEvent(m_window, &forward);
+        return false;
+    }
+    default:
+        return false;
+    }
 }
 
 /*
