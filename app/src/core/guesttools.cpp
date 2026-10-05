@@ -10,6 +10,8 @@
 #include <QSettings>
 #include <QTimer>
 
+#include <utility>
+
 #include "core/gpucontexts.h"
 #include "core/guestos.h"
 #include "core/paths.h"
@@ -111,12 +113,16 @@ static bool hasPci(const ArgsFile &args)
     return machine != "isapc" && machine != "microvm" && machine != "none";
 }
 
-bool addsAgentPort(const ArgsFile &args, const QString &qemu)
+bool hasSerialController(const ArgsFile &args, const QString &qemu)
 {
     const QString target = targetOf(qemu);
 
-    return (target == "x86_64" || target == "aarch64") && hasPci(args) &&
-           !args.toText().contains(kPortName);
+    return (target == "x86_64" || target == "aarch64") && hasPci(args);
+}
+
+bool addsAgentPort(const ArgsFile &args, const QString &qemu)
+{
+    return hasSerialController(args, qemu) && !args.toText().contains(kPortName);
 }
 
 bool canBootstrap(const ArgsFile &args, const QString &qemu)
@@ -493,30 +499,36 @@ GuestToolsMonitor::GuestToolsMonitor(Vm *vm)
         emit changed();
     });
 
-    /* Shut Down goes through the agent while there is one: Plasma answers
-       the power button with its logout screen, which waits for a click */
+    /* Shut Down goes through the agent while there is one, before qemu-ga
+       and the power button, which Plasma answers with its logout screen */
     m_shutdownFallback->setSingleShot(true);
     m_shutdownFallback->setInterval(5000);
-    connect(m_shutdownFallback, &QTimer::timeout, this, [this]() {
-        if (m_vm->runner()->state() == VmRunner::State::Running) {
-            m_vm->runner()->pressPowerButton();
-        }
-    });
-    vm->runner()->setShutdownHandler([guard = QPointer<GuestToolsMonitor>(this)]() {
-        return guard && guard->shutDownThroughAgent();
+    connect(m_shutdownFallback, &QTimer::timeout, this, [this]() { answerShutdown(false); });
+    vm->runner()->setShutdownHandler(
+        [guard = QPointer<GuestToolsMonitor>(this)](const std::function<void(bool)> &answer) {
+        return guard && guard->shutDownThroughAgent(answer);
     });
     runnerChanged();
 }
 
-bool GuestToolsMonitor::shutDownThroughAgent()
+bool GuestToolsMonitor::shutDownThroughAgent(const std::function<void(bool took)> &answer)
 {
     if (!m_in.running || !m_in.agentSeen ||
         m_socket->state() != QLocalSocket::ConnectedState) {
         return false;
     }
+    m_shutdownAnswer = answer;
     send("shutdown");
     m_shutdownFallback->start();
     return true;
+}
+
+void GuestToolsMonitor::answerShutdown(bool took)
+{
+    m_shutdownFallback->stop();
+    if (const auto answer = std::exchange(m_shutdownAnswer, {})) {
+        answer(took);
+    }
 }
 
 void GuestToolsMonitor::remember()
@@ -586,6 +598,7 @@ void GuestToolsMonitor::runnerChanged()
         const QString rememberedTools = m_in.rememberedTools;
 
         m_in = Inputs{};
+        m_pendingAsked = false;
         m_in.remembered = remembered;
         m_in.rememberedTools = rememberedTools;
         m_in.running = true;
@@ -620,6 +633,7 @@ void GuestToolsMonitor::runnerChanged()
         m_grace->stop();
         m_poll->stop();
         m_shutdownFallback->stop();
+        m_shutdownAnswer = {};
         m_bootstrapTimer->stop();
         m_socket->abort();
         m_buffer.clear();
@@ -669,8 +683,9 @@ void GuestToolsMonitor::handle(const Message &m)
         m_grace->stop();
         if (!m.report.tools.isEmpty() && !m.report.installing) {
             m_in.failed = false;
-            /* in: no install at the next start after all */
-            if (m_in.pending == Pending::Bootstrap) {
+            /* in: no install at the next start after all - but for one
+               asked for in this run, an update or an install again */
+            if (m_in.pending == Pending::Bootstrap && !m_pendingAsked) {
                 m_in.pending = Pending::None;
                 GuestTools::setPending(m_vm->id(), Pending::None);
             }
@@ -686,10 +701,7 @@ void GuestToolsMonitor::handle(const Message &m)
     case Message::Type::Result:
         emit commandFinished(m.command, m.ok, m.error);
         if (m.command == "shutdown") {
-            m_shutdownFallback->stop();
-            if (!m.ok) {
-                m_vm->runner()->pressPowerButton();
-            }
+            answerShutdown(m.ok);
         }
         if (m.command == "install-from-medium") {
             m_in.installing = false;
@@ -701,8 +713,8 @@ void GuestToolsMonitor::handle(const Message &m)
         }
         break;
     case Message::Type::Error:
-        /* a command this agent does not know (an older one): shutdown falls
-           back to the power button by its timer */
+        /* a command this agent does not know (an older one): shutdown goes
+           the next way by its timer */
         qInfo("guest agent of %s: %s", qPrintable(m_vm->id()), qPrintable(m.error));
         break;
     case Message::Type::Invalid:
@@ -764,6 +776,7 @@ void GuestToolsMonitor::setPending(Pending pending)
 {
     GuestTools::setPending(m_vm->id(), pending);
     m_in.pending = pending;
+    m_pendingAsked = m_in.running && pending != Pending::None;
     emit changed();
 }
 

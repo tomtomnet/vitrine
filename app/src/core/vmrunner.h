@@ -7,6 +7,7 @@
 #include <functional>
 
 #include "core/argsfile.h"
+#include "core/guestshutdown.h"
 
 class QmpClient;
 
@@ -87,6 +88,10 @@ public:
     QString displaySocket() const;
     /* The socket of the vitrine agent's port (guest tools), while active */
     QString agentSocket() const;
+    /* The socket of the port of QEMU's guest agent (qemu-ga) that Shut Down
+       uses, while active: the one the runner adds, or the VM's own; empty
+       without */
+    QString guestAgentSocket() const;
     /*
      * A VM shown in vitrine's window starts paused (QEMU's -S) and waits
      * for its screen, the state Starting meanwhile: the view attaches to
@@ -120,18 +125,26 @@ public:
     void attach(const ArgsFile &args);
     void pause();
     void resume();
-    /* Asks the guest to shut down: through the shutdown handler if it takes
-       the request, else with the ACPI power button */
+    /*
+     * Asks the guest to shut down, the gentlest way it takes
+     * (GuestShutdown): the shutdown handler, else QEMU's guest agent if the
+     * guest runs it, else the ACPI power button - which a KDE guest answers
+     * with its logout screen, waiting for someone at the guest's screen to
+     * confirm.  shutdownWayChanged() tells each way tried.
+     */
     void powerdown();
+    /* The way the last powerdown() of the run took, or is trying; None
+       once the guest shuts down */
+    GuestShutdown::Way shutdownWay() const;
     /* The ACPI power button only */
     void pressPowerButton();
     /*
-     * The guest's own way to shut down, tried first by powerdown(): returns
-     * true if it took the request.  The guest tools' agent is one: a KDE
-     * guest answers the power button with its logout screen, which waits
-     * for someone at the guest's screen to confirm.
+     * The guest's own way to shut down, tried first by powerdown(): the
+     * guest tools' agent, which powers the guest off at once.  It returns
+     * false if it cannot take the request now, else it answers later
+     * whether it did (GuestShutdown::Asker).
      */
-    void setShutdownHandler(const std::function<bool()> &handler);
+    void setShutdownHandler(const GuestShutdown::Asker &handler);
     void reset();
     /*
      * Quits QEMU at once: QMP quit, then SIGTERM if it is still there
@@ -175,6 +188,9 @@ signals:
      * folders with a mount point were mounted there, or not
      */
     void sharesMounted(const QStringList &mounted, const QStringList &problems);
+    /* powerdown() tries @way; None: the request is over (the guest shuts
+       down, or the run ended) */
+    void shutdownWayChanged(GuestShutdown::Way way);
 
 private:
     struct Private;

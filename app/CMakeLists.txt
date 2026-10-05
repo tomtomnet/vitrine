@@ -20,6 +20,8 @@ qt_add_library(vitrine_core STATIC
     src/core/guestagent.h
     src/core/guestos.cpp
     src/core/guestos.h
+    src/core/guestshutdown.cpp
+    src/core/guestshutdown.h
     src/core/guesttools.cpp
     src/core/guesttools.h
     src/core/hostdevices.cpp
@@ -200,6 +202,8 @@ qt_add_library(vitrine_ui STATIC
     src/ui/qemudocs.h
     src/ui/referencepanel.cpp
     src/ui/referencepanel.h
+    src/ui/shutdownnotice.cpp
+    src/ui/shutdownnotice.h
     src/ui/settingspages.cpp
     src/ui/settingspages.h
     src/ui/snapshotview.cpp
@@ -327,6 +331,7 @@ if(BUILD_TESTING)
             gpucontexts
             guestagent
             guestos
+            guestshutdown
             guesttools
             hostdevices
             hostkvm
@@ -357,6 +362,7 @@ if(BUILD_TESTING)
             cardupdatedialog
             guestoffer
             mainbar
+            guesttoolsdialog
             newvmdialog
             oschooser
             settingspages
@@ -399,6 +405,8 @@ if(BUILD_TESTING)
     # the same stand-in, for QEMUs found running
     target_compile_definitions(test_vmrunner PRIVATE FAKE_QEMU="$<TARGET_FILE:fake-qemu>")
     add_dependencies(test_vmrunner fake-qemu)
+    target_compile_definitions(test_guesttools PRIVATE FAKE_QEMU="$<TARGET_FILE:fake-qemu>")
+    add_dependencies(test_guesttools fake-qemu)
     target_compile_definitions(test_udmabuf PRIVATE FAKE_QEMU="$<TARGET_FILE:fake-qemu>")
     add_dependencies(test_udmabuf fake-qemu)
     target_compile_definitions(test_udmabufnotifier PRIVATE FAKE_QEMU="$<TARGET_FILE:fake-qemu>")

@@ -56,6 +56,7 @@
 #include "ui/systems.h"
 #include "ui/qemudocs.h"
 #include "ui/referencepanel.h"
+#include "ui/shutdownnotice.h"
 #include "ui/textdialog.h"
 #include "ui/udmabufnotifier.h"
 #include "ui/uiconfig.h"
@@ -354,7 +355,8 @@ void MainWindow::createActions()
                      QKeySequence(Qt::CTRL | Qt::Key_P), &MainWindow::togglePause);
     m_shutDown = action(tr("Shut &Down"), {"system-shutdown"}, QStyle::SP_MediaStop,
                         QKeySequence(Qt::CTRL | Qt::Key_H), &MainWindow::shutDown);
-    m_shutDown->setToolTip(tr("Ask the guest to shut down, as with the power button"));
+    m_shutDown->setToolTip(tr("Ask the guest to shut down: through its guest tools or guest "
+                              "agent, else with the power button"));
     m_reset = action(tr("&Reset"), {"system-reboot", "view-refresh"}, QStyle::SP_BrowserReload,
                      {}, &MainWindow::reset);
     m_forceOff = action(tr("&Force Off"), {"process-stop"}, QStyle::SP_BrowserStop, {},
@@ -646,6 +648,8 @@ void MainWindow::addVm(Vm *vm)
     /* QEMU that does not end after Force Off: killed only if the user says so */
     connect(vm->runner(), &VmRunner::notResponding, this,
             [this, vm]() { KillPrompt::ask(this, vm); });
+    /* how Shut Down reaches the guest, and when the guest may ask on its screen */
+    ShutdownNotice::follow(vm, statusBar());
     m_states[vm->id()] = vm->runner()->state();
     updateItem(vm);
     m_list->sortItems();
@@ -1264,9 +1268,9 @@ void MainWindow::togglePause()
 
 void MainWindow::shutDown()
 {
+    /* the status bar says how (ShutdownNotice) */
     if (Vm *vm = current()) {
         vm->runner()->powerdown();
-        statusBar()->showMessage(tr("Asked %1 to shut down").arg(vm->name()), 5000);
     }
 }
 
@@ -1402,11 +1406,11 @@ void MainWindow::closeEvent(QCloseEvent *event)
         box->setInformativeText(
             shown.size() == 1
                 ? tr("In the background, it has no screen until vitrine starts again. "
-                     "Shut Down asks the guest to shut down, as the power button does, "
-                     "and closes the window once it is off.")
+                     "Shut Down asks the guest to shut down, through its agent or the "
+                     "power button, and closes the window once it is off.")
                 : tr("In the background, they have no screen until vitrine starts again. "
-                     "Shut Down asks the guests to shut down, as the power button does, "
-                     "and closes the window once they are off."));
+                     "Shut Down asks the guests to shut down, through their agents or the "
+                     "power button, and closes the window once they are off."));
         box->exec();
         if (box->clickedButton() == shutDown) {
             /* as they are now: one may have stopped while the question was
@@ -1435,6 +1439,8 @@ void MainWindow::closeEvent(QCloseEvent *event)
                     break;
                 }
                 m_closeAfter.insert(each->id());
+                /* off for good, not started again for its guest tools */
+                GuestToolsDialog::stayOff(each);
                 if (first.isEmpty()) {
                     first = each->id();
                 }

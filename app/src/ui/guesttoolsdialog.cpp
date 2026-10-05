@@ -2,11 +2,11 @@
 #include "guesttoolsdialog.h"
 
 #include <QAction>
+#include <QApplication>
 #include <QCheckBox>
 #include <QDateTime>
 #include <QDialogButtonBox>
 #include <QLabel>
-#include <QMessageBox>
 #include <QPushButton>
 #include <QTimer>
 #include <QVBoxLayout>
@@ -25,8 +25,18 @@
 using GuestTools::Pending;
 using GuestTools::State;
 
-/* The guest's shutdown, before vitrine offers to force the VM off */
-static const int kShutdownMs = 120000;
+/*
+ * How long the dialog waits for the guest to shut down before it gives up
+ * restarting the VM (the install stays for its next start): a guest that
+ * asks on its screen has the user's answer by then, or the user went
+ * elsewhere, and should not see the VM start again whenever it stops later
+ */
+static int shutdownWaitMs = 5 * 60 * 1000;
+
+void GuestToolsDialog::setShutdownWait(int ms)
+{
+    shutdownWaitMs = ms;
+}
 
 static std::function<void(Vm *)> &starter()
 {
@@ -54,14 +64,41 @@ void GuestToolsDialog::updateAction(QAction *action, Vm *vm)
     action->setStatusTip(why);
 }
 
+GuestToolsDialog *GuestToolsDialog::of(Vm *vm)
+{
+    for (QWidget *top : QApplication::topLevelWidgets()) {
+        auto *dialog = qobject_cast<GuestToolsDialog *>(top);
+        if (dialog && vm && dialog->m_vm == vm) {
+            return dialog;
+        }
+    }
+    return nullptr;
+}
+
+void GuestToolsDialog::stayOff(Vm *vm)
+{
+    if (GuestToolsDialog *dialog = of(vm); dialog && dialog->m_step == Step::ShuttingDown) {
+        dialog->stopWaiting(tr("The VM stays off: the guest tools install at its next start."));
+    }
+}
+
 void GuestToolsDialog::run(QWidget *parent, Vm *vm)
 {
     if (!vm) {
         return;
     }
+    if (GuestToolsDialog *open = of(vm)) {
+        open->show();
+        open->raise();
+        open->activateWindow();
+        return;
+    }
     auto *dialog = new GuestToolsDialog(vm, parent);
     dialog->setAttribute(Qt::WA_DeleteOnClose);
-    dialog->open();
+    /* not modal: the VM's screen takes its clicks meanwhile, the guest may
+       be asking something there */
+    dialog->setWindowModality(Qt::NonModal);
+    dialog->show();
 }
 
 /* Why the tools cannot go into @vm now; empty if they can */
@@ -102,15 +139,14 @@ static QString obstacle(Vm *vm, const GuestTools::Medium &medium)
 }
 
 GuestToolsDialog::GuestToolsDialog(Vm *vm, QWidget *parent)
-    : QDialog(parent), m_vm(vm), m_progress(Widgets::note()),
+    : QDialog(parent), m_vm(vm), m_restart(Widgets::note()), m_warning(new Banner(Banner::Warning)),
+      m_progress(Widgets::note()),
       m_snapshot(new QCheckBox(tr("Take a snapshot of the disks first"))),
-      m_buttons(new QDialogButtonBox(QDialogButtonBox::Cancel)), m_timeout(new QTimer(this))
+      m_buttons(new QDialogButtonBox(QDialogButtonBox::Cancel)), m_wait(new QTimer(this))
 {
     const GuestToolsMonitor *monitor = GuestToolsMonitor::of(vm);
     const GuestTools::Medium medium = GuestTools::medium();
     const bool update = !monitor->report().tools.isEmpty();
-    const bool running = vm->runner()->isActive();
-    const QString problem = obstacle(vm, medium);
     auto *layout = new QVBoxLayout(this);
     QString what;
 
@@ -132,19 +168,11 @@ GuestToolsDialog::GuestToolsDialog(Vm *vm, QWidget *parent)
     what += tr("<li>the vitrine agent, which tells vitrine how the guest is doing</li></ul>");
     what += tr("<p>Mesa and KWin then stay at these versions until the next guest tools. "
                "The guest needs the network: dkms and the kernel headers come from Fedora.</p>");
-    what += running ? tr("<p><b>vitrine shuts the VM down and starts it again</b> with the "
-                         "tools medium. The guest installs them before its desktop starts, "
-                         "which takes a few minutes, then restarts once more.</p>")
-                    : tr("<p>The VM starts with the tools medium. The guest installs them "
-                         "before its desktop starts, which takes a few minutes, then restarts "
-                         "once more.</p>");
     layout->addWidget(Widgets::note(what));
+    /* what the VM goes through, and what keeps it from it (refresh()) */
+    layout->addWidget(m_restart);
+    layout->addWidget(m_warning);
 
-    if (!problem.isEmpty()) {
-        auto *warning = new Banner(Banner::Warning);
-        warning->setText(problem.toHtmlEscaped());
-        layout->addWidget(warning);
-    }
     if (const GuestOs::Os os =
             GuestOs::Catalogue::instance().find(VmConfig::guest(vm->args()).id);
         GuestOs::isFedora(os.id) && !os.isGeneric() && os.version != "Rawhide") {
@@ -177,8 +205,7 @@ GuestToolsDialog::GuestToolsDialog(Vm *vm, QWidget *parent)
     /* room to spare under the text, not between its lines */
     layout->addStretch();
 
-    m_install = m_buttons->addButton(running ? tr("&Restart and Install") : tr("&Install"),
-                                     QDialogButtonBox::AcceptRole);
+    m_install = m_buttons->addButton(tr("&Install"), QDialogButtonBox::AcceptRole);
     m_mediumButton = m_buttons->addButton(tr("Attach &Medium Only"),
                                           QDialogButtonBox::ActionRole);
     m_mediumButton->setToolTip(
@@ -189,30 +216,120 @@ GuestToolsDialog::GuestToolsDialog(Vm *vm, QWidget *parent)
                                                     QStyle::SP_DialogApplyButton));
     Widgets::setButtonIcon(m_mediumButton, Icons::themed({"media-optical", "drive-optical"},
                                                          QStyle::SP_DriveCDIcon));
-    m_install->setEnabled(problem.isEmpty());
-    m_mediumButton->setEnabled(problem.isEmpty());
     layout->addWidget(m_buttons);
     connect(m_install, &QPushButton::clicked, this, [this]() { go(false); });
     connect(m_mediumButton, &QPushButton::clicked, this, [this]() { go(true); });
     connect(m_buttons, &QDialogButtonBox::rejected, this, &QDialog::reject);
 
-    m_timeout->setSingleShot(true);
-    connect(m_timeout, &QTimer::timeout, this, [this]() {
-        if (!m_vm || m_step != Step::ShuttingDown) {
-            return;
-        }
-        if (Widgets::confirm(this, QMessageBox::Warning, tr("Force Off %1?").arg(m_vm->name()),
-                             tr("The guest has not shut down. Force the VM off? The guest "
-                                "loses its unsaved work."),
-                             tr("&Force Off"),
-                             Icons::themed({"process-stop"}, QStyle::SP_BrowserStop))) {
-            m_vm->runner()->forceOff();
-        } else {
-            m_timeout->start(kShutdownMs);
+    /* not modal: the VM may start, stop, change or go meanwhile */
+    connect(vm->runner(), &VmRunner::stateChanged, this, [this](VmRunner::State state) {
+        if (m_step != Step::ShuttingDown) {
+            refresh();
+        } else if (state == VmRunner::State::Stopped) {
+            m_wait->stop();
+            /* QEMU stopped by itself (a crash) is no shutdown to restart after */
+            if (const QString error = m_vm->runner()->errorString(); !error.isEmpty()) {
+                stopWaiting(tr("The VM stopped with an error: the guest tools install at its "
+                               "next start."));
+            } else {
+                next();
+            }
         }
     });
+    connect(vm, &Vm::changed, this, &GuestToolsDialog::refresh);
+    connect(vm, &QObject::destroyed, this, &QDialog::reject);
+    m_wait->setSingleShot(true);
+    connect(m_wait, &QTimer::timeout, this, [this]() {
+        if (m_step == Step::ShuttingDown) {
+            stopWaiting(tr("The guest did not shut down: the guest tools install at the VM's "
+                           "next start."));
+        }
+    });
+    refresh();
     setMinimumWidth(Widgets::em(this) * 34);
     Widgets::resizeToWidth(this, sizeHint().width());
+}
+
+void GuestToolsDialog::refresh()
+{
+    if (!m_vm || m_step != Step::Idle) {
+        return;
+    }
+    const bool running = m_vm->runner()->isActive();
+    const QString problem = obstacle(m_vm, GuestTools::medium());
+
+    m_restart->setText(running ? tr("<b>vitrine shuts the VM down and starts it again</b> "
+                                    "with the tools medium. The guest installs them before its "
+                                    "desktop starts, which takes a few minutes, then restarts "
+                                    "once more.")
+                               : tr("The VM starts with the tools medium. The guest installs "
+                                    "them before its desktop starts, which takes a few minutes, "
+                                    "then restarts once more."));
+    m_warning->setText(problem.toHtmlEscaped());
+    m_warning->setVisible(!problem.isEmpty());
+    m_install->setText(running ? tr("&Restart and Install") : tr("&Install"));
+    m_install->setEnabled(problem.isEmpty());
+    m_mediumButton->setEnabled(problem.isEmpty());
+    if (isVisible()) {
+        fit();
+    }
+}
+
+void GuestToolsDialog::fit()
+{
+    Widgets::resizeToWidth(this, width());
+}
+
+void GuestToolsDialog::reject()
+{
+    switch (m_step) {
+    case Step::ShuttingDown:
+        /* Cancel, Escape, the window's X or the banner's Cancel: no install
+           after all, nor restart (the guest was asked already) */
+        m_step = Step::Idle;
+        m_wait->stop();
+        if (m_vm) {
+            GuestToolsMonitor::of(m_vm)->setPending(Pending::None);
+        }
+        break;
+    case Step::Snapshot:
+        /* not while qemu-img writes it: the VM stays off once it is written */
+        m_cancelled = true;
+        if (m_vm) {
+            GuestToolsMonitor::of(m_vm)->setPending(Pending::None);
+        }
+        setProgress(tr("The snapshot is being written; then the VM stays off."));
+        return;
+    case Step::Starting:
+        return;
+    case Step::Idle:
+    case Step::Done:
+        break;
+    }
+    QDialog::reject();
+}
+
+void GuestToolsDialog::stopWaiting(const QString &why)
+{
+    m_step = Step::Done;
+    m_wait->stop();
+    if (isHidden()) {
+        /* out of sight all along: nothing to say, the banner says what is pending */
+        QDialog::reject();
+        return;
+    }
+    setProgress(why);
+    m_buttons->button(QDialogButtonBox::Cancel)->setText(tr("&Close"));
+}
+
+void GuestToolsDialog::setProgress(const QString &text)
+{
+    m_progress->setText(text);
+    m_progress->show();
+    /* the line it adds, not taken from the notes above */
+    if (isVisible()) {
+        fit();
+    }
 }
 
 void GuestToolsDialog::go(bool medium)
@@ -224,20 +341,21 @@ void GuestToolsDialog::go(bool medium)
     m_install->setEnabled(false);
     m_mediumButton->setEnabled(false);
     m_snapshot->setEnabled(false);
-    m_progress->show();
     GuestToolsMonitor::of(m_vm)->setPending(medium ? Pending::Medium : Pending::Bootstrap);
     if (m_vm->runner()->isActive()) {
         m_step = Step::ShuttingDown;
-        m_progress->setText(tr("Shutting the guest down…"));
-        connect(m_vm->runner(), &VmRunner::stateChanged, this, [this](VmRunner::State s) {
-            if (s == VmRunner::State::Stopped && m_step == Step::ShuttingDown) {
-                m_timeout->stop();
-                next();
-            }
-        });
-        /* through the agent if the guest has one (VmRunner's shutdown handler) */
+        setProgress(tr("Waiting for the guest to shut down. If it asks what to do, answer it "
+                       "on its screen: the VM then starts again with the tools medium."));
+        m_wait->start(shutdownWaitMs);
+        /*
+         * Out of the way of the VM's screen, where the guest may ask what
+         * to do (Plasma answers the power button with its logout screen),
+         * for as long as it takes: the status bar says how the guest was
+         * asked, and Install Guest Tools brings this back.  The gentlest
+         * way the guest takes (VmRunner::powerdown()).
+         */
+        hide();
         m_vm->runner()->powerdown();
-        m_timeout->start(kShutdownMs);
         return;
     }
     next();
@@ -254,10 +372,15 @@ void GuestToolsDialog::next()
             tr("Before guest tools %1").arg(QDateTime::currentDateTime().toString("yyyy-MM-dd hh:mm"));
 
         m_step = Step::Snapshot;
-        m_progress->setText(tr("Taking the snapshot “%1”…").arg(name.toHtmlEscaped()));
+        setProgress(tr("Taking the snapshot “%1”…").arg(name.toHtmlEscaped()));
         m_snapshots = new VmSnapshots(m_vm->runner(), this);
         m_snapshots->setVm(m_vm->args(), m_vm->dir());
         connect(m_snapshots, &VmSnapshots::finished, this, [this](const QString &error) {
+            if (m_cancelled) {
+                m_step = Step::Done;
+                QDialog::reject();
+                return;
+            }
             if (!error.isEmpty()) {
                 fail(tr("The snapshot failed: %1").arg(VmSnapshots::explain(error)));
                 return;
@@ -268,7 +391,7 @@ void GuestToolsDialog::next()
         return;
     }
     m_step = Step::Starting;
-    m_progress->setText(tr("Starting the VM…"));
+    setProgress(tr("Starting the VM…"));
     if (starter()) {
         starter()(m_vm);
     } else {
@@ -279,12 +402,17 @@ void GuestToolsDialog::next()
 
 void GuestToolsDialog::fail(const QString &error)
 {
-    m_step = Step::Idle;
-    m_progress->setText(
+    m_step = Step::Done;
+    m_buttons->button(QDialogButtonBox::Cancel)->setText(tr("&Close"));
+    /* hidden since its guest shut down: back with the error, the VM off and
+       its screen gone (KWin activates it, WA_ShowWithoutActivating or not) */
+    if (isHidden()) {
+        show();
+    }
+    setProgress(
         QString("<b>%1</b><br>%2")
             .arg(error.toHtmlEscaped(),
                  tr("The VM is off; the guest tools install at its next start.").toHtmlEscaped()));
-    m_buttons->button(QDialogButtonBox::Cancel)->setText(tr("&Close"));
 }
 
 GuestToolsBanner::GuestToolsBanner(QWidget *parent)
@@ -305,6 +433,10 @@ GuestToolsBanner::GuestToolsBanner(QWidget *parent)
             switch (monitor->state()) {
             case State::Pending:
                 monitor->setPending(Pending::None);
+                /* nor the restart its dialog waits to make, out of sight */
+                if (GuestToolsDialog *waiting = GuestToolsDialog::of(m_vm)) {
+                    waiting->reject();
+                }
                 break;
             case State::RebootNeeded:
                 monitor->requestReboot();

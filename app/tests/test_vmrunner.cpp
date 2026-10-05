@@ -255,19 +255,21 @@ private slots:
         const QStringList command = runner.commandLine(
             ArgsFile::parse("-m 1G\n#share tag=pub,path=/home/x\n# note\n"));
 
-        QCOMPARE(command.size(), 17);
+        QCOMPARE(command.size(), 23);
         QCOMPARE(command[0], testQemu());
         QCOMPARE(command.mid(1, 2), QStringList({"-m", "1G"}));
         QCOMPARE(command[3], "-chardev");
         QCOMPARE(command[4], "socket,id=vitrine-fs0,path=" + runDir + "/fs0.sock");
         QCOMPARE(command[5], "-device");
         QCOMPARE(command[6], "vhost-user-fs-pci,queue-size=1024,chardev=vitrine-fs0,tag=pub");
-        /* the guest tools' agent (test_guesttools) */
+        /* the guest tools' agent (test_guesttools), then qemu-ga's port (agentPort) */
         QCOMPARE(command.mid(7, 2), QStringList({"-device", "virtio-serial-pci,id=vitrine-serial"}));
-        QCOMPARE(command[13], "-qmp");
-        QCOMPARE(command[14], "unix:" + runDir + "/qmp.sock,server=on,wait=off");
-        QCOMPARE(command[15], "-pidfile");
-        QCOMPARE(command[16], runDir + "/qemu.pid");
+        QCOMPARE(command.mid(13, 2), QStringList({"-chardev", "socket,id=vitrine-ga,path=" + runDir +
+                                                                 "/qga.sock,server=on,wait=off"}));
+        QCOMPARE(command[19], "-qmp");
+        QCOMPARE(command[20], "unix:" + runDir + "/qmp.sock,server=on,wait=off");
+        QCOMPARE(command[21], "-pidfile");
+        QCOMPARE(command[22], runDir + "/qemu.pid");
         QVERIFY(runDir.toLocal8Bit().size() < 90);
     }
 
@@ -281,7 +283,7 @@ private slots:
         const QStringList bus = runner.commandLine(ArgsFile::parse("-m 1G\n-display dbus\n"));
         const QString monitor = "unix:" + runDir + "/display.sock,server=on,wait=off";
 
-        QCOMPARE(embedded.mid(5, 2), QStringList({"-qmp", monitor}));
+        QCOMPARE(embedded.mid(embedded.indexOf("-qmp"), 2), QStringList({"-qmp", monitor}));
         QVERIFY(!sdl.contains(monitor));
         QVERIFY(!bus.contains(monitor));
         QCOMPARE(runner.displaySocket(), "");   // not running
@@ -455,10 +457,17 @@ private slots:
                  "media.role=game application.name=vm\n\n~/x\nit's $HOME\n1\n");
     }
 
-    /* a share to mount: the port of the guest agent, unless the VM has its own */
+    /*
+     * The port of the guest agent, qemu-ga, for Shut Down and the shares to
+     * mount: every VM with PCI on x86-64 and ARM gets it, unless it has its
+     * own.  First on the guest tools' controller with shares to mount, as it
+     * always was; else on a controller of its own after the agent's, so that
+     * a running state saved without it still loads
+     */
     void agentPort()
     {
         const VmRunner runner(id, tmp.path());
+        const QStringList plain = runner.commandLine(ArgsFile::parse("-m 1G\n"));
         const QStringList mount = runner.commandLine(
             ArgsFile::parse("-m 1G\n#share tag=pub,path=/home/x,mount=/mnt/pub\n"));
         const QStringList noMount = runner.commandLine(
@@ -466,13 +475,86 @@ private slots:
         const QStringList own = runner.commandLine(ArgsFile::parse(
             "-m 1G\n#share tag=pub,path=/home/x,mount=/mnt/pub\n"
             "-device virtserialport,chardev=ga,name=org.qemu.guest_agent.0\n"));
+        const QString chardev = "socket,id=vitrine-ga,path=" + runDir + "/qga.sock,server=on,wait=off";
+        const QString first = "virtserialport,bus=vitrine-serial.0,chardev=vitrine-ga,"
+                              "name=org.qemu.guest_agent.0,id=vitrine-ga-port";
+        const QString after = "virtserialport,bus=vitrine-ga-serial.0,chardev=vitrine-ga,"
+                              "name=org.qemu.guest_agent.0,id=vitrine-ga-port";
+        auto count = [](const QStringList &command, const QString &what) {
+            return command.filter(what).size();
+        };
 
-        QVERIFY(mount.contains("socket,id=vitrine-ga,path=" + runDir + "/qga.sock,server=on,wait=off"));
-        QVERIFY(mount.contains("virtserialport,bus=vitrine-serial.0,chardev=vitrine-ga,"
-                               "name=org.qemu.guest_agent.0,id=vitrine-ga-port"));
-        /* and -smbios; the guest tools' agent shares the controller */
-        QCOMPARE(mount.size(), noMount.size() + 6 + 2 - 2);
+        for (const QStringList &command : {plain, mount, noMount}) {
+            QVERIFY(command.contains(chardev));
+            QCOMPARE(count(command, "name=org.qemu.guest_agent.0"), 1);
+            QCOMPARE(count(command, "name=org.vitrine.agent.0"), 1);
+        }
+        QVERIFY(mount.contains(first));
+        QCOMPARE(count(mount, "virtio-serial-pci"), 1);
+        for (const QStringList &command : {plain, noMount}) {
+            QVERIFY(command.contains(after));
+            QCOMPARE(count(command, "virtio-serial-pci"), 2);
+            QVERIFY(command.indexOf("virtio-serial-pci,id=vitrine-ga-serial") >
+                    command.indexOf(command.filter("name=org.vitrine.agent.0").first()));
+        }
+        /* -smbios more, a controller less */
+        QCOMPARE(mount.size(), noMount.size());
         QVERIFY(!own.join(' ').contains("vitrine-ga"));
+        QCOMPARE(count(own, "virtio-serial-pci,id=vitrine-serial"), 1);
+        /* no PCI, or a target without the controller: neither port */
+        for (const QString &args : {QString("-machine isapc\n"), QString("-machine microvm\n"),
+                                    QString("#qemu /opt/qemu/bin/qemu-system-ppc64\n")}) {
+            const QStringList command = runner.commandLine(ArgsFile::parse(args));
+            QCOMPARE(count(command, "virtio-serial-pci"), 0);
+            QVERIFY(!command.contains(chardev));
+        }
+        /* but qemu-ga's for shares to mount, on any target, as always */
+        const QStringList ppc = runner.commandLine(ArgsFile::parse(
+            "#qemu /opt/qemu/bin/qemu-system-ppc64\n#share tag=pub,path=/home/x,mount=/mnt/pub\n"));
+        QVERIFY(ppc.contains(first));
+        QCOMPARE(count(ppc, "virtio-serial-pci"), 1);
+        QCOMPARE(count(ppc, "name=org.vitrine.agent.0"), 0);
+        QCOMPARE(runner.guestAgentSocket(), "");    // not running
+    }
+
+    /*
+     * Shut Down asks qemu-ga through the VM's own port when it has one: the
+     * socket QEMU listens on, a relative path in the VM's folder.  Closed in
+     * the guest (no guest here): the power button at once, not after
+     * qemu-ga's silence
+     */
+    void ownGuestAgent()
+    {
+        using Way = GuestShutdown::Way;
+        auto *runner = new VmRunner(id, tmp.path());
+        QList<Way> ways;
+        connect(runner, &VmRunner::shutdownWayChanged, this, [&ways](Way way) { ways << way; });
+        const QString socket = tmp.filePath(id + "-ga.sock");
+        const auto removeSocket = qScopeGuard([&socket]() { QFile::remove(socket); });
+
+        runner->start(ArgsFile::parse(QString(kHeadless) +
+                                      "-chardev socket,id=myga,path=" + id +
+                                      "-ga.sock,server=on,wait=off\n"
+                                      "-device virtio-serial-pci\n"
+                                      "-device virtserialport,chardev=myga,"
+                                      "name=org.qemu.guest_agent.0\n"));
+        QTRY_COMPARE_WITH_TIMEOUT(runner->state(), VmRunner::State::Running, 20000);
+        QCOMPARE(runner->guestAgentSocket(), socket);
+        QVERIFY(QFileInfo::exists(socket));
+        QVERIFY(!read(runner->logPath()).contains("vitrine-ga"));
+
+        QElapsedTimer clock;
+        clock.start();
+        runner->powerdown();
+        QTRY_COMPARE(runner->shutdownWay(), Way::PowerButton);
+        QVERIFY2(clock.elapsed() < 2000, qPrintable(QString::number(clock.elapsed())));
+        QCOMPARE(ways, QList<Way>{Way::PowerButton});
+
+        runner->forceOff();
+        QTRY_COMPARE_WITH_TIMEOUT(runner->state(), VmRunner::State::Stopped, 15000);
+        QCOMPARE(runner->guestAgentSocket(), "");
+        QCOMPARE(runner->shutdownWay(), Way::None);
+        delete runner;
     }
 
     /* systemd in the guest mounts what it reads from SMBIOS, as if in /etc/fstab */

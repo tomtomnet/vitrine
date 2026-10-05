@@ -7,6 +7,7 @@
 #include <QElapsedTimer>
 #include <QFile>
 #include <QFileInfo>
+#include <QJsonArray>
 #include <QJsonObject>
 #include <QProcess>
 #include <QRegularExpression>
@@ -18,6 +19,7 @@
 
 #include "core/firmwarefiles.h"
 #include "core/guestagent.h"
+#include "core/guestshutdown.h"
 #include "core/guesttools.h"
 #include "core/hostkvm.h"
 #include "core/paths.h"
@@ -111,10 +113,44 @@ static QList<VmConfig::Share> sharesToMount(const ArgsFile &args)
     return list;
 }
 
-/* Unless the VM has an agent port of its own, which the manager cannot share */
-static bool addsAgent(const ArgsFile &args)
+/*
+ * The port of QEMU's guest agent, qemu-ga, which most Linux guests run
+ * (Fedora installs it in VMs): it mounts the shares the guest did not, on
+ * any target (their virtiofs devices need PCI too), and Shut Down asks it
+ * before the power button (GuestShutdown), where the target has the guest
+ * tools' controller.  Not when the VM has a port of its own, which the
+ * manager cannot share.
+ */
+static bool addsAgent(const ArgsFile &args, const QString &qemu)
 {
-    return !sharesToMount(args).isEmpty() && !args.toText().contains("org.qemu.guest_agent.0");
+    return (!sharesToMount(args).isEmpty() || GuestTools::hasSerialController(args, qemu)) &&
+           !args.toText().contains("org.qemu.guest_agent.0");
+}
+
+/*
+ * qemu-ga's port of the VM's own, which Shut Down can still ask the guest
+ * agent through: the socket QEMU listens on for its chardev (a relative
+ * path in the VM's folder @dir, where QEMU runs), and the chardev's id.
+ * None when the chardev is no socket QEMU listens on.
+ */
+static std::pair<QString, QString> ownAgentSocket(const ArgsFile &args, const QString &dir)
+{
+    QString chardev;
+
+    for (int i : args.indexesOf("device")) {
+        const OptionValue port = args.valueAt(i);
+        if (port.implied() == "virtserialport" && port.get("name") == "org.qemu.guest_agent.0") {
+            chardev = port.get("chardev");
+        }
+    }
+    for (int i : args.indexesOf("chardev")) {
+        const OptionValue c = args.valueAt(i);
+        if (!chardev.isEmpty() && c.get("id") == chardev && c.implied() == "socket" &&
+            !c.get("path").isEmpty() && c.has("server") && c.flag("server", true)) {
+            return {QDir(dir).absoluteFilePath(c.get("path")), chardev};
+        }
+    }
+    return {};
 }
 
 /* As fstab and /proc/self/mountinfo write spaces and the like: \040 */
@@ -222,7 +258,10 @@ struct VmRunner::Private
     qint64 pid = 0;             // QEMU
     QList<Helper> helpers;      // virtiofsd started for this run
     GuestAgent *agent = nullptr;    // mounting the shares
-    std::function<bool()> shutdownHandler;
+    GuestShutdown *shutdown;        // powerdown()'s ways
+    bool guestAgentPort = false;    // the run has qemu-ga's port, agentPath()
+    QString guestAgentSocket;       // qemu-ga's port Shut Down uses: its socket
+    QString guestAgentChardev;      // and its chardev
     bool connecting = false;
     bool heldForDisplay = false;    // started paused (-S) for its screen
     bool waitingForDisplay = false; // and waiting for it now: waitsForDisplay()
@@ -245,6 +284,14 @@ struct VmRunner::Private
     QString argsPath() const { return runDir() + "/run.args"; }
     QString qmpArg() const;
     QString displayArg() const;
+    /* qemu-ga's chardev, on agentPath() */
+    QString guestAgentArg() const;
+    /* qemu-ga's port, with its chardev, on the virtio-serial controller @controller */
+    QStringList guestAgentPortArgs(const QString &controller) const;
+    /* Shut Down through qemu-ga: on the runner's port, or the VM's own */
+    void useGuestAgent();
+    /* the guest opened qemu-ga's port: its qemu-ga runs */
+    void guestAgentOpen(const std::function<void(bool open)> &answer);
     /* @problems: the cards whose properties could not be read, for the log */
     QStringList commandLine(const ArgsFile &args, const QString &qemu,
                             QStringList *problems = nullptr) const;
@@ -294,6 +341,55 @@ QString VmRunner::Private::qmpArg() const
 QString VmRunner::Private::displayArg() const
 {
     return QString("unix:%1,server=on,wait=off").arg(OptionValue::escape(displayPath()));
+}
+
+QString VmRunner::Private::guestAgentArg() const
+{
+    return QString("socket,id=vitrine-ga,path=%1,server=on,wait=off")
+        .arg(OptionValue::escape(agentPath()));
+}
+
+QStringList VmRunner::Private::guestAgentPortArgs(const QString &controller) const
+{
+    return {"-chardev", guestAgentArg(),
+            "-device", QString("virtio-serial-pci,id=%1").arg(controller),
+            "-device", QString("virtserialport,bus=%1.0,chardev=vitrine-ga,"
+                               "name=org.qemu.guest_agent.0,id=%2").arg(controller, kAgentPort)};
+}
+
+void VmRunner::Private::useGuestAgent()
+{
+    const auto [own, chardev] = ownAgentSocket(args, dir);
+
+    guestAgentSocket = guestAgentPort ? agentPath() : own;
+    guestAgentChardev = guestAgentPort ? "vitrine-ga" : chardev;
+    shutdown->setGuestAgent(guestAgentSocket,
+                            [this](const auto &answer) { guestAgentOpen(answer); });
+}
+
+void VmRunner::Private::guestAgentOpen(const std::function<void(bool open)> &answer)
+{
+    if (!qmp->isReady()) {
+        answer(true);
+        return;
+    }
+    /* frontend-open: the port's state in the guest; unknown, qemu-ga is tried,
+       but not through a QEMU whose monitor just closed: it is going away */
+    qmp->execute("query-chardev", {},
+                 [this, answer, label = guestAgentChardev](const QJsonValue &result,
+                                                           const QString &error) {
+        if (!error.isEmpty()) {
+            answer(qmp->isReady());
+            return;
+        }
+        for (const QJsonValue &chardev : result.toArray()) {
+            if (chardev["label"].toString() == label) {
+                answer(chardev["frontend-open"].toBool(true));
+                return;
+            }
+        }
+        answer(true);
+    });
 }
 
 /*
@@ -423,6 +519,12 @@ void VmRunner::Private::cleanup()
         emit q->waitsForDisplayChanged(false);
     }
     suspended = false;
+    /* before QMP, whose failed commands would answer the request */
+    shutdown->reset();
+    shutdown->setGuestAgent({});
+    guestAgentPort = false;
+    guestAgentSocket.clear();
+    guestAgentChardev.clear();
     qmp->disconnectFromSocket();
     for (const Helper &h : std::as_const(helpers)) {
         signalIfOurs(h.pid, h.marker, SIGTERM);
@@ -657,6 +759,8 @@ void VmRunner::Private::event(const QString &name, const QJsonObject &data)
     }
     if (name == "SHUTDOWN") {
         stopRequested = true;
+        /* the guest shut down: whatever way the request took is done */
+        shutdown->reset();
         setState(State::Stopping);
     } else if (state == State::Stopping) {
         return;
@@ -674,7 +778,7 @@ void VmRunner::Private::mountShares()
 {
     const QList<VmConfig::Share> shares = sharesToMount(args);
 
-    if (!addsAgent(args)) {
+    if (shares.isEmpty() || !guestAgentPort) {
         return;
     }
     if (agent) {
@@ -756,6 +860,12 @@ VmRunner::VmRunner(const QString &id, const QString &dir, QObject *parent)
     d->killTimer->setSingleShot(true);
     d->displayTimer = new QTimer(this);
     d->displayTimer->setSingleShot(true);
+    d->shutdown = new GuestShutdown(this);
+    d->shutdown->setPowerButton([this]() { pressPowerButton(); });
+    d->shutdown->setRunning([this]() {
+        return d->state != State::Stopped && d->state != State::Stopping;
+    });
+    connect(d->shutdown, &GuestShutdown::wayChanged, this, &VmRunner::shutdownWayChanged);
     connect(d->displayTimer, &QTimer::timeout, this, [this]() { d->endDisplayWait(true); });
     connect(d->poll, &QTimer::timeout, this, [this]() { d->tick(); });
     connect(d->killTimer, &QTimer::timeout, this, [this]() { d->escalate(); });
@@ -778,6 +888,8 @@ VmRunner::~VmRunner()
         d->qmp->execute("cont");
         d->qmp->flush();
     }
+    /* first: the answers to a shutdown on its way go nowhere */
+    delete d->shutdown;
     delete d->qmp;
     delete d;
 }
@@ -1000,14 +1112,12 @@ QStringList VmRunner::Private::commandLine(const ArgsFile &args, const QString &
                 << "type=11,value=io.systemd.credential.binary:fstab.extra=" +
                        QString::fromLatin1(fstab.toUtf8().toBase64());
     }
-    if (addsAgent(args)) {
-        command << "-chardev"
-                << QString("socket,id=vitrine-ga,path=%1,server=on,wait=off")
-                       .arg(OptionValue::escape(agentPath()))
-                << "-device" << "virtio-serial-pci,id=vitrine-serial"
-                << "-device"
-                << QString("virtserialport,bus=vitrine-serial.0,chardev=vitrine-ga,"
-                           "name=org.qemu.guest_agent.0,id=%1").arg(kAgentPort);
+    /* qemu-ga's port, first on the runner's controller for a VM with shares
+       to mount, where it always was; else after the guest tools' agent */
+    const bool guestAgent = addsAgent(args, qemu);
+    const bool guestAgentFirst = guestAgent && !sharesToMount(args).isEmpty();
+    if (guestAgentFirst) {
+        command += guestAgentPortArgs("vitrine-serial");
     }
     if (VmConfig::screen(args) == VmConfig::Screen::Embedded) {
         /* a second -qmp; -mon is deprecated */
@@ -1018,10 +1128,19 @@ QStringList VmRunner::Private::commandLine(const ArgsFile &args, const QString &
     }
     /* the guest tools' agent, on qemu-ga's controller if there is one */
     if (GuestTools::addsAgentPort(args, qemu)) {
-        if (!addsAgent(args)) {
+        if (!guestAgentFirst) {
             command << "-device" << "virtio-serial-pci,id=vitrine-serial";
         }
         command += GuestTools::agentPortArgs(toolsAgentPath());
+    }
+    /*
+     * Else qemu-ga's port on a controller of its own, after the agent's: a
+     * running state saved before the runner added it (a snapshot) still
+     * loads, which a port more on the agent's controller would keep QEMU
+     * from (its ports no longer match the state's)
+     */
+    if (guestAgent && !guestAgentFirst) {
+        command += guestAgentPortArgs("vitrine-ga-serial");
     }
     /* the guest tools asked for: the medium, and the unit that installs them at boot */
     const GuestTools::Pending tools = GuestTools::pending(id);
@@ -1147,6 +1266,11 @@ QStringList VmRunner::environment(const ArgsFile &args)
 QString VmRunner::agentSocket() const
 {
     return isActive() ? d->toolsAgentPath() : QString();
+}
+
+QString VmRunner::guestAgentSocket() const
+{
+    return isActive() ? d->guestAgentSocket : QString();
 }
 
 QStringList VmRunner::shellAssignments(const QStringList &environment)
@@ -1286,6 +1410,8 @@ void VmRunner::start(const ArgsFile &args)
     }
     log.close();
 
+    d->guestAgentPort = addsAgent(args, qemu);
+    d->useGuestAgent();
     d->setState(State::Starting);
     d->clock.start();
     for (qsizetype i = 0; i < shares.size(); i++) {
@@ -1338,6 +1464,8 @@ void VmRunner::attach(const ArgsFile &args)
         d->args = args;
     }
     d->embedded = running.contains(d->displayArg());
+    d->guestAgentPort = running.contains(d->guestAgentArg());
+    d->useGuestAgent();
     /* still paused for its screen when the vitrine that started it ended */
     d->heldForDisplay = d->embedded && running.contains("-S") && d->args.indexOf("S") < 0;
     d->pid = pid;
@@ -1369,10 +1497,14 @@ void VmRunner::resume()
 
 void VmRunner::powerdown()
 {
-    if (d->shutdownHandler && isActive() && d->shutdownHandler()) {
-        return;
+    if (isActive()) {
+        d->shutdown->start();
     }
-    pressPowerButton();
+}
+
+GuestShutdown::Way VmRunner::shutdownWay() const
+{
+    return d->shutdown->way();
 }
 
 void VmRunner::pressPowerButton()
@@ -1382,9 +1514,9 @@ void VmRunner::pressPowerButton()
     }
 }
 
-void VmRunner::setShutdownHandler(const std::function<bool()> &handler)
+void VmRunner::setShutdownHandler(const GuestShutdown::Asker &handler)
 {
-    d->shutdownHandler = handler;
+    d->shutdown->setToolsAgent(handler);
 }
 
 void VmRunner::reset()
