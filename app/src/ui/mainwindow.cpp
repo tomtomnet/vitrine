@@ -53,6 +53,7 @@
 #include "ui/preferencesdialog.h"
 #include "ui/qemubuilddialog.h"
 #include "ui/stackbanner.h"
+#include "ui/systems.h"
 #include "ui/qemudocs.h"
 #include "ui/referencepanel.h"
 #include "ui/textdialog.h"
@@ -70,35 +71,33 @@
 enum { IdRole = Qt::UserRole, StateRole, StateColorRole };
 
 /*
- * A computer with a badge for the state, drawn at the size and pixel ratio
- * the list asks: pixmaps made beforehand for 1, 2 and 3 came out scaled,
- * and blurred, at 1.25 or 1.5
+ * The icon of the VM's system (Systems::icon) with a badge for the state,
+ * drawn at the size and pixel ratio the list asks: pixmaps made beforehand
+ * for 1, 2 and 3 came out scaled, and blurred, at 1.25 or 1.5
  */
-static QIcon vmIcon(VmRunner::State state)
+static QIcon vmIcon(const Vm *vm, VmRunner::State state)
 {
-    static QHash<int, QIcon> cache;
-    const QIcon base = Icons::themed({"computer"}, QStyle::SP_ComputerIcon);
+    static QHash<std::pair<qint64, int>, QIcon> cache;
+    const QIcon base = Systems::icon(VmConfig::guest(vm->args()));
+    const std::pair<qint64, int> key(base.cacheKey(), int(state));
 
     if (state == VmRunner::State::Stopped) {
         return base;
     }
-    if (!cache.contains(int(state))) {
+    if (!cache.contains(key)) {
         switch (state) {
         case VmRunner::State::Running:
-            cache.insert(int(state),
-                         Icons::badged(base, QColor(0x27, 0xae, 0x60), Icons::Badge::Play));
+            cache.insert(key, Icons::badged(base, QColor(0x27, 0xae, 0x60), Icons::Badge::Play));
             break;
         case VmRunner::State::Paused:
-            cache.insert(int(state),
-                         Icons::badged(base, QColor(0xf6, 0x74, 0x00), Icons::Badge::Pause));
+            cache.insert(key, Icons::badged(base, QColor(0xf6, 0x74, 0x00), Icons::Badge::Pause));
             break;
         default:
-            cache.insert(int(state),
-                         Icons::badged(base, QColor(0x3d, 0xae, 0xe9), Icons::Badge::Busy));
+            cache.insert(key, Icons::badged(base, QColor(0x3d, 0xae, 0xe9), Icons::Badge::Busy));
             break;
         }
     }
-    return cache.value(int(state));
+    return cache.value(key);
 }
 
 /* QEMU shows the running VM in a window of its own: SDL or GTK, its default being one of them */
@@ -461,8 +460,12 @@ void MainWindow::createActions()
     machine->addActions({m_start, m_showWindow, m_pause, m_shutDown, m_reset, m_forceOff});
     machine->addSeparator();
     machine->addActions({m_ctrlAltDel, m_releaseInput});
-    machine->addAction(tr("Install &Guest Tools…"), this,
-                       [this]() { GuestToolsDialog::run(this, current()); });
+    QAction *tools = machine->addAction(tr("Install &Guest Tools…"), this,
+                                        [this]() { GuestToolsDialog::run(this, current()); });
+    /* off for VMs the tools are not for, which its tip says */
+    machine->setToolTipsVisible(true);
+    connect(machine, &QMenu::aboutToShow, this,
+            [this, tools]() { GuestToolsDialog::updateAction(tools, current()); });
     machine->addSeparator();
     machine->addActions({m_log, m_folder, m_command});
     machine->addSeparator();
@@ -809,7 +812,7 @@ void MainWindow::updateItem(Vm *vm)
         }
     }
     item->setData(StateColorRole, color);
-    item->setIcon(vmIcon(state));
+    item->setIcon(vmIcon(vm, state));
     if (item->text() != vm->name()) {
         item->setText(vm->name());
         m_list->sortItems();

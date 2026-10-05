@@ -5,6 +5,7 @@
 
 #include "core/vmtemplate.h"
 
+class OsChooser;
 class QButtonGroup;
 class QCheckBox;
 class QComboBox;
@@ -18,9 +19,10 @@ class VmStore;
 
 /*
  * Creates a VM: a folder, a disk, the firmware variables and vm.args.  It
- * asks only what vitrine cannot choose: the system, the memory and
- * processors, the disk and the disc to install from; the rest comes from
- * the template, the settings change it afterwards.
+ * asks only what vitrine cannot choose: the disc to install from, the
+ * system, which the disc tells unless the user chooses it (GuestOs), the
+ * memory and processors, the disk; the rest comes from the template of the
+ * system, the settings change it afterwards.
  */
 class NewVmDialog : public QDialog
 {
@@ -37,13 +39,31 @@ public:
     QStringList warnings() const { return m_warnings; }
 
 private:
+    /* The template's memory, processors and disk, when its kind changed */
     void applyDefaults();
     void updateDisk();
+    /* The system of the disc chosen, while "Detect" is on */
+    void detect();
+    /* The system shown changed: the template, the desktop */
+    void systemChanged();
+    /* The VM named after its system, unless the user named it */
+    void nameAfterSystem();
+    /* What detect() found, under the system; the window as high as it then needs */
+    void tell(const QString &text);
+    VmTemplate::Os templateOs() const;
     bool create(Vm *vm, QString *error);
 
     VmStore *m_store;
     QLineEdit *m_name;
-    QComboBox *m_os;
+    OsChooser *m_os;
+    QCheckBox *m_detect;
+    QLabel *m_detected;
+    QComboBox *m_desktop;
+    /* The name given after the system, until the user writes another */
+    QString m_autoName;
+    /* The kind of the template the defaults are of */
+    VmTemplate::Os m_kind = VmTemplate::Os::Other;
+    bool m_defaulted = false;
     QSlider *m_memorySlider;
     QSpinBox *m_memory;
     QSlider *m_cpuSlider;

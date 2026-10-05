@@ -10,6 +10,7 @@
 #include <optional>
 
 #include "core/argsfile.h"
+#include "core/vmconfig.h"
 
 class GpuContexts;
 class QLocalSocket;
@@ -31,6 +32,17 @@ class Vm;
  * guest is doing: tools and package versions, the driver per kernel.
  */
 namespace GuestTools {
+
+/*
+ * Whether the guest tools are offered for a VM: they are for Fedora Linux
+ * only, the system its #guest directive names (any release of it, not its
+ * atomic desktops), or the one an agent in its guest reports, os-release's
+ * ID (@reportedOs: fedora).  Not for another system, nor while the VM's
+ * system is not known.  The prompt, the menu entry and the dialog go by
+ * it; @why says why not, for them.
+ */
+bool offered(const VmConfig::Guest &guest, const QString &reportedOs = {},
+             QString *why = nullptr);
 
 /* The medium's FAT label (11 characters at most), which the guest mounts it by */
 extern const char kLabel[];
@@ -196,6 +208,9 @@ public:
     const GuestTools::Report &report() const { return m_in.report; }
     /* The agent answered since the guest booted */
     bool hasAgent() const { return m_in.agentSeen; }
+    /* What the guest runs as the agent said (os-release's ID), or fedora
+       when the tools were in at its last run; empty if not known */
+    QString reportedOs() const;
     /* While installing: the installer's step */
     QString step() const { return m_step; }
     int stepCurrent() const { return m_current; }

@@ -18,6 +18,8 @@ qt_add_library(vitrine_core STATIC
     src/core/gpucontexts.h
     src/core/guestagent.cpp
     src/core/guestagent.h
+    src/core/guestos.cpp
+    src/core/guestos.h
     src/core/guesttools.cpp
     src/core/guesttools.h
     src/core/hostdevices.cpp
@@ -186,6 +188,8 @@ qt_add_library(vitrine_ui STATIC
     src/ui/memorymonitor.h
     src/ui/newvmdialog.cpp
     src/ui/newvmdialog.h
+    src/ui/oschooser.cpp
+    src/ui/oschooser.h
     src/ui/perfmonitor.cpp
     src/ui/perfmonitor.h
     src/ui/preferencesdialog.cpp
@@ -200,6 +204,8 @@ qt_add_library(vitrine_ui STATIC
     src/ui/settingspages.h
     src/ui/snapshotview.cpp
     src/ui/snapshotview.h
+    src/ui/systems.cpp
+    src/ui/systems.h
     src/ui/stackbanner.cpp
     src/ui/stackbanner.h
     src/ui/textdialog.cpp
@@ -224,6 +230,33 @@ qt_add_library(vitrine_ui STATIC
     src/ui/widgets.h
 )
 target_link_libraries(vitrine_ui PUBLIC vitrine_core vitrine_vmview Qt6::DBus Qt6::Widgets)
+# the systems' logos (data/os/README.md: where they come from, their licenses)
+qt_add_resources(vitrine_ui oslogos PREFIX /os BASE data/os FILES
+    data/os/almalinux.svg
+    data/os/alpinelinux.svg
+    data/os/apple.svg
+    data/os/archlinux.svg
+    data/os/cachyos.svg
+    data/os/centos.svg
+    data/os/elementary.svg
+    data/os/endeavouros.svg
+    data/os/freebsd.svg
+    data/os/kalilinux.svg
+    data/os/kde.svg
+    data/os/linux.svg
+    data/os/linuxmint.svg
+    data/os/manjaro.svg
+    data/os/netbsd.svg
+    data/os/openbsd.svg
+    data/os/opensuse.svg
+    data/os/popos.svg
+    data/os/redhat.svg
+    data/os/slackware.svg
+    data/os/suse.svg
+    data/os/ubuntu.svg
+    data/os/voidlinux.svg
+    data/os/windows.svg
+    data/os/zorin.svg)
 target_compile_options(vitrine_ui PRIVATE -Wall -Wextra)
 
 qt_add_executable(vitrine
@@ -293,6 +326,7 @@ if(BUILD_TESTING)
             firmwarefiles
             gpucontexts
             guestagent
+            guestos
             guesttools
             hostdevices
             hostkvm
@@ -321,8 +355,10 @@ if(BUILD_TESTING)
     # the windows': widgets that are never shown, so no screen either
     foreach(name
             cardupdatedialog
+            guestoffer
             mainbar
             newvmdialog
+            oschooser
             settingspages
             shortcuts
             snapshotview
@@ -340,7 +376,8 @@ if(BUILD_TESTING)
             banner
             dialogs
             icons
-            mainwindow)
+            mainwindow
+            systems)
         qt_add_executable(test_${name} tests/test_${name}.cpp tests/scales.h)
         target_link_libraries(test_${name} PRIVATE vitrine_ui Qt6::GuiPrivate Qt6::Test)
         target_compile_options(test_${name} PRIVATE -Wall -Wextra)

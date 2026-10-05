@@ -37,6 +37,8 @@ struct Options {
     Os os = Os::Linux;
     /* Of a Linux guest, e.g. kde or gnome: the #guest directive */
     QString desktop;
+    /* What it runs, e.g. fedora44 (GuestOs): the #guest directive's id */
+    QString system;
     qint64 memoryMiB = 4096;
     int cpus = 4;
     /* Of the topology on a PC; 0: 2 when this computer's cores have two */

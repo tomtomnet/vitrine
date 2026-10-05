@@ -14,6 +14,7 @@
 
 class ArgsEditorPane;
 class Banner;
+class OsChooser;
 class QemuDocs;
 class QRadioButton;
 class QCheckBox;
@@ -91,7 +92,7 @@ private:
     void updateDesktop();
 
     QLineEdit *m_name;
-    QComboBox *m_os;
+    OsChooser *m_os;
     QComboBox *m_desktop;
     QString m_loaded;
     VmConfig::Guest m_loadedGuest;
@@ -184,6 +185,10 @@ private:
     void addDisk();
     void addCdrom();
     void chooseDisc();
+    /* The system the disc chosen tells while the VM's is not set, if the
+       disc is still in its drive; else empty */
+    QString toldSystem() const;
+    void updateSystem();
     void resize();
     QString newDiskName() const;
     /* The boot order: an entry added to it, the list made again, a device moved */
@@ -202,6 +207,14 @@ private:
     QPushButton *m_bootUp;
     QPushButton *m_bootDown;
     QLabel *m_bootHint;
+    QLabel *m_system;
+    /* The VM's #guest when loaded: no system yet, its family */
+    bool m_systemSet = true;
+    QString m_family;
+    /* The system a disc chosen tells (GuestOs::detect), and its desktop */
+    QString m_toldDisc;
+    QString m_toldSystem;
+    QString m_toldDesktop;
     QList<Entry> m_entries;
     int m_nextId = 0;
     QList<BootItem> m_bootItems;

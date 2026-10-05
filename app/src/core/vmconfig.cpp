@@ -112,7 +112,7 @@ Guest guest(const ArgsFile &args)
     }
     const OptionValue v = args.valueAt(i);
     return {(v.implied().isEmpty() ? v.get("os") : v.implied()).toLower(),
-            v.get("desktop").toLower()};
+            v.get("desktop").toLower(), v.get("id").toLower()};
 }
 
 void setGuest(ArgsFile &args, const Guest &g)
@@ -120,7 +120,7 @@ void setGuest(ArgsFile &args, const Guest &g)
     int i = args.indexOf("guest", ArgsFile::Line::Directive);
     QStringList parts;
 
-    if (g.os.isEmpty() && g.desktop.isEmpty()) {
+    if (g.os.isEmpty() && g.desktop.isEmpty() && g.id.isEmpty()) {
         if (i >= 0) {
             args.removeAt(i);
         }
@@ -129,6 +129,9 @@ void setGuest(ArgsFile &args, const Guest &g)
     if (!g.os.isEmpty()) {
         parts << OptionValue::escape(g.os);
     }
+    if (!g.id.isEmpty()) {
+        parts << "id=" + OptionValue::escape(g.id);
+    }
     if (!g.desktop.isEmpty()) {
         parts << "desktop=" + OptionValue::escape(g.desktop);
     }
@@ -136,7 +139,8 @@ void setGuest(ArgsFile &args, const Guest &g)
         const OptionValue old = args.valueAt(i);
         /* keys of a later vitrine, or the user's */
         for (const OptionValue::Item &item : old.items()) {
-            if (!item.key.isEmpty() && item.key != "os" && item.key != "desktop") {
+            if (!item.key.isEmpty() && item.key != "os" && item.key != "desktop" &&
+                item.key != "id") {
                 parts << OptionValue::itemText(item);
             }
         }

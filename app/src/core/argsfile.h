@@ -22,7 +22,9 @@
  *   #qemu /path/to/qemu-system-x86_64     the QEMU of this VM, if not the
  *                                         one in the preferences
  *   #env NAME=VALUE                       an environment variable for QEMU
- *   #guest linux[,desktop=kde]            what runs in the VM
+ *   #guest linux[,id=fedora44][,desktop=kde]
+ *                                         what runs in the VM: the family,
+ *                                         the system, its desktop
  *
  * Blank lines, comments and the order of the lines survive editing.
  */

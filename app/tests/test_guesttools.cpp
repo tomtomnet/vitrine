@@ -4,11 +4,13 @@
 #include <QFileInfo>
 #include <QJsonArray>
 #include <QJsonDocument>
+#include <QSettings>
 #include <QSignalSpy>
 #include <QStandardPaths>
 #include <QTemporaryDir>
 #include <QTest>
 
+#include "core/guestos.h"
 #include "core/guesttools.h"
 #include "core/paths.h"
 #include "core/qmpclient.h"
@@ -85,6 +87,67 @@ private slots:
     {
         QDir(dataDir()).removeRecursively();
         setPending("vitrine-test-vm", Pending::None);
+    }
+
+    /* The tools are for Fedora only: the VM's system, or what its guest reports */
+    void offeredForFedora()
+    {
+        QString why;
+
+        /* vitrine's list of systems, the same on every computer */
+        GuestOs::Catalogue::reload({});
+        QVERIFY(offered({"linux", "kde", "fedora44"}));
+        QVERIFY(offered({"linux", "", "fedora43"}));
+        QVERIFY(offered({"linux", "", "fedora-unknown"}));
+        QVERIFY(offered({"linux", "", "fedora-rawhide"}));
+        QVERIFY(!offered({"linux", "", "silverblue43"}, {}, &why));
+        QCOMPARE(why, "The guest tools are for Fedora Linux; this VM runs Fedora Silverblue 43.");
+        QVERIFY(!offered({"windows", "", "win11"}, {}, &why));
+        QCOMPARE(why, "The guest tools are for Fedora Linux; this VM runs Microsoft Windows 11.");
+        QVERIFY(!offered({"linux", "kde", "ubuntu24.04"}, {}, &why));
+        QCOMPARE(why, "The guest tools are for Fedora Linux; this VM runs Ubuntu 24.04.");
+        QVERIFY(!offered({"linux", "", "someos3"}, {}, &why));
+        QCOMPARE(why, "The guest tools are for Fedora Linux; this VM runs someos3.");
+        /* the family alone */
+        QVERIFY(!offered({"windows", ""}, {}, &why));
+        QCOMPARE(why, "The guest tools are for Fedora Linux; this VM runs Windows.");
+        QVERIFY(!offered({"other", ""}, {}, &why));
+        QVERIFY(why.contains("another system"));
+        /* not known: no offer, unless its guest says Fedora */
+        QVERIFY(!offered({"linux", "kde"}, {}, &why));
+        QVERIFY(why.contains("choose Fedora as its system"));
+        QVERIFY(!offered({}, {}, &why));
+        QVERIFY(offered({"linux", "kde"}, "fedora"));
+        QVERIFY(offered({}, "fedora"));
+        QVERIFY(!offered({}, "ubuntu", &why));
+        QCOMPARE(why, "The guest tools are for Fedora Linux; this VM runs ubuntu.");
+        /* the guest knows better than a setting gone stale */
+        QVERIFY(offered({"linux", "", "ubuntu24.04"}, "fedora"));
+        GuestOs::Catalogue::reload();
+    }
+
+    /* What the monitor says the guest runs: its agent's word, or what its tools tell */
+    void reportedOs()
+    {
+        QTemporaryDir tmp;
+        QFile args(tmp.filePath("vm.args"));
+
+        QVERIFY(args.open(QIODevice::WriteOnly) && args.write("-name Test\n") > 0);
+        args.close();
+        {
+            Vm vm(tmp.path());
+            QCOMPARE(GuestToolsMonitor::of(&vm)->reportedOs(), "");
+        }
+        /* the tools were in at its last run: they install in Fedora only */
+        QSettings(Paths::settingsPath(), QSettings::IniFormat)
+            .setValue("guesttools/last/" + QFileInfo(tmp.path()).fileName(),
+                      "installed 0.1.0-1.fc44");
+        {
+            Vm vm(tmp.path());
+            QCOMPARE(GuestToolsMonitor::of(&vm)->reportedOs(), "fedora");
+        }
+        QSettings(Paths::settingsPath(), QSettings::IniFormat)
+            .remove("guesttools/last/" + QFileInfo(tmp.path()).fileName());
     }
 
     void agentPort()

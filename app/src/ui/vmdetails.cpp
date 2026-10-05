@@ -30,6 +30,7 @@
 #include "ui/guesttoolsdialog.h"
 #include "ui/icons.h"
 #include "ui/qemudocs.h"
+#include "ui/systems.h"
 #include "ui/uiconfig.h"
 
 /* How to build a guest Mesa with native context, in the repository */
@@ -185,6 +186,7 @@ void VmDetails::refresh()
     }
     m_name->setText(m_vm->name());
     m_state->setText(stateText(m_vm));
+    m_icon->setIcon(Systems::icon(VmConfig::guest(m_vm->args())));
     m_note->setVisible(keptOpen(m_vm));
     m_card->refresh();
 
@@ -302,8 +304,16 @@ QString VmDetails::html() const
     } else {
         accelText = accel;
     }
+    const VmConfig::Guest guest = VmConfig::guest(args);
+    QString system = Systems::name(guest);
+    if (system.isEmpty()) {
+        system = tr("not set");
+    } else if (!guest.desktop.isEmpty()) {
+        system += " · " + Systems::desktopName(guest.desktop);
+    }
     section(tr("System"),
-            {{tr("Memory"), text(memory > 0 ? sizeText(memory) : tr("QEMU default"))},
+            {{tr("Operating system"), text(system)},
+             {tr("Memory"), text(memory > 0 ? sizeText(memory) : tr("QEMU default"))},
              {tr("Processors"), text(processors)},
              {tr("Machine"), text(machine.isEmpty() ? tr("QEMU default") : machine)},
              {tr("Acceleration"), text(accelText)},

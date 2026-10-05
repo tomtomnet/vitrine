@@ -16,7 +16,10 @@
 #include <QTest>
 #include <QTimer>
 
+#include <QFileDialog>
+
 #include "core/argsfile.h"
+#include "core/guestos.h"
 #include "core/paths.h"
 #include "core/vmstore.h"
 #include "ui/argseditor.h"
@@ -432,6 +435,79 @@ private slots:
         page.save(args);
         QVERIFY2(text(args).contains("-drive media=cdrom,readonly=on\n"), qPrintable(text(args)));
         QCOMPARE(text(args).count("bootindex"), 1);
+    }
+
+    /* A disc chosen for a VM whose system is not set tells the system */
+    void storagePageTellsTheSystem()
+    {
+        QTemporaryDir dir;
+        const QString iso = dir.filePath("Fedora-KDE-Desktop-Live-44-1.6.x86_64.iso");
+        StoragePage page(dir.path());
+        auto *table = page.findChild<QTableWidget *>("disks");
+        auto *told = page.findChild<QLabel *>("discSystem");
+        QPushButton *choose = nullptr;
+        for (QPushButton *b : page.findChildren<QPushButton *>()) {
+            if (b->text() == "Choose &Disc…") {
+                choose = b;
+            }
+        }
+        auto chooseDisc = [&]() {
+            QTimer::singleShot(0, [iso]() {
+                if (auto *d = qobject_cast<QFileDialog *>(QApplication::activeModalWidget())) {
+                    d->selectFile(iso);
+                    /* QFileDialog's accept() is protected, QDialog's is not */
+                    static_cast<QDialog *>(d)->accept();
+                }
+            });
+            table->setCurrentCell(0, 0);
+            choose->click();
+        };
+        QFile file(iso);
+
+        /* vitrine's list of systems, the same on every computer; the file's
+           name tells, as it has no label */
+        GuestOs::Catalogue::reload({});
+        QVERIFY(table && told && choose);
+        QVERIFY(file.open(QIODevice::WriteOnly) && file.write("not a disc") > 0);
+        file.close();
+
+        ArgsFile args = ArgsFile::parse("#guest linux\n-machine q35\n"
+                                        "-drive media=cdrom,readonly=on\n");
+        page.load(args);
+        QVERIFY(told->isHidden());
+        chooseDisc();
+        QVERIFY(!told->isHidden());
+        QVERIFY2(told->text().contains("Fedora Linux 44"), qPrintable(told->text()));
+        page.save(args);
+        QVERIFY2(text(args).startsWith("#guest linux,id=fedora44,desktop=kde\n"),
+                 qPrintable(text(args)));
+        QVERIFY(text(args).contains("file=" + iso));
+        QVERIFY(told->isHidden());
+
+        /* ejected before the page is applied: nothing */
+        args = ArgsFile::parse("-machine q35\n-drive media=cdrom,readonly=on\n");
+        page.load(args);
+        chooseDisc();
+        QVERIFY(!told->isHidden());
+        for (QPushButton *b : page.findChildren<QPushButton *>()) {
+            if (b->text() == "&Eject") {
+                b->click();
+            }
+        }
+        QVERIFY(told->isHidden());
+        page.save(args);
+        QVERIFY(!text(args).contains("#guest"));
+
+        /* the system set, or of another family: left as it is */
+        for (const char *guest : {"#guest linux,id=ubuntu24.04\n", "#guest windows\n"}) {
+            args = ArgsFile::parse(QString(guest) + "-machine q35\n-drive media=cdrom,readonly=on\n");
+            page.load(args);
+            chooseDisc();
+            QVERIFY(told->isHidden());
+            page.save(args);
+            QVERIFY2(text(args).startsWith(guest), qPrintable(text(args)));
+        }
+        GuestOs::Catalogue::reload();
     }
 };
 
