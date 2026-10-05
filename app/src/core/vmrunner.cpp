@@ -373,9 +373,15 @@ void VmRunner::Private::guestAgentOpen(const std::function<void(bool open)> &ans
         answer(true);
         return;
     }
-    /* frontend-open: the port's state in the guest; unknown, qemu-ga is tried */
+    /* frontend-open: the port's state in the guest; unknown, qemu-ga is tried,
+       but not through a QEMU whose monitor just closed: it is going away */
     qmp->execute("query-chardev", {},
-                 [answer, label = guestAgentChardev](const QJsonValue &result, const QString &) {
+                 [this, answer, label = guestAgentChardev](const QJsonValue &result,
+                                                           const QString &error) {
+        if (!error.isEmpty()) {
+            answer(qmp->isReady());
+            return;
+        }
         for (const QJsonValue &chardev : result.toArray()) {
             if (chardev["label"].toString() == label) {
                 answer(chardev["frontend-open"].toBool(true));
