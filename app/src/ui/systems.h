@@ -36,7 +36,9 @@ QIcon icon(const VmConfig::Guest &guest);
    logo has the same icon, which the list's badges are made from once */
 void reloadIcons();
 
-/* "Fedora Linux 44", or its family: "Linux"; empty when not known */
+/* "Fedora Linux 44"; "Fedora (another release)" for fedora-unknown */
+QString osName(const GuestOs::Os &os);
+/* Its system's name, or its family's: "Linux"; empty when not known */
 QString name(const VmConfig::Guest &guest);
 /* kde: "KDE Plasma"; empty for none */
 QString desktopName(const QString &desktop);

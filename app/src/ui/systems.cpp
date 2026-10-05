@@ -8,6 +8,7 @@
 #include <QIconEngine>
 #include <QPainter>
 #include <QPixmapCache>
+#include <QRegularExpression>
 
 #include <cmath>
 
@@ -275,12 +276,22 @@ QIcon icon(const VmConfig::Guest &guest)
     return icon(GuestOs::Catalogue::instance().find(guest.id), guest.os);
 }
 
+QString osName(const GuestOs::Os &os)
+{
+    if (os.isGeneric()) {
+        /* "Fedora", "Red Hat Enterprise Linux 9 Unknown" */
+        return QCoreApplication::translate("Systems", "%1 (another release)")
+            .arg(QString(os.name).remove(QRegularExpression(" [Uu]nknown$")));
+    }
+    return os.name;
+}
+
 QString name(const VmConfig::Guest &guest)
 {
     const GuestOs::Os os = GuestOs::Catalogue::instance().find(guest.id);
 
     if (!os.isNull()) {
-        return os.name;
+        return osName(os);
     }
     if (!guest.id.isEmpty()) {
         return guest.id;

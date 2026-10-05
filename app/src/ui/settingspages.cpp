@@ -46,6 +46,7 @@
 #include "ui/banner.h"
 #include "ui/firmwarerepair.h"
 #include "ui/icons.h"
+#include "ui/oschooser.h"
 #include "ui/qemudocs.h"
 #include "ui/referencepanel.h"
 #include "ui/uiconfig.h"
@@ -53,12 +54,7 @@
 
 /* General */
 
-/* The systems and desktops of #guest, by the names the page gives them */
-static const char *const kSystems[][2] = {
-    {"linux", QT_TRANSLATE_NOOP("GeneralPage", "Linux")},
-    {"windows", QT_TRANSLATE_NOOP("GeneralPage", "Windows")},
-    {"other", QT_TRANSLATE_NOOP("GeneralPage", "Another system")},
-};
+/* The desktops of #guest, by the names the page gives them */
 static const char *const kDesktops[][2] = {
     {"kde", QT_TRANSLATE_NOOP("GeneralPage", "KDE Plasma")},
     {"gnome", QT_TRANSLATE_NOOP("GeneralPage", "GNOME")},
@@ -83,7 +79,7 @@ static void fillChoices(QComboBox *combo, const char *const (&choices)[N][2], co
 }
 
 GeneralPage::GeneralPage(Vm *vm, QWidget *parent)
-    : SettingsPage(parent), m_name(new QLineEdit), m_os(new QComboBox), m_desktop(new QComboBox)
+    : SettingsPage(parent), m_name(new QLineEdit), m_os(new OsChooser), m_desktop(new QComboBox)
 {
     auto *layout = new QVBoxLayout(this);
     auto *form = Widgets::form();
@@ -97,6 +93,8 @@ GeneralPage::GeneralPage(Vm *vm, QWidget *parent)
     m_desktop->setObjectName("desktop");
     form->addRow(tr("&Name:"), m_name);
     form->addRow(tr("&System:"), m_os);
+    form->addRow(QString(), Widgets::hint(tr("The list of VMs shows its logo; the guest tools "
+                                             "are for Fedora.")));
     form->addRow(tr("&Desktop:"), m_desktop);
     form->addRow(QString(), Widgets::hint(tr("The timing of the VM's frames depends on its "
                                              "desktop.")));
@@ -105,7 +103,7 @@ GeneralPage::GeneralPage(Vm *vm, QWidget *parent)
                                     "VM creates and its log.")));
     layout->addLayout(form);
     layout->addStretch();
-    connect(m_os, &QComboBox::currentIndexChanged, this, &GeneralPage::updateDesktop);
+    connect(m_os, &OsChooser::systemChosen, this, &GeneralPage::updateDesktop);
 }
 
 QIcon GeneralPage::icon() const
@@ -115,17 +113,16 @@ QIcon GeneralPage::icon() const
 
 void GeneralPage::updateDesktop()
 {
-    const QString os = m_os->currentData().toString();
+    const QString os = m_os->family();
     m_desktop->setEnabled(os == "linux" || os.isEmpty());
 }
 
 VmConfig::Guest GeneralPage::shown() const
 {
-    const QString os = m_os->currentData().toString();
-    /* a desktop for Linux, or a system not known; the precise system while
-       the family is the same */
-    return {os, m_desktop->isEnabled() ? m_desktop->currentData().toString() : QString(),
-            os == m_loadedGuest.os ? m_loadedGuest.id : QString()};
+    /* a desktop for Linux, or a system not known */
+    return {m_os->family(),
+            m_desktop->isEnabled() ? m_desktop->currentData().toString() : QString(),
+            m_os->id()};
 }
 
 void GeneralPage::load(const ArgsFile &args)
@@ -134,11 +131,10 @@ void GeneralPage::load(const ArgsFile &args)
 
     m_loaded = VmConfig::name(args);
     m_name->setText(m_loaded);
-    fillChoices(m_os, kSystems, guest.os);
+    m_os->setSystem(guest.id, guest.os);
     fillChoices(m_desktop, kDesktops, guest.desktop);
     updateDesktop();
     /* as the page shows it, so that an untouched page writes nothing */
-    m_loadedGuest = guest;
     m_loadedGuest = shown();
 }
 
@@ -151,7 +147,8 @@ void GeneralPage::save(ArgsFile &args)
         VmConfig::setName(args, name);
         m_loaded = name;
     }
-    if (guest.os != m_loadedGuest.os || guest.desktop != m_loadedGuest.desktop) {
+    if (guest.os != m_loadedGuest.os || guest.desktop != m_loadedGuest.desktop ||
+        guest.id != m_loadedGuest.id) {
         VmConfig::setGuest(args, guest);
         m_loadedGuest = guest;
     }
@@ -163,7 +160,7 @@ bool GeneralPage::isModified() const
     const VmConfig::Guest guest = shown();
 
     return (!name.isEmpty() && name != m_loaded) || guest.os != m_loadedGuest.os ||
-           guest.desktop != m_loadedGuest.desktop;
+           guest.desktop != m_loadedGuest.desktop || guest.id != m_loadedGuest.id;
 }
 
 /* Hardware */

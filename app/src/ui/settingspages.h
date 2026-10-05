@@ -14,6 +14,7 @@
 
 class ArgsEditorPane;
 class Banner;
+class OsChooser;
 class QemuDocs;
 class QRadioButton;
 class QCheckBox;
@@ -91,7 +92,7 @@ private:
     void updateDesktop();
 
     QLineEdit *m_name;
-    QComboBox *m_os;
+    OsChooser *m_os;
     QComboBox *m_desktop;
     QString m_loaded;
     VmConfig::Guest m_loadedGuest;

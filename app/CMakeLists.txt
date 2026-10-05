@@ -186,6 +186,8 @@ qt_add_library(vitrine_ui STATIC
     src/ui/memorymonitor.h
     src/ui/newvmdialog.cpp
     src/ui/newvmdialog.h
+    src/ui/oschooser.cpp
+    src/ui/oschooser.h
     src/ui/perfmonitor.cpp
     src/ui/perfmonitor.h
     src/ui/preferencesdialog.cpp
@@ -356,6 +358,7 @@ if(BUILD_TESTING)
             cardupdatedialog
             guestoffer
             newvmdialog
+            oschooser
             settingspages
             stackbanner
             udmabufnotifier)
