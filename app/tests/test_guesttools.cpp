@@ -197,20 +197,21 @@ private slots:
         setPending(id, Pending::None);
         QStringList c = command("-machine q35\n");
         const QString runDir = QFileInfo(c.last()).absolutePath();
-        /* with qemu-ga's port (test_vmrunner): one controller */
+        /* then qemu-ga's port, on a controller of its own (test_vmrunner) */
         QCOMPARE(valuesOf(c, "-device"),
                  QStringList({"virtio-serial-pci,id=vitrine-serial",
-                              "virtserialport,bus=vitrine-serial.0,chardev=vitrine-ga,"
-                              "name=org.qemu.guest_agent.0,id=vitrine-ga-port",
                               "virtserialport,bus=vitrine-serial.0,chardev=vitrine-agent,"
-                              "name=org.vitrine.agent.0,id=vitrine-agent-port"}));
+                              "name=org.vitrine.agent.0,id=vitrine-agent-port",
+                              "virtio-serial-pci,id=vitrine-ga-serial",
+                              "virtserialport,bus=vitrine-ga-serial.0,chardev=vitrine-ga,"
+                              "name=org.qemu.guest_agent.0,id=vitrine-ga-port"}));
         QCOMPARE(valuesOf(c, "-chardev"),
-                 QStringList({"socket,id=vitrine-ga,path=" + runDir + "/qga.sock,server=on,wait=off",
-                              "socket,id=vitrine-agent,path=" + runDir +
-                                  "/agent.sock,server=on,wait=off"}));
+                 QStringList({"socket,id=vitrine-agent,path=" + runDir +
+                                  "/agent.sock,server=on,wait=off",
+                              "socket,id=vitrine-ga,path=" + runDir + "/qga.sock,server=on,wait=off"}));
         QVERIFY(valuesOf(c, "-smbios").isEmpty());
 
-        /* with shares to mount too */
+        /* with shares to mount: qemu-ga's port first on the one controller */
         c = command("-machine q35,memory-backend=m\n#share tag=t,path=/x,mount=/mnt/x\n");
         QCOMPARE(valuesOf(c, "-device").filter("virtio-serial-pci").size(), 1);
         QCOMPARE(valuesOf(c, "-device").filter("virtserialport,bus=vitrine-serial.0").size(), 2);
@@ -239,7 +240,7 @@ private slots:
         c = runner.commandLine(ArgsFile::parse("#qemu /opt/qemu-system-aarch64\n-machine virt\n"));
         QVERIFY(valuesOf(c, "-drive").isEmpty());
         QVERIFY(valuesOf(c, "-smbios").isEmpty());
-        QCOMPARE(valuesOf(c, "-device").size(), 3);     // the agents' ports still
+        QCOMPARE(valuesOf(c, "-device").size(), 4);     // the agents' ports still
         setPending(id, Pending::None);
         QDir(dataDir()).removeRecursively();
     }

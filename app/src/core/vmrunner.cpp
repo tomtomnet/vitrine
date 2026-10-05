@@ -116,9 +116,9 @@ static QList<VmConfig::Share> sharesToMount(const ArgsFile &args)
 /*
  * The port of QEMU's guest agent, qemu-ga, which most Linux guests run
  * (Fedora installs it in VMs): Shut Down asks it before the power button
- * (GuestShutdown), and it mounts the shares the guest did not.  On the
- * guest tools' controller, where the target has one; not when the VM has
- * a port of its own, which the manager cannot share.
+ * (GuestShutdown), and it mounts the shares the guest did not.  Where the
+ * target has the guest tools' controller; not when the VM has a port of
+ * its own, which the manager cannot share.
  */
 static bool addsAgent(const ArgsFile &args, const QString &qemu)
 {
@@ -1095,7 +1095,11 @@ QStringList VmRunner::Private::commandLine(const ArgsFile &args, const QString &
                 << "type=11,value=io.systemd.credential.binary:fstab.extra=" +
                        QString::fromLatin1(fstab.toUtf8().toBase64());
     }
-    if (addsAgent(args, qemu)) {
+    /* qemu-ga's port, first on the runner's controller for a VM with shares
+       to mount, where it always was; else after the guest tools' agent */
+    const bool guestAgent = addsAgent(args, qemu);
+    const bool guestAgentFirst = guestAgent && !sharesToMount(args).isEmpty();
+    if (guestAgentFirst) {
         command << "-chardev" << guestAgentArg()
                 << "-device" << "virtio-serial-pci,id=vitrine-serial"
                 << "-device"
@@ -1111,10 +1115,23 @@ QStringList VmRunner::Private::commandLine(const ArgsFile &args, const QString &
     }
     /* the guest tools' agent, on qemu-ga's controller if there is one */
     if (GuestTools::addsAgentPort(args, qemu)) {
-        if (!addsAgent(args, qemu)) {
+        if (!guestAgentFirst) {
             command << "-device" << "virtio-serial-pci,id=vitrine-serial";
         }
         command += GuestTools::agentPortArgs(toolsAgentPath());
+    }
+    /*
+     * Else qemu-ga's port on a controller of its own, after the agent's: a
+     * running state saved before the runner added it (a snapshot) still
+     * loads, which a port more on the agent's controller would keep QEMU
+     * from (its ports no longer match the state's)
+     */
+    if (guestAgent && !guestAgentFirst) {
+        command << "-chardev" << guestAgentArg()
+                << "-device" << "virtio-serial-pci,id=vitrine-ga-serial"
+                << "-device"
+                << QString("virtserialport,bus=vitrine-ga-serial.0,chardev=vitrine-ga,"
+                           "name=org.qemu.guest_agent.0,id=%1").arg(kAgentPort);
     }
     /* the guest tools asked for: the medium, and the unit that installs them at boot */
     const GuestTools::Pending tools = GuestTools::pending(id);

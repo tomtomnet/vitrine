@@ -255,21 +255,21 @@ private slots:
         const QStringList command = runner.commandLine(
             ArgsFile::parse("-m 1G\n#share tag=pub,path=/home/x\n# note\n"));
 
-        QCOMPARE(command.size(), 21);
+        QCOMPARE(command.size(), 23);
         QCOMPARE(command[0], testQemu());
         QCOMPARE(command.mid(1, 2), QStringList({"-m", "1G"}));
         QCOMPARE(command[3], "-chardev");
         QCOMPARE(command[4], "socket,id=vitrine-fs0,path=" + runDir + "/fs0.sock");
         QCOMPARE(command[5], "-device");
         QCOMPARE(command[6], "vhost-user-fs-pci,queue-size=1024,chardev=vitrine-fs0,tag=pub");
-        /* qemu-ga's port (agentPort), then the guest tools' agent (test_guesttools) */
-        QCOMPARE(command.mid(7, 2), QStringList({"-chardev", "socket,id=vitrine-ga,path=" + runDir +
-                                                                "/qga.sock,server=on,wait=off"}));
-        QCOMPARE(command.mid(9, 2), QStringList({"-device", "virtio-serial-pci,id=vitrine-serial"}));
-        QCOMPARE(command[17], "-qmp");
-        QCOMPARE(command[18], "unix:" + runDir + "/qmp.sock,server=on,wait=off");
-        QCOMPARE(command[19], "-pidfile");
-        QCOMPARE(command[20], runDir + "/qemu.pid");
+        /* the guest tools' agent (test_guesttools), then qemu-ga's port (agentPort) */
+        QCOMPARE(command.mid(7, 2), QStringList({"-device", "virtio-serial-pci,id=vitrine-serial"}));
+        QCOMPARE(command.mid(13, 2), QStringList({"-chardev", "socket,id=vitrine-ga,path=" + runDir +
+                                                                 "/qga.sock,server=on,wait=off"}));
+        QCOMPARE(command[19], "-qmp");
+        QCOMPARE(command[20], "unix:" + runDir + "/qmp.sock,server=on,wait=off");
+        QCOMPARE(command[21], "-pidfile");
+        QCOMPARE(command[22], runDir + "/qemu.pid");
         QVERIFY(runDir.toLocal8Bit().size() < 90);
     }
 
@@ -460,7 +460,9 @@ private slots:
     /*
      * The port of the guest agent, qemu-ga, for Shut Down and the shares to
      * mount: every VM with PCI on x86-64 and ARM gets it, unless it has its
-     * own; the guest tools' agent shares the controller
+     * own.  First on the guest tools' controller with shares to mount, as it
+     * always was; else on a controller of its own after the agent's, so that
+     * a running state saved without it still loads
      */
     void agentPort()
     {
@@ -474,20 +476,29 @@ private slots:
             "-m 1G\n#share tag=pub,path=/home/x,mount=/mnt/pub\n"
             "-device virtserialport,chardev=ga,name=org.qemu.guest_agent.0\n"));
         const QString chardev = "socket,id=vitrine-ga,path=" + runDir + "/qga.sock,server=on,wait=off";
-        const QString port = "virtserialport,bus=vitrine-serial.0,chardev=vitrine-ga,"
-                             "name=org.qemu.guest_agent.0,id=vitrine-ga-port";
+        const QString first = "virtserialport,bus=vitrine-serial.0,chardev=vitrine-ga,"
+                              "name=org.qemu.guest_agent.0,id=vitrine-ga-port";
+        const QString after = "virtserialport,bus=vitrine-ga-serial.0,chardev=vitrine-ga,"
+                              "name=org.qemu.guest_agent.0,id=vitrine-ga-port";
         auto count = [](const QStringList &command, const QString &what) {
             return command.filter(what).size();
         };
 
         for (const QStringList &command : {plain, mount, noMount}) {
             QVERIFY(command.contains(chardev));
-            QVERIFY(command.contains(port));
-            QCOMPARE(count(command, "virtio-serial-pci"), 1);
+            QCOMPARE(count(command, "name=org.qemu.guest_agent.0"), 1);
             QCOMPARE(count(command, "name=org.vitrine.agent.0"), 1);
         }
-        /* and -smbios */
-        QCOMPARE(mount.size(), noMount.size() + 2);
+        QVERIFY(mount.contains(first));
+        QCOMPARE(count(mount, "virtio-serial-pci"), 1);
+        for (const QStringList &command : {plain, noMount}) {
+            QVERIFY(command.contains(after));
+            QCOMPARE(count(command, "virtio-serial-pci"), 2);
+            QVERIFY(command.indexOf("virtio-serial-pci,id=vitrine-ga-serial") >
+                    command.indexOf(command.filter("name=org.vitrine.agent.0").first()));
+        }
+        /* -smbios more, a controller less */
+        QCOMPARE(mount.size(), noMount.size());
         QVERIFY(!own.join(' ').contains("vitrine-ga"));
         QCOMPARE(count(own, "virtio-serial-pci,id=vitrine-serial"), 1);
         /* no PCI, or a target without the controller: neither port */
