@@ -25,6 +25,8 @@ public:
 
 protected:
     void changeEvent(QEvent *event) override;
+    /* The arrows from one tab's button to the next, as on a QTabBar */
+    bool eventFilter(QObject *watched, QEvent *event) override;
 
 private:
     void updateCurrent();
@@ -50,12 +52,17 @@ public:
 
     QSize sizeHint() const override;
     QSize minimumSizeHint() const override;
-    /* As wide as the names, which the list draws in bold, if there is room */
+    /* The role of the line its list draws under each name, for its width */
+    void setStateRole(int role) { m_stateRole = role; }
+    /* As wide as the names, in bold there, and the lines under them, if there is room */
     void showPopup() override;
 
 protected:
     void paintEvent(QPaintEvent *event) override;
     void wheelEvent(QWheelEvent *event) override;
+
+private:
+    int m_stateRole = -1;
 };
 
 /*

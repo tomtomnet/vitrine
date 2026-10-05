@@ -415,7 +415,7 @@ void MainWindow::createActions()
     connect(m_listButton, &QAction::triggered, m_library, &QAction::toggle);
     /* KDE's: the menus behind the bar's button by default, for the room */
     m_menuBar = new QAction(Icons::themed({"show-menu"}, QStyle::SP_TitleBarMenuButton),
-                            tr("Show &Menu Bar"), this);
+                            tr("Show Menu &Bar"), this);
     m_menuBar->setCheckable(true);
     m_menuBar->setShortcut(QKeySequence(Qt::CTRL | Qt::Key_M));
     connect(m_menuBar, &QAction::toggled, this, &MainWindow::showMenuBar);
@@ -515,10 +515,12 @@ void MainWindow::createActions()
     addToolBar(m_bar);
     m_bar->addAction(m_listButton);
     m_bar->setIconOnly(m_listButton);
-    m_chooser = new VmChooser;
+    auto *chooser = new VmChooser;
+    m_chooser = chooser;
     m_chooser->setModel(m_list->model());
     /* each VM as the list has it: the name, its state under it */
     m_chooser->setItemDelegate(new VmItemDelegate(m_chooser));
+    chooser->setStateRole(StateRole);
     m_chooser->setToolTip(tr("The virtual machine shown"));
     m_chooserAction = m_bar->addWidget(m_chooser);
     connect(m_list, &QListWidget::currentRowChanged, m_chooser, &QComboBox::setCurrentIndex);
@@ -554,7 +556,9 @@ void MainWindow::showLibrary(bool shown)
 void MainWindow::showMenuBar(bool shown)
 {
     menuBar()->setVisible(shown);
-    m_menuButton->setVisible(!shown);
+    /* a desktop's global menu has the menus, outside the window: the
+       button stays, the window has no menu bar to show */
+    m_menuButton->setVisible(!shown || menuBar()->isNativeMenuBar());
 }
 
 void MainWindow::openMenu()
@@ -563,7 +567,7 @@ void MainWindow::openMenu()
         menuBar()->setActiveAction(menuBar()->actions().value(0));
         return;
     }
-    if (QWidget *button = m_bar->widgetForAction(m_menuButton)) {
+    if (QWidget *button = m_bar->widgetForAction(m_menuButton); button && button->isVisible()) {
         /* under the button, as a click on it shows it */
         m_mainMenu->popup(button->mapToGlobal(
             QPoint(isRightToLeft() ? button->width() - m_mainMenu->sizeHint().width() : 0,
@@ -958,8 +962,8 @@ bool MainWindow::eventFilter(QObject *watched, QEvent *event)
         static_cast<QWidget *>(watched)->window() == this) {
         m_lastPress.start();
     }
-    /* the arrows, Home, End... going through the list of VMs */
-    if (event->type() == QEvent::KeyPress && watched == m_list) {
+    /* the arrows, Home, End... going through the list of VMs, or the bar's drop-down of them */
+    if (event->type() == QEvent::KeyPress && (watched == m_list || watched == m_chooser)) {
         m_lastListKey.start();
     }
     /* once Qt gave the focus back to the widget that had it */
@@ -994,8 +998,8 @@ void MainWindow::focusScreen(FocusCause cause)
     if (cause == FocusCause::Activated && m_lastPress.isValid() && m_lastPress.elapsed() < 500) {
         return;
     }
-    if (cause == FocusCause::Switched && m_list->hasFocus() && m_lastListKey.isValid() &&
-        m_lastListKey.elapsed() < 500) {
+    if (cause == FocusCause::Switched && (m_list->hasFocus() || m_chooser->hasFocus()) &&
+        m_lastListKey.isValid() && m_lastListKey.elapsed() < 500) {
         return;
     }
     const QWidget *focus = QApplication::focusWidget();

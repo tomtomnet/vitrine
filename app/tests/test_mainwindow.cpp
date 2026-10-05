@@ -445,6 +445,35 @@ private slots:
         }
     }
 
+    /* In the menu button's menu and in View, each letter opens one item, not two by turns */
+    void mnemonics()
+    {
+        auto w = window();
+        settle(w.get());
+        QToolButton *button = menuButton(w.get());
+        QVERIFY(button);
+        QList<QMenu *> menus = {button->menu() ? button->menu() : button->defaultAction()->menu()};
+        for (QAction *a : menuBarOf(w.get())->actions()) {
+            if (plain(a->text()) == "View") {
+                menus << a->menu();
+            }
+        }
+        QCOMPARE(menus.size(), 2);
+        for (const QMenu *menu : std::as_const(menus)) {
+            QHash<QKeySequence, QString> seen;
+            for (QAction *a : menu->actions()) {
+                const QKeySequence key = QKeySequence::mnemonic(a->text());
+                if (a->isSeparator() || !a->isVisible() || key.isEmpty()) {
+                    continue;
+                }
+                QVERIFY2(!seen.contains(key), qPrintable(QString("%1 and %2 both %3")
+                                                             .arg(seen.value(key), plain(a->text()),
+                                                                  key.toString())));
+                seen.insert(key, plain(a->text()));
+            }
+        }
+    }
+
     /* With the menu bar hidden, each shortcut of the menus triggers its action, once */
     void shortcutsWithoutMenuBar()
     {

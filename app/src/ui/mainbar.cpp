@@ -5,10 +5,9 @@
 #include <QAction>
 #include <QApplication>
 #include <QHBoxLayout>
-#include <QIconEngine>
+#include <QKeyEvent>
 #include <QLayout>
 #include <QMenu>
-#include <QPainter>
 #include <QScreen>
 #include <QScrollBar>
 #include <QStyleOptionComboBox>
@@ -16,6 +15,7 @@
 #include <QToolButton>
 #include <QWheelEvent>
 
+#include "ui/icons.h"
 
 namespace {
 
@@ -50,49 +50,6 @@ int leastWidth(const QWidget *widget)
     return qMax(0, width);
 }
 
-/* Three bars, for a theme without a menu icon, drawn at the ratio asked */
-class MenuIconEngine : public QIconEngine
-{
-public:
-    QIconEngine *clone() const override { return new MenuIconEngine; }
-
-    void paint(QPainter *painter, const QRect &rect, QIcon::Mode mode, QIcon::State state) override
-    {
-        const qreal ratio = painter->device() ? painter->device()->devicePixelRatio() : 1.0;
-        painter->drawPixmap(rect, scaledPixmap(rect.size(), mode, state, ratio));
-    }
-
-    QPixmap pixmap(const QSize &size, QIcon::Mode mode, QIcon::State state) override
-    {
-        return scaledPixmap(size, mode, state, 1.0);
-    }
-
-    QPixmap scaledPixmap(const QSize &size, QIcon::Mode mode, QIcon::State,
-                         qreal scale) override
-    {
-        const QSize device = (QSizeF(size) * scale).toSize();
-        QPixmap pixmap(device);
-        const QPalette palette = QApplication::palette();
-        /* whole device pixels: crisp bars at any ratio */
-        const int bar = qMax(1, device.height() / 8);
-        const int gap = (device.height() - 3 * bar) / 4;
-        const int top = (device.height() - 3 * bar - 2 * gap) / 2;
-        const int side = device.width() / 8;
-
-        pixmap.fill(Qt::transparent);
-        QPainter p(&pixmap);
-        for (int i = 0; i < 3; i++) {
-            p.fillRect(side, top + i * (bar + gap), device.width() - 2 * side, bar,
-                       palette.color(mode == QIcon::Disabled ? QPalette::Disabled
-                                                             : QPalette::Normal,
-                                     QPalette::ButtonText));
-        }
-        p.end();
-        pixmap.setDevicePixelRatio(scale);
-        return pixmap;
-    }
-};
-
 }
 
 TabSwitcher::TabSwitcher(const QList<QAction *> &tabs, QWidget *parent)
@@ -108,7 +65,9 @@ TabSwitcher::TabSwitcher(const QList<QAction *> &tabs, QWidget *parent)
         auto *button = new QToolButton;
         button->setDefaultAction(tab);
         button->setAutoRaise(true);
+        /* the current one Tab reaches (updateCurrent()), the arrows go to the others */
         button->setFocusPolicy(Qt::NoFocus);
+        button->installEventFilter(this);
         button->setToolButtonStyle(Qt::ToolButtonTextOnly);
         /* as high as the bar's buttons, which have icons */
         button->setSizePolicy(QSizePolicy::Fixed, QSizePolicy::Preferred);
@@ -125,7 +84,8 @@ TabSwitcher::TabSwitcher(const QList<QAction *> &tabs, QWidget *parent)
     m_menuButton->setMenu(m_menu);
     m_menuButton->setPopupMode(QToolButton::InstantPopup);
     m_menuButton->setAutoRaise(true);
-    m_menuButton->setFocusPolicy(Qt::NoFocus);
+    /* reached with Tab, as the tabs it stands for */
+    m_menuButton->setFocusPolicy(Qt::TabFocus);
     m_menuButton->setToolButtonStyle(Qt::ToolButtonTextOnly);
     m_menuButton->setSizePolicy(QSizePolicy::Fixed, QSizePolicy::Preferred);
     m_menuButton->hide();
@@ -167,13 +127,38 @@ void TabSwitcher::changeEvent(QEvent *event)
     }
 }
 
+bool TabSwitcher::eventFilter(QObject *watched, QEvent *event)
+{
+    const qsizetype from = m_buttons.indexOf(qobject_cast<QToolButton *>(watched));
+
+    if (event->type() == QEvent::KeyPress && from >= 0) {
+        const int key = static_cast<QKeyEvent *>(event)->key();
+        int step = 0;
+
+        if (key == Qt::Key_Left || key == Qt::Key_Right) {
+            step = (key == Qt::Key_Right) != isRightToLeft() ? 1 : -1;
+        }
+        /* the next tab that is enabled, as QTabBar goes: up to the last one */
+        for (qsizetype i = from + step; step != 0 && i >= 0 && i < m_buttons.size(); i += step) {
+            if (m_tabs[i]->isEnabled()) {
+                m_tabs[i]->trigger();
+                m_buttons[i]->setFocus(Qt::TabFocusReason);
+                return true;
+            }
+        }
+    }
+    return QWidget::eventFilter(watched, event);
+}
+
 void TabSwitcher::updateCurrent()
 {
-    for (const QAction *tab : std::as_const(m_tabs)) {
-        if (tab->isChecked()) {
-            m_menuButton->setText(tab->iconText());
-            m_menuButton->setToolTip(tab->iconText());
+    for (int i = 0; i < m_tabs.size(); i++) {
+        if (m_tabs[i]->isChecked()) {
+            m_menuButton->setText(m_tabs[i]->iconText());
+            m_menuButton->setToolTip(m_tabs[i]->iconText());
         }
+        /* one stop of Tab for all the tabs, as a QTabBar has */
+        m_buttons[i]->setFocusPolicy(m_tabs[i]->isChecked() ? Qt::TabFocus : Qt::NoFocus);
     }
 }
 
@@ -253,9 +238,13 @@ void VmChooser::showPopup()
     for (int i = 0; i < count(); i++) {
         const QString name = itemText(i);
         const QModelIndex index = model()->index(i, modelColumn(), rootModelIndex());
-        /* the item as the delegate has it, its name bold, inside 4 pixels each side */
-        width = qMax(width, view()->sizeHintForIndex(index).width() +
-                                metrics.horizontalAdvance(name) -
+        /* its two lines: the name in bold, the state under it */
+        const int text = qMax(metrics.horizontalAdvance(name),
+                              m_stateRole >= 0
+                                  ? normal.horizontalAdvance(index.data(m_stateRole).toString())
+                                  : 0);
+        /* the item as the delegate has it, with that text, inside 4 pixels each side */
+        width = qMax(width, view()->sizeHintForIndex(index).width() + text -
                                 normal.horizontalAdvance(name) + 8);
     }
     width += 2 * view()->frameWidth();
@@ -295,16 +284,10 @@ TabSwitcher *MainBar::addTabs(const QList<QAction *> &tabs)
 QAction *MainBar::addMenuButton(QMenu *menu, const QString &text)
 {
     QAction *action = menu->menuAction();
-    QIcon icon(new MenuIconEngine);
 
-    /* KDE's, GNOME's */
-    for (const char *name : {"application-menu", "open-menu-symbolic", "open-menu"}) {
-        if (QIcon::hasThemeIcon(name)) {
-            icon = QIcon::fromTheme(name);
-            break;
-        }
-    }
-    action->setIcon(icon);
+    /* KDE's, GNOME's; else the style's sign for more of a toolbar */
+    action->setIcon(Icons::themed({"application-menu", "open-menu-symbolic", "open-menu"},
+                                  QStyle::SP_ToolBarHorizontalExtensionButton));
     action->setText(text);
     addAction(action);
     if (auto *button = qobject_cast<QToolButton *>(widgetForAction(action))) {
@@ -401,9 +384,18 @@ void MainBar::fit()
     m_fitting = true;
 
     const int last = stepCount();
+    /* what each step saves, each button measured once */
+    QList<int> saved;
+    for (QAction *action : std::as_const(m_textOrder)) {
+        saved << (action->isVisible() ? buttonWidth(action, true) - buttonWidth(action, false) : 0);
+    }
+    if (m_tabs) {
+        saved << m_tabs->widthFor(false) - m_tabs->widthFor(true);
+    }
+    int needed = neededWidth(0);
     int steps = 0;
-    while (steps < last && neededWidth(steps) > width()) {
-        steps++;
+    while (steps < last && needed > width()) {
+        needed -= saved[steps++];
     }
     apply(steps);
     /* never narrower than with every step taken, the VMs' names elided */
