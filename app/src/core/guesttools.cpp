@@ -11,6 +11,7 @@
 #include <QTimer>
 
 #include "core/gpucontexts.h"
+#include "core/guestos.h"
 #include "core/paths.h"
 #include "core/qmpclient.h"
 #include "core/vmhardware.h"
@@ -28,6 +29,34 @@ const char kFedoraRelease[] = "44";
 static const int kGraceMs = 90000;
 /* Connecting again to the agent's socket */
 static const int kRetryMs = 3000;
+
+bool offered(const VmConfig::Guest &guest, const QString &reportedOs, QString *why)
+{
+    QString reason;
+
+    if (GuestOs::isFedora(guest.id) || reportedOs == "fedora") {
+        return true;
+    }
+    if (!guest.id.isEmpty() || !reportedOs.isEmpty()) {
+        const GuestOs::Os os = GuestOs::Catalogue::instance().find(guest.id);
+        const QString name = !os.isNull()      ? os.name
+                             : guest.id.isEmpty() ? reportedOs
+                                                  : guest.id;
+        reason = QObject::tr("The guest tools are for Fedora Linux; this VM runs %1.").arg(name);
+    } else if (guest.os == "windows") {
+        reason = QObject::tr("The guest tools are for Fedora Linux; this VM runs Windows.");
+    } else if (guest.os == "other") {
+        reason = QObject::tr("The guest tools are for Fedora Linux; this VM runs another "
+                             "system.");
+    } else {
+        reason = QObject::tr("The guest tools are for Fedora Linux. If this VM runs it, choose "
+                             "Fedora as its system in its settings (General).");
+    }
+    if (why) {
+        *why = reason;
+    }
+    return false;
+}
 
 QString dataDir()
 {
@@ -517,6 +546,15 @@ void GuestToolsMonitor::remember()
         m_in.remembered = value == "not-installed" ? State::NotInstalled : State::Installed;
         m_in.rememberedTools = value.section(' ', 1);
     }
+}
+
+QString GuestToolsMonitor::reportedOs() const
+{
+    if (!m_in.report.osId.isEmpty()) {
+        return m_in.report.osId;
+    }
+    /* the installer installs them in Fedora only */
+    return m_in.remembered == State::Installed ? "fedora" : QString();
 }
 
 State GuestToolsMonitor::state() const

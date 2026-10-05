@@ -322,6 +322,7 @@ if(BUILD_TESTING)
     # the windows': widgets that are never shown, so no screen either
     foreach(name
             cardupdatedialog
+            guestoffer
             newvmdialog
             settingspages
             stackbanner

@@ -424,8 +424,12 @@ void MainWindow::createActions()
     machine->addActions({m_start, m_showWindow, m_pause, m_shutDown, m_reset, m_forceOff});
     machine->addSeparator();
     machine->addActions({m_ctrlAltDel, m_releaseInput});
-    machine->addAction(tr("Install &Guest Tools…"), this,
-                       [this]() { GuestToolsDialog::run(this, current()); });
+    QAction *tools = machine->addAction(tr("Install &Guest Tools…"), this,
+                                        [this]() { GuestToolsDialog::run(this, current()); });
+    /* off for VMs the tools are not for, which its tip says */
+    machine->setToolTipsVisible(true);
+    connect(machine, &QMenu::aboutToShow, this,
+            [this, tools]() { GuestToolsDialog::updateAction(tools, current()); });
     machine->addSeparator();
     machine->addActions({m_log, m_folder, m_command});
     machine->addSeparator();
