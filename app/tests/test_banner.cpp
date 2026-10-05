@@ -336,8 +336,14 @@ private slots:
                 return QStringList{"no dialog"};
             }
             Scales::settle(dialog);
-            auto *banner = dialog->findChild<Banner *>();
-            if (!banner || !banner->isVisible()) {
+            /* the build banner's: not built yet, with Build… */
+            Banner *banner = nullptr;
+            for (Banner *b : dialog->findChildren<Banner *>()) {
+                if (b->isVisible()) {
+                    banner = b;
+                }
+            }
+            if (!banner) {
                 wrong << "no warning";
             } else {
                 for (const QString &w : checkBanner(dialog, banner, true)) {

@@ -12,7 +12,8 @@ class QTimer;
 
 /*
  * The tools the manager runs: Vitrine's QEMU, built and updated from here
- * too, or another one (advanced), and virtiofsd
+ * too, or another one (advanced), the guest tools, built and updated from
+ * here too, and virtiofsd
  */
 class PreferencesDialog : public QDialog
 {
@@ -25,6 +26,8 @@ public:
 
 private:
     void updateStack();
+    /* The guest tools' medium, as QEMU's build */
+    void updateTools();
     void checkQemu();
     void checkVirtiofsd();
     /* The VM folder chosen, and how many VMs it holds */
@@ -37,6 +40,9 @@ private:
     QWidget *m_qemuRow;
     QLineEdit *m_qemu;
     QLabel *m_qemuStatus;
+    QLabel *m_tools;
+    QLabel *m_toolsState;
+    QPushButton *m_buildTools;
     QLineEdit *m_virtiofsd;
     QLabel *m_virtiofsdStatus;
     QCheckBox *m_updates;

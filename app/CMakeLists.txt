@@ -168,6 +168,8 @@ qt_add_library(vitrine_ui STATIC
     src/ui/clonedialog.h
     src/ui/firmwarerepair.cpp
     src/ui/firmwarerepair.h
+    src/ui/guesttoolsbuilddialog.cpp
+    src/ui/guesttoolsbuilddialog.h
     src/ui/guesttoolsdialog.cpp
     src/ui/guesttoolsdialog.h
     src/ui/hosttuningnotifier.cpp

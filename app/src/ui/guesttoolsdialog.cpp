@@ -17,6 +17,7 @@
 #include "core/vmrunner.h"
 #include "core/vmstore.h"
 #include "ui/banner.h"
+#include "ui/guesttoolsbuilddialog.h"
 #include "ui/icons.h"
 #include "ui/widgets.h"
 
@@ -54,10 +55,9 @@ static QString obstacle(Vm *vm, const GuestTools::Medium &medium)
     const GuestToolsMonitor *monitor = GuestToolsMonitor::of(vm);
     const QString qemu = VmConfig::qemuBinary(args);
 
+    /* GuestToolsBuildBanner says so, with Build… */
     if (!medium.isValid()) {
-        return GuestToolsDialog::tr(
-            "The guest tools are not built yet. Build them in vitrine's sources with "
-            "guest/build-rpms.sh, then guest/build-medium.sh (about 35 minutes).");
+        return GuestToolsDialog::tr("The guest tools are not built yet: build them first.");
     }
     if (const QString os = VmConfig::guest(args).os; !os.isEmpty() && os != "linux") {
         return GuestToolsDialog::tr("The guest tools are for Fedora Linux guests.");
@@ -83,50 +83,59 @@ static QString obstacle(Vm *vm, const GuestTools::Medium &medium)
     return {};
 }
 
-GuestToolsDialog::GuestToolsDialog(Vm *vm, QWidget *parent)
-    : QDialog(parent), m_vm(vm), m_progress(Widgets::note()),
-      m_snapshot(new QCheckBox(tr("Take a snapshot of the disks first"))),
-      m_buttons(new QDialogButtonBox(QDialogButtonBox::Cancel)), m_timeout(new QTimer(this))
+/* What the tools of @medium install in @vm, and how */
+static QString what(Vm *vm, const GuestTools::Medium &medium)
 {
-    const GuestToolsMonitor *monitor = GuestToolsMonitor::of(vm);
-    const GuestTools::Medium medium = GuestTools::medium();
-    const bool update = !monitor->report().tools.isEmpty();
     const bool running = vm->runner()->isActive();
-    const QString problem = obstacle(vm, medium);
-    auto *layout = new QVBoxLayout(this);
     QString what;
 
-    setWindowTitle(update ? tr("Update Guest Tools") : tr("Install Guest Tools"));
-    what = tr("<p>The guest tools make a Fedora %1 guest run well in vitrine. They "
-              "install:</p><ul>")
+    what = GuestToolsDialog::tr("<p>The guest tools make a Fedora %1 guest run well in vitrine. "
+                                "They install:</p><ul>")
                .arg(GuestTools::kFedoraRelease);
-    what += tr("<li>vitrine's virtio-gpu driver, built again for each new kernel (DKMS), with "
-               "its settings</li>");
+    what += GuestToolsDialog::tr("<li>vitrine's virtio-gpu driver, built again for each new "
+                                 "kernel (DKMS), with its settings</li>");
     if (!medium.mesa.isEmpty()) {
-        what += tr("<li>Mesa %1 with native context, in place of the guest's</li>")
+        what += GuestToolsDialog::tr("<li>Mesa %1 with native context, in place of the guest's</li>")
                     .arg(medium.mesa.toHtmlEscaped());
     }
     const QString desktop = VmConfig::guest(vm->args()).desktop;
     if (!medium.kwin.isEmpty() && (desktop.isEmpty() || desktop == "kde")) {
-        what += tr("<li>KWin %1, if the guest's Plasma is %2</li>")
+        what += GuestToolsDialog::tr("<li>KWin %1, if the guest's Plasma is %2</li>")
                     .arg(medium.kwin.toHtmlEscaped(), medium.kwin.section('-', 0, 0));
     }
-    what += tr("<li>the vitrine agent, which tells vitrine how the guest is doing</li></ul>");
-    what += tr("<p>Mesa and KWin then stay at these versions until the next guest tools. "
-               "The guest needs the network: dkms and the kernel headers come from Fedora.</p>");
-    what += running ? tr("<p><b>vitrine shuts the VM down and starts it again</b> with the "
-                         "tools medium. The guest installs them before its desktop starts, "
-                         "which takes a few minutes, then restarts once more.</p>")
-                    : tr("<p>The VM starts with the tools medium. The guest installs them "
-                         "before its desktop starts, which takes a few minutes, then restarts "
-                         "once more.</p>");
-    layout->addWidget(Widgets::note(what));
+    what += GuestToolsDialog::tr("<li>the vitrine agent, which tells vitrine how the guest is "
+                                 "doing</li></ul>");
+    what += GuestToolsDialog::tr("<p>Mesa and KWin then stay at these versions until the next "
+                                 "guest tools. The guest needs the network: dkms and the kernel "
+                                 "headers come from Fedora.</p>");
+    what += running ? GuestToolsDialog::tr("<p><b>vitrine shuts the VM down and starts it again"
+                                           "</b> with the tools medium. The guest installs them "
+                                           "before its desktop starts, which takes a few "
+                                           "minutes, then restarts once more.</p>")
+                    : GuestToolsDialog::tr("<p>The VM starts with the tools medium. The guest "
+                                           "installs them before its desktop starts, which takes "
+                                           "a few minutes, then restarts once more.</p>");
+    return what;
+}
 
-    if (!problem.isEmpty()) {
-        auto *warning = new Banner(Banner::Warning);
-        warning->setText(problem.toHtmlEscaped());
-        layout->addWidget(warning);
-    }
+GuestToolsDialog::GuestToolsDialog(Vm *vm, QWidget *parent)
+    : QDialog(parent), m_vm(vm), m_what(Widgets::note()), m_warning(new Banner(Banner::Warning)),
+      m_progress(Widgets::note()),
+      m_snapshot(new QCheckBox(tr("Take a snapshot of the disks first"))),
+      m_buttons(new QDialogButtonBox(QDialogButtonBox::Cancel)), m_timeout(new QTimer(this))
+{
+    const GuestToolsMonitor *monitor = GuestToolsMonitor::of(vm);
+    const bool update = !monitor->report().tools.isEmpty();
+    const bool running = vm->runner()->isActive();
+    auto *layout = new QVBoxLayout(this);
+    auto *build = new GuestToolsBuildBanner;
+
+    setWindowTitle(update ? tr("Update Guest Tools") : tr("Install Guest Tools"));
+    layout->addWidget(m_what);
+    /* the medium: not built yet, being built, out of date, with Build… or Update… */
+    layout->addWidget(build);
+    /* what else keeps the tools from the VM (refresh()) */
+    layout->addWidget(m_warning);
 
     /* the disks of a VM that writes to qcow2 files can go back to before */
     bool canSnapshot = false;
@@ -155,8 +164,6 @@ GuestToolsDialog::GuestToolsDialog(Vm *vm, QWidget *parent)
                                                     QStyle::SP_DialogApplyButton));
     Widgets::setButtonIcon(m_mediumButton, Icons::themed({"media-optical", "drive-optical"},
                                                          QStyle::SP_DriveCDIcon));
-    m_install->setEnabled(problem.isEmpty());
-    m_mediumButton->setEnabled(problem.isEmpty());
     layout->addWidget(m_buttons);
     connect(m_install, &QPushButton::clicked, this, [this]() { go(false); });
     connect(m_mediumButton, &QPushButton::clicked, this, [this]() { go(true); });
@@ -177,8 +184,30 @@ GuestToolsDialog::GuestToolsDialog(Vm *vm, QWidget *parent)
             m_timeout->start(kShutdownMs);
         }
     });
+    /* a build made the medium meanwhile */
+    connect(build, &GuestToolsBuildBanner::mediumChanged, this, &GuestToolsDialog::refresh);
+    refresh();
     setMinimumWidth(Widgets::em(this) * 34);
     Widgets::resizeToWidth(this, sizeHint().width());
+}
+
+void GuestToolsDialog::refresh()
+{
+    if (!m_vm || m_step != Step::Idle) {
+        return;
+    }
+    const GuestTools::Medium medium = GuestTools::medium();
+    const QString problem = obstacle(m_vm, medium);
+
+    m_what->setText(what(m_vm, medium));
+    /* without a medium, the build banner tells it */
+    m_warning->setText(problem.toHtmlEscaped());
+    m_warning->setVisible(!problem.isEmpty() && medium.isValid());
+    m_install->setEnabled(problem.isEmpty());
+    m_mediumButton->setEnabled(problem.isEmpty());
+    if (isVisible()) {
+        Widgets::resizeToWidth(this, width());
+    }
 }
 
 void GuestToolsDialog::go(bool medium)

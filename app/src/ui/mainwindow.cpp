@@ -39,6 +39,7 @@
 #include "core/vmstore.h"
 #include "ui/clonedialog.h"
 #include "ui/firmwarerepair.h"
+#include "ui/guesttoolsbuilddialog.h"
 #include "ui/guesttoolsdialog.h"
 #include "ui/hosttuningnotifier.h"
 #include "ui/icons.h"
@@ -416,6 +417,11 @@ void MainWindow::createActions()
     file->addAction(m_import);
     file->addSeparator();
     file->addAction(m_build);
+    /* the guest tools' medium, as QEMU: built or updated, or the build under way */
+    file->addAction(Icons::themed({"run-build-install", "system-software-install"},
+                                  QStyle::SP_DialogApplyButton),
+                    tr("Build &Guest Tools…"), this,
+                    [this]() { GuestToolsBuildDialog::present(this); });
     file->addAction(m_preferences);
     file->addAction(m_reference);
     file->addSeparator();

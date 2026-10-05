@@ -11,6 +11,7 @@
 #include <QPushButton>
 #include <QVBoxLayout>
 
+#include "core/guesttoolsbuilder.h"
 #include "core/paths.h"
 #include "ui/icons.h"
 #include "ui/widgets.h"
@@ -131,6 +132,11 @@ QemuBuildDialog::QemuBuildDialog(QWidget *parent)
         m_progress->setValue(done);
     });
     connect(m_builder, &StackBuilder::finished, this, &QemuBuildDialog::finished);
+    /* not while the guest tools build */
+    connect(GuestToolsBuilder::instance(), &GuestToolsBuilder::started, this,
+            &QemuBuildDialog::updateState);
+    connect(GuestToolsBuilder::instance(), &GuestToolsBuilder::finished, this,
+            &QemuBuildDialog::updateState);
 
     /* a build running already, started from another window: where it is */
     m_log->setPlainText(m_builder->log());
@@ -213,6 +219,7 @@ void QemuBuildDialog::showMissing()
 void QemuBuildDialog::updateState()
 {
     const bool running = m_builder->isRunning();
+    const bool tools = GuestToolsBuilder::instance()->isRunning();
     const StackBuilder::State state = StackBuilder::state();
     const StackBuilder::Build build = StackBuilder::current();
     QString status = "<b>" + describe(build).toHtmlEscaped() + "</b>";
@@ -220,10 +227,15 @@ void QemuBuildDialog::updateState()
     if (state != StackBuilder::State::NotBuilt) {
         status += "<br>" + explain(state, build).toHtmlEscaped();
     }
+    if (tools && !running) {
+        status += "<br>" + tr("The guest tools are being built: Vitrine's QEMU can be built once "
+                              "they are done, as both take a lot of memory.")
+                               .toHtmlEscaped();
+    }
     setWindowTitle(title(state));
     m_status->setText(status);
     m_build->setText(state == StackBuilder::State::Outdated ? tr("Update") : tr("Build"));
-    m_build->setEnabled(!running && state != StackBuilder::State::NoSources);
+    m_build->setEnabled(!running && !tools && state != StackBuilder::State::NoSources);
     m_cancel->setVisible(running);
     m_background->setVisible(running);
     /* no empty line before a build: the step's, under way or done */

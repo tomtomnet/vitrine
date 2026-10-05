@@ -34,6 +34,8 @@ public:
 
 private:
     GuestToolsDialog(Vm *vm, QWidget *parent);
+    /* What depends on the medium, which a build may make meanwhile */
+    void refresh();
     void go(bool medium);
     void next();
     void fail(const QString &error);
@@ -42,6 +44,8 @@ private:
     QPointer<Vm> m_vm;
     Step m_step = Step::Idle;
     bool m_mediumOnly = false;
+    QLabel *m_what;
+    Banner *m_warning;
     QLabel *m_progress;
     QCheckBox *m_snapshot;
     QDialogButtonBox *m_buttons;
