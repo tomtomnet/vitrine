@@ -5,6 +5,7 @@
 #include <QFileInfo>
 #include <QPointer>
 #include <QPushButton>
+#include <QScopeGuard>
 #include <QStandardPaths>
 #include <QStatusBar>
 #include <QTemporaryDir>
@@ -247,19 +248,46 @@ private slots:
         QVERIFY(m_started.isEmpty());
     }
 
-    /* The install cancelled elsewhere (the banner's Cancel) while it waits out of sight */
+    /* The install cancelled with the banner's Cancel while it waits out of sight */
     void cancelledElsewhere()
     {
         GuestToolsDialog *dialog = restartAndInstall();
         QVERIFY(dialog);
         const QPointer<GuestToolsDialog> guard(dialog);
-        GuestToolsMonitor::of(vm())->setPending(Pending::None);
+        GuestToolsBanner banner;
+        banner.setVm(vm());
+        QPushButton *cancel = button(&banner, "Cancel");
+        QVERIFY(cancel);
+        cancel->click();
         QTRY_VERIFY(!guard);
-        QVERIFY(shownWindows().isEmpty());
+        QCOMPARE(pending(vm()->id()), Pending::None);
         vm()->runner()->forceOff();
         QTRY_VERIFY_WITH_TIMEOUT(!vm()->runner()->isActive(), 15000);
         QTest::qWait(200);
         QVERIFY(m_started.isEmpty());
+    }
+
+    /*
+     * A report of tools already in the guest (an update, an install again)
+     * takes a pending install back, which one coming while the guest shuts
+     * down must not undo: the VM starts with what was chosen
+     */
+    void choiceKept()
+    {
+        Pending atStart = Pending::None;
+        GuestToolsDialog::setStarter([this, &atStart](Vm *v) {
+            atStart = pending(v->id());
+            m_started << v;
+        });
+        const auto restore = qScopeGuard([this]() {
+            GuestToolsDialog::setStarter([this](Vm *v) { m_started << v; });
+        });
+        QVERIFY(restartAndInstall());
+        /* as GuestToolsMonitor does on such a report */
+        setPending(vm()->id(), Pending::None);
+        vm()->runner()->forceOff();
+        QTRY_COMPARE_WITH_TIMEOUT(m_started.size(), 1, 15000);
+        QCOMPARE(atStart, Pending::Bootstrap);
     }
 
     /* What the buttons say follows the VM, which may start or stop meanwhile */

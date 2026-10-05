@@ -177,14 +177,6 @@ GuestToolsDialog::GuestToolsDialog(Vm *vm, QWidget *parent)
     connect(vm->runner(), &VmRunner::stateChanged, this, &GuestToolsDialog::refresh);
     connect(vm, &Vm::changed, this, &GuestToolsDialog::refresh);
     connect(vm, &QObject::destroyed, this, &QDialog::reject);
-    /* waiting for the guest to shut down, the install cancelled elsewhere
-       (the banner's Cancel): no restart */
-    connect(GuestToolsMonitor::of(vm), &GuestToolsMonitor::changed, this, [this]() {
-        if (m_vm && m_step == Step::ShuttingDown &&
-            GuestTools::pending(m_vm->id()) == Pending::None) {
-            reject();
-        }
-    });
     refresh();
     setMinimumWidth(Widgets::em(this) * 34);
     Widgets::resizeToWidth(this, sizeHint().width());
@@ -289,6 +281,9 @@ void GuestToolsDialog::next()
     }
     m_step = Step::Starting;
     setProgress(tr("Starting the VM…"));
+    /* as chosen here: a report of the guest's tools while it shut down
+       may have taken it back (GuestToolsMonitor, for tools already in) */
+    GuestToolsMonitor::of(m_vm)->setPending(m_mediumOnly ? Pending::Medium : Pending::Bootstrap);
     if (starter()) {
         starter()(m_vm);
     } else {
@@ -332,6 +327,10 @@ GuestToolsBanner::GuestToolsBanner(QWidget *parent)
             switch (monitor->state()) {
             case State::Pending:
                 monitor->setPending(Pending::None);
+                /* nor the restart its dialog waits to make, out of sight */
+                if (GuestToolsDialog *waiting = GuestToolsDialog::of(m_vm)) {
+                    waiting->reject();
+                }
                 break;
             case State::RebootNeeded:
                 monitor->requestReboot();
