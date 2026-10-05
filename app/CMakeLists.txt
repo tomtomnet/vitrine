@@ -56,6 +56,8 @@ qt_add_library(vitrine_core STATIC
     src/core/vmhardware.h
     src/core/vmrunner.cpp
     src/core/vmrunner.h
+    src/core/vmstats.cpp
+    src/core/vmstats.h
     src/core/vmstore.cpp
     src/core/vmstore.h
     src/core/vmtemplate.cpp
@@ -309,6 +311,7 @@ if(BUILD_TESTING)
             vmconfig
             vmhardware
             vmrunner
+            vmstats
             vmstore
             vmtemplate)
         qt_add_executable(test_${name} tests/test_${name}.cpp)
@@ -357,6 +360,8 @@ if(BUILD_TESTING)
     add_dependencies(test_vmrunner fake-qemu)
     target_compile_definitions(test_udmabuf PRIVATE FAKE_QEMU="$<TARGET_FILE:fake-qemu>")
     add_dependencies(test_udmabuf fake-qemu)
+    target_compile_definitions(test_vmstats PRIVATE FAKE_QEMU="$<TARGET_FILE:fake-qemu>")
+    add_dependencies(test_vmstats fake-qemu)
     target_compile_definitions(test_udmabufnotifier PRIVATE FAKE_QEMU="$<TARGET_FILE:fake-qemu>")
     add_dependencies(test_udmabufnotifier fake-qemu)
 

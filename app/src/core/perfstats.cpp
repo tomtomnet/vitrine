@@ -156,7 +156,7 @@ QString formatMs(double ms)
     return QObject::tr("%1 ms").arg(qRound(ms));
 }
 
-static QString percent(double p)
+QString formatPercent(double p)
 {
     if (p < 0.05) {
         return QObject::tr("< 0.1 %");
@@ -176,6 +176,14 @@ static QString perSecond(double n)
 }
 
 QString summary(const Snapshot &s)
+{
+    QStringList parts{displaySummary(s), mainLoopSummary(s)};
+
+    parts.removeAll(QString());
+    return parts.join(QObject::tr(" · "));
+}
+
+QString displaySummary(const Snapshot &s)
 {
     QStringList parts;
 
@@ -197,10 +205,13 @@ QString summary(const Snapshot &s)
             parts << QObject::tr("input %1").arg(formatMs(d.input.median));
         }
     }
-    if (s.threads) {
-        parts << QObject::tr("main loop wait %1").arg(percent(s.mainLoop.wait));
-    }
     return parts.join(QObject::tr(" · "));
+}
+
+QString mainLoopSummary(const Snapshot &s)
+{
+    return s.threads ? QObject::tr("main loop wait %1").arg(formatPercent(s.mainLoop.wait))
+                     : QString();
 }
 
 /* A row of plain text: values like "< 0.1 %" are no markup */
@@ -296,17 +307,18 @@ QString hostDetails(const Snapshot &s)
 
     if (s.threads) {
         html += QObject::tr("<b>QEMU on the host</b>") + "<table>";
-        html += row(QObject::tr("Main loop"), QObject::tr("%1 CPU").arg(percent(s.mainLoop.cpu)),
+        html += row(QObject::tr("Main loop"),
+                    QObject::tr("%1 CPU").arg(formatPercent(s.mainLoop.cpu)),
                     QObject::tr("waited %1 of the time for a CPU, %2 per run")
-                        .arg(percent(s.mainLoop.wait), formatMs(s.mainLoop.waitPerRunMs)));
+                        .arg(formatPercent(s.mainLoop.wait), formatMs(s.mainLoop.waitPerRunMs)));
         if (s.vcpus.threads) {
             html += row(QObject::tr("%n vCPU(s)", nullptr, s.vcpus.threads),
-                        QObject::tr("%1 CPU").arg(percent(s.vcpus.cpu)),
-                        QObject::tr("waited %1 for a CPU").arg(percent(s.vcpus.wait)));
+                        QObject::tr("%1 CPU").arg(formatPercent(s.vcpus.cpu)),
+                        QObject::tr("waited %1 for a CPU").arg(formatPercent(s.vcpus.wait)));
         }
         if (s.others.threads) {
             html += row(QObject::tr("Other threads"),
-                        QObject::tr("%1 CPU").arg(percent(s.others.cpu)),
+                        QObject::tr("%1 CPU").arg(formatPercent(s.others.cpu)),
                         QObject::tr("%n thread(s): GPU, I/O, audio…", nullptr, s.others.threads));
         }
         html += "</table>";
@@ -316,14 +328,14 @@ QString hostDetails(const Snapshot &s)
         html += QObject::tr("<b>KVM</b>") + "<table>";
         html += row(QObject::tr("VM exits"), perSecond(s.exits),
                     QObject::tr("≈ %1 of a CPU at %2 µs each")
-                        .arg(percent(s.exits * kExitCostUs / 1e4)).arg(kExitCostUs));
+                        .arg(formatPercent(s.exits * kExitCostUs / 1e4)).arg(kExitCostUs));
         html += row(QObject::tr("Halt exits"), perSecond(s.haltExits));
         html += row(QObject::tr("Device exits"), perSecond(s.deviceExits),
                     QObject::tr("I/O and MMIO: emulated devices"));
         if (s.haltPollSuccess >= 0) {
             html += row(QObject::tr("Halt polling"),
-                        QObject::tr("%1 successful").arg(percent(100 * s.haltPollSuccess)),
-                        QObject::tr("%1 of a CPU polling").arg(percent(s.haltPollCpu)));
+                        QObject::tr("%1 successful").arg(formatPercent(100 * s.haltPollSuccess)),
+                        QObject::tr("%1 of a CPU polling").arg(formatPercent(s.haltPollCpu)));
         }
         html += "</table>";
     }

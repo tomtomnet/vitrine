@@ -5,21 +5,27 @@ tools, and runs its few commands, over the virtio-serial port
 org.vitrine.agent.0 that vitrine gives every VM.
 
 Protocol: one JSON object per line, both ways.
-  host -> guest  {"cmd": "status" | "install-from-medium" | "request-reboot" | "shutdown",
+  host -> guest  {"cmd": "status" | "stats" | "install-from-medium" | "request-reboot" |
+                         "shutdown",
                   "id": N}
-  guest -> host  {"type": "hello", "protocol": 1, "agent": VERSION, "status": {...}}
+  guest -> host  {"type": "hello", "protocol": 2, "agent": VERSION, "status": {...}}
                  {"type": "status", "id": N, "status": {...}}
+                 {"type": "stats", "id": N, "stats": {"time": S, "net": [...],
+                                                      "memory": {...}}}
                  {"type": "progress", "id": N, "step": TEXT, "current": I, "total": T}
                  {"type": "result", "id": N, "cmd": CMD, "ok": BOOL, "error": TEXT,
                   "rebootNeeded": BOOL}
                  {"type": "error", "id": N, "error": TEXT}
 The hello goes out each time the host side opens the port.  The commands are
-fixed actions: the host cannot make the guest run anything else.  shutdown
+fixed actions: the host cannot make the guest run anything else.  stats (protocol
+2) is the guest's own counters, cheap to ask every second: vitrine's status bar
+shows them.  shutdown
 powers the guest off at once, as root: Plasma answers the ACPI power button
 with its logout screen, which waits for someone to confirm.
 
   vitrine-agent                 the service (vitrine-agent.service)
   vitrine-agent --status        prints the status and exits
+  vitrine-agent --stats         prints the counters stats answers and exits
   vitrine-agent --install DIR [--reboot]
                                 runs DIR/install (the tools medium) and reports
                                 its progress on the port; the bootstrap that
@@ -40,7 +46,7 @@ import sys
 import time
 
 AGENT_VERSION = "@VERSION@"
-PROTOCOL = 1
+PROTOCOL = 2
 PORT = "/dev/virtio-ports/org.vitrine.agent.0"
 LABEL = "VITRINETOOL"
 STATE_DIR = "/var/lib/vitrine-guest-tools"
@@ -282,6 +288,29 @@ def status(installing=False):
     }
 
 
+def stats():
+    """The guest's counters for the host's status bar, cheap enough for every
+    second: the bytes of its network cards and its memory.  QEMU counts no
+    network traffic (passt moves the packets over vhost-user).  Cards are
+    devices: not lo, bridges or tunnels, whose traffic the cards carry.
+    time (the monotonic clock) dates the counters, for rates."""
+    net = []
+    for line in (read("/proc/net/dev", "") or "").splitlines()[2:]:
+        name, _, counters = line.partition(":")
+        name = name.strip()
+        fields = counters.split()
+        if len(fields) < 16 or not os.path.exists(f"/sys/class/net/{name}/device"):
+            continue
+        net.append({"name": name, "rxBytes": int(fields[0]), "rxPackets": int(fields[1]),
+                    "txBytes": int(fields[8]), "txPackets": int(fields[9])})
+    memory = {}
+    for line in (read("/proc/meminfo", "") or "").splitlines():
+        key, _, value = line.partition(":")
+        if key in ("MemTotal", "MemAvailable") and value.split():
+            memory["total" if key == "MemTotal" else "available"] = int(value.split()[0]) * 1024
+    return {"time": time.monotonic(), "net": net, "memory": memory}
+
+
 class Port:
     """The guest's end of the virtio-serial port.  It reads as hung up while
     no one holds the host's end (vitrine connects to QEMU's socket)."""
@@ -500,6 +529,8 @@ def command(message, port, install):
     rid = message.get("id")
     if cmd == "status":
         port.send({"type": "status", "id": rid, "status": status(install is not None)})
+    elif cmd == "stats":
+        port.send({"type": "stats", "id": rid, "stats": stats()})
     elif cmd == "install-from-medium":
         if install:
             port.send({"type": "error", "id": rid, "error": "an install is running"})
@@ -562,6 +593,9 @@ def install_once(medium, reboot):
                     if message.get("cmd") == "status":
                         port.send({"type": "status", "id": message.get("id"),
                                    "status": status(True)})
+                    elif message.get("cmd") == "stats":
+                        port.send({"type": "stats", "id": message.get("id"),
+                                   "stats": stats()})
                     else:
                         port.send({"type": "error", "id": message.get("id"),
                                    "error": "the guest tools are being installed"})
@@ -572,6 +606,9 @@ def install_once(medium, reboot):
 def main(argv):
     if len(argv) >= 2 and argv[1] == "--status":
         print(json.dumps(status(), indent=2))
+        return 0
+    if len(argv) >= 2 and argv[1] == "--stats":
+        print(json.dumps(stats(), indent=2))
         return 0
     if len(argv) >= 3 and argv[1] == "--install":
         return install_once(argv[2], "--reboot" in argv[3:])

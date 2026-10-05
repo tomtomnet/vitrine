@@ -96,6 +96,10 @@ struct Snapshot {
 
 /* "240 fps · frame 6.1 ms · input 11 ms · main loop wait 0.4 %" */
 QString summary(const Snapshot &s);
+/* Its parts: "240 fps · frame 6.1 ms · input 11 ms", or "display idle" */
+QString displaySummary(const Snapshot &s);
+/* "main loop wait 0.4 %" */
+QString mainLoopSummary(const Snapshot &s);
 /* The details, as rich text */
 QString details(const Snapshot &s);
 /* Those of QEMU's threads and KVM: details() without the display */
@@ -103,6 +107,8 @@ QString hostDetails(const Snapshot &s);
 
 /* Milliseconds, to two significant digits or so: "0.35 ms", "6.1 ms", "21 ms" */
 QString formatMs(double ms);
+/* A percentage in tooltips: "< 0.1 %", "0.4 %", "12 %" */
+QString formatPercent(double p);
 
 /*
  * Polls the VM of a VmRunner twice a second while it runs, and tells when

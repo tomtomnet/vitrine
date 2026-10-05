@@ -144,14 +144,23 @@ private slots:
         Snapshot s;
 
         QCOMPARE(summary(s), QString());
+        QCOMPARE(displaySummary(s), QString());
+        QCOMPARE(mainLoopSummary(s), QString());
 
         s.threads = true;
         s.mainLoop.wait = 0.43;
         QCOMPARE(summary(s), "main loop wait 0.4 %");
+        QCOMPARE(displaySummary(s), QString());
 
         s.display = true;
         QVERIFY(parseDisplay(json(kDisplay), &s.screen));
         QCOMPARE(summary(s), "240 fps · frame 6.1 ms · input 11 ms · main loop wait 0.4 %");
+        /* the status bar's two entries */
+        QCOMPARE(displaySummary(s), "240 fps · frame 6.1 ms · input 11 ms");
+        QCOMPARE(mainLoopSummary(s), "main loop wait 0.4 %");
+        s.threads = false;
+        QCOMPARE(summary(s), "240 fps · frame 6.1 ms · input 11 ms");
+        s.threads = true;
 
         /* X11: no presentation feedback */
         s.screen.method = "swap";
@@ -168,6 +177,9 @@ private slots:
 
         QCOMPARE(formatMs(21.4), "21 ms");
         QCOMPARE(formatMs(6.15), "6.2 ms");
+        QCOMPARE(formatPercent(0.01), "< 0.1 %");
+        QCOMPARE(formatPercent(4.24), "4.2 %");
+        QCOMPARE(formatPercent(42.4), "42 %");
     }
 
     void detailsText()

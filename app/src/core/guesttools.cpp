@@ -23,6 +23,7 @@ const char kLabel[] = "VITRINETOOL";
 const char kPortName[] = "org.vitrine.agent.0";
 const char kPortId[] = "vitrine-agent-port";
 const char kFedoraRelease[] = "44";
+const int kStatsProtocol = 2;
 
 /* No hello this long after the guest started: no agent */
 static const int kGraceMs = 90000;
@@ -236,7 +237,7 @@ Message parseMessage(const QByteArray &line)
     static const QHash<QString, Message::Type> types{
         {"hello", Message::Type::Hello},       {"status", Message::Type::Status},
         {"progress", Message::Type::Progress}, {"result", Message::Type::Result},
-        {"error", Message::Type::Error}};
+        {"error", Message::Type::Error},       {"stats", Message::Type::Stats}};
     QJsonParseError error;
     const QJsonDocument doc = QJsonDocument::fromJson(line, &error);
     const QJsonObject o = doc.object();
@@ -268,6 +269,9 @@ Message parseMessage(const QByteArray &line)
         break;
     case Message::Type::Error:
         m.error = o["error"].toString();
+        break;
+    case Message::Type::Stats:
+        m.stats = o["stats"].toObject();
         break;
     case Message::Type::Invalid:
         break;
@@ -446,6 +450,7 @@ GuestToolsMonitor::GuestToolsMonitor(Vm *vm)
     connect(m_socket, &QLocalSocket::readyRead, this, &GuestToolsMonitor::read);
     connect(m_socket, &QLocalSocket::connected, this, [this]() { requestStatus(); });
     connect(m_socket, &QLocalSocket::disconnected, this, [this]() {
+        agentGone();
         if (m_in.running) {
             m_retry->start();
         }
@@ -585,6 +590,7 @@ void GuestToolsMonitor::runnerChanged()
         m_bootstrapTimer->stop();
         m_socket->abort();
         m_buffer.clear();
+        agentGone();
     }
     emit changed();
 }
@@ -623,6 +629,10 @@ void GuestToolsMonitor::handle(const Message &m)
 {
     switch (m.type) {
     case Message::Type::Hello:
+        m_protocol = m.protocol;
+        m_statsId = -1;
+        m_statsRefused = false;
+        [[fallthrough]];
     case Message::Type::Status:
         m_in.agentSeen = true;
         m_in.report = m.report;
@@ -663,10 +673,25 @@ void GuestToolsMonitor::handle(const Message &m)
         }
         break;
     case Message::Type::Error:
+        if (m.id >= 0 && m.id == m_statsId) {
+            /* an agent busy installing the tools, or one that says it has
+               stats and has not: asked again after its next hello */
+            m_statsId = -1;
+            m_statsRefused = true;
+            qInfo("guest agent of %s, stats: %s", qPrintable(m_vm->id()), qPrintable(m.error));
+            break;
+        }
         /* a command this agent does not know (an older one): shutdown falls
            back to the power button by its timer */
         qInfo("guest agent of %s: %s", qPrintable(m_vm->id()), qPrintable(m.error));
         break;
+    case Message::Type::Stats:
+        /* every second while the status bar shows them: no change of state */
+        if (m.id == m_statsId) {
+            m_statsId = -1;
+        }
+        emit statsReceived(m.stats);
+        return;
     case Message::Type::Invalid:
         return;
     }
@@ -692,21 +717,47 @@ void GuestToolsMonitor::guestRestarted()
     m_in.agentSeen = false;
     m_in.waited = false;
     m_in.installing = false;
+    agentGone();
     m_contexts->reset();
     m_grace->start();
     emit changed();
 }
 
-void GuestToolsMonitor::send(const QString &command)
+void GuestToolsMonitor::agentGone()
 {
-    if (m_socket->state() == QLocalSocket::ConnectedState) {
-        m_socket->write(commandLine(command, m_nextId++));
+    m_protocol = 0;
+    m_statsId = -1;
+    m_statsRefused = false;
+}
+
+qint64 GuestToolsMonitor::send(const QString &command)
+{
+    if (m_socket->state() != QLocalSocket::ConnectedState) {
+        return -1;
     }
+    m_socket->write(commandLine(command, m_nextId));
+    return m_nextId++;
 }
 
 void GuestToolsMonitor::requestStatus()
 {
     send("status");
+}
+
+bool GuestToolsMonitor::reportsStats() const
+{
+    return m_in.agentSeen && m_protocol >= kStatsProtocol && !m_statsRefused &&
+           m_socket->state() == QLocalSocket::ConnectedState;
+}
+
+void GuestToolsMonitor::requestStats()
+{
+    /* one at a time; an answer lost (the guest froze) is not waited for long */
+    if (!reportsStats() || (m_statsId >= 0 && m_statsAsked.elapsed() < 5000)) {
+        return;
+    }
+    m_statsId = send("stats");
+    m_statsAsked.start();
 }
 
 void GuestToolsMonitor::installFromMedium()
