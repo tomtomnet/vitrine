@@ -108,7 +108,7 @@ const char kRoot[] = "/org/qemu/Display1";
 class FakeDisplay
 {
 public:
-    explicit FakeDisplay(const QString &path)
+    explicit FakeDisplay(const QString &path) : m_path(path)
     {
         sockaddr_un addr{};
         const QByteArray name = path.toLocal8Bit();
@@ -153,6 +153,7 @@ public:
         g_main_context_unref(m_ctx);
     }
 
+    QString path() const { return m_path; }
     QStringList calls() const
     {
         std::lock_guard g(m_lock);
@@ -430,6 +431,7 @@ private:
         d->m_answered++;
     }
 
+    QString m_path;
     int m_listenFd = -1;
     std::atomic<bool> m_stop{false};
     std::atomic<bool> m_hold{false};
@@ -479,6 +481,8 @@ public:
                                                  m_top->mapToGlobal(pos), QPoint(), QPoint(0, 120));
         QWindowSystemInterface::flushWindowSystemEvents();
     }
+    /* The buttons went up where the window could not see it */
+    void forgetButtons() { m_buttons = Qt::NoButton; }
     /* The pointer goes off the window */
     void leave()
     {
@@ -1090,35 +1094,45 @@ private Q_SLOTS:
     }
 
     /*
-     * The pointer over the screen reaches the guest, through the window
-     * around it: moves (in the guest's pixels), both presses of a double
-     * click, the wheel, the right button (and no context menu of the
-     * window's), and a drag that goes on past the screen's edge, with the
-     * button down until its release, as with any widget
+     * A window with the screen on the right of a side 100 pixels wide, as
+     * large as the guest's screen: the same pixels (scale 1)
      */
-    void screenTakesPointer()
+    static bool screenBesideSide(FakeDisplay &qemu, QWidget *top, VmView *view, QString *error)
     {
-        FakeDisplay qemu(socketPath());
-        QWidget top;
-        auto *layout = new QHBoxLayout(&top);
+        auto *layout = new QHBoxLayout(top);
         auto *side = new QWidget;
-        std::unique_ptr<VmView> view(new VmView);
-        QString error;
-        QVERIFY2(view->attach(socketPath(), &error), qPrintable(error));
-        QTRY_VERIFY(qemu.listening());
-        QVERIFY(guestScreen(qemu, view.get(), 640, 480));
+        if (!view->attach(qemu.path(), error) ||
+            !QTest::qWaitFor([&qemu]() { return qemu.listening(); }) ||
+            !guestScreen(qemu, view, 640, 480)) {
+            return false;
+        }
         layout->setContentsMargins(0, 0, 0, 0);
         layout->setSpacing(0);
         side->setFixedWidth(100);
         layout->addWidget(side);
         layout->addWidget(view->widget(), 1);
+        top->resize(100 + 640, 480);
+        top->show();
+        return QTest::qWaitForWindowExposed(top) && QTest::qWaitFor([]() {
+            return displayWindow() && displayWindow()->size() == QSize(640, 480);
+        });
+    }
+
+    /*
+     * The pointer over the screen reaches the guest, through the window
+     * around it: moves (in the guest's pixels), both presses of a double
+     * click, the wheel, the right button (and no context menu of the
+     * window's)
+     */
+    void screenTakesPointer()
+    {
+        FakeDisplay qemu(socketPath());
+        QWidget top;
+        std::unique_ptr<VmView> view(new VmView);
+        QString error;
         top.setContextMenuPolicy(Qt::CustomContextMenu);
         QSignalSpy menu(&top, &QWidget::customContextMenuRequested);
-        /* the screen as large as the guest's: the same pixels (scale 1) */
-        top.resize(100 + 640, 480);
-        top.show();
-        QVERIFY(QTest::qWaitForWindowExposed(&top));
-        QTRY_VERIFY(displayWindow() && displayWindow()->size() == QSize(640, 480));
+        QVERIFY2(screenBesideSide(qemu, &top, view.get(), &error), qPrintable(error));
         qemu.clearCalls();
         Pointer pointer(top.windowHandle());
 
@@ -1140,27 +1154,84 @@ private Q_SLOTS:
                      QStringList({"Mouse.Release (0,)", "Mouse.Release (0,)",
                                   "Mouse.Release (3,)", "Mouse.Release (2,)"}));
         QCOMPARE(menu.size(), 0);
+    }
 
-        /* pressed in the screen, released over the side: at the screen's edge
-           in between */
+    /*
+     * The user's report (2026-10-05): a window of the guest dragged by its
+     * title bar was let go as the pointer crossed the screen's edge, where
+     * QEMU's SDL window keeps it.  There the compositor gave the pointer
+     * back to the main window's own surface, and the screen took that Leave
+     * for the pointer taken away: DisplayWindow lets the buttons go then
+     * (qt-client.md F11).  Now the press holds until its release, wherever
+     * that is, the guest's pointer at the screen's edge while out of it -
+     * over the side, out of the window - while a button the compositor
+     * really takes away (a Leave, the button down: its own grab, a screen
+     * lock) or that the window's losing the keyboard leaves down still goes
+     * up in the guest.
+     */
+    void guestDragLeavesScreen()
+    {
+        FakeDisplay qemu(socketPath());
+        QWidget top;
+        std::unique_ptr<VmView> view(new VmView);
+        QString error;
+        QVERIFY2(screenBesideSide(qemu, &top, view.get(), &error), qPrintable(error));
+        QVERIFY(QTest::qWaitForWindowActive(&top));
+        view->focus();
+        QTRY_VERIFY(view->hasKeyboard());
+        Pointer pointer(top.windowHandle());
         auto lastAt = [&qemu]() {
             const QStringList at = qemu.callsTo("Mouse.SetAbsPosition");
-            return at.value(at.size() - 1);
+            return at.value(at.size() - 1).section(' ', 1);
         };
+
+        pointer.move(QPointF(400, 200));
         qemu.clearCalls();
         pointer.press(QPointF(400, 200));
-        pointer.move(QPointF(300, 200));
-        QTRY_COMPARE(lastAt(), QString("Mouse.SetAbsPosition (200, 200)"));
-        pointer.move(QPointF(50, 200));
-        QTRY_COMPARE(lastAt(), QString("Mouse.SetAbsPosition (0, 200)"));
-        QTest::qWait(100);
+        QTRY_COMPARE(qemu.callsTo("Mouse.Press"), QStringList({"Mouse.Press (0,)"}));
+        const QList<std::pair<QPointF, QString>> path = {
+            {QPointF(150, 200), "(50, 200)"},
+            {QPointF(50, 200), "(0, 200)"},     // over the side
+            {QPointF(-80, -30), "(0, 0)"},      // out of the window
+            {QPointF(900, 600), "(639, 479)"},  // out of it on the other side
+            {QPointF(500, 300), "(400, 300)"},  // back
+        };
+        for (const auto &[pos, at] : path) {
+            pointer.move(pos);
+            QTRY_COMPARE(lastAt(), at);
+        }
         QCOMPARE(qemu.callsTo("Mouse.Release").size(), 0);
-        pointer.release(QPointF(50, 200));
+        pointer.release(QPointF(500, 300));
         QTRY_COMPARE(qemu.callsTo("Mouse.Release"), QStringList({"Mouse.Release (0,)"}));
-        /* the pointer off the window: nothing held */
+        QCOMPARE(qemu.callsTo("Mouse.Press").size(), 1);
+
+        /* released over the side: there, up in the guest */
         pointer.press(QPointF(400, 200));
-        pointer.leave();
+        pointer.move(QPointF(50, 200));
+        QTRY_COMPARE(lastAt(), QString("(0, 200)"));
+        QTest::qWait(50);
+        QCOMPARE(qemu.callsTo("Mouse.Release").size(), 1);
+        pointer.release(QPointF(50, 200));
         QTRY_COMPARE(qemu.callsTo("Mouse.Release").size(), 2);
+
+        /* the compositor takes the pointer away, the button down */
+        pointer.press(QPointF(400, 200));
+        QTRY_COMPARE(qemu.callsTo("Mouse.Press").size(), 3);
+        pointer.leave();
+        QTRY_COMPARE(qemu.callsTo("Mouse.Release").size(), 3);
+        pointer.forgetButtons();
+
+        /* another window takes the keyboard, the button down */
+        pointer.press(QPointF(400, 200));
+        QTRY_COMPARE(qemu.callsTo("Mouse.Press").size(), 4);
+        QWidget other;
+        other.resize(200, 100);
+        other.show();
+        other.activateWindow();
+        QVERIFY(QTest::qWaitForWindowActive(&other));
+        QTRY_VERIFY(!view->hasKeyboard());
+        QTRY_COMPARE(qemu.callsTo("Mouse.Release").size(), 4);
+        QCOMPARE(qemu.callsTo("Mouse.Press").size(), 4);
     }
 
     /*
