@@ -43,7 +43,9 @@ defs=(--define "_smp_build_ncpus ${JOBS:-$(nproc)}"
       --define '__brp_linkdupes /usr/bin/true')
 [ "${DEBUGINFO:-0}" = 1 ] || defs+=(--define 'debug_package %{nil}')
 # the build requirements the spec generates (Mesa's Rust crates): rpmbuild -br
-# writes them to a .buildreqs.nosrc.rpm (and exits 11 while some are missing)
+# writes them to a .buildreqs.nosrc.rpm (and exits 11 while some are missing);
+# it unpacks and patches the sources first
+say "phase: preparing the sources"
 for _ in 1 2 3; do
 	rm -f "$top"/SRPMS/*.buildreqs.nosrc.rpm
 	rc=0; rpmbuild -br "${defs[@]}" "$spec" > /dev/null || rc=$?
