@@ -361,6 +361,8 @@ if(BUILD_TESTING)
     # the same stand-in, for QEMUs found running
     target_compile_definitions(test_vmrunner PRIVATE FAKE_QEMU="$<TARGET_FILE:fake-qemu>")
     add_dependencies(test_vmrunner fake-qemu)
+    target_compile_definitions(test_guesttools PRIVATE FAKE_QEMU="$<TARGET_FILE:fake-qemu>")
+    add_dependencies(test_guesttools fake-qemu)
     target_compile_definitions(test_udmabuf PRIVATE FAKE_QEMU="$<TARGET_FILE:fake-qemu>")
     add_dependencies(test_udmabuf fake-qemu)
     target_compile_definitions(test_udmabufnotifier PRIVATE FAKE_QEMU="$<TARGET_FILE:fake-qemu>")

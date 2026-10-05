@@ -4,6 +4,11 @@
 #include <QFileInfo>
 #include <QJsonArray>
 #include <QJsonDocument>
+#include <QLocalServer>
+#include <QLocalSocket>
+#include <QPointer>
+#include <QProcess>
+#include <QScopeGuard>
 #include <QSignalSpy>
 #include <QStandardPaths>
 #include <QTemporaryDir>
@@ -51,6 +56,39 @@ static const char kHello[] =
     R"j("mesa-dri-drivers":"26.2.3-1.xe.fc44","kwin":"6.7.5-1.21.fc44"},"kwinPatched":true,)j"
     R"j("preempt":"full","rebootNeeded":false,"installed":{"medium":"32fe6c83b34e87e8",)j"
     R"j("tools":"0.1.0-1.fc44"},"installing":false}})j";
+
+/* QEMU's end of QMP, for a QEMU found running: answers every command,
+   query-status with running */
+class FakeQmp : public QObject
+{
+public:
+    explicit FakeQmp(const QString &path)
+    {
+        QLocalServer::removeServer(path);
+        m_server.listen(path);
+        connect(&m_server, &QLocalServer::newConnection, this, [this]() {
+            QLocalSocket *peer = m_server.nextPendingConnection();
+            connect(peer, &QLocalSocket::readyRead, this, [this, peer]() {
+                m_buffer += peer->readAll();
+                for (qsizetype nl; (nl = m_buffer.indexOf('\n')) >= 0;) {
+                    const QJsonObject c = QJsonDocument::fromJson(m_buffer.left(nl)).object();
+                    m_buffer.remove(0, nl + 1);
+                    QJsonObject reply{{"return", QJsonObject()}, {"id", c["id"]}};
+                    if (c["execute"] == "query-status") {
+                        reply["return"] = QJsonObject{{"running", true}, {"status", "running"}};
+                    }
+                    peer->write(QJsonDocument(reply).toJson(QJsonDocument::Compact) + '\n');
+                }
+            });
+            peer->write(R"({"QMP": {"version": {"qemu": {"major": 11}}, "capabilities": []}})"
+                        "\n");
+        });
+    }
+
+private:
+    QLocalServer m_server;
+    QByteArray m_buffer;
+};
 
 class TestGuestTools : public QObject
 {
@@ -536,6 +574,74 @@ private slots:
         setPending(id, Pending::None);
         Paths::setQemuBinary({});
         QDir(dataDir()).removeRecursively();
+    }
+
+    /*
+     * The agent's report of tools in the guest takes back an install pending
+     * from before the run (they are in after all), not one asked for in the
+     * run: an update or an install again, over the tools the guest has, for
+     * which the guest shuts down to start again with the medium
+     */
+    void pendingAskedInTheRun()
+    {
+        QTemporaryDir tmp;
+        const QString id = QString("vitrine-gt-pending-%1").arg(QCoreApplication::applicationPid());
+        const QString dir = tmp.filePath(id);
+        QVERIFY(QDir().mkpath(dir));
+        QFile args(dir + "/vm.args");
+        QVERIFY(args.open(QIODevice::WriteOnly));
+        args.write("-machine q35\n");
+        args.close();
+        const QStringList command = VmRunner(id, dir).commandLine(ArgsFile::parse("-machine q35\n"));
+        const QString runDir = QFileInfo(command.last()).absolutePath();
+
+        /* a QEMU found running, and the agent behind the port's socket */
+        FakeQmp qmp(runDir + "/qmp.sock");
+        QLocalServer agent;
+        QLocalServer::removeServer(runDir + "/agent.sock");
+        QVERIFY(agent.listen(runDir + "/agent.sock"));
+        QPointer<QLocalSocket> peer;
+        connect(&agent, &QLocalServer::newConnection, this,
+                [&]() { peer = agent.nextPendingConnection(); });
+        QProcess qemu;
+        qemu.start(FAKE_QEMU, {"-qmp", command[command.size() - 3]});
+        QVERIFY(qemu.waitForStarted());
+        /* running its program, not still the fork that execs it */
+        QVERIFY(QTest::qWaitFor([&qemu]() {
+            QFile f(QString("/proc/%1/cmdline").arg(qemu.processId()));
+            return f.open(QIODevice::ReadOnly) && f.readAll().contains("-qmp");
+        }, 5000));
+        QFile pid(runDir + "/qemu.pid");
+        QVERIFY(pid.open(QIODevice::WriteOnly));
+        pid.write(QByteArray::number(qemu.processId()) + '\n');
+        pid.close();
+        const auto end = qScopeGuard([&]() {
+            setPending(id, Pending::None);
+            qemu.kill();
+            qemu.waitForFinished();
+        });
+
+        setPending(id, Pending::Bootstrap);
+        VmStore store(tmp.path());
+        Vm *vm = store.find(id);
+        QVERIFY(vm);
+        GuestToolsMonitor *monitor = GuestToolsMonitor::of(vm);
+        vm->runner()->attach(vm->args());
+        QTRY_COMPARE(vm->runner()->state(), VmRunner::State::Running);
+        QTRY_VERIFY(peer);
+        auto report = [&]() { peer->write(QByteArray(kHello) + '\n'); };
+
+        /* from before the run, the tools in: no install at the next start */
+        report();
+        QTRY_VERIFY(monitor->hasAgent());
+        QCOMPARE(pending(id), Pending::None);
+
+        /* asked for in the run, as Install Guest Tools does: kept */
+        monitor->setPending(Pending::Bootstrap);
+        QSignalSpy changed(monitor, &GuestToolsMonitor::changed);
+        report();
+        QTRY_VERIFY(!changed.isEmpty());
+        QCOMPARE(pending(id), Pending::Bootstrap);
     }
 
     /*

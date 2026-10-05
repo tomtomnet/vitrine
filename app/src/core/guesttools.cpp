@@ -560,6 +560,7 @@ void GuestToolsMonitor::runnerChanged()
         const QString rememberedTools = m_in.rememberedTools;
 
         m_in = Inputs{};
+        m_pendingAsked = false;
         m_in.remembered = remembered;
         m_in.rememberedTools = rememberedTools;
         m_in.running = true;
@@ -644,8 +645,9 @@ void GuestToolsMonitor::handle(const Message &m)
         m_grace->stop();
         if (!m.report.tools.isEmpty() && !m.report.installing) {
             m_in.failed = false;
-            /* in: no install at the next start after all */
-            if (m_in.pending == Pending::Bootstrap) {
+            /* in: no install at the next start after all - but for one
+               asked for in this run, an update or an install again */
+            if (m_in.pending == Pending::Bootstrap && !m_pendingAsked) {
                 m_in.pending = Pending::None;
                 GuestTools::setPending(m_vm->id(), Pending::None);
             }
@@ -736,6 +738,7 @@ void GuestToolsMonitor::setPending(Pending pending)
 {
     GuestTools::setPending(m_vm->id(), pending);
     m_in.pending = pending;
+    m_pendingAsked = m_in.running && pending != Pending::None;
     emit changed();
 }
 

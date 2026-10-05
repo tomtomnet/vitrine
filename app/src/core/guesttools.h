@@ -260,6 +260,9 @@ private:
     /* the next way, if the agent does not answer the shutdown */
     QTimer *m_shutdownFallback;
     std::function<void(bool took)> m_shutdownAnswer;
+    /* an install asked for in this run (setPending()), over the tools the
+       guest has: a report of those does not take it back */
+    bool m_pendingAsked = false;
     /* how long an older agent's report is taken as before the bootstrap */
     QTimer *m_bootstrapTimer;
 };
