@@ -196,6 +196,8 @@ qt_add_library(vitrine_ui STATIC
     src/ui/qemudocs.h
     src/ui/referencepanel.cpp
     src/ui/referencepanel.h
+    src/ui/shutdownnotice.cpp
+    src/ui/shutdownnotice.h
     src/ui/settingspages.cpp
     src/ui/settingspages.h
     src/ui/snapshotview.cpp
@@ -322,6 +324,7 @@ if(BUILD_TESTING)
     # the windows': widgets that are never shown, so no screen either
     foreach(name
             cardupdatedialog
+            guesttoolsdialog
             newvmdialog
             settingspages
             stackbanner
