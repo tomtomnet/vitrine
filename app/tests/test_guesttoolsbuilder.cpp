@@ -637,6 +637,33 @@ private slots:
         QVERIFY(!QFileInfo::exists(guest + "/medium-args"));
     }
 
+    /* vitrine killed while it builds: the script stops, and removes its container */
+    void stopsWhenVitrineDies()
+    {
+        const QString guest = guestDir("dies-guest", true);
+        const QString rpms = m_tmp.filePath("dies/rpms");
+        const QString hang = m_podman + "/hang.pid";
+        QProcessEnvironment env = QProcessEnvironment::systemEnvironment();
+        QProcess vitrine;
+
+        QFile::remove(hang);
+        QFile::remove(m_podman + "/calls");
+        env.insert("BUILDER_CHILD", guest);
+        env.insert("BUILDER_RPMS", rpms);
+        env.insert("FAKE_CONTAINER", "hang");
+        vitrine.setProcessEnvironment(env);
+        vitrine.start(QCoreApplication::applicationFilePath(), {});
+        QTRY_VERIFY_WITH_TIMEOUT(QFileInfo(hang).size() > 0, 20000);
+        const pid_t container = pid_t(read(hang).trimmed().toLongLong());
+        QCOMPARE(::kill(container, 0), 0);
+
+        vitrine.kill();
+        QVERIFY(vitrine.waitForFinished(5000));
+        QTRY_VERIFY_WITH_TIMEOUT(::kill(container, 0) != 0 && errno == ESRCH, 10000);
+        QVERIFY(read(m_podman + "/calls").contains("rm -f -t 0 vitrine-rpm-tools-fc44-"));
+        QTRY_VERIFY_WITH_TIMEOUT(!QFileInfo::exists(rpms + "/.tools.new"), 5000);
+    }
+
     /* Stop ends what the script runs too, not the script alone */
     void stopsTheProcessGroup()
     {
@@ -843,5 +870,23 @@ private slots:
     }
 };
 
-QTEST_GUILESS_MAIN(TestGuestToolsBuilder)
+int main(int argc, char **argv)
+{
+    QCoreApplication app(argc, argv);
+
+    /* stopsWhenVitrineDies()'s vitrine: it builds until killed */
+    if (const QString guest = qEnvironmentVariable("BUILDER_CHILD"); !guest.isEmpty()) {
+        GuestToolsBuilder builder;
+        builder.setGuestDir(guest);
+        builder.setRpmsDir(qEnvironmentVariable("BUILDER_RPMS"));
+        builder.setCacheDir(qEnvironmentVariable("BUILDER_RPMS") + "/../cache");
+        builder.setMediumImage(qEnvironmentVariable("BUILDER_RPMS") + "/../medium.img");
+        builder.start();
+        return app.exec();
+    }
+    TestGuestToolsBuilder test;
+    QTEST_SET_MAIN_SOURCE_PATH
+    return QTest::qExec(&test, argc, argv);
+}
+
 #include "test_guesttoolsbuilder.moc"

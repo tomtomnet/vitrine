@@ -107,14 +107,15 @@ flock -n 9 || die "another build of the guest tools is running into $out"
 # containers named after $out: a build into another folder is not this one's
 tag=$(printf '%s' "$out" | sha256sum | cut -c1-8)
 
-# A stop (Ctrl+C, vitrine's Stop): podman passes a SIGTERM to the build,
-# whose bash, the container's init, ignores it; the container goes here,
-# and with it the build's partial output
+# A stop (Ctrl+C, vitrine's Stop, vitrine gone): podman passes a SIGTERM to
+# the build, whose bash, the container's init, ignores it; the container
+# goes here, and with it the build's partial output.  Another signal does
+# not cut that short.
 pid=
 container=
 new=
 stop() {
-	trap - INT TERM HUP
+	trap '' INT TERM HUP PIPE
 	if [ -n "$pid" ]; then
 		podman rm -f -t 0 "$container" > /dev/null 2>&1 || true
 		for _ in $(seq 30); do
@@ -132,6 +133,7 @@ stop() {
 trap 'stop 130' INT
 trap 'stop 143' TERM
 trap 'stop 129' HUP
+trap 'stop 141' PIPE
 
 for t in "${targets[@]}"; do
 	hash=$(inputs_hash "$t")

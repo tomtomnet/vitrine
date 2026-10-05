@@ -17,6 +17,7 @@
 
 #include <algorithm>
 #include <csignal>
+#include <sys/prctl.h>
 #include <sys/types.h>
 #include <unistd.h>
 
@@ -555,9 +556,21 @@ void GuestToolsBuilder::run()
     m_process = new QProcess(this);
     m_process->setProcessEnvironment(env);
     m_process->setProcessChannelMode(QProcess::MergedChannels);
-    /* a process group of its own, which Stop signals as a whole: the script
-       removes its container, podman and tail go with it */
-    m_process->setChildProcessModifier([]() { ::setpgid(0, 0); });
+    /*
+     * A process group of its own, which Stop signals as a whole: the script
+     * removes its container, podman and tail go with it.  And stopped if
+     * vitrine goes without stopping it (killed, crashed): the container
+     * would go on for its 20 minutes and its GiB.
+     */
+    const pid_t app = ::getpid();
+    m_process->setChildProcessModifier([app]() {
+        ::setpgid(0, 0);
+        ::prctl(PR_SET_PDEATHSIG, SIGTERM);
+        /* gone already, as it forked */
+        if (::getppid() != app) {
+            ::_exit(127);
+        }
+    });
     connect(m_process, &QProcess::readyRead, this, &GuestToolsBuilder::readOutput);
     connect(m_process, &QProcess::errorOccurred, this, [this](QProcess::ProcessError error) {
         if (error == QProcess::FailedToStart) {
