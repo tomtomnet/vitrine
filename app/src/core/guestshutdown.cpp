@@ -11,8 +11,12 @@
 
 /* A qemu-ga that runs answers guest-sync at once */
 static int syncTimeoutMs = 3000;
-/* It answers guest-shutdown only when shutdown(8) failed, which it waits for */
-static int refuseTimeoutMs = 3000;
+/*
+ * It answers guest-shutdown only when shutdown(8) failed, which it waits
+ * for: a guest busy, or a slow logind, may take seconds to fail, and a
+ * guest that shuts down closes the connection with QEMU before this
+ */
+static int refuseTimeoutMs = 10000;
 
 GuestShutdown::GuestShutdown(QObject *parent) : QObject(parent), m_refuse(new QTimer(this))
 {
@@ -71,6 +75,8 @@ void GuestShutdown::start()
         return;
     }
     m_busy = true;
+    /* a new request: its ways are told again, the same as the last one's or not */
+    m_way = Way::None;
     tryToolsAgent();
 }
 

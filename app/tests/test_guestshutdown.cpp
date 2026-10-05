@@ -24,6 +24,7 @@ public:
 
     bool answersSync = true;
     Shutdown shutdown = Shutdown::Silent;
+    int refuseAfterMs = 0;
     QList<QJsonObject> commands;    // what came, guest-sync aside
     int connections = 0;
 
@@ -61,8 +62,9 @@ private:
             if (shutdown == Shutdown::Refuse) {
                 const QJsonObject error{{"class", "GenericError"},
                                         {"desc", "child process has failed to shutdown"}};
-                peer->write(QJsonDocument(QJsonObject{{"error", error}, {"id", m["id"]}})
-                                .toJson(QJsonDocument::Compact) + '\n');
+                const QByteArray line = QJsonDocument(QJsonObject{{"error", error}, {"id", m["id"]}})
+                                            .toJson(QJsonDocument::Compact) + '\n';
+                QTimer::singleShot(refuseAfterMs, peer, [peer, line]() { peer->write(line); });
             } else if (shutdown == Shutdown::Close) {
                 peer->disconnectFromServer();
             }
@@ -251,9 +253,10 @@ private slots:
         QCOMPARE(run.pressed, 1);
         QCOMPARE(run.ways, QList<Way>{Way::PowerButton});
         QVERIFY(!run.shutdown.isBusy());
-        /* asked again: again */
+        /* asked again: again, and told again, for the window to say it again */
         run.shutdown.start();
         QCOMPARE(run.pressed, 2);
+        QCOMPARE(run.ways, QList<Way>({Way::PowerButton, Way::PowerButton}));
     }
 
     /* Not twice while a request is on its way; again once it took a way */
@@ -268,6 +271,22 @@ private slots:
         run.answerTools(true);
         run.shutdown.start();
         QCOMPARE(run.asked, 2);
+        QCOMPARE(run.ways, QList<Way>({Way::ToolsAgent, Way::ToolsAgent}));
+    }
+
+    /* A refusal that takes long, shutdown(8) failing late: still the button */
+    void lateRefusal()
+    {
+        FakeQga qga(socket());
+        Run run;
+        run.toolsAgent(false);
+        run.shutdown.setGuestAgent(socket());
+        qga.shutdown = FakeQga::Shutdown::Refuse;
+        qga.refuseAfterMs = 150;
+
+        run.shutdown.start();
+        QTRY_COMPARE(run.pressed, 1);
+        QCOMPARE(run.ways, QList<Way>({Way::GuestAgent, Way::PowerButton}));
     }
 
     /* The guest shut down, or the run ended: late answers do nothing */
@@ -320,7 +339,7 @@ private slots:
         run.shutdown.start();
         QTRY_VERIFY(!run.shutdown.isBusy());
         QCOMPARE(run.pressed, 0);
-        QCOMPARE(run.ways, QList<Way>{Way::GuestAgent});
+        QCOMPARE(run.ways, QList<Way>({Way::GuestAgent, Way::GuestAgent}));
     }
 
     /* Destroyed with a request on its way, the answers coming after */

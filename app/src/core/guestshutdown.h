@@ -73,7 +73,7 @@ public:
     static void setGuestAgentTimeouts(int syncMs, int refuseMs);
 
 signals:
-    /* Each way as it is tried, and None once reset */
+    /* Each way as it is tried, for each request, and None once reset */
     void wayChanged(GuestShutdown::Way way);
 
 private:
