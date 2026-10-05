@@ -3,7 +3,7 @@
 A Qt application for running Linux desktop virtual machines with QEMU/KVM.
 The guest uses the host's GPU through virtio-gpu DRM native context, and the
 app shows the guest's display in its window through QEMU's D-Bus display, or
-leaves it to QEMU's own SDL window.
+leaves it to QEMU's own SDL or GTK window.
 
 QEMU, virglrenderer and the guest's graphics stack (virtio-gpu driver, Mesa,
 KWin) are used at pinned versions, with the patches vitrine needs kept in

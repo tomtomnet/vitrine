@@ -7,10 +7,10 @@
 #include <QProcess>
 #include <QRegularExpression>
 #include <QSaveFile>
+#include <QSettings>
 
 #include <algorithm>
 
-#include "core/cardupdate.h"
 #include "core/paths.h"
 #include "core/vmconfig.h"
 #include "core/guesttools.h"
@@ -78,10 +78,24 @@ void Vm::reload()
     }
 }
 
+/*
+ * The Don't Ask Again of the 3D card's update, per VM, which the Display
+ * page's options replaced with the prompt (2026-10-05): its keys go
+ */
+static void forgetCardUpdate()
+{
+    QSettings s(Paths::settingsPath(), QSettings::IniFormat);
+
+    if (s.childGroups().contains("cardupdate")) {
+        s.remove("cardupdate");
+    }
+}
+
 VmStore::VmStore(const QString &dir, QObject *parent)
     : QObject(parent), m_dir(QDir(dir).absolutePath()),
       m_watcher(new QFileSystemWatcher(this))
 {
+    forgetCardUpdate();
     QDir().mkpath(m_dir);
     m_watcher->addPath(m_dir);
     connect(m_watcher, &QFileSystemWatcher::directoryChanged, this, &VmStore::reload);
@@ -163,15 +177,6 @@ Vm *VmStore::create(const QString &name, QString *error)
     return vm;
 }
 
-/*
- * What vitrine keeps of a VM beside its folder goes with it: a VM made
- * later in a folder of the same name starts afresh
- */
-static void forget(const QString &id)
-{
-    CardUpdate::setDeclined(id, false);
-}
-
 bool VmStore::remove(Vm *vm, QString *error)
 {
     if (vm->runner()->isActive()) {
@@ -188,7 +193,6 @@ bool VmStore::remove(Vm *vm, QString *error)
     }
     m_watcher->removePath(vm->argsPath());
     m_vms.removeOne(vm);
-    forget(vm->id());
     emit removed(vm->id());
     vm->deleteLater();
     return true;
@@ -207,7 +211,6 @@ void VmStore::reload()
     for (Vm *vm : QList<Vm *>(m_vms)) {
         if (!present.contains(vm->id()) && !vm->runner()->isActive()) {
             m_vms.removeOne(vm);
-            forget(vm->id());
             emit removed(vm->id());
             vm->deleteLater();
         }

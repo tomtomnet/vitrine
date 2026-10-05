@@ -33,6 +33,7 @@
 
 #include <algorithm>
 
+#include "core/cardsettings.h"
 #include "core/firmware.h"
 #include "core/firmwarefiles.h"
 #include "core/hostdevices.h"
@@ -267,34 +268,118 @@ bool HardwarePage::isModified() const
 
 /* Display */
 
+/* The options of QEMU's windows the page has, each window's, and QEMU's defaults */
+static const char *const kWindowOptions[][2] = {
+    {"show-cursor", QT_TRANSLATE_NOOP("DisplayPage", "Show the mouse &pointer")},
+    {"zoom-to-fit", QT_TRANSLATE_NOOP("DisplayPage", "&Zoom the screen to fit the window")},
+    {"show-menubar", QT_TRANSLATE_NOOP("DisplayPage", "Menu &bar")},
+    {"grab-on-hover",
+     QT_TRANSLATE_NOOP("DisplayPage", "Take the &keyboard when the pointer is over the window")},
+};
+static const QHash<QString, QStringList> kWindowKeys = {
+    {"sdl", {"show-cursor"}},
+    {"gtk", {"show-cursor", "zoom-to-fit", "show-menubar", "grab-on-hover"}},
+};
+static bool windowOptionDefault(const QString &key)
+{
+    return key == "show-menubar";
+}
+
+/* The cards of the list, by the machine: virt on ARM has no VGA */
+static QList<std::pair<QString, QString>> cardChoices(const ArgsFile &args)
+{
+    if (VmConfig::machineType(args).startsWith("virt")) {
+        return {{"virtio-gpu-gl-pci", DisplayPage::tr("3D (virtio-gpu-gl-pci)")},
+                {"virtio-gpu-pci", DisplayPage::tr("2D (virtio-gpu-pci)")}};
+    }
+    return {{"virtio-vga-gl", DisplayPage::tr("3D, with VGA (virtio-vga-gl)")},
+            {"virtio-gpu-gl-pci", DisplayPage::tr("3D, without VGA (virtio-gpu-gl-pci)")},
+            {"virtio-vga", DisplayPage::tr("2D, with VGA (virtio-vga)")},
+            {"VGA", DisplayPage::tr("Standard VGA (VGA)")}};
+}
+
+/* A driver of the list as VmConfig's graphics */
+static VmConfig::Graphics cardGraphics(const QString &driver)
+{
+    VmConfig::Graphics g;
+
+    g.device = driver;
+    g.kind = VmConfig::isAccelerated(driver) ? VmConfig::Graphics::Accelerated
+             : driver == "VGA"               ? VmConfig::Graphics::Standard
+                                             : VmConfig::Graphics::Virtio;
+    return g;
+}
+
 DisplayPage::DisplayPage(QWidget *parent)
     : SettingsPage(parent), m_custom(new Banner(Banner::Information)),
       m_embedded(new QRadioButton(tr("In &Vitrine's window"))),
-      m_ownWindow(new QRadioButton(tr("In a &window of its own (SDL)")))
+      m_sdl(new QRadioButton(tr("In QEMU's &SDL window"))),
+      m_gtk(new QRadioButton(tr("In QEMU's &GTK window"))),
+      m_nowhere(new QRadioButton(tr("&Nowhere"))), m_gtkHint(Widgets::hint()),
+      m_windowLabel(new QLabel(tr("QEMU's window:"))), m_card(new QComboBox),
+      m_cardHint(Widgets::hint()),
+      m_nativeContext(new QCheckBox(tr("&DRM native context"))),
+      m_venus(new QCheckBox(tr("V&enus"))),
+      m_frameTiming(new QCheckBox(tr("Frames in s&tep with this computer's screen"))),
+      m_nativeContextHint(Widgets::hint()), m_venusHint(Widgets::hint()),
+      m_frameTimingHint(Widgets::hint())
 {
     auto *layout = new QVBoxLayout(this);
     auto *form = Widgets::form();
     auto *choices = new QVBoxLayout;
+    auto *windowOptions = new QVBoxLayout;
+    auto *features = new QVBoxLayout;
     auto *group = new QButtonGroup(this);
 
     m_custom->setObjectName("customDisplay");
     m_embedded->setObjectName("embedded");
-    m_ownWindow->setObjectName("ownWindow");
-    group->addButton(m_embedded);
-    group->addButton(m_ownWindow);
+    m_sdl->setObjectName("ownWindow");
+    m_gtk->setObjectName("gtkWindow");
+    m_nowhere->setObjectName("nowhere");
+    m_card->setObjectName("card");
+    m_cardHint->setObjectName("cardHint");
+    m_nativeContext->setObjectName("nativeContext");
+    m_venus->setObjectName("venus");
+    m_frameTiming->setObjectName("frameTiming");
+    for (QRadioButton *b : {m_embedded, m_sdl, m_gtk, m_nowhere}) {
+        group->addButton(b);
+    }
     choices->addWidget(m_embedded);
     choices->addWidget(Widgets::hint(tr("The screen is part of Vitrine's window, and can go "
                                         "full screen.")));
-    choices->addWidget(m_ownWindow);
+    choices->addWidget(m_sdl);
     choices->addWidget(Widgets::hint(tr("QEMU shows the screen in a window of its own, which "
                                         "stays open when Vitrine closes.")));
+    choices->addWidget(m_gtk);
+    choices->addWidget(m_gtkHint);
+    choices->addWidget(m_nowhere);
+    choices->addWidget(Widgets::hint(tr("The VM runs without a screen.")));
     form->addRow(Widgets::label(tr("Show the VM:"), m_embedded), choices);
-    form->addRow(QString(), Widgets::hint(tr("Vitrine chooses the graphics card and its 3D "
-                                             "acceleration; the Arguments page can change "
-                                             "them.")));
+
+    for (const auto &[key, text] : kWindowOptions) {
+        auto *box = new QCheckBox(tr(text));
+        box->setObjectName(key);
+        windowOptions->addWidget(box);
+        m_options.insert(key, box);
+    }
+    form->addRow(m_windowLabel, windowOptions);
+
+    form->addRow(Widgets::label(tr("Graphics &card:"), m_card), m_card);
+    form->addRow(QString(), m_cardHint);
+    features->addWidget(m_nativeContext);
+    features->addWidget(m_nativeContextHint);
+    features->addWidget(m_venus);
+    features->addWidget(m_venusHint);
+    features->addWidget(m_frameTiming);
+    features->addWidget(m_frameTimingHint);
+    form->addRow(Widgets::label(tr("3D:"), m_nativeContext), features);
+
     layout->addWidget(m_custom);
     layout->addLayout(form);
     layout->addStretch();
+
+    connect(group, &QButtonGroup::buttonToggled, this, &DisplayPage::update);
+    connect(m_card, &QComboBox::currentIndexChanged, this, &DisplayPage::update);
 }
 
 QIcon DisplayPage::icon() const
@@ -303,42 +388,153 @@ QIcon DisplayPage::icon() const
                          QStyle::SP_DesktopIcon);
 }
 
-VmConfig::Screen DisplayPage::chosen() const
+QString DisplayPage::chosen3dCard() const
 {
-    return m_embedded->isChecked()    ? VmConfig::Screen::Embedded
-           : m_ownWindow->isChecked() ? VmConfig::Screen::OwnWindow
-                                      : VmConfig::Screen::None;
+    const QString card = m_card->currentData().toString();
+    return m_card->isEnabled() && VmConfig::isAccelerated(card) ? card : QString();
+}
+
+DisplayPage::Shown DisplayPage::shown() const
+{
+    Shown s;
+
+    s.screen = m_embedded->isChecked() ? "dbus"
+               : m_sdl->isChecked()    ? "sdl"
+               : m_gtk->isChecked()    ? "gtk"
+               : m_nowhere->isChecked() ? "none"
+                                        : QString();
+    for (const QString &key : kWindowKeys.value(s.screen)) {
+        s.options.insert(key, m_options.value(key)->isChecked());
+    }
+    s.card = m_card->currentData().toString();
+    /* vitrine's settings of a 3D card, of those its QEMU has */
+    if (!chosen3dCard().isEmpty()) {
+        s.nativeContext = m_nativeContext->isEnabled() && m_nativeContext->isChecked();
+        s.venus = m_venus->isEnabled() && m_venus->isChecked();
+        s.frameTiming = m_frameTiming->isEnabled() && m_frameTiming->isChecked();
+    }
+    return s;
+}
+
+void DisplayPage::update()
+{
+    const Shown s = shown();
+    const QString card = chosen3dCard();
+    const std::optional<CardSettings::Offers> offers =
+        CardSettings::offers(m_args, card.isEmpty() ? m_loaded.card : card);
+    const auto lacks = [&offers](const QString &display) {
+        return offers && offers->displays && !offers->displays->contains(display);
+    };
+    struct Feature {
+        QCheckBox *box;
+        QLabel *hint;
+        CardSettings::Feature feature;
+        QString text;
+    };
+    const Feature features[] = {
+        {m_nativeContext, m_nativeContextHint, CardSettings::Feature::NativeContext,
+         tr("The guest's 3D goes through this computer's GPU driver, with the Mesa the "
+            "guest tools install.")},
+        {m_venus, m_venusHint, CardSettings::Feature::Venus,
+         tr("Vulkan for a GPU without native context.")},
+        {m_frameTiming, m_frameTimingHint, CardSettings::Feature::FrameTiming,
+         tr("Smooth frames in Vitrine's window and the SDL one, with the guest tools' "
+            "driver.")},
+    };
+
+    /* the displays its QEMU has, and the one it uses; none for -nographic */
+    const bool nographic = m_args.indexOf("nographic") >= 0;
+    for (const auto &[button, display] :
+         {std::pair(m_embedded, "dbus"), std::pair(m_sdl, "sdl"), std::pair(m_gtk, "gtk")}) {
+        button->setEnabled(!nographic && (button->isChecked() || !lacks(display)));
+    }
+    m_nowhere->setEnabled(!nographic);
+    m_gtkHint->setText(lacks("gtk") ? tr("This VM's QEMU has no GTK display.")
+                                    : tr("The same, with QEMU's menus; there the frames do "
+                                         "not keep step with this computer's screen."));
+
+    /* each window its options */
+    const QStringList keys = kWindowKeys.value(s.screen);
+    for (auto it = m_options.cbegin(); it != m_options.cend(); ++it) {
+        it.value()->setVisible(keys.contains(it.key()));
+    }
+    m_windowLabel->setVisible(!keys.isEmpty());
+
+    /* the card */
+    const QString driver = m_card->currentData().toString();
+    if (!m_card->isEnabled()) {
+        m_cardHint->setText(tr("The graphics of this VM are set up by hand: change them on "
+                               "the Arguments page."));
+    } else if (VmConfig::machineType(m_args).startsWith("virt")) {
+        m_cardHint->clear();
+    } else if (VmConfig::isVgaDevice(driver)) {
+        m_cardHint->setText(tr("It shows the firmware, the boot loader and the first boot "
+                               "messages too."));
+    } else if (driver.startsWith("virtio-gpu")) {
+        m_cardHint->setText(tr("Nothing shows before the guest's driver starts, but UEFI's "
+                               "own screens."));
+    } else {
+        m_cardHint->clear();
+    }
+    m_cardHint->setVisible(!m_cardHint->text().isEmpty());
+
+    /* its 3D, with what the VM's QEMU has */
+    for (const Feature &f : features) {
+        const bool offered = offers && CardSettings::isOffered(*offers, f.feature);
+        f.box->setEnabled(!card.isEmpty() && offered);
+        f.hint->setText(card.isEmpty() ? f.text
+                        : !offers      ? tr("This VM's QEMU did not say what it has.")
+                        : offered      ? f.text
+                        : !offers->card ? tr("Vitrine's QEMU is built without it.")
+                                        : tr("This VM's QEMU lacks it."));
+    }
 }
 
 void DisplayPage::load(const ArgsFile &args)
 {
     const VmConfig::Screen screen = VmConfig::screen(args);
-    const QString display = VmConfig::graphics(args).display;
+    const VmConfig::Graphics g = VmConfig::graphics(args);
+    const QString display = g.display;
+    QString radio;
     QString custom;
 
-    m_loaded = screen;
+    m_args = args;
+    /* the screen: none checked for one shown elsewhere, or in another window */
+    if (screen == VmConfig::Screen::Embedded) {
+        radio = "dbus";
+    } else if (screen == VmConfig::Screen::OwnWindow && (display == "sdl" || display == "gtk")) {
+        radio = display;
+    } else if (screen == VmConfig::Screen::None && !VmConfig::hasRemoteDisplay(args) &&
+               args.indexOf("nographic") < 0 && (display == "none" || display == "egl-headless")) {
+        radio = "none";
+    }
     /*
-     * None checked for a VM that shows nowhere.  The buttons' group keeps
-     * one checked while it is exclusive, whatever their autoExclusive says,
-     * and a button left checked would make an untouched page modified
+     * The buttons' group keeps one checked while it is exclusive, whatever
+     * their autoExclusive says, and a button left checked would make an
+     * untouched page modified
      */
-    QButtonGroup *group = m_embedded->group();
-    group->setExclusive(false);
-    m_embedded->setChecked(screen == VmConfig::Screen::Embedded);
-    m_ownWindow->setChecked(screen == VmConfig::Screen::OwnWindow);
-    group->setExclusive(true);
+    {
+        const QSignalBlocker block(m_embedded->group());
+        m_embedded->group()->setExclusive(false);
+        m_embedded->setChecked(radio == "dbus");
+        m_sdl->setChecked(radio == "sdl");
+        m_gtk->setChecked(radio == "gtk");
+        m_nowhere->setChecked(radio == "none");
+        m_embedded->group()->setExclusive(true);
+    }
 
     if (args.indexOf("nographic") >= 0) {
         custom = tr("This VM has no screen (-nographic): change it on the Arguments page.");
-    } else if (screen == VmConfig::Screen::None &&
-               (display.isEmpty() || display == "default")) {
+    } else if (screen == VmConfig::Screen::None && radio.isEmpty() &&
+               (display.isEmpty() || display == "default" || display == "none" ||
+                display == "egl-headless")) {
         custom = tr("This VM shows its screen over VNC or SPICE only. Choosing below adds a "
                     "window.");
-    } else if (screen == VmConfig::Screen::None) {
+    } else if (screen == VmConfig::Screen::None && radio.isEmpty()) {
         custom = tr("This VM shows its screen nowhere Vitrine can (-display %1). Choosing "
                     "below replaces it.")
                      .arg(display.toHtmlEscaped());
-    } else if (screen == VmConfig::Screen::OwnWindow && display != "sdl") {
+    } else if (screen == VmConfig::Screen::OwnWindow && radio.isEmpty()) {
         custom = display.isEmpty() || display == "default"
                      ? tr("The screen shows in QEMU's default window.")
                      : tr("The screen shows in QEMU's %1 window.")
@@ -346,21 +542,102 @@ void DisplayPage::load(const ArgsFile &args)
     }
     m_custom->setText(custom);
     m_custom->setVisible(!custom.isEmpty());
-    m_embedded->setEnabled(args.indexOf("nographic") < 0);
-    m_ownWindow->setEnabled(args.indexOf("nographic") < 0);
+
+    /* the window's options, as QEMU takes them when not given */
+    for (auto it = m_options.cbegin(); it != m_options.cend(); ++it) {
+        it.value()->setChecked(
+            VmConfig::displayFlag(args, it.key(), windowOptionDefault(it.key())));
+    }
+
+    /* the card: one of the list, else the VM's own as it is */
+    {
+        const QSignalBlocker block(m_card);
+        const bool custom = g.kind == VmConfig::Graphics::Custom;
+        QString own = g.device;
+
+        m_card->clear();
+        for (const auto &[driver, text] : cardChoices(args)) {
+            m_card->addItem(text, driver);
+        }
+        if (custom) {
+            own = tr("Set up by hand (%1)").arg(g.custom);
+        } else if (own.isEmpty()) {
+            own = g.kind == VmConfig::Graphics::None    ? tr("None")
+                  : g.kind == VmConfig::Graphics::Virtio ? QString("virtio-vga")
+                                                         : QString("VGA");
+        }
+        if (m_card->findData(own) < 0) {
+            m_card->addItem(own, own);
+        }
+        m_card->setCurrentIndex(m_card->findData(own));
+        m_card->setEnabled(!custom);
+    }
+    m_nativeContext->setChecked(CardSettings::isOn(args, CardSettings::Feature::NativeContext));
+    m_venus->setChecked(CardSettings::isOn(args, CardSettings::Feature::Venus));
+    m_frameTiming->setChecked(CardSettings::isOn(args, CardSettings::Feature::FrameTiming));
+
+    /* as the page shows it, so that an untouched page writes nothing */
+    m_loaded.card = m_card->currentData().toString();
+    update();
+    m_loaded = shown();
 }
 
 void DisplayPage::save(ArgsFile &args)
 {
-    if (chosen() != m_loaded && chosen() != VmConfig::Screen::None) {
-        VmConfig::setScreen(args, chosen());
-        load(args);
+    const Shown s = shown();
+
+    if (s == m_loaded) {
+        return;
     }
+    const bool cardChanged = s.card != m_loaded.card;
+    /* the card, its 3D as it was: its settings follow */
+    if (cardChanged) {
+        VmConfig::Graphics g = cardGraphics(s.card);
+        const VmConfig::Graphics now = VmConfig::graphics(args);
+        g.display = now.display;
+        g.nativeContext = now.nativeContext && g.kind == VmConfig::Graphics::Accelerated;
+        g.venus = now.venus && g.kind == VmConfig::Graphics::Accelerated;
+        VmConfig::setGraphics(args, g);
+    }
+    if (!chosen3dCard().isEmpty()) {
+        if (const std::optional<CardSettings::Offers> offers =
+                CardSettings::offers(args, chosen3dCard())) {
+            const std::pair<CardSettings::Feature, bool> features[] = {
+                {CardSettings::Feature::NativeContext, s.nativeContext},
+                {CardSettings::Feature::Venus, s.venus},
+                {CardSettings::Feature::FrameTiming, s.frameTiming},
+            };
+            for (const auto &[feature, on] : features) {
+                if (CardSettings::isOn(args, feature) != on) {
+                    CardSettings::set(args, feature, on, *offers);
+                }
+            }
+        }
+    }
+    /* the screen, after the card: a 3D one shows nowhere through egl-headless */
+    if (!s.screen.isEmpty() && (s.screen != m_loaded.screen || (cardChanged && s.screen == "none"))) {
+        VmConfig::setScreen(args, s.screen == "dbus"   ? VmConfig::Screen::Embedded
+                                  : s.screen == "none" ? VmConfig::Screen::None
+                                                       : VmConfig::Screen::OwnWindow,
+                            s.screen);
+    }
+    /* in the page's order; QEMU's default, said by leaving the key out */
+    for (const auto &[key, text] : kWindowOptions) {
+        const bool on = s.options.value(key);
+        const bool qemuDefault = windowOptionDefault(key);
+        if (s.options.contains(key) && VmConfig::displayFlag(args, key, qemuDefault) != on) {
+            VmConfig::setDisplayOption(args, key,
+                                       on == qemuDefault ? QString()
+                                       : on              ? QString("on")
+                                                         : QString("off"));
+        }
+    }
+    load(args);
 }
 
 bool DisplayPage::isModified() const
 {
-    return chosen() != m_loaded;
+    return shown() != m_loaded;
 }
 
 /* Storage */

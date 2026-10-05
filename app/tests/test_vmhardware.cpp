@@ -195,6 +195,69 @@ private slots:
         QCOMPARE(text(a), "-device virtio-vga-gl\n-display dbus,p2p=yes,gl=on\n");
     }
 
+    /* The Display page's windows and nowhere, and QEMU's window's options */
+    void windowsAndOptions()
+    {
+        ArgsFile a = ArgsFile::parse("-device virtio-vga-gl\n-display dbus,p2p=yes,gl=on\n");
+
+        setScreen(a, Screen::OwnWindow, "gtk");
+        QCOMPARE(text(a), "-device virtio-vga-gl\n-display gtk,gl=on\n");
+        QVERIFY(screen(a) == Screen::OwnWindow);
+        /* the options: a key of the window's line, QEMU's default when not given */
+        QVERIFY(displayFlag(a, "show-menubar", true));
+        QVERIFY(!displayFlag(a, "show-cursor", false));
+        setDisplayOption(a, "show-cursor", "on");
+        setDisplayOption(a, "show-menubar", "off");
+        QCOMPARE(displayOption(a, "show-menubar"), "off");
+        QVERIFY(displayFlag(a, "show-cursor", false));
+        QVERIFY(!displayFlag(a, "show-menubar", true));
+        QCOMPARE(text(a), "-device virtio-vga-gl\n-display gtk,gl=on,show-cursor=on,"
+                          "show-menubar=off\n");
+        /* SDL keeps what it has of them */
+        setScreen(a, Screen::OwnWindow);
+        QCOMPARE(text(a), "-device virtio-vga-gl\n-display sdl,gl=on,show-cursor=on\n");
+        setDisplayOption(a, "show-cursor", {});
+        QCOMPARE(text(a), "-device virtio-vga-gl\n-display sdl,gl=on\n");
+        /* nothing to set without a window line, nor of -display vnc= */
+        ArgsFile b = ArgsFile::parse("-vnc :0\n-display vnc=:1\n");
+        setDisplayOption(b, "show-cursor", "on");
+        QCOMPARE(text(b), "-vnc :0\n-display vnc=:1\n");
+        QVERIFY(hasRemoteDisplay(b));
+        QVERIFY(!hasRemoteDisplay(a));
+
+        /* nowhere: a 3D card needs a display with OpenGL, which QEMU refuses it without */
+        setScreen(a, Screen::None);
+        QCOMPARE(text(a), "-device virtio-vga-gl\n-display egl-headless\n");
+        QVERIFY(screen(a) == Screen::None);
+        a = ArgsFile::parse("-device virtio-vga\n-display sdl\n");
+        setScreen(a, Screen::None);
+        QCOMPARE(text(a), "-device virtio-vga\n-display none\n");
+        setScreen(a, Screen::Embedded);
+        QCOMPARE(text(a), "-device virtio-vga\n-display dbus,p2p=yes\n");
+    }
+
+    /* From one 3D card to the other: the properties stay, in their places */
+    void other3dCard()
+    {
+        const QString props = "hostmem=4G,blob=on,drm_native_context=on,x-host-vblank=on,"
+                              "venus=off,id=gpu";
+        ArgsFile a = ArgsFile::parse("-device virtio-vga-gl," + props + "\n"
+                                     "-display dbus,p2p=yes,gl=on\n");
+        Graphics g = graphics(a);
+
+        QVERIFY(isAccelerated("virtio-vga-gl") && isAccelerated("virtio-gpu-gl-pci"));
+        QVERIFY(!isAccelerated("virtio-vga") && !isAccelerated("VGA"));
+        g.device = "virtio-gpu-gl-pci";
+        setGraphics(a, g);
+        QCOMPARE(text(a), "-device virtio-gpu-gl-pci," + props + "\n-vga none\n"
+                          "-display dbus,p2p=yes,gl=on\n");
+        g.device = "virtio-vga-gl";
+        setGraphics(a, g);
+        QCOMPARE(text(a), "-device virtio-vga-gl," + props + "\n-vga none\n"
+                          "-display dbus,p2p=yes,gl=on\n");
+        QCOMPARE(graphics(a).kind, Graphics::Accelerated);
+    }
+
     void readNetwork()
     {
         struct Case {

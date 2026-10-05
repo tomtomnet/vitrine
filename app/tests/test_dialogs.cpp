@@ -6,7 +6,6 @@
 #include <QLabel>
 #include <QPlainTextEdit>
 #include <QPushButton>
-#include <QScrollBar>
 #include <QStyleFactory>
 #include <QTemporaryDir>
 
@@ -15,7 +14,6 @@
 #include "core/paths.h"
 #include "core/vmstore.h"
 #include "scales.h"
-#include "ui/cardupdatedialog.h"
 #include "ui/clonedialog.h"
 #include "ui/guesttoolsdialog.h"
 #include "ui/newvmdialog.h"
@@ -80,7 +78,6 @@ class TestDialogs : public QObject
         const QList<std::pair<QString, std::function<QWidget *()>>> dialogs = {
             {"New VM", [this]() { return new NewVmDialog(m_store); }},
             {"Clone", [this]() { return new CloneDialog(m_store, vm()); }},
-            {"3D card", [this]() { return new CardUpdateDialog(vm()); }},
             {"QEMU build", []() { return new QemuBuildDialog; }},
             {"Command line", []() {
                  TextDialog::showText(nullptr, "Command Line", "qemu-system-x86_64 -m 4G");
@@ -184,50 +181,6 @@ private slots:
                 }
                 return wrong;
             });
-        });
-    }
-
-    void cardLines_data()
-    {
-        sizes_data();
-    }
-
-    /* The argument lines all shown, however they wrap, and no more room than they need */
-    void cardLines()
-    {
-        QFETCH(QString, style);
-        QApplication::setStyle(style);
-        Scales::sweep([this](int n) {
-            QStringList wrong;
-            CardUpdateDialog dialog(vm());
-            Scales::settle(&dialog);
-            /* narrower, then wider: the lines wrap otherwise */
-            for (int width : {dialog.minimumWidth(), dialog.minimumWidth() + 40 + n % 50,
-                              dialog.width() + 200}) {
-                dialog.resize(width, dialog.height());
-                Scales::settle(&dialog);
-                for (const char *name : {"before", "after"}) {
-                    auto *box = dialog.findChild<QPlainTextEdit *>(name);
-                    if (!box) {
-                        wrong << QString("no %1").arg(name);
-                        continue;
-                    }
-                    if (box->verticalScrollBar()->maximum() > 0) {
-                        wrong << QString("%1 at %2: scrolls, %3 lines hidden").arg(name)
-                                     .arg(width).arg(box->verticalScrollBar()->maximum());
-                    }
-                    /* no line's room more than needed */
-                    const qreal line = QFontMetricsF(box->font()).lineSpacing();
-                    const qreal lines = box->document()->lineCount();
-                    const qreal room = box->viewport()->height() -
-                                       2 * box->document()->documentMargin();
-                    if (room > (lines + 1) * line) {
-                        wrong << QString("%1 at %2: room for %3 lines, %4 shown").arg(name)
-                                     .arg(width).arg(room / line, 0, 'f', 1).arg(lines);
-                    }
-                }
-            }
-            return wrong;
         });
     }
 

@@ -39,8 +39,7 @@ class Vm;
  * The simple pages come first: General, Hardware, Display, Storage, Shared
  * Folders, USB, Network.  Then the Advanced group: Machine, Boot, PCI
  * Devices and Arguments, which edits the whole command line.  What vitrine
- * decides itself, the graphics card and its 3D features, the accelerator,
- * has no page but Arguments.
+ * decides itself, the accelerator, has no page but Arguments.
  */
 class SettingsPage : public QWidget
 {
@@ -122,7 +121,11 @@ private:
     int m_loadedCpus = 0;
 };
 
-/* Where the screen shows: vitrine's window or QEMU's SDL window */
+/*
+ * Where the screen shows (vitrine's window, QEMU's SDL or GTK window, or
+ * nowhere), what QEMU's window does, and the graphics card, with vitrine's
+ * settings for its 3D: DRM native context, Venus, the frame timing
+ */
 class DisplayPage : public SettingsPage
 {
     Q_OBJECT
@@ -137,13 +140,45 @@ public:
     bool isModified() const override;
 
 private:
-    /* The screen chosen, None when neither is */
-    VmConfig::Screen chosen() const;
+    /* What the page shows; save() writes what differs from what load() showed */
+    struct Shown {
+        /* -display of the screen chosen: dbus, sdl, gtk, none; empty when none is */
+        QString screen;
+        /* the options of QEMU's window that it has, e.g. show-cursor */
+        QMap<QString, bool> options;
+        /* the card chosen: a driver of the list, or the VM's own as it is */
+        QString card;
+        bool nativeContext = false;
+        bool venus = false;
+        bool frameTiming = false;
+
+        bool operator==(const Shown &other) const = default;
+    };
+    Shown shown() const;
+    /* What can be chosen, and what the notes say, for the choices of now */
+    void update();
+    /* The 3D card chosen in the list, or empty */
+    QString chosen3dCard() const;
 
     Banner *m_custom;
     QRadioButton *m_embedded;
-    QRadioButton *m_ownWindow;
-    VmConfig::Screen m_loaded = VmConfig::Screen::None;
+    QRadioButton *m_sdl;
+    QRadioButton *m_gtk;
+    QRadioButton *m_nowhere;
+    QLabel *m_gtkHint;
+    QLabel *m_windowLabel;
+    QMap<QString, QCheckBox *> m_options;
+    QComboBox *m_card;
+    QLabel *m_cardHint;
+    QCheckBox *m_nativeContext;
+    QCheckBox *m_venus;
+    QCheckBox *m_frameTiming;
+    QLabel *m_nativeContextHint;
+    QLabel *m_venusHint;
+    QLabel *m_frameTimingHint;
+    /* The arguments load() read: what their QEMU offers depends on the card */
+    ArgsFile m_args;
+    Shown m_loaded;
 };
 
 class StoragePage : public SettingsPage

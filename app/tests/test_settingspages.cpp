@@ -7,6 +7,7 @@
 #include <QListWidget>
 #include <QPlainTextEdit>
 #include <QPushButton>
+#include <QScopeGuard>
 #include <QRadioButton>
 #include <QSpinBox>
 #include <QStandardPaths>
@@ -95,6 +96,178 @@ private slots:
         ownWindow->click();
         page.save(args);
         QCOMPARE(text(args), "-vnc :0\n-display sdl\n");
+    }
+
+    /* The Display page: the window and its options, the card and vitrine's settings of its 3D */
+    void displayPageOptions()
+    {
+        const auto restore = qScopeGuard([]() {
+            Paths::setQemuBinary("/nonexistent/qemu-system-x86_64");
+        });
+        /* vitrine's QEMU, not built: all it offers */
+        Paths::setQemuBinary({});
+        DisplayPage page;
+        auto *embedded = page.findChild<QRadioButton *>("embedded");
+        auto *sdl = page.findChild<QRadioButton *>("ownWindow");
+        auto *gtk = page.findChild<QRadioButton *>("gtkWindow");
+        auto *nowhere = page.findChild<QRadioButton *>("nowhere");
+        auto *card = page.findChild<QComboBox *>("card");
+        auto *native = page.findChild<QCheckBox *>("nativeContext");
+        auto *venus = page.findChild<QCheckBox *>("venus");
+        auto *timing = page.findChild<QCheckBox *>("frameTiming");
+        auto *cursor = page.findChild<QCheckBox *>("show-cursor");
+        auto *zoom = page.findChild<QCheckBox *>("zoom-to-fit");
+        auto *menubar = page.findChild<QCheckBox *>("show-menubar");
+        auto *hover = page.findChild<QCheckBox *>("grab-on-hover");
+        QVERIFY(embedded && sdl && gtk && nowhere && card && native && venus && timing &&
+                cursor && zoom && menubar && hover);
+        const auto display = [](const ArgsFile &a) {
+            return a.lines[a.indexesOf("display").last()].value;
+        };
+        const auto device = [](const ArgsFile &a) {
+            return a.lines[a.indexOfDevice([](const QString &d) {
+                                return d.startsWith("virtio") || d == "VGA";
+                            })].value;
+        };
+
+        /* a new Linux VM's: vitrine's window, the 3D card with all of vitrine's settings */
+        const QString full = "virtio-vga-gl,hostmem=4G,blob=on,drm_native_context=on,"
+                             "x-host-vblank=on,x-vblank-lead=3000,x-vblank-lead-auto=on";
+        ArgsFile args = ArgsFile::parse("-machine q35,memory-backend=mem\n"
+                                        "-accel kvm,honor-guest-pat=auto\n"
+                                        "-object memory-backend-memfd,id=mem,size=4G,share=on\n"
+                                        "-device " + full + "\n"
+                                        "-display dbus,p2p=yes,gl=on\n");
+        const QString before = text(args);
+        page.load(args);
+        QVERIFY(embedded->isChecked());
+        QCOMPARE(card->currentData().toString(), "virtio-vga-gl");
+        QVERIFY(native->isChecked() && native->isEnabled());
+        QVERIFY(timing->isChecked() && timing->isEnabled());
+        /* vitrine's QEMU has no Venus */
+        QVERIFY(!venus->isChecked() && !venus->isEnabled());
+        QVERIFY(!cursor->isVisibleTo(&page));
+        QVERIFY(!page.isModified());
+        page.save(args);
+        QCOMPARE(text(args), before);
+
+        /* QEMU's GTK window, and its options */
+        gtk->click();
+        QVERIFY(page.isModified());
+        for (QCheckBox *box : {cursor, zoom, menubar, hover}) {
+            QVERIFY(box->isVisibleTo(&page));
+        }
+        /* QEMU's own defaults */
+        QVERIFY(!cursor->isChecked() && menubar->isChecked());
+        cursor->setChecked(true);
+        zoom->setChecked(true);
+        menubar->setChecked(false);
+        page.save(args);
+        QCOMPARE(display(args), "gtk,gl=on,show-cursor=on,zoom-to-fit=on,show-menubar=off");
+        QVERIFY(gtk->isChecked());
+        QVERIFY(!page.isModified());
+
+        /* SDL's: the mouse pointer, the others go */
+        sdl->click();
+        QVERIFY(cursor->isVisibleTo(&page) && !zoom->isVisibleTo(&page));
+        QVERIFY(cursor->isChecked());
+        page.save(args);
+        QCOMPARE(display(args), "sdl,gl=on,show-cursor=on");
+        cursor->setChecked(false);
+        page.save(args);
+        QCOMPARE(display(args), "sdl,gl=on");
+
+        /* the card without VGA: no VGA of QEMU's beside it, the properties as they were */
+        card->setCurrentIndex(card->findData("virtio-gpu-gl-pci"));
+        QVERIFY(page.isModified());
+        page.save(args);
+        QVERIFY2(text(args).contains("-device " + QString(full).replace("virtio-vga-gl",
+                                                                        "virtio-gpu-gl-pci") +
+                                     "\n-vga none\n"),
+                 qPrintable(text(args)));
+
+        /* vitrine's settings, one by one */
+        timing->setChecked(false);
+        page.save(args);
+        QCOMPARE(device(args), "virtio-gpu-gl-pci,hostmem=4G,blob=on,drm_native_context=on,"
+                               "x-host-vblank=off");
+        QVERIFY(!timing->isChecked());
+        native->setChecked(false);
+        page.save(args);
+        QCOMPARE(device(args), "virtio-gpu-gl-pci,hostmem=4G,blob=on,x-host-vblank=off");
+
+        /* and back to the template's */
+        card->setCurrentIndex(card->findData("virtio-vga-gl"));
+        native->setChecked(true);
+        timing->setChecked(true);
+        page.save(args);
+        QCOMPARE(device(args), full);
+        QVERIFY(!page.isModified());
+
+        /* nowhere: a display with OpenGL for the 3D card, no window */
+        nowhere->click();
+        page.save(args);
+        QCOMPARE(display(args), "egl-headless");
+        QVERIFY(nowhere->isChecked());
+        /* a 2D card has none of the 3D settings, and QEMU's none display */
+        card->setCurrentIndex(card->findData("virtio-vga"));
+        QVERIFY(!native->isEnabled() && !venus->isEnabled() && !timing->isEnabled());
+        page.save(args);
+        QVERIFY(device(args).startsWith("virtio-vga,"));
+        QVERIFY(!device(args).contains("drm_native_context"));
+        QCOMPARE(display(args), "none");
+        QVERIFY(nowhere->isChecked());
+        embedded->click();
+        page.save(args);
+        QCOMPARE(display(args), "dbus,p2p=yes");
+    }
+
+    /* What the VM's QEMU lacks is not offered; a card set by hand stays */
+    void displayPageOffers()
+    {
+        QTemporaryDir tmp;
+        const QString qemu = tmp.filePath(Paths::qemuSystemName());
+        QFile f(qemu);
+        QVERIFY(f.open(QIODevice::WriteOnly));
+        /* QEMU 10.2 without GTK: neither native context nor the host's vblank */
+        f.write("#!/bin/sh\n"
+                "case \"$1 $2\" in\n"
+                "'-display help') printf 'Available display backend types:\\nnone\\nsdl\\n"
+                "egl-headless\\ndbus\\n\\nSuboptions\\n' ;;\n"
+                "'-device virtio-vga-gl,help') printf 'virtio-vga-gl options:\\n"
+                "  blob=<bool>\\n  hostmem=<size>\\n  venus=<bool>\\n' ;;\n"
+                "'-object kvm-accel,help') printf 'kvm-accel options:\\n"
+                "  kernel-irqchip=<on|off|split>\\n' ;;\n"
+                "esac\n");
+        f.close();
+        QVERIFY(f.setPermissions(QFileDevice::ReadOwner | QFileDevice::ExeOwner));
+        DisplayPage page;
+        auto *gtk = page.findChild<QRadioButton *>("gtkWindow");
+        auto *card = page.findChild<QComboBox *>("card");
+        auto *native = page.findChild<QCheckBox *>("nativeContext");
+        auto *venus = page.findChild<QCheckBox *>("venus");
+        auto *timing = page.findChild<QCheckBox *>("frameTiming");
+        QVERIFY(gtk && card && native && venus && timing);
+
+        ArgsFile args = ArgsFile::parse("#qemu " + qemu + "\n-device virtio-vga-gl\n"
+                                        "-display sdl,gl=on\n");
+        page.load(args);
+        QVERIFY(!gtk->isEnabled());
+        QVERIFY(!native->isEnabled() && !timing->isEnabled());
+        QVERIFY(venus->isEnabled());
+        venus->setChecked(true);
+        page.save(args);
+        QCOMPARE(text(args), "#qemu " + qemu + "\n-device virtio-vga-gl,hostmem=4G,blob=on,"
+                             "venus=on\n-display sdl,gl=on\n");
+
+        /* several cards: the Arguments page's */
+        args = ArgsFile::parse("-device qxl-vga\n-device virtio-gpu-pci\n-display gtk\n");
+        page.load(args);
+        QVERIFY(!card->isEnabled());
+        QVERIFY(!native->isEnabled());
+        QVERIFY(!page.isModified());
+        page.save(args);
+        QCOMPARE(text(args), "-device qxl-vga\n-device virtio-gpu-pci\n-display gtk\n");
     }
 
     /* The count is the Hardware page's: edits elsewhere on the page keep -smp */
