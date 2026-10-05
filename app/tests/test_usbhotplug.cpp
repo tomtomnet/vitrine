@@ -353,6 +353,9 @@ private slots:
                  QJsonObject({{"id", "vitrine-usb-99-2-0781-5567"}}));
         QTRY_VERIFY(!hotplug->has(stick));
         QVERIFY(hotplug->devices().isEmpty());
+        QVERIFY(readFile(vm.runner.logPath())
+                    .contains("vitrine: USB: took back SanDisk Cruzer Blade (0781:5567) "
+                              "(vitrine-usb-99-2-0781-5567)"));
 
         /* not there: nothing to take back */
         QCOMPARE(wait([&](const UsbHotplug::Done &done) { hotplug->detach(stick, done); }),

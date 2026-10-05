@@ -440,16 +440,19 @@ void UsbHotplug::detach(const UsbDevice &host, const Done &done)
 
     struct State {
         int pending = 0;
+        QStringList which;
         QString error;
     };
     auto state = std::make_shared<State>();
     const QPointer<UsbHotplug> self(this);
+    const QString name = host.displayName();
     for (const Device &d : list) {
         /* one of the arguments, without an id, by its path */
         const QString which = d.id.isEmpty() ? d.path : d.id;
+        state->which << which;
         state->pending++;
         client->execute("device_del", {{"id", which}},
-                        [self, state, done, which](const QJsonValue &, const QString &error) {
+                        [self, state, done, name](const QJsonValue &, const QString &error) {
             /* gone already: as asked */
             if (!error.isEmpty() && !error.contains("not found") && state->error.isEmpty()) {
                 state->error = error;
@@ -457,9 +460,10 @@ void UsbHotplug::detach(const UsbDevice &host, const Done &done)
             if (--state->pending > 0 || !self) {
                 return;
             }
+            const QString what = QString("%1 (%2)").arg(name, state->which.join(", "));
             self->note(state->error.isEmpty()
-                           ? tr("USB: took back %1").arg(which)
-                           : tr("USB: could not take back %1: %2").arg(which, state->error));
+                           ? tr("USB: took back %1").arg(what)
+                           : tr("USB: could not take back %1: %2").arg(what, state->error));
             self->refresh();
             done(state->error);
         });
