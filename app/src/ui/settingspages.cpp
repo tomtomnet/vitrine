@@ -35,6 +35,7 @@
 
 #include "core/firmware.h"
 #include "core/firmwarefiles.h"
+#include "core/guestos.h"
 #include "core/hostdevices.h"
 #include "core/paths.h"
 #include "core/qemuinfo.h"
@@ -49,6 +50,7 @@
 #include "ui/oschooser.h"
 #include "ui/qemudocs.h"
 #include "ui/referencepanel.h"
+#include "ui/systems.h"
 #include "ui/uiconfig.h"
 #include "ui/widgets.h"
 
@@ -370,7 +372,8 @@ StoragePage::StoragePage(const QString &vmDir, QWidget *parent)
       m_disc(new QPushButton(tr("Choose &Disc…"))), m_eject(new QPushButton(tr("&Eject"))),
       m_resize(new QPushButton(tr("Si&ze…"))), m_remove(new QPushButton(tr("&Remove"))),
       m_boot(new QListWidget), m_bootUp(new QPushButton(tr("Move &Up"))),
-      m_bootDown(new QPushButton(tr("Move Dow&n"))), m_bootHint(Widgets::hint())
+      m_bootDown(new QPushButton(tr("Move Dow&n"))), m_bootHint(Widgets::hint()),
+      m_system(Widgets::hint())
 {
     /* the boot order's buttons in the column of the disks' */
     auto *layout = new QGridLayout(this);
@@ -425,7 +428,12 @@ StoragePage::StoragePage(const QString &vmDir, QWidget *parent)
                                        "created in the VM folder when you apply; removing a "
                                        "disk takes it out of the VM, but its file stays.")),
                       0, 0, 1, 2);
-    layout->addWidget(m_table, 1, 0);
+    auto *disks = new QVBoxLayout;
+    disks->addWidget(m_table, 1);
+    disks->addWidget(m_system);
+    m_system->setObjectName("discSystem");
+    m_system->hide();
+    layout->addLayout(disks, 1, 0);
     layout->addLayout(buttons, 1, 1);
     layout->setRowStretch(1, 1);
     layout->addWidget(Widgets::heading(tr("Boot order")), 2, 0, 1, 2);
@@ -480,8 +488,13 @@ QIcon StoragePage::icon() const
 void StoragePage::load(const ArgsFile &args)
 {
     QStringList cards;
+    const VmConfig::Guest guest = VmConfig::guest(args);
 
     m_virt = VmConfig::machineType(args).startsWith("virt");
+    m_systemSet = !guest.id.isEmpty();
+    m_family = guest.os;
+    m_toldDisc.clear();
+    m_toldSystem.clear();
     m_entries.clear();
     for (const VmConfig::Disk &d : VmConfig::disks(args)) {
         m_entries << Entry{d, d.file, m_pending.value(d.file), false, m_nextId++};
@@ -514,6 +527,24 @@ void StoragePage::load(const ArgsFile &args)
 void StoragePage::save(ArgsFile &args)
 {
     QList<VmConfig::Disk> removed;
+
+    /* the system the disc chosen told, for a VM without one */
+    if (const QString system = toldSystem(); !system.isEmpty()) {
+        VmConfig::Guest guest = VmConfig::guest(args);
+        if (guest.id.isEmpty()) {
+            guest.id = system;
+            guest.os = GuestOs::guestFamily(GuestOs::Catalogue::instance().find(system));
+            if (guest.os != "linux") {
+                guest.desktop.clear();
+            } else if (guest.desktop.isEmpty()) {
+                guest.desktop = m_toldDesktop;
+            }
+            VmConfig::setGuest(args, guest);
+        }
+        m_systemSet = true;
+        m_toldSystem.clear();
+        updateSystem();
+    }
 
     /* discs, which move no line */
     for (const Entry &e : std::as_const(m_entries)) {
@@ -621,6 +652,7 @@ void StoragePage::fill()
     const int row = m_table->currentRow();
     int n = 0;
 
+    updateSystem();
     m_table->setRowCount(0);
     for (const Entry &e : std::as_const(m_entries)) {
         if (e.removed) {
@@ -922,8 +954,41 @@ void StoragePage::chooseDisc()
                                                      tr("Disc images (*.iso);;All files (*)"));
     if (!iso.isEmpty()) {
         m_entries[i].file = iso;
+        /* a VM whose system is not set: the disc tells it, as in the New VM dialog */
+        if (!m_systemSet) {
+            const GuestOs::Detection d = GuestOs::detect(iso);
+            const QString family =
+                GuestOs::guestFamily(GuestOs::Catalogue::instance().find(d.id));
+            const bool fits = !d.id.isEmpty() && (m_family.isEmpty() || m_family == family);
+            m_toldDisc = fits ? iso : QString();
+            m_toldSystem = fits ? d.id : QString();
+            m_toldDesktop = fits ? d.desktop : QString();
+        }
         fill();
     }
+}
+
+QString StoragePage::toldSystem() const
+{
+    if (m_systemSet || m_toldSystem.isEmpty()) {
+        return {};
+    }
+    for (const Entry &e : m_entries) {
+        if (!e.removed && e.disk.cdrom && e.file == m_toldDisc) {
+            return m_toldSystem;
+        }
+    }
+    return {};
+}
+
+void StoragePage::updateSystem()
+{
+    const QString system = toldSystem();
+
+    m_system->setText(tr("The disc is %1: the VM's system, not set yet, is set to it when you "
+                         "apply.")
+                          .arg(Systems::name({{}, {}, system}).toHtmlEscaped()));
+    m_system->setVisible(!system.isEmpty());
 }
 
 void StoragePage::resize()
