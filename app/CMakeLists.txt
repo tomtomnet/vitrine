@@ -212,6 +212,8 @@ qt_add_library(vitrine_ui STATIC
     src/ui/updatenotifier.h
     src/ui/usbaccess.cpp
     src/ui/usbaccess.h
+    src/ui/usbmenu.cpp
+    src/ui/usbmenu.h
     src/ui/vmconsole.cpp
     src/ui/vmconsole.h
     src/ui/vmdetails.cpp
@@ -325,7 +327,8 @@ if(BUILD_TESTING)
             newvmdialog
             settingspages
             stackbanner
-            udmabufnotifier)
+            udmabufnotifier
+            usbmenu)
         qt_add_executable(test_${name} tests/test_${name}.cpp)
         target_link_libraries(test_${name} PRIVATE vitrine_ui Qt6::Test)
         add_test(NAME ${name} COMMAND test_${name})
@@ -360,6 +363,8 @@ if(BUILD_TESTING)
     add_dependencies(test_vmrunner fake-qemu)
     target_compile_definitions(test_usbhotplug PRIVATE FAKE_QEMU="$<TARGET_FILE:fake-qemu>")
     add_dependencies(test_usbhotplug fake-qemu)
+    target_compile_definitions(test_usbmenu PRIVATE FAKE_QEMU="$<TARGET_FILE:fake-qemu>")
+    add_dependencies(test_usbmenu fake-qemu)
     target_compile_definitions(test_udmabuf PRIVATE FAKE_QEMU="$<TARGET_FILE:fake-qemu>")
     add_dependencies(test_udmabuf fake-qemu)
     target_compile_definitions(test_udmabufnotifier PRIVATE FAKE_QEMU="$<TARGET_FILE:fake-qemu>")

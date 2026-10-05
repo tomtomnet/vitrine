@@ -17,6 +17,7 @@ class QListWidget;
 class QListWidgetItem;
 class QSplitter;
 class UpdateNotifier;
+class UsbMenu;
 class QStackedWidget;
 class Vm;
 class VmConsole;
@@ -165,4 +166,6 @@ private:
     QAction *m_preferences;
     QAction *m_reference;
     QAction *m_quit;
+    /* Host USB devices for the selected VM while it runs */
+    UsbMenu *m_usb;
 };

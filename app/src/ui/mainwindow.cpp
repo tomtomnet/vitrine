@@ -57,6 +57,7 @@
 #include "ui/uiconfig.h"
 #include "ui/updatenotifier.h"
 #include "ui/usbaccess.h"
+#include "ui/usbmenu.h"
 #include "ui/vmconsole.h"
 #include "ui/vmdetails.h"
 #include "ui/vmpane.h"
@@ -266,6 +267,7 @@ MainWindow::MainWindow(VmStore *store, QWidget *parent)
         }
         QMenu menu;
         menu.addActions({m_start, m_showWindow, m_pause, m_shutDown, m_reset, m_forceOff});
+        menu.addMenu(m_usb);
         menu.addSeparator();
         menu.addActions({m_settings, m_log, m_folder, m_command});
         menu.addSeparator();
@@ -431,6 +433,18 @@ void MainWindow::createActions()
     machine->addActions({m_start, m_showWindow, m_pause, m_shutDown, m_reset, m_forceOff});
     machine->addSeparator();
     machine->addActions({m_ctrlAltDel, m_releaseInput});
+    /* host USB devices given to the running VM and taken back, over QMP */
+    m_usb = new UsbMenu(m_store, this);
+    m_usb->setSaveGuard([this](Vm *vm) {
+        return vm != m_pane->vm() ||
+               m_pane->confirmChanges(tr("Apply them before keeping the USB devices for the "
+                                         "next starts?"));
+    });
+    connect(m_usb, &UsbMenu::settingsRequested, this,
+            [this](Vm *vm) { openSettings(vm, VmPane::UsbDevices); });
+    connect(m_usb, &UsbMenu::message, this,
+            [this](const QString &text) { statusBar()->showMessage(text, 8000); });
+    machine->addMenu(m_usb);
     machine->addAction(tr("Install &Guest Tools…"), this,
                        [this]() { GuestToolsDialog::run(this, current()); });
     machine->addSeparator();
@@ -463,6 +477,7 @@ void MainWindow::createActions()
     toolbar->addActions({m_start, m_pause, m_shutDown, m_forceOff});
     toolbar->addSeparator();
     toolbar->addActions({m_fullScreen, m_ctrlAltDel});
+    m_usb->addTo(toolbar);
 }
 
 Vm *MainWindow::current() const
@@ -955,6 +970,7 @@ void MainWindow::updateActions()
     m_fullScreen->setEnabled(view);
     m_ctrlAltDel->setEnabled(view && state == VmRunner::State::Running);
     m_releaseInput->setEnabled(view && (view->grabbed() || view->hasKeyboard()));
+    m_usb->setVm(vm);
 }
 
 void MainWindow::updateStatus()
