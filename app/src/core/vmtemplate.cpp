@@ -76,7 +76,7 @@ bool hasPasst(const QemuInfo *info, const QString &chosen)
 
 std::optional<QStringList> gpuProperties(const QemuInfo *info, const QString &chosen)
 {
-    static const QString card = "virtio-gpu-gl-pci";
+    static const QString card = kCard;
     QStringList names;
     QString error;
 
@@ -169,7 +169,7 @@ const QList<std::pair<QString, QString>> &cardProperties()
 /* Those of vitrine's QEMU that @known lacks stay out, as QEMU refuses unknown properties */
 static QString gpuDevice(const std::optional<QStringList> &known)
 {
-    QString value = "virtio-gpu-gl-pci";
+    QString value = kCard;
 
     for (const auto &[key, v] : cardProperties()) {
         if (!known || known->contains(key)) {
@@ -213,8 +213,12 @@ static void linuxPc(Writer &w, const Options &o,
     w.firmware(addFirmware);
 
     w.section("Display");
-    /* no VGA beside the card: UEFI shows the boot screens on it */
-    w.option("vga", "none");
+    /*
+     * The card's VGA part shows the firmware, the boot loader and the
+     * kernel's first messages until the guest's driver takes over (with
+     * virtio-gpu-gl-pci, BIOS shows nothing, UEFI nothing between the boot
+     * loader and the driver); QEMU adds no VGA of its own beside it
+     */
     w.option("device", gpuDevice(o.gpuProperties));
     w.option("display", "dbus,p2p=yes,gl=on");
 
