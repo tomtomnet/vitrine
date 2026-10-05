@@ -56,7 +56,8 @@ public slots:
 
 private:
     GuestToolsDialog(Vm *vm, QWidget *parent);
-    /* What the buttons do as the VM is now, and what keeps them from it */
+    /* What the buttons do as the VM is now, what keeps them from it, and what
+       depends on the medium, which a build may make meanwhile */
     void refresh();
     void go(bool medium);
     void next();
@@ -74,7 +75,7 @@ private:
     Step m_step = Step::Idle;
     bool m_mediumOnly = false;
     bool m_cancelled = false;   // during the snapshot: no start after it
-    QLabel *m_restart;
+    QLabel *m_what;
     Banner *m_warning;
     QLabel *m_progress;
     QCheckBox *m_snapshot;

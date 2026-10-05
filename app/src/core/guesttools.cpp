@@ -14,6 +14,7 @@
 
 #include "core/gpucontexts.h"
 #include "core/guestos.h"
+#include "core/guesttoolsbuilder.h"
 #include "core/paths.h"
 #include "core/qmpclient.h"
 #include "core/vmhardware.h"
@@ -498,6 +499,11 @@ GuestToolsMonitor::GuestToolsMonitor(Vm *vm)
     });
     connect(vm->runner(), &VmRunner::stateChanged, this, &GuestToolsMonitor::runnerChanged);
     connect(this, &GuestToolsMonitor::changed, this, &GuestToolsMonitor::remember);
+    /* a new medium, built from the app: the VMs with older tools offer it */
+    connect(GuestToolsBuilder::instance(), &GuestToolsBuilder::built, this, [this]() {
+        m_in.medium = GuestTools::medium();
+        emit changed();
+    });
     m_bootstrapTimer->setSingleShot(true);
     m_bootstrapTimer->setInterval(20 * 60 * 1000);
     connect(m_bootstrapTimer, &QTimer::timeout, this, [this]() {

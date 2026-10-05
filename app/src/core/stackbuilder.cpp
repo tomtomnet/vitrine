@@ -21,6 +21,7 @@
 #include <sys/types.h>
 #include <unistd.h>
 
+#include "core/guesttoolsbuilder.h"
 #include "core/paths.h"
 
 /* What a complete build has, written last */
@@ -404,6 +405,12 @@ void StackBuilder::start()
 
     if (!isHostDir(host)) {
         m_error = tr("This installation of Vitrine has no host/build.sh to build its QEMU with");
+        emit finished(m_error);
+        return;
+    }
+    /* the guest tools' build takes many GiB too: one at a time */
+    if (GuestToolsBuilder::instance()->isRunning()) {
+        m_error = tr("The guest tools are being built: build Vitrine's QEMU once they are done");
         emit finished(m_error);
         return;
     }

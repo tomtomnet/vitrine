@@ -17,8 +17,10 @@
 #include <QUrl>
 #include <QVBoxLayout>
 
+#include "core/guesttoolsbuilder.h"
 #include "core/paths.h"
 #include "core/stackbuilder.h"
+#include "ui/guesttoolsbuilddialog.h"
 #include "ui/hosttuningprefs.h"
 #include "ui/icons.h"
 #include "ui/qemubuilddialog.h"
@@ -37,7 +39,8 @@ PreferencesDialog::PreferencesDialog(QWidget *parent)
     : QDialog(parent), m_stack(Widgets::note()), m_stackState(Widgets::hint()),
       m_build(new QPushButton),
       m_custom(new QCheckBox(tr("Use &another QEMU (advanced):"))), m_qemu(new QLineEdit),
-      m_qemuStatus(Widgets::hint()), m_virtiofsd(new QLineEdit),
+      m_qemuStatus(Widgets::hint()), m_tools(Widgets::note()), m_toolsState(Widgets::hint()),
+      m_buildTools(new QPushButton), m_virtiofsd(new QLineEdit),
       m_virtiofsdStatus(Widgets::hint()),
       m_updates(new QCheckBox(tr("Check GitHub for &updates once a day"))),
       m_vmsDir(Paths::vmsDir()), m_vmsDirLabel(new QLabel), m_vmsDirState(Widgets::hint()),
@@ -46,6 +49,7 @@ PreferencesDialog::PreferencesDialog(QWidget *parent)
     auto *layout = new QVBoxLayout(this);
     auto *form = Widgets::form();
     auto *stackRow = new QHBoxLayout;
+    auto *toolsRow = new QHBoxLayout;
     auto *buttons = new QDialogButtonBox(QDialogButtonBox::Ok | QDialogButtonBox::Cancel);
     auto *vmsRow = new QHBoxLayout;
     auto *vmsChange = new QPushButton(tr("C&hange…"));
@@ -54,6 +58,7 @@ PreferencesDialog::PreferencesDialog(QWidget *parent)
 
     setWindowTitle(tr("Preferences"));
     m_build->setObjectName("buildQemu");
+    m_buildTools->setObjectName("buildGuestTools");
     m_custom->setObjectName("customQemu");
     m_qemu->setObjectName("qemu");
     m_virtiofsd->setObjectName("virtiofsd");
@@ -86,6 +91,11 @@ PreferencesDialog::PreferencesDialog(QWidget *parent)
     form->addRow(QString(), m_custom);
     form->addRow(QString(), m_qemuRow);
     form->addRow(QString(), m_qemuStatus);
+    /* built and updated from here too, as QEMU */
+    toolsRow->addWidget(m_tools, 1);
+    toolsRow->addWidget(m_buildTools, 0, Qt::AlignTop);
+    form->addRow(tr("Guest tools:"), toolsRow);
+    form->addRow(QString(), m_toolsState);
     form->addRow(Widgets::label(tr("&virtiofsd:"), m_virtiofsd),
                  Widgets::browseRow(m_virtiofsd, tr("virtiofsd Binary")));
     form->addRow(QString(), m_virtiofsdStatus);
@@ -122,6 +132,17 @@ PreferencesDialog::PreferencesDialog(QWidget *parent)
     });
     connect(StackBuilder::instance(), &StackBuilder::finished, this,
             &PreferencesDialog::updateStack);
+    connect(m_buildTools, &QPushButton::clicked, this, [this]() {
+        /* the build goes on in the background when this window closes */
+        GuestToolsBuildDialog dialog(this);
+        dialog.exec();
+        updateTools();
+    });
+    GuestToolsBuilder *tools = GuestToolsBuilder::instance();
+    connect(tools, &GuestToolsBuilder::started, this, &PreferencesDialog::updateTools);
+    connect(tools, &GuestToolsBuilder::stepStarted, this, &PreferencesDialog::updateTools);
+    connect(tools, &GuestToolsBuilder::waitingChanged, this, &PreferencesDialog::updateTools);
+    connect(tools, &GuestToolsBuilder::finished, this, &PreferencesDialog::updateTools);
     connect(vmsChange, &QPushButton::clicked, this, [this]() {
         const QString dir = QFileDialog::getExistingDirectory(this, tr("Folder of the VMs"),
                                                               m_vmsDir);
@@ -139,6 +160,7 @@ PreferencesDialog::PreferencesDialog(QWidget *parent)
 
     m_qemuRow->setEnabled(m_custom->isChecked());
     updateStack();
+    updateTools();
     checkQemu();
     checkVirtiofsd();
     updateVmsDir();
@@ -160,6 +182,25 @@ void PreferencesDialog::updateStack()
                      : state == StackBuilder::State::UpToDate ? tr("Details…")
                                                                : tr("Build…"));
     m_build->setEnabled(state != StackBuilder::State::NoSources || running);
+}
+
+void PreferencesDialog::updateTools()
+{
+    const GuestToolsBuilder *builder = GuestToolsBuilder::instance();
+    const GuestToolsBuilder::State state = GuestToolsBuilder::state();
+    const bool running = builder->isRunning();
+
+    m_tools->setText(GuestToolsBuildDialog::describe().toHtmlEscaped());
+    m_tools->setToolTip(GuestToolsBuilder::mediumImage());
+    m_toolsState->setText(
+        running ? tr("Building: %1.").arg(GuestToolsBuildDialog::progressText(builder, false))
+                      .toHtmlEscaped()
+                : GuestToolsBuildDialog::explain(state).toHtmlEscaped());
+    m_buildTools->setText(running                                         ? tr("Show…")
+                          : state == GuestToolsBuilder::State::Outdated ? tr("Update…")
+                          : state == GuestToolsBuilder::State::UpToDate ? tr("Details…")
+                                                                        : tr("Build…"));
+    m_buildTools->setEnabled(state != GuestToolsBuilder::State::NoSources || running);
 }
 
 void PreferencesDialog::checkQemu()
