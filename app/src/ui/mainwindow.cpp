@@ -1,11 +1,13 @@
 // SPDX-License-Identifier: GPL-2.0-or-later
 #include "mainwindow.h"
 
+#include <QAbstractItemView>
 #include <QAction>
 #include <QApplication>
 #include <QCloseEvent>
 #include <QDesktopServices>
 #include <QDialog>
+#include <QDir>
 #include <QFileInfo>
 #include <QLabel>
 #include <QListWidget>
@@ -26,6 +28,7 @@
 #include <QVBoxLayout>
 
 #include <algorithm>
+#include <functional>
 #include <memory>
 
 #include "core/hostsettings.h"
@@ -43,6 +46,7 @@
 #include "ui/icons.h"
 #include "ui/importdialog.h"
 #include "ui/killprompt.h"
+#include "ui/mainbar.h"
 #include "ui/memorymonitor.h"
 #include "ui/newvmdialog.h"
 #include "ui/perfmonitor.h"
@@ -188,6 +192,7 @@ MainWindow::MainWindow(VmStore *store, QWidget *parent)
     /* a large icon beside the two lines of each VM */
     const int large = style()->pixelMetric(QStyle::PM_LargeIconSize, nullptr, m_list);
     m_list->setIconSize(QSize(large, large));
+    m_chooser->view()->setIconSize(m_list->iconSize());
     m_list->setItemDelegate(new VmItemDelegate(m_list));
     m_list->setContextMenuPolicy(Qt::CustomContextMenu);
     m_list->setMinimumWidth(200);
@@ -276,6 +281,10 @@ MainWindow::MainWindow(VmStore *store, QWidget *parent)
         if (tab == VmPane::Console) {
             focusScreen(FocusCause::Shown);
         }
+        /* on the Settings tab, Ctrl+S applies its changes (VmPane), and is not
+           Settings' too: with two shortcuts on one key, Qt does neither */
+        m_settings->setShortcut(tab == VmPane::Settings ? QKeySequence()
+                                                        : QKeySequence(Qt::CTRL | Qt::Key_S));
     });
     /* a click on the VM shown already: its screen, as a click on another */
     connect(m_list, &QListWidget::itemClicked, this,
@@ -292,9 +301,13 @@ MainWindow::MainWindow(VmStore *store, QWidget *parent)
         resize(1060, 660);
     }
     restoreState(settings.value("mainwindow/state").toByteArray());
+    /* hidden by an older vitrine's toolbar menu, it would hide the menus now */
+    m_bar->show();
     m_splitter->restoreState(settings.value("mainwindow/splitter").toByteArray());
     m_library->setChecked(settings.value("mainwindow/library", true).toBool());
-    m_list->setVisible(m_library->isChecked());
+    showLibrary(m_library->isChecked());
+    m_menuBar->setChecked(settings.value("mainwindow/menubar", false).toBool());
+    showMenuBar(m_menuBar->isChecked());
     select(settings.value("mainwindow/current").toString());
     if (!m_list->currentItem() && m_list->count() > 0) {
         m_list->setCurrentRow(0);
@@ -370,7 +383,13 @@ void MainWindow::createActions()
     m_preferences->setShortcut(QKeySequence::Preferences);
     connect(m_preferences, &QAction::triggered, this, [this]() {
         PreferencesDialog dialog(this);
-        dialog.exec();
+        if (dialog.exec() == QDialog::Accepted && m_store->dir() != Paths::vmsDir()) {
+            /* the VMs found in the folder chosen, no import needed */
+            m_store->setDir(Paths::vmsDir());
+            statusBar()->showMessage(tr("%n VM(s) in %1", nullptr, int(m_store->vms().size()))
+                                         .arg(QDir::toNativeSeparators(m_store->dir())),
+                                     8000);
+        }
     });
     m_reference = new QAction(Icons::themed({"help-contents", "documentation"},
                                             QStyle::SP_DialogHelpButton),
@@ -387,7 +406,21 @@ void MainWindow::createActions()
     m_library->setChecked(true);
     m_library->setShortcut(QKeySequence(Qt::Key_F9));
     m_library->setToolTip(tr("The list of VMs, or more room for the console"));
-    connect(m_library, &QAction::toggled, m_list, &QWidget::setVisible);
+    connect(m_library, &QAction::toggled, this, &MainWindow::showLibrary);
+    /* the same in the bar, an arrow out of the side or into it: not shown
+       pressed all the time the list shows, as a checked button would be */
+    m_listButton = new QAction(this);
+    m_listButton->setObjectName("listButton");
+    connect(m_listButton, &QAction::triggered, m_library, &QAction::toggle);
+    /* KDE's: the menus behind the bar's button by default, for the room */
+    m_menuBar = new QAction(Icons::themed({"show-menu"}, QStyle::SP_TitleBarMenuButton),
+                            tr("Show Menu &Bar"), this);
+    m_menuBar->setCheckable(true);
+    m_menuBar->setShortcut(QKeySequence(Qt::CTRL | Qt::Key_M));
+    connect(m_menuBar, &QAction::toggled, this, &MainWindow::showMenuBar);
+    m_openMenu = new QAction(tr("Open &Menu"), this);
+    m_openMenu->setShortcut(QKeySequence(Qt::Key_F10));
+    connect(m_openMenu, &QAction::triggered, this, &MainWindow::openMenu);
     /* the desktop takes the keys themselves */
     m_ctrlAltDel = action(tr("Send Ctrl+Alt+&Del"),
                           {"input-keyboard", "preferences-desktop-keyboard"},
@@ -415,7 +448,11 @@ void MainWindow::createActions()
 
     QMenu *view = menuBar()->addMenu(tr("&View"));
     view->addAction(m_fullScreen);
+    view->addSeparator();
     view->addAction(m_library);
+    view->addAction(m_menuBar);
+    view->addSeparator();
+    view->addActions(m_pane->tabActions());
 
     QMenu *machine = menuBar()->addMenu(tr("&Machine"));
     machine->addAction(m_settings);
@@ -450,15 +487,104 @@ void MainWindow::createActions()
     });
     help->addAction(tr("About &Qt"), qApp, &QApplication::aboutQt);
 
-    QToolBar *toolbar = addToolBar(tr("Main Toolbar"));
-    toolbar->setObjectName("toolbar");
-    toolbar->setMovable(false);
-    toolbar->setToolButtonStyle(Qt::ToolButtonFollowStyle);
-    toolbar->addAction(m_new);
-    toolbar->addSeparator();
-    toolbar->addActions({m_start, m_pause, m_shutDown, m_forceOff});
-    toolbar->addSeparator();
-    toolbar->addActions({m_fullScreen, m_ctrlAltDel});
+    /* the menus, for the bar's button while the menu bar is hidden */
+    m_mainMenu = new QMenu(this);
+    m_mainMenu->addActions(menuBar()->actions());
+    m_mainMenu->addSeparator();
+    m_mainMenu->addAction(m_menuBar);
+    /* the shortcuts of the menus' actions work with the menu bar hidden */
+    std::function<void(const QMenu *)> addShortcuts = [&](const QMenu *menu) {
+        for (QAction *a : menu->actions()) {
+            if (a->menu()) {
+                addShortcuts(a->menu());
+            } else if (!a->isSeparator()) {
+                addAction(a);
+            }
+        }
+    };
+    addShortcuts(m_mainMenu);
+    addAction(m_openMenu);
+
+    /*
+     * One bar for what were three rows (menu bar, toolbar, the VM's tabs):
+     * the list's button and, while the list is hidden, the VMs; the actions
+     * on the VM; the VM's tabs at the end, then the menus' button
+     */
+    m_bar = new MainBar(tr("Main Toolbar"), this);
+    m_bar->setObjectName("toolbar");
+    m_bar->setMovable(false);
+    m_bar->setFloatable(false);
+    m_bar->setToolButtonStyle(Qt::ToolButtonFollowStyle);
+    addToolBar(m_bar);
+    m_bar->addAction(m_listButton);
+    m_bar->setIconOnly(m_listButton);
+    auto *chooser = new VmChooser;
+    m_chooser = chooser;
+    m_chooser->setModel(m_list->model());
+    /* each VM as the list has it: the name, its state under it */
+    m_chooser->setItemDelegate(new VmItemDelegate(m_chooser));
+    chooser->setStateRole(StateRole);
+    m_chooser->setToolTip(tr("The virtual machine shown"));
+    m_chooserAction = m_bar->addWidget(m_chooser);
+    connect(m_list, &QListWidget::currentRowChanged, m_chooser, &QComboBox::setCurrentIndex);
+    connect(m_chooser, &QComboBox::activated, m_list, qOverload<int>(&QListWidget::setCurrentRow));
+    m_bar->addAction(m_new);
+    m_bar->addSeparator();
+    m_bar->addActions({m_start, m_pause, m_shutDown, m_forceOff});
+    m_bar->addSeparator();
+    m_bar->addActions({m_fullScreen, m_ctrlAltDel});
+    m_bar->addStretch();
+    m_bar->addTabs(m_pane->tabActions());
+    m_menuButton = m_bar->addMenuButton(m_mainMenu, tr("Menu"));
+    m_menuButton->setToolTip(tr("Menu (F10)"));
+    /* short of room, the least used lose their text first */
+    m_bar->setTextOrder({m_ctrlAltDel, m_fullScreen, m_forceOff, m_shutDown, m_pause, m_new,
+                         m_start});
+    /* the tabs replace the pane's own */
+    m_pane->setTabBarShown(false);
+}
+
+void MainWindow::showLibrary(bool shown)
+{
+    m_list->setVisible(shown);
+    m_chooserAction->setVisible(!shown);
+    m_listButton->setIcon(
+        shown ? Icons::themed({"sidebar-collapse", "view-left-close"}, QStyle::SP_ArrowLeft)
+              : Icons::themed({"sidebar-expand", "view-left-new"}, QStyle::SP_ArrowRight));
+    m_listButton->setText(shown ? tr("Hide the List of VMs") : tr("Show the List of VMs"));
+    m_listButton->setToolTip(shown ? tr("Hide the list of VMs, for more room (F9)")
+                                   : tr("Show the list of VMs (F9)"));
+}
+
+void MainWindow::showMenuBar(bool shown)
+{
+    menuBar()->setVisible(shown);
+    /* a desktop's global menu has the menus, outside the window: the
+       button stays, the window has no menu bar to show */
+    m_menuButton->setVisible(!shown || menuBar()->isNativeMenuBar());
+}
+
+void MainWindow::openMenu()
+{
+    if (menuBar()->isVisible()) {
+        menuBar()->setActiveAction(menuBar()->actions().value(0));
+        return;
+    }
+    if (QWidget *button = m_bar->widgetForAction(m_menuButton); button && button->isVisible()) {
+        /* under the button, as a click on it shows it */
+        m_mainMenu->popup(button->mapToGlobal(
+            QPoint(isRightToLeft() ? button->width() - m_mainMenu->sizeHint().width() : 0,
+                   button->height())));
+    }
+}
+
+QMenu *MainWindow::createPopupMenu()
+{
+    /* not the toolbar's toggle: the bar holds the menus while the menu bar is hidden */
+    auto *menu = new QMenu(this);
+    menu->addAction(m_menuBar);
+    menu->addAction(m_library);
+    return menu;
 }
 
 Vm *MainWindow::current() const
@@ -839,8 +965,8 @@ bool MainWindow::eventFilter(QObject *watched, QEvent *event)
         static_cast<QWidget *>(watched)->window() == this) {
         m_lastPress.start();
     }
-    /* the arrows, Home, End... going through the list of VMs */
-    if (event->type() == QEvent::KeyPress && watched == m_list) {
+    /* the arrows, Home, End... going through the list of VMs, or the bar's drop-down of them */
+    if (event->type() == QEvent::KeyPress && (watched == m_list || watched == m_chooser)) {
         m_lastListKey.start();
     }
     /* once Qt gave the focus back to the widget that had it */
@@ -875,8 +1001,8 @@ void MainWindow::focusScreen(FocusCause cause)
     if (cause == FocusCause::Activated && m_lastPress.isValid() && m_lastPress.elapsed() < 500) {
         return;
     }
-    if (cause == FocusCause::Switched && m_list->hasFocus() && m_lastListKey.isValid() &&
-        m_lastListKey.elapsed() < 500) {
+    if (cause == FocusCause::Switched && (m_list->hasFocus() || m_chooser->hasFocus()) &&
+        m_lastListKey.isValid() && m_lastListKey.elapsed() < 500) {
         return;
     }
     const QWidget *focus = QApplication::focusWidget();
@@ -945,6 +1071,12 @@ void MainWindow::updateActions()
     m_log->setEnabled(vm);
     m_folder->setEnabled(vm);
     m_command->setEnabled(vm);
+    /* the tabs are those of the VM's pane, which the welcome page replaces */
+    for (QAction *tab : m_pane->tabActions()) {
+        tab->setEnabled(m_list->count() > 0);
+    }
+    /* the action's: the bar enables its widget as the action is */
+    m_chooserAction->setEnabled(m_list->count() > 0);
 
     const VmConsole *console = currentConsole();
     VmView *view = console ? console->view() : nullptr;
@@ -1327,6 +1459,7 @@ void MainWindow::closeEvent(QCloseEvent *event)
     settings.setValue("mainwindow/state", saveState());
     settings.setValue("mainwindow/splitter", m_splitter->saveState());
     settings.setValue("mainwindow/library", m_library->isChecked());
+    settings.setValue("mainwindow/menubar", m_menuBar->isChecked());
     settings.setValue("mainwindow/current", vm ? vm->id() : QString());
     settings.setValue("mainwindow/tab", int(m_pane->tab()));
     settings.setValue("settings/page", int(m_pane->page()));

@@ -263,20 +263,20 @@ QString VmDetails::html() const
     const ArgsFile &args = m_vm->args();
     const QemuInfo *info = m_docs->info();
     const QString dim = palette().color(QPalette::PlaceholderText).name();
-    QString html;
+    /* one table for every section: one column of names, so that the values
+       of one section are in line with those of the others */
+    QString html = "<table cellspacing=\"0\" cellpadding=\"2\">";
 
     auto section = [&](const QString &title, const Rows &rows) {
         if (rows.isEmpty()) {
             return;
         }
-        html += QString("<h3>%1</h3><table cellspacing=\"0\" cellpadding=\"2\">")
-                    .arg(title.toHtmlEscaped());
+        html += QString("<tr><td colspan=\"2\"><h3>%1</h3></td></tr>").arg(title.toHtmlEscaped());
         for (const auto &[key, value] : rows) {
             html += QString("<tr><td style=\"color:%1\">%2&nbsp;&nbsp;&nbsp;</td>"
                             "<td>%3</td></tr>")
                         .arg(dim, key.toHtmlEscaped(), value);
         }
-        html += "</table>";
     };
     auto text = [](const QString &plain) { return plain.toHtmlEscaped(); };
 
@@ -446,5 +446,6 @@ QString VmDetails::html() const
         files << std::pair(tr("Log"), link(m_vm->runner()->logPath()));
     }
     section(tr("Files"), files);
+    html += "</table>";
     return html;
 }

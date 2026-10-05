@@ -10,9 +10,11 @@
  */
 #include <QApplication>
 #include <QDir>
+#include <QHBoxLayout>
 #include <QKeyEvent>
 #include <QMouseEvent>
 #include <QSignalSpy>
+#include <QSplitter>
 #include <QTemporaryDir>
 #include <QTest>
 #include <QVBoxLayout>
@@ -20,10 +22,12 @@
 #include <QPointer>
 #include <QRegularExpression>
 #include <QWindow>
+#include <qpa/qwindowsysteminterface.h>
 
 #include <atomic>
 #include <chrono>
 #include <cstring>
+#include <memory>
 #include <mutex>
 #include <thread>
 #include <vector>
@@ -104,7 +108,7 @@ const char kRoot[] = "/org/qemu/Display1";
 class FakeDisplay
 {
 public:
-    explicit FakeDisplay(const QString &path)
+    explicit FakeDisplay(const QString &path) : m_path(path)
     {
         sockaddr_un addr{};
         const QByteArray name = path.toLocal8Bit();
@@ -149,6 +153,7 @@ public:
         g_main_context_unref(m_ctx);
     }
 
+    QString path() const { return m_path; }
     QStringList calls() const
     {
         std::lock_guard g(m_lock);
@@ -426,6 +431,7 @@ private:
         d->m_answered++;
     }
 
+    QString m_path;
     int m_listenFd = -1;
     std::atomic<bool> m_stop{false};
     std::atomic<bool> m_hold{false};
@@ -440,6 +446,92 @@ private:
     std::vector<GDBusMethodInvocation *> m_held;    // bus thread
     mutable std::mutex m_lock;
     QStringList m_calls;
+};
+
+/*
+ * The pointer as a Wayland compositor gives it to a window with subsurfaces,
+ * KWin 6.7's way (seat.cpp, SeatInterface::notifyPointerMotion): each event
+ * goes to the surface under the pointer that takes input - a child window
+ * over the top-level's own surface, unless it is transparent for input -
+ * with a leave and an enter when that surface changes, a button held or
+ * not.  Only the top-level stays the same while a button is down; there is
+ * no other here.  Positions are in the top-level's coordinates.
+ */
+class Pointer
+{
+public:
+    explicit Pointer(QWindow *top) : m_top(top) {}
+
+    void move(QPointF pos) { deliver(pos, QEvent::MouseMove, Qt::NoButton); }
+    void press(QPointF pos, Qt::MouseButton button = Qt::LeftButton)
+    {
+        m_buttons |= button;
+        deliver(pos, QEvent::MouseButtonPress, button);
+    }
+    void release(QPointF pos, Qt::MouseButton button = Qt::LeftButton)
+    {
+        m_buttons &= ~button;
+        deliver(pos, QEvent::MouseButtonRelease, button);
+    }
+    /* One notch of a wheel, up */
+    void wheel(QPointF pos)
+    {
+        QWindow *target = focusAt(pos);
+        QWindowSystemInterface::handleWheelEvent(target, localIn(target, pos),
+                                                 m_top->mapToGlobal(pos), QPoint(), QPoint(0, 120));
+        QWindowSystemInterface::flushWindowSystemEvents();
+    }
+    /* The buttons went up where the window could not see it */
+    void forgetButtons() { m_buttons = Qt::NoButton; }
+    /* The pointer goes off the window */
+    void leave()
+    {
+        if (m_focus) {
+            QWindowSystemInterface::handleLeaveEvent<QWindowSystemInterface::SynchronousDelivery>(
+                std::exchange(m_focus, nullptr));
+        }
+    }
+    /* Where the events go at @pos */
+    QWindow *surfaceAt(QPointF pos) const
+    {
+        const QObjectList children = m_top->children();
+        for (auto it = children.crbegin(); it != children.crend(); ++it) {
+            auto *window = qobject_cast<QWindow *>(*it);
+            if (window && window->isVisible() &&
+                !(window->flags() & Qt::WindowTransparentForInput) &&
+                window->geometry().contains(pos.toPoint())) {
+                return window;
+            }
+        }
+        return m_top;
+    }
+
+private:
+    QPointF localIn(QWindow *target, QPointF pos) const
+    {
+        return target == m_top ? pos : pos - QPointF(target->position());
+    }
+    QWindow *focusAt(QPointF pos)
+    {
+        QWindow *target = surfaceAt(pos);
+        if (target != m_focus) {
+            leave();
+            QWindowSystemInterface::handleEnterEvent<QWindowSystemInterface::SynchronousDelivery>(
+                target, localIn(target, pos), m_top->mapToGlobal(pos));
+            m_focus = target;
+        }
+        return target;
+    }
+    void deliver(QPointF pos, QEvent::Type type, Qt::MouseButton button)
+    {
+        QWindow *target = focusAt(pos);
+        QWindowSystemInterface::handleMouseEvent<QWindowSystemInterface::SynchronousDelivery>(
+            target, localIn(target, pos), m_top->mapToGlobal(pos), m_buttons, button, type);
+    }
+
+    QWindow *m_top;
+    QWindow *m_focus = nullptr;
+    Qt::MouseButtons m_buttons;
 };
 
 class TestVmView : public QObject
@@ -460,6 +552,29 @@ private:
             }
         }
         return nullptr;
+    }
+
+    /* Its container in the view's widget, where it is embedded */
+    static QWidget *screenContainer(VmView *view)
+    {
+        for (QWidget *w : view->widget()->findChildren<QWidget *>()) {
+            if (!strcmp(w->metaObject()->className(), "QWindowContainer")) {
+                return w;
+            }
+        }
+        return nullptr;
+    }
+
+    /* The guest's screen, @width x @height from its scanout, as the view learns it */
+    static bool guestScreen(FakeDisplay &qemu, VmView *view, int width, int height)
+    {
+        const int buffer = memfd_create("guest", MFD_CLOEXEC);
+        if (buffer < 0 || ftruncate(buffer, off_t(width) * height * 4) != 0) {
+            return false;
+        }
+        qemu.scanout(buffer, uint32_t(width), uint32_t(height));
+        close(buffer);
+        return QTest::qWaitFor([&]() { return view->guestSize() == QSize(width, height); });
     }
 
     /* A key as the compositor gives it: XKB keycode = evdev + 8 (KEY_A: 30) */
@@ -920,6 +1035,247 @@ private Q_SLOTS:
         QTest::qWait(100);
         QCOMPARE(qemu.callsTo("Mouse.Release").size(), 2);
         delete view;
+    }
+
+    /*
+     * The user's report (2026-10-05): the main window's splitter, the list
+     * of VMs on its left and the screen on its right, moved left but not
+     * right.  Dragged right, the pointer is over the screen at its first
+     * move, and the compositor gave it to the screen's surface (a button
+     * held does not keep it on the window's own): the splitter stopped, and
+     * the guest got the moves and the release.  Now the splitter follows
+     * both ways, and the guest gets nothing of a drag that is not its own.
+     */
+    void splitterDraggedOverScreen()
+    {
+        FakeDisplay qemu(socketPath());
+        QSplitter top;
+        /* gone before the window it is in, the test failed or not */
+        std::unique_ptr<VmView> view(new VmView);
+        QString error;
+        QVERIFY2(view->attach(socketPath(), &error), qPrintable(error));
+        QTRY_VERIFY(qemu.listening());
+        QVERIFY(guestScreen(qemu, view.get(), 64, 64));     // its moves would reach the guest
+        top.addWidget(new QWidget);
+        top.addWidget(view->widget());
+        top.setChildrenCollapsible(false);
+        top.resize(800, 500);
+        top.setSizes({260, 540});
+        top.show();
+        QVERIFY(QTest::qWaitForWindowExposed(&top));
+        QTRY_VERIFY(displayWindow() && displayWindow()->isVisible());
+        const int before = top.sizes().first();
+        qemu.clearCalls();
+
+        Pointer pointer(top.windowHandle());
+        QSplitterHandle *handle = top.handle(1);
+        auto drag = [&](int by) {
+            const QPointF start = handle->mapTo(&top, QPointF(handle->rect().center()));
+            pointer.move(start);
+            pointer.press(start);
+            for (int i = 1; i <= 20; i++) {
+                pointer.move(start + QPointF(by * i / 20.0, 0));
+            }
+            pointer.release(start + QPointF(by, 0));
+            /* away from the handle: over the screen */
+            pointer.move(QPointF(top.width() - 20, top.height() / 2.0));
+        };
+
+        drag(200);
+        QCOMPARE(top.sizes().first(), before + 200);
+        drag(-100);
+        QCOMPARE(top.sizes().first(), before + 100);
+        /* the moves after the drags: the guest's own, the only ones it got */
+        QTest::qWait(100);
+        const QStringList calls = qemu.callsTo("Mouse.");
+        QVERIFY2(!calls.filter(QRegularExpression("^Mouse.(Press|Release)")).size(),
+                 qPrintable(calls.join(", ")));
+        QCOMPARE(calls.size(), 2);
+    }
+
+    /*
+     * A window with the screen on the right of a side 100 pixels wide, as
+     * large as the guest's screen: the same pixels (scale 1)
+     */
+    static bool screenBesideSide(FakeDisplay &qemu, QWidget *top, VmView *view, QString *error)
+    {
+        auto *layout = new QHBoxLayout(top);
+        auto *side = new QWidget;
+        if (!view->attach(qemu.path(), error) ||
+            !QTest::qWaitFor([&qemu]() { return qemu.listening(); }) ||
+            !guestScreen(qemu, view, 640, 480)) {
+            return false;
+        }
+        layout->setContentsMargins(0, 0, 0, 0);
+        layout->setSpacing(0);
+        side->setFixedWidth(100);
+        layout->addWidget(side);
+        layout->addWidget(view->widget(), 1);
+        top->resize(100 + 640, 480);
+        top->show();
+        return QTest::qWaitForWindowExposed(top) && QTest::qWaitFor([]() {
+            return displayWindow() && displayWindow()->size() == QSize(640, 480);
+        });
+    }
+
+    /*
+     * The pointer over the screen reaches the guest, through the window
+     * around it: moves (in the guest's pixels), both presses of a double
+     * click, the wheel, the right button (and no context menu of the
+     * window's)
+     */
+    void screenTakesPointer()
+    {
+        FakeDisplay qemu(socketPath());
+        QWidget top;
+        std::unique_ptr<VmView> view(new VmView);
+        QString error;
+        top.setContextMenuPolicy(Qt::CustomContextMenu);
+        QSignalSpy menu(&top, &QWidget::customContextMenuRequested);
+        QVERIFY2(screenBesideSide(qemu, &top, view.get(), &error), qPrintable(error));
+        qemu.clearCalls();
+        Pointer pointer(top.windowHandle());
+
+        pointer.move(QPointF(110, 20));
+        QTRY_COMPARE(qemu.callsTo("Mouse."), QStringList({"Mouse.SetAbsPosition (10, 20)"}));
+
+        qemu.clearCalls();
+        for (int i = 0; i < 2; i++) {
+            pointer.press(QPointF(110, 20));
+            pointer.release(QPointF(110, 20));
+        }
+        pointer.wheel(QPointF(110, 20));
+        pointer.press(QPointF(110, 20), Qt::RightButton);
+        pointer.release(QPointF(110, 20), Qt::RightButton);
+        QTRY_COMPARE(qemu.callsTo("Mouse.Press"),
+                     QStringList({"Mouse.Press (0,)", "Mouse.Press (0,)", "Mouse.Press (3,)",
+                                  "Mouse.Press (2,)"}));
+        QTRY_COMPARE(qemu.callsTo("Mouse.Release"),
+                     QStringList({"Mouse.Release (0,)", "Mouse.Release (0,)",
+                                  "Mouse.Release (3,)", "Mouse.Release (2,)"}));
+        QCOMPARE(menu.size(), 0);
+    }
+
+    /*
+     * The user's report (2026-10-05): a window of the guest dragged by its
+     * title bar was let go as the pointer crossed the screen's edge, where
+     * QEMU's SDL window keeps it.  There the compositor gave the pointer
+     * back to the main window's own surface, and the screen took that Leave
+     * for the pointer taken away: DisplayWindow lets the buttons go then
+     * (qt-client.md F11).  Now the press holds until its release, wherever
+     * that is, the guest's pointer at the screen's edge while out of it -
+     * over the side, out of the window - while a button the compositor
+     * really takes away (a Leave, the button down: its own grab, a screen
+     * lock) or that the window's losing the keyboard leaves down still goes
+     * up in the guest.
+     */
+    void guestDragLeavesScreen()
+    {
+        FakeDisplay qemu(socketPath());
+        QWidget top;
+        std::unique_ptr<VmView> view(new VmView);
+        QString error;
+        QVERIFY2(screenBesideSide(qemu, &top, view.get(), &error), qPrintable(error));
+        QVERIFY(QTest::qWaitForWindowActive(&top));
+        view->focus();
+        QTRY_VERIFY(view->hasKeyboard());
+        Pointer pointer(top.windowHandle());
+        auto lastAt = [&qemu]() {
+            const QStringList at = qemu.callsTo("Mouse.SetAbsPosition");
+            return at.value(at.size() - 1).section(' ', 1);
+        };
+
+        pointer.move(QPointF(400, 200));
+        qemu.clearCalls();
+        pointer.press(QPointF(400, 200));
+        QTRY_COMPARE(qemu.callsTo("Mouse.Press"), QStringList({"Mouse.Press (0,)"}));
+        const QList<std::pair<QPointF, QString>> path = {
+            {QPointF(150, 200), "(50, 200)"},
+            {QPointF(50, 200), "(0, 200)"},     // over the side
+            {QPointF(-80, -30), "(0, 0)"},      // out of the window
+            {QPointF(900, 600), "(639, 479)"},  // out of it on the other side
+            {QPointF(500, 300), "(400, 300)"},  // back
+        };
+        for (const auto &[pos, at] : path) {
+            pointer.move(pos);
+            QTRY_COMPARE(lastAt(), at);
+        }
+        QCOMPARE(qemu.callsTo("Mouse.Release").size(), 0);
+        pointer.release(QPointF(500, 300));
+        QTRY_COMPARE(qemu.callsTo("Mouse.Release"), QStringList({"Mouse.Release (0,)"}));
+        QCOMPARE(qemu.callsTo("Mouse.Press").size(), 1);
+
+        /* released over the side: there, up in the guest */
+        pointer.press(QPointF(400, 200));
+        pointer.move(QPointF(50, 200));
+        QTRY_COMPARE(lastAt(), QString("(0, 200)"));
+        QTest::qWait(50);
+        QCOMPARE(qemu.callsTo("Mouse.Release").size(), 1);
+        pointer.release(QPointF(50, 200));
+        QTRY_COMPARE(qemu.callsTo("Mouse.Release").size(), 2);
+
+        /* the compositor takes the pointer away, the button down */
+        pointer.press(QPointF(400, 200));
+        QTRY_COMPARE(qemu.callsTo("Mouse.Press").size(), 3);
+        pointer.leave();
+        QTRY_COMPARE(qemu.callsTo("Mouse.Release").size(), 3);
+        pointer.forgetButtons();
+
+        /* another window takes the keyboard, the button down */
+        pointer.press(QPointF(400, 200));
+        QTRY_COMPARE(qemu.callsTo("Mouse.Press").size(), 4);
+        QWidget other;
+        other.resize(200, 100);
+        other.show();
+        other.activateWindow();
+        QVERIFY(QTest::qWaitForWindowActive(&other));
+        QTRY_VERIFY(!view->hasKeyboard());
+        QTRY_COMPARE(qemu.callsTo("Mouse.Release").size(), 4);
+        QCOMPARE(qemu.callsTo("Mouse.Press").size(), 4);
+    }
+
+    /*
+     * The guest's cursor shows over the screen: the window's own surface
+     * never has the pointer, its container does, which has the cursor the
+     * window was given (DisplayWindow's: the guest's, or none)
+     */
+    void cursorOnScreen()
+    {
+        FakeDisplay qemu(socketPath());
+        QWidget top;
+        auto *layout = new QVBoxLayout(&top);
+        std::unique_ptr<VmView> view(new VmView);
+        QString error;
+        QVERIFY2(view->attach(socketPath(), &error), qPrintable(error));
+        QTRY_VERIFY(qemu.listening());
+        layout->addWidget(view->widget());
+        top.resize(640, 480);
+        top.show();
+        QVERIFY(QTest::qWaitForWindowExposed(&top));
+        QWidget *container = screenContainer(view.get());
+        QVERIFY(container);
+
+        displayWindow()->setCursor(Qt::BlankCursor);
+        QCOMPARE(container->cursor().shape(), Qt::BlankCursor);
+        QPixmap guest(16, 16);
+        guest.fill(Qt::red);
+        displayWindow()->setCursor(QCursor(guest, 3, 4));
+        QCOMPARE(container->cursor().shape(), Qt::BitmapCursor);
+        QCOMPARE(container->cursor().hotSpot(), QPoint(3, 4));
+
+        /* in full screen the window is its own, with the pointer: back, the
+           new window's cursor is on the new container */
+        view->setFullScreen(true);
+        QVERIFY(!(displayWindow()->flags() & Qt::WindowTransparentForInput));
+        Pointer full(displayWindow());
+        qemu.clearCalls();
+        full.press(QPointF(10, 10));
+        full.release(QPointF(10, 10));
+        QTRY_COMPARE(qemu.callsTo("Mouse.Release"), QStringList({"Mouse.Release (0,)"}));
+        displayWindow()->setCursor(Qt::BlankCursor);
+        view->setFullScreen(false);
+        QVERIFY(screenContainer(view.get()) && screenContainer(view.get()) != container);
+        QCOMPARE(screenContainer(view.get())->cursor().shape(), displayWindow()->cursor().shape());
     }
 
     /* The view shares the clipboard on its connection; it may go before

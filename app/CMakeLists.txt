@@ -180,6 +180,8 @@ qt_add_library(vitrine_ui STATIC
     src/ui/killprompt.h
     src/ui/logview.cpp
     src/ui/logview.h
+    src/ui/mainbar.cpp
+    src/ui/mainbar.h
     src/ui/mainwindow.cpp
     src/ui/mainwindow.h
     src/ui/memorymonitor.cpp
@@ -357,11 +359,15 @@ if(BUILD_TESTING)
     foreach(name
             cardupdatedialog
             guestoffer
+            mainbar
             newvmdialog
             oschooser
             settingspages
+            shortcuts
+            snapshotview
             stackbanner
-            udmabufnotifier)
+            udmabufnotifier
+            vmdetails)
         qt_add_executable(test_${name} tests/test_${name}.cpp)
         target_link_libraries(test_${name} PRIVATE vitrine_ui Qt6::Test)
         add_test(NAME ${name} COMMAND test_${name})
@@ -373,6 +379,7 @@ if(BUILD_TESTING)
             banner
             dialogs
             icons
+            mainwindow
             systems)
         qt_add_executable(test_${name} tests/test_${name}.cpp tests/scales.h)
         target_link_libraries(test_${name} PRIVATE vitrine_ui Qt6::GuiPrivate Qt6::Test)
@@ -402,7 +409,9 @@ if(BUILD_TESTING)
 
     # VmView against a stand-in for QEMU's display (QMP and D-Bus), offscreen
     qt_add_executable(test_vmview tests/test_vmview.cpp)
-    target_link_libraries(test_vmview PRIVATE vitrine_vmview PkgConfig::GIO Qt6::Test Qt6::Widgets)
+    # Qt6::GuiPrivate: the pointer delivered as a compositor does (QWindowSystemInterface)
+    target_link_libraries(test_vmview PRIVATE vitrine_vmview PkgConfig::GIO Qt6::GuiPrivate
+                                              Qt6::Test Qt6::Widgets)
     target_compile_definitions(test_vmview PRIVATE QT_NO_KEYWORDS)
     target_compile_options(test_vmview PRIVATE -Wall -Wextra)
     add_test(NAME vmview COMMAND test_vmview)

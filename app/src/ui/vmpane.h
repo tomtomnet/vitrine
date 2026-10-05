@@ -9,6 +9,7 @@
 
 class Banner;
 class LogView;
+class QAction;
 class QLabel;
 class QListWidget;
 class QPushButton;
@@ -59,6 +60,15 @@ public:
 
     Tab tab() const;
     void setTab(Tab tab);
+    /*
+     * The tabs as checkable actions, in the order of Tab, the current one
+     * checked: for a bar of the window to show them, and a menu to list
+     * them.  Their text has a mnemonic for the menu; a button made from
+     * one shows it without.
+     */
+    QList<QAction *> tabActions() const { return m_tabActions; }
+    /* The pane's own row of tabs, hidden while the window shows tabActions() */
+    void setTabBarShown(bool shown);
     /* The settings page shown, or to show once there is a VM */
     Page page() const;
     void setPage(Page page);
@@ -101,6 +111,7 @@ private:
     Page m_page = General;
     QTimer *m_check;
     QTabWidget *m_tabs;
+    QList<QAction *> m_tabActions;
     QWidget *m_console;
     VmDetails *m_details;
     QWidget *m_side;

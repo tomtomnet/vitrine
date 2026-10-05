@@ -87,6 +87,12 @@ ctest --test-dir build --output-on-failure   # optional
 ./build/app/vitrine
 ```
 
+The window has one bar above the VMs: the actions on the selected VM, its
+tabs (Console, Details, Settings, Snapshots, Logs), and at the end a button
+with the menus (File, View, Machine, Help) that the steps below name; Ctrl+M
+shows the menu bar instead. The button at the start of the bar, or F9, hides
+the list of VMs; the bar then has a drop-down of them.
+
 1. **Build vitrine's QEMU.** The banner's Build… button (or File > Build
    QEMU…, Ctrl+B) opens a window whose Build button fetches QEMU and
    virglrenderer at their pinned commits, patches them and installs them into
@@ -122,9 +128,10 @@ ctest --test-dir build --output-on-failure   # optional
    packages whose sources changed): VMs with older tools then offer Update….
 
 Keys: Ctrl+Alt+G gives the keyboard and mouse to the VM or takes them back,
-Ctrl+Alt+F toggles full screen, F9 shows or hides the VM list, Ctrl+H asks
-the guest to shut down, Ctrl+L shows QEMU's log. Closing vitrine can leave
-its VMs running; it finds them again at its next start.
+Ctrl+Alt+F toggles full screen, F9 shows or hides the VM list, F10 opens the
+menus, Ctrl+M shows or hides the menu bar, Ctrl+H asks the guest to shut
+down, Ctrl+L shows QEMU's log. Closing vitrine can leave its VMs running; it
+finds them again at its next start.
 
 Clipboard: text copied on the host can be pasted in the guest, and the other
 way around, through spice-vdagent in the guest (new VMs have its channel).
@@ -137,7 +144,8 @@ guest with its keys or mouse does that. QEMU's SDL window shares the
 clipboard too, and on Wayland waits for a key or click in it.
 
 Files: VMs in `~/.local/share/vitrine/vms/<id>/` (`vm.args`, a new VM's
-disk, `qemu.log`), vitrine's QEMU in `~/.local/share/vitrine/stack/`, the
+disk, `qemu.log`), or another folder chosen in Preferences, where vitrine
+lists every folder holding a `vm.args`; vitrine's QEMU in `~/.local/share/vitrine/stack/`, the
 guest tools in `~/.local/share/vitrine/guest-tools/`, QEMU's build trees in
 `~/.cache/vitrine/stack-build/`, the guest tools' downloads in
 `~/.cache/vitrine/guest-build/`, settings in `~/.config/vitrine/settings.conf`.

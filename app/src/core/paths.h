@@ -13,7 +13,15 @@
 namespace Paths {
 
 QString dataDir();
+/*
+ * The folder of the VMs, each a folder of it holding a vm.args: the one
+ * chosen in the preferences, else defaultVmsDir()
+ */
 QString vmsDir();
+/* <dataDir>/vms */
+QString defaultVmsDir();
+/* An empty @dir, or the default one, goes back to the default */
+void setVmsDir(const QString &dir);
 QString cacheDir();
 /* Private to the user (0700), created on demand */
 QString runtimeDir();
