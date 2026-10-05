@@ -123,6 +123,8 @@ private:
     TabSwitcher *m_tabs = nullptr;
     /* A button out of the layout, never shown, to measure the others */
     QToolButton *m_probe;
+    /* The probe's, for the buttons that open a menu: the arrow takes room */
+    QMenu *m_probeMenu;
     int m_steps = 0;
     bool m_fitting = false;
 };

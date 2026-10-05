@@ -1420,8 +1420,8 @@ UsbPage::UsbPage(QWidget *parent)
     layout->addWidget(m_controller);
     layout->addWidget(Widgets::note(tr("The checked devices are given to the VM when it starts, by "
                               "their vendor and product ID: this computer cannot use them "
-                              "while the VM runs. The menu of the VM window can attach "
-                              "devices while it runs too.")));
+                              "while the VM runs. The USB Devices menu gives devices to the "
+                              "VM while it runs too.")));
     layout->addWidget(m_tree, 1);
 }
 

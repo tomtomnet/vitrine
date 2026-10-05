@@ -148,6 +148,17 @@ a click or the mouse entering it since the last host copy; copying in the
 guest with its keys or mouse does that. QEMU's SDL window shares the
 clipboard too, and on Wayland waits for a key or click in it.
 
+USB: Machine > USB Devices (also a button of the bar, and in the VM list's
+context menu) gives the host's USB devices to a running VM, whatever shows its
+screen, and takes them back; Keep for the Next Starts gives the VM the same
+devices at each start, as its USB Devices settings do. A keyboard, mouse or
+Bluetooth adapter given to a VM is no longer usable on the host: vitrine asks
+first. QEMU must open the device's node (`/dev/bus/usb/BBB/DDD`); when your
+user cannot, vitrine asks for access (pkexec: polkit's password dialog) and
+gives it with setfacl until the device is unplugged. A udev rule gives it for
+good, e.g. in `/etc/udev/rules.d/70-qemu-usb.rules`:
+`SUBSYSTEM=="usb", ATTR{idVendor}=="0781", ATTR{idProduct}=="5567", TAG+="uaccess"`.
+
 Files: VMs in `~/.local/share/vitrine/vms/<id>/` (`vm.args`, a new VM's
 disk, `qemu.log`), or another folder chosen in Preferences, where vitrine
 lists every folder holding a `vm.args`; vitrine's QEMU in `~/.local/share/vitrine/stack/`, the

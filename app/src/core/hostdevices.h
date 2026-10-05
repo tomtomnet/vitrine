@@ -39,11 +39,17 @@ struct UsbDevice
     QString product;
     QString serial;
     bool isHub = false;
+    quint8 deviceClass = 0;         // bDeviceClass, 0 when its interfaces tell
+    QList<quint8> interfaceClasses; // bInterfaceClass of each, e.g. 0x03 HID
 
     /* /dev/bus/usb/001/004 */
     QString devNode() const;
     /* "Logitech USB Receiver (046d:c52b)" */
     QString displayName() const;
+    /* A keyboard, mouse or other input device: it has an HID interface */
+    bool isInput() const;
+    /* A wireless controller: Bluetooth adapters, and what connects through them */
+    bool isWireless() const;
 };
 
 namespace HostDevices {

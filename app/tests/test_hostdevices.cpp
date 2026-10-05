@@ -53,6 +53,15 @@ private:
         link(dir, sys + "/bus/pci/devices/" + address);
     }
 
+    /* An interface of a USB device: @name is DEVICE:CONFIGURATION.INTERFACE */
+    void usbInterface(const QString &name, const QByteArray &cls)
+    {
+        const QString dir = sys + "/devices/usb/" + name;
+        write(dir + "/bInterfaceClass", cls + "\n");
+        QDir().mkpath(sys + "/bus/usb/devices");
+        link(dir, sys + "/bus/usb/devices/" + name);
+    }
+
     void usb(const QString &name, const QByteArray &bus, const QByteArray &dev,
              const QByteArray &vendor, const QByteArray &product, const QByteArray &cls,
              const QByteArray &manufacturer = {}, const QByteArray &productName = {})
@@ -95,7 +104,10 @@ private slots:
         usb("usb1", "1", "1", "1d6b", "0002", "09", "Linux xhci-hcd", "xHCI Host Controller");
         usb("1-1", "1", "2", "046d", "c52b", "00", "Logitech", "USB Receiver");
         usb("1-2", "1", "3", "046d", "c52b", "00");
-        usb("1-1:1.0", "1", "2", "046d", "c52b", "00");
+        /* the receiver's keyboard and mouse, and a vendor's own interface */
+        usbInterface("1-1:1.0", "03");
+        usbInterface("1-1:1.1", "03");
+        usbInterface("1-1:1.2", "ff");
     }
 
     void pciDevices()
@@ -216,11 +228,31 @@ private slots:
         QCOMPARE(list[1].productId, 0xc52b);
         QCOMPARE(list[1].devNode(), "/dev/bus/usb/001/002");
         QCOMPARE(list[1].displayName(), "Logitech USB Receiver (046d:c52b)");
+        QCOMPARE(list[1].interfaceClasses, QList<quint8>({0x03, 0x03, 0xff}));
+        QVERIFY(list[1].isInput());
+        QVERIFY(!list[1].isWireless());
         QCOMPARE(list[2].port, "1-2");
+        QVERIFY(list[2].interfaceClasses.isEmpty());
+        QVERIFY(!list[2].isInput());
         if (QFileInfo::exists("/usr/share/hwdata/usb.ids")) {
             QCOMPARE(list[2].manufacturer, "Logitech, Inc.");
             QCOMPARE(list[2].product, "Unifying Receiver");
         }
+    }
+
+    /* Bluetooth: a wireless controller, as a device or by its interfaces */
+    void usbWireless()
+    {
+        UsbDevice dev;
+        QVERIFY(!dev.isWireless());
+        dev.deviceClass = 0xe0;
+        QVERIFY(dev.isWireless());
+        dev.deviceClass = 0xef;
+        dev.interfaceClasses = {0xe0, 0xe0, 0xfe};
+        QVERIFY(dev.isWireless());
+        QVERIFY(!dev.isInput());
+        dev.deviceClass = 0x03;
+        QVERIFY(dev.isInput());
     }
 
     void system()

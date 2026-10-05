@@ -31,6 +31,16 @@ QString UsbDevice::displayName() const
         .simplified();
 }
 
+bool UsbDevice::isInput() const
+{
+    return deviceClass == 0x03 || interfaceClasses.contains(quint8(0x03));
+}
+
+bool UsbDevice::isWireless() const
+{
+    return deviceClass == 0xe0 || interfaceClasses.contains(quint8(0xe0));
+}
+
 namespace {
 
 /* The names in pci.ids or usb.ids */
@@ -210,13 +220,21 @@ QList<UsbDevice> usbDevices(const QString &sysfs)
     QList<UsbDevice> list;
     const QDir dir(sysfs + "/bus/usb/devices");
     const IdNames &names = usbNames();
+    const QStringList entries =
+        dir.entryList(QDir::AllEntries | QDir::System | QDir::NoDotAndDotDot);
+    QHash<QString, QList<quint8>> interfaces;
 
-    for (const QString &name : dir.entryList(QDir::AllEntries | QDir::System |
-                                                 QDir::NoDotAndDotDot)) {
+    /* 1-2:1.0 is an interface of device 1-2 (configuration 1, interface 0) */
+    for (const QString &name : entries) {
+        if (name.contains(':')) {
+            interfaces[name.section(':', 0, 0)]
+                << quint8(readHex(dir.filePath(name) + "/bInterfaceClass"));
+        }
+    }
+    for (const QString &name : entries) {
         const QString path = dir.filePath(name) + '/';
         UsbDevice dev;
 
-        /* 1-2:1.0 is an interface of device 1-2 */
         if (name.contains(':')) {
             continue;
         }
@@ -228,7 +246,9 @@ QList<UsbDevice> usbDevices(const QString &sysfs)
         dev.manufacturer = readText(path + "manufacturer");
         dev.product = readText(path + "product");
         dev.serial = readText(path + "serial");
-        dev.isHub = readHex(path + "bDeviceClass") == 0x09;
+        dev.deviceClass = quint8(readHex(path + "bDeviceClass"));
+        dev.isHub = dev.deviceClass == 0x09;
+        dev.interfaceClasses = interfaces.value(name);
         if (dev.manufacturer.isEmpty()) {
             dev.manufacturer = names.vendors.value(dev.vendorId);
         }
