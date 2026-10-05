@@ -23,10 +23,10 @@ using State = GuestToolsBuilder::State;
 /* The lines of the log a window shows: the builder keeps more */
 static const int kLogLines = 5000;
 
-/* "10.0" */
+/* "10", "6.3" */
 static QString gib(qint64 mib)
 {
-    return QLocale().toString(double(mib) / 1024, 'f', 1);
+    return QLocale().toString(double(mib) / 1024, 'f', mib % 1024 == 0 ? 0 : 1);
 }
 
 /* The end of @log: @lines lines at most */
@@ -208,8 +208,8 @@ GuestToolsBuildDialog::GuestToolsBuildDialog(QWidget *parent)
     Widgets::setButtonIcon(m_cancel, Icons::themed({"process-stop"}, QStyle::SP_BrowserStop));
     m_memory->button()->setText(tr("Build Anyway"));
     m_memory->button()->show();
-    m_memory->button()->setToolTip(tr("Start it now: the host may run short of memory, and "
-                                      "the kernel stop a program to free some, a VM maybe"));
+    m_memory->button()->setToolTip(tr("Start it now: if the host runs short of memory, the "
+                                      "kernel stops a program to free some, maybe a VM"));
     layout->addWidget(buttons);
 
     connect(buttons, &QDialogButtonBox::rejected, this, &QDialog::close);

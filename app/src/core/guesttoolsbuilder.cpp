@@ -48,10 +48,10 @@ static bool isGuestDir(const QString &dir)
            QFileInfo(dir + "/rpm-build-inside.sh").isFile();
 }
 
-/* 10.0, for messages */
+/* 10, 6.3: for messages */
 static QString gib(qint64 mib)
 {
-    return QString::number(double(mib) / 1024, 'f', 1);
+    return QString::number(double(mib) / 1024, 'f', mib % 1024 == 0 ? 0 : 1);
 }
 
 static QString release()
