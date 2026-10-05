@@ -19,8 +19,10 @@ QString text(const QString &name, GuestShutdown::Way way)
     case GuestShutdown::Way::GuestAgent:
         return QObject::tr("Asked %1 to shut down through its guest agent").arg(name);
     case GuestShutdown::Way::PowerButton:
-        return QObject::tr("Pressed the power button of %1. If the guest asks what to do, "
-                           "answer it on its screen.")
+        /* first what to do: the permanent notices leave the status bar's
+           messages little room in a narrow window */
+        return QObject::tr("The guest may ask what to do: answer it on its screen. Shut Down "
+                           "pressed the power button of %1.")
             .arg(name);
     }
     return {};

@@ -243,7 +243,7 @@ void GuestToolsDialog::go(bool medium)
     if (m_vm->runner()->isActive()) {
         m_step = Step::ShuttingDown;
         setProgress(tr("Waiting for the guest to shut down. If it asks what to do, answer it "
-                       "on its screen: the VM then starts again with the guest tools."));
+                       "on its screen: the VM then starts again with the tools medium."));
         connect(m_vm->runner(), &VmRunner::stateChanged, this, [this](VmRunner::State s) {
             if (s == VmRunner::State::Stopped && m_step == Step::ShuttingDown) {
                 next();
