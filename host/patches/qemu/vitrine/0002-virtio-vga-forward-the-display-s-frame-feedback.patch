@@ -21,6 +21,15 @@ Vitrine gives new Linux VMs virtio-vga-gl rather than virtio-gpu-gl-pci,
 which shows the firmware, the bootloader and the early boot on its VGA
 part, with SeaBIOS as with OVMF.  Vitrine's own patch, for the research
 series to take over.
+
+Measured on a nested KWin at 60 Hz, the D-Bus client (dbus-display/) full
+screen, a Fedora 44 KDE guest with native context and vitrine's guest
+tools running vkcube for 20 s.  virtio-vga-gl without the patch: no
+vblank tick in the guest, every frame copied, a frame on the screen
+17.1 ms after QEMU's update (p50, p99 17.7), intervals of 33.3 ms at p99.
+With it: 61 ticks a second, zero copy with 1420 flushes held, 4.7 ms (p99
+4.8), 16.7 ms intervals; virtio-gpu-gl-pci, before as after: 61 ticks,
+zero copy, 4.6-4.7 ms.
 ---
  hw/display/virtio-vga.c | 68 ++++++++++++++++++++++++++++++++++++++++++++++++++
  1 file changed, 68 insertions(+)
