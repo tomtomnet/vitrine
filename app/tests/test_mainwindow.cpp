@@ -526,6 +526,11 @@ private slots:
     void library()
     {
         int width = 0;
+        /* KDE's style where it is installed: it does not widen a combo box's
+           list to its items as Fusion does */
+        if (QStyleFactory::keys().contains("Breeze", Qt::CaseInsensitive)) {
+            useStyle("Breeze", 10);
+        }
         {
             auto w = window();
             settle(w.get());
@@ -546,6 +551,23 @@ private slots:
             QVERIFY(!vms->isVisible());
             QVERIFY(vmChooser->isVisible());
             QCOMPARE(vmChooser->currentText(), w->current()->name());
+            /* its list as wide as the items want, their names bold */
+            vmChooser->showPopup();
+            QTRY_VERIFY(vmChooser->view()->isVisible());
+            const QString longest = "A Virtual Machine With a Rather Long Name";
+            QFont bold = vmChooser->view()->font();
+            bold.setBold(true);
+            const int item =
+                vmChooser->view()->sizeHintForIndex(
+                    vmChooser->model()->index(vmChooser->findText(longest), 0)).width() +
+                QFontMetrics(bold).horizontalAdvance(longest) -
+                QFontMetrics(vmChooser->view()->font()).horizontalAdvance(longest);
+            QVERIFY2(vmChooser->view()->viewport()->width() >= item,
+                     qPrintable(QString("the list of VMs %1 wide for an item %2 wide")
+                                    .arg(vmChooser->view()->viewport()->width())
+                                    .arg(item)));
+            vmChooser->hidePopup();
+            QTRY_VERIFY(!vmChooser->view()->isVisible());
             /* another VM from the bar */
             const int bravo = vmChooser->findText("Bravo");
             QVERIFY(bravo >= 0);

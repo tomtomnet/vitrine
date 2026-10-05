@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: GPL-2.0-or-later
 #include "mainbar.h"
 
+#include <QAbstractItemView>
 #include <QAction>
 #include <QApplication>
 #include <QHBoxLayout>
@@ -8,6 +9,8 @@
 #include <QLayout>
 #include <QMenu>
 #include <QPainter>
+#include <QScreen>
+#include <QScrollBar>
 #include <QStyleOptionComboBox>
 #include <QStylePainter>
 #include <QToolButton>
@@ -238,6 +241,33 @@ void VmChooser::paintEvent(QPaintEvent *)
 void VmChooser::wheelEvent(QWheelEvent *event)
 {
     event->ignore();
+}
+
+void VmChooser::showPopup()
+{
+    QFont bold = view()->font();
+    const QFontMetrics normal(bold);
+    int width = 0;
+
+    bold.setBold(true);
+    const QFontMetrics metrics(bold);
+    for (int i = 0; i < count(); i++) {
+        const QString name = itemText(i);
+        const QModelIndex index = model()->index(i, modelColumn(), rootModelIndex());
+        /* the item as the delegate has it, its name bold, inside 4 pixels each side */
+        width = qMax(width, view()->sizeHintForIndex(index).width() +
+                                metrics.horizontalAdvance(name) -
+                                normal.horizontalAdvance(name) + 8);
+    }
+    width += 2 * view()->frameWidth();
+    if (count() > maxVisibleItems()) {
+        width += view()->verticalScrollBar()->sizeHint().width();
+    }
+    if (const QScreen *screen = this->screen()) {
+        width = qMin(width, screen->availableGeometry().width() / 2);
+    }
+    view()->setMinimumWidth(width);
+    QComboBox::showPopup();
 }
 
 MainBar::MainBar(const QString &title, QWidget *parent)

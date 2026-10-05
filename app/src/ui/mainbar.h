@@ -50,6 +50,8 @@ public:
 
     QSize sizeHint() const override;
     QSize minimumSizeHint() const override;
+    /* As wide as the names, which the list draws in bold, if there is room */
+    void showPopup() override;
 
 protected:
     void paintEvent(QPaintEvent *event) override;
