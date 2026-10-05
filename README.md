@@ -122,6 +122,11 @@ Ctrl+Alt+F toggles full screen, F9 shows or hides the VM list, Ctrl+H asks
 the guest to shut down, Ctrl+L shows QEMU's log. Closing vitrine can leave
 its VMs running; it finds them again at its next start.
 
+Shut Down goes through the guest's agent when it runs one: the guest tools',
+else QEMU's guest agent (Fedora installs qemu-guest-agent in VMs). Otherwise
+it presses the VM's power button, which some guests answer with a question
+on their screen, as Plasma does with its logout screen: answer it there.
+
 Clipboard: text copied on the host can be pasted in the guest, and the other
 way around, through spice-vdagent in the guest (new VMs have its channel).
 Text only. In a Plasma Wayland guest, text copied in Wayland applications
