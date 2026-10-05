@@ -7,6 +7,7 @@
 #include <QElapsedTimer>
 #include <QFile>
 #include <QFileInfo>
+#include <QJsonArray>
 #include <QJsonObject>
 #include <QProcess>
 #include <QRegularExpression>
@@ -18,6 +19,7 @@
 
 #include "core/firmwarefiles.h"
 #include "core/guestagent.h"
+#include "core/guestshutdown.h"
 #include "core/guesttools.h"
 #include "core/hostkvm.h"
 #include "core/paths.h"
@@ -111,10 +113,17 @@ static QList<VmConfig::Share> sharesToMount(const ArgsFile &args)
     return list;
 }
 
-/* Unless the VM has an agent port of its own, which the manager cannot share */
-static bool addsAgent(const ArgsFile &args)
+/*
+ * The port of QEMU's guest agent, qemu-ga, which most Linux guests run
+ * (Fedora installs it in VMs): Shut Down asks it before the power button
+ * (GuestShutdown), and it mounts the shares the guest did not.  On the
+ * guest tools' controller, where the target has one; not when the VM has
+ * a port of its own, which the manager cannot share.
+ */
+static bool addsAgent(const ArgsFile &args, const QString &qemu)
 {
-    return !sharesToMount(args).isEmpty() && !args.toText().contains("org.qemu.guest_agent.0");
+    return GuestTools::hasSerialController(args, qemu) &&
+           !args.toText().contains("org.qemu.guest_agent.0");
 }
 
 /* As fstab and /proc/self/mountinfo write spaces and the like: \040 */
@@ -222,7 +231,8 @@ struct VmRunner::Private
     qint64 pid = 0;             // QEMU
     QList<Helper> helpers;      // virtiofsd started for this run
     GuestAgent *agent = nullptr;    // mounting the shares
-    std::function<bool()> shutdownHandler;
+    GuestShutdown *shutdown;        // powerdown()'s ways
+    bool guestAgentPort = false;    // the run has qemu-ga's port, agentPath()
     bool connecting = false;
     bool heldForDisplay = false;    // started paused (-S) for its screen
     bool waitingForDisplay = false; // and waiting for it now: waitsForDisplay()
@@ -245,6 +255,10 @@ struct VmRunner::Private
     QString argsPath() const { return runDir() + "/run.args"; }
     QString qmpArg() const;
     QString displayArg() const;
+    /* qemu-ga's chardev, on agentPath() */
+    QString guestAgentArg() const;
+    /* the guest opened qemu-ga's port: its qemu-ga runs */
+    void guestAgentOpen(const std::function<void(bool open)> &answer);
     /* @problems: the cards whose properties could not be read, for the log */
     QStringList commandLine(const ArgsFile &args, const QString &qemu,
                             QStringList *problems = nullptr) const;
@@ -294,6 +308,30 @@ QString VmRunner::Private::qmpArg() const
 QString VmRunner::Private::displayArg() const
 {
     return QString("unix:%1,server=on,wait=off").arg(OptionValue::escape(displayPath()));
+}
+
+QString VmRunner::Private::guestAgentArg() const
+{
+    return QString("socket,id=vitrine-ga,path=%1,server=on,wait=off")
+        .arg(OptionValue::escape(agentPath()));
+}
+
+void VmRunner::Private::guestAgentOpen(const std::function<void(bool open)> &answer)
+{
+    if (!qmp->isReady()) {
+        answer(true);
+        return;
+    }
+    /* frontend-open: the port's state in the guest; unknown, qemu-ga is tried */
+    qmp->execute("query-chardev", {}, [answer](const QJsonValue &result, const QString &) {
+        for (const QJsonValue &chardev : result.toArray()) {
+            if (chardev["label"].toString() == "vitrine-ga") {
+                answer(chardev["frontend-open"].toBool(true));
+                return;
+            }
+        }
+        answer(true);
+    });
 }
 
 /*
@@ -423,6 +461,10 @@ void VmRunner::Private::cleanup()
         emit q->waitsForDisplayChanged(false);
     }
     suspended = false;
+    /* before QMP, whose failed commands would answer the request */
+    shutdown->reset();
+    shutdown->setGuestAgent({});
+    guestAgentPort = false;
     qmp->disconnectFromSocket();
     for (const Helper &h : std::as_const(helpers)) {
         signalIfOurs(h.pid, h.marker, SIGTERM);
@@ -657,6 +699,8 @@ void VmRunner::Private::event(const QString &name, const QJsonObject &data)
     }
     if (name == "SHUTDOWN") {
         stopRequested = true;
+        /* the guest shut down: whatever way the request took is done */
+        shutdown->reset();
         setState(State::Stopping);
     } else if (state == State::Stopping) {
         return;
@@ -674,7 +718,7 @@ void VmRunner::Private::mountShares()
 {
     const QList<VmConfig::Share> shares = sharesToMount(args);
 
-    if (!addsAgent(args)) {
+    if (shares.isEmpty() || !guestAgentPort) {
         return;
     }
     if (agent) {
@@ -756,6 +800,12 @@ VmRunner::VmRunner(const QString &id, const QString &dir, QObject *parent)
     d->killTimer->setSingleShot(true);
     d->displayTimer = new QTimer(this);
     d->displayTimer->setSingleShot(true);
+    d->shutdown = new GuestShutdown(this);
+    d->shutdown->setPowerButton([this]() { pressPowerButton(); });
+    d->shutdown->setRunning([this]() {
+        return d->state != State::Stopped && d->state != State::Stopping;
+    });
+    connect(d->shutdown, &GuestShutdown::wayChanged, this, &VmRunner::shutdownWayChanged);
     connect(d->displayTimer, &QTimer::timeout, this, [this]() { d->endDisplayWait(true); });
     connect(d->poll, &QTimer::timeout, this, [this]() { d->tick(); });
     connect(d->killTimer, &QTimer::timeout, this, [this]() { d->escalate(); });
@@ -778,6 +828,8 @@ VmRunner::~VmRunner()
         d->qmp->execute("cont");
         d->qmp->flush();
     }
+    /* first: the answers to a shutdown on its way go nowhere */
+    delete d->shutdown;
     delete d->qmp;
     delete d;
 }
@@ -1000,10 +1052,8 @@ QStringList VmRunner::Private::commandLine(const ArgsFile &args, const QString &
                 << "type=11,value=io.systemd.credential.binary:fstab.extra=" +
                        QString::fromLatin1(fstab.toUtf8().toBase64());
     }
-    if (addsAgent(args)) {
-        command << "-chardev"
-                << QString("socket,id=vitrine-ga,path=%1,server=on,wait=off")
-                       .arg(OptionValue::escape(agentPath()))
+    if (addsAgent(args, qemu)) {
+        command << "-chardev" << guestAgentArg()
                 << "-device" << "virtio-serial-pci,id=vitrine-serial"
                 << "-device"
                 << QString("virtserialport,bus=vitrine-serial.0,chardev=vitrine-ga,"
@@ -1018,7 +1068,7 @@ QStringList VmRunner::Private::commandLine(const ArgsFile &args, const QString &
     }
     /* the guest tools' agent, on qemu-ga's controller if there is one */
     if (GuestTools::addsAgentPort(args, qemu)) {
-        if (!addsAgent(args)) {
+        if (!addsAgent(args, qemu)) {
             command << "-device" << "virtio-serial-pci,id=vitrine-serial";
         }
         command += GuestTools::agentPortArgs(toolsAgentPath());
@@ -1147,6 +1197,11 @@ QStringList VmRunner::environment(const ArgsFile &args)
 QString VmRunner::agentSocket() const
 {
     return isActive() ? d->toolsAgentPath() : QString();
+}
+
+QString VmRunner::guestAgentSocket() const
+{
+    return isActive() && d->guestAgentPort ? d->agentPath() : QString();
 }
 
 QStringList VmRunner::shellAssignments(const QStringList &environment)
@@ -1286,6 +1341,9 @@ void VmRunner::start(const ArgsFile &args)
     }
     log.close();
 
+    d->guestAgentPort = addsAgent(args, qemu);
+    d->shutdown->setGuestAgent(d->guestAgentPort ? d->agentPath() : QString(),
+                               [this](const auto &answer) { d->guestAgentOpen(answer); });
     d->setState(State::Starting);
     d->clock.start();
     for (qsizetype i = 0; i < shares.size(); i++) {
@@ -1338,6 +1396,9 @@ void VmRunner::attach(const ArgsFile &args)
         d->args = args;
     }
     d->embedded = running.contains(d->displayArg());
+    d->guestAgentPort = running.contains(d->guestAgentArg());
+    d->shutdown->setGuestAgent(d->guestAgentPort ? d->agentPath() : QString(),
+                               [this](const auto &answer) { d->guestAgentOpen(answer); });
     /* still paused for its screen when the vitrine that started it ended */
     d->heldForDisplay = d->embedded && running.contains("-S") && d->args.indexOf("S") < 0;
     d->pid = pid;
@@ -1369,10 +1430,14 @@ void VmRunner::resume()
 
 void VmRunner::powerdown()
 {
-    if (d->shutdownHandler && isActive() && d->shutdownHandler()) {
-        return;
+    if (isActive()) {
+        d->shutdown->start();
     }
-    pressPowerButton();
+}
+
+GuestShutdown::Way VmRunner::shutdownWay() const
+{
+    return d->shutdown->way();
 }
 
 void VmRunner::pressPowerButton()
@@ -1382,9 +1447,9 @@ void VmRunner::pressPowerButton()
     }
 }
 
-void VmRunner::setShutdownHandler(const std::function<bool()> &handler)
+void VmRunner::setShutdownHandler(const GuestShutdown::Asker &handler)
 {
-    d->shutdownHandler = handler;
+    d->shutdown->setToolsAgent(handler);
 }
 
 void VmRunner::reset()

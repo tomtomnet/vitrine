@@ -8,6 +8,7 @@
 #include <QStandardPaths>
 #include <QTemporaryDir>
 #include <QTest>
+#include <QTimer>
 
 #include "core/guesttools.h"
 #include "core/paths.h"
@@ -195,19 +196,29 @@ private slots:
         QDir(dataDir()).removeRecursively();
         setPending(id, Pending::None);
         QStringList c = command("-machine q35\n");
-        const QString socket = QFileInfo(c.last()).absolutePath() + "/agent.sock";
+        const QString runDir = QFileInfo(c.last()).absolutePath();
+        /* with qemu-ga's port (test_vmrunner): one controller */
         QCOMPARE(valuesOf(c, "-device"),
                  QStringList({"virtio-serial-pci,id=vitrine-serial",
+                              "virtserialport,bus=vitrine-serial.0,chardev=vitrine-ga,"
+                              "name=org.qemu.guest_agent.0,id=vitrine-ga-port",
                               "virtserialport,bus=vitrine-serial.0,chardev=vitrine-agent,"
                               "name=org.vitrine.agent.0,id=vitrine-agent-port"}));
         QCOMPARE(valuesOf(c, "-chardev"),
-                 QStringList({"socket,id=vitrine-agent,path=" + socket + ",server=on,wait=off"}));
+                 QStringList({"socket,id=vitrine-ga,path=" + runDir + "/qga.sock,server=on,wait=off",
+                              "socket,id=vitrine-agent,path=" + runDir +
+                                  "/agent.sock,server=on,wait=off"}));
         QVERIFY(valuesOf(c, "-smbios").isEmpty());
 
-        /* with qemu-ga's port too: one controller */
+        /* with shares to mount too */
         c = command("-machine q35,memory-backend=m\n#share tag=t,path=/x,mount=/mnt/x\n");
         QCOMPARE(valuesOf(c, "-device").filter("virtio-serial-pci").size(), 1);
         QCOMPARE(valuesOf(c, "-device").filter("virtserialport,bus=vitrine-serial.0").size(), 2);
+        /* a VM with qemu-ga's port of its own: the agent's alone on the controller */
+        c = command("-machine q35\n-device virtio-serial\n"
+                    "-device virtserialport,chardev=ga,name=org.qemu.guest_agent.0\n");
+        QCOMPARE(valuesOf(c, "-device").filter("bus=vitrine-serial.0").size(), 1);
+        QCOMPARE(valuesOf(c, "-device").filter("vitrine-serial").size(), 2);
 
         /* pending, but no medium built: nothing to attach */
         setPending(id, Pending::Bootstrap);
@@ -228,7 +239,7 @@ private slots:
         c = runner.commandLine(ArgsFile::parse("#qemu /opt/qemu-system-aarch64\n-machine virt\n"));
         QVERIFY(valuesOf(c, "-drive").isEmpty());
         QVERIFY(valuesOf(c, "-smbios").isEmpty());
-        QCOMPARE(valuesOf(c, "-device").size(), 2);     // the agent's port still
+        QCOMPARE(valuesOf(c, "-device").size(), 3);     // the agents' ports still
         setPending(id, Pending::None);
         QDir(dataDir()).removeRecursively();
     }
@@ -487,18 +498,32 @@ private slots:
         QTRY_VERIFY(found);
         QVERIFY(readOnly);
 
-        /* Shut Down asks the shutdown handler first, the power button if it declines */
+        /* qemu-ga's port beside it, on the same controller */
+        QVERIFY(QFileInfo::exists(runner.guestAgentSocket()));
+
+        /* Shut Down asks the shutdown handler first; when it declines,
+           qemu-ga, whose port no guest opened here, then the power button */
+        using Way = GuestShutdown::Way;
         int asked = 0;
         bool takes = true;
-        runner.setShutdownHandler([&]() {
+        QList<Way> ways;
+        connect(&runner, &VmRunner::shutdownWayChanged, this, [&ways](Way way) { ways << way; });
+        runner.setShutdownHandler([&](const std::function<void(bool)> &answer) {
             asked++;
+            if (takes) {
+                QTimer::singleShot(0, this, [answer]() { answer(true); });
+            }
             return takes;
         });
         runner.powerdown();
         QCOMPARE(asked, 1);
+        QCOMPARE(runner.shutdownWay(), Way::ToolsAgent);
+        QTest::qWait(50);
         takes = false;
         runner.powerdown();     // the power button: a VM without a guest stays up
         QCOMPARE(asked, 2);
+        QTRY_COMPARE(runner.shutdownWay(), Way::PowerButton);
+        QCOMPARE(ways, QList<Way>({Way::ToolsAgent, Way::PowerButton}));
         QTest::qWait(200);
         QCOMPARE(runner.state(), VmRunner::State::Running);
 

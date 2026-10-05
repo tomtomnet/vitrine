@@ -7,6 +7,7 @@
 #include <QPointer>
 #include <QStringList>
 
+#include <functional>
 #include <optional>
 
 #include "core/argsfile.h"
@@ -61,7 +62,10 @@ Medium medium(const QString &release = kFedoraRelease);
 Medium parseManifest(const QByteArray &json, const QString &image);
 
 /* What the runner adds to a VM's command line */
-/* The agent's port: on x86-64 and ARM machines with PCI, unless the VM has it */
+/* Its virtio-serial controller, for the agents' ports: on x86-64 and ARM
+   machines with PCI */
+bool hasSerialController(const ArgsFile &args, const QString &qemu);
+/* The agent's port: there, unless the VM has it */
 bool addsAgentPort(const ArgsFile &args, const QString &qemu);
 /* The port, on the runner's virtio-serial controller vitrine-serial */
 QStringList agentPortArgs(const QString &socket);
@@ -228,8 +232,10 @@ private:
     void qmpEvent(const QString &name, const QJsonObject &data);
     void guestRestarted();
     void send(const QString &command);
-    /* The runner's shutdown handler: the agent powers the guest off at once */
-    bool shutDownThroughAgent();
+    /* The runner's shutdown handler: the agent powers the guest off at once;
+       @answer says whether it took the request */
+    bool shutDownThroughAgent(const std::function<void(bool took)> &answer);
+    void answerShutdown(bool took);
     /* What this run showed, for while the VM is off */
     void remember();
 
@@ -251,8 +257,9 @@ private:
     QString m_error;
     qint64 m_nextId = 1;
     int m_polls = 0;
-    /* the power button, if the agent does not answer the shutdown */
+    /* the next way, if the agent does not answer the shutdown */
     QTimer *m_shutdownFallback;
+    std::function<void(bool took)> m_shutdownAnswer;
     /* how long an older agent's report is taken as before the bootstrap */
     QTimer *m_bootstrapTimer;
 };

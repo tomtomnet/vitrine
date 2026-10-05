@@ -40,6 +40,8 @@ public:
     /* ready() once in sync with the agent, else failed() */
     void connectToSocket(const QString &path, int timeoutMs = 10000);
     void disconnectFromSocket();
+    /* Connected or connecting: false in the callbacks a disconnection fails */
+    bool isConnected() const { return m_socket; }
     void execute(const QString &command, const QJsonObject &arguments, const Callback &callback);
     /* Runs @path with @args in the guest, as root, and waits for it to end */
     void exec(const QString &path, const QStringList &args,
