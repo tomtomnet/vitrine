@@ -45,10 +45,10 @@
 #include "ui/killprompt.h"
 #include "ui/memorymonitor.h"
 #include "ui/newvmdialog.h"
-#include "ui/perfmonitor.h"
 #include "ui/preferencesdialog.h"
 #include "ui/qemubuilddialog.h"
 #include "ui/stackbanner.h"
+#include "ui/statusstats.h"
 #include "ui/qemudocs.h"
 #include "ui/referencepanel.h"
 #include "ui/textdialog.h"
@@ -173,7 +173,7 @@ MainWindow::MainWindow(VmStore *store, QWidget *parent)
       m_right(new QStackedWidget), m_pane(new VmPane), m_details(m_pane->details()),
       m_splitter(new QSplitter), m_qemuStatus(new QLabel), m_running(new QLabel),
       m_consoles(new QStackedWidget),
-      m_noConsole(new QWidget), m_input(new QLabel), m_perf(new PerfMonitor)
+      m_noConsole(new QWidget), m_input(new QLabel), m_stats(new StatusStats)
 {
     auto *welcome = new QWidget;
     auto *welcomeLayout = new QVBoxLayout(welcome);
@@ -232,9 +232,11 @@ MainWindow::MainWindow(VmStore *store, QWidget *parent)
     auto *host = new HostSettings(store, this);
     connect(host, &HostSettings::notice, this,
             [this](const QString &text) { statusBar()->showMessage(text, 15000); });
-    statusBar()->addPermanentWidget(m_running);
-    statusBar()->addPermanentWidget(m_input);
-    statusBar()->addPermanentWidget(m_perf);
+    /* the statistics of the selected VM, and the labels the user may hide
+       from their menu */
+    statusBar()->addPermanentWidget(m_stats->optional("running", tr("Running VMs"), m_running));
+    statusBar()->addPermanentWidget(m_stats->optional("keyboard", tr("Keyboard"), m_input));
+    statusBar()->addPermanentWidget(m_stats);
     statusBar()->addPermanentWidget(m_updates->button());
     statusBar()->addPermanentWidget((new HostTuningNotifier(host, this))->button());
     /* native context's guest windows copied for want of udmabuf: after
@@ -242,7 +244,9 @@ MainWindow::MainWindow(VmStore *store, QWidget *parent)
     statusBar()->addPermanentWidget(
         (new UdmabufNotifier(new UdmabufWatch(store, host, this), host, this))->button());
     statusBar()->addPermanentWidget((new MemoryMonitor(store, this))->button());
-    statusBar()->addPermanentWidget(m_qemuStatus);
+    statusBar()->addPermanentWidget(m_stats->optional("qemu", tr("QEMU Version"), m_qemuStatus));
+    /* the menu of what the status bar shows, at its end */
+    statusBar()->addPermanentWidget(m_stats->menuButton());
 
     connect(create, &QPushButton::clicked, m_new, &QAction::trigger);
     connect(m_list, &QListWidget::currentItemChanged, this, &MainWindow::currentChanged);
@@ -727,7 +731,7 @@ void MainWindow::showCurrent()
     m_right->setCurrentIndex(m_list->count() == 0 ? 0 : 1);
     m_pane->setVm(vm);
     m_consoles->setCurrentWidget(console ? static_cast<QWidget *>(console) : m_noConsole);
-    m_perf->setVm(vm, console);
+    m_stats->setVm(vm, console);
     m_details->setError(vm ? m_errors.value(vm->id()) : QString());
     updateActions();
     updateInput();
