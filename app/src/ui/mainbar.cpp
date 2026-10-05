@@ -259,7 +259,7 @@ void VmChooser::showPopup()
 }
 
 MainBar::MainBar(const QString &title, QWidget *parent)
-    : QToolBar(title, parent), m_probe(new QToolButton(this))
+    : QToolBar(title, parent), m_probe(new QToolButton(this)), m_probeMenu(new QMenu(this))
 {
     /* as the buttons the bar makes for its actions, but out of its layout */
     m_probe->hide();
@@ -324,6 +324,10 @@ int MainBar::buttonWidth(QAction *action, bool text) const
     /* as QToolButton shows an action, without the mnemonic */
     m_probe->setText(action->iconText().replace('&', "&&"));
     m_probe->setIcon(action->icon());
+    /* one that opens a menu has room for its arrow (Breeze), as its button pops it up */
+    const auto *button = qobject_cast<QToolButton *>(widgetForAction(action));
+    m_probe->setMenu(action->menu() ? m_probeMenu : nullptr);
+    m_probe->setPopupMode(button ? button->popupMode() : QToolButton::DelayedPopup);
     return hintWidth(m_probe);
 }
 

@@ -550,8 +550,8 @@ void MainWindow::createActions()
     m_menuButton = m_bar->addMenuButton(m_mainMenu, tr("Menu"));
     m_menuButton->setToolTip(tr("Menu (F10)"));
     /* short of room, the least used lose their text first */
-    m_bar->setTextOrder({m_ctrlAltDel, m_fullScreen, m_forceOff, m_shutDown, m_pause, m_new,
-                         m_start});
+    m_bar->setTextOrder({m_ctrlAltDel, m_usb->menuAction(), m_fullScreen, m_forceOff,
+                         m_shutDown, m_pause, m_new, m_start});
     /* the tabs replace the pane's own */
     m_pane->setTabBarShown(false);
 }

@@ -47,8 +47,8 @@ const char kBravo[] = "-name Bravo\n-machine q35\n-m 1G\n-display sdl\n";
 const char kLong[] = "-name A Virtual Machine With a Rather Long Name\n-machine q35\n-m 1G\n";
 
 /* Text-less in this order when the bar is short of room */
-const QStringList kTextOrder = {"Send Ctrl+Alt+Del", "Full Screen", "Force Off", "Shut Down",
-                                "Pause", "New…", "Start"};
+const QStringList kTextOrder = {"Send Ctrl+Alt+Del", "USB Devices", "Full Screen", "Force Off",
+                                "Shut Down", "Pause", "New…", "Start"};
 
 int s_ambiguous = 0;
 

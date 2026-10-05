@@ -139,8 +139,8 @@ a click or the mouse entering it since the last host copy; copying in the
 guest with its keys or mouse does that. QEMU's SDL window shares the
 clipboard too, and on Wayland waits for a key or click in it.
 
-USB: Machine > USB Devices (also on the toolbar and in the VM list's context
-menu) gives the host's USB devices to a running VM, whatever shows its
+USB: Machine > USB Devices (also a button of the bar, and in the VM list's
+context menu) gives the host's USB devices to a running VM, whatever shows its
 screen, and takes them back; Keep for the Next Starts gives the VM the same
 devices at each start, as its USB Devices settings do. A keyboard, mouse or
 Bluetooth adapter given to a VM is no longer usable on the host: vitrine asks
