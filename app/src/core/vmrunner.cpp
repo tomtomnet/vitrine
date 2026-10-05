@@ -115,14 +115,15 @@ static QList<VmConfig::Share> sharesToMount(const ArgsFile &args)
 
 /*
  * The port of QEMU's guest agent, qemu-ga, which most Linux guests run
- * (Fedora installs it in VMs): Shut Down asks it before the power button
- * (GuestShutdown), and it mounts the shares the guest did not.  Where the
- * target has the guest tools' controller; not when the VM has a port of
- * its own, which the manager cannot share.
+ * (Fedora installs it in VMs): it mounts the shares the guest did not, on
+ * any target (their virtiofs devices need PCI too), and Shut Down asks it
+ * before the power button (GuestShutdown), where the target has the guest
+ * tools' controller.  Not when the VM has a port of its own, which the
+ * manager cannot share.
  */
 static bool addsAgent(const ArgsFile &args, const QString &qemu)
 {
-    return GuestTools::hasSerialController(args, qemu) &&
+    return (!sharesToMount(args).isEmpty() || GuestTools::hasSerialController(args, qemu)) &&
            !args.toText().contains("org.qemu.guest_agent.0");
 }
 
@@ -285,6 +286,8 @@ struct VmRunner::Private
     QString displayArg() const;
     /* qemu-ga's chardev, on agentPath() */
     QString guestAgentArg() const;
+    /* qemu-ga's port, with its chardev, on the virtio-serial controller @controller */
+    QStringList guestAgentPortArgs(const QString &controller) const;
     /* Shut Down through qemu-ga: on the runner's port, or the VM's own */
     void useGuestAgent();
     /* the guest opened qemu-ga's port: its qemu-ga runs */
@@ -344,6 +347,14 @@ QString VmRunner::Private::guestAgentArg() const
 {
     return QString("socket,id=vitrine-ga,path=%1,server=on,wait=off")
         .arg(OptionValue::escape(agentPath()));
+}
+
+QStringList VmRunner::Private::guestAgentPortArgs(const QString &controller) const
+{
+    return {"-chardev", guestAgentArg(),
+            "-device", QString("virtio-serial-pci,id=%1").arg(controller),
+            "-device", QString("virtserialport,bus=%1.0,chardev=vitrine-ga,"
+                               "name=org.qemu.guest_agent.0,id=%2").arg(controller, kAgentPort)};
 }
 
 void VmRunner::Private::useGuestAgent()
@@ -1100,11 +1111,7 @@ QStringList VmRunner::Private::commandLine(const ArgsFile &args, const QString &
     const bool guestAgent = addsAgent(args, qemu);
     const bool guestAgentFirst = guestAgent && !sharesToMount(args).isEmpty();
     if (guestAgentFirst) {
-        command << "-chardev" << guestAgentArg()
-                << "-device" << "virtio-serial-pci,id=vitrine-serial"
-                << "-device"
-                << QString("virtserialport,bus=vitrine-serial.0,chardev=vitrine-ga,"
-                           "name=org.qemu.guest_agent.0,id=%1").arg(kAgentPort);
+        command += guestAgentPortArgs("vitrine-serial");
     }
     if (VmConfig::screen(args) == VmConfig::Screen::Embedded) {
         /* a second -qmp; -mon is deprecated */
@@ -1127,11 +1134,7 @@ QStringList VmRunner::Private::commandLine(const ArgsFile &args, const QString &
      * from (its ports no longer match the state's)
      */
     if (guestAgent && !guestAgentFirst) {
-        command << "-chardev" << guestAgentArg()
-                << "-device" << "virtio-serial-pci,id=vitrine-ga-serial"
-                << "-device"
-                << QString("virtserialport,bus=vitrine-ga-serial.0,chardev=vitrine-ga,"
-                           "name=org.qemu.guest_agent.0,id=%1").arg(kAgentPort);
+        command += guestAgentPortArgs("vitrine-ga-serial");
     }
     /* the guest tools asked for: the medium, and the unit that installs them at boot */
     const GuestTools::Pending tools = GuestTools::pending(id);

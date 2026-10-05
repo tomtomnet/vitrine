@@ -508,6 +508,12 @@ private slots:
             QCOMPARE(count(command, "virtio-serial-pci"), 0);
             QVERIFY(!command.contains(chardev));
         }
+        /* but qemu-ga's for shares to mount, on any target, as always */
+        const QStringList ppc = runner.commandLine(ArgsFile::parse(
+            "#qemu /opt/qemu/bin/qemu-system-ppc64\n#share tag=pub,path=/home/x,mount=/mnt/pub\n"));
+        QVERIFY(ppc.contains(first));
+        QCOMPARE(count(ppc, "virtio-serial-pci"), 1);
+        QCOMPARE(count(ppc, "name=org.vitrine.agent.0"), 0);
         QCOMPARE(runner.guestAgentSocket(), "");    // not running
     }
 
