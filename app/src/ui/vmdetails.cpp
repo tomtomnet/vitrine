@@ -34,7 +34,6 @@
 /* How to build a guest Mesa with native context, in the repository */
 static const char kGuestMesaGuide[] =
     "https://github.com/tomtomnet/vitrine/blob/main/docs/guest-mesa.md";
-/* The link that offers vitrine's 3D card again after Don't Ask Again */
 
 /* The guest shut down, but -no-shutdown keeps QEMU open until Force Off */
 static bool keptOpen(const Vm *vm)

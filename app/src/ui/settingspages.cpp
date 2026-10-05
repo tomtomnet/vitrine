@@ -420,8 +420,8 @@ void DisplayPage::update()
 {
     const Shown s = shown();
     const QString card = chosen3dCard();
-    const std::optional<CardSettings::Offers> offers =
-        CardSettings::offers(m_args, card.isEmpty() ? m_loaded.card : card);
+    /* asked about the 3D card chosen, else the VM's own if it has one */
+    const std::optional<CardSettings::Offers> offers = CardSettings::offers(m_args, card);
     const auto lacks = [&offers](const QString &display) {
         return offers && offers->displays && !offers->displays->contains(display);
     };
