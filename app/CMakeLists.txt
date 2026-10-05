@@ -178,6 +178,8 @@ qt_add_library(vitrine_ui STATIC
     src/ui/killprompt.h
     src/ui/logview.cpp
     src/ui/logview.h
+    src/ui/mainbar.cpp
+    src/ui/mainbar.h
     src/ui/mainwindow.cpp
     src/ui/mainwindow.h
     src/ui/memorymonitor.cpp
@@ -319,6 +321,7 @@ if(BUILD_TESTING)
     # the windows': widgets that are never shown, so no screen either
     foreach(name
             cardupdatedialog
+            mainbar
             newvmdialog
             settingspages
             shortcuts
@@ -336,7 +339,8 @@ if(BUILD_TESTING)
     foreach(name
             banner
             dialogs
-            icons)
+            icons
+            mainwindow)
         qt_add_executable(test_${name} tests/test_${name}.cpp tests/scales.h)
         target_link_libraries(test_${name} PRIVATE vitrine_ui Qt6::GuiPrivate Qt6::Test)
         target_compile_options(test_${name} PRIVATE -Wall -Wextra)
