@@ -34,3 +34,4 @@ install(CODE [[
 add_subdirectory(helper)
 add_subdirectory(app)
 add_subdirectory(host)
+add_subdirectory(guest)

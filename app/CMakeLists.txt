@@ -20,6 +20,8 @@ qt_add_library(vitrine_core STATIC
     src/core/guestagent.h
     src/core/guesttools.cpp
     src/core/guesttools.h
+    src/core/guesttoolsbuilder.cpp
+    src/core/guesttoolsbuilder.h
     src/core/hostdevices.cpp
     src/core/hostdevices.h
     src/core/hostkvm.cpp
@@ -62,9 +64,11 @@ qt_add_library(vitrine_core STATIC
     src/core/vmtemplate.h
 )
 target_include_directories(vitrine_core PUBLIC src)
-# host/ of the source tree: what a build tree's app builds its QEMU with
+# host/ and guest/ of the source tree: what a build tree's app builds its
+# QEMU and the guest tools with
 target_compile_definitions(vitrine_core PRIVATE
     VITRINE_HOST_SOURCE_DIR="${PROJECT_SOURCE_DIR}/host"
+    VITRINE_GUEST_SOURCE_DIR="${PROJECT_SOURCE_DIR}/guest"
     # the root helper the host settings go through (helper/)
     VITRINE_HELPER_PATH="${VITRINE_HELPER_PATH}")
 # what the runner passes a guest to install the guest tools at boot
@@ -292,6 +296,7 @@ if(BUILD_TESTING)
             gpucontexts
             guestagent
             guesttools
+            guesttoolsbuilder
             hostdevices
             hostkvm
             hostmemory
@@ -352,6 +357,9 @@ if(BUILD_TESTING)
         VITRINE_HELPER_PATH="${VITRINE_HELPER_PATH}"
         TEST_WORK_DIR="${CMAKE_CURRENT_BINARY_DIR}/test-work")
     add_dependencies(test_hostsettings vitrine-helper-fake fake-qemu)
+    # the scripts of guest/, against a stand-in for podman
+    target_compile_definitions(test_guesttoolsbuilder PRIVATE
+        GUEST_SOURCE_DIR="${PROJECT_SOURCE_DIR}/guest")
     # the same stand-in, for QEMUs found running
     target_compile_definitions(test_vmrunner PRIVATE FAKE_QEMU="$<TARGET_FILE:fake-qemu>")
     add_dependencies(test_vmrunner fake-qemu)
