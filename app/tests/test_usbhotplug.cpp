@@ -18,6 +18,7 @@
 #include <QLocalServer>
 #include <QLocalSocket>
 #include <QProcess>
+#include <QScopeGuard>
 #include <QSignalSpy>
 #include <QStandardPaths>
 #include <QTemporaryDir>
@@ -531,8 +532,21 @@ private slots:
         Paths::setQemuBinary(qemu);
 
         const QString id = vmId();
+        const QString bareId = vmId();
         VmRunner runner(id, m_tmp.filePath(id));
+        VmRunner bare(bareId, m_tmp.filePath(bareId));
         QDir().mkpath(m_tmp.filePath(id));
+        QDir().mkpath(m_tmp.filePath(bareId));
+        /* a failed check leaves no QEMU running: a VM outlives its runner */
+        const auto stop = qScopeGuard([&runner, &bare]() {
+            for (VmRunner *r : {&runner, &bare}) {
+                r->forceOff();
+            }
+            if (!QTest::qWaitFor([&]() { return !runner.isActive() && !bare.isActive(); }, 20000)) {
+                qWarning("a test QEMU did not quit");
+            }
+            Paths::setQemuBinary({});
+        });
         UsbHotplug *hotplug = UsbHotplug::of(&runner);
         QSignalSpy failed(&runner, &VmRunner::failed);
         runner.start(ArgsFile::parse("-machine q35\n-m 128\n-nodefaults\n-display none\n"
@@ -595,9 +609,6 @@ private slots:
         QVERIFY(failed.isEmpty());
 
         /* no USB controller: x-query-usb says so; device_add would refuse */
-        const QString bareId = vmId();
-        VmRunner bare(bareId, m_tmp.filePath(bareId));
-        QDir().mkpath(m_tmp.filePath(bareId));
         UsbHotplug *none = UsbHotplug::of(&bare);
         bare.start(ArgsFile::parse("-machine q35\n-m 128\n-nodefaults\n-display none\n"));
         QTRY_VERIFY_WITH_TIMEOUT(bare.state() == VmRunner::State::Running, 20000);
@@ -617,7 +628,6 @@ private slots:
         QTRY_VERIFY_WITH_TIMEOUT(runner.state() == VmRunner::State::Stopped &&
                                      bare.state() == VmRunner::State::Stopped,
                                  20000);
-        Paths::setQemuBinary({});
     }
 };
 
