@@ -3,6 +3,8 @@
 
 #include <QAbstractButton>
 #include <QAbstractItemView>
+#include <QAction>
+#include <QActionGroup>
 #include <QComboBox>
 #include <QFrame>
 #include <QHBoxLayout>
@@ -20,6 +22,7 @@
 #include <QStackedWidget>
 #include <QStyleOptionViewItem>
 #include <QStylePainter>
+#include <QTabBar>
 #include <QTabWidget>
 #include <QTimer>
 #include <QToolButton>
@@ -179,6 +182,24 @@ VmPane::VmPane(QWidget *parent)
     m_tabs->addTab(settings, tr("Settings"));
     m_tabs->addTab(m_snapshots, tr("Snapshots"));
     m_tabs->addTab(m_log, tr("Logs"));
+    {
+        /* the same, as actions, for the window's bar and its View menu */
+        auto *group = new QActionGroup(this);
+        const QStringList texts = {tr("&Console"), tr("&Details"), tr("&Settings"),
+                                   tr("S&napshots"), tr("L&ogs")};
+        for (int i = 0; i < m_tabs->count(); i++) {
+            auto *action = new QAction(texts.value(i, m_tabs->tabText(i)), group);
+            action->setCheckable(true);
+            action->setChecked(i == m_tabs->currentIndex());
+            connect(action, &QAction::triggered, this, [this, i]() { setTab(Tab(i)); });
+            m_tabActions << action;
+        }
+        connect(m_tabs, &QTabWidget::currentChanged, this, [this](int index) {
+            if (QAction *action = m_tabActions.value(index)) {
+                action->setChecked(true);
+            }
+        });
+    }
 
     /* the pages down the side, as the settings dialog had them, on the tab:
        the simple ones, then Advanced, folded */
@@ -440,6 +461,12 @@ VmPane::Tab VmPane::tab() const
 void VmPane::setTab(Tab tab)
 {
     m_tabs->setCurrentIndex(qBound(0, int(tab), int(Logs)));
+}
+
+void VmPane::setTabBarShown(bool shown)
+{
+    /* the tab widget lays its pages out without it */
+    m_tabs->tabBar()->setVisible(shown);
 }
 
 VmPane::Page VmPane::page() const
