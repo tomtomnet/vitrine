@@ -1062,7 +1062,8 @@ void MainWindow::updateActions()
     for (QAction *tab : m_pane->tabActions()) {
         tab->setEnabled(m_list->count() > 0);
     }
-    m_chooser->setEnabled(m_list->count() > 0);
+    /* the action's: the bar enables its widget as the action is */
+    m_chooserAction->setEnabled(m_list->count() > 0);
 
     const VmConsole *console = currentConsole();
     VmView *view = console ? console->view() : nullptr;

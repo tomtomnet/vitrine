@@ -610,6 +610,46 @@ private slots:
         QVERIFY(qAbs(list(w.get())->width() - width) <= 1);
     }
 
+    /* F10: the menus under the bar's button, or the menu bar's first one */
+    void openMenu()
+    {
+        auto w = window();
+        settle(w.get());
+        QToolButton *button = menuButton(w.get());
+        QVERIFY(button);
+        QMenu *menu = button->menu() ? button->menu() : button->defaultAction()->menu();
+
+        QTest::keyClick(list(w.get()), Qt::Key_F10);
+        QTRY_COMPARE(QApplication::activePopupWidget(), menu);
+        menu->close();
+        QTRY_VERIFY(!QApplication::activePopupWidget());
+
+        action(w.get(), "Show Menu Bar")->trigger();
+        QTRY_VERIFY(menuBarOf(w.get())->isVisible());
+        QTest::keyClick(list(w.get()), Qt::Key_F10);
+        QTRY_VERIFY(QApplication::activePopupWidget());
+        QCOMPARE(menuBarOf(w.get())->activeAction(), menuBarOf(w.get())->actions().value(0));
+        QApplication::activePopupWidget()->close();
+    }
+
+    /* No VM yet: the welcome page, and nothing in the bar to choose a tab or a VM */
+    void noVms()
+    {
+        QTemporaryDir empty;
+        VmStore store(empty.path());
+        MainWindow w(&store);
+        w.resize(1280, 800);
+        settle(&w);
+        for (QToolButton *tab : tabButtons(&w)) {
+            QVERIFY(!tab->isEnabled());
+        }
+        action(&w, "Show Library")->trigger();
+        layOut();
+        QVERIFY(!chooser(&w)->isEnabled());
+        QVERIFY(barProblems(&w, "no VMs").isEmpty());
+        action(&w, "Show Library")->trigger();
+    }
+
     /* An older vitrine's toolbar menu could hide the bar: it shows, with the menus */
     void barAlwaysShown()
     {
