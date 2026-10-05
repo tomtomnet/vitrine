@@ -207,8 +207,10 @@ QString mainLoopSummary(const Snapshot &s)
 /* A row of plain text: values like "< 0.1 %" are no markup */
 static QString row(const QString &label, const QString &value, const QString &note = {})
 {
-    return QString("<tr><td nowrap>%1</td><td nowrap align=\"right\">&nbsp;&nbsp;%2</td>"
-                   "<td nowrap>&nbsp;&nbsp;%3</td></tr>")
+    /* white-space in CSS: Qt's rich text ignores td's nowrap */
+    return QString("<tr><td style=\"white-space:nowrap\">%1</td>"
+                   "<td style=\"white-space:nowrap\" align=\"right\">&nbsp;&nbsp;%2</td>"
+                   "<td style=\"white-space:nowrap\">&nbsp;&nbsp;%3</td></tr>")
         .arg(label.toHtmlEscaped(), value.toHtmlEscaped(), note.toHtmlEscaped());
 }
 

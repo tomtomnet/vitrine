@@ -745,7 +745,11 @@ QString StatusStats::tooltip(Stat stat) const
         body = PerfStats::hostDetails(s.perf);
         break;
     }
-    return QString("<p style=\"white-space:pre\"><b>%1</b></p>%2").arg(name, body);
+    /* on lines of their own, titles too: QToolTip's label narrows a
+       word-wrapped text of a few lines */
+    return QString("<div style=\"white-space:nowrap\"><p style=\"white-space:pre\"><b>%1</b>"
+                   "</p>%2</div>")
+        .arg(name, body);
 }
 
 /* --- events --- */

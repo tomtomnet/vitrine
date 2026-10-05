@@ -342,6 +342,29 @@ private slots:
                 Scales::settle(&w.window);
                 QTRY_VERIFY(s->label(StatusStats::MainLoop)->isVisible());
 
+                /* each tooltip on the lines it has: laid out word-wrapped, as QToolTip
+                   does, no taller than without wrapping */
+                for (int i = 0; i < StatusStats::kStats; i++) {
+                    QLabel *l = s->label(StatusStats::Stat(i));
+                    if (!l->isVisible()) {
+                        continue;
+                    }
+                    const QPoint at = l->rect().center();
+                    QHelpEvent tip(QEvent::ToolTip, at, l->mapToGlobal(at));
+                    QApplication::sendEvent(l, &tip);
+                    QTRY_VERIFY(QToolTip::isVisible());
+                    QLabel wrapped, unwrapped;
+                    wrapped.setWordWrap(true);
+                    wrapped.setText(QToolTip::text());
+                    unwrapped.setText(QToolTip::text());
+                    QVERIFY2(wrapped.sizeHint().height() <= unwrapped.sizeHint().height(),
+                             qPrintable(QString("%1 at n=%2: %3 > %4")
+                                            .arg(l->objectName()).arg(n)
+                                            .arg(wrapped.sizeHint().height())
+                                            .arg(unwrapped.sizeHint().height())));
+                    QToolTip::hideText();
+                }
+
                 /* no label narrower than it was, so that what follows stays put */
                 const int widest = s->label(StatusStats::Disk)->width();
                 QTest::qWait(1200);
