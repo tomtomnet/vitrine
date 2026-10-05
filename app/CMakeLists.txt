@@ -48,6 +48,8 @@ qt_add_library(vitrine_core STATIC
     src/core/udmabuf.h
     src/core/updatecheck.cpp
     src/core/updatecheck.h
+    src/core/usbhotplug.cpp
+    src/core/usbhotplug.h
     src/core/vmconfig.cpp
     src/core/vmcloner.cpp
     src/core/vmcloner.h
@@ -305,6 +307,7 @@ if(BUILD_TESTING)
             stackbuilder
             udmabuf
             updatecheck
+            usbhotplug
             vmcloner
             vmconfig
             vmhardware
@@ -355,6 +358,8 @@ if(BUILD_TESTING)
     # the same stand-in, for QEMUs found running
     target_compile_definitions(test_vmrunner PRIVATE FAKE_QEMU="$<TARGET_FILE:fake-qemu>")
     add_dependencies(test_vmrunner fake-qemu)
+    target_compile_definitions(test_usbhotplug PRIVATE FAKE_QEMU="$<TARGET_FILE:fake-qemu>")
+    add_dependencies(test_usbhotplug fake-qemu)
     target_compile_definitions(test_udmabuf PRIVATE FAKE_QEMU="$<TARGET_FILE:fake-qemu>")
     add_dependencies(test_udmabuf fake-qemu)
     target_compile_definitions(test_udmabufnotifier PRIVATE FAKE_QEMU="$<TARGET_FILE:fake-qemu>")
