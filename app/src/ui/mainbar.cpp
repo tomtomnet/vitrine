@@ -16,7 +16,6 @@
 #include <QToolButton>
 #include <QWheelEvent>
 
-#include "ui/icons.h"
 
 namespace {
 
