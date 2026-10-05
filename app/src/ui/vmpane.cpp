@@ -265,9 +265,17 @@ VmPane::VmPane(QWidget *parent)
     }
     connect(m_more, &QToolButton::toggled, this, &VmPane::showAdvanced);
     connect(m_apply, &QPushButton::clicked, this, &VmPane::apply);
-    /* Ctrl+S on the settings, the Arguments page's editor among them: Apply */
-    auto *save = new QShortcut(QKeySequence::Save, settings);
-    save->setContext(Qt::WidgetWithChildrenShortcut);
+    /*
+     * Ctrl+S while the Settings tab shows, wherever the keys are in the
+     * window (a page's field, the Arguments editor, the list of VMs or the
+     * tabs after a click with the mouse): Apply.  Not on the other tabs,
+     * where the VM's screen takes Ctrl+S for the guest.
+     */
+    auto *save = new QShortcut(QKeySequence::Save, this);
+    save->setContext(Qt::WindowShortcut);
+    save->setEnabled(m_tabs->currentWidget() == settings);
+    connect(m_tabs, &QTabWidget::currentChanged, save,
+            [this, save, settings]() { save->setEnabled(m_tabs->currentWidget() == settings); });
     connect(save, &QShortcut::activated, this, [this]() {
         if (m_apply->isEnabled()) {
             m_apply->click();

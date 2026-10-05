@@ -11,6 +11,7 @@
 #include <QSpinBox>
 #include <QStandardPaths>
 #include <QTableWidget>
+#include <QTabBar>
 #include <QTemporaryDir>
 #include <QTest>
 #include <QTimer>
@@ -306,6 +307,26 @@ private slots:
         QVERIFY2(saved.contains("-smp 2"), saved.constData());
         /* the letter itself did not go into the text */
         QVERIFY(!editor->toPlainText().contains("-smp 2s"));
+
+        /* with the keys outside the page (the tabs, the list of VMs after a
+           click on them): still Apply, while the Settings tab shows */
+        QTest::keyClicks(editor, " ");
+        QTRY_VERIFY(apply->isEnabled());
+        auto *tabs = pane.findChild<QTabBar *>();
+        QVERIFY(tabs);
+        tabs->setFocusPolicy(Qt::StrongFocus);
+        tabs->setFocus();
+        QTRY_VERIFY(tabs->hasFocus());
+        QTest::keyClick(tabs, Qt::Key_S, Qt::ControlModifier);
+        QTRY_VERIFY(!pane.isModified());
+
+        /* on another tab, Ctrl+S is not the settings' */
+        editor->setFocus();
+        QTest::keyClicks(editor, "x");
+        QTRY_VERIFY(apply->isEnabled());
+        pane.setTab(VmPane::Details);
+        QTest::keyClick(&pane, Qt::Key_S, Qt::ControlModifier);
+        QVERIFY(pane.isModified());
     }
 
     /* The boot order on the Storage page: checked devices, in order; Apply writes it */
