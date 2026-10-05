@@ -72,13 +72,28 @@ void setGraphics(ArgsFile &args, const Graphics &graphics);
  */
 enum class Screen { Embedded, OwnWindow, None };
 Screen screen(const ArgsFile &args);
+/* A display over the network: -vnc, -spice or -display vnc= */
+bool hasRemoteDisplay(const ArgsFile &args);
 /*
- * Shows the screen in vitrine's window (-display dbus,p2p=yes) or in
- * QEMU's SDL window, with OpenGL for a 3D card; the card stays as it is
+ * Shows the screen in vitrine's window (-display dbus,p2p=yes), in QEMU's
+ * window of @window (sdl, the default, or gtk), with OpenGL for a 3D card,
+ * or nowhere: -display none, or egl-headless for a 3D card, which needs a
+ * display with OpenGL.  The card stays as it is.
  */
-void setScreen(ArgsFile &args, Screen screen);
+void setScreen(ArgsFile &args, Screen screen, const QString &window = {});
+/*
+ * A key of the window's -display line, e.g. show-cursor or zoom-to-fit;
+ * empty when not given.  Setting an empty @value removes the key; there
+ * is nothing to set without a -display line.
+ */
+QString displayOption(const ArgsFile &args, const QString &key);
+void setDisplayOption(ArgsFile &args, const QString &key, const QString &value);
+/* A boolean key of the window's -display line; @fallback, QEMU's default, when not given */
+bool displayFlag(const ArgsFile &args, const QString &key, bool fallback);
 /* With a VGA mode, which shows the firmware and boot screens */
 bool isVgaDevice(const QString &device);
+/* A virtio-gpu card with OpenGL, e.g. virtio-vga-gl */
+bool isAccelerated(const QString &device);
 /* The same virtio card with OpenGL, or without: virtio-vga for virtio-vga-gl */
 QString glCounterpart(const QString &device);
 

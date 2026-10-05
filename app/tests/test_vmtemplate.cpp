@@ -95,8 +95,7 @@ private slots:
                  "-drive if=pflash,format=qcow2,unit=0,readonly=on,file=CODE.qcow2\n"
                  "\n"
                  "# Display\n"
-                 "-vga none\n"
-                 "-device virtio-gpu-gl-pci,hostmem=4G,blob=on,drm_native_context=on,"
+                 "-device virtio-vga-gl,hostmem=4G,blob=on,drm_native_context=on,"
                  "x-host-vblank=on,x-vblank-lead=3000,x-vblank-lead-auto=on\n"
                  "-display dbus,p2p=yes,gl=on\n"
                  "\n"
@@ -141,7 +140,7 @@ private slots:
         QCOMPARE(cpus.threads, 2);
         const VmConfig::Graphics g = VmConfig::graphics(args);
         QCOMPARE(g.kind, VmConfig::Graphics::Accelerated);
-        QCOMPARE(g.device, "virtio-gpu-gl-pci");
+        QCOMPARE(g.device, "virtio-vga-gl");
         QVERIFY(g.nativeContext);
         QCOMPARE(g.hostmemMiB, 4096);
         QVERIFY(VmConfig::screen(args) == VmConfig::Screen::Embedded);
@@ -203,12 +202,12 @@ private slots:
     void plainQemu()
     {
         Options o = fedora("x86_64");
-        /* virtio-gpu-gl-pci of QEMU 10.2 */
+        /* virtio-vga-gl of QEMU 10.2 */
         o.gpuProperties = {"addr", "blob", "hostmem", "max_hostmem", "venus", "xres", "yres"};
         const ArgsFile args = build(o);
         const QString text = args.toText();
 
-        QVERIFY(text.contains("-device virtio-gpu-gl-pci,hostmem=4G,blob=on\n"));
+        QVERIFY(text.contains("-device virtio-vga-gl,hostmem=4G,blob=on\n"));
         QVERIFY(text.contains("-accel kvm\n"));
         QVERIFY(!text.contains("x-"));
         QVERIFY(!text.contains("honor-guest-pat"));
@@ -222,7 +221,7 @@ private slots:
         QCOMPARE(build(o).toText(), build(fedora("x86_64")).toText());
         /* a QEMU of no properties, e.g. without the card: none of them */
         o.gpuProperties = QStringList();
-        QVERIFY(build(o).toText().contains("-device virtio-gpu-gl-pci\n-display"));
+        QVERIFY(build(o).toText().contains("-device virtio-vga-gl\n-display"));
     }
 
     /*
@@ -235,12 +234,12 @@ private slots:
     {
         const bool installed = !QStandardPaths::findExecutable("passt").isEmpty();
         const QString stack = Paths::stackDir();
-        const QString full = "-device virtio-gpu-gl-pci,hostmem=4G,blob=on,drm_native_context=on,"
+        const QString full = "-device virtio-vga-gl,hostmem=4G,blob=on,drm_native_context=on,"
                              "x-host-vblank=on,x-vblank-lead=3000,x-vblank-lead-auto=on\n";
         /* the documentation of QEMU 10.2, loaded: no native context, no passt */
         QemuInfo system;
-        system.devices = {{"virtio-gpu-gl-pci", "PCI", {}, "Display devices", {}, true}};
-        system.properties["virtio-gpu-gl-pci"] = {{"blob", "bool", {}, "off"},
+        system.devices = {{"virtio-vga-gl", "PCI", {}, "Display devices", {}, true}};
+        system.properties["virtio-vga-gl"] = {{"blob", "bool", {}, "off"},
                                                   {"hostmem", "size", {}, "0"},
                                                   {"venus", "bool", {}, "off"}};
         system.netdevs = {{"user", {}}, {"tap", {}}};
@@ -283,8 +282,8 @@ private slots:
         /* QEMU 10.2: no native context, no passt */
         const QString plain = m_tmp.filePath("plain/" + Paths::qemuSystemName());
         QVERIFY(script(plain, "case \"$1 $2\" in\n"
-                              "'-device virtio-gpu-gl-pci,help')\n"
-                              "  echo 'virtio-gpu-gl-pci options:'\n"
+                              "'-device virtio-vga-gl,help')\n"
+                              "  echo 'virtio-vga-gl options:'\n"
                               "  echo '  blob=<bool>'\n"
                               "  echo '  hostmem=<size>'\n"
                               "  echo '  venus=<bool>' ;;\n"
@@ -303,7 +302,7 @@ private slots:
         o.gpuProperties = gpuProperties(nullptr, plain);
         const ArgsFile args = build(o);
         QVERIFY(args.toText().contains("-accel kvm\n"));
-        QVERIFY(args.toText().contains("-device virtio-gpu-gl-pci,hostmem=4G,blob=on\n"));
+        QVERIFY(args.toText().contains("-device virtio-vga-gl,hostmem=4G,blob=on\n"));
         QVERIFY(!args.toText().contains("venus"));
         QVERIFY(!VmConfig::graphics(args).nativeContext);
 
@@ -315,9 +314,9 @@ private slots:
 
         /* loaded: a QEMU without the card has none, else as it says */
         QCOMPARE(gpuProperties(&info, plain), QStringList());
-        info.devices = {{"virtio-gpu-gl-pci", "PCI", {}, "Display devices", {}, true}};
+        info.devices = {{"virtio-vga-gl", "PCI", {}, "Display devices", {}, true}};
         QCOMPARE(gpuProperties(&info, plain), QStringList({"blob", "hostmem", "venus"}));
-        info.properties["virtio-gpu-gl-pci"] = {{"blob", "bool", {}, "off"},
+        info.properties["virtio-vga-gl"] = {{"blob", "bool", {}, "off"},
                                                 {"x-host-vblank", "bool", {}, "on"}};
         QCOMPARE(gpuProperties(&info, plain), QStringList({"blob", "x-host-vblank"}));
 

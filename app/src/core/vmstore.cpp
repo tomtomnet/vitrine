@@ -7,10 +7,10 @@
 #include <QProcess>
 #include <QRegularExpression>
 #include <QSaveFile>
+#include <QSettings>
 
 #include <algorithm>
 
-#include "core/cardupdate.h"
 #include "core/paths.h"
 #include "core/vmconfig.h"
 #include "core/guesttools.h"
@@ -78,10 +78,24 @@ void Vm::reload()
     }
 }
 
+/*
+ * The Don't Ask Again of the 3D card's update, per VM, which the Display
+ * page's options replaced with the prompt (2026-10-05): its keys go
+ */
+static void forgetCardUpdate()
+{
+    QSettings s(Paths::settingsPath(), QSettings::IniFormat);
+
+    if (s.childGroups().contains("cardupdate")) {
+        s.remove("cardupdate");
+    }
+}
+
 VmStore::VmStore(const QString &dir, QObject *parent)
     : QObject(parent), m_dir(QDir(dir).absolutePath()),
       m_watcher(new QFileSystemWatcher(this))
 {
+    forgetCardUpdate();
     QDir().mkpath(m_dir);
     m_watcher->addPath(m_dir);
     connect(m_watcher, &QFileSystemWatcher::directoryChanged, this, &VmStore::reload);
@@ -171,19 +185,10 @@ void VmStore::adopt(Vm *vm)
     connect(vm->runner(), &VmRunner::stateChanged, this, [this, vm]() {
         if (!vm->runner()->isActive() &&
             QFileInfo(QDir(vm->dir()).absolutePath()).absolutePath() != m_dir) {
-            QMetaObject::invokeMethod(this, [this]() { sync(false); }, Qt::QueuedConnection);
+            QMetaObject::invokeMethod(this, [this]() { sync(); }, Qt::QueuedConnection);
         }
     });
     emit added(vm);
-}
-
-/*
- * What vitrine keeps of a VM beside its folder goes with it: a VM made
- * later in a folder of the same name starts afresh
- */
-static void forget(const QString &id)
-{
-    CardUpdate::setDeclined(id, false);
 }
 
 bool VmStore::remove(Vm *vm, QString *error)
@@ -202,7 +207,6 @@ bool VmStore::remove(Vm *vm, QString *error)
     }
     m_watcher->removePath(vm->argsPath());
     m_vms.removeOne(vm);
-    forget(vm->id());
     emit removed(vm->id());
     vm->deleteLater();
     return true;
@@ -210,7 +214,7 @@ bool VmStore::remove(Vm *vm, QString *error)
 
 void VmStore::reload()
 {
-    sync(true);
+    sync();
 }
 
 void VmStore::setDir(const QString &dir)
@@ -224,11 +228,11 @@ void VmStore::setDir(const QString &dir)
     m_dir = path;
     QDir().mkpath(m_dir);
     m_watcher->addPath(m_dir);
-    sync(false);
+    sync();
     emit dirChanged(m_dir);
 }
 
-void VmStore::sync(bool forgetGone)
+void VmStore::sync()
 {
     const QDir dir(m_dir);
     QStringList present;
@@ -243,9 +247,6 @@ void VmStore::sync(bool forgetGone)
         if (!present.contains(QDir(vm->dir()).absolutePath()) && !vm->runner()->isActive()) {
             m_vms.removeOne(vm);
             m_watcher->removePath(vm->argsPath());
-            if (forgetGone) {
-                forget(vm->id());
-            }
             emit removed(vm->id());
             vm->deleteLater();
         }

@@ -1,0 +1,121 @@
+From: Vitrine
+Subject: [PATCH] virtio-vga: forward the display's frame feedback to the
+ virtio-gpu inside
+
+virtio-vga and virtio-vga-gl give the console of their first head
+GraphicHwOps of their own, which pass each hook to the VGA part or to the
+virtio-gpu device inside.  The research series added five hooks to
+virtio-gpu's own ops (gl_presented, gl_flush_pending, gl_flush_done,
+gl_flush_fenced, gl_zero_copy) and none to these, so with virtio-vga-gl
+the display's feedback never reached the device: the guest's vblank was
+not locked to the host's presentation (x-host-vblank), the guest's flush
+fences were not held, and the D-Bus display copied every frame, the
+guest's buffers never going to the screen as they are (zero copy).
+virtio-gpu-gl-pci, whose console has virtio-gpu's ops, had all of it.
+
+Forward them as the other hooks are.  The device takes them while the VGA
+part shows the firmware too, as virtio-gpu-gl-pci's does while OVMF
+drives it: it raises no interrupt before the guest's driver is ready.
+
+Vitrine gives new Linux VMs virtio-vga-gl rather than virtio-gpu-gl-pci,
+which shows the firmware, the bootloader and the early boot on its VGA
+part, with SeaBIOS as with OVMF.  Vitrine's own patch, for the research
+series to take over.
+
+Measured on a nested KWin at 60 Hz, the D-Bus client (dbus-display/) full
+screen, a Fedora 44 KDE guest with native context and vitrine's guest
+tools running vkcube for 20 s.  virtio-vga-gl without the patch: no
+vblank tick in the guest, every frame copied, a frame on the screen
+17.1 ms after QEMU's update (p50, p99 17.7), intervals of 33.3 ms at p99.
+With it: 61 ticks a second, zero copy with 1420 flushes held, 4.7 ms (p99
+4.8), 16.7 ms intervals; virtio-gpu-gl-pci, before as after: 61 ticks,
+zero copy, 4.6-4.7 ms.
+---
+ hw/display/virtio-vga.c | 68 ++++++++++++++++++++++++++++++++++++++++++++++++++
+ 1 file changed, 68 insertions(+)
+
+diff --git a/hw/display/virtio-vga.c b/hw/display/virtio-vga.c
+--- a/hw/display/virtio-vga.c
++++ b/hw/display/virtio-vga.c
+@@ -75,6 +75,69 @@ static int virtio_vga_base_get_flags(void *opaque)
+     return g->hw_ops->get_flags(g);
+ }
+ 
++/*
++ * The display's feedback on the frames of the first head, whose console the
++ * VGA part takes over: for the virtio-gpu device inside, as its own
++ * console's hooks get it.  Without them the guest's vblank is not locked to
++ * the host's presentation (x-host-vblank), its flush fences are not held,
++ * and its frames are always copied, never shown as they are (zero copy).
++ */
++static void virtio_vga_base_gl_presented(void *opaque, uint32_t head,
++                                         int64_t when_ns, int64_t period_ns,
++                                         int64_t compositor_lead_ns,
++                                         int64_t swap_lead_ns)
++{
++    VirtIOVGABase *vvga = opaque;
++    VirtIOGPUBase *g = vvga->vgpu;
++
++    if (g->hw_ops->gl_presented) {
++        g->hw_ops->gl_presented(g, head, when_ns, period_ns,
++                                compositor_lead_ns, swap_lead_ns);
++    }
++}
++
++static void virtio_vga_base_gl_flush_pending(void *opaque, uint32_t head,
++                                             uint64_t token)
++{
++    VirtIOVGABase *vvga = opaque;
++    VirtIOGPUBase *g = vvga->vgpu;
++
++    if (g->hw_ops->gl_flush_pending) {
++        g->hw_ops->gl_flush_pending(g, head, token);
++    }
++}
++
++static void virtio_vga_base_gl_flush_done(void *opaque, uint32_t head,
++                                          uint64_t token)
++{
++    VirtIOVGABase *vvga = opaque;
++    VirtIOGPUBase *g = vvga->vgpu;
++
++    if (g->hw_ops->gl_flush_done) {
++        g->hw_ops->gl_flush_done(g, head, token);
++    }
++}
++
++static bool virtio_vga_base_gl_flush_fenced(void *opaque, uint32_t head)
++{
++    VirtIOVGABase *vvga = opaque;
++    VirtIOGPUBase *g = vvga->vgpu;
++
++    return g->hw_ops->gl_flush_fenced &&
++           g->hw_ops->gl_flush_fenced(g, head);
++}
++
++static void virtio_vga_base_gl_zero_copy(void *opaque, uint32_t head,
++                                         bool on)
++{
++    VirtIOVGABase *vvga = opaque;
++    VirtIOGPUBase *g = vvga->vgpu;
++
++    if (g->hw_ops->gl_zero_copy) {
++        g->hw_ops->gl_zero_copy(g, head, on);
++    }
++}
++
+ static const GraphicHwOps virtio_vga_base_ops = {
+     .get_flags = virtio_vga_base_get_flags,
+     .invalidate = virtio_vga_base_invalidate_display,
+@@ -82,6 +145,11 @@ static const GraphicHwOps virtio_vga_base_ops = {
+     .text_update = virtio_vga_base_text_update,
+     .ui_info = virtio_vga_base_ui_info,
+     .gl_block = virtio_vga_base_gl_block,
++    .gl_presented = virtio_vga_base_gl_presented,
++    .gl_flush_pending = virtio_vga_base_gl_flush_pending,
++    .gl_flush_done = virtio_vga_base_gl_flush_done,
++    .gl_flush_fenced = virtio_vga_base_gl_flush_fenced,
++    .gl_zero_copy = virtio_vga_base_gl_zero_copy,
+ };
+ 
+ static const VMStateDescription vmstate_virtio_vga_base = {

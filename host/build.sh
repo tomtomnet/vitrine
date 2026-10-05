@@ -116,7 +116,7 @@ fi
 # pkg-config modules), so that other distributions can map them
 fedora=(git gcc gcc-c++ make meson ninja-build pkgconf-pkg-config python3 python3-pyyaml
 	python3-wheel python3-setuptools python3-pip binutils
-	util-linux glib2-devel pixman-devel zlib-devel libslirp-devel SDL2-devel libepoxy-devel
+	util-linux glib2-devel pixman-devel zlib-devel libslirp-devel SDL2-devel gtk3-devel libepoxy-devel
 	mesa-libgbm-devel mesa-libEGL-devel libdrm-devel libva-devel libusb1-devel
 	pulseaudio-libs-devel pipewire-devel spice-protocol libzstd-devel libpng-devel
 	libcap-ng-devel libattr-devel wayland-devel wayland-protocols-devel bzip2)
@@ -130,7 +130,7 @@ check_deps() {
 	need_pc epoxy gbm egl libdrm libva
 	python3 -c 'import yaml' 2> /dev/null || missing+=("python3 module yaml")
 	# QEMU
-	need_pc glib-2.0 gio-unix-2.0 pixman-1 zlib slirp sdl2 libusb-1.0 libpulse libpipewire-0.3 \
+	need_pc glib-2.0 gio-unix-2.0 pixman-1 zlib slirp sdl2 gtk+-3.0 libusb-1.0 libpulse libpipewire-0.3 \
 		spice-protocol libzstd libpng libcap-ng wayland-client
 	need_cmd wayland-scanner gdbus-codegen
 	# QEMU's configure requires it (install_blobs, on by default): the x86_64
@@ -374,7 +374,7 @@ begin "configuring QEMU"
 qbuild=$work/qemu-build
 qargs=(--prefix="$prefix" --target-list=x86_64-softmmu --without-default-features --disable-werror
 	--enable-kvm --enable-tcg --enable-pixman --enable-attr --enable-virtfs --enable-hmp
-	--enable-malloc-trim --enable-sdl --enable-sdl-gui --enable-opengl --enable-virglrenderer
+	--enable-malloc-trim --enable-sdl --enable-sdl-gui --enable-gtk --enable-opengl --enable-virglrenderer
 	--enable-libusb --enable-pa --enable-pipewire --enable-spice-protocol --enable-passt --enable-gio
 	--enable-dbus-display --enable-slirp --enable-tpm --enable-vhost-kernel --enable-vhost-net
 	--enable-vhost-user --enable-zstd --enable-png --enable-tools --enable-fdt=internal --disable-docs

@@ -3,7 +3,7 @@
 A Qt application for running Linux desktop virtual machines with QEMU/KVM.
 The guest uses the host's GPU through virtio-gpu DRM native context, and the
 app shows the guest's display in its window through QEMU's D-Bus display, or
-leaves it to QEMU's own SDL window.
+leaves it to QEMU's own SDL or GTK window.
 
 QEMU, virglrenderer and the guest's graphics stack (virtio-gpu driver, Mesa,
 KWin) are used at pinned versions, with the patches vitrine needs kept in
@@ -49,7 +49,7 @@ Building vitrine's QEMU (the list in `host/build.sh`; `host/build.sh
 ```
 sudo dnf install git gcc gcc-c++ make meson ninja-build pkgconf-pkg-config python3 \
     python3-pyyaml python3-wheel python3-setuptools python3-pip binutils util-linux \
-    glib2-devel pixman-devel zlib-devel libslirp-devel SDL2-devel libepoxy-devel \
+    glib2-devel pixman-devel zlib-devel libslirp-devel SDL2-devel gtk3-devel libepoxy-devel \
     mesa-libgbm-devel mesa-libEGL-devel libdrm-devel libva-devel libusb1-devel \
     pulseaudio-libs-devel pipewire-devel spice-protocol libzstd-devel libpng-devel \
     libcap-ng-devel libattr-devel wayland-devel wayland-protocols-devel bzip2

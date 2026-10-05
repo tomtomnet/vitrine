@@ -1113,8 +1113,8 @@ private slots:
         QVERIFY(QDir().mkpath(QFileInfo(broken).path()));
         script("system/" + Paths::qemuSystemName(),
                "case \"$1 $2\" in\n"
-               "'-device virtio-gpu-gl-pci,help')\n"
-               "  echo 'virtio-gpu-gl-pci options:'\n"
+               "'-device virtio-gpu-gl-pci,help'|'-device virtio-vga-gl,help')\n"
+               "  echo \"${2%,help} options:\"\n"
                "  echo '  addr=<str>             - Slot and optional function number'\n"
                "  echo '  blob=<bool>            - on/off (default: off)'\n"
                "  echo '  hostmem=<size>         -  (default: 0)'\n"
@@ -1186,8 +1186,8 @@ private slots:
             withHeadless("-device virtio-gpu-gl-pci,blob,drm_native_context\n"), &why));
         QVERIFY(why.startsWith("This VM uses drm_native_context, which"));
         /* a card it lacks altogether */
-        QVERIFY(VmRunner::needsQemuBuild(withHeadless("-device virtio-vga-gl\n"), &why));
-        QVERIFY(why.startsWith("This VM uses virtio-vga-gl, which"));
+        QVERIFY(VmRunner::needsQemuBuild(withHeadless("-device virtio-gpu-gl\n"), &why));
+        QVERIFY(why.startsWith("This VM uses virtio-gpu-gl, which"));
         /* a QEMU of the VM's own, or of the preferences: as the user chose */
         QVERIFY(!VmRunner::needsQemuBuild(own));
         Paths::setQemuBinary(system);

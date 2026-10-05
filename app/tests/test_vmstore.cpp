@@ -2,12 +2,12 @@
 #include <QDir>
 #include <QFile>
 #include <QFileInfo>
+#include <QSettings>
 #include <QSignalSpy>
 #include <QStandardPaths>
 #include <QTemporaryDir>
 #include <QTest>
 
-#include "core/cardupdate.h"
 #include "core/paths.h"
 #include "core/vmrunner.h"
 #include "core/vmstore.h"
@@ -128,13 +128,27 @@ private slots:
         QCOMPARE(store.vms().size(), 1);
         QCOMPARE(store.vms()[0]->name(), "Copied");
 
-        /* what vitrine keeps of it goes with it */
-        CardUpdate::setDeclined("copied", true);
         QVERIFY(QDir(tmp.filePath("copied")).removeRecursively());
         QTRY_COMPARE(removed.size(), 1);
         QCOMPARE(removed[0][0].toString(), "copied");
         QVERIFY(store.vms().isEmpty());
-        QVERIFY(!CardUpdate::isDeclined("copied"));
+    }
+
+    /* The card update's Don't Ask Again goes with the prompt; the other settings stay */
+    void oldCardUpdateSettings()
+    {
+        QTemporaryDir tmp;
+        {
+            QSettings s(Paths::settingsPath(), QSettings::IniFormat);
+            s.setValue("cardupdate/declined/Fedora", true);
+            s.setValue("cardupdate/declined/Other", true);
+            s.setValue("qemu/binary", "/usr/bin/qemu-system-x86_64");
+        }
+        VmStore store(tmp.path());
+        QSettings s(Paths::settingsPath(), QSettings::IniFormat);
+        QVERIFY(!s.childGroups().contains("cardupdate"));
+        QCOMPARE(s.value("qemu/binary").toString(), "/usr/bin/qemu-system-x86_64");
+        s.remove("qemu");
     }
 
     /* Another folder: its VMs as found there, the old ones left where they are */
@@ -152,7 +166,6 @@ private slots:
         QSignalSpy removed(&store, &VmStore::removed);
         QSignalSpy changed(&store, &VmStore::dirChanged);
         QCOMPARE(store.vms().size(), 2);
-        CardUpdate::setDeclined("one", true);
 
         store.setDir(b.path());
         QCOMPARE(store.dir(), QDir(b.path()).absolutePath());
@@ -165,10 +178,9 @@ private slots:
         /* the same name in both folders: the new folder's */
         QCOMPARE(store.find("both")->name(), "Both in B");
         QCOMPARE(store.find("both")->dir(), b.filePath("both"));
-        /* nothing moved, deleted or forgotten */
+        /* nothing moved or deleted */
         QVERIFY(QFileInfo::exists(a.filePath("one/vm.args")));
         QVERIFY(QFileInfo::exists(a.filePath("both/vm.args")));
-        QVERIFY(CardUpdate::isDeclined("one"));
         /* new VMs go to the new folder, which is watched */
         QCOMPARE(store.create("Three")->dir(), b.filePath("Three"));
         write(b.filePath("four/vm.args"), "-name Four\n");
@@ -184,7 +196,6 @@ private slots:
         QCOMPARE(store.find("both")->name(), "Both in A");
         QVERIFY(store.find("five"));
         QVERIFY(!store.find("two"));
-        CardUpdate::setDeclined("one", false);
     }
 
     /*

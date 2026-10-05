@@ -22,7 +22,7 @@
 #include "ui/qemudocs.h"
 
 /* The 3D card of vitrine's QEMU, all of it */
-static const char kCard[] = "-device virtio-gpu-gl-pci,hostmem=4G,blob=on,drm_native_context=on,"
+static const char kCard[] = "-device virtio-vga-gl,hostmem=4G,blob=on,drm_native_context=on,"
                             "x-host-vblank=on,x-vblank-lead=3000,x-vblank-lead-auto=on\n";
 
 /*
@@ -108,8 +108,8 @@ private slots:
         qputenv("XDG_CONFIG_HOME", m_tmp.filePath("config").toUtf8());
         qputenv("XDG_CACHE_HOME", m_tmp.filePath("cache").toUtf8());
         QVERIFY(script(systemQemu(), "case \"$1 $2\" in\n"
-                                     "'-device virtio-gpu-gl-pci,help')\n"
-                                     "  echo 'virtio-gpu-gl-pci options:'\n"
+                                     "'-device virtio-vga-gl,help')\n"
+                                     "  echo 'virtio-vga-gl options:'\n"
                                      "  echo '  blob=<bool>'\n"
                                      "  echo '  hostmem=<size>'\n"
                                      "  echo '  venus=<bool>' ;;\n"
@@ -249,7 +249,7 @@ private slots:
         QemuDocs::reloadPreferred();
         const QString args = create();
 
-        QVERIFY2(args.contains("-device virtio-gpu-gl-pci,hostmem=4G,blob=on\n"),
+        QVERIFY2(args.contains("-device virtio-vga-gl,hostmem=4G,blob=on\n"),
                  qPrintable(args));
         QVERIFY(args.contains("-accel kvm\n"));
         QVERIFY(!args.contains("drm_native_context"));

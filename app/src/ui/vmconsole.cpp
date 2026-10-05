@@ -16,7 +16,6 @@
 #include "core/vmrunner.h"
 #include "core/vmstore.h"
 #include "ui/banner.h"
-#include "ui/cardupdatedialog.h"
 #include "ui/guesttoolsdialog.h"
 #include "ui/icons.h"
 #include "ui/systems.h"
@@ -109,9 +108,6 @@ VmConsole::VmConsole(Vm *vm, QWidget *parent)
         auto *tools = new GuestToolsBanner;
         tools->setVm(vm);
         column->addWidget(tools);
-        auto *card = new CardUpdateBanner;
-        card->setVm(vm);
-        column->addWidget(card);
         column->addSpacing(16);
         column->addWidget(m_start, 0, Qt::AlignLeft);
         column->addSpacing(16);
@@ -169,8 +165,8 @@ VmConsole::VmConsole(Vm *vm, QWidget *parent)
         title->setAlignment(Qt::AlignCenter);
         m_ownWindowText->setAlignment(Qt::AlignCenter);
         m_ownWindowText->setWordWrap(true);
-        m_ownWindowText->setText(tr("QEMU shows this VM in a window of its own (SDL display), "
-                                    "which stays open without vitrine."));
+        m_ownWindowText->setText(tr("QEMU shows this VM in a window of its own, which stays "
+                                    "open without vitrine."));
         connect(show, &QPushButton::clicked, this, &VmConsole::showWindowRequested);
         column->addStretch();
         column->addWidget(title);

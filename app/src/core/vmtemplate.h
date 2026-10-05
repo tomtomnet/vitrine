@@ -24,7 +24,9 @@ struct QemuInfo;
  * the host's, shown in vitrine's window; the disk on an iothread; virtio
  * input, sound and random numbers; NAT through passt with the guest's SSH
  * on a port of this computer; UEFI without Secure Boot, as the guest
- * tools' kernel module is not signed.
+ * tools' kernel module is not signed.  The card is the launcher's with a
+ * VGA part (virtio-vga-gl rather than virtio-gpu-gl-pci), which shows the
+ * firmware, the boot loader and the early boot, with BIOS as with UEFI.
  */
 namespace VmTemplate {
 
@@ -57,9 +59,9 @@ struct Options {
     int sshPort = 0;
     bool passt = false;
     /*
-     * The properties of virtio-gpu-gl-pci in the QEMU the VM runs with, to
-     * leave out those of vitrine's QEMU it lacks; not set for vitrine's
-     * QEMU, built or not, which has them all
+     * The properties of the 3D card (virtio-vga-gl) in the QEMU the VM
+     * runs with, to leave out those of vitrine's QEMU it lacks; not set
+     * for vitrine's QEMU, built or not, which has them all
      */
     std::optional<QStringList> gpuProperties;
 };
@@ -91,13 +93,15 @@ bool hasVga(const QString &arch = {});
  * has it if built with it, as vitrine's is.
  */
 bool hasPasst(const QemuInfo *info, const QString &chosen);
-/* The properties of virtio-gpu-gl-pci; not set for vitrine's QEMU */
+/* The properties of the 3D card (virtio-vga-gl); not set for vitrine's QEMU */
 std::optional<QStringList> gpuProperties(const QemuInfo *info, const QString &chosen);
 
+/* The 3D card of Linux on a PC */
+inline constexpr char kCard[] = "virtio-vga-gl";
 /*
- * The properties the 3D card of Linux on a PC gets, KEY and VALUE in the
- * order the template writes them, when the QEMU has them all: what
- * CardUpdate offers VMs made before
+ * The properties that card gets, KEY and VALUE in the order the template
+ * writes them, when the QEMU has them all: what the Display page's
+ * options for native context and the frame timing write (CardSettings)
  */
 const QList<std::pair<QString, QString>> &cardProperties();
 

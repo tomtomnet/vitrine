@@ -18,7 +18,7 @@ class VmView;
 /*
  * A VM's console, VMware style: while the VM is off, a page to start it;
  * while it runs in vitrine's window, its screen (VmView); while it runs in
- * a window of its own (QEMU's SDL display), the way to that window.
+ * a window of its own (QEMU's SDL or GTK display), the way to that window.
  *
  * MainWindow keeps one console per VM, in a stack on the Console tab, for
  * as long as the VM exists: the screen is a native subsurface drawn by a

@@ -266,8 +266,7 @@ static int windowLine(const ArgsFile &args)
     return -1;
 }
 
-/* A display over the network: -vnc, -spice or -display vnc= */
-static bool hasRemoteDisplay(const ArgsFile &args)
+bool hasRemoteDisplay(const ArgsFile &args)
 {
     if (args.indexOf("vnc") >= 0 || args.indexOf("spice") >= 0) {
         return true;
@@ -306,6 +305,11 @@ Screen screen(const ArgsFile &args)
 bool isVgaDevice(const QString &device)
 {
     return kVgaDevices.contains(device);
+}
+
+bool isAccelerated(const QString &device)
+{
+    return kAccelerated.contains(device);
 }
 
 QString glCounterpart(const QString &device)
@@ -478,13 +482,18 @@ static void setCard(ArgsFile &args, const Graphics &now, const Graphics &g)
     }
     v.setImplied(driver);
     if (kAccelerated.contains(driver)) {
-        v.remove("drm_native_context");
-        v.remove("venus");
-        if (g.nativeContext) {
-            v.set("drm_native_context", "on");
+        /* where they are on the line when they stay as they are, e.g. for another 3D card */
+        if (v.flag("drm_native_context") != g.nativeContext) {
+            v.remove("drm_native_context");
+            if (g.nativeContext) {
+                v.set("drm_native_context", "on");
+            }
         }
-        if (g.venus) {
-            v.set("venus", "on");
+        if (v.flag("venus") != g.venus) {
+            v.remove("venus");
+            if (g.venus) {
+                v.set("venus", "on");
+            }
         }
         if (g.nativeContext || g.venus) {
             const qint64 mib = g.hostmemMiB > 0   ? g.hostmemMiB
@@ -607,11 +616,23 @@ void setGraphics(ArgsFile &args, const Graphics &g)
     setWindow(args, g.display, gl, accelerated);
 }
 
-void setScreen(ArgsFile &args, Screen screen)
+void setScreen(ArgsFile &args, Screen screen, const QString &window)
 {
     Graphics g = graphics(args);
 
-    g.display = screen == Screen::Embedded ? "dbus" : screen == Screen::OwnWindow ? "sdl" : "none";
+    switch (screen) {
+    case Screen::Embedded:
+        g.display = "dbus";
+        break;
+    case Screen::OwnWindow:
+        g.display = window.isEmpty() ? QString("sdl") : window;
+        break;
+    case Screen::None:
+        /* virgl and native context draw with OpenGL, which QEMU refuses
+           to start the 3D card without: a display with it, and no window */
+        g.display = g.kind == Graphics::Accelerated ? "egl-headless" : "none";
+        break;
+    }
     setGraphics(args, g);
     /* virgl needs OpenGL in the window, whichever it is */
     const int line = windowLine(args);
@@ -621,6 +642,27 @@ void setScreen(ArgsFile &args, Screen screen)
             v.set("gl", "on");
             args.setValueAt(line, v);
         }
+    }
+}
+
+QString displayOption(const ArgsFile &args, const QString &key)
+{
+    const int line = windowLine(args);
+    return line < 0 ? QString() : args.valueAt(line).get(key);
+}
+
+bool displayFlag(const ArgsFile &args, const QString &key, bool fallback)
+{
+    const int line = windowLine(args);
+    return line < 0 ? fallback : args.valueAt(line).flag(key, fallback);
+}
+
+void setDisplayOption(ArgsFile &args, const QString &key, const QString &value)
+{
+    const int line = windowLine(args);
+
+    if (line >= 0 && args.valueAt(line).get(key) != value) {
+        setKey(args, line, key, value);
     }
 }
 

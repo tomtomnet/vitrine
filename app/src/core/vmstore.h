@@ -78,8 +78,8 @@ signals:
     void dirChanged(const QString &dir);
 
 private:
-    /* @forgetGone: what is known of a VM whose folder went goes with it */
-    void sync(bool forgetGone);
+    /* The VMs of the folder as found there; the running ones stay */
+    void sync();
     /* In the list, its vm.args watched */
     void adopt(Vm *vm);
     QString m_dir;
