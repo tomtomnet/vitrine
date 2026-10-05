@@ -28,30 +28,31 @@ static QString warning(const QStringList &names, const QString &why)
         .arg(names.join(", "), why);
 }
 
-void request(Vm *vm, QObject *context, const std::function<void(const QString &warning)> &done,
-             const QString &sysfs, const QString &dev)
+void grant(const QList<UsbDevice> &devices, QObject *context,
+           const std::function<void(const QStringList &names, const QString &why)> &done,
+           const QString &dev)
 {
-    QList<std::pair<quint16, quint16>> ids;
+    QList<UsbDevice> out;
     QStringList nodes, names;
 
-    for (const VmConfig::UsbId &id : VmConfig::usbPassthrough(vm->args())) {
-        ids << std::pair(id.vendor, id.product);
-    }
-    const QList<UsbDevice> devices = HostDevices::usbWithoutAccess(ids, sysfs, dev);
-    if (devices.isEmpty()) {
-        done({});
-        return;
-    }
     for (const UsbDevice &d : devices) {
         /* /dev/bus/usb/001/004 */
-        nodes << dev + d.devNode().mid(4);
-        names << d.displayName();
+        const QString node = dev + d.devNode().mid(4);
+        if (::access(QFile::encodeName(node).constData(), R_OK | W_OK) != 0) {
+            out << d;
+            nodes << node;
+            names << d.displayName();
+        }
+    }
+    if (out.isEmpty()) {
+        done({}, {});
+        return;
     }
 
     const QString pkexec = QStandardPaths::findExecutable("pkexec");
     const QString setfacl = QStandardPaths::findExecutable("setfacl");
     if (pkexec.isEmpty() || setfacl.isEmpty()) {
-        done(warning(names, tr("asking for access needs pkexec (polkit) and setfacl (acl)")));
+        done(names, tr("asking for access needs pkexec (polkit) and setfacl (acl)"));
         return;
     }
 
@@ -65,12 +66,12 @@ void request(Vm *vm, QObject *context, const std::function<void(const QString &w
         *reported = true;
         process->deleteLater();
         QStringList still;
-        for (qsizetype i = 0; i < devices.size(); i++) {
+        for (qsizetype i = 0; i < out.size(); i++) {
             if (::access(QFile::encodeName(nodes[i]).constData(), R_OK | W_OK) != 0) {
                 still << names[i];
             }
         }
-        done(still.isEmpty() ? QString() : warning(still, why));
+        done(still, still.isEmpty() ? QString() : why);
     };
     QObject::connect(process, &QProcess::finished, context,
                      [=](int code, QProcess::ExitStatus status) {
@@ -88,6 +89,20 @@ void request(Vm *vm, QObject *context, const std::function<void(const QString &w
     });
     process->start(pkexec,
                    QStringList{setfacl, "-m", QString("u:%1:rw").arg(getuid())} + nodes);
+}
+
+void request(Vm *vm, QObject *context, const std::function<void(const QString &warning)> &done,
+             const QString &sysfs, const QString &dev)
+{
+    QList<std::pair<quint16, quint16>> ids;
+
+    for (const VmConfig::UsbId &id : VmConfig::usbPassthrough(vm->args())) {
+        ids << std::pair(id.vendor, id.product);
+    }
+    grant(HostDevices::usbWithoutAccess(ids, sysfs, dev), context,
+          [done](const QStringList &names, const QString &why) {
+        done(names.isEmpty() ? QString() : warning(names, why));
+    }, dev);
 }
 
 }
