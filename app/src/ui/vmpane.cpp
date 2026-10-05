@@ -277,8 +277,10 @@ VmPane::VmPane(QWidget *parent)
     connect(m_tabs, &QTabWidget::currentChanged, save,
             [this, save, settings]() { save->setEnabled(m_tabs->currentWidget() == settings); });
     connect(save, &QShortcut::activated, this, [this]() {
-        if (m_apply->isEnabled()) {
-            m_apply->click();
+        /* the changes themselves, not Apply's state: it follows them a moment
+           later, and Ctrl+S right after a key would find it off */
+        if (isModified()) {
+            apply();
         }
     });
     connect(m_discard, &QPushButton::clicked, this, &VmPane::discard);

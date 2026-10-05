@@ -278,6 +278,10 @@ MainWindow::MainWindow(VmStore *store, QWidget *parent)
         if (tab == VmPane::Console) {
             focusScreen(FocusCause::Shown);
         }
+        /* on the Settings tab, Ctrl+S applies its changes (VmPane), and is not
+           Settings' too: with two shortcuts on one key, Qt does neither */
+        m_settings->setShortcut(tab == VmPane::Settings ? QKeySequence()
+                                                        : QKeySequence(Qt::CTRL | Qt::Key_S));
     });
     /* a click on the VM shown already: its screen, as a click on another */
     connect(m_list, &QListWidget::itemClicked, this,

@@ -321,6 +321,7 @@ if(BUILD_TESTING)
             cardupdatedialog
             newvmdialog
             settingspages
+            shortcuts
             snapshotview
             stackbanner
             udmabufnotifier
