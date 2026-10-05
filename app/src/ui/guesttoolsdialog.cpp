@@ -296,12 +296,10 @@ void GuestToolsDialog::fail(const QString &error)
 {
     m_step = Step::Idle;
     m_buttons->button(QDialogButtonBox::Cancel)->setText(tr("&Close"));
-    /* hidden since its guest shut down; the VM is off, its screen gone:
-       back, without taking the keys from where they go */
+    /* hidden since its guest shut down: back with the error, the VM off and
+       its screen gone (KWin activates it, WA_ShowWithoutActivating or not) */
     if (isHidden()) {
-        setAttribute(Qt::WA_ShowWithoutActivating);
         show();
-        setAttribute(Qt::WA_ShowWithoutActivating, false);
     }
     setProgress(
         QString("<b>%1</b><br>%2")
