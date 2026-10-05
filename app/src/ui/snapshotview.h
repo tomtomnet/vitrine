@@ -22,7 +22,8 @@ public:
     void setVm(Vm *vm);
 
 signals:
-    /* Start From It: the VM, stopped, starts from snapshot @name */
+    /* Start From It: the VM, stopped, starts from snapshot @name (its
+       running state); an empty @name: as it is, its disks taken back already */
     void startRequested(const QString &name);
 
 protected:
@@ -36,6 +37,9 @@ private:
     void take();
     void restore();
     void remove();
+    void startFrom();
+    /* Whether snapshot @name holds the VM's running state, not the disks only */
+    bool hasState(const QString &name) const;
     void busy(const QString &what);
 
     QPointer<Vm> m_vm;
@@ -51,4 +55,6 @@ private:
     QPushButton *m_delete;
     /* no qcow2 file to keep a snapshot in, now */
     bool m_cannotTake = false;
+    /* Start From It of a snapshot of the disks only: the start once they are back */
+    bool m_startAfterRestore = false;
 };

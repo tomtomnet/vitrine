@@ -7,6 +7,7 @@
 #include <QCloseEvent>
 #include <QDesktopServices>
 #include <QDialog>
+#include <QDir>
 #include <QFileInfo>
 #include <QLabel>
 #include <QListWidget>
@@ -281,6 +282,10 @@ MainWindow::MainWindow(VmStore *store, QWidget *parent)
         if (tab == VmPane::Console) {
             focusScreen(FocusCause::Shown);
         }
+        /* on the Settings tab, Ctrl+S applies its changes (VmPane), and is not
+           Settings' too: with two shortcuts on one key, Qt does neither */
+        m_settings->setShortcut(tab == VmPane::Settings ? QKeySequence()
+                                                        : QKeySequence(Qt::CTRL | Qt::Key_S));
     });
     /* a click on the VM shown already: its screen, as a click on another */
     connect(m_list, &QListWidget::itemClicked, this,
@@ -379,7 +384,13 @@ void MainWindow::createActions()
     m_preferences->setShortcut(QKeySequence::Preferences);
     connect(m_preferences, &QAction::triggered, this, [this]() {
         PreferencesDialog dialog(this);
-        dialog.exec();
+        if (dialog.exec() == QDialog::Accepted && m_store->dir() != Paths::vmsDir()) {
+            /* the VMs found in the folder chosen, no import needed */
+            m_store->setDir(Paths::vmsDir());
+            statusBar()->showMessage(tr("%n VM(s) in %1", nullptr, int(m_store->vms().size()))
+                                         .arg(QDir::toNativeSeparators(m_store->dir())),
+                                     8000);
+        }
     });
     m_reference = new QAction(Icons::themed({"help-contents", "documentation"},
                                             QStyle::SP_DialogHelpButton),
@@ -526,11 +537,6 @@ void MainWindow::createActions()
                          m_start});
     /* the tabs replace the pane's own */
     m_pane->setTabBarShown(false);
-    /* on the Settings tab, Ctrl+S applies its changes (VmPane), not Settings too */
-    connect(m_pane, &VmPane::tabChanged, this, [this](VmPane::Tab tab) {
-        m_settings->setShortcut(tab == VmPane::Settings ? QKeySequence()
-                                                        : QKeySequence(Qt::CTRL | Qt::Key_S));
-    });
 }
 
 void MainWindow::showLibrary(bool shown)

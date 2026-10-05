@@ -138,7 +138,8 @@ Vm *VmStore::create(const QString &name, QString *error)
         base = "vm";
     }
     id = base;
-    for (int n = 2; dir.exists(id); n++) {
+    /* nor the name of a VM still running from a folder used before */
+    for (int n = 2; dir.exists(id) || find(id); n++) {
         id = QString("%1-%2").arg(base).arg(n);
     }
     if (!dir.mkpath(id)) {
@@ -157,10 +158,23 @@ Vm *VmStore::create(const QString &name, QString *error)
         QDir(dir.filePath(id)).removeRecursively();
         return nullptr;
     }
+    adopt(vm);
+    return vm;
+}
+
+void VmStore::adopt(Vm *vm)
+{
     m_vms << vm;
     m_watcher->addPath(vm->argsPath());
+    /* a VM of another folder, left running when the folder changed: it
+       leaves the list once it stops */
+    connect(vm->runner(), &VmRunner::stateChanged, this, [this, vm]() {
+        if (!vm->runner()->isActive() &&
+            QFileInfo(QDir(vm->dir()).absolutePath()).absolutePath() != m_dir) {
+            QMetaObject::invokeMethod(this, [this]() { sync(false); }, Qt::QueuedConnection);
+        }
+    });
     emit added(vm);
-    return vm;
 }
 
 /*
@@ -196,29 +210,54 @@ bool VmStore::remove(Vm *vm, QString *error)
 
 void VmStore::reload()
 {
+    sync(true);
+}
+
+void VmStore::setDir(const QString &dir)
+{
+    const QString path = QDir(dir).absolutePath();
+
+    if (path == m_dir) {
+        return;
+    }
+    m_watcher->removePath(m_dir);
+    m_dir = path;
+    QDir().mkpath(m_dir);
+    m_watcher->addPath(m_dir);
+    sync(false);
+    emit dirChanged(m_dir);
+}
+
+void VmStore::sync(bool forgetGone)
+{
     const QDir dir(m_dir);
     QStringList present;
 
     for (const QString &id : dir.entryList(QDir::Dirs | QDir::NoDotAndDotDot)) {
         if (QFileInfo::exists(dir.filePath(id) + '/' + kArgsFile)) {
-            present << id;
+            present << QDir(dir.filePath(id)).absolutePath();
         }
     }
+    /* by folder, not by name: another folder may hold a VM of the same name */
     for (Vm *vm : QList<Vm *>(m_vms)) {
-        if (!present.contains(vm->id()) && !vm->runner()->isActive()) {
+        if (!present.contains(QDir(vm->dir()).absolutePath()) && !vm->runner()->isActive()) {
             m_vms.removeOne(vm);
-            forget(vm->id());
+            m_watcher->removePath(vm->argsPath());
+            if (forgetGone) {
+                forget(vm->id());
+            }
             emit removed(vm->id());
             vm->deleteLater();
         }
     }
-    for (const QString &id : std::as_const(present)) {
-        if (!find(id)) {
-            Vm *vm = new Vm(dir.filePath(id), this);
-            m_vms << vm;
-            m_watcher->addPath(vm->argsPath());
-            emit added(vm);
+    for (const QString &path : std::as_const(present)) {
+        const QString id = QFileInfo(path).fileName();
+        /* one VM per name at a time: one of the old folder still running
+           keeps it until it stops (VMs are known by name everywhere) */
+        if (find(id)) {
+            continue;
         }
+        adopt(new Vm(path, this));
     }
 }
 

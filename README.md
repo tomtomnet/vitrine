@@ -140,7 +140,8 @@ guest with its keys or mouse does that. QEMU's SDL window shares the
 clipboard too, and on Wayland waits for a key or click in it.
 
 Files: VMs in `~/.local/share/vitrine/vms/<id>/` (`vm.args`, a new VM's
-disk, `qemu.log`), vitrine's QEMU in `~/.local/share/vitrine/stack/`, the
+disk, `qemu.log`), or another folder chosen in Preferences, where vitrine
+lists every folder holding a `vm.args`; vitrine's QEMU in `~/.local/share/vitrine/stack/`, the
 guest tools in `~/.local/share/vitrine/guest-tools/`, QEMU's build trees in
 `~/.cache/vitrine/stack-build/`, the guest tools' downloads in
 `~/.cache/vitrine/guest-build/`, settings in `~/.config/vitrine/settings.conf`.
