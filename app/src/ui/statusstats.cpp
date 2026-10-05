@@ -586,8 +586,9 @@ static QString diskDetails(const VmStats::Snapshot &s)
                    "<table>";
 
     for (const VmStats::DeviceRate &d : s.diskUse.devices) {
-        if (d.readTotal == 0 && d.writtenTotal == 0) {
-            continue;       // an empty drive
+        /* not the empty drive the firmware and the guest looked at once */
+        if (d.read == 0 && d.written == 0 && d.readTotal + d.writtenTotal < (1 << 20)) {
+            continue;
         }
         html += tableRow(d.name,
                          StatusStats::tr("R %1 · W %2")

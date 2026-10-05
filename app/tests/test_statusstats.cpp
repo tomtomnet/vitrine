@@ -87,8 +87,11 @@ private:
             return R"({"running": true, "status": "running"})";
         }
         if (command == "query-blockstats") {
+            /* and the empty drive the guest looked at once */
             return QString(R"([{"device": "disk0", "stats": {"rd_bytes": %1, "wr_bytes": %2,)"
-                           R"( "rd_operations": %3, "wr_operations": %3}}])")
+                           R"( "rd_operations": %3, "wr_operations": %3}},)"
+                           R"( {"device": "ide2-cd0", "stats": {"rd_bytes": 528, "wr_bytes": 0,)"
+                           R"( "rd_operations": 1, "wr_operations": 0}}])")
                 .arg(qint64(n) * 12 << 20)
                 .arg(qint64(n) << 20)
                 .arg(n)
@@ -353,6 +356,10 @@ private slots:
                     QHelpEvent tip(QEvent::ToolTip, at, l->mapToGlobal(at));
                     QApplication::sendEvent(l, &tip);
                     QTRY_VERIFY(QToolTip::isVisible());
+                    if (l == s->label(StatusStats::Disk)) {
+                        QVERIFY(QToolTip::text().contains("disk0"));
+                        QVERIFY(!QToolTip::text().contains("ide2-cd0"));
+                    }
                     QLabel wrapped, unwrapped;
                     wrapped.setWordWrap(true);
                     wrapped.setText(QToolTip::text());
