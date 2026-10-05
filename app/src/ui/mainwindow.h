@@ -9,7 +9,10 @@
 
 #include "core/vmrunner.h"
 
+class MainBar;
 class QAction;
+class QComboBox;
+class QMenu;
 class PerfMonitor;
 class QemuBuildDialog;
 class QLabel;
@@ -46,6 +49,9 @@ public:
     /* Shows the window over the others, for a second instance */
     void bringToFront();
 
+    /* The bar's own menu: what shows and hides the menu bar and the list */
+    QMenu *createPopupMenu() override;
+
 protected:
     void closeEvent(QCloseEvent *event) override;
     /* Dialogs, from anywhere: they come out of full screen first */
@@ -53,6 +59,12 @@ protected:
 
 private:
     void createActions();
+    /* The list of VMs on the left, or the bar's drop-down of them instead */
+    void showLibrary(bool shown);
+    /* The menu bar, or its menus behind the bar's menu button instead */
+    void showMenuBar(bool shown);
+    /* F10: the menus, from the menu bar or the bar's button */
+    void openMenu();
     void addVm(Vm *vm);
     void removeItem(const QString &id);
     QListWidgetItem *itemOf(const QString &id) const;
@@ -166,6 +178,18 @@ private:
     QAction *m_preferences;
     QAction *m_reference;
     QAction *m_quit;
+    /* The one bar under the title: actions, tabs, menu button */
+    MainBar *m_bar;
+    /* The VMs in the bar while the list is hidden, and its action there */
+    QComboBox *m_chooser;
+    QAction *m_chooserAction;
+    /* In the bar: hides or shows the list (m_library) */
+    QAction *m_listButton;
+    /* The menu bar shown, else its menus behind m_menuButton */
+    QAction *m_menuBar;
+    QMenu *m_mainMenu;
+    QAction *m_menuButton;
+    QAction *m_openMenu;
     /* Host USB devices for the selected VM while it runs */
     UsbMenu *m_usb;
 };

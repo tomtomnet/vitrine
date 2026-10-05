@@ -13,6 +13,8 @@
 #include <QTableWidget>
 #include <QVBoxLayout>
 
+#include <utility>
+
 #include "core/snapshots.h"
 #include "core/vmrunner.h"
 #include "core/vmstore.h"
@@ -133,11 +135,7 @@ SnapshotView::SnapshotView(QWidget *parent)
     connect(m_take, &QPushButton::clicked, this, &SnapshotView::take);
     connect(m_restore, &QPushButton::clicked, this, &SnapshotView::restore);
     connect(m_delete, &QPushButton::clicked, this, &SnapshotView::remove);
-    connect(m_start, &QPushButton::clicked, this, [this]() {
-        if (!selected().isEmpty()) {
-            emit startRequested(selected());
-        }
-    });
+    connect(m_start, &QPushButton::clicked, this, &SnapshotView::startFrom);
     updateButtons();
 }
 
@@ -182,6 +180,9 @@ void SnapshotView::setVm(Vm *vm)
             m_error->setText(error.toHtmlEscaped());
             m_error->setVisible(!error.isEmpty());
             updateButtons();
+            if (std::exchange(m_startAfterRestore, false) && error.isEmpty()) {
+                emit startRequested(QString());
+            }
         });
         connect(m_snapshots, &VmSnapshots::busyChanged, this, &SnapshotView::updateButtons);
         connect(m_snapshots, &VmSnapshots::notice, this, [this](const QString &text) {
@@ -264,13 +265,8 @@ void SnapshotView::updateButtons()
     const bool live = state == VmRunner::State::Running || state == VmRunner::State::Paused;
     const bool stopped = state == VmRunner::State::Stopped;
     const QString name = selected();
-    bool withState = false;
+    const bool withState = hasState(name);
 
-    if (m_snapshots) {
-        for (const VmSnapshots::Snapshot &s : m_snapshots->snapshots()) {
-            withState |= s.name == name && s.stateBytes > 0;
-        }
-    }
     m_take->setEnabled(!busy && (live || stopped) && !m_cannotTake);
     /* a running VM goes back to the running state, not the disks alone */
     m_restore->setEnabled(!busy && !name.isEmpty() && (stopped || (live && withState)));
@@ -278,7 +274,13 @@ void SnapshotView::updateButtons()
                               ? tr("This snapshot holds the disks only: stop the VM to go back "
                                    "to it")
                               : tr("Take the VM back to where it was"));
-    m_start->setEnabled(!busy && !name.isEmpty() && stopped && withState);
+    /* of the disks only too: QEMU saves no running state for VMs with some
+       devices (vhost-user, 3D blob resources...), whose snapshots all are so */
+    m_start->setEnabled(!busy && !name.isEmpty() && stopped);
+    m_start->setToolTip(!name.isEmpty() && !withState
+                            ? tr("This snapshot holds the disks only: they go back to it, and "
+                                 "the guest starts from them")
+                            : tr("Start the VM where it was when the snapshot was taken"));
     m_delete->setEnabled(!busy && !name.isEmpty() && (live || stopped));
 }
 
@@ -385,6 +387,42 @@ void SnapshotView::restore()
     }
     busy(tr("Going back to %1…").arg(name));
     m_snapshots->restore(name);
+}
+
+void SnapshotView::startFrom()
+{
+    const QString name = selected();
+
+    if (name.isEmpty()) {
+        return;
+    }
+    if (hasState(name)) {
+        emit startRequested(name);
+        return;
+    }
+    if (!Widgets::confirm(this, QMessageBox::Warning, tr("Start From %1?").arg(name),
+                          tr("This snapshot holds the disks only, without the running VM: "
+                             "the disks go back to what they held when it was taken, what "
+                             "was written since is lost, and the guest starts from them."),
+                          tr("&Start"), m_start->icon())) {
+        return;
+    }
+    m_startAfterRestore = true;
+    busy(tr("Going back to %1…").arg(name));
+    m_snapshots->restore(name);
+}
+
+bool SnapshotView::hasState(const QString &name) const
+{
+    if (!m_snapshots || name.isEmpty()) {
+        return false;
+    }
+    for (const VmSnapshots::Snapshot &s : m_snapshots->snapshots()) {
+        if (s.name == name && s.stateBytes > 0) {
+            return true;
+        }
+    }
+    return false;
 }
 
 void SnapshotView::remove()
