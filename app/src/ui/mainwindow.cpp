@@ -1304,6 +1304,8 @@ void MainWindow::closeEvent(QCloseEvent *event)
                     break;
                 }
                 m_closeAfter.insert(each->id());
+                /* off for good, not started again for its guest tools */
+                GuestToolsDialog::stayOff(each);
                 if (first.isEmpty()) {
                     first = each->id();
                 }

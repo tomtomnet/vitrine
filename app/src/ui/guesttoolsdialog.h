@@ -11,6 +11,7 @@ class QCheckBox;
 class QDialogButtonBox;
 class QLabel;
 class QPushButton;
+class QTimer;
 class Vm;
 class VmSnapshots;
 
@@ -38,6 +39,16 @@ public:
 
     /* Its open one for @vm, if any */
     static GuestToolsDialog *of(Vm *vm);
+    /* @vm stays off once its guest shut down (the window closes): its
+       dialog, waiting to restart it, does not; the install stays pending */
+    static void stayOff(Vm *vm);
+    /* Tests: how long it waits for the guest to shut down */
+    static void setShutdownWait(int ms);
+
+public slots:
+    /* Not while the snapshot is written; while the guest shuts down, the
+       install is cancelled too */
+    void reject() override;
 
 private:
     GuestToolsDialog(Vm *vm, QWidget *parent);
@@ -48,13 +59,17 @@ private:
     void fail(const QString &error);
     /* Its content changed: as high as it is at its width */
     void fit();
+    /* No restart after all: says @why if shown, else goes */
+    void stopWaiting(const QString &why);
     /* The progress line, under the notes */
     void setProgress(const QString &text);
 
-    enum class Step { Idle, ShuttingDown, Snapshot, Starting };
+    /* Done: failed, cancelled or given up, nothing more to do but close */
+    enum class Step { Idle, ShuttingDown, Snapshot, Starting, Done };
     QPointer<Vm> m_vm;
     Step m_step = Step::Idle;
     bool m_mediumOnly = false;
+    bool m_cancelled = false;   // during the snapshot: no start after it
     QLabel *m_restart;
     Banner *m_warning;
     QLabel *m_progress;
@@ -63,6 +78,8 @@ private:
     QPushButton *m_install;
     QPushButton *m_mediumButton;
     VmSnapshots *m_snapshots = nullptr;
+    /* the guest's shutdown, waited for so long */
+    QTimer *m_wait;
 };
 
 /*
