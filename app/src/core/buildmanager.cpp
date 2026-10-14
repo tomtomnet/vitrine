@@ -9,7 +9,6 @@
 #include <QJsonDocument>
 #include <QJsonObject>
 #include <QSaveFile>
-#include <QTimer>
 
 #include <algorithm>
 #include <fcntl.h>
@@ -53,11 +52,7 @@ BuildManager *BuildManager::instance()
     return manager;
 }
 
-BuildManager::BuildManager(QObject *parent) : QObject(parent), m_tick(new QTimer(this))
-{
-    m_tick->setInterval(1000);
-    connect(m_tick, &QTimer::timeout, this, &BuildManager::update);
-}
+BuildManager::BuildManager(QObject *parent) : QObject(parent) {}
 
 BuildManager::~BuildManager() = default;
 
@@ -84,11 +79,6 @@ void BuildManager::setHistoryFile(const QString &path)
 void BuildManager::setLogDir(const QString &path)
 {
     m_logDir = path;
-}
-
-void BuildManager::setTick(int ms)
-{
-    m_tick->setInterval(ms);
 }
 
 QList<Component> BuildManager::components() const
@@ -211,7 +201,6 @@ void BuildManager::build(const QStringList &ids, bool clean)
                 Progress &p = m_progress[m_current];
                 p.phase = text;
                 p.done = p.total = 0;
-                m_phaseClocks[m_current].start();
                 emit progressChanged(m_current);
                 updateTask();
             }
@@ -223,6 +212,7 @@ void BuildManager::build(const QStringList &ids, bool clean)
                     p.done = done;
                     p.total = total;
                     emit progressChanged(m_current);
+                    updateTask();
                 }
             }
         });
@@ -254,7 +244,6 @@ void BuildManager::build(const QStringList &ids, bool clean)
                 Progress &p = m_progress[m_current];
                 p.phase = text;
                 p.done = p.total = 0;
-                m_phaseClocks[m_current].start();
                 emit progressChanged(m_current);
                 updateTask();
             }
@@ -267,6 +256,7 @@ void BuildManager::build(const QStringList &ids, bool clean)
                     p.done = done;
                     p.total = total;
                     emit progressChanged(m_current);
+                    updateTask();
                 }
             }
         });
@@ -315,19 +305,17 @@ void BuildManager::build(const QStringList &ids, bool clean)
     m_clean = clean;
     m_progress.clear();
     m_clocks.clear();
-    m_phaseClocks.clear();
+    m_shown = 0;
     for (const QString &id : std::as_const(m_queue)) {
         m_progress[id].state = State::Queued;
         m_logs.remove(id);
     }
-    m_runClock.start();
     /* in the app's tasks: this run, the last one's leaving them */
     if (m_task) {
         m_task->dismiss();
     }
     m_task = TaskList::instance()->add(Task::Kind::Build,
                                        tr("Building %1").arg(component(m_queue.first()).title));
-    m_tick->start();
     emit runStarted();
     for (const QString &id : std::as_const(m_queue)) {
         emit progressChanged(id);
@@ -423,11 +411,9 @@ void BuildManager::finishRun(const QString &error, bool stopped)
             } else {
                 p.state = stopped ? State::Stopped : State::Skipped;
             }
-            p.remainingMs = -1;
         }
     }
     m_running = false;
-    m_tick->stop();
     m_current.clear();
     m_logTo.clear();
     m_part.clear();
@@ -500,9 +486,6 @@ BuildManager::Progress BuildManager::progress(const QString &id) const
     if (m_clocks.contains(id) && !isFinal(p.state)) {
         p.elapsedMs = m_clocks.value(id).elapsed();
     }
-    if (!isFinal(p.state) && p.state != State::Idle) {
-        p.remainingMs = remainingOf(id);
-    }
     return p;
 }
 
@@ -529,63 +512,6 @@ QString BuildManager::log(const QString &id) const
     return file.open(QIODevice::ReadOnly) ? QString::fromUtf8(file.readAll()) : QString();
 }
 
-qint64 BuildManager::remainingOf(const QString &id) const
-{
-    const Progress p = m_progress.value(id);
-    const qint64 estimate = estimateMs(id);
-
-    switch (p.state) {
-    case State::Queued:
-    case State::Waiting:
-        return estimate;
-    case State::Building: {
-        const qint64 elapsed = m_clocks.contains(id) ? m_clocks.value(id).elapsed() : 0;
-        const qint64 phase = m_phaseClocks.contains(id) ? m_phaseClocks.value(id).elapsed() : 0;
-        const bool compiling = component(id).kind == Kind::Host
-                                   ? p.phase.startsWith("compiling ") ||
-                                         p.phase.startsWith("building ")
-                                   : m_tools && m_tools->isCompiling();
-        /* from the compiler's count: the rest of it at its pace, and what
-           comes after compiling (installing, packaging) */
-        if (compiling && p.total > 0 && p.done > 0 && qint64(p.done) * m_countFrom >= p.total &&
-            phase >= m_countAfterMs) {
-            return phase * (p.total - p.done) / p.done + estimate / 12;
-        }
-        return std::max(estimate - elapsed, estimate / 10);
-    }
-    default:
-        return 0;
-    }
-}
-
-qint64 BuildManager::remainingMs() const
-{
-    qint64 sum = 0;
-
-    if (!m_running) {
-        return -1;
-    }
-    for (const QString &id : m_queue) {
-        if (!isFinal(m_progress.value(id).state)) {
-            sum += remainingOf(id);
-        }
-    }
-    return sum;
-}
-
-qint64 BuildManager::estimateMs(const QString &id) const
-{
-    QList<qint64> list = durations(id);
-
-    if (list.isEmpty()) {
-        const Component c = component(id);
-        return qint64(c.isValid() ? c.minutes : 10) * 60000;
-    }
-    std::sort(list.begin(), list.end());
-    return list.size() % 2 ? list.at(list.size() / 2)
-                           : (list.at(list.size() / 2 - 1) + list.at(list.size() / 2)) / 2;
-}
-
 QList<qint64> BuildManager::durations(const QString &id) const
 {
     loadHistory();
@@ -597,7 +523,6 @@ void BuildManager::setCurrent(const QString &id)
     m_current = id;
     m_logTo = id;
     m_clocks[id].start();
-    m_phaseClocks[id].start();
     m_progress[id].phase.clear();
     m_progress[id].done = m_progress[id].total = 0;
     setState(id, State::Building);
@@ -615,7 +540,6 @@ void BuildManager::componentDone(const QString &id, State state)
     Progress &p = m_progress[id];
 
     p.state = state;
-    p.remainingMs = -1;
     p.elapsedMs = m_clocks.contains(id) ? m_clocks.value(id).elapsed() : 0;
     /* only a build tells how long one takes */
     if (state == State::Built && m_clocks.contains(id)) {
@@ -790,17 +714,6 @@ void BuildManager::record(const QString &id, qint64 ms)
     saveHistory();
 }
 
-void BuildManager::update()
-{
-    if (!m_running) {
-        return;
-    }
-    if (!m_current.isEmpty()) {
-        emit progressChanged(m_current);
-    }
-    updateTask();
-}
-
 void BuildManager::updateTask()
 {
     if (!m_task || !m_running) {
@@ -823,18 +736,25 @@ void BuildManager::updateTask()
     QString what = p.state == State::Waiting ? tr("waiting for memory")
                    : p.phase.isEmpty()       ? tr("starting")
                                              : p.phase;
-    const qint64 remaining = remainingMs();
-    const qint64 elapsed = m_runClock.elapsed();
+    /* the whole run's: the components done, and of the one compiling its
+       compiler's count; never back, when a phase after compiling counts
+       nothing */
+    const bool compiling = p.state == State::Building && p.total > 0 &&
+                           (component(id).kind == Kind::Host
+                                ? p.phase.startsWith("compiling ") ||
+                                      p.phase.startsWith("building ")
+                                : m_tools && m_tools->isCompiling());
+    qint64 done = compiling ? qint64(p.done) * 1000 / p.total : 0;
 
+    for (const QString &other : std::as_const(m_queue)) {
+        if (isFinal(m_progress.value(other).state)) {
+            done += 1000;
+        }
+    }
+    m_shown = std::max(m_shown, done / m_queue.size());
     m_task->setTitle(tr("Building %1").arg(component(id).title));
     m_task->setText(m_queue.size() > 1
                         ? tr("%1 of %2: %3").arg(index + 1).arg(m_queue.size()).arg(what)
                         : what.left(1).toUpper() + what.mid(1));
-    /* the whole run's: what it took so far, of that and what is left */
-    if (remaining >= 0 && p.state != State::Waiting) {
-        m_task->setProgress(elapsed * 1000 / std::max<qint64>(1, elapsed + remaining), 1000);
-    } else {
-        m_task->setProgress(0, 0);
-    }
-    m_task->setRemaining(remaining < 0 ? -1 : (remaining + 999) / 1000);
+    m_task->setProgress(m_shown, 1000);
 }

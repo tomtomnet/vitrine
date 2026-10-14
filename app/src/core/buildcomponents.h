@@ -37,7 +37,6 @@ struct Component {
     QString dir;                    // the host/ or guest/ folder it is described in
     QHash<QString, QString> values; // its NAME=value lines
     QStringList deps;
-    int minutes = 10;               // a first build, until this machine has built it
     bool heavy = false;             // takes up to the container's memory cap
 
     bool isValid() const { return !id.isEmpty(); }

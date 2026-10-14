@@ -12,7 +12,6 @@
 #include "core/tasks.h"
 
 class GuestToolsBuilder;
-class QTimer;
 class StackBuilder;
 
 /*
@@ -26,11 +25,10 @@ class StackBuilder;
  * lines, per component.
  *
  * Each component has its log, kept beside the cache, and the durations of
- * its last builds on this machine, kept with the data: the estimate of a
- * build is their median, else the minutes components.conf gives.  A
- * component building tells what is left from its compiler's count once it
- * compiles.  The run is one task of the app's (TaskList): its title the
- * component building, its progress the whole run's, what is left with it.
+ * its last builds on this machine, kept with the data.  The run is one
+ * task of the app's (TaskList): its title the component building, its
+ * progress the whole run's, from the components done and the compiler's
+ * count of the one compiling.
  */
 class BuildManager : public QObject
 {
@@ -57,7 +55,6 @@ public:
         int done = 0;           // of its counted phase; total 0 when it cannot tell
         int total = 0;
         qint64 elapsedMs = 0;
-        qint64 remainingMs = -1;
         QString error;
     };
 
@@ -73,15 +70,6 @@ public:
     void setBuilders(StackBuilder *stack, GuestToolsBuilder *tools);
     void setHistoryFile(const QString &path);
     void setLogDir(const QString &path);
-    /* How often the estimate is worked out again while a run goes on */
-    void setTick(int ms);
-    /* When a compiler's count is trusted for what is left: after @ms in
-       its phase, once 1/@part of it is done (15 s, 50) */
-    void setCountFrom(qint64 ms, int part)
-    {
-        m_countAfterMs = ms;
-        m_countFrom = part;
-    }
 
     QList<Builds::Component> components() const;
     Builds::Component component(const QString &id) const;
@@ -114,12 +102,7 @@ public:
     QString focus() const;
     /* The component's log: of the run, else the one kept of its last build */
     QString log(const QString &id) const;
-    /* What is left of the run, ms; -1 while it cannot tell */
-    qint64 remainingMs() const;
-    /* How long building @id takes, ms: from this machine's builds, else
-       components.conf's minutes */
-    qint64 estimateMs(const QString &id) const;
-    /* Its last durations, ms, the newest last */
+    /* Its last durations on this machine, ms, the newest last */
     QList<qint64> durations(const QString &id) const;
     /* Why the last run failed; empty if it did not */
     QString error() const { return m_error; }
@@ -138,7 +121,7 @@ signals:
     void runStarted();
     /* @error is empty when all was built */
     void runFinished(const QString &error);
-    /* A component's state, phase or progress, its estimate */
+    /* A component's state, phase or progress */
     void progressChanged(const QString &id);
     /* The statuses were worked out again */
     void statusChanged();
@@ -160,9 +143,7 @@ private:
     void record(const QString &id, qint64 ms);
     void loadHistory() const;
     void saveHistory();
-    void update();
     void updateTask();
-    qint64 remainingOf(const QString &id) const;
 
     Builds::Places m_places;
     bool m_placesSet = false;
@@ -186,14 +167,10 @@ private:
     QString m_error;
     QHash<QString, Progress> m_progress;
     QHash<QString, QElapsedTimer> m_clocks;
-    QHash<QString, QElapsedTimer> m_phaseClocks;
     QHash<QString, QString> m_logs;
     mutable QHash<QString, QList<qint64>> m_history;
     mutable bool m_historyLoaded = false;
-    QElapsedTimer m_runClock;
-    qint64 m_countAfterMs = 15000;
-    int m_countFrom = 50;
-    QTimer *m_tick;
+    qint64 m_shown = 0;             // the run's progress shown, in thousandths
     QPointer<Task> m_task;
     QStringList m_connected;        // the builders followed
 };

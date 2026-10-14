@@ -94,16 +94,16 @@ and force off the selected VM, and its tabs (Console, Details, Settings,
 Snapshots, Logs) at the end. The button at the start of the bar, or F9,
 collapses the list of VMs to their icons and expands it back; so does
 dragging its edge. Under the list, a button shows the long tasks under way
-(builds, clones), how far they are and what is left: a click shows the
-task's window, or a menu of the tasks when there are several.
+(builds, clones) and how far they are: a click shows the task's window, or
+a menu of the tasks when there are several.
 
 File > Builds… (Ctrl+B) shows what vitrine builds: its QEMU (virglrenderer,
 rutabaga_gfx, QEMU) and the guest tools (their packages and medium), each
 with its source, its patches by origin, whether it is up to date and why
-not, when it was built, how long a build takes on this machine, and its
-log. A build redoes only what changed: a component built from the same
-inputs is not built again, a changed patch compiles only the files it
-changes, and the guest packages compile through ccache.
+not, when it was built and how long that took, and its log. A build
+redoes only what changed: a component built from the same inputs is not
+built again, a changed patch compiles only the files it changes, and the
+guest packages compile through ccache.
 
 1. **Build vitrine's QEMU.** The banner's Build… button (or File > Builds…)
    opens the Builds window, whose Build button fetches QEMU, virglrenderer

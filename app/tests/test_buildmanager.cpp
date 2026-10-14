@@ -7,6 +7,7 @@
 #include <QTemporaryDir>
 #include <QTest>
 
+#include <algorithm>
 #include <fcntl.h>
 #include <sys/file.h>
 #include <unistd.h>
@@ -97,6 +98,7 @@ echo "vitrine-build: phase: building the packages"
 echo "Executing(%build): /bin/sh -e /var/tmp/rpm-tmp.b"
 echo "[1/10] cc a.c"
 echo "[10/10] cc z.c"
+echo "Executing(%install): /bin/sh -e /var/tmp/rpm-tmp.i"
 if [ "${GUEST_FAIL:-}" = "$pkg" ]; then
 	echo "vitrine-build: error: building $pkg failed (status 1)"
 	exit 1
@@ -198,7 +200,6 @@ class TestBuildManager : public QObject
         m.setBuilders(stack, tools);
         m.setHistoryFile(dir + "/history.json");
         m.setLogDir(dir + "/logs");
-        m.setTick(50);
         return places;
     }
 
@@ -311,7 +312,7 @@ private slots:
             const qsizetype built = states.indexOf(id + ' ' + QString::number(int(State::Built)));
             QVERIFY2(queued >= 0 && building > queued && built > building,
                      qPrintable(id + ": " + states.join(", ")));
-            /* how long it took, for the next estimate */
+            /* how long it took */
             QCOMPARE(m.durations(id).size(), 1);
         }
         QCOMPARE(m.queue(), QStringList({"virglrenderer", "rutabaga_gfx", "qemu", "tools", "mesa",
@@ -350,7 +351,6 @@ private slots:
         QCOMPARE(task->title(), "9 components built");
         QCOMPARE(task->text(), "Built: virglrenderer, rutabaga_gfx, QEMU, vitrine-guest-tools, "
                                "Mesa, KWin, wl-cross-domain-proxy, KPipeWire, Guest tools medium");
-        QCOMPARE(task->remaining(), -1);
         QCOMPARE(m.focus(), "medium");
 
         /* the next run's task replaces it */
@@ -421,52 +421,51 @@ private slots:
         QVERIFY(m.durations("virglrenderer").isEmpty());
     }
 
-    /* What is left: the history's median, the defaults before; the
-       compiler's count once it compiles; the task tells it */
-    void estimates()
+    /* How far the run is, in its task: the components done, and the
+       compiler's count of the one compiling; never back */
+    void taskProgress()
     {
         BuildManager m;
-        const Builds::Places places = setUp(m, "eta");
-        const qint64 qemuMinutes = Builds::find(m.components(), "qemu").minutes;
+        setUp(m, "count");
+        QVERIFY(write(m_tmp.filePath("count/history.json"),
+                      R"({"qemu": {"durations": [60000, 120000, 90000]}})"));
+        m.setHistoryFile(m_tmp.filePath("count/history.json"));
 
-        QCOMPARE(m.estimateMs("qemu"), qemuMinutes * 60000);
-        QCOMPARE(m.estimateMs("nothing"), 10 * 60000);
-        QVERIFY(write(m_tmp.filePath("eta/history.json"),
-                      R"({"qemu": {"durations": [60000, 120000, 90000]},
-                          "mesa": {"durations": [60000, 120000]}})"));
-        m.setHistoryFile(m_tmp.filePath("eta/history.json"));
-        QCOMPARE(m.estimateMs("qemu"), 90000);
-        QCOMPARE(m.estimateMs("mesa"), 90000);
-        QCOMPARE(m.remainingMs(), -1);
-
-        /* QEMU half compiled: what is left of its count, not its estimate */
-        m.setCountFrom(0, 2);
-        qputenv("QEMU_HOLD", m_tmp.filePath("eta/go").toUtf8());
+        /* virglrenderer and rutabaga_gfx built, QEMU half compiled: 2.5 of 3 */
+        qputenv("QEMU_HOLD", m_tmp.filePath("count/go").toUtf8());
         QSignalSpy finished(&m, &BuildManager::runFinished);
         m.build({"qemu"});
         QTRY_VERIFY_WITH_TIMEOUT(m.progress("qemu").done == 2, 10000);
-        QTest::qWait(300);
         const BuildManager::Progress p = m.progress("qemu");
         QCOMPARE(p.state, State::Building);
         QCOMPARE(p.total, 4);
-        QVERIFY2(p.remainingMs >= 0 && p.remainingMs < 90000 / 12 + 60000,
-                 qPrintable(QString::number(p.remainingMs)));
-        QVERIFY(m.remainingMs() >= p.remainingMs);
-        /* the run's task: the component, how far the run is, what is left */
-        QTRY_VERIFY_WITH_TIMEOUT(m.task()->text() == "3 of 3: compiling QEMU", 5000);
+        QCOMPARE(m.task()->text(), "3 of 3: compiling QEMU");
         QCOMPARE(m.task()->title(), "Building QEMU");
+        QCOMPARE(m.task()->done(), 833);
         QCOMPARE(m.task()->total(), 1000);
-        QVERIFY(m.task()->done() > 0 && m.task()->done() < 1000);
-        QVERIFY(m.task()->remaining() >= 0);
-        QVERIFY(write(m_tmp.filePath("eta/go"), "\n"));
+        QVERIFY(write(m_tmp.filePath("count/go"), "\n"));
         QVERIFY(finished.wait(10000));
         QCOMPARE(finished[0][0].toString(), "");
-        QCOMPARE(m.task()->remaining(), -1);
         /* one more duration of each */
         QCOMPARE(m.durations("qemu").size(), 4);
         QCOMPARE(m.durations("virglrenderer").size(), 1);
         QCOMPARE(m.durations("rutabaga_gfx").size(), 1);
-        Q_UNUSED(places);
+
+        /* a package installs after it compiled, counting nothing: the
+           run's progress stays */
+        QList<qint64> shown;
+        finished.clear();
+        m.build({"mesa"});
+        connect(m.task(), &Task::changed, this,
+                [&shown, task = m.task()]() { shown << task->done(); });
+        QVERIFY(finished.wait(30000));
+        QCOMPARE(finished[0][0].toString(), "");
+        QStringList values;
+        for (const qint64 value : std::as_const(shown)) {
+            values << QString::number(value);
+        }
+        QVERIFY2(shown.contains(500) && std::is_sorted(shown.begin(), shown.end()),
+                 qPrintable(values.join(", ")));
     }
 
     /* A package brought back from its build before took no time to build */

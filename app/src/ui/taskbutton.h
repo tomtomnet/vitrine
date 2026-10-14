@@ -58,7 +58,7 @@ public:
     QSize sizeHint() const override;
     QSize minimumSizeHint() const override;
 
-    /* "Building QEMU · 45% — Compiling QEMU · about 6 min left": the menu's entries */
+    /* "Building QEMU · 45% — Compiling QEMU": the menu's entries */
     static QString describe(const Task *task);
     /* The menu's icon of @task: its kind's while it runs, then how it ended */
     static QIcon icon(const Task *task);

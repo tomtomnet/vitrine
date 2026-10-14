@@ -66,22 +66,6 @@ private slots:
         QCOMPARE(changed.size(), 6);
     }
 
-    /* What is left, told when it changes; nothing once it is over */
-    void remaining()
-    {
-        TaskList list;
-        Task *task = list.add(Task::Kind::Build, "Building QEMU");
-        QSignalSpy changed(task, &Task::changed);
-
-        QCOMPARE(task->remaining(), -1);
-        task->setRemaining(90);
-        task->setRemaining(90);
-        QCOMPARE(task->remaining(), 90);
-        QCOMPARE(changed.size(), 1);
-        task->finish(Task::State::Done);
-        QCOMPARE(task->remaining(), -1);
-    }
-
     void finish()
     {
         TaskList list;

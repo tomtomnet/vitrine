@@ -179,7 +179,6 @@ private slots:
                  QStringList({"tools", "mesa", "kwin", "proxy", "kpipewire"}));
         QVERIFY(!find(all, "proxy").heavy);
         QVERIFY(!find(all, "kpipewire").heavy);
-        QVERIFY(find(all, "qemu").minutes > 0);
         QVERIFY(!find(all, "nothing").isValid());
 
         /* none of a folder that is not there; a package without its spec neither */
