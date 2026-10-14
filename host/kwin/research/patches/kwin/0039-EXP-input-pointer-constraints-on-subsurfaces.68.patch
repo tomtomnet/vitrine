@@ -1,0 +1,245 @@
+From: virtio-gpu-desktop <setup@localhost>
+Subject: [PATCH] EXP input: pointer constraints on the subsurface under the pointer
+
+A client may ask for a pointer lock or confinement on any of its surfaces (pointer-constraints-
+unstable-v1). KWin activates a constraint only on the focused window's main surface, so a client
+whose input surface is a subsurface - an app that embeds another client's view as a subsurface of
+its window, e.g. vmview showing a VM's desktop inside a Qt window (route B, 2026-10-13) - can never
+lock the pointer (the VM's Ctrl+Alt+G grab).
+
+The constrained surface is now the input surface under the pointer (the main surface's
+mapToInputSurface(), as the seat finds it for events) or the nearest of its parents with a
+constraint of its own (an embedded view's surface may have subsurfaces of its own: the nested
+desktop's window renders into a subsurface of its toplevel); without one it stays the main surface,
+so a confinement of the main surface stays while the pointer crosses its subsurfaces. The
+constrained surface's local position is used for the region tests, and where it lies in the main
+surface now (mapToChild, live: its parents' commits move it) maps back for the lock hint and in
+applyPointerConfinement(). The commits of the subsurface under the pointer and of its parents are
+watched, so a constraint one of them commits takes effect at once; constraints are re-evaluated when
+the pointer moves onto another surface of the active window, and a subsurface's constraint is broken
+with the window's when the pointer leaves the window. Without subsurface constraints nothing changes.
+
+The Plasma/6.8 version (branch as of 2026-10-13): its header has m_surfaceConfinementConnection next to
+the committed connection, and a constraint made outside of a transaction applies at once with
+pointerConfinementChangedWithoutCommit (pointerconstraints_v1.cpp), which the watched subsurfaces
+are connected to as well. Not built yet: KWin 6.8.0 needs the Plasma 6.8.0 libraries (2026-10-14).
+---
+--- a/src/pointer_input.h
++++ b/src/pointer_input.h
+@@ -182,6 +182,9 @@
+     EdgeBarrierType edgeBarrierType(const QPointF &pos, const RectF &lastOutputGeometry) const;
+     qreal edgeBarrier(EdgeBarrierType type) const;
+     QPointF applyPointerConfinement(const QPointF &pos) const;
++    std::pair<SurfaceInterface *, QPointF> constraintTarget() const;
++    QPointF constraintOffset(SurfaceInterface *surface) const;
++    void watchInputSurface();
+     void disconnectConfinedPointerRegionConnection();
+     void disconnectPointerConstraintsConnection();
+     void breakPointerConstraints(SurfaceInterface *surface);
+@@ -193,11 +196,13 @@
+     QMetaObject::Connection m_constraintsActivatedConnection;
+     QMetaObject::Connection m_surfaceCommittedConnection;
+     QMetaObject::Connection m_surfaceConfinementConnection;
++    QList<QMetaObject::Connection> m_inputSurfaceCommittedConnections;
+     QMetaObject::Connection m_decorationGeometryConnection;
+     QMetaObject::Connection m_decorationDestroyedConnection;
+     QMetaObject::Connection m_decorationClosedConnection;
+     bool m_confined = false;
+     QPointer<SurfaceInterface> m_constrainedSurface;
++    QPointer<SurfaceInterface> m_watchedInputSurface; // the subsurface under the pointer: its and its parents' changes may add a constraint
+     bool m_locked = false;
+     bool m_enableConstraints = true;
+     bool m_lastOutputWasPlaceholder = true;
+--- a/src/pointer_input.cpp
++++ b/src/pointer_input.cpp
+@@ -29,6 +29,7 @@
+ #include "wayland/pointerconstraints_v1.h"
+ #include "wayland/pointerwarp_v1.h"
+ #include "wayland/seat.h"
++#include "wayland/subcompositor.h"
+ #include "wayland/surface.h"
+ #include "wayland_server.h"
+ #include "window.h"
+@@ -284,6 +285,14 @@
+     };
+ 
+     update();
++    // the pointer may have moved onto a subsurface of the same window that has a constraint of its own
++    // (e.g. another client's view embedded in an app): constraints follow it
++    if (m_enableConstraints && focus() && focus() == workspace()->activeWindow()) {
++        watchInputSurface();
++        if (constraintTarget().first != m_constrainedSurface) {
++            updatePointerConstraints();
++        }
++    }
+     input()->processSpies(&InputEventSpy::pointerMotion, &event);
+     input()->processFilters(&InputEventFilter::pointerMotion, &event);
+ }
+@@ -636,6 +645,15 @@
+     if (focusOld && focusOld->isClient()) {
+         focusOld->pointerLeaveEvent();
+         breakPointerConstraints(focusOld->surface());
++        // and the constraint of one of its subsurfaces, if that is where it was
++        if (m_constrainedSurface && m_constrainedSurface != focusOld->surface()) {
++            breakPointerConstraints(m_constrainedSurface);
++        }
++        for (const auto &connection : std::as_const(m_inputSurfaceCommittedConnections)) {
++            disconnect(connection);
++        }
++        m_inputSurfaceCommittedConnections.clear();
++        m_watchedInputSurface = nullptr;
+         disconnectPointerConstraintsConnection();
+     }
+     disconnect(m_focusGeometryConnection);
+@@ -713,7 +731,13 @@
+         && focus()->surface()
+         && focus() == workspace()->activeWindow()
+         && focus()->surface() == waylandServer()->seat()->focusedPointerSurface();
+-    if (!canConstrain || focus()->surface() != m_constrainedSurface) {
++    if (canConstrain) {
++        watchInputSurface();
++    }
++    // the surface whose constraint applies: the window's main surface, or the subsurface under the
++    // pointer when that one has a constraint of its own
++    const auto [target, targetPos] = canConstrain ? constraintTarget() : std::pair<SurfaceInterface *, QPointF>(nullptr, QPointF());
++    if (!canConstrain || target != m_constrainedSurface) {
+         disconnectConfinedPointerRegionConnection();
+         m_confined = false;
+         m_locked = false;
+@@ -727,7 +751,7 @@
+         return;
+     }
+ 
+-    SurfaceInterface *s = focus()->surface();
++    SurfaceInterface *s = target;
+     m_constrainedSurface = s;
+     if (!m_surfaceCommittedConnection) {
+         m_surfaceCommittedConnection = connect(s, &SurfaceInterface::committed,
+@@ -741,21 +765,22 @@
+     // since Wayland commits are applied asynchronously
+ 
+     const bool shouldConfine = s->confinedPointerRegion()
+-        && s->confinedPointerRegion()->contains(focus()->mapToLocal(m_pos));
++        && s->confinedPointerRegion()->contains(targetPos);
+     if (m_confined != shouldConfine) {
+         m_confined = shouldConfine;
+         s->setPointerConfined(m_confined);
+     }
+ 
+     const bool shouldLock = s->lockedPointerRegion()
+-        && s->lockedPointerRegion()->contains(focus()->mapToLocal(m_pos));
++        && s->lockedPointerRegion()->contains(targetPos);
+     if (m_locked != shouldLock) {
+         m_locked = shouldLock;
+         s->setPointerLocked(m_locked);
+         if (!shouldLock) {
+             const auto hint = s->lockedPointerHint();
+-            if (hint && hint->x() >= 0 && hint->y() >= 0 && focus() && hint->x() < focus()->width() && hint->y() < focus()->height()) {
+-                processWarp(focus()->mapFromLocal(*hint), waylandServer()->seat()->timestamp());
++            const QSizeF size = s == focus()->surface() ? QSizeF(focus()->width(), focus()->height()) : s->size();
++            if (hint && hint->x() >= 0 && hint->y() >= 0 && focus() && hint->x() < size.width() && hint->y() < size.height()) {
++                processWarp(focus()->mapFromLocal(*hint + constraintOffset(s)), waylandServer()->seat()->timestamp());
+             }
+         }
+     }
+@@ -763,33 +788,94 @@
+ 
+ QPointF PointerInputRedirection::applyPointerConfinement(const QPointF &pos) const
+ {
+-    if (!m_confined || !focus() || !focus()->surface() || !focus()->surface()->confinedPointerRegion()) {
++    if (!m_confined || !focus() || !m_constrainedSurface || !m_constrainedSurface->confinedPointerRegion()) {
+         return pos;
+     }
+-    const auto s = focus()->surface();
++    const auto s = m_constrainedSurface.data();
+     const RegionF region = *s->confinedPointerRegion();
++    // in the constrained surface's coordinates (a subsurface's, where its parents place it now)
++    const QPointF offset = constraintOffset(s);
+ 
+-    const QPointF localPos = focus()->mapToLocal(pos);
++    const QPointF localPos = focus()->mapToLocal(pos) - offset;
+     if (region.contains(localPos)) {
+         return pos;
+     }
+ 
+-    const QPointF currentPos = focus()->mapToLocal(m_pos);
++    const QPointF currentPos = focus()->mapToLocal(m_pos) - offset;
+ 
+     // allow either x or y to pass
+     QPointF p(currentPos.x(), localPos.y());
+     if (region.contains(p)) {
+-        return focus()->mapFromLocal(p);
++        return focus()->mapFromLocal(p + offset);
+     }
+ 
+     p = QPointF(localPos.x(), currentPos.y());
+     if (region.contains(p)) {
+-        return focus()->mapFromLocal(p);
++        return focus()->mapFromLocal(p + offset);
+     }
+ 
+     return m_pos;
+ }
+ 
++std::pair<SurfaceInterface *, QPointF> PointerInputRedirection::constraintTarget() const
++{
++    SurfaceInterface *mainSurface = focus() ? focus()->surface() : nullptr;
++    if (!mainSurface) {
++        return {nullptr, QPointF()};
++    }
++    const QPointF local = focus()->mapToLocal(m_pos);
++    // the input surface under the pointer or the nearest of its parents with a constraint of its own (an
++    // embedded view's surface may have subsurfaces of its own); without one, the main surface, whose
++    // constraint thus stays while the pointer crosses its subsurfaces (a video, a GL view)
++    for (SurfaceInterface *s = mainSurface->mapToInputSurface(local).first; s && s != mainSurface;) {
++        if (s->confinedPointerRegion() || s->lockedPointerRegion()) {
++            return {s, mainSurface->mapToChild(s, local)};
++        }
++        SubSurfaceInterface *subsurface = s->subSurface();
++        s = subsurface ? subsurface->parentSurface() : nullptr;
++    }
++    return {mainSurface, local};
++}
++
++QPointF PointerInputRedirection::constraintOffset(SurfaceInterface *surface) const
++{
++    // where a subsurface lies in the focused window's main surface, now (its parents' commits move it)
++    SurfaceInterface *mainSurface = focus() ? focus()->surface() : nullptr;
++    if (!mainSurface || !surface || surface == mainSurface) {
++        return QPointF();
++    }
++    return -mainSurface->mapToChild(surface, QPointF());
++}
++
++void PointerInputRedirection::watchInputSurface()
++{
++    // the subsurface under the pointer and its parents below the main surface: a constraint one of them
++    // asks for takes effect with its commit, as the main surface's does (whose commits are watched
++    // while it is the constrained surface)
++    SurfaceInterface *mainSurface = focus() ? focus()->surface() : nullptr;
++    SurfaceInterface *input = mainSurface ? mainSurface->mapToInputSurface(focus()->mapToLocal(m_pos)).first : nullptr;
++    if (input == mainSurface) {
++        input = nullptr;
++    }
++    if (input == m_watchedInputSurface) {
++        return;
++    }
++    for (const auto &connection : std::as_const(m_inputSurfaceCommittedConnections)) {
++        disconnect(connection);
++    }
++    m_inputSurfaceCommittedConnections.clear();
++    m_watchedInputSurface = input;
++    for (SurfaceInterface *s = input; s && s != mainSurface;) {
++        m_inputSurfaceCommittedConnections.append(connect(s, &SurfaceInterface::committed,
++                                                          this, &PointerInputRedirection::updatePointerConstraints));
++        // a constraint made outside of a transaction applies at once, without a commit
++        m_inputSurfaceCommittedConnections.append(connect(s, &SurfaceInterface::pointerConfinementChangedWithoutCommit,
++                                                          this, &PointerInputRedirection::updatePointerConstraints));
++        SubSurfaceInterface *subsurface = s->subSurface();
++        s = subsurface ? subsurface->parentSurface() : nullptr;
++    }
++}
++
+ PointerInputRedirection::EdgeBarrierType PointerInputRedirection::edgeBarrierType(const QPointF &pos, const RectF &lastOutputGeometry) const
+ {
+     constexpr qreal cornerThreshold = 15;

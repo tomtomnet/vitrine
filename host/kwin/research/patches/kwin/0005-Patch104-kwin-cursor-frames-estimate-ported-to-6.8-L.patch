@@ -1,0 +1,207 @@
+From c4650bddc648f37235fc0e344c00a54eaa0f4b07 Mon Sep 17 00:00:00 2001
+From: tomtomnet <tompere8000@proton.me>
+Date: Sat, 3 Oct 2026 14:28:59 +0200
+Subject: [PATCH 5/9] Patch104 kwin-cursor-frames-estimate (ported to 6.8:
+ LayerData, renderLayers lambda and journal hunks re-placed)
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ src/compositor.cpp         |  7 +++++++
+ src/compositor.h           |  1 +
+ src/core/renderbackend.cpp | 25 +++++++++++++++++++++++++
+ src/core/renderbackend.h   | 12 ++++++++++++
+ src/core/renderjournal.cpp |  5 +++++
+ src/core/renderjournal.h   |  5 +++++
+ src/core/renderloop.cpp    | 21 ++++++++++++++++++---
+ 7 files changed, 73 insertions(+), 3 deletions(-)
+
+diff --git a/src/compositor.cpp b/src/compositor.cpp
+index 3727cd5c63..988fcbb904 100644
+--- a/src/compositor.cpp
++++ b/src/compositor.cpp
+@@ -724,6 +724,7 @@ std::pair<QList<Compositor::LayerData>, std::expected<void, OutputError>> Compos
+             .highPriority = isCursor,
+             .surfaceDamage = Region(),
+             .requiredAlphaBits = isCursor ? 8u : 0u,
++            .cursor = isCursor,
+         });
+         view->setUnderlay(underlay);
+         unusedOutputLayers.removeOne(layer);
+@@ -934,6 +935,12 @@ void Compositor::composite(RenderLoop *renderLoop)
+             layer.surfaceDamage |= layer.view->layer()->deviceRepaints();
+             layer.view->layer()->resetRepaints();
+             if (layer.view->layer()->isEnabled() && !layer.directScanout) {
++                // for the render time estimate: what this frame renders
++                if (layer.cursor) {
++                    frame->setCursorRendered();
++                } else {
++                    frame->setContentRendered();
++                }
+                 if (!renderLayer(layer.view, logicalOutput, output, frame, layer.surfaceDamage)) {
+                     return std::unexpected(OutputError{
+                         .code = OutputErrorCode::Other,
+diff --git a/src/compositor.h b/src/compositor.h
+index 5cbbb3c338..13c3a3c05b 100644
+--- a/src/compositor.h
++++ b/src/compositor.h
+@@ -111,6 +111,7 @@ protected:
+         bool highPriority = false;
+         Region surfaceDamage;
+         uint32_t requiredAlphaBits;
++        bool cursor = false;
+     };
+     std::pair<QList<Compositor::LayerData>, std::expected<void, OutputError>> setupLayers(SceneView *primaryView,
+                                                                                           LogicalOutput *logicalOutput,
+diff --git a/src/core/renderbackend.cpp b/src/core/renderbackend.cpp
+index c918108560..9ef4664d31 100644
+--- a/src/core/renderbackend.cpp
++++ b/src/core/renderbackend.cpp
+@@ -177,6 +177,31 @@ bool OutputFrame::renderedByCompositor() const
+     return m_renderTimeQueries.size() > 1;
+ }
+ 
++void OutputFrame::setCursorRendered()
++{
++    m_cursorRendered = true;
++}
++
++void OutputFrame::setContentRendered()
++{
++    m_contentRendered = true;
++}
++
++bool OutputFrame::onlyCursorRendered() const
++{
++    return m_cursorRendered && !m_contentRendered;
++}
++
++bool OutputFrame::cursorRendered() const
++{
++    return m_cursorRendered;
++}
++
++bool OutputFrame::contentRendered() const
++{
++    return m_contentRendered;
++}
++
+ std::optional<double> OutputFrame::brightness() const
+ {
+     return m_brightness;
+diff --git a/src/core/renderbackend.h b/src/core/renderbackend.h
+index 127d9fb3a3..bf4e3b96c2 100644
+--- a/src/core/renderbackend.h
++++ b/src/core/renderbackend.h
+@@ -105,6 +105,16 @@ public:
+      * only putting client buffers on planes
+      */
+     bool renderedByCompositor() const;
++    /**
++     * A layer tells what it rendered for this frame: the cursor, or content.
++     * A frame for which only the cursor was rendered says nothing about how
++     * long the frames with content take
++     */
++    void setCursorRendered();
++    void setContentRendered();
++    bool onlyCursorRendered() const;
++    bool cursorRendered() const;
++    bool contentRendered() const;
+ 
+     std::optional<double> brightness() const;
+     void setBrightness(double brightness);
+@@ -134,6 +144,8 @@ private:
+     PresentationMode m_presentationMode = PresentationMode::VSync;
+     std::vector<std::unique_ptr<RenderTimeQuery>> m_renderTimeQueries;
+     bool m_presented = false;
++    bool m_cursorRendered = false;
++    bool m_contentRendered = false;
+     std::optional<double> m_brightness;
+     std::optional<double> m_dimmingFactor;
+     std::optional<double> m_artificialHdrHeadroom;
+diff --git a/src/core/renderjournal.cpp b/src/core/renderjournal.cpp
+index d59dde3baa..8907f5a212 100644
+--- a/src/core/renderjournal.cpp
++++ b/src/core/renderjournal.cpp
+@@ -74,6 +74,11 @@ void RenderJournal::add(std::chrono::nanoseconds renderTime, std::chrono::nanose
+     m_result = mix(renderTime, m_result, ratio);
+ }
+ 
++void RenderJournal::skip(std::chrono::nanoseconds presentationTimestamp)
++{
++    add(m_result, presentationTimestamp);
++}
++
+ std::chrono::nanoseconds RenderJournal::result() const
+ {
+     return m_result + m_variance * 2;
+diff --git a/src/core/renderjournal.h b/src/core/renderjournal.h
+index 74d6029dc4..04708025b7 100644
+--- a/src/core/renderjournal.h
++++ b/src/core/renderjournal.h
+@@ -23,6 +23,11 @@ public:
+     explicit RenderJournal();
+ 
+     void add(std::chrono::nanoseconds renderTime, std::chrono::nanoseconds presentationTimestamp);
++    /**
++     * A frame that says nothing about how long frames take to render:
++     * time passes for what is remembered, nothing is learned
++     */
++    void skip(std::chrono::nanoseconds presentationTimestamp);
+ 
+     std::chrono::nanoseconds result() const;
+ 
+diff --git a/src/core/renderloop.cpp b/src/core/renderloop.cpp
+index 3675bf609d..4d99f9c30d 100644
+--- a/src/core/renderloop.cpp
++++ b/src/core/renderloop.cpp
+@@ -27,6 +27,8 @@ static const bool s_printDebugInfo = qEnvironmentVariableIntValue("KWIN_LOG_PERF
+ // panel it shows no gain, and it costs up to a refresh of latency long after a loaded phase),
+ // KWIN_LATE_FLIP_STEP_US sets how much earlier frames start per late flip (500 by default)
+ static const bool s_lateFlipCompensation = qEnvironmentVariableIntValue("KWIN_LATE_FLIP_COMPENSATION") != 0;
++// KWIN_RENDER_ESTIMATE_UPSTREAM=1: the frames for which only the cursor was rendered count for the render time estimate
++static const bool s_upstreamEstimate = qEnvironmentVariableIntValue("KWIN_RENDER_ESTIMATE_UPSTREAM") != 0;
+ static const std::chrono::nanoseconds s_lateFlipStep = std::chrono::microseconds(qEnvironmentVariableIsEmpty("KWIN_LATE_FLIP_STEP_US") ? 500 : std::max(10, qEnvironmentVariableIntValue("KWIN_LATE_FLIP_STEP_US")));
+ 
+ RenderLoopPrivate::RenderLoopPrivate(RenderLoop *q, BackendOutput *output)
+@@ -161,14 +163,14 @@ void RenderLoopPrivate::notifyFrameCompleted(std::chrono::nanoseconds timestamp,
+ {
+     if (output && s_printDebugInfo && !m_debugOutput) {
+         m_debugOutput = std::fstream(qPrintable("kwin perf statistics " + output->name() + ".csv"), std::ios::out);
+-        *m_debugOutput << "target pageflip timestamp,pageflip timestamp,render start,render end,safety margin,refresh duration,vrr,tearing,predicted render time,late flip compensation\n";
++        *m_debugOutput << "target pageflip timestamp,pageflip timestamp,render start,render end,safety margin,refresh duration,vrr,tearing,predicted render time,late flip compensation,cursor rendered,content rendered\n";
+     }
+     if (m_debugOutput) {
+         auto times = renderTime.value_or(RenderTimeSpan{});
+         const bool vrr = mode == PresentationMode::AdaptiveSync || mode == PresentationMode::AdaptiveAsync;
+         const bool tearing = mode == PresentationMode::Async || mode == PresentationMode::AdaptiveAsync;
+         *m_debugOutput << frame->targetPageflipTime().time_since_epoch().count() << "," << timestamp.count() << "," << times.start.time_since_epoch().count() << "," << times.end.time_since_epoch().count()
+-                       << "," << safetyMargin.count() << "," << frame->refreshDuration().count() << "," << (vrr ? 1 : 0) << "," << (tearing ? 1 : 0) << "," << frame->predictedRenderTime().count() << "," << lateFlipCompensation.count() << "\n";
++                       << "," << safetyMargin.count() << "," << frame->refreshDuration().count() << "," << (vrr ? 1 : 0) << "," << (tearing ? 1 : 0) << "," << frame->predictedRenderTime().count() << "," << lateFlipCompensation.count() << "," << (frame->cursorRendered() ? 1 : 0) << "," << (frame->contentRendered() ? 1 : 0) << "\n";
+     }
+ 
+     Q_ASSERT(pendingFrameCount > 0);
+@@ -176,7 +178,20 @@ void RenderLoopPrivate::notifyFrameCompleted(std::chrono::nanoseconds timestamp,
+ 
+     notifyVblank(timestamp);
+ 
+-    if (renderTime) {
++    if (renderTime && !s_upstreamEstimate && frame && frame->onlyCursorRendered()) {
++        // The estimate is the smoothed render time plus twice the largest recent
++        // excess over it, remembered for seconds, and the next frames start that
++        // much earlier. While a client's buffers go straight to the screen a frame
++        // takes 0.1 ms; the frame for which the cursor is rendered, because its
++        // shape changed, counts as 2 ms at least, as anything rendered with OpenGL.
++        // One such frame takes the estimate from 0.2 to 4.7 ms: the compositor
++        // works two refreshes ahead for seconds, and the client's frames are shown
++        // a refresh later (key to screen with a fullscreen client on bare metal:
++        // 14.2 ms, and 18.4 ms when the pointer's shape changes with every key).
++        // The time it takes to render the cursor says nothing about the frames
++        // with content.
++        renderJournal.skip(timestamp);
++    } else if (renderTime) {
+         // timings are pretty unpredictable in the sub-millisecond range; this minimum
+         // ensures that when CPU or GPU power states change, we don't drop any frames
+         const std::chrono::nanoseconds minimumTime = std::chrono::milliseconds(2);
+-- 
+2.55.0
+

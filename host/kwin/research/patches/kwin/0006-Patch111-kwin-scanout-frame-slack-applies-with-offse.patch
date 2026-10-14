@@ -1,0 +1,68 @@
+From d808f880b1344d553fe2be80dee340110df12e7e Mon Sep 17 00:00:00 2001
+From: tomtomnet <tompere8000@proton.me>
+Date: Sat, 3 Oct 2026 14:32:05 +0200
+Subject: [PATCH 6/9] Patch111 kwin-scanout-frame-slack (applies with offset)
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ src/core/renderloop.cpp | 16 +++++++++++++++-
+ src/core/renderloop_p.h |  2 ++
+ 2 files changed, 17 insertions(+), 1 deletion(-)
+
+diff --git a/src/core/renderloop.cpp b/src/core/renderloop.cpp
+index 4d99f9c30d..86874cd186 100644
+--- a/src/core/renderloop.cpp
++++ b/src/core/renderloop.cpp
+@@ -27,6 +27,13 @@ static const bool s_printDebugInfo = qEnvironmentVariableIntValue("KWIN_LOG_PERF
+ // panel it shows no gain, and it costs up to a refresh of latency long after a loaded phase),
+ // KWIN_LATE_FLIP_STEP_US sets how much earlier frames start per late flip (500 by default)
+ static const bool s_lateFlipCompensation = qEnvironmentVariableIntValue("KWIN_LATE_FLIP_COMPENSATION") != 0;
++// KWIN_SCANOUT_FRAME_SLACK_US: after a frame the compositor did not render (a client's
++// buffer went straight to the screen), the next frame starts this long plus the safety
++// margin and the estimate before its vblank instead of a whole millisecond on top: such a
++// frame only imports and tests the client's next buffer, so a client that commits later
++// is still shown at that vblank (a virtual machine's frames come ~4 ms before it today).
++// Unset: nothing changes.
++static const std::optional<int> s_scanoutFrameSlackUs = qEnvironmentVariableIsEmpty("KWIN_SCANOUT_FRAME_SLACK_US") ? std::nullopt : std::optional<int>(qEnvironmentVariableIntValue("KWIN_SCANOUT_FRAME_SLACK_US"));
+ // KWIN_RENDER_ESTIMATE_UPSTREAM=1: the frames for which only the cursor was rendered count for the render time estimate
+ static const bool s_upstreamEstimate = qEnvironmentVariableIntValue("KWIN_RENDER_ESTIMATE_UPSTREAM") != 0;
+ static const std::chrono::nanoseconds s_lateFlipStep = std::chrono::microseconds(qEnvironmentVariableIsEmpty("KWIN_LATE_FLIP_STEP_US") ? 500 : std::max(10, qEnvironmentVariableIntValue("KWIN_LATE_FLIP_STEP_US")));
+@@ -65,7 +72,11 @@ void RenderLoopPrivate::scheduleRepaint(std::chrono::nanoseconds lastTargetTimes
+ 
+     // Estimate when it's a good time to perform the next compositing cycle.
+     // the 1ms on top of the safety margin is required for timer and scheduler inaccuracies
+-    std::chrono::nanoseconds expectedCompositingTime = std::min(renderJournal.result() + safetyMargin + 1ms + lateFlipCompensation, 2 * vblankInterval);
++    std::chrono::nanoseconds slack = 1ms;
++    if (s_scanoutFrameSlackUs && lastFrameScanout) {
++        slack = std::chrono::microseconds(std::max(0, *s_scanoutFrameSlackUs));
++    }
++    std::chrono::nanoseconds expectedCompositingTime = std::min(renderJournal.result() + safetyMargin + slack + lateFlipCompensation, 2 * vblankInterval);
+ 
+     if (presentationMode == PresentationMode::VSync) {
+         // normal presentation: pageflips only happen at vblank
+@@ -178,6 +189,9 @@ void RenderLoopPrivate::notifyFrameCompleted(std::chrono::nanoseconds timestamp,
+ 
+     notifyVblank(timestamp);
+ 
++    // whether the compositor rendered anything for this frame (see KWIN_SCANOUT_FRAME_SLACK_US)
++    lastFrameScanout = frame && !frame->renderedByCompositor();
++
+     if (renderTime && !s_upstreamEstimate && frame && frame->onlyCursorRendered()) {
+         // The estimate is the smoothed render time plus twice the largest recent
+         // excess over it, remembered for seconds, and the next frames start that
+diff --git a/src/core/renderloop_p.h b/src/core/renderloop_p.h
+index 18aa8290d0..87509a1346 100644
+--- a/src/core/renderloop_p.h
++++ b/src/core/renderloop_p.h
+@@ -55,6 +55,8 @@ public:
+     std::chrono::nanoseconds safetyMargin{0};
+     // the next frame was requested too late for its lead: it renders at once
+     bool scheduledLate = false;
++    // the last completed frame went straight to the screen (nothing rendered)
++    bool lastFrameScanout = false;
+     // how much earlier frames start because planned frames reached the screen late
+     std::chrono::nanoseconds lateFlipCompensation{0};
+ 
+-- 
+2.55.0
+

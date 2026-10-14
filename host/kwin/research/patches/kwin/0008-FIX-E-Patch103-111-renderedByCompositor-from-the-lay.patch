@@ -1,0 +1,32 @@
+From ee753e86ea54586c53a4e97977cd011c75fe2fa6 Mon Sep 17 00:00:00 2001
+From: tomtomnet <tompere8000@proton.me>
+Date: Sat, 3 Oct 2026 14:34:50 +0200
+Subject: [PATCH 8/9] FIX-E Patch103/111: renderedByCompositor from the layers'
+ flags (Patch104), not the number of render time queries
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ src/core/renderbackend.cpp | 7 ++++---
+ 1 file changed, 4 insertions(+), 3 deletions(-)
+
+diff --git a/src/core/renderbackend.cpp b/src/core/renderbackend.cpp
+index 9ef4664d31..a7c1b3c412 100644
+--- a/src/core/renderbackend.cpp
++++ b/src/core/renderbackend.cpp
+@@ -172,9 +172,10 @@ bool OutputFrame::scheduledLate() const
+ 
+ bool OutputFrame::renderedByCompositor() const
+ {
+-    // the compositor's own query for the whole frame is always there;
+-    // a layer that was rendered adds its own
+-    return m_renderTimeQueries.size() > 1;
++    // the layers say what they rendered (see setCursorRendered/setContentRendered);
++    // counting render time queries no longer works in 6.8, where a rendered layer
++    // adds none without GL timer queries (KWIN_NO_TIMER_QUERY, virtual machines)
++    return m_cursorRendered || m_contentRendered;
+ }
+ 
+ void OutputFrame::setCursorRendered()
+-- 
+2.55.0
+

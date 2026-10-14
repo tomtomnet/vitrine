@@ -1,0 +1,47 @@
+From 60ff242a19606a343f3eba44a06798dfbc5b4b8d Mon Sep 17 00:00:00 2001
+From: Local <local@localhost>
+Date: Tue, 6 Oct 2026 00:02:19 +0200
+Subject: [PATCH] FIX-G renderloop: a commit-timing target sets the earliest
+ vblank, the pipeline depth counts from now
+
+---
+ src/core/renderloop.cpp | 9 ++++++++-
+ 1 file changed, 8 insertions(+), 1 deletion(-)
+
+diff --git a/src/core/renderloop.cpp b/src/core/renderloop.cpp
+index 0a08006..d52b5f3 100644
+--- a/src/core/renderloop.cpp
++++ b/src/core/renderloop.cpp
+@@ -4,6 +4,7 @@
+     SPDX-License-Identifier: GPL-2.0-or-later
+ */
+ 
++#include <algorithm>
+ #include "renderloop.h"
+ #include "backendoutput.h"
+ #include "options.h"
+@@ -81,6 +82,12 @@ void RenderLoopPrivate::scheduleRepaint(std::chrono::nanoseconds lastTargetTimes
+     if (presentationMode == PresentationMode::VSync) {
+         // normal presentation: pageflips only happen at vblank
+         const uint64_t pageflipsSince = std::max<int64_t>((presentNotBefore - lastPresentationTimestamp) / vblankInterval, 0);
++        // The pipeline depth (pageflipsInAdvance) counts from now: it is how far ahead compositing
++        // has to start. A commit-timing target only sets the earliest vblank allowed, the first one
++        // at or after it. Adding the depth to the target's interval showed a stamped frame one
++        // refresh later than asked whenever triple buffering (2026-10-05, 6.7.91 at 240 Hz).
++        const uint64_t pageflipsSinceNow = std::max<int64_t>((currentTime - lastPresentationTimestamp) / vblankInterval, 0);
++        const uint64_t pageflipsToNotBefore = std::max<int64_t>((presentNotBefore - lastPresentationTimestamp + vblankInterval - std::chrono::nanoseconds(1)) / vblankInterval, 0);
+         if (pageflipsSince > 100) {
+             // if it's been a while since the last frame, the GPU is likely in a low power state and render time will be increased
+             // -> take that into account and start compositing very early
+@@ -121,7 +128,7 @@ void RenderLoopPrivate::scheduleRepaint(std::chrono::nanoseconds lastTargetTimes
+             targetTimestamp = lastPresentationTimestamp + intervalsSinceLastTimestamp * vblankInterval;
+         } else {
+             // Either no frame is scheduled yet, or presentNotBefore is earlier than the last presentNotBefore hint
+-            targetTimestamp = lastPresentationTimestamp + std::max(pageflipsSince + pageflipsInAdvance, pageflipsSinceLastToTarget + 1) * vblankInterval;
++            targetTimestamp = lastPresentationTimestamp + std::max({pageflipsSinceNow + pageflipsInAdvance, pageflipsToNotBefore, pageflipsSinceLastToTarget + 1}) * vblankInterval;
+         }
+     } else {
+         wasTripleBuffering = false;
+-- 
+2.55.0
+
