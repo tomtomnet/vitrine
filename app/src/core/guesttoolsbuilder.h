@@ -5,7 +5,10 @@
 #include <QHash>
 #include <QList>
 #include <QObject>
+#include <QPointer>
 #include <QStringList>
+
+#include "core/tasks.h"
 
 class QProcess;
 class QTimer;
@@ -162,6 +165,9 @@ public:
     QString stepText() const { return m_index >= 0 ? m_plan.value(m_index).text : QString(); }
     /* What the step does now: "installing the build dependencies", "compiling" */
     QString phase() const { return m_phase; }
+    /* "step 2 of 4: building Mesa 26.2.3 (compiling, 35%)", the phase's
+       percent only with @percent; "starting" before the first step */
+    QString progressText(bool percent = true) const;
     /* The phase's progress; total 0 when unknown */
     int progressDone() const { return m_done; }
     int progressTotal() const { return m_total; }
@@ -173,6 +179,8 @@ public:
     bool wasStopped() const { return m_stopped; }
     /* Why the last build failed; empty if it ended well or was stopped */
     QString error() const { return m_failure; }
+    /* The build's in the app's tasks (TaskList), until seen; null if none */
+    Task *task() const { return m_task; }
 
 signals:
     void started();
@@ -231,4 +239,5 @@ private:
     QStringList m_warnings;
     QString m_error;            // the scripts' last error line
     QString m_failure;
+    QPointer<Task> m_task;
 };

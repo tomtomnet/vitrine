@@ -23,6 +23,7 @@
 
 #include "core/guesttoolsbuilder.h"
 #include "core/paths.h"
+#include "core/tasks.h"
 
 /* What a complete build has, written last */
 static const char kManifest[] = "/share/vitrine/stack.conf";
@@ -365,6 +366,32 @@ StackBuilder *StackBuilder::instance()
 
 StackBuilder::StackBuilder(QObject *parent) : QObject(parent)
 {
+    /* the app's tasks follow the build: first, so that the windows that
+       hear of it find its task as it is */
+    connect(this, &StackBuilder::stepStarted, this,
+            [this](int step, int total, const QString &text) {
+        if (m_task) {
+            m_task->setText(tr("Step %1 of %2: %3").arg(step).arg(total).arg(text));
+            /* busy until ninja tells how far it is */
+            m_task->setProgress(0, 0);
+        }
+    });
+    connect(this, &StackBuilder::progress, this, [this](int done, int total) {
+        if (m_task) {
+            m_task->setProgress(done, total);
+        }
+    });
+    connect(this, &StackBuilder::finished, this, [this](const QString &error) {
+        /* a start refused has no task of its own: that of the last build is finished */
+        if (!m_task) {
+            return;
+        }
+        if (error.isEmpty()) {
+            m_task->finish(Task::State::Done, current(m_stack).summary());
+        } else {
+            m_task->finish(wasStopped() ? Task::State::Stopped : Task::State::Failed, error);
+        }
+    });
 }
 
 StackBuilder::~StackBuilder()
@@ -414,6 +441,14 @@ void StackBuilder::start()
         emit finished(m_error);
         return;
     }
+
+    /* in the app's tasks: this build, the last one's leaving them */
+    if (m_task) {
+        m_task->dismiss();
+    }
+    m_task = TaskList::instance()->add(Task::Kind::QemuBuild,
+                                       state(host, stack) == State::Outdated ? tr("QEMU update")
+                                                                             : tr("QEMU build"));
 
     m_process = new QProcess(this);
     m_process->setProcessChannelMode(QProcess::MergedChannels);

@@ -2,6 +2,7 @@
 #include <QDir>
 #include <QFile>
 #include <QFileInfo>
+#include <QPointer>
 #include <QProcess>
 #include <QSignalSpy>
 #include <QStandardPaths>
@@ -14,6 +15,7 @@
 
 #include "core/paths.h"
 #include "core/stackbuilder.h"
+#include "core/tasks.h"
 
 /* A manifest as host/build.sh writes it */
 static const char kManifest[] = R"(# What host/build.sh built here
@@ -519,6 +521,83 @@ exit 2
         b.setHostDir(m_tmp.filePath("nowhere"));
         QVERIFY(build(b).contains("no host/build.sh"));
         QVERIFY(built.isEmpty());
+    }
+
+    /*
+     * Each build is a task of the app's: its steps and ninja's progress,
+     * then how it ended; the next build's replaces it, a start refused
+     * makes none
+     */
+    void reportsTasks()
+    {
+        TaskList *tasks = TaskList::instance();
+        const QString stack = m_tmp.filePath("task-stack");
+        StackBuilder b;
+        b.setHostDir(hostDir("task-host", R"sh(#!/bin/bash
+stack=$2
+echo "vitrine-build: step 1/2: checking the build dependencies"
+echo "vitrine-build: step 2/2: compiling QEMU"
+printf '[1/4] Compiling a\n[3/4] Compiling b\n'
+mkdir -p "$stack/0123456789abcdef/bin" "$stack/0123456789abcdef/share/vitrine"
+printf 'STAMP=abc\nQEMU_VERSION=11.1.50\nQEMU_PATCHES=a.patch b.patch\n' \
+    > "$stack/0123456789abcdef/share/vitrine/stack.conf"
+ln -sfn 0123456789abcdef "$stack/current"
+echo "vitrine-build: built: $stack/0123456789abcdef"
+)sh"));
+        b.setStackDir(stack);
+        b.setWorkDir(m_tmp.filePath("task-work"));
+        QStringList seen;
+        connect(tasks, &TaskList::taskChanged, this, [&seen](Task *task) {
+            seen << QString("%1 %2/%3").arg(task->text()).arg(task->done()).arg(task->total());
+        });
+
+        QCOMPARE(build(b), "");
+        Task *task = b.task();
+        QVERIFY(task);
+        QVERIFY(tasks->tasks().contains(task));
+        QCOMPARE(task->kind(), Task::Kind::QemuBuild);
+        QCOMPARE(task->title(), "QEMU build");
+        QVERIFY2(seen.contains("Step 2 of 2: compiling QEMU 0/0"), qPrintable(seen.join('\n')));
+        QVERIFY2(seen.contains("Step 2 of 2: compiling QEMU 3/4"), qPrintable(seen.join('\n')));
+        QCOMPARE(task->state(), Task::State::Done);
+        QCOMPARE(task->text(), "QEMU 11.1.50 + 2 patches");
+        disconnect(tasks, &TaskList::taskChanged, this, nullptr);
+
+        /* failed: the next build's task replaces it, as the user saw it in the window */
+        b.setHostDir(hostDir("task-fail-host", R"sh(#!/bin/bash
+echo "vitrine-build: error: compiling QEMU failed (status 2)"
+exit 2
+)sh"));
+        const QPointer<Task> first(task);
+        QCOMPARE(build(b), "Compiling QEMU failed (status 2)");
+        QTRY_VERIFY(!first);
+        task = b.task();
+        QVERIFY(task);
+        QCOMPARE(task->state(), Task::State::Failed);
+        QCOMPARE(task->text(), "Compiling QEMU failed (status 2)");
+
+        /* refused before it ran: no task, the last one as it was */
+        b.setHostDir(m_tmp.filePath("nowhere"));
+        QVERIFY(build(b).contains("no host/build.sh"));
+        QCOMPARE(b.task(), task);
+        QCOMPARE(task->state(), Task::State::Failed);
+        QCOMPARE(task->text(), "Compiling QEMU failed (status 2)");
+
+        /* stopped */
+        b.setHostDir(hostDir("task-stop-host", R"sh(#!/bin/bash
+echo "vitrine-build: step 1/8: fetching QEMU"
+exec sleep 300
+)sh"));
+        QSignalSpy finished(&b, &StackBuilder::finished);
+        b.start();
+        QVERIFY(b.task() && b.task() != task);
+        QVERIFY(b.task()->isRunning());
+        /* once it runs: its process group made */
+        QTRY_COMPARE_WITH_TIMEOUT(b.task()->text(), "Step 1 of 8: fetching QEMU", 10000);
+        b.cancel();
+        QVERIFY(finished.wait(10000));
+        QCOMPARE(b.task()->state(), Task::State::Stopped);
+        b.task()->dismiss();
     }
 
     /* Stop ends the compilers too, not bash alone (which waits for them) */

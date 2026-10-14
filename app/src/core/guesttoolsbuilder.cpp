@@ -25,6 +25,7 @@
 #include "core/hostmemory.h"
 #include "core/paths.h"
 #include "core/stackbuilder.h"
+#include "core/tasks.h"
 
 /* The scripts' lines for the app start with it, as host/build.sh's */
 static const char kTag[] = "vitrine-build: ";
@@ -393,6 +394,33 @@ GuestToolsBuilder::GuestToolsBuilder(QObject *parent)
 {
     m_memoryTimer->setInterval(2000);
     connect(m_memoryTimer, &QTimer::timeout, this, &GuestToolsBuilder::checkMemory);
+
+    /* the app's tasks follow the build: first, so that the windows that
+       hear of it find its task as it is */
+    const auto follow = [this]() {
+        if (m_task && m_running) {
+            QString text = progressText(false);
+            text[0] = text[0].toUpper();
+            m_task->setText(text);
+            /* nothing moves while it waits for memory */
+            m_task->setProgress(isWaiting() ? 0 : m_done, isWaiting() ? 0 : m_total);
+        }
+    };
+    connect(this, &GuestToolsBuilder::stepStarted, this, follow);
+    connect(this, &GuestToolsBuilder::phaseChanged, this, follow);
+    connect(this, &GuestToolsBuilder::progress, this, follow);
+    connect(this, &GuestToolsBuilder::waitingChanged, this, follow);
+    connect(this, &GuestToolsBuilder::finished, this, [this](const QString &error) {
+        /* a start refused has no task of its own: that of the last build is finished */
+        if (!m_task) {
+            return;
+        }
+        if (error.isEmpty()) {
+            m_task->finish(Task::State::Done);
+        } else {
+            m_task->finish(m_stopped ? Task::State::Stopped : Task::State::Failed, error);
+        }
+    });
 }
 
 GuestToolsBuilder::~GuestToolsBuilder()
@@ -459,6 +487,15 @@ void GuestToolsBuilder::start()
     }
     m_plan = plan(guest, rpms);
     m_running = true;
+    /* in the app's tasks: this build, the last one's leaving them */
+    if (m_task) {
+        m_task->dismiss();
+    }
+    m_task = TaskList::instance()->add(Task::Kind::GuestToolsBuild,
+                                       state(guest, m_image.isEmpty() ? mediumImage() : m_image) ==
+                                               State::Outdated
+                                           ? tr("Guest tools update")
+                                           : tr("Guest tools build"));
     emit started();
     next();
 }
@@ -519,6 +556,28 @@ void GuestToolsBuilder::checkMemory()
 bool GuestToolsBuilder::isWaiting() const
 {
     return m_running && !m_process && m_memoryTimer->isActive();
+}
+
+QString GuestToolsBuilder::progressText(bool percent) const
+{
+    QStringList detail;
+    QString text;
+
+    if (step() < 1) {
+        return tr("starting");
+    }
+    text = tr("step %1 of %2: %3").arg(step()).arg(m_plan.size()).arg(stepText());
+    if (isWaiting()) {
+        detail << tr("waiting for memory");
+    } else {
+        if (!m_phase.isEmpty()) {
+            detail << m_phase;
+        }
+        if (percent && m_total > 0) {
+            detail << tr("%1%").arg(m_done * 100 / m_total);
+        }
+    }
+    return detail.isEmpty() ? text : text + " (" + detail.join(", ") + ")";
 }
 
 void GuestToolsBuilder::proceed()

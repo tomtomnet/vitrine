@@ -89,7 +89,11 @@ The window has one bar above the VMs: the menus (File, View, Machine, Help)
 that the steps below name, the buttons that start, pause, shut down, reset
 and force off the selected VM, and its tabs (Console, Details, Settings,
 Snapshots, Logs) at the end. The button at the start of the bar, or F9,
-hides the list of VMs.
+collapses the list of VMs to their icons and expands it back; so does
+dragging its edge. Under the list, a button shows the long tasks under way
+(the builds of QEMU and of the guest tools, clones) and how far they are: a
+click shows the task's window, or a menu of the tasks when there are
+several.
 
 1. **Build vitrine's QEMU.** The banner's Build… button (or File > Build
    QEMU…, Ctrl+B) opens a window whose Build button fetches QEMU and
@@ -125,11 +129,11 @@ hides the list of VMs.
    older tools then offer Update….
 
 Keys: Ctrl+Alt+G gives the keyboard and mouse to the VM or takes them back,
-Ctrl+Alt+F toggles full screen, F9 shows or hides the VM list, F10 or Alt with
-a menu's first letter opens the menus (not while the VM's screen has the keys:
-they go to the VM), Ctrl+H asks the guest to shut down, Ctrl+L shows QEMU's
-log. Closing vitrine can leave its VMs running; it finds them again at its
-next start.
+Ctrl+Alt+F toggles full screen, F9 collapses or expands the VM list, F10 or
+Alt with a menu's first letter opens the menus (not while the VM's screen has
+the keys: they go to the VM), Ctrl+H asks the guest to shut down, Ctrl+L shows
+QEMU's log. Closing vitrine can leave its VMs running; it finds them again at
+its next start.
 
 Shut Down goes through the guest's agent when it runs one: the guest tools',
 else QEMU's guest agent (Fedora installs qemu-guest-agent in VMs). Otherwise

@@ -3,6 +3,7 @@
 #include <QDir>
 #include <QFile>
 #include <QFileInfo>
+#include <QPointer>
 #include <QProcess>
 #include <QSignalSpy>
 #include <QStandardPaths>
@@ -15,6 +16,7 @@
 #include "core/guesttools.h"
 #include "core/guesttoolsbuilder.h"
 #include "core/stackbuilder.h"
+#include "core/tasks.h"
 
 using State = GuestToolsBuilder::State;
 
@@ -577,6 +579,73 @@ private slots:
         QCOMPARE(build(b), "");
         QCOMPARE(steps.size(), 1);
         QCOMPARE(read(guest + "/rpms-args").count('\n'), 3);
+    }
+
+    /*
+     * Each build is a task of the app's: its step and phase, the phase's
+     * progress, then how it ended; the next build's replaces it
+     */
+    void reportsTasks()
+    {
+        const QString guest = guestDir("task-guest");
+        const QString gate = m_tmp.filePath("task-gate");
+        TaskList *tasks = TaskList::instance();
+        GuestToolsBuilder b;
+        setUp(b, guest, "task");
+        QSignalSpy finished(&b, &GuestToolsBuilder::finished);
+        QStringList seen;
+        connect(tasks, &TaskList::taskChanged, this, [&seen](Task *task) {
+            seen << QString("%1 %2/%3").arg(task->text()).arg(task->done()).arg(task->total());
+        });
+
+        qputenv("GATE", "mesa:" + gate.toUtf8());
+        b.start();
+        Task *task = b.task();
+        QVERIFY(task);
+        QVERIFY(tasks->tasks().contains(task));
+        QCOMPARE(task->kind(), Task::Kind::GuestToolsBuild);
+        QCOMPARE(task->title(), "Guest tools build");
+        /* held at the end of Mesa's build */
+        QTRY_COMPARE_WITH_TIMEOUT(task->text(), "Step 2 of 4: building Mesa 26.2.3 (making the packages)",
+                                  10000);
+        QVERIFY(task->isRunning());
+        QCOMPARE(task->total(), 0);
+        QVERIFY2(seen.contains("Step 2 of 4: building Mesa 26.2.3 (compiling) 5808/5808"),
+                 qPrintable(seen.join('\n')));
+        QVERIFY2(seen.contains("Step 1 of 4: building vitrine-guest-tools 0.1.0 "
+                               "(installing rpmbuild) 82/82"),
+                 qPrintable(seen.join('\n')));
+        disconnect(tasks, &TaskList::taskChanged, this, nullptr);
+
+        QVERIFY(write(gate, "go\n"));
+        QTRY_VERIFY_WITH_TIMEOUT(!finished.isEmpty(), 10000);
+        QCOMPARE(finished[0][0].toString(), "");
+        QCOMPARE(task->state(), Task::State::Done);
+        qunsetenv("GATE");
+
+        /* the medium's failure: the new build's task, the last one's gone */
+        const QPointer<Task> first(task);
+        qputenv("FAKE_MEDIUM_FAIL", "1");
+        QCOMPARE(build(b), "No room left");
+        QTRY_VERIFY(!first);
+        task = b.task();
+        QVERIFY(task);
+        QCOMPARE(task->state(), Task::State::Failed);
+        QCOMPARE(task->text(), "No room left");
+        qunsetenv("FAKE_MEDIUM_FAIL");
+
+        /* stopped */
+        QVERIFY(write(m_tmp.filePath("task/rpms/mesa/.inputs"), "older\n"));
+        QFile::remove(gate);
+        qputenv("GATE", "mesa:" + gate.toUtf8());
+        finished.clear();
+        b.start();
+        QTRY_VERIFY_WITH_TIMEOUT(b.task() && b.task()->text().contains("making the packages"),
+                                 10000);
+        b.cancel();
+        QTRY_VERIFY_WITH_TIMEOUT(!finished.isEmpty(), 25000);
+        QCOMPARE(b.task()->state(), Task::State::Stopped);
+        b.task()->dismiss();
     }
 
     /* A package that fails: its error, the last good packages and medium kept */

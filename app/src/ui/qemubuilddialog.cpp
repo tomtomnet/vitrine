@@ -14,6 +14,7 @@
 #include "core/guesttoolsbuilder.h"
 #include "core/paths.h"
 #include "ui/icons.h"
+#include "ui/taskbutton.h"
 #include "ui/widgets.h"
 
 /* The repository's page, from its git URL */
@@ -137,6 +138,9 @@ QemuBuildDialog::QemuBuildDialog(QWidget *parent)
             &QemuBuildDialog::updateState);
     connect(GuestToolsBuilder::instance(), &GuestToolsBuilder::finished, this,
             &QemuBuildDialog::updateState);
+
+    /* the build's task, in the main window's list: seen here once it is over */
+    TaskButton::followSeen(this, [this]() { return m_builder->task(); });
 
     /* a build running already, started from another window: where it is */
     m_log->setPlainText(m_builder->log());

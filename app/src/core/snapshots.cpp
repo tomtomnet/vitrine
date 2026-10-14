@@ -232,6 +232,9 @@ struct VmSnapshots::Private
             error = VmSnapshots::tr("A snapshot needs a name that is not only digits");
         } else if (!live() && runner && runner->isActive()) {
             error = VmSnapshots::tr("The VM is starting or stopping: wait for it");
+        } else if (!live() && runner && !runner->busy().isEmpty()) {
+            /* qemu-img would write the disks being copied for a clone */
+            error = runner->busy();
         } else if (!live() && qemuImg().isEmpty()) {
             error = VmSnapshots::tr("qemu-img was not found: install it with QEMU "
                                     "(the qemu-img package)");

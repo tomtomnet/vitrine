@@ -17,6 +17,8 @@
 #include "core/vmrunner.h"
 
 static const char kArgsFile[] = "vm.args";
+/* In a folder of newFolder() until its VM is made: one without vm.args was left so */
+static const char kMaking[] = ".vitrine-making";
 
 Vm::Vm(const QString &dir, QObject *parent)
     : QObject(parent), m_dir(QDir(dir).absolutePath())
@@ -97,6 +99,7 @@ VmStore::VmStore(const QString &dir, QObject *parent)
 {
     forgetCardUpdate();
     QDir().mkpath(m_dir);
+    removeInterrupted();
     m_watcher->addPath(m_dir);
     connect(m_watcher, &QFileSystemWatcher::directoryChanged, this, &VmStore::reload);
     connect(m_watcher, &QFileSystemWatcher::fileChanged, this, [this](const QString &path) {
@@ -135,6 +138,18 @@ Vm *VmStore::find(const QString &id) const
 
 Vm *VmStore::create(const QString &name, QString *error)
 {
+    const QString dir = newFolder(name, error);
+    ArgsFile args;
+
+    if (dir.isEmpty()) {
+        return nullptr;
+    }
+    VmConfig::setName(args, name.trimmed());
+    return createIn(dir, args, error);
+}
+
+QString VmStore::newFolder(const QString &name, QString *error)
+{
     static const QRegularExpression unsafe("[^\\w.-]+",
                                            QRegularExpression::UseUnicodePropertiesOption);
     const QDir dir(m_dir);
@@ -160,20 +175,61 @@ Vm *VmStore::create(const QString &name, QString *error)
         if (error) {
             *error = tr("Cannot create %1").arg(dir.filePath(id));
         }
-        return nullptr;
+        return {};
     }
+    /* what it is, for the store that finds it later without its VM */
+    QFile marker(dir.filePath(id) + '/' + kMaking);
+    if (!marker.open(QIODevice::WriteOnly) ||
+        marker.write("vitrine is making a VM in this folder: without a vm.args once vitrine "
+                     "ended, it was interrupted, and goes to the trash at its next start.\n") < 0) {
+        if (error) {
+            *error = marker.errorString();
+        }
+        QDir(dir.filePath(id)).removeRecursively();
+        return {};
+    }
+    m_making.insert(dir.filePath(id));
+    return dir.filePath(id);
+}
 
-    ArgsFile args;
-    Vm *vm = new Vm(dir.filePath(id), this);
+Vm *VmStore::createIn(const QString &dir, const ArgsFile &args, QString *error)
+{
+    Vm *vm = new Vm(dir, this);
 
-    VmConfig::setName(args, name.trimmed());
     if (!vm->save(args, error)) {
         delete vm;
-        QDir(dir.filePath(id)).removeRecursively();
+        dropFolder(dir);
         return nullptr;
     }
+    m_making.remove(dir);
+    QFile::remove(dir + '/' + kMaking);
     adopt(vm);
     return vm;
+}
+
+void VmStore::dropFolder(const QString &dir)
+{
+    m_making.remove(dir);
+    QDir(dir).removeRecursively();
+}
+
+void VmStore::removeInterrupted()
+{
+    const QDir dir(m_dir);
+
+    for (const QString &id : dir.entryList(QDir::Dirs | QDir::NoDotAndDotDot)) {
+        const QString path = dir.filePath(id);
+        /* this app's own, being made: not interrupted */
+        if (m_making.contains(path) || !QFileInfo::exists(path + '/' + kMaking) ||
+            QFileInfo::exists(path + '/' + kArgsFile)) {
+            continue;
+        }
+        /* copies of another VM's disks, or nothing: the trash, should one be wanted */
+        if (!QFile::moveToTrash(path)) {
+            qWarning("vitrine: cannot move %s, a VM folder never finished, to the trash",
+                     qPrintable(path));
+        }
+    }
 }
 
 void VmStore::adopt(Vm *vm)
@@ -196,6 +252,13 @@ bool VmStore::remove(Vm *vm, QString *error)
     if (vm->runner()->isActive()) {
         if (error) {
             *error = tr("%1 is running").arg(vm->name());
+        }
+        return false;
+    }
+    /* its disks being copied for a clone, say */
+    if (!vm->runner()->busy().isEmpty()) {
+        if (error) {
+            *error = vm->runner()->busy();
         }
         return false;
     }
@@ -227,6 +290,7 @@ void VmStore::setDir(const QString &dir)
     m_watcher->removePath(m_dir);
     m_dir = path;
     QDir().mkpath(m_dir);
+    removeInterrupted();
     m_watcher->addPath(m_dir);
     sync();
     emit dirChanged(m_dir);

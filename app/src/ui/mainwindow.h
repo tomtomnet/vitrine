@@ -21,6 +21,7 @@ class QSplitter;
 class UpdateNotifier;
 class UsbMenu;
 class QStackedWidget;
+class Sidebar;
 class StatusStats;
 class Vm;
 class VmConsole;
@@ -59,8 +60,9 @@ protected:
 
 private:
     void createActions();
-    /* The list of VMs on the left, or not */
-    void showLibrary(bool shown);
+    /* The list of VMs collapsed to its icons, or expanded: what F9 and the
+       bar's button say they do */
+    void libraryCollapsed(bool collapsed);
     /* F10: the first menu, as Alt and its letter open it */
     void openMenu();
     void addVm(Vm *vm);
@@ -109,6 +111,8 @@ private:
     void releaseInput();
 
     VmStore *m_store;
+    /* The list of VMs and the tasks' button under it */
+    Sidebar *m_sidebar;
     QListWidget *m_list;
     QStackedWidget *m_right;
     VmPane *m_pane;
@@ -178,7 +182,7 @@ private:
     QAction *m_quit;
     /* The one bar under the title: menus, the VM's power buttons, its tabs */
     MainBar *m_bar;
-    /* In the bar: hides or shows the list (m_library) */
+    /* In the bar: collapses or expands the list (m_library) */
     QAction *m_listButton;
     /* The window's menus, in the bar */
     QMenuBar *m_menus;
