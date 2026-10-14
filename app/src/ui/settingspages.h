@@ -36,8 +36,8 @@ class Vm;
  * when it is left, so that the other pages, the Arguments page above all,
  * see the changes.
  *
- * The simple pages come first: General, Hardware, Display, Storage, Shared
- * Folders, USB, Network.  Then the Advanced group: Machine, Boot, PCI
+ * The pages, in one list: General, Hardware, Display, Storage, Shared
+ * Folders, USB, Network, Machine (with the firmware and the boot), PCI
  * Devices and Arguments, which edits the whole command line.  What vitrine
  * decides itself, the accelerator, has no page but Arguments.
  */
@@ -68,8 +68,6 @@ public:
         return true;
     }
 };
-
-/* Simple pages */
 
 class GeneralPage : public SettingsPage
 {
@@ -361,21 +359,24 @@ private:
     QString m_backend;
 };
 
-/* Advanced pages */
-
-/* The processor model and topology, the machine, the QEMU of the VM */
+/*
+ * The processor model and topology, the machine, the QEMU of the VM, and
+ * under Boot, its firmware and boot menu
+ */
 class MachinePage : public SettingsPage
 {
     Q_OBJECT
 
 public:
-    explicit MachinePage(QWidget *parent = nullptr);
+    /* @vm: for Reset UEFI Variables, none without */
+    explicit MachinePage(Vm *vm = nullptr, QWidget *parent = nullptr);
 
     QString title() const override { return tr("Machine"); }
     QIcon icon() const override;
     void load(const ArgsFile &args) override;
     void save(ArgsFile &args) override;
     bool isModified() const override;
+    bool commit(const ArgsFile &args, const QString &vmDir, QString *error) override;
 
 private:
     /* The QEMU chosen, empty for the default one */
@@ -386,7 +387,16 @@ private:
     /* The topology box or its numbers differ from what load() showed */
     bool topologyChanged() const;
     void describe();
+    /* The machine shown, which the firmware to choose from depends on */
+    QString shownMachine() const;
+    /* The firmware for the machine shown, @choose chosen if it has it */
+    void fillFirmware(VmConfig::FirmwareKind choose);
+    void describeFirmware();
+    /* Reset UEFI Variables: for the variable store the saved arguments name */
+    void updateResetVars();
+    void resetVars();
 
+    Vm *m_vm;
     QemuDocs *m_docs = nullptr;
     QCheckBox *m_topology;
     QSpinBox *m_sockets;
@@ -401,6 +411,12 @@ private:
     QRadioButton *m_ownQemu;
     QLineEdit *m_qemuPath;
     QLabel *m_qemuInfo;
+    QComboBox *m_firmware;
+    QLabel *m_firmwareInfo;
+    QPushButton *m_resetVars;
+    QCheckBox *m_bootMenu;
+    /* The firmware files apply() copies, until the settings are applied */
+    QTemporaryDir m_staging;
 
     /* As -smp and -cpu say */
     VmConfig::Cpus m_loadedCpus;
@@ -409,40 +425,10 @@ private:
     VmConfig::Cpus m_shownCpus;
     QString m_loadedMachine;
     QString m_loadedQemu;
-};
-
-/* Firmware and boot */
-class BootPage : public SettingsPage
-{
-    Q_OBJECT
-
-public:
-    explicit BootPage(Vm *vm, QWidget *parent = nullptr);
-
-    QString title() const override { return tr("Boot"); }
-    QIcon icon() const override;
-    void load(const ArgsFile &args) override;
-    void save(ArgsFile &args) override;
-    bool isModified() const override;
-    bool commit(const ArgsFile &args, const QString &vmDir, QString *error) override;
-
-private:
-    void describeFirmware();
-    /* Reset UEFI Variables: for the variable store the saved arguments name */
-    void updateResetVars();
-    void resetVars();
-
-    Vm *m_vm;
-    QComboBox *m_firmware;
-    QLabel *m_firmwareInfo;
-    QPushButton *m_resetVars;
-    QCheckBox *m_bootMenu;
-    /* The firmware files apply() copies, until the dialog applies */
-    QTemporaryDir m_staging;
-
-    QString m_machine;
     VmConfig::FirmwareKind m_loadedFirmware = VmConfig::FirmwareKind::Bios;
     bool m_loadedBootMenu = false;
+    /* The firmware list is for ARM's virt, which boots with UEFI only */
+    bool m_firmwareVirt = false;
 };
 
 class PciPage : public SettingsPage

@@ -268,7 +268,7 @@ MainWindow::MainWindow(VmStore *store, QWidget *parent)
         m_list->setCurrentRow(0);
     }
     currentChanged();
-    m_pane->setPage(VmPane::Page(settings.value("settings/page").toInt()));
+    m_pane->setPage(VmPane::savedPage(settings.value("settings/page")));
     m_pane->setTab(VmPane::Tab(settings.value("mainwindow/tab").toInt()));
     updateStatus();
     /* the dialogs of the whole app */
@@ -1445,6 +1445,6 @@ void MainWindow::closeEvent(QCloseEvent *event)
     settings.setValue("mainwindow/listWidth", m_sidebar->expandedWidth());
     settings.setValue("mainwindow/current", vm ? vm->id() : QString());
     settings.setValue("mainwindow/tab", int(m_pane->tab()));
-    settings.setValue("settings/page", int(m_pane->page()));
+    settings.setValue("settings/page", VmPane::pageKey(m_pane->page()));
     QMainWindow::closeEvent(event);
 }

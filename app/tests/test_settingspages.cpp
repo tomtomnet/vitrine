@@ -9,6 +9,7 @@
 #include <QPushButton>
 #include <QScopeGuard>
 #include <QSpinBox>
+#include <QStackedWidget>
 #include <QStandardItemModel>
 #include <QStandardPaths>
 #include <QTableWidget>
@@ -501,7 +502,7 @@ private slots:
         QCOMPARE(text(args), "-m 1G\n-smp 2\n");
     }
 
-    /* Keyboard focus crossing the lists of pages chooses none */
+    /* Keyboard focus coming into the list of pages chooses none */
     void paneKeepsItsPageOnFocus()
     {
         QTemporaryDir dir;
@@ -511,30 +512,178 @@ private slots:
         Vm vm(dir.path());
         VmPane pane;
         auto *pages = pane.findChild<QListWidget *>("pages");
-        auto *advanced = pane.findChild<QListWidget *>("advancedPages");
-        QVERIFY(pages && advanced);
+        QVERIFY(pages);
 
         pane.setVm(&vm);
         pane.setTab(VmPane::Settings);
         pane.setPage(VmPane::Machine);
         QCOMPARE(pane.page(), VmPane::Machine);
-        /* Shift+Tab from the Advanced button into the simple pages */
+        /* Shift+Tab or Tab into the list, from the page or the tabs */
         QFocusEvent backtab(QEvent::FocusIn, Qt::BacktabFocusReason);
         QCoreApplication::sendEvent(pages, &backtab);
         QCOMPARE(pane.page(), VmPane::Machine);
-
-        /* Tab into the advanced ones from a simple page */
-        pane.setPage(VmPane::Network);
-        QCOMPARE(pane.page(), VmPane::Network);
         QFocusEvent tab(QEvent::FocusIn, Qt::TabFocusReason);
-        QCoreApplication::sendEvent(advanced, &tab);
-        QCOMPARE(pane.page(), VmPane::Network);
+        QCoreApplication::sendEvent(pages, &tab);
+        QCOMPARE(pane.page(), VmPane::Machine);
 
         /* the keys and the mouse still choose */
-        QTest::keyClick(advanced, Qt::Key_Down);
-        QCOMPARE(pane.page(), VmPane::Machine);
+        QTest::keyClick(pages, Qt::Key_Down);
+        QCOMPARE(pane.page(), VmPane::PciDevices);
         pages->setCurrentRow(VmPane::Display);
         QCOMPARE(pane.page(), VmPane::Display);
+    }
+
+    /*
+     * Every page in one list, in the order of VmPane::Page, none folded
+     * away under an Advanced button; the Boot page's content on the Machine
+     * page, under a heading
+     */
+    void paneListsEveryPage()
+    {
+        QTemporaryDir dir;
+        QFile args(dir.filePath("vm.args"));
+        QVERIFY(args.open(QIODevice::WriteOnly) && args.write("-machine q35\n-m 1G\n") > 0);
+        args.close();
+        Vm vm(dir.path());
+        VmPane pane;
+        auto *pages = pane.findChild<QListWidget *>("pages");
+        auto *stack = pane.findChild<QStackedWidget *>("pageStack");
+        QVERIFY(pages && stack);
+
+        pane.setVm(&vm);
+        pane.setTab(VmPane::Settings);
+        QStringList titles;
+        for (int i = 0; i < pages->count(); i++) {
+            titles << pages->item(i)->text();
+            QVERIFY(!pages->item(i)->isHidden());
+        }
+        QCOMPARE(titles, QStringList({"General", "Hardware", "Display", "Storage",
+                                      "Shared Folders", "USB Devices", "Network", "Machine",
+                                      "PCI Devices", "Arguments"}));
+        QCOMPARE(pane.findChildren<QListWidget *>("pages").size(), 1);
+        QVERIFY(!pane.findChild<QWidget *>("advanced"));
+        QVERIFY(!pane.findChild<QWidget *>("advancedPages"));
+        QCOMPARE(stack->count(), pages->count());
+
+        /* the pages by their names, which callers open */
+        const QList<std::pair<VmPane::Page, QString>> named = {
+            {VmPane::General, "General"},      {VmPane::UsbDevices, "USB Devices"},
+            {VmPane::Network, "Network"},      {VmPane::Machine, "Machine"},
+            {VmPane::PciDevices, "PCI Devices"}, {VmPane::Arguments, "Arguments"}};
+        for (const auto &[page, title] : named) {
+            pane.setPage(page);
+            QCOMPARE(pane.page(), page);
+            QCOMPARE(pages->currentItem()->text(), title);
+            QCOMPARE(stack->currentIndex(), int(page));
+        }
+
+        /* the firmware and the boot menu under Boot, on the Machine page */
+        QWidget *machine = stack->widget(VmPane::Machine);
+        QVERIFY(machine->findChild<QComboBox *>("firmware"));
+        QVERIFY(machine->findChild<QCheckBox *>("bootMenu"));
+        QVERIFY(machine->findChild<QPushButton *>("resetVars"));
+        QStringList labels;
+        for (const QLabel *label : machine->findChildren<QLabel *>()) {
+            labels << label->text();
+        }
+        QVERIFY2(labels.contains("Boot"), qPrintable(labels.join(" | ")));
+        QVERIFY(labels.contains("F&irmware:"));
+        int firmwarePages = 0;
+        for (int i = 0; i < stack->count(); i++) {
+            firmwarePages += stack->widget(i)->findChildren<QComboBox *>("firmware").size();
+        }
+        QCOMPARE(firmwarePages, 1);
+    }
+
+    /*
+     * The page kept by name; an index an older vitrine kept, which counted
+     * Boot between Machine and PCI Devices, on the page of the same name,
+     * Boot on Machine
+     */
+    void savedPage_data()
+    {
+        QTest::addColumn<QVariant>("saved");
+        QTest::addColumn<int>("page");
+
+        for (int i = 0; i <= VmPane::Arguments; i++) {
+            const auto page = VmPane::Page(i);
+            QTest::addRow("%s", qPrintable(VmPane::pageKey(page))) << QVariant(VmPane::pageKey(page)) << i;
+        }
+        const QList<int> older = {VmPane::General,  VmPane::Hardware,      VmPane::Display,
+                                  VmPane::Storage,  VmPane::SharedFolders, VmPane::UsbDevices,
+                                  VmPane::Network,  VmPane::Machine,       VmPane::Machine,
+                                  VmPane::PciDevices, VmPane::Arguments};
+        for (int i = 0; i < older.size(); i++) {
+            /* as QSettings reads an int back from the file: a string */
+            QTest::addRow("older %d", i) << QVariant(QString::number(i)) << older[i];
+        }
+        QTest::newRow("older, an int") << QVariant(8) << int(VmPane::Machine);
+        QTest::newRow("none") << QVariant() << int(VmPane::General);
+        QTest::newRow("out of range") << QVariant("11") << int(VmPane::General);
+        QTest::newRow("negative") << QVariant("-1") << int(VmPane::General);
+        QTest::newRow("unknown name") << QVariant("boot") << int(VmPane::General);
+    }
+
+    void savedPage()
+    {
+        QFETCH(QVariant, saved);
+        QFETCH(int, page);
+
+        QCOMPARE(int(VmPane::savedPage(saved)), page);
+    }
+
+    /* Machine's Boot part: the firmware there is for the machine shown, the boot menu */
+    void machinePageBoot()
+    {
+        using VmConfig::FirmwareKind;
+        MachinePage page;
+        auto *machine = page.findChild<QComboBox *>("machine");
+        auto *firmware = page.findChild<QComboBox *>("firmware");
+        auto *menu = page.findChild<QCheckBox *>("bootMenu");
+        auto *reset = page.findChild<QPushButton *>("resetVars");
+        QVERIFY(machine && firmware && menu && reset);
+        auto items = [firmware]() {
+            QStringList list;
+            for (int i = 0; i < firmware->count(); i++) {
+                list << firmware->itemText(i);
+            }
+            return list.join(", ");
+        };
+
+        ArgsFile args = ArgsFile::parse("-machine q35\n-m 1G\n");
+        page.load(args);
+        QCOMPARE(firmware->currentData().toInt(), int(FirmwareKind::Bios));
+        QVERIFY(items().startsWith("BIOS"));
+        QVERIFY(!menu->isChecked());
+        /* no VM, no variables to reset */
+        QVERIFY(reset->isHidden());
+        QVERIFY(!page.isModified());
+
+        menu->setChecked(true);
+        QVERIFY(page.isModified());
+        page.save(args);
+        QVERIFY(VmConfig::bootMenu(args));
+        QVERIFY2(text(args).contains("-boot menu=on\n"), qPrintable(text(args)));
+        QVERIFY(!page.isModified());
+
+        /* ARM's virt boots with UEFI only: the list follows the machine */
+        firmware->setCurrentIndex(firmware->findData(int(FirmwareKind::Uefi)));
+        QVERIFY(page.isModified());
+        machine->setCurrentText("virt");
+        QVERIFY2(!items().contains("BIOS"), qPrintable(items()));
+        QCOMPARE(firmware->currentData().toInt(), int(FirmwareKind::Uefi));
+        machine->setCurrentText("q35");
+        QVERIFY(items().startsWith("BIOS"));
+        QCOMPARE(firmware->currentData().toInt(), int(FirmwareKind::Uefi));
+
+        /* loaded again (Discard): as the arguments say */
+        page.load(args);
+        QCOMPARE(firmware->currentData().toInt(), int(FirmwareKind::Bios));
+        QVERIFY(menu->isChecked());
+        QVERIFY(!page.isModified());
+        menu->setChecked(false);
+        page.save(args);
+        QCOMPARE(text(args), "-machine q35\n-m 1G\n");
     }
 
     /* Ctrl+S in the Arguments page's editor applies the changes, as Apply does */

@@ -341,7 +341,7 @@ when it draws through virgl.
   there).
   New Linux VMs on a PC get them from Vitrine's template when their QEMU has
   them, as Vitrine's own does. Other VMs (on ARM, imported, or older ones)
-  get them on the Arguments page, under Advanced in the VM's settings.
+  get them on the Arguments page of the VM's settings.
 - The host's virglrenderer needs the native context renderer of its GPU,
   which most distributions leave out. Vitrine builds its own with QEMU
   (`host/build.sh`, which File > Build QEMU runs), with the renderers of AMD
