@@ -10,6 +10,7 @@
 #include "core/vmrunner.h"
 
 class MainBar;
+class TabSwitcher;
 class QAction;
 class QKeyEvent;
 class QMenu;
@@ -188,11 +189,15 @@ private:
     QAction *m_releaseInput;
     /* The nested desktop's views of the console: Boot, Screen, Desktop */
     QList<QAction *> m_views;
+    /* m_views, under the Console tab's button while the VM has views */
+    QMenu *m_viewMenu = nullptr;
     QAction *m_preferences;
     QAction *m_reference;
     QAction *m_quit;
     /* The one bar under the title: menus, the VM's power buttons, its tabs */
     MainBar *m_bar;
+    /* the VM pane's tabs in the bar */
+    TabSwitcher *m_tabs = nullptr;
     /* In the bar: collapses or expands the list (m_library) */
     QAction *m_listButton;
     /* The window's menus, in the bar */

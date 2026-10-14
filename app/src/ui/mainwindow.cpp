@@ -517,7 +517,10 @@ void MainWindow::createActions()
 
     /* the VM's power actions in the Machine menu alone, as the user prefers */
     m_bar->addStretch();
-    m_bar->addTabs(m_pane->tabActions());
+    m_tabs = m_bar->addTabs(m_pane->tabActions());
+    /* the nested desktop's views under the Console tab's button (updateActions()) */
+    m_viewMenu = new QMenu(this);
+    m_viewMenu->addActions(m_views);
     /* the tabs replace the pane's own */
     m_pane->setTabBarShown(false);
 }
@@ -1125,6 +1128,16 @@ void MainWindow::updateActions()
     for (int i = 0; i < m_views.size(); i++) {
         m_views[i]->setEnabled(views);
         m_views[i]->setChecked(views && int(console->currentView()) == i);
+    }
+    /* the views in the Console tab's menu, its name with the one shown (the user's
+       idea, rather than a row of buttons over the screen); one view: neither */
+    if (QAction *tab = m_pane->tabActions().value(VmPane::Console)) {
+        const QString name = tab->text().remove('&');
+        tab->setIconText(views ? QString("%1 %2").arg(name).arg(int(console->currentView()) + 1)
+                               : name);
+        if (m_tabs) {
+            m_tabs->setTabMenu(tab, views ? m_viewMenu : nullptr);
+        }
     }
     m_usb->setVm(vm);
 }

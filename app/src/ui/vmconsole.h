@@ -24,7 +24,7 @@ class VmView;
  * a window of its own (QEMU's SDL or GTK display), the way to that window.
  *
  * A VM whose nested desktop shows in vitrine's window (NestedDesktop::
- * Mode::Integrated) has three views, which a switcher above them chooses,
+ * Mode::Integrated) has three views, which the Console tab's menu chooses,
  * as the View menu and Ctrl+Alt+1/2/3 do (ConsoleViews tells which, and
  * when they change by themselves): Boot and Screen, QEMU's consoles 0 and
  * 1 through the D-Bus display (the VGA card's screen, the virtio-gpu
@@ -129,11 +129,8 @@ private:
     QLabel *m_messageTitle;
     QLabel *m_messageText;
     QPushButton *m_messageButton;
-    /* Screen: nothing over it, which would resize the guest, but the
-       nested desktop's switcher */
+    /* Screen: nothing over it, which would resize the guest */
     QWidget *m_screen;
-    QWidget *m_switcher;
-    QToolButton *m_viewButtons[3];
     QStackedWidget *m_viewPages;
     QWidget *m_dbusPage;
     QVBoxLayout *m_screenLayout;

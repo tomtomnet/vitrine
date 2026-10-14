@@ -155,6 +155,19 @@ void TabSwitcher::updateCurrent()
     }
 }
 
+void TabSwitcher::setTabMenu(QAction *tab, QMenu *menu)
+{
+    const qsizetype i = m_tabs.indexOf(tab);
+
+    if (i < 0 || m_buttons[i]->menu() == menu) {
+        return;
+    }
+    m_buttons[i]->setMenu(menu);
+    m_buttons[i]->setPopupMode(menu ? QToolButton::MenuButtonPopup : QToolButton::DelayedPopup);
+    /* the arrow takes room: the bar sees if it still holds all it has */
+    updateGeometry();
+}
+
 void TabSwitcher::fitMenuButton()
 {
     const QString current = m_menuButton->text();
