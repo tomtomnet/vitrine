@@ -1096,8 +1096,15 @@ int View::event(wl_proxy *p, uint32_t opcode, const wl_message *m, wl_argument *
         closeFds();
         return 0;
     }
+    // an object the guest does not know: one of the app's, or one destroyed on the app's side, which
+    // libwayland passes as NULL where the protocol allows none (the keyboard's leave of a window the
+    // app just closed): the guest takes a NULL there for a protocol error
     auto foreign = [&](int i) {
-        return specs[i].type == 'o' && args[i].o && !byProxy.count(reinterpret_cast<wl_proxy *>(args[i].o));
+        if (specs[i].type != 'o')
+            return false;
+        if (!args[i].o)
+            return !specs[i].nullable;
+        return !byProxy.count(reinterpret_cast<wl_proxy *>(args[i].o));
     };
     int foreignArg = -1;
     for (int i = 0; i < n; i++)
