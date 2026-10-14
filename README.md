@@ -205,4 +205,6 @@ GPL-2.0-or-later, see [LICENSE](LICENSE). Patches to other projects are under
 the licenses of the files they change, and files with their own license header
 keep that license. The system logos in `app/data/os/` are CC0 or vitrine's own,
 each listed with its source in [its README](app/data/os/README.md); the logos
-are their owners' trademarks.
+are their owners' trademarks. vitrine's own logo, `app/data/vitrine.svg`, is
+derived from QEMU's logo, "Kew the Angry Emu" by Benoît Canet, and is under
+CC BY 3.0 ([its note](app/data/README.md)).
