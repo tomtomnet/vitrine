@@ -683,16 +683,16 @@ QString summary(const QList<Change> &changes)
         }
     }
     if (patches > 0) {
-        parts << tr("%n patch(es) changed", nullptr, patches);
+        parts << (patches == 1 ? tr("1 patch changed") : tr("%1 patches changed").arg(patches));
     }
     if (added > 0) {
-        parts << tr("%n new patch(es)", nullptr, added);
+        parts << (added == 1 ? tr("1 new patch") : tr("%1 new patches").arg(added));
     }
     if (removed > 0) {
-        parts << tr("%n patch(es) removed", nullptr, removed);
+        parts << (removed == 1 ? tr("1 patch removed") : tr("%1 patches removed").arg(removed));
     }
     if (files > 0) {
-        parts << tr("%n file(s) changed", nullptr, files);
+        parts << (files == 1 ? tr("1 file changed") : tr("%1 files changed").arg(files));
     }
     parts.removeDuplicates();
     return parts.join(", ");

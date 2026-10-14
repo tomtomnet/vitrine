@@ -166,7 +166,7 @@ signals:
     void componentStarted(const QString &component);
     /* It is there: built now, or up to date already */
     void componentDone(const QString &component, bool built, const QString &folder);
-    /* The output, as it comes */
+    /* The output, line by line as it comes, each once handled */
     void output(const QString &text);
     /* From ninja's [done/total] */
     void progress(int done, int total);

@@ -257,7 +257,7 @@ QString BuildsWindow::duration(qint64 ms)
         return tr("less than a minute");
     }
     if (minutes < 60) {
-        return tr("%n min", nullptr, int(minutes));
+        return tr("%1 min").arg(minutes);
     }
     return tr("%1 h %2 min").arg(minutes / 60).arg(minutes % 60);
 }
@@ -941,9 +941,9 @@ void BuildsWindow::showPatches()
         item->setToolTip(0, item->text(0));
         item->setToolTip(1, patch.path);
         item->setData(0, Qt::UserRole, patch.path);
-        group->setText(0, origin.isEmpty() ? tr("%n patch(es)", nullptr, group->childCount())
-                                           : tr("%1 · %n patch(es)", nullptr, group->childCount())
-                                                 .arg(origin));
+        const int count = group->childCount();
+        const QString patches = count == 1 ? tr("1 patch") : tr("%1 patches").arg(count);
+        group->setText(0, origin.isEmpty() ? patches : origin + " · " + patches);
     }
     m_patches->expandAll();
 }
@@ -1137,8 +1137,11 @@ void BuildsWindow::updateHeader()
     } else if (outdated.isEmpty()) {
         text = tr("All is built from this version's sources.");
     } else {
-        text = tr("%n component(s) to build: about %1.", nullptr, int(outdated.size()))
-                   .arg(duration(estimate));
+        text = outdated.size() == 1
+                   ? tr("1 component to build: about %1.").arg(duration(estimate))
+                   : tr("%1 components to build: about %2.")
+                         .arg(outdated.size())
+                         .arg(duration(estimate));
     }
     if (!m_manager->error().isEmpty()) {
         text = tr("The last build failed: %1.").arg(m_manager->error()) + ' ' + text;

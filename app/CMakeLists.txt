@@ -313,6 +313,8 @@ if(BUILD_TESTING)
     endfunction()
     foreach(name
             argsfile
+            buildcomponents
+            buildmanager
             cardsettings
             diskinfo
             firmware

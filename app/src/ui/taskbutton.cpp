@@ -80,7 +80,7 @@ QString remainingOf(const Task *task)
         return TaskButton::tr("less than a minute left");
     }
     if (minutes < 60) {
-        return TaskButton::tr("about %n min left", nullptr, int(minutes));
+        return TaskButton::tr("about %1 min left").arg(minutes);
     }
     return TaskButton::tr("about %1 h %2 min left").arg(minutes / 60).arg(minutes % 60);
 }

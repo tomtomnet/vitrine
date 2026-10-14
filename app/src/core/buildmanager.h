@@ -75,6 +75,13 @@ public:
     void setLogDir(const QString &path);
     /* How often the estimate is worked out again while a run goes on */
     void setTick(int ms);
+    /* When a compiler's count is trusted for what is left: after @ms in
+       its phase, once 1/@part of it is done (15 s, 50) */
+    void setCountFrom(qint64 ms, int part)
+    {
+        m_countAfterMs = ms;
+        m_countFrom = part;
+    }
 
     QList<Builds::Component> components() const;
     Builds::Component component(const QString &id) const;
@@ -175,6 +182,7 @@ private:
     QStringList m_queue;
     QStringList m_part;             // of the queue, the part running
     QString m_current;
+    QString m_logTo;                /* the component whose lines come now */
     QString m_error;
     QHash<QString, Progress> m_progress;
     QHash<QString, QElapsedTimer> m_clocks;
@@ -183,6 +191,8 @@ private:
     mutable QHash<QString, QList<qint64>> m_history;
     mutable bool m_historyLoaded = false;
     QElapsedTimer m_runClock;
+    qint64 m_countAfterMs = 15000;
+    int m_countFrom = 50;
     QTimer *m_tick;
     QPointer<Task> m_task;
     QStringList m_connected;        // the builders followed

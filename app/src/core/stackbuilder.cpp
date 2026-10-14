@@ -518,11 +518,14 @@ void StackBuilder::readOutput()
         const qsizetype cut = m_log.indexOf('\n', m_log.size() - kMaxLog * 3 / 4);
         m_log.remove(0, cut < 0 ? m_log.size() - kMaxLog * 3 / 4 : cut + 1);
     }
-    emit output(text);
+    /* line by line, each told once handled: what follows a component's
+       line is that component's */
     m_partial += text;
     while ((end = m_partial.indexOf('\n')) >= 0) {
-        handleLine(m_partial.left(end));
+        const QString line = m_partial.left(end + 1);
         m_partial.remove(0, end + 1);
+        handleLine(line.chopped(1));
+        emit output(line);
     }
 }
 
@@ -570,8 +573,10 @@ void StackBuilder::handleLine(const QString &text)
 void StackBuilder::done(int code, bool crashed)
 {
     if (!m_partial.isEmpty()) {
-        handleLine(m_partial);
+        const QString line = m_partial;
         m_partial.clear();
+        handleLine(line);
+        emit output(line);
     }
     m_process->deleteLater();
     m_process = nullptr;

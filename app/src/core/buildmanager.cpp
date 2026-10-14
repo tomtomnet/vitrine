@@ -29,9 +29,6 @@ using Builds::Kind;
 static const int kHistory = 5;
 /* A component's log kept in memory, from its end: Mesa's alone is some 25 MB */
 static const qsizetype kMaxLog = 2 << 20;
-/* A compiler's count is trusted once that part of it is done (1/50), that long after it began */
-static const int kCountFrom = 50;
-static const qint64 kCountAfterMs = 15000;
 
 static bool isFinal(BuildManager::State state)
 {
@@ -194,7 +191,7 @@ void BuildManager::build(const QStringList &ids, bool clean)
         m_connected << "stack";
         connect(m_stack, &StackBuilder::output, this, [this](const QString &text) {
             if (m_running && !m_part.isEmpty() && component(m_part.first()).kind == Kind::Host) {
-                append(m_current.isEmpty() ? m_part.first() : m_current, text);
+                append(m_logTo.isEmpty() ? m_part.first() : m_logTo, text);
             }
         });
         connect(m_stack, &StackBuilder::componentStarted, this, [this](const QString &id) {
@@ -242,7 +239,7 @@ void BuildManager::build(const QStringList &ids, bool clean)
         };
         connect(m_tools, &GuestToolsBuilder::output, this, [this, guestPart](const QString &text) {
             if (guestPart()) {
-                append(m_current.isEmpty() ? m_part.first() : m_current, text);
+                append(m_logTo.isEmpty() ? m_part.first() : m_logTo, text);
             }
         });
         connect(m_tools, &GuestToolsBuilder::stepStarted, this,
@@ -311,6 +308,7 @@ void BuildManager::build(const QStringList &ids, bool clean)
     m_queue = queue;
     m_part.clear();
     m_current.clear();
+    m_logTo.clear();
     m_error.clear();
     m_running = true;
     m_cancelled = false;
@@ -393,6 +391,7 @@ void BuildManager::partFinished(const QString &error, bool stopped)
             }
         }
         m_current.clear();
+        m_logTo.clear();
         m_part.clear();
         /* what was built changes what the rest needs */
         m_loaded = false;
@@ -430,6 +429,7 @@ void BuildManager::finishRun(const QString &error, bool stopped)
     m_running = false;
     m_tick->stop();
     m_current.clear();
+    m_logTo.clear();
     m_part.clear();
     m_error = stopped ? QString() : error;
     if (!error.isEmpty() && !failed.isEmpty() && !stopped) {
@@ -448,8 +448,8 @@ void BuildManager::finishRun(const QString &error, bool stopped)
             m_task->setTitle(built.isEmpty()        ? tr("Builds up to date")
                              : built.size() == 1    ? tr("%1 built").arg(built.first())
                              : built.size() == 2    ? tr("%1 and %2 built").arg(built[0], built[1])
-                                                    : tr("%n components built", nullptr,
-                                                         int(built.size())));
+                                                    : tr("%1 components built")
+                                                          .arg(built.size()));
             m_task->finish(Task::State::Done, built.isEmpty() ? QString()
                                                               : tr("Built: %1").arg(built.join(", ")));
         } else {
@@ -547,8 +547,8 @@ qint64 BuildManager::remainingOf(const QString &id) const
                                    : m_tools && m_tools->isCompiling();
         /* from the compiler's count: the rest of it at its pace, and what
            comes after compiling (installing, packaging) */
-        if (compiling && p.total > 0 && p.done > 0 && qint64(p.done) * kCountFrom >= p.total &&
-            phase >= kCountAfterMs) {
+        if (compiling && p.total > 0 && p.done > 0 && qint64(p.done) * m_countFrom >= p.total &&
+            phase >= m_countAfterMs) {
             return phase * (p.total - p.done) / p.done + estimate / 12;
         }
         return std::max(estimate - elapsed, estimate / 10);
@@ -595,6 +595,7 @@ QList<qint64> BuildManager::durations(const QString &id) const
 void BuildManager::setCurrent(const QString &id)
 {
     m_current = id;
+    m_logTo = id;
     m_clocks[id].start();
     m_phaseClocks[id].start();
     m_progress[id].phase.clear();
