@@ -50,6 +50,8 @@ qt_add_library(vitrine_core STATIC
     src/core/snapshots.h
     src/core/stackbuilder.cpp
     src/core/stackbuilder.h
+    src/core/tasks.cpp
+    src/core/tasks.h
     src/core/udmabuf.cpp
     src/core/udmabuf.h
     src/core/updatecheck.cpp
@@ -355,6 +357,7 @@ if(BUILD_TESTING)
             qmpclient
             snapshots
             stackbuilder
+            tasks
             udmabuf
             updatecheck
             usbhotplug
