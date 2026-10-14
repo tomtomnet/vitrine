@@ -218,6 +218,8 @@ signals:
     /* powerdown() tries @way; None: the request is over (the guest shuts
        down, or the run ended) */
     void shutdownWayChanged(GuestShutdown::Way way);
+    /* The guest reboots, by itself or by Reset: QMP's RESET */
+    void guestReset();
 
 private:
     struct Private;

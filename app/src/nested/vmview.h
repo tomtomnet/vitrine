@@ -39,6 +39,9 @@ struct vmview_callbacks {
     void (*connection)(void *data, int connected);
     /* the guest's window was mapped (shown) or unmapped */
     void (*mapped)(void *data, bool mapped);
+    /* a pointer button went down on the guest's window, which the app never sees: it may give
+       the guest the keyboard (vitrine) */
+    void (*pressed)(void *data);
 };
 
 /* Serve SOCKET_PATH (created; an old socket there is replaced) and show the guest's window as a

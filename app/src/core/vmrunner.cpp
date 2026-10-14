@@ -834,6 +834,10 @@ void VmRunner::Private::event(const QString &name, const QJsonObject &data)
         }
         return;
     }
+    if (name == "RESET") {
+        emit q->guestReset();
+        return;
+    }
     if (name == "SHUTDOWN") {
         stopRequested = true;
         /* the guest shut down: whatever way the request took is done */

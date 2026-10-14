@@ -144,7 +144,7 @@ VmView::~VmView()
     delete m_host;
 }
 
-bool VmView::attach(const QString &monitorSocket, QString *error, bool guestWaits)
+bool VmView::attach(const QString &monitorSocket, QString *error, bool guestWaits, int console)
 {
     if (m_dbus) {
         return true;
@@ -191,10 +191,11 @@ bool VmView::attach(const QString &monitorSocket, QString *error, bool guestWait
     }
     /* no parent: it may outlive the view (retire()) */
     m_dbus = new DBusDisplay(m_stats.get());
-    if (!m_dbus->connectPeer(sv[0], error) || !m_dbus->selectConsole(error)) {
+    if (!m_dbus->connectPeer(sv[0], error) || !m_dbus->selectConsole(error, console)) {
         detach();
         return false;
     }
+    m_console = m_dbus->consolePath().section('_', -1).toInt();
 
     /* from the listener thread to the window, on the GUI thread */
     Listener::Callbacks cb;
@@ -249,6 +250,7 @@ bool VmView::attach(const QString &monitorSocket, QString *error, bool guestWait
         }
     });
     sendFirstUiInfo(guestWaits);
+    watchConsoles();
     /*
      * Last: QEMU reads the clipboard object's properties as it takes the
      * Register, with its main loop stopped until this thread answers them,
@@ -270,6 +272,10 @@ void VmView::detach()
         m_listener->stop();
         m_listener.reset();
     }
+    if (m_consoleWatch && m_dbus && m_dbus->connection()) {
+        g_dbus_connection_signal_unsubscribe(m_dbus->connection(), m_consoleWatch);
+    }
+    m_consoleWatch = 0;
     /* before the connection closes: QEMU's calls to it end here */
     delete std::exchange(m_clipboard, nullptr);
     if (m_dbus) {
@@ -305,6 +311,94 @@ void VmView::detach()
 bool VmView::isAttached() const
 {
     return m_dbus;
+}
+
+int VmView::console() const
+{
+    return m_dbus ? m_console : -1;
+}
+
+QSize VmView::consoleSize(int index) const
+{
+    return m_consoleSizes.value(index);
+}
+
+void VmView::setConsoleSize(int index, QSize size)
+{
+    if (!size.isEmpty() && m_consoleSizes.value(index) != size) {
+        m_consoleSizes.insert(index, size);
+        Q_EMIT consoleSizeChanged(index, size);
+    }
+}
+
+/*
+ * QEMU keeps each console's size in its Width and Height properties, which
+ * change with the guest's mode: the nested desktop's console view tells by
+ * them when the virtio-gpu card's screen shows the guest's (QEMU's
+ * placeholder is 640x480 until then), while it shows the VGA's.  Every
+ * console of the VM, from the view's connection, on the GUI thread.
+ */
+void VmView::watchConsoles()
+{
+    GDBusConnection *conn = m_dbus->connection();
+    GError *gerr = nullptr;
+
+    /* the view may go before a change already on its way */
+    m_consoleWatch = g_dbus_connection_signal_subscribe(
+        conn, nullptr, "org.freedesktop.DBus.Properties", "PropertiesChanged", nullptr,
+        "org.qemu.Display1.Console", G_DBUS_SIGNAL_FLAGS_NONE,
+        [](GDBusConnection *, const char *, const char *path, const char *, const char *,
+           GVariant *parameters, gpointer data) {
+            auto *self = static_cast<QPointer<VmView> *>(data);
+            GVariant *changed = g_variant_get_child_value(parameters, 1);
+            guint32 width = 0, height = 0;
+            const bool hasWidth = g_variant_lookup(changed, "Width", "u", &width);
+            const bool hasHeight = g_variant_lookup(changed, "Height", "u", &height);
+            g_variant_unref(changed);
+            if (*self && (hasWidth || hasHeight)) {
+                const int index = QString::fromLatin1(path).section('_', -1).toInt();
+                const QSize now = (*self)->consoleSize(index);
+                (*self)->setConsoleSize(index, QSize(hasWidth ? int(width) : now.width(),
+                                                     hasHeight ? int(height) : now.height()));
+            }
+        },
+        new QPointer<VmView>(this),
+        [](gpointer data) { delete static_cast<QPointer<VmView> *>(data); });
+
+    /* their sizes now: the consoles of the VM */
+    GVariant *vm = g_dbus_connection_call_sync(
+        conn, nullptr, "/org/qemu/Display1/VM", "org.freedesktop.DBus.Properties", "Get",
+        g_variant_new("(ss)", "org.qemu.Display1.VM", "ConsoleIDs"), G_VARIANT_TYPE("(v)"),
+        G_DBUS_CALL_FLAGS_NONE, 5000, nullptr, &gerr);
+    if (!vm) {
+        g_clear_error(&gerr);
+        return;
+    }
+    GVariant *ids = nullptr;
+    g_variant_get(vm, "(v)", &ids);
+    gsize n = 0;
+    const auto *idv = static_cast<const guint32 *>(
+        g_variant_get_fixed_array(ids, &n, sizeof(guint32)));
+    for (gsize i = 0; i < n; i++) {
+        const QByteArray path = "/org/qemu/Display1/Console_" + QByteArray::number(idv[i]);
+        GVariant *all = g_dbus_connection_call_sync(
+            conn, nullptr, path.constData(), "org.freedesktop.DBus.Properties", "GetAll",
+            g_variant_new("(s)", "org.qemu.Display1.Console"), G_VARIANT_TYPE("(a{sv})"),
+            G_DBUS_CALL_FLAGS_NONE, 5000, nullptr, nullptr);
+        if (!all) {
+            continue;
+        }
+        GVariant *dict = g_variant_get_child_value(all, 0);
+        guint32 width = 0, height = 0;
+        if (g_variant_lookup(dict, "Width", "u", &width) &&
+            g_variant_lookup(dict, "Height", "u", &height)) {
+            setConsoleSize(int(idv[i]), QSize(int(width), int(height)));
+        }
+        g_variant_unref(dict);
+        g_variant_unref(all);
+    }
+    g_variant_unref(ids);
+    g_variant_unref(vm);
 }
 
 QWidget *VmView::widget() const

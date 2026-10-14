@@ -32,6 +32,8 @@ qt_add_library(vitrine_core STATIC
     src/core/buildmanager.h
     src/core/cardsettings.cpp
     src/core/cardsettings.h
+    src/core/consoleviews.cpp
+    src/core/consoleviews.h
     src/core/diskinfo.cpp
     src/core/diskinfo.h
     src/core/firmware.cpp
@@ -177,18 +179,23 @@ qt_add_library(vitrine_vmview STATIC
     src/vmview/vmview.h
     src/vmview/waylandextras.cpp
     src/vmview/waylandextras.h
+    # the nested desktop in the window: vitrine's side of the library below
+    src/nested/desktopview.h
+    src/nested/nestedview.cpp
+    src/nested/nestedview.h
     ${VMVIEW_PROTOCOL_SOURCES}
 )
 target_include_directories(vitrine_vmview PUBLIC src PRIVATE src/vmview ${VMVIEW_PROTOCOL_DIR})
 target_link_libraries(vitrine_vmview
     PUBLIC Qt6::Gui Qt6::Widgets
-    PRIVATE Qt6::GuiPrivate PkgConfig::GIO PkgConfig::EGL PkgConfig::WAYLAND PkgConfig::GBM)
+    PRIVATE Qt6::GuiPrivate PkgConfig::GIO PkgConfig::EGL PkgConfig::WAYLAND PkgConfig::GBM
+            nestedvmview)
 # GLib's headers use the names of Qt's signals/slots keywords; Qt's GL headers
 # come with Qt6::Gui and GL entry points are resolved at run time
 target_compile_definitions(vitrine_vmview PRIVATE QT_NO_KEYWORDS)
 # vitrine's own files there; the research side's build as they come
 set_source_files_properties(src/vmview/vmview.cpp src/vmview/vmclipboard.cpp
-    src/vmview/viewsurface.cpp PROPERTIES COMPILE_OPTIONS "-Wall;-Wextra")
+    src/vmview/viewsurface.cpp src/nested/nestedview.cpp PROPERTIES COMPILE_OPTIONS "-Wall;-Wextra")
 
 # The nested desktop in the window: the research side's vmview library in
 # src/nested, as it comes (src/nested/README.md), built as its own CMake
@@ -416,6 +423,7 @@ if(BUILD_TESTING)
     endforeach()
     # the windows': widgets that are never shown, so no screen either
     foreach(name
+            consoleviews
             guestoffer
             guesttoolsdialog
             mainbar

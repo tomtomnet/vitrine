@@ -88,6 +88,7 @@ constexpr uint32_t kWmBaseName = 0xfff00001; // our xdg_wm_base in the guest's r
 constexpr uint16_t kDisplayError = 0, kDisplayDeleteId = 1;
 constexpr uint16_t kRegistryGlobal = 0, kRegistryGlobalRemove = 1;
 constexpr uint16_t kPointerEnter = 0, kPointerLeave = 1, kPointerFrame = 5;
+constexpr uint16_t kPointerButton = 3;
 constexpr uint16_t kKeyboardEnter = 1, kKeyboardLeave = 2, kKeyboardKey = 3, kKeyboardModifiers = 4;
 constexpr uint16_t kDataDeviceEnter = 1, kDataDeviceLeave = 2, kDataDeviceMotion = 3, kDataDeviceDrop = 4;
 constexpr uint16_t kToplevelConfigure = 0, kSurfaceConfigure = 0, kPopupDone = 1;
@@ -1126,6 +1127,8 @@ int View::event(wl_proxy *p, uint32_t opcode, const wl_message *m, wl_argument *
         }
         if (foreignArg < 0)
             o->pendingFrame = true;
+        if (opcode == kPointerButton && args[3].u == WL_POINTER_BUTTON_STATE_PRESSED && cb.pressed)
+            cb.pressed(cb.data);
         break;
     case Role::Keyboard:
         if ((opcode == kKeyboardEnter || opcode == kKeyboardLeave) && foreignArg < 0) {

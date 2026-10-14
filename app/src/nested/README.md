@@ -27,3 +27,4 @@ screen, and the library's callbacks brought to the GUI thread).
 
 | file | change | why |
 |---|---|---|
+| `vmview.{h,cpp}` | `vmview_callbacks.pressed`: called (on the library's thread) when a pointer button goes down on the guest's window | the compositor sends those clicks to the guest's surface, never to Qt: without it, a click on the desktop could not give the guest the keyboard back once a widget of vitrine's (the list of VMs) had taken it, as a click on the VM's screen does |
