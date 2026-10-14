@@ -183,6 +183,17 @@ public:
     /* Tests: how long QEMU has to quit before SIGTERM, and to end after it
        (twice that once its monitor closed) */
     void setQuitTimeout(int ms);
+    /*
+     * A guest asked to shut down (powerdown()) that panics on its way, as a
+     * nested desktop's guest can at the very end of its poweroff (fbcon,
+     * with a DRM session on two cards): QMP's GUEST_PANICKED, from the
+     * nested desktop's ISA pvpanic, quits QEMU.  And the last resort, for a
+     * nested desktop's guest that stalls without panicking: once its agent
+     * went away (the guest is shutting down) it has this long to end,
+     * else QEMU quits.  Long, as a slow shutdown must not be cut: 5 min.
+     * Tests: shorter.
+     */
+    void setShutdownStallTimeout(int ms);
     /* Null while stopped */
     QmpClient *qmp() const;
     /* QEMU's process, 0 while stopped */

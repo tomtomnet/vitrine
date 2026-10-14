@@ -44,6 +44,8 @@ static const int kHelperTimeoutMs = 10000;
 static const int kQuitTimeoutMs = 5000;
 /* The guest waiting for its screen at most (VmRunner::waitsForDisplay) */
 static int displayWaitMs = 5000;
+/* A nested desktop's guest that stalls in its shutdown: QEMU quits after this */
+static const int kShutdownStallMs = 5 * 60 * 1000;
 
 /* A live process, not a zombie */
 static bool alive(qint64 pid)
@@ -289,6 +291,9 @@ struct VmRunner::Private
     bool suspended = false;     // Paused by the guest's own suspend (S3)
     bool stopRequested = false; // the end of the run is no failure
     bool forceRequested = false; // forceOff() was used in this run
+    bool shutdownAsked = false; // powerdown() was used in this run
+    QTimer *stallTimer;         // the guest's shutdown stalls: the last resort
+    int stallTimeoutMs = kShutdownStallMs;
     /* forceOff()'s steps: 0 none, 1 SIGTERM sent, 2 notResponding() said */
     int killStep = 0;
     int quitTimeoutMs = kQuitTimeoutMs;
@@ -342,6 +347,8 @@ struct VmRunner::Private
     void waitForDisplay();
     void endDisplayWait(bool timedOut);
     void event(const QString &name, const QJsonObject &data);
+    /* QEMU quits: the guest it was asked to shut down panicked or stalls */
+    void endStuckShutdown(const QString &why);
     /*
      * qemu-ga came up: what the guest runs (guestOsInfo()), then, with
      * @mount, the shares the guest did not mount, on the same connection:
@@ -561,6 +568,8 @@ void VmRunner::Private::cleanup()
     poll->stop();
     killTimer->stop();
     displayTimer->stop();
+    stallTimer->stop();
+    shutdownAsked = false;
     phase = Phase::Idle;
     connecting = false;
     heldForDisplay = false;
@@ -828,9 +837,31 @@ void VmRunner::Private::event(const QString &name, const QJsonObject &data)
 {
     /* qemu-ga opened its port: the guest has booted */
     if (name == "VSERPORT_CHANGE") {
-        if (!guestAgentPortId.isEmpty() && data["id"].toString() == guestAgentPortId &&
-            data["open"].toBool()) {
+        const QString port = data["id"].toString();
+        const bool agent = (!guestAgentPortId.isEmpty() && port == guestAgentPortId) ||
+                           port == GuestTools::kPortId;
+        if (!guestAgentPortId.isEmpty() && port == guestAgentPortId && data["open"].toBool()) {
             guestAgentUp(true);
+        }
+        /*
+         * An agent's port closed while the guest was asked to shut down: it
+         * is on its way.  A nested desktop's guest can stall there (its
+         * display rejecting the greeter's frames): the last resort's time
+         * runs from here, not from the request, which a guest may answer
+         * with a question on its screen first
+         */
+        if (agent && !data["open"].toBool() && shutdownAsked &&
+            nested != NestedDesktop::Mode::Off && !stallTimer->isActive()) {
+            stallTimer->start(stallTimeoutMs);
+        }
+        return;
+    }
+    if (name == "GUEST_PANICKED") {
+        q->appendNote(VmRunner::tr("the guest panicked (QEMU's action: %1)")
+                          .arg(data["action"].toString()));
+        if (shutdownAsked && state != State::Stopped) {
+            endStuckShutdown(VmRunner::tr("the guest panicked while shutting down, as asked: "
+                                          "QEMU quits"));
         }
         return;
     }
@@ -853,6 +884,13 @@ void VmRunner::Private::event(const QString &name, const QJsonObject &data)
         setSuspended(false);
         setState(State::Running);
     }
+}
+
+void VmRunner::Private::endStuckShutdown(const QString &why)
+{
+    stallTimer->stop();
+    q->appendNote(why);
+    q->forceOff();
 }
 
 void VmRunner::Private::guestAgentUp(bool mount)
@@ -983,6 +1021,15 @@ VmRunner::VmRunner(const QString &id, const QString &dir, QObject *parent)
     d->killTimer->setSingleShot(true);
     d->displayTimer = new QTimer(this);
     d->displayTimer->setSingleShot(true);
+    d->stallTimer = new QTimer(this);
+    d->stallTimer->setSingleShot(true);
+    connect(d->stallTimer, &QTimer::timeout, this, [this]() {
+        if (isActive()) {
+            d->endStuckShutdown(tr("the guest did not end its shutdown within %n minute(s) of "
+                                   "its agent's end: QEMU quits",
+                                   nullptr, qMax(1, d->stallTimeoutMs / 60000)));
+        }
+    });
     d->shutdown = new GuestShutdown(this);
     d->shutdown->setPowerButton([this]() { pressPowerButton(); });
     d->shutdown->setRunning([this]() {
@@ -1482,6 +1529,7 @@ void VmRunner::start(const ArgsFile &args)
     d->error.clear();
     d->stopRequested = false;
     d->forceRequested = false;
+    d->shutdownAsked = false;
     d->killStep = 0;
     d->args = args;
     d->qemu = qemu;
@@ -1676,6 +1724,7 @@ void VmRunner::attach(const ArgsFile &args)
     d->error.clear();
     d->stopRequested = false;
     d->forceRequested = false;
+    d->shutdownAsked = false;
     d->killStep = 0;
     d->phase = Private::Phase::Attach;
     d->connecting = true;
@@ -1699,6 +1748,7 @@ void VmRunner::resume()
 void VmRunner::powerdown()
 {
     if (isActive()) {
+        d->shutdownAsked = true;
         d->shutdown->start();
     }
 }
@@ -1782,6 +1832,11 @@ void VmRunner::killQemu()
 void VmRunner::setQuitTimeout(int ms)
 {
     d->quitTimeoutMs = ms;
+}
+
+void VmRunner::setShutdownStallTimeout(int ms)
+{
+    d->stallTimeoutMs = ms;
 }
 
 qint64 VmRunner::pid() const
