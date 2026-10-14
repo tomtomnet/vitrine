@@ -24,6 +24,7 @@
 #include <QSlider>
 #include <QSpinBox>
 #include <QSplitter>
+#include <QStandardItemModel>
 #include <QTableWidget>
 #include <QThread>
 #include <QTreeWidget>
@@ -268,6 +269,21 @@ bool HardwarePage::isModified() const
 
 /* Display */
 
+/* Where the screen shows, by -display, in the order of the list: vitrine's window first, the
+   one new VMs have */
+static const char *const kDisplays[][2] = {
+    {"dbus", QT_TRANSLATE_NOOP("DisplayPage", "Vitrine's window (D-Bus)")},
+    {"gtk", QT_TRANSLATE_NOOP("DisplayPage", "QEMU's GTK window")},
+    {"sdl", QT_TRANSLATE_NOOP("DisplayPage", "QEMU's SDL window")},
+    {"none", QT_TRANSLATE_NOOP("DisplayPage", "None")},
+};
+
+/* A display of the list as the notes name it */
+static QString displayName(const QString &display)
+{
+    return display == "dbus" ? QString("D-Bus") : display.toUpper();
+}
+
 /* The options of QEMU's windows the page has, each window's, and QEMU's defaults */
 static const char *const kWindowOptions[][2] = {
     {"show-cursor", QT_TRANSLATE_NOOP("DisplayPage", "Show the mouse &pointer")},
@@ -311,11 +327,8 @@ static VmConfig::Graphics cardGraphics(const QString &driver)
 }
 
 DisplayPage::DisplayPage(QWidget *parent)
-    : SettingsPage(parent), m_custom(new Banner(Banner::Information)),
-      m_embedded(new QRadioButton(tr("In &Vitrine's window"))),
-      m_sdl(new QRadioButton(tr("In QEMU's &SDL window"))),
-      m_gtk(new QRadioButton(tr("In QEMU's &GTK window"))),
-      m_nowhere(new QRadioButton(tr("&Nowhere"))), m_gtkHint(Widgets::hint()),
+    : SettingsPage(parent), m_custom(new Banner(Banner::Information)), m_display(new QComboBox),
+      m_displayHint(Widgets::hint()), m_displayLacks(Widgets::hint()),
       m_windowLabel(new QLabel(tr("QEMU's window:"))), m_card(new QComboBox),
       m_cardHint(Widgets::hint()),
       m_nativeContext(new QCheckBox(tr("&DRM native context"))),
@@ -326,35 +339,24 @@ DisplayPage::DisplayPage(QWidget *parent)
 {
     auto *layout = new QVBoxLayout(this);
     auto *form = Widgets::form();
-    auto *choices = new QVBoxLayout;
     auto *windowOptions = new QVBoxLayout;
     auto *features = new QVBoxLayout;
-    auto *group = new QButtonGroup(this);
 
     m_custom->setObjectName("customDisplay");
-    m_embedded->setObjectName("embedded");
-    m_sdl->setObjectName("ownWindow");
-    m_gtk->setObjectName("gtkWindow");
-    m_nowhere->setObjectName("nowhere");
+    m_display->setObjectName("display");
+    m_displayHint->setObjectName("displayHint");
+    m_displayLacks->setObjectName("displayLacks");
     m_card->setObjectName("card");
     m_cardHint->setObjectName("cardHint");
     m_nativeContext->setObjectName("nativeContext");
     m_venus->setObjectName("venus");
     m_frameTiming->setObjectName("frameTiming");
-    for (QRadioButton *b : {m_embedded, m_sdl, m_gtk, m_nowhere}) {
-        group->addButton(b);
+    for (const auto &[key, text] : kDisplays) {
+        m_display->addItem(tr(text), QString(key));
     }
-    choices->addWidget(m_embedded);
-    choices->addWidget(Widgets::hint(tr("The screen is part of Vitrine's window, and can go "
-                                        "full screen.")));
-    choices->addWidget(m_sdl);
-    choices->addWidget(Widgets::hint(tr("QEMU shows the screen in a window of its own, which "
-                                        "stays open when Vitrine closes.")));
-    choices->addWidget(m_gtk);
-    choices->addWidget(m_gtkHint);
-    choices->addWidget(m_nowhere);
-    choices->addWidget(Widgets::hint(tr("The VM runs without a screen.")));
-    form->addRow(Widgets::label(tr("Show the VM:"), m_embedded), choices);
+    form->addRow(tr("Disp&lay:"), m_display);
+    form->addRow(QString(), m_displayHint);
+    form->addRow(QString(), m_displayLacks);
 
     for (const auto &[key, text] : kWindowOptions) {
         auto *box = new QCheckBox(tr(text));
@@ -378,7 +380,7 @@ DisplayPage::DisplayPage(QWidget *parent)
     layout->addLayout(form);
     layout->addStretch();
 
-    connect(group, &QButtonGroup::buttonToggled, this, &DisplayPage::update);
+    connect(m_display, &QComboBox::currentIndexChanged, this, &DisplayPage::update);
     connect(m_card, &QComboBox::currentIndexChanged, this, &DisplayPage::update);
 }
 
@@ -398,11 +400,7 @@ DisplayPage::Shown DisplayPage::shown() const
 {
     Shown s;
 
-    s.screen = m_embedded->isChecked() ? "dbus"
-               : m_sdl->isChecked()    ? "sdl"
-               : m_gtk->isChecked()    ? "gtk"
-               : m_nowhere->isChecked() ? "none"
-                                        : QString();
+    s.screen = m_display->currentIndex() >= 0 ? m_display->currentData().toString() : QString();
     for (const QString &key : kWindowKeys.value(s.screen)) {
         s.options.insert(key, m_options.value(key)->isChecked());
     }
@@ -444,14 +442,41 @@ void DisplayPage::update()
 
     /* the displays its QEMU has, and the one it uses; none for -nographic */
     const bool nographic = m_args.indexOf("nographic") >= 0;
-    for (const auto &[button, display] :
-         {std::pair(m_embedded, "dbus"), std::pair(m_sdl, "sdl"), std::pair(m_gtk, "gtk")}) {
-        button->setEnabled(!nographic && (button->isChecked() || !lacks(display)));
+    const auto *model = qobject_cast<const QStandardItemModel *>(m_display->model());
+    QStringList lacking;
+    for (int i = 0; i < m_display->count(); i++) {
+        const QString display = m_display->itemData(i).toString();
+        const bool lacked = display != "none" && lacks(display);
+        QStandardItem *item = model ? model->item(i) : nullptr;
+
+        if (lacked) {
+            lacking << displayName(display);
+        }
+        if (item) {
+            item->setEnabled(!lacked || i == m_display->currentIndex());
+            item->setToolTip(lacked ? tr("This VM's QEMU has no %1 display.")
+                                          .arg(displayName(display))
+                                    : QString());
+        }
     }
-    m_nowhere->setEnabled(!nographic);
-    m_gtkHint->setText(lacks("gtk") ? tr("This VM's QEMU has no GTK display.")
-                                    : tr("The same, with QEMU's menus; there the frames do "
-                                         "not keep step with this computer's screen."));
+    m_display->setEnabled(!nographic);
+    m_displayHint->setText(
+        s.screen == "dbus"   ? tr("The screen is part of Vitrine's window, and can go full screen.")
+        : s.screen == "gtk"  ? tr("QEMU shows the screen in a window of its own with its menus, "
+                                  "which stays open when Vitrine closes; the frames there do not "
+                                  "keep step with this computer's screen.")
+        : s.screen == "sdl"  ? tr("QEMU shows the screen in a window of its own, which stays open "
+                                  "when Vitrine closes.")
+        : s.screen == "none" ? tr("The VM runs without a screen.")
+                             : QString());
+    m_displayHint->setVisible(!m_displayHint->text().isEmpty());
+    m_displayLacks->setText(lacking.isEmpty()      ? QString()
+                            : lacking.size() == 1 ? tr("This VM's QEMU has no %1 display.")
+                                                        .arg(lacking.first())
+                                                  : tr("This VM's QEMU has none of these "
+                                                       "displays: %1.")
+                                                        .arg(lacking.join(", ")));
+    m_displayLacks->setVisible(!lacking.isEmpty() && !nographic);
 
     /* each window its options */
     const QStringList keys = kWindowKeys.value(s.screen);
@@ -495,53 +520,52 @@ void DisplayPage::load(const ArgsFile &args)
     const VmConfig::Screen screen = VmConfig::screen(args);
     const VmConfig::Graphics g = VmConfig::graphics(args);
     const QString display = g.display;
-    QString radio;
+    QString choice;
     QString custom;
+    /* in the list for a screen none of its choices: what the VM has, in short */
+    QString own;
 
     m_args = args;
-    /* the screen: none checked for one shown elsewhere, or in another window */
+    /* the screen: no choice for one shown elsewhere, or in another window */
     if (screen == VmConfig::Screen::Embedded) {
-        radio = "dbus";
+        choice = "dbus";
     } else if (screen == VmConfig::Screen::OwnWindow && (display == "sdl" || display == "gtk")) {
-        radio = display;
+        choice = display;
     } else if (screen == VmConfig::Screen::None && !VmConfig::hasRemoteDisplay(args) &&
                args.indexOf("nographic") < 0 && (display == "none" || display == "egl-headless")) {
-        radio = "none";
-    }
-    /*
-     * The buttons' group keeps one checked while it is exclusive, whatever
-     * their autoExclusive says, and a button left checked would make an
-     * untouched page modified
-     */
-    {
-        const QSignalBlocker block(m_embedded->group());
-        m_embedded->group()->setExclusive(false);
-        m_embedded->setChecked(radio == "dbus");
-        m_sdl->setChecked(radio == "sdl");
-        m_gtk->setChecked(radio == "gtk");
-        m_nowhere->setChecked(radio == "none");
-        m_embedded->group()->setExclusive(true);
+        choice = "none";
     }
 
     if (args.indexOf("nographic") >= 0) {
         custom = tr("This VM has no screen (-nographic): change it on the Arguments page.");
-    } else if (screen == VmConfig::Screen::None && radio.isEmpty() &&
+        own = tr("No screen (-nographic)");
+    } else if (screen == VmConfig::Screen::None && choice.isEmpty() &&
                (display.isEmpty() || display == "default" || display == "none" ||
                 display == "egl-headless")) {
         custom = tr("This VM shows its screen over VNC or SPICE only. Choosing below adds a "
                     "window.");
-    } else if (screen == VmConfig::Screen::None && radio.isEmpty()) {
+        own = tr("VNC or SPICE only");
+    } else if (screen == VmConfig::Screen::None && choice.isEmpty()) {
         custom = tr("This VM shows its screen nowhere Vitrine can (-display %1). Choosing "
                     "below replaces it.")
                      .arg(display.toHtmlEscaped());
-    } else if (screen == VmConfig::Screen::OwnWindow && radio.isEmpty()) {
-        custom = display.isEmpty() || display == "default"
-                     ? tr("The screen shows in QEMU's default window.")
-                     : tr("The screen shows in QEMU's %1 window.")
-                           .arg(display.toUpper().toHtmlEscaped());
+        own = tr("Elsewhere (-display %1)").arg(display);
+    } else if (screen == VmConfig::Screen::OwnWindow && choice.isEmpty()) {
+        const bool qemuDefault = display.isEmpty() || display == "default";
+        custom = qemuDefault ? tr("The screen shows in QEMU's default window.")
+                             : tr("The screen shows in QEMU's %1 window.")
+                                   .arg(display.toUpper().toHtmlEscaped());
+        own = qemuDefault ? tr("QEMU's default window")
+                          : tr("QEMU's %1 window").arg(display.toUpper());
     }
     m_custom->setText(custom);
     m_custom->setVisible(!custom.isEmpty());
+    /* none of the list current, which would make an untouched page modified */
+    {
+        const QSignalBlocker block(m_display);
+        m_display->setPlaceholderText(own);
+        m_display->setCurrentIndex(choice.isEmpty() ? -1 : m_display->findData(choice));
+    }
 
     /* the window's options, as QEMU takes them when not given */
     for (auto it = m_options.cbegin(); it != m_options.cend(); ++it) {

@@ -122,8 +122,8 @@ private:
 };
 
 /*
- * Where the screen shows (vitrine's window, QEMU's SDL or GTK window, or
- * nowhere), what QEMU's window does, and the graphics card, with vitrine's
+ * Where the screen shows (vitrine's window, QEMU's GTK or SDL window, or
+ * none), what QEMU's window does, and the graphics card, with vitrine's
  * settings for its 3D: DRM native context, Venus, the frame timing
  */
 class DisplayPage : public SettingsPage
@@ -142,7 +142,7 @@ public:
 private:
     /* What the page shows; save() writes what differs from what load() showed */
     struct Shown {
-        /* -display of the screen chosen: dbus, sdl, gtk, none; empty when none is */
+        /* -display of the screen chosen: dbus, gtk, sdl, none; empty when none is */
         QString screen;
         /* the options of QEMU's window that it has, e.g. show-cursor */
         QMap<QString, bool> options;
@@ -161,11 +161,11 @@ private:
     QString chosen3dCard() const;
 
     Banner *m_custom;
-    QRadioButton *m_embedded;
-    QRadioButton *m_sdl;
-    QRadioButton *m_gtk;
-    QRadioButton *m_nowhere;
-    QLabel *m_gtkHint;
+    /* The screen's place, by -display; none current for another (m_custom says it) */
+    QComboBox *m_display;
+    QLabel *m_displayHint;
+    /* What of the list the VM's QEMU lacks */
+    QLabel *m_displayLacks;
     QLabel *m_windowLabel;
     QMap<QString, QCheckBox *> m_options;
     QComboBox *m_card;
