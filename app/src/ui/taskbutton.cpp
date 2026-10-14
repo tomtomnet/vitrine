@@ -67,6 +67,24 @@ QString percent(double fraction)
     return fraction < 0 ? QString() : TaskButton::tr("%1%").arg(int(fraction * 100));
 }
 
+/* "about 18 min left"; nothing once over, or while it cannot tell */
+QString remainingOf(const Task *task)
+{
+    const qint64 seconds = task->remaining();
+    const qint64 minutes = (seconds + 30) / 60;
+
+    if (!task->isRunning() || seconds < 0) {
+        return {};
+    }
+    if (seconds < 45) {
+        return TaskButton::tr("less than a minute left");
+    }
+    if (minutes < 60) {
+        return TaskButton::tr("about %n min left", nullptr, int(minutes));
+    }
+    return TaskButton::tr("about %1 h %2 min left").arg(minutes / 60).arg(minutes % 60);
+}
+
 /* What a task shows beside its title: how far, or how it ended */
 QString statusOf(const Task *task)
 {
@@ -354,6 +372,9 @@ QString TaskButton::describe(const Task *task)
     if (!task->text().isEmpty()) {
         line += " — " + task->text();
     }
+    if (const QString left = remainingOf(task); !left.isEmpty()) {
+        line += " · " + left;
+    }
     return line;
 }
 
@@ -444,6 +465,9 @@ void TaskButton::refresh()
         }
         if (!task->text().isEmpty()) {
             tip += "<br>" + task->text().toHtmlEscaped();
+        }
+        if (const QString left = remainingOf(task); !left.isEmpty()) {
+            tip += "<br>" + (left.left(1).toUpper() + left.mid(1)).toHtmlEscaped();
         }
     } else if (!tasks.isEmpty()) {
         QStringList lines{"<b>" + title().toHtmlEscaped() + "</b>"};

@@ -1135,7 +1135,7 @@ bool VmRunner::needsQemuBuild(const ArgsFile &args, QString *why)
     if (system.isEmpty()) {
         if (why) {
             *why = tr("Vitrine's QEMU is not built yet, and %1 is not in PATH: build it with "
-                      "File > Build QEMU, or choose a QEMU in the preferences")
+                      "File > Builds, or choose a QEMU in the preferences")
                        .arg(Paths::qemuSystemName());
         }
         return true;
@@ -1146,7 +1146,7 @@ bool VmRunner::needsQemuBuild(const ArgsFile &args, QString *why)
     }
     if (why) {
         *why = tr("This VM uses %1, which the system's QEMU lacks: build Vitrine's QEMU with "
-                  "File > Build QEMU, or choose another QEMU in the preferences")
+                  "File > Builds, or choose another QEMU in the preferences")
                    .arg(lacks.join(", "));
     }
     return true;

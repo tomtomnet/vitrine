@@ -1301,7 +1301,7 @@ private slots:
         QVERIFY(VmRunner::needsQemuBuild(linuxVm, &why));
         QCOMPARE(why, "This VM uses drm_native_context, x-host-vblank, x-vblank-lead, "
                       "x-vblank-lead-auto, honor-guest-pat, which the system's QEMU lacks: "
-                      "build Vitrine's QEMU with File > Build QEMU, or choose another QEMU in "
+                      "build Vitrine's QEMU with File > Builds, or choose another QEMU in "
                       "the preferences");
         QVERIFY(VmRunner::needsQemuBuild(withHeadless("-device virtio-vga,x-host-vblank=on\n")));
         QVERIFY(VmRunner::needsQemuBuild(withHeadless("-accel kvm,honor-guest-pat=on\n")));
@@ -1338,7 +1338,7 @@ private slots:
             runner.start(linuxVm);
             QCOMPARE(failed.size(), 1);
             QVERIFY(failed[0][0].toString().contains("drm_native_context"));
-            QVERIFY(failed[0][0].toString().contains("File > Build QEMU"));
+            QVERIFY(failed[0][0].toString().contains("File > Builds"));
             QCOMPARE(runner.state(), VmRunner::State::Stopped);
             QVERIFY(states.isEmpty());
             /* nothing ran, nor was written */
@@ -1358,7 +1358,7 @@ private slots:
         QVERIFY(Paths::qemuBinary().isEmpty());
         QVERIFY(VmRunner::needsQemuBuild(headless, &why));
         QVERIFY(why.contains(Paths::qemuSystemName() + " is not in PATH"));
-        QVERIFY(why.contains("File > Build QEMU"));
+        QVERIFY(why.contains("File > Builds"));
         QVERIFY(VmRunner::needsQemuBuild(windows));
         QVERIFY(!VmRunner::needsQemuBuild(own));
 

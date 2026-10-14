@@ -3,6 +3,7 @@
 
 #include <QCoreApplication>
 #include <QDir>
+#include <QDirIterator>
 #include <QFile>
 #include <QJsonArray>
 #include <QJsonDocument>
@@ -11,7 +12,10 @@
 #include <QTimer>
 
 #include <algorithm>
+#include <fcntl.h>
 #include <functional>
+#include <sys/file.h>
+#include <unistd.h>
 
 #include "core/guesttoolsbuilder.h"
 #include "core/paths.h"
@@ -647,6 +651,86 @@ void BuildManager::saveLog(const QString &id)
     }
     file.write(m_logs.value(id).toUtf8());
     file.commit();
+}
+
+QStringList BuildManager::cacheDirs() const
+{
+    /* every Fedora release's of the guest tools */
+    return m_cacheDirs.isEmpty() ? QStringList{StackBuilder::workDir(),
+                                               Paths::cacheDir() + "/guest-build"}
+                                 : m_cacheDirs;
+}
+
+/* @dir and all in it, its folders made writable first: some downloads
+   come read-only */
+static bool removeTree(const QString &dir)
+{
+    QDirIterator it(dir, QDir::Dirs | QDir::Hidden | QDir::System | QDir::NoDotAndDotDot,
+                    QDirIterator::Subdirectories);
+
+    if (!QFileInfo::exists(dir)) {
+        return true;
+    }
+    while (it.hasNext()) {
+        const QString path = it.next();
+        if (!it.fileInfo().isSymLink()) {
+            QFile::setPermissions(path, QFile::permissions(path) | QFileDevice::ReadOwner |
+                                            QFileDevice::WriteOwner | QFileDevice::ExeOwner);
+        }
+    }
+    QFile::setPermissions(dir, QFile::permissions(dir) | QFileDevice::WriteOwner);
+    return QDir(dir).removeRecursively() || !QFileInfo::exists(dir);
+}
+
+bool BuildManager::clearCache(QString *error)
+{
+    const Builds::Places places = m_placesSet ? m_places : Builds::Places::defaults();
+    QStringList lockFiles;
+    QList<int> locks;
+    QStringList failed;
+    const auto release = [&locks]() {
+        for (const int fd : std::as_const(locks)) {
+            ::flock(fd, LOCK_UN);
+            ::close(fd);
+        }
+    };
+
+    if (m_running || (m_stack && m_stack->isRunning()) || (m_tools && m_tools->isRunning())) {
+        *error = tr("A build is running: clear the cache once it is done.");
+        return false;
+    }
+    /* a build from a terminal: build.sh's lock in its work folder,
+       build-rpms.sh's in its output */
+    for (const QString &dir : cacheDirs()) {
+        lockFiles << dir + "/.lock";
+    }
+    lockFiles << places.rpmsDir + "/.lock";
+    for (const QString &path : std::as_const(lockFiles)) {
+        const int fd = ::open(QFile::encodeName(path).constData(), O_WRONLY | O_CLOEXEC);
+        if (fd < 0) {
+            continue;
+        }
+        if (::flock(fd, LOCK_EX | LOCK_NB) != 0) {
+            ::close(fd);
+            release();
+            *error = tr("A build is running from a terminal: clear the cache once it is done.");
+            return false;
+        }
+        locks << fd;
+    }
+    for (const QString &dir : cacheDirs()) {
+        if (!removeTree(dir)) {
+            failed << dir;
+        }
+    }
+    release();
+    if (!failed.isEmpty()) {
+        *error = tr("Some files could not be removed from %1. Those the build container made "
+                    "may need: podman unshare rm -rf FOLDER")
+                     .arg(failed.join(", "));
+        return false;
+    }
+    return true;
 }
 
 void BuildManager::loadHistory() const

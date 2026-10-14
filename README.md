@@ -91,12 +91,19 @@ and force off the selected VM, and its tabs (Console, Details, Settings,
 Snapshots, Logs) at the end. The button at the start of the bar, or F9,
 collapses the list of VMs to their icons and expands it back; so does
 dragging its edge. Under the list, a button shows the long tasks under way
-(the builds of QEMU and of the guest tools, clones) and how far they are: a
-click shows the task's window, or a menu of the tasks when there are
-several.
+(builds, clones), how far they are and what is left: a click shows the
+task's window, or a menu of the tasks when there are several.
 
-1. **Build vitrine's QEMU.** The banner's Build… button (or File > Build
-   QEMU…, Ctrl+B) opens a window whose Build button fetches QEMU and
+File > Builds… (Ctrl+B) shows what vitrine builds: its QEMU (virglrenderer,
+QEMU) and the guest tools (their packages and medium), each with its
+source, its patches by origin, whether it is up to date and why not, when
+it was built, how long a build takes on this machine, and its log. A build
+redoes only what changed: a component built from the same inputs is not
+built again, a changed patch compiles only the files it changes, and the
+guest packages compile through ccache.
+
+1. **Build vitrine's QEMU.** The banner's Build… button (or File > Builds…)
+   opens the Builds window, whose Build button fetches QEMU and
    virglrenderer at their pinned commits, patches them and installs them into
    `~/.local/share/vitrine/stack` (a few minutes). VMs need it for their
    display in vitrine's window and for 3D. Until it is built, they use the
@@ -109,7 +116,7 @@ several.
    (Ctrl+S) edits. A Linux VM whose 3D card lacks what new VMs get (native
    context, the host vblank timing) offers Update… on its Details tab.
 3. **Guest tools** for Fedora 44 x86-64 guests (virtio-gpu driver, Mesa, KWin
-   for Plasma 6.7.5, an agent). File > Build Guest Tools… (also Build… in
+   for Plasma 6.7.5, an agent). The Builds window (also Build… in
    Machine > Install Guest Tools… and in Preferences) builds them in a Fedora
    container with rootless podman, then makes the medium VMs install them
    from: 20 to 40 minutes the first time (Mesa ~15-25 min, KWin ~10, tools

@@ -206,7 +206,7 @@ void VmDetails::refresh()
                        "it for AMD GPUs, and for Intel GPUs on the i915 or Xe driver, and this "
                        "computer's GPU is none of them.")
                   : tr("This computer offers the guest no DRM native context: the virglrenderer "
-                       "QEMU uses has none for its GPU. File > Build QEMU builds Vitrine's QEMU, "
+                       "QEMU uses has none for its GPU. File > Builds builds Vitrine's QEMU, "
                        "which has it for AMD GPUs, and for Intel GPUs on the i915 or Xe driver."));
         m_contextsNote->show();
         break;

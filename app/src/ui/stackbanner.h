@@ -24,7 +24,7 @@ public:
     void refresh();
 
 signals:
-    /* Build, Update or Show: the build window */
+    /* Build, Update or Show: the Builds window, on QEMU */
     void buildRequested();
 
 private:

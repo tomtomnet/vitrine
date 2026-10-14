@@ -20,10 +20,9 @@
 #include "core/guesttoolsbuilder.h"
 #include "core/paths.h"
 #include "core/stackbuilder.h"
-#include "ui/guesttoolsbuilddialog.h"
+#include "ui/buildswindow.h"
 #include "ui/hosttuningprefs.h"
 #include "ui/icons.h"
-#include "ui/qemubuilddialog.h"
 #include "ui/qemudocs.h"
 #include "ui/widgets.h"
 
@@ -124,20 +123,15 @@ PreferencesDialog::PreferencesDialog(QWidget *parent)
         }
     });
     connect(m_virtiofsd, &QLineEdit::textChanged, this, &PreferencesDialog::checkVirtiofsd);
-    connect(m_build, &QPushButton::clicked, this, [this]() {
-        /* the build goes on in the background when this window closes */
-        QemuBuildDialog dialog(this);
-        dialog.exec();
-        updateStack();
-    });
+    /* the Builds window over this one: the builds go on when it closes */
+    connect(m_build, &QPushButton::clicked, this,
+            [this]() { BuildsWindow::present(this, "qemu"); });
+    connect(StackBuilder::instance(), &StackBuilder::started, this,
+            &PreferencesDialog::updateStack);
     connect(StackBuilder::instance(), &StackBuilder::finished, this,
             &PreferencesDialog::updateStack);
-    connect(m_buildTools, &QPushButton::clicked, this, [this]() {
-        /* the build goes on in the background when this window closes */
-        GuestToolsBuildDialog dialog(this);
-        dialog.exec();
-        updateTools();
-    });
+    connect(m_buildTools, &QPushButton::clicked, this,
+            [this]() { BuildsWindow::present(this, "medium"); });
     GuestToolsBuilder *tools = GuestToolsBuilder::instance();
     connect(tools, &GuestToolsBuilder::started, this, &PreferencesDialog::updateTools);
     connect(tools, &GuestToolsBuilder::stepStarted, this, &PreferencesDialog::updateTools);
@@ -173,10 +167,10 @@ void PreferencesDialog::updateStack()
     const StackBuilder::Build build = StackBuilder::current();
     const bool running = StackBuilder::instance()->isRunning();
 
-    m_stack->setText(QemuBuildDialog::describe(build).toHtmlEscaped());
+    m_stack->setText(BuildsWindow::describe(build).toHtmlEscaped());
     m_stack->setToolTip(build.isValid() ? build.qemuBinary() : QString());
     m_stackState->setText(running ? tr("Building…")
-                                  : QemuBuildDialog::explain(state, build).toHtmlEscaped());
+                                  : BuildsWindow::explain(state, build).toHtmlEscaped());
     m_build->setText(running                                    ? tr("Show…")
                      : state == StackBuilder::State::Outdated  ? tr("Update…")
                      : state == StackBuilder::State::UpToDate ? tr("Details…")
@@ -190,12 +184,12 @@ void PreferencesDialog::updateTools()
     const GuestToolsBuilder::State state = GuestToolsBuilder::state();
     const bool running = builder->isRunning();
 
-    m_tools->setText(GuestToolsBuildDialog::describe().toHtmlEscaped());
+    m_tools->setText(BuildsWindow::describeGuestTools().toHtmlEscaped());
     m_tools->setToolTip(GuestToolsBuilder::mediumImage());
     m_toolsState->setText(
-        running ? tr("Building: %1.").arg(GuestToolsBuildDialog::progressText(builder, false))
+        running ? tr("Building: %1.").arg(builder->progressText(false))
                       .toHtmlEscaped()
-                : GuestToolsBuildDialog::explain(state).toHtmlEscaped());
+                : BuildsWindow::explain(state).toHtmlEscaped());
     m_buildTools->setText(running                                         ? tr("Show…")
                           : state == GuestToolsBuilder::State::Outdated ? tr("Update…")
                           : state == GuestToolsBuilder::State::UpToDate ? tr("Details…")

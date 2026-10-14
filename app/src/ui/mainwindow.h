@@ -13,7 +13,6 @@ class MainBar;
 class QAction;
 class QMenu;
 class QMenuBar;
-class QemuBuildDialog;
 class QLabel;
 class QListWidget;
 class QListWidgetItem;
@@ -45,7 +44,8 @@ public:
     void select(const QString &id);
     void newVm();
     void importVm();
-    void buildQemu();
+    /* The Builds window, on @component ("qemu") if given */
+    void showBuilds(const QString &component = {});
     void openSettings(Vm *vm, int page = -1);
     /* Shows the window over the others, for a second instance */
     void bringToFront();
@@ -141,7 +141,8 @@ private:
     QSet<QString> m_askingUsb;
     /* The snapshot the next start of a VM starts from, by id */
     QHash<QString, QString> m_loadvm;
-    QPointer<QemuBuildDialog> m_buildDialog;
+    /* The VMs' QEMU when a build of Vitrine's began, to tell whether it changed */
+    QString m_qemuBefore;
     UpdateNotifier *m_updates;
     /* The selection left a VM with changes, to ask about */
     bool m_leaving = false;

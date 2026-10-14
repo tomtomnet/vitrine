@@ -8,7 +8,7 @@
 #include "core/paths.h"
 #include "core/stackbuilder.h"
 #include "ui/banner.h"
-#include "ui/qemubuilddialog.h"
+#include "ui/buildswindow.h"
 #include "ui/qemudocs.h"
 
 StackBanner::StackBanner(QWidget *parent)
@@ -104,7 +104,7 @@ void StackBanner::refresh()
                   "other sources or patches. VMs running keep the QEMU they started with.");
         button = tr("Update…");
     } else {
-        text = QemuBuildDialog::explain(state, {}).toHtmlEscaped();
+        text = BuildsWindow::explain(state, {}).toHtmlEscaped();
     }
 
     for (Banner *banner : {m_warning, m_note}) {

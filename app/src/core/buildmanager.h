@@ -119,6 +119,14 @@ public:
     /* The run's in the app's tasks, until seen; null if none */
     Task *task() const { return m_task; }
 
+    /* The build cache: the sources and build trees, the downloads, the
+       compiler cache; what is built is elsewhere, and stays */
+    QStringList cacheDirs() const;
+    void setCacheDirs(const QStringList &dirs) { m_cacheDirs = dirs; }
+    /* Removes them, unless a build runs, here or from a terminal (the
+       scripts' locks); false, and why, if not all of it went */
+    bool clearCache(QString *error);
+
 signals:
     void runStarted();
     /* @error is empty when all was built */
@@ -155,6 +163,7 @@ private:
     QPointer<GuestToolsBuilder> m_tools;
     QString m_historyFile;
     QString m_logDir;
+    QStringList m_cacheDirs;
 
     mutable bool m_loaded = false;
     mutable QList<Builds::Component> m_components;

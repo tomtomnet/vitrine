@@ -17,7 +17,7 @@
 #include "core/vmrunner.h"
 #include "core/vmstore.h"
 #include "ui/banner.h"
-#include "ui/guesttoolsbuilddialog.h"
+#include "ui/guesttoolsbuildbanner.h"
 #include "ui/icons.h"
 #include "ui/widgets.h"
 
