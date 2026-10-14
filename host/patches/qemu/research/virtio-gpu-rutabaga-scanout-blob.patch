@@ -1,0 +1,188 @@
+From 964bc419a6550e926df7c606dc2e8abe2a82e9d9 Mon Sep 17 00:00:00 2001
+From: virtio-gpu-desktop <local@localhost>
+Date: Wed, 14 Oct 2026 13:24:19 +0200
+Subject: [PATCH] virtio-gpu-rutabaga: blob scanouts (SET_SCANOUT_BLOB) on
+ displays with GL
+
+The guest's KMS clients that render on the GPU - its greeter, a Plasma
+session on the VM's own screen - show their framebuffers with
+SET_SCANOUT_BLOB. virtio-gpu-rutabaga had no such command: the guest got
+VIRTIO_GPU_RESP_ERR_UNSPEC for every page flip ("response 0x1200 (command
+0x10d)" in its log) and the console stayed black; the read-back path of
+SET_SCANOUT cannot help either, native-context blobs live in host GPU
+memory.
+
+Export the blob as a dma-buf once (rutabaga_resource_export_blob, kept until
+the resource is freed) and give it to the console as virtio-gpu-gl does
+(virtio_gpu_update_dmabuf); RESOURCE_FLUSH of such a scanout is a GL update.
+A display without GL gets the error it got before: a CPU mapping of the
+dma-buf read zeros for buffers the host GPU placed out of the CPU's reach.
+
+Tested 2026-10-14 on a Radeon 780M: a nested-desktop guest with -display
+dbus,gl=on and the D-Bus client on console 1 shows the guest's greeter after
+its nested session ended, and a Plasma session logged in from it; the
+guest logs no SET_SCANOUT_BLOB error any more.
+---
+ hw/display/virtio-gpu-rutabaga.c | 118 +++++++++++++++++++++++++++++++
+ 1 file changed, 118 insertions(+)
+
+diff --git a/hw/display/virtio-gpu-rutabaga.c b/hw/display/virtio-gpu-rutabaga.c
+index fc67bfc759..18ceb768bf 100644
+--- a/hw/display/virtio-gpu-rutabaga.c
++++ b/hw/display/virtio-gpu-rutabaga.c
+@@ -8,6 +8,7 @@
+ #include "hw/virtio/virtio.h"
+ #include "hw/virtio/virtio-gpu.h"
+ #include "hw/virtio/virtio-gpu-pixman.h"
++#include "hw/virtio/virtio-gpu-bswap.h"
+ #include "hw/virtio/virtio-iommu.h"
+ #include "migration/blocker.h"
+ #include "qemu/mmap-alloc.h"
+@@ -218,6 +219,10 @@ virtio_gpu_rutabaga_resource_unref(VirtIOGPU *g,
+     if (res->image) {
+         pixman_image_unref(res->image);
+     }
++    if (res->dmabuf_fd >= 0) {
++        close(res->dmabuf_fd);
++        res->dmabuf_fd = -1;
++    }
+ 
+     QTAILQ_REMOVE(&g->reslist, res, next);
+ 
+@@ -285,6 +290,101 @@ rutabaga_cmd_context_destroy(VirtIOGPU *g,
+     CHECK(!result, cmd);
+ }
+ 
++/*
++ * A blob as a scanout (SET_SCANOUT_BLOB): the KMS framebuffers of the guest's
++ * GPU-rendered clients on the VM's own screen - its greeter, a session there.
++ * Native-context blobs live in host GPU memory and cannot be read back, so the
++ * blob is exported as a dma-buf (once, kept until the resource goes) and given
++ * to the display as it is. That needs a display with GL (-display dbus,gl=on,
++ * sdl,gl=on, ...): a CPU mapping of the dma-buf reads zeros for buffers the
++ * host GPU placed out of the CPU's reach (2026-10-14), so a display without GL
++ * gets the error it got before.
++ */
++static bool
++rutabaga_blob_export(VirtIOGPURutabaga *vr,
++                     struct virtio_gpu_simple_resource *res)
++{
++    struct rutabaga_handle handle = { .os_handle = -1 };
++
++    if (res->dmabuf_fd >= 0) {
++        return true;
++    }
++    if (rutabaga_resource_export_blob(vr->rutabaga, res->resource_id,
++                                      &handle)) {
++        return false;
++    }
++    if (handle.handle_type != RUTABAGA_HANDLE_TYPE_MEM_DMABUF) {
++        close(handle.os_handle);
++        return false;
++    }
++    res->dmabuf_fd = handle.os_handle;
++    return true;
++}
++
++static void
++rutabaga_cmd_set_scanout_blob(VirtIOGPU *g,
++                              struct virtio_gpu_ctrl_command *cmd)
++{
++    struct virtio_gpu_simple_resource *res;
++    struct virtio_gpu_scanout *scanout;
++    struct virtio_gpu_framebuffer fb = { 0 };
++    struct virtio_gpu_set_scanout_blob ss;
++
++    VirtIOGPUBase *vb = VIRTIO_GPU_BASE(g);
++    VirtIOGPURutabaga *vr = VIRTIO_GPU_RUTABAGA(g);
++    if (vr->headless) {
++        return;
++    }
++
++    VIRTIO_GPU_FILL_CMD(ss);
++    virtio_gpu_scanout_blob_bswap(&ss);
++    trace_virtio_gpu_cmd_set_scanout_blob(ss.scanout_id, ss.resource_id,
++                                          ss.r.width, ss.r.height, ss.r.x,
++                                          ss.r.y);
++
++    if (ss.scanout_id >= vb->conf.max_outputs) {
++        cmd->error = VIRTIO_GPU_RESP_ERR_INVALID_SCANOUT_ID;
++        return;
++    }
++    if (ss.resource_id == 0) {
++        virtio_gpu_disable_scanout(g, ss.scanout_id);
++        return;
++    }
++    if (!virtio_gpu_check_scanout_bounds(ss.scanout_id, ss.resource_id,
++                                         ss.width, ss.height, &ss.r,
++                                         &cmd->error)) {
++        return;
++    }
++    res = virtio_gpu_find_resource(g, ss.resource_id);
++    if (!res || !res->blob_size) {
++        cmd->error = VIRTIO_GPU_RESP_ERR_INVALID_RESOURCE_ID;
++        return;
++    }
++    if (!virtio_gpu_scanout_blob_to_fb(&fb, &ss, res->blob_size)) {
++        cmd->error = VIRTIO_GPU_RESP_ERR_INVALID_PARAMETER;
++        return;
++    }
++    scanout = &vb->scanout[ss.scanout_id];
++    if (!qemu_console_has_gl(scanout->con)) {
++        qemu_log_mask(LOG_GUEST_ERROR, "%s: scanout %d: blob scanouts need a "
++                      "display with GL\n", __func__, ss.scanout_id);
++        cmd->error = VIRTIO_GPU_RESP_ERR_UNSPEC;
++        return;
++    }
++    if (!rutabaga_blob_export(vr, res)) {
++        qemu_log_mask(LOG_GUEST_ERROR, "%s: resource %d has no dma-buf\n",
++                      __func__, ss.resource_id);
++        cmd->error = VIRTIO_GPU_RESP_ERR_UNSPEC;
++        return;
++    }
++    vb->enable = 1;
++    if (virtio_gpu_update_dmabuf(g, ss.scanout_id, res, &fb, &ss.r)) {
++        cmd->error = VIRTIO_GPU_RESP_ERR_INVALID_PARAMETER;
++        return;
++    }
++    virtio_gpu_update_scanout(g, ss.scanout_id, res, &fb, &ss.r);
++}
++
+ static void
+ rutabaga_cmd_resource_flush(VirtIOGPU *g, struct virtio_gpu_ctrl_command *cmd)
+ {
+@@ -321,6 +421,21 @@ rutabaga_cmd_resource_flush(VirtIOGPU *g, struct virtio_gpu_ctrl_command *cmd)
+         return;
+     }
+ 
++    /* a blob shown with SET_SCANOUT_BLOB: no read-back, the display has it */
++    if (res->blob_size && res->dmabuf_fd >= 0) {
++        for (i = 0; i < vb->conf.max_outputs; i++) {
++            scanout = &vb->scanout[i];
++            if (scanout->resource_id != res->resource_id) {
++                continue;
++            }
++            if (qemu_console_has_gl(scanout->con)) {
++                qemu_console_gl_update(scanout->con, 0, 0,
++                                       scanout->width, scanout->height);
++            }
++        }
++        return;
++    }
++
+     transfer.x = 0;
+     transfer.y = 0;
+     transfer.z = 0;
+@@ -1029,6 +1144,9 @@ virtio_gpu_rutabaga_process_cmd(VirtIOGPU *g,
+     case VIRTIO_GPU_CMD_SET_SCANOUT:
+         rutabaga_cmd_set_scanout(g, cmd);
+         break;
++    case VIRTIO_GPU_CMD_SET_SCANOUT_BLOB:
++        rutabaga_cmd_set_scanout_blob(g, cmd);
++        break;
+     case VIRTIO_GPU_CMD_RESOURCE_FLUSH:
+         rutabaga_cmd_resource_flush(g, cmd);
+         break;
+-- 
+2.56.0
+

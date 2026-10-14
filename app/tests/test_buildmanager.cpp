@@ -21,11 +21,11 @@ using State = BuildManager::State;
 
 /*
  * A stand-in for host/build.sh: its lines, per component, as the real one
- * says them, and a QEMU and a virglrenderer where it says.  HOST_HOLD
- * holds virglrenderer's build until that file is there, QEMU_HOLD QEMU's
- * compile half-way; HOST_FAIL=qemu fails it.  (No line of these scripts
- * starts with a #, nor has a \": moc would take them for a directive or a
- * string's end.)
+ * says them, and a QEMU, a virglrenderer and a rutabaga_gfx where it says.
+ * HOST_HOLD holds virglrenderer's build until that file is there,
+ * QEMU_HOLD QEMU's compile half-way; HOST_FAIL=qemu fails it.  (No line of
+ * these scripts starts with a #, nor has a \": moc would take them for a
+ * directive or a string's end.)
  */
 static const char kBuildSh[] = R"sh(#!/bin/bash
 here=$(cd "$(dirname "$0")" && pwd)
@@ -42,9 +42,9 @@ while [ $# -gt 0 ]; do
 	shift
 done
 echo "$target" >> "$here/calls"
-echo "vitrine-build: step 1/3: checking the build dependencies"
+echo "vitrine-build: step 1/4: checking the build dependencies"
 echo "vitrine-build: component: virglrenderer"
-echo "vitrine-build: step 2/3: building virglrenderer"
+echo "vitrine-build: step 2/4: building virglrenderer"
 [ -z "${HOST_HOLD:-}" ] || while [ ! -e "$HOST_HOLD" ]; do sleep 0.05; done
 echo "[1/2] cc a.c"
 echo "[2/2] cc b.c"
@@ -56,8 +56,19 @@ if [ "$target" = virglrenderer ]; then
 	echo "vitrine-build: built: $lib"
 	exit 0
 fi
+echo "vitrine-build: component: rutabaga_gfx"
+echo "vitrine-build: step 3/4: building rutabaga_gfx"
+echo "[1/1] rustc lib.rs"
+ffi=$stack/rutabaga_gfx/bbbbbbbbbbbbbbbb
+mkdir -p "$ffi/share/vitrine"
+echo KEY=k > "$ffi/share/vitrine/rutabaga_gfx.conf"
+echo "vitrine-build: done: rutabaga_gfx built $ffi"
+if [ "$target" = rutabaga_gfx ]; then
+	echo "vitrine-build: built: $ffi"
+	exit 0
+fi
 echo "vitrine-build: component: qemu"
-echo "vitrine-build: step 3/3: compiling QEMU"
+echo "vitrine-build: step 4/4: compiling QEMU"
 if [ "${HOST_FAIL:-}" = qemu ]; then
 	echo "vitrine-build: error: compiling QEMU failed (status 2)"
 	exit 2
@@ -152,7 +163,7 @@ class TestBuildManager : public QObject
             write(places.hostDir + "/build.sh", kBuildSh, true) &&
             write(places.hostDir + "/versions.conf",
                   "QEMU_URL=https://q/qemu.git\nQEMU_COMMIT=1\nVIRGL_URL=https://v/v.git\n"
-                  "VIRGL_COMMIT=2\n") &&
+                  "VIRGL_COMMIT=2\nRUTABAGA_URL=https://r/r.git\nRUTABAGA_COMMIT=3\n") &&
             write(places.hostDir + "/patches/qemu/0001-a.patch", "Subject: [PATCH] a\n") &&
             QFile::copy(StackBuilder::hostDir() + "/components.conf",
                         places.hostDir + "/components.conf") &&
@@ -235,11 +246,13 @@ private slots:
         BuildManager m;
         const Builds::Places places = setUp(m, "plan");
         QVERIFY(!places.hostDir.isEmpty());
-        const QStringList all = {"virglrenderer", "qemu", "tools", "mesa", "kwin", "medium"};
+        const QStringList all = {"virglrenderer", "rutabaga_gfx", "qemu", "tools",
+                                 "mesa",          "kwin",         "medium"};
 
-        QCOMPARE(m.components().size(), 6);
-        QCOMPARE(m.plan({"qemu"}), QStringList({"virglrenderer", "qemu"}));
+        QCOMPARE(m.components().size(), 7);
+        QCOMPARE(m.plan({"qemu"}), QStringList({"virglrenderer", "rutabaga_gfx", "qemu"}));
         QCOMPARE(m.plan({"virglrenderer"}), QStringList({"virglrenderer"}));
+        QCOMPARE(m.plan({"rutabaga_gfx"}), QStringList({"virglrenderer", "rutabaga_gfx"}));
         QCOMPARE(m.plan({"mesa"}), QStringList({"mesa", "medium"}));
         QCOMPARE(m.plan({"medium"}), QStringList({"tools", "mesa", "kwin", "medium"}));
         QCOMPARE(m.plan({"kwin", "virglrenderer"}),
@@ -247,7 +260,7 @@ private slots:
         QCOMPARE(m.outdated(), all);
         QVERIFY(m.plan({"nothing"}).isEmpty());
 
-        /* virglrenderer built from its sources: QEMU alone */
+        /* virglrenderer built from its sources: what is built against it */
         const QList<Builds::Component> components = Builds::load(places);
         const QString vkey = Builds::key(Builds::find(components, "virglrenderer"), components);
         QVERIFY(write(places.stackDir + "/virglrenderer/" + vkey.left(16) +
@@ -255,7 +268,7 @@ private slots:
                       "KEY=" + vkey.toUtf8() + '\n'));
         m.refresh();
         QCOMPARE(m.status("virglrenderer").state, Builds::Status::State::UpToDate);
-        QCOMPARE(m.plan({"qemu"}), QStringList({"qemu"}));
+        QCOMPARE(m.plan({"qemu"}), QStringList({"rutabaga_gfx", "qemu"}));
         QCOMPARE(m.outdated(), all.mid(1));
     }
 
@@ -297,7 +310,8 @@ private slots:
             /* how long it took, for the next estimate */
             QCOMPARE(m.durations(id).size(), 1);
         }
-        QCOMPARE(m.queue(), QStringList({"virglrenderer", "qemu", "tools", "mesa", "kwin", "medium"}));
+        QCOMPARE(m.queue(), QStringList({"virglrenderer", "rutabaga_gfx", "qemu", "tools", "mesa",
+                                         "kwin", "medium"}));
         /* the components one after the other, each script once */
         QCOMPARE(read(places.hostDir + "/calls"), "qemu\n");
         QCOMPARE(read(places.guestDir + "/rpms-calls"), "tools\nmesa\nkwin\n");
@@ -306,6 +320,9 @@ private slots:
         /* each its log, kept */
         QVERIFY(m.log("virglrenderer").contains("[2/2] cc b.c"));
         QVERIFY(!m.log("virglrenderer").contains("link qemu-system-x86_64"));
+        QVERIFY(m.log("rutabaga_gfx").contains("[1/1] rustc lib.rs"));
+        QVERIFY(!m.log("rutabaga_gfx").contains("cc b.c"));
+        QVERIFY(!m.log("qemu").contains("rustc lib.rs"));
         QVERIFY(m.log("qemu").contains("[4/4] link qemu-system-x86_64"));
         QVERIFY(m.log("mesa").contains("building: mesa"));
         QVERIFY(!m.log("mesa").contains("building: kwin"));
@@ -326,9 +343,9 @@ private slots:
         QVERIFY(task);
         QCOMPARE(task->kind(), Task::Kind::Build);
         QCOMPARE(task->state(), Task::State::Done);
-        QCOMPARE(task->title(), "6 components built");
-        QCOMPARE(task->text(), "Built: virglrenderer, QEMU, vitrine-guest-tools, Mesa, KWin, "
-                               "Guest tools medium");
+        QCOMPARE(task->title(), "7 components built");
+        QCOMPARE(task->text(), "Built: virglrenderer, rutabaga_gfx, QEMU, vitrine-guest-tools, "
+                               "Mesa, KWin, Guest tools medium");
         QCOMPARE(task->remaining(), -1);
         QCOMPARE(m.focus(), "medium");
 
@@ -367,6 +384,7 @@ private slots:
         qputenv("HOST_FAIL", "qemu");
         QCOMPARE(build(m, {"qemu"}), "QEMU: Compiling QEMU failed (status 2)");
         QCOMPARE(m.progress("virglrenderer").state, State::Built);
+        QCOMPARE(m.progress("rutabaga_gfx").state, State::Built);
         QCOMPARE(m.progress("qemu").state, State::Failed);
         /* the window shows what failed */
         QCOMPARE(m.focus(), "qemu");
@@ -390,7 +408,7 @@ private slots:
         QVERIFY(finished.wait(15000));
         QCOMPARE(finished[0][0].toString(), "Stopped");
         QVERIFY(m.error().isEmpty());
-        for (const char *id : {"virglrenderer", "qemu", "tools", "medium"}) {
+        for (const char *id : {"virglrenderer", "rutabaga_gfx", "qemu", "tools", "medium"}) {
             QCOMPARE(m.progress(id).state, State::Stopped);
         }
         QVERIFY(!QFileInfo::exists(places.guestDir + "/rpms-calls"));
@@ -430,7 +448,7 @@ private slots:
                  qPrintable(QString::number(p.remainingMs)));
         QVERIFY(m.remainingMs() >= p.remainingMs);
         /* the run's task: the component, how far the run is, what is left */
-        QTRY_VERIFY_WITH_TIMEOUT(m.task()->text() == "2 of 2: compiling QEMU", 5000);
+        QTRY_VERIFY_WITH_TIMEOUT(m.task()->text() == "3 of 3: compiling QEMU", 5000);
         QCOMPARE(m.task()->title(), "Building QEMU");
         QCOMPARE(m.task()->total(), 1000);
         QVERIFY(m.task()->done() > 0 && m.task()->done() < 1000);
@@ -442,6 +460,7 @@ private slots:
         /* one more duration of each */
         QCOMPARE(m.durations("qemu").size(), 4);
         QCOMPARE(m.durations("virglrenderer").size(), 1);
+        QCOMPARE(m.durations("rutabaga_gfx").size(), 1);
         Q_UNUSED(places);
     }
 

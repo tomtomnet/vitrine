@@ -1,0 +1,36 @@
+From c174777c8a9001d38909759493f8febd4e722461 Mon Sep 17 00:00:00 2001
+From: virtio-gpu-desktop <local@localhost>
+Date: Wed, 14 Oct 2026 01:30:00 +0200
+Subject: [PATCH 19/19] virtio-gpu-rutabaga: do not leak the scanout image of a
+ freed resource
+
+rutabaga_cmd_set_scanout() creates res->image (one reference) and then takes a second one that
+nothing ever drops: the display surface takes and drops its own (qemu_create_displaysurface_pixman /
+the surface replacement), and the resource's unref drops one. So every resource that was ever shown
+leaves its image behind: width * height * 4 bytes (4 MB at 1280x800) per freed scanout buffer.
+
+Measured 2026-10-14 on the desktop (RX 6900 XT, nested guest, bench/ab/scanout_leak_ab_1014.sh lk1):
+the fork's QEMU grows 4,000 KiB per scanout cycle (rounds of 10/20/50: +35/+78/+195 MiB), with this
+change 0 (209.4 MiB flat). Under ASan (qemu_leaktest_run_1012.sh, SCANOUT_CHURN=50, REBOOT=1): the
+fork reports "Indirect leak of 192512000 byte(s) in 47 object(s)" from rutabaga_cmd_set_scanout,
+this change none from there, and no ASan error (no use-after-free) over the churn, a guest reboot
+(device reset) and shutdown. The image is created with NULL data (pixman owns its buffer), so no
+memory depends on the extra reference.
+
+Local fix of the fork (the user: "start with a fix, to send it upstream we'll see"); not submitted.
+---
+ hw/display/virtio-gpu-rutabaga.c | 1 -
+ 1 file changed, 1 deletion(-)
+
+diff --git a/hw/display/virtio-gpu-rutabaga.c b/hw/display/virtio-gpu-rutabaga.c
+index f49260a37a..fc67bfc759 100644
+--- a/hw/display/virtio-gpu-rutabaga.c
++++ b/hw/display/virtio-gpu-rutabaga.c
+@@ -388,7 +388,6 @@ rutabaga_cmd_set_scanout(VirtIOGPU *g, struct virtio_gpu_ctrl_command *cmd)
+                                               res->height,
+                                               NULL, 0);
+         CHECK(res->image, cmd);
+-        pixman_image_ref(res->image);
+     }
+ 
+     vb->enable = 1;

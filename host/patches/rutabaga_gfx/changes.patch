@@ -1,0 +1,275 @@
+rutabaga_gfx: native contexts through the FFI, the fence ring index, polling, a logger, guest dma-bufs
+
+The research's patches/rutabaga_gfx/changes.diff (git diff HEAD of its
+checkout of 4fb9f32055d8, release 0.1.85, on 2026-10-12), unchanged
+below this description:
+
+- the FFI's virgl_renderer feature: DRM native contexts and virgl2
+  through the C FFI that QEMU uses, beside cross-domain on one device,
+  as crosvm's --features virgl_renderer;
+- struct rutabaga_fence's ring_idx a uint8_t, as RutabagaFence's is in
+  Rust: as a uint32_t a reader got three bytes of padding with it, the
+  fences of rings other than 0 never matched their commands, and QEMU's
+  control queue filled up (the display froze);
+- rutabaga_poll_descriptor() and rutabaga_poll(): virglrenderer's DRM
+  contexts retire their fences only from a poll;
+- rutabaga's and virglrenderer's messages to stderr, which QEMU dropped
+  (no logger): warnings and errors, RUTABAGA_LOG=off|error|warn|info|
+  debug|trace for others, at most 50 at once then one a second;
+- guest-memory blobs get the udmabuf of their pages QEMU makes
+  (x-guest-dmabuf), through virglrenderer's
+  virgl_renderer_resource_set_guest_dmabuf(), looked up at run time.
+
+diff --git a/ffi/Cargo.toml b/ffi/Cargo.toml
+index daf57a9..4d69f87 100644
+--- a/ffi/Cargo.toml
++++ b/ffi/Cargo.toml
+@@ -19,5 +19,7 @@ log = "0.4"
+ 
+ [features]
+ gbm = ["rutabaga_gfx/gbm"]
++# drm (native context) and virgl2 contexts through the FFI, as crosvm's --features virgl_renderer
++virgl_renderer = ["rutabaga_gfx/virgl_renderer"]
+ gfxstream = ["rutabaga_gfx/gfxstream"]
+ vulkano = ["rutabaga_gfx/vulkano"]
+diff --git a/ffi/src/include/rutabaga_gfx_ffi.h b/ffi/src/include/rutabaga_gfx_ffi.h
+index 9615612..0a8f848 100644
+--- a/ffi/src/include/rutabaga_gfx_ffi.h
++++ b/ffi/src/include/rutabaga_gfx_ffi.h
+@@ -225,7 +225,13 @@ struct rutabaga_fence {
+     uint32_t flags;
+     uint64_t fence_id;
+     uint32_t ctx_id;
+-    uint32_t ring_idx;
++    /*
++     * RutabagaFence::ring_idx is a u8 on the Rust side (#[repr(C)]): as a uint32_t here a
++     * reader got three bytes of uninitialized padding with it, and fences of context rings
++     * other than 0 never matched their commands (QEMU: the control queue filled up).
++     */
++    uint8_t ring_idx;
++    uint8_t padding[3];
+ };
+ 
+ struct rutabaga_debug {
+@@ -284,6 +290,14 @@ int32_t rutabaga_init(const struct rutabaga_builder *builder, struct rutabaga **
+  */
+ int32_t rutabaga_finish(struct rutabaga **ptr);
+ 
++/**
++ * The descriptor that becomes readable when rutabaga_poll() should be called (-1: none needed);
++ * owned by the caller. virglrenderer's drm contexts retire fences only from a poll.
++ */
++int32_t rutabaga_poll_descriptor(struct rutabaga *ptr, int32_t *fd);
++
++int32_t rutabaga_poll(struct rutabaga *ptr);
++
+ int32_t rutabaga_get_num_capsets(struct rutabaga *ptr, uint32_t *num_capsets);
+ 
+ int32_t rutabaga_get_capset_info(struct rutabaga *ptr, uint32_t capset_index, uint32_t *capset_id,
+diff --git a/ffi/src/lib.rs b/ffi/src/lib.rs
+index b68e81f..7908c38 100644
+--- a/ffi/src/lib.rs
++++ b/ffi/src/lib.rs
+@@ -192,6 +192,85 @@ fn create_ffi_debug_handler(
+     RutabagaDebugHandler::new(move |rutabaga_debug| debug_cb(user_data, &rutabaga_debug))
+ }
+ 
++/// rutabaga's and virglrenderer's messages go through the `log` crate, and a VMM using this
++/// library (QEMU) installs no logger: every message was dropped, virglrenderer's native-context
++/// errors included (a failed GEM_VA map of a texture, for instance, which the guest never hears
++/// of). This one writes warnings and errors to stderr (RUTABAGA_LOG=off|error|warn|info|debug|trace
++/// changes the level): bursts of up to LOG_BURST messages, then one a second, with a count of the
++/// suppressed ones, so that a message repeated every frame cannot fill the VMM's log.
++struct StderrLogger;
++
++const LOG_BURST: f64 = 50.0;
++
++struct LogBudget {
++    last: Option<std::time::Instant>,
++    tokens: f64,
++    suppressed: u64,
++}
++
++static LOG_BUDGET: Mutex<LogBudget> = Mutex::new(LogBudget {
++    last: None,
++    tokens: LOG_BURST,
++    suppressed: 0,
++});
++
++impl log::Log for StderrLogger {
++    fn enabled(&self, metadata: &log::Metadata) -> bool {
++        metadata.level() <= log::max_level()
++    }
++
++    fn log(&self, record: &log::Record) {
++        if !self.enabled(record.metadata()) {
++            return;
++        }
++        let Ok(mut budget) = LOG_BUDGET.lock() else { return };
++        let now = std::time::Instant::now();
++        if let Some(last) = budget.last {
++            let refill = now.duration_since(last).as_secs_f64();
++            budget.tokens = (budget.tokens + refill).min(LOG_BURST);
++        }
++        budget.last = Some(now);
++        if budget.tokens < 1.0 {
++            budget.suppressed += 1;
++            return;
++        }
++        budget.tokens -= 1.0;
++        let wall = std::time::SystemTime::now()
++            .duration_since(std::time::UNIX_EPOCH)
++            .unwrap_or_default();
++        if budget.suppressed > 0 {
++            eprintln!("rutabaga: {} messages suppressed", budget.suppressed);
++            budget.suppressed = 0;
++        }
++        eprintln!(
++            "rutabaga {}.{:03} {}: {}",
++            wall.as_secs(),
++            wall.subsec_millis(),
++            record.level(),
++            record.args().to_string().trim_end()
++        );
++    }
++
++    fn flush(&self) {}
++}
++
++static LOGGER: StderrLogger = StderrLogger;
++
++fn init_logger() {
++    let level = match std::env::var("RUTABAGA_LOG").as_deref() {
++        Ok("off") => log::LevelFilter::Off,
++        Ok("error") => log::LevelFilter::Error,
++        Ok("info") => log::LevelFilter::Info,
++        Ok("debug") => log::LevelFilter::Debug,
++        Ok("trace") => log::LevelFilter::Trace,
++        _ => log::LevelFilter::Warn,
++    };
++    // fails when the process has a logger already: that one stays
++    if log::set_logger(&LOGGER).is_ok() {
++        log::set_max_level(level);
++    }
++}
++
+ #[no_mangle]
+ /// # Safety
+ /// - `capset_names` must be a null-terminated C-string.
+@@ -220,6 +299,7 @@ pub unsafe extern "C" fn rutabaga_calculate_capset_mask(
+ #[no_mangle]
+ pub unsafe extern "C" fn rutabaga_init(builder: &rutabaga_builder, ptr: &mut *mut rutabaga) -> i32 {
+     catch_unwind(AssertUnwindSafe(|| {
++        init_logger();
+         let fence_handler = create_ffi_fence_handler(builder.user_data, builder.fence_cb);
+         let mut debug_handler_opt: Option<RutabagaDebugHandler> = None;
+ 
+@@ -299,6 +379,32 @@ pub extern "C" fn rutabaga_finish(ptr: &mut *mut rutabaga) -> i32 {
+     .unwrap_or(-ESRCH)
+ }
+ 
++/// The descriptor that becomes readable when `rutabaga_poll` should be called, or -1 when the
++/// default component does not need polling. virglrenderer's drm (native) contexts retire their
++/// fences only from a poll; a VMM that never polls (QEMU's virtio-gpu-rutabaga before this) left
++/// them pending forever. The caller owns the descriptor.
++#[no_mangle]
++pub extern "C" fn rutabaga_poll_descriptor(ptr: &mut rutabaga, fd: &mut i32) -> i32 {
++    catch_unwind(AssertUnwindSafe(|| {
++        *fd = match ptr.poll_descriptor() {
++            Some(descriptor) => descriptor.into_raw_descriptor(),
++            None => -1,
++        };
++        NO_ERROR
++    }))
++    .unwrap_or(-ESRCH)
++}
++
++/// Process what the poll descriptor signalled (fence retirement of the default component).
++#[no_mangle]
++pub extern "C" fn rutabaga_poll(ptr: &mut rutabaga) -> i32 {
++    catch_unwind(AssertUnwindSafe(|| {
++        ptr.event_poll();
++        NO_ERROR
++    }))
++    .unwrap_or(-ESRCH)
++}
++
+ #[no_mangle]
+ pub extern "C" fn rutabaga_get_num_capsets(ptr: &mut rutabaga, num_capsets: &mut u32) -> i32 {
+     catch_unwind(AssertUnwindSafe(|| {
+diff --git a/src/virgl_renderer.rs b/src/virgl_renderer.rs
+index 4c195b4..3e910d3 100644
+--- a/src/virgl_renderer.rs
++++ b/src/virgl_renderer.rs
+@@ -64,6 +64,7 @@ use crate::rutabaga_utils::RutabagaIovec;
+ use crate::rutabaga_utils::RutabagaResult;
+ use crate::rutabaga_utils::Transfer3D;
+ use crate::rutabaga_utils::VirglRendererFlags;
++use crate::rutabaga_utils::RUTABAGA_BLOB_MEM_GUEST;
+ use crate::rutabaga_utils::RUTABAGA_FLAG_FENCE;
+ use crate::rutabaga_utils::RUTABAGA_FLAG_INFO_RING_IDX;
+ use crate::rutabaga_utils::RUTABAGA_MAP_ACCESS_RW;
+@@ -73,6 +74,38 @@ use crate::RUTABAGA_PATH_TYPE_GPU;
+ 
+ type Query = virgl_renderer_export_query;
+ 
++/// Gives a guest-memory resource a dma-buf of its pages (a udmabuf the VMM made), so that DRM
++/// native contexts, which import resources by dma-buf only, can use it - as QEMU's virtio-gpu-gl
++/// does. virgl_renderer_resource_set_guest_dmabuf() is our virglrenderer's (patch
++/// virglrenderer-main-guest-dmabuf-api), looked up at run time: upstream builds lack it, and
++/// the resource then stays as before (the guest's import fails, it copies instead).
++fn set_guest_dmabuf(resource_id: u32, fd: OwnedDescriptor) {
++    type SetGuestDmabuf = unsafe extern "C" fn(u32, c_int) -> c_int;
++    static FUNC: std::sync::OnceLock<Option<SetGuestDmabuf>> = std::sync::OnceLock::new();
++    let func = FUNC.get_or_init(|| {
++        // SAFETY: dlsym with a NUL-terminated name; the symbol has this signature
++        let sym = unsafe {
++            libc::dlsym(libc::RTLD_DEFAULT, c"virgl_renderer_resource_set_guest_dmabuf".as_ptr())
++        };
++        if sym.is_null() {
++            warn!("virglrenderer without virgl_renderer_resource_set_guest_dmabuf: guest-memory blobs get no dma-buf");
++            None
++        } else {
++            // SAFETY: see above
++            Some(unsafe { std::mem::transmute::<*mut c_void, SetGuestDmabuf>(sym) })
++        }
++    });
++    let Some(func) = func else { return };
++    let raw = fd.into_raw_descriptor();
++    // SAFETY: a valid fd; virglrenderer keeps it on success
++    let ret = unsafe { func(resource_id, raw) };
++    if ret != 0 {
++        // SAFETY: not taken: ours to close
++        drop(unsafe { OwnedDescriptor::from_raw_descriptor(raw) });
++        warn!("resource {resource_id}: virgl_renderer_resource_set_guest_dmabuf failed ({ret})");
++    }
++}
++
+ /// Default drm fd, returning this indicates that virglrenderer should
+ /// find an available GPU itself.
+ const DEFAULT_DRM_FD: i32 = -1;
+@@ -842,7 +875,7 @@ impl RutabagaComponent for VirglRenderer {
+         resource_id: u32,
+         resource_create_blob: ResourceCreateBlob,
+         mut iovec_opt: Option<Vec<RutabagaIovec>>,
+-        _handle_opt: Option<RutabagaHandle>,
++        handle_opt: Option<RutabagaHandle>,
+     ) -> RutabagaResult<RutabagaResource> {
+         let mut iovec_ptr = null_mut();
+         let mut num_iovecs = 0;
+@@ -867,6 +900,15 @@ impl RutabagaComponent for VirglRenderer {
+         let ret = unsafe { virgl_renderer_resource_create_blob(&resource_create_args) };
+         ret_to_res(ret)?;
+ 
++        // a udmabuf of a guest-memory blob's pages, from the VMM (QEMU's x-guest-dmabuf)
++        if let Some(RutabagaHandle::MagmaGpuHandle(handle)) = handle_opt {
++            if resource_create_blob.blob_mem == RUTABAGA_BLOB_MEM_GUEST
++                && handle.handle_type == MAGMA_GPU_HANDLE_TYPE_MEM_DMABUF
++            {
++                set_guest_dmabuf(resource_id, handle.os_handle);
++            }
++        }
++
+         // TODO(b/244591751): assign vulkan_info to support opaque_fd mapping via Vulkano when
+         // sandboxing (hence external_blob) is enabled.
+         Ok(RutabagaResource {

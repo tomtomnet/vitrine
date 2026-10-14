@@ -12,10 +12,10 @@
 
 /*
  * What Vitrine builds: the components host/components.conf and
- * guest/components.conf describe (virglrenderer and QEMU; the guest tools'
- * packages and the medium made of them), each with its source, its patches
- * and what it is built against; and whether what is built is what the
- * sources make now, and if not, why.
+ * guest/components.conf describe (virglrenderer, rutabaga_gfx and QEMU;
+ * the guest tools' packages and the medium made of them), each with its
+ * source, its patches and what it is built against; and whether what is
+ * built is what the sources make now, and if not, why.
  *
  * The scripts build them (host/build.sh, guest/build-rpms.sh,
  * guest/build-medium.sh) and record with each build the lines of inputs
@@ -31,7 +31,7 @@ enum class Kind {
 };
 
 struct Component {
-    QString id;                     // virglrenderer, qemu, tools, mesa, kwin, medium
+    QString id;                     // virglrenderer, rutabaga_gfx, qemu, tools, mesa, kwin, medium
     QString title;                  // "QEMU"
     Kind kind = Kind::Host;
     QString dir;                    // the host/ or guest/ folder it is described in

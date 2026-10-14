@@ -21,10 +21,10 @@ class QTreeWidgetItem;
 
 /*
  * The builds of what Vitrine builds (BuildManager), in one window, not
- * modal: Vitrine's QEMU (virglrenderer, QEMU) and the guest tools (their
- * packages and the medium), each with its state and why, when it was
- * built and how long a build of it takes; the selected one's source,
- * patches by origin (their text on demand) and log.  Build for the
+ * modal: Vitrine's QEMU (virglrenderer, rutabaga_gfx, QEMU) and the guest
+ * tools (their packages and the medium), each with its state and why, when
+ * it was built and how long a build of it takes; the selected one's
+ * source, patches by origin (their text on demand) and log.  Build for the
  * selected one, Update All for what is out of date, Stop; the cache's
  * size, and Clear.  The builds go on when it closes.
  */

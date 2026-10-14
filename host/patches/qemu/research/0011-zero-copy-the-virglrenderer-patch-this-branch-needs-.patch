@@ -1,8 +1,8 @@
-From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From d64aa785fd169a6c0aa396f49ff81f4e0253ba7c Mon Sep 17 00:00:00 2001
 From: tomtomnet <tompere8000@proton.me>
 Date: Sat, 26 Sep 2026 15:30:54 +0200
-Subject: [PATCH] zero-copy: the virglrenderer patch this branch needs, and
- what it does
+Subject: [PATCH 11/19] zero-copy: the virglrenderer patch this branch needs,
+ and what it does
 
 contrib/qemu-gui/virglrenderer/ carries the virglrenderer patch that adds
 virgl_renderer_resource_set_guest_dmabuf(), from the same DRM native
@@ -17,7 +17,6 @@ upstream may change, and a virglrenderer call upstream will likely
 replace with VIRTIO_GPU_F_CREATE_GUEST_HANDLE.
 
 Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
-Claude-Session: https://claude.ai/code/session_014Q4Faji8f5ncpq4S3fVqfu
 ---
  .github/README.md                             | 46 +++++++++++
  ...tach-a-dma-buf-to-guest-memory-blobs.patch | 82 +++++++++++++++++++
@@ -27,7 +26,7 @@ Claude-Session: https://claude.ai/code/session_014Q4Faji8f5ncpq4S3fVqfu
  create mode 100644 contrib/qemu-gui/virglrenderer/README.md
 
 diff --git a/.github/README.md b/.github/README.md
-index 9b9d93ab7b30e0628f23a0b250ad1ba076fe8aed..c66f226b9fcb9f3a7280860ee1f533c1a056b311 100644
+index 9b9d93ab7b..c66f226b9f 100644
 --- a/.github/README.md
 +++ b/.github/README.md
 @@ -9,6 +9,52 @@ refresh rate.
@@ -85,7 +84,7 @@ index 9b9d93ab7b30e0628f23a0b250ad1ba076fe8aed..c66f226b9fcb9f3a7280860ee1f533c1
  - **ui/sdl2: follow the host refresh rate, tolerate grab border**
 diff --git a/contrib/qemu-gui/virglrenderer/0001-virglrenderer-let-the-VMM-attach-a-dma-buf-to-guest-memory-blobs.patch b/contrib/qemu-gui/virglrenderer/0001-virglrenderer-let-the-VMM-attach-a-dma-buf-to-guest-memory-blobs.patch
 new file mode 100644
-index 0000000000000000000000000000000000000000..303c2d7e77dd6759bb0c2041e5b2a30ebd0a564c
+index 0000000000..303c2d7e77
 --- /dev/null
 +++ b/contrib/qemu-gui/virglrenderer/0001-virglrenderer-let-the-VMM-attach-a-dma-buf-to-guest-memory-blobs.patch
 @@ -0,0 +1,82 @@
@@ -173,7 +172,7 @@ index 0000000000000000000000000000000000000000..303c2d7e77dd6759bb0c2041e5b2a30e
 +                                                      uint32_t flags,
 diff --git a/contrib/qemu-gui/virglrenderer/README.md b/contrib/qemu-gui/virglrenderer/README.md
 new file mode 100644
-index 0000000000000000000000000000000000000000..101ee65557f44a7f0b2bdeaf323e70559450385e
+index 0000000000..101ee65557
 --- /dev/null
 +++ b/contrib/qemu-gui/virglrenderer/README.md
 @@ -0,0 +1,10 @@

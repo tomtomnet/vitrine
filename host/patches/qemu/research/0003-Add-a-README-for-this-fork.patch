@@ -1,7 +1,7 @@
-From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From 86dc1313b51734f0479004ac20267c29a6b74df3 Mon Sep 17 00:00:00 2001
 From: tomtomnet <tompere8000@proton.me>
 Date: Wed, 23 Sep 2026 14:15:13 +0200
-Subject: [PATCH] Add a README for this fork
+Subject: [PATCH 03/19] Add a README for this fork
 
 How to build it on Fedora, how to make the build faster, and how to
 use the in-window menu.  It sits in .github/ so that GitHub shows it
@@ -20,7 +20,7 @@ Co-Authored-By: Claude Opus 5.5 (1M context) <noreply@anthropic.com>
 
 diff --git a/.github/README.md b/.github/README.md
 new file mode 100644
-index 0000000000000000000000000000000000000000..514fcae8cddd90d6ffbb42228f4c7821b4f8ed4e
+index 0000000000..514fcae8cd
 --- /dev/null
 +++ b/.github/README.md
 @@ -0,0 +1,121 @@
@@ -147,7 +147,7 @@ index 0000000000000000000000000000000000000000..514fcae8cddd90d6ffbb42228f4c7821
 +- QEMU's own README is [README.rst](../README.rst).
 diff --git a/.github/workflows/lockdown.yml b/.github/workflows/lockdown.yml
 deleted file mode 100644
-index d5e1265cffb3920219b6a6ac7afeaff12289eb70..0000000000000000000000000000000000000000
+index d5e1265cff..0000000000
 --- a/.github/workflows/lockdown.yml
 +++ /dev/null
 @@ -1,30 +0,0 @@

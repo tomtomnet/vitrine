@@ -8,15 +8,16 @@
 class QProcess;
 
 /*
- * Vitrine's QEMU: upstream QEMU and virglrenderer at the commits of
- * host/versions.conf, with host/patches (for QEMU: the qemu-gui fork's
- * commits, the research series, vitrine's), which host/build.sh builds into
- * folders of their own under Paths::stackDir() (QEMU in <stamp>/, and
- * `current` pointing to the last complete build; virglrenderer in
- * virglrenderer/<key>/).  This runs build.sh and follows its progress; the
- * static functions tell what is built and whether it is what host/ asks
- * for.  The stamp is QEMU's key (Builds::key()), which sums up its inputs
- * and virglrenderer's: a build of other inputs is out of date.
+ * Vitrine's QEMU: upstream QEMU, virglrenderer and rutabaga_gfx at the
+ * commits of host/versions.conf, with host/patches (for QEMU: the
+ * research's series, then vitrine's patches), which host/build.sh builds
+ * into folders of their own under Paths::stackDir() (QEMU in <stamp>/, and
+ * `current` pointing to the last complete build; the libraries in
+ * virglrenderer/<key>/ and rutabaga_gfx/<key>/).  This runs build.sh and
+ * follows its progress; the static functions tell what is built and
+ * whether it is what host/ asks for.  The stamp is QEMU's key
+ * (Builds::key()), which sums up its inputs and the libraries': a build of
+ * other inputs is out of date.
  */
 class StackBuilder : public QObject
 {
@@ -50,8 +51,18 @@ public:
            none in a build of an older Vitrine (in the prefix's lib64) */
         QString virglKey;
         QString virglPrefix;
+        /* the rutabaga_gfx (virtio-gpu-rutabaga), in a folder of its own;
+           none in a build of an older Vitrine, which has no such device */
+        QString rutabagaCommit;
+        QString rutabagaVersion;
+        QStringList rutabagaPatches;
+        QString rutabagaKey;
+        QString rutabagaPrefix;
 
         bool isValid() const { return !stamp.isEmpty(); }
+        /* The folder of library @component ("virglrenderer",
+           "rutabaga_gfx") it is built against; empty if none */
+        QString libraryPrefix(const QString &component) const;
         QString qemuBinary() const;
         /* "QEMU 11.1.50 + 7 patches" */
         QString summary() const;
@@ -114,10 +125,10 @@ public:
      * that come back to it need no build), those a running process was
      * started from (any VM's QEMU, also of another vitrine), and those of
      * the binaries in @keep (the QEMU of the preferences, those of the VMs'
-     * #qemu); and the virglrenderer folders none of those kept is built
-     * against, but the newest.  Leftovers of builds that never ended go
-     * too.  Nothing while a build holds the stack's lock.  Returns the
-     * folders removed.
+     * #qemu); and the folders of the libraries (virglrenderer, rutabaga_gfx)
+     * none of those kept is built against, but the newest of each.
+     * Leftovers of builds that never ended go too.  Nothing while a build
+     * holds the stack's lock.  Returns the folders removed.
      */
     static QStringList prune(const QString &stackDir, const QStringList &keep);
     /* The cores, but no more than the memory affords, about 1 GiB each */
@@ -137,9 +148,9 @@ public:
 
     bool isRunning() const { return m_process != nullptr; }
     /*
-     * Builds @target ("virglrenderer", or "qemu", the default: the whole
-     * stack) and what it needs; @clean: its build trees from nothing
-     * (build.sh --clean)
+     * Builds @target ("virglrenderer", "rutabaga_gfx", or "qemu", the
+     * default: the whole stack) and what it needs; @clean: its build trees
+     * from nothing (build.sh --clean)
      */
     void start(const QString &target = {}, bool clean = false);
     /* Stops build.sh and what it runs: the whole process group */
@@ -156,13 +167,13 @@ public:
     QStringList warnings() const { return m_warnings; }
     /* The last build ended with Stop */
     bool wasStopped() const { return m_cancelled && !m_process; }
-    /* What the last build was for: "qemu", "virglrenderer" */
+    /* What the last build was for: "qemu", "virglrenderer", "rutabaga_gfx" */
     QString target() const { return m_target; }
 
 signals:
     void started();
     void stepStarted(int step, int total, const QString &text);
-    /* build.sh goes on with @component ("virglrenderer", "qemu") */
+    /* build.sh goes on with @component ("virglrenderer", "rutabaga_gfx", "qemu") */
     void componentStarted(const QString &component);
     /* It is there: built now, or up to date already */
     void componentDone(const QString &component, bool built, const QString &folder);

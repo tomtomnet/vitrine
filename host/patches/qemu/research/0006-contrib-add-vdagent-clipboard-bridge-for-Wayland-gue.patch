@@ -1,7 +1,8 @@
-From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From 1031f9d4dc413ac9eafe36fe4b09bf8d30355681 Mon Sep 17 00:00:00 2001
 From: tomtomnet <tompere8000@proton.me>
 Date: Wed, 23 Sep 2026 15:21:54 +0200
-Subject: [PATCH] contrib: add vdagent-clipboard-bridge for Wayland guests
+Subject: [PATCH 06/19] contrib: add vdagent-clipboard-bridge for Wayland
+ guests
 
 spice-vdagent only knows the X11 clipboard.  GNOME keeps it in sync
 with the Wayland one, but KDE Plasma only passes X11 copies on to
@@ -25,7 +26,7 @@ Co-Authored-By: Claude Opus 5.5 (1M context) <noreply@anthropic.com>
  create mode 100644 contrib/vdagent-clipboard-bridge/vdagent-clipboard-bridge.desktop
 
 diff --git a/.github/README.md b/.github/README.md
-index 514fcae8cddd90d6ffbb42228f4c7821b4f8ed4e..a8d2fb9430565e9e7e9915e5745c956fac201963 100644
+index 514fcae8cd..a8d2fb9430 100644
 --- a/.github/README.md
 +++ b/.github/README.md
 @@ -6,7 +6,7 @@ passthrough, usage statistics and VM information, without giving up the fast
@@ -106,7 +107,7 @@ index 514fcae8cddd90d6ffbb42228f4c7821b4f8ed4e..a8d2fb9430565e9e7e9915e5745c956f
  - License: GPL-2.0-or-later, like QEMU (see [COPYING](../COPYING)). Dear ImGui
 diff --git a/contrib/vdagent-clipboard-bridge/vdagent-clipboard-bridge b/contrib/vdagent-clipboard-bridge/vdagent-clipboard-bridge
 new file mode 100755
-index 0000000000000000000000000000000000000000..adc05c447eceae6d9db9692adb72dbe0851bc7b1
+index 0000000000..adc05c447e
 --- /dev/null
 +++ b/contrib/vdagent-clipboard-bridge/vdagent-clipboard-bridge
 @@ -0,0 +1,121 @@
@@ -233,7 +234,7 @@ index 0000000000000000000000000000000000000000..adc05c447eceae6d9db9692adb72dbe0
 +    main()
 diff --git a/contrib/vdagent-clipboard-bridge/vdagent-clipboard-bridge.desktop b/contrib/vdagent-clipboard-bridge/vdagent-clipboard-bridge.desktop
 new file mode 100644
-index 0000000000000000000000000000000000000000..e983cc8b21a6493a8240eb79a2d689a9241459f0
+index 0000000000..e983cc8b21
 --- /dev/null
 +++ b/contrib/vdagent-clipboard-bridge/vdagent-clipboard-bridge.desktop
 @@ -0,0 +1,7 @@

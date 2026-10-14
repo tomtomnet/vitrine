@@ -1,4 +1,5 @@
 // SPDX-License-Identifier: GPL-2.0-or-later
+#include <QCryptographicHash>
 #include <QDir>
 #include <QFile>
 #include <QFileInfo>
@@ -28,15 +29,23 @@ VIRGL_URL=https://gitlab.freedesktop.org/virgl/virglrenderer.git
 VIRGL_COMMIT=cf6c62da2a1384b194f463e6221371962fe99575
 VIRGL_VERSION=1.3.0
 VIRGL_PATCHES=0001-x.patch 0002-y.patch 0003-z.patch
+RUTABAGA_URL=https://github.com/magma-gpu/rutabaga_gfx.git
+RUTABAGA_COMMIT=4fb9f32055d8e001cc9450e92db76fc6fc16804e
+RUTABAGA_VERSION=0.1.85
+RUTABAGA_PATCHES=changes.patch
+RUTABAGA_KEY=0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef
+RUTABAGA_PREFIX=/s/rutabaga_gfx/0123456789abcdef
 )";
 
 /*
  * Stand-ins for the components, which the real build.sh builds: a
- * virglrenderer meson project taking build.sh's options, and a QEMU whose
- * configure writes a Makefile linking a "qemu-system-x86_64" against it
- * with configure's --extra-ldflags, as QEMU's does, linked again when
- * configure ran again; its install takes DESTDIR, and writes a firmware
- * descriptor naming the configured prefix, as QEMU's do
+ * virglrenderer meson project taking build.sh's options; a rutabaga_gfx
+ * one too, built against it, with a crate as a meson wrap of an archive
+ * that unpacks into a folder of another name, as its crates do; and a
+ * QEMU whose configure writes a Makefile linking a "qemu-system-x86_64"
+ * against both with configure's --extra-ldflags, as QEMU's does, linked
+ * again when configure ran again; its install takes DESTDIR, and writes a
+ * firmware descriptor naming the configured prefix, as QEMU's do
  */
 static const char kVirglMeson[] = R"(project('virglrenderer', 'c', version : '1.3.0')
 lib = shared_library('virglrenderer', 'virgl.c', version : '1.9.0', install : true)
@@ -48,6 +57,26 @@ static const char kVirglOptions[] = R"(option('drm-renderers', type : 'array', v
 option('video', type : 'boolean', value : false)
 option('venus', type : 'boolean', value : false)
 )";
+static const char kRutabagaMeson[] = R"(project('rutabaga_gfx', 'c', version : '0.1.85')
+assert(get_option('ffi'), 'the FFI, for QEMU')
+assert(get_option('features').contains('virgl_renderer'), 'with virglrenderer')
+crate = subproject('crate-1-rs')
+lib = shared_library('rutabaga_gfx_ffi', 'ffi.c', install : true,
+                     dependencies : [dependency('virglrenderer'), crate.get_variable('dep')])
+install_headers('rutabaga_gfx_ffi.h', subdir : 'rutabaga_gfx')
+import('pkgconfig').generate(lib, name : 'rutabaga_gfx_ffi', description : 'test')
+)";
+static const char kRutabagaOptions[] = R"(option('features', type : 'array', value : [''],
+       choices : ['', 'gbm', 'gfxstream', 'virgl_renderer'])
+option('ffi', type : 'boolean', value : false)
+)";
+static const char kRutabagaFfi[] = R"c(#include "crate.h"
+int virgl_renderer_init(void);
+int rutabaga_init(void)
+{
+    return virgl_renderer_init() + CRATE;
+}
+)c";
 static const char kQemuConfigure[] = R"sh(#!/bin/sh
 src=$(cd "$(dirname "$0")" && pwd)
 for a; do
@@ -62,9 +91,9 @@ t=$(printf '\t')
 cat > Makefile <<EOF
 all: qemu-system-x86_64 qemu-img
 qemu-system-x86_64: $src/qemu.c Makefile
-${t}cc -o \$@ $src/qemu.c $(pkg-config --cflags --libs virglrenderer) $ldflags
+${t}cc -o \$@ $src/qemu.c $(pkg-config --cflags --libs virglrenderer rutabaga_gfx_ffi) $ldflags
 qemu-img: $src/qemu.c Makefile
-${t}cc -o \$@ $src/qemu.c $(pkg-config --cflags --libs virglrenderer) $ldflags
+${t}cc -o \$@ $src/qemu.c $(pkg-config --cflags --libs virglrenderer rutabaga_gfx_ffi) $ldflags
 install: all
 ${t}mkdir -p \$(DESTDIR)$prefix/bin \$(DESTDIR)$prefix/share/qemu/firmware
 ${t}cp qemu-system-x86_64 qemu-img \$(DESTDIR)$prefix/bin/
@@ -73,6 +102,7 @@ EOF
 )sh";
 static const char kQemuMain[] = R"c(#include <stdio.h>
 #include <string.h>
+#include <rutabaga_gfx/rutabaga_gfx_ffi.h>
 int virgl_renderer_init(void);
 int main(int argc, char **argv)
 {
@@ -80,11 +110,17 @@ int main(int argc, char **argv)
         printf("QEMU emulator version 9.9.9\n");
         return 0;
     }
+    if (argc > 2 && !strcmp(argv[1], "-device") &&
+        !strcmp(argv[2], "virtio-gpu-rutabaga-pci,help")) {
+        printf("virtio-gpu-rutabaga-pci options:\n  cross-domain=<bool>\n"
+               "  wayland-socket-path=<str>\n  x-drm=<bool>\n  x-guest-dmabuf=<bool>\n");
+        return 0;
+    }
     if (argc > 2 && !strcmp(argv[1], "-device")) {
         printf("virtio-gpu-gl-pci options:\n  drm_native_context=<bool>\n  x-host-vblank=<bool>\n");
         return 0;
     }
-    return virgl_renderer_init();
+    return virgl_renderer_init() + rutabaga_init();
 }
 )c";
 
@@ -192,7 +228,7 @@ private slots:
         QVERIFY2(!host.isEmpty(), "host/ of the source tree");
         const StackBuilder::Versions real = StackBuilder::versions(host);
         QVERIFY(real.isValid());
-        /* upstream QEMU: the fork's commits are patches */
+        /* upstream QEMU: the research's series is patches on top */
         QCOMPARE(real.qemuUrl, "https://gitlab.com/qemu-project/qemu.git");
         QCOMPARE(real.qemuCommit.size(), 40);
         QCOMPARE(real.virglCommit.size(), 40);
@@ -259,6 +295,14 @@ private slots:
         QCOMPARE(b.qemuPatches.size(), 7);
         QCOMPARE(b.virglPatches, QStringList({"0001-x.patch", "0002-y.patch", "0003-z.patch"}));
         QCOMPARE(b.virglVersion, "1.3.0");
+        QCOMPARE(b.rutabagaVersion, "0.1.85");
+        QCOMPARE(b.rutabagaCommit, "4fb9f32055d8e001cc9450e92db76fc6fc16804e");
+        QCOMPARE(b.rutabagaPatches, QStringList({"changes.patch"}));
+        QCOMPARE(b.rutabagaKey.size(), 64);
+        QCOMPARE(b.libraryPrefix("rutabaga_gfx"), "/s/rutabaga_gfx/0123456789abcdef");
+        /* a build of an older Vitrine: the library in the prefix's lib64 */
+        QVERIFY(b.libraryPrefix("virglrenderer").isEmpty());
+        QVERIFY(b.libraryPrefix("qemu").isEmpty());
         QCOMPARE(b.summary(), "QEMU 11.1.50 + 7 patches");
         b.qemuPatches = {"0001-a.patch"};
         QCOMPARE(b.summary(), "QEMU 11.1.50 + 1 patch");
@@ -288,6 +332,7 @@ private slots:
         QVERIFY(QDir().mkpath(fixture + "/patches/qemu"));
         QVERIFY(QFile::copy(host + "/build.sh", fixture + "/build.sh"));
         QVERIFY(QFile::copy(host + "/versions.conf", fixture + "/versions.conf"));
+        QVERIFY(QFile::copy(host + "/components.conf", fixture + "/components.conf"));
         for (const QString name : {"b.patch", "B.patch", "0010-x.patch", "0002-y.patch", "_z.patch"}) {
             QVERIFY(write(fixture + "/patches/qemu/" + name, name.toUtf8() + '\n'));
         }
@@ -315,6 +360,12 @@ private slots:
         QVERIFY(StackBuilder::inputStamp(fixture) != changed);
         QCOMPARE(run("bash", {fixture + "/build.sh", "--print-stamp"}, {}, &status).trimmed(),
                  StackBuilder::inputStamp(fixture));
+        /* rutabaga_gfx's too: QEMU is built against it */
+        const QString withVirgl = StackBuilder::inputStamp(fixture);
+        QVERIFY(write(fixture + "/patches/rutabaga_gfx/changes.patch", "r\n"));
+        QVERIFY(StackBuilder::inputStamp(fixture) != withVirgl);
+        QCOMPARE(run("bash", {fixture + "/build.sh", "--print-stamp"}, {}, &status).trimmed(),
+                 StackBuilder::inputStamp(fixture));
 
         QVERIFY(StackBuilder::inputStamp(m_tmp.filePath("nowhere")).isEmpty());
         QVERIFY(StackBuilder::inputStamp({}).isEmpty());
@@ -330,6 +381,7 @@ private slots:
         QVERIFY(QDir().mkpath(fixture));
         QVERIFY(QFile::copy(host + "/build.sh", fixture + "/build.sh"));
         QVERIFY(QFile::copy(host + "/versions.conf", fixture + "/versions.conf"));
+        QVERIFY(QFile::copy(host + "/components.conf", fixture + "/components.conf"));
         for (const QString name : {"vitrine/0001-v.patch", "fork/0002-f.patch", "fork/0010-f.patch",
                                    "research/0001-r.patch", "fork/0001-f.patch", "B/b.patch",
                                    "a/a.patch", "_c/c.patch", "0001-top.patch",
@@ -582,34 +634,52 @@ echo "vitrine-build: built: /nowhere"
     {
         const QString stack = m_tmp.filePath("prune-stack");
         const QString virgl = stack + "/virglrenderer/";
-        /* @day: of October; @library: the virglrenderer folder it is built against */
+        const QString rutabaga = stack + "/rutabaga_gfx/";
+        /* @day: of October; @library, @rutabaga: the library folders it is built against */
         const auto prefix = [&stack](const char *name, int day, const QString &library = {},
-                                     bool complete = true) {
+                                     bool complete = true, const QString &rutabaga = {}) {
             const QString dir = stack + '/' + name;
             const QString binary = dir + "/bin/qemu-system-x86_64";
-            const QString conf = QString("STAMP=x\nBUILT=2026-10-%1T10:00:00Z\nVIRGL_PREFIX=%2\n")
+            const QString conf = QString("STAMP=x\nBUILT=2026-10-%1T10:00:00Z\nVIRGL_PREFIX=%2\n"
+                                         "RUTABAGA_PREFIX=%3\n")
                                      .arg(day, 2, 10, QChar('0'))
-                                     .arg(library);
+                                     .arg(library, rutabaga);
             if (!write(binary, "x\n", true) ||
                 (complete && !write(dir + "/share/vitrine/stack.conf", conf.toUtf8()))) {
                 return QString();
             }
             return binary;
         };
-        const auto library = [&virgl](const char *name, int day, bool complete = true) {
-            return write(virgl + name + "/lib64/libvirglrenderer.so.1", "x\n") &&
-                   (!complete || write(virgl + name + "/share/vitrine/virglrenderer.conf",
-                                       QString("KEY=k\nBUILT=2026-10-%1T10:00:00Z\n")
-                                           .arg(day, 2, 10, QChar('0'))
-                                           .toUtf8()));
+        /* in @top, of @component: its library and manifest */
+        const auto libraryOf = [](const QString &top, const char *component, const char *file,
+                                  const char *name, int day, bool complete) {
+            return write(top + name + "/lib64/" + file, "x\n") &&
+                   (!complete ||
+                    write(top + name + "/share/vitrine/" + component + ".conf",
+                          QString("KEY=k\nBUILT=2026-10-%1T10:00:00Z\n")
+                              .arg(day, 2, 10, QChar('0'))
+                              .toUtf8()));
+        };
+        const auto library = [&](const char *name, int day, bool complete = true) {
+            return libraryOf(virgl, "virglrenderer", "libvirglrenderer.so.1", name, day, complete);
+        };
+        const auto rutabagaLibrary = [&](const char *name, int day, bool complete = true) {
+            return libraryOf(rutabaga, "rutabaga_gfx", "librutabaga_gfx_ffi.so", name, day,
+                             complete);
         };
         QVERIFY(library("1111111111111111", 1));
         QVERIFY(library("2222222222222222", 2));
         QVERIFY(library("3333333333333333", 3));
         QVERIFY(library("4444444444444444", 9));
         QVERIFY(library("5555555555555555", 10, false));
-        QVERIFY(!prefix("aaaaaaaaaaaaaaaa", 8, virgl + "1111111111111111").isEmpty());
-        QVERIFY(!prefix("bbbbbbbbbbbbbbbb", 4, virgl + "2222222222222222").isEmpty());
+        QVERIFY(rutabagaLibrary("6666666666666666", 1));
+        QVERIFY(rutabagaLibrary("7777777777777777", 2));
+        QVERIFY(rutabagaLibrary("8888888888888888", 9));
+        QVERIFY(rutabagaLibrary("9999999999999999", 10, false));
+        QVERIFY(!prefix("aaaaaaaaaaaaaaaa", 8, virgl + "1111111111111111", true,
+                        rutabaga + "6666666666666666").isEmpty());
+        QVERIFY(!prefix("bbbbbbbbbbbbbbbb", 4, virgl + "2222222222222222", true,
+                        rutabaga + "7777777777777777").isEmpty());
         const QString named = prefix("cccccccccccccccc", 5);
         const QString running = prefix("dddddddddddddddd", 6);
         QVERIFY(!prefix("eeeeeeeeeeeeeeee", 9, {}, false).isEmpty());
@@ -642,12 +712,16 @@ echo "vitrine-build: built: /nowhere"
                                        canonical + "/eeeeeeeeeeeeeeee",
                                        canonical + "/virglrenderer/5555555555555555",
                                        canonical + "/virglrenderer/2222222222222222",
+                                       canonical + "/rutabaga_gfx/9999999999999999",
+                                       canonical + "/rutabaga_gfx/7777777777777777",
                                        canonical + "/.stage-0123456789abcdef"}));
         for (const char *kept : {"aaaaaaaaaaaaaaaa", "cccccccccccccccc", "dddddddddddddddd",
                                  "ffffffffffffffff", "other", "virglrenderer/1111111111111111",
                                  "virglrenderer/3333333333333333",
                                  /* the newest: a build of virglrenderer alone */
-                                 "virglrenderer/4444444444444444"}) {
+                                 "virglrenderer/4444444444444444",
+                                 "rutabaga_gfx/6666666666666666",
+                                 "rutabaga_gfx/8888888888888888"}) {
             QVERIFY2(QFileInfo::exists(stack + '/' + kept), kept);
         }
         QVERIFY(StackBuilder::current(stack).isValid());
@@ -699,17 +773,17 @@ sh -c 'echo $$ > %1; exec sleep 300'
 
     /*
      * The real build.sh with stand-ins for the components: fetch at the
-     * pinned commits, patches, a folder per key (QEMU's stamp, and
-     * virglrenderer's own), RUNPATH and ldd checks, `current` flipped only
+     * pinned commits, patches, a folder per key (QEMU's stamp, and the
+     * libraries' own), RUNPATH and ldd checks, `current` flipped only
      * after a complete build, nothing redone when nothing changed, nothing
      * left of a failed build; and updates that compile only what changed:
      * the files a patch does not change keep their time, the build trees
-     * stay, virglrenderer is not built again for a change of QEMU's
+     * stay, the libraries are not built again for a change of QEMU's
      */
     void buildShEndToEnd()
     {
         for (const char *tool : {"git", "meson", "ninja", "cc", "make", "readelf", "ldd",
-                                 "pkg-config", "flock"}) {
+                                 "pkg-config", "flock", "tar"}) {
             if (QStandardPaths::findExecutable(tool).isEmpty()) {
                 QSKIP(qPrintable(QString("needs %1").arg(tool)));
             }
@@ -736,13 +810,38 @@ sh -c 'echo $$ > %1; exec sleep 300'
             return f.open(QIODevice::ReadOnly) ? QString::fromUtf8(f.readAll()) : QString();
         };
 
-        /* the components' repositories, QEMU's with a meson subproject of its own */
+        /* the components' repositories, QEMU's with a meson subproject of its
+           own, rutabaga_gfx's with a crate: an archive that unpacks into a
+           folder of another name than its wrap's */
         const QString virglRepo = m_tmp.filePath("e2e/virgl-repo");
+        const QString rutabagaRepo = m_tmp.filePath("e2e/rutabaga-repo");
         const QString qemuRepo = m_tmp.filePath("e2e/qemu-repo");
         const QString subRepo = m_tmp.filePath("e2e/keycodemapdb-repo");
         QVERIFY(write(virglRepo + "/meson.build", kVirglMeson));
         QVERIFY(write(virglRepo + "/meson_options.txt", kVirglOptions));
         QVERIFY(write(virglRepo + "/virgl.c", "int virgl_renderer_init(void) { return 0; }\n"));
+        const QString crateSource = m_tmp.filePath("e2e/crate");
+        const QString crateArchive = m_tmp.filePath("e2e/crate-1.0.tar.gz");
+        QVERIFY(write(crateSource + "/crate-1.0/crate.h", "#define CRATE 0\n"));
+        run("tar", {"-C", crateSource, "-czf", crateArchive, "crate-1.0"}, {}, &status);
+        QCOMPARE(status, 0);
+        QFile archive(crateArchive);
+        QVERIFY(archive.open(QIODevice::ReadOnly));
+        const QByteArray crateHash =
+            QCryptographicHash::hash(archive.readAll(), QCryptographicHash::Sha256).toHex();
+        archive.close();
+        QVERIFY(write(rutabagaRepo + "/meson.build", kRutabagaMeson));
+        QVERIFY(write(rutabagaRepo + "/meson_options.txt", kRutabagaOptions));
+        QVERIFY(write(rutabagaRepo + "/ffi.c", kRutabagaFfi));
+        QVERIFY(write(rutabagaRepo + "/rutabaga_gfx_ffi.h", "int rutabaga_init(void);\n"));
+        QVERIFY(write(rutabagaRepo + "/subprojects/crate-1-rs.wrap",
+                      "[wrap-file]\ndirectory = crate-1.0\nsource_url = file://" +
+                          crateArchive.toUtf8() +
+                          "\nsource_filename = crate-1.0.tar.gz\nsource_hash = " + crateHash +
+                          "\npatch_directory = crate-1-rs\n"));
+        QVERIFY(write(rutabagaRepo + "/subprojects/packagefiles/crate-1-rs/meson.build",
+                      "project('crate', 'c', version : '1.0')\n"
+                      "dep = declare_dependency(include_directories : include_directories('.'))\n"));
         QVERIFY(write(subRepo + "/README", "v1\n"));
         QVERIFY(write(qemuRepo + "/configure", kQemuConfigure, true));
         QVERIFY(write(qemuRepo + "/qemu.c", kQemuMain));
@@ -750,7 +849,7 @@ sh -c 'echo $$ > %1; exec sleep 300'
         QVERIFY(write(qemuRepo + "/meson.build", "project('qemu', 'c')\n"));
         QVERIFY(write(qemuRepo + "/subprojects/.gitignore", "/keycodemapdb\n"));
         QVERIFY(write(qemuRepo + "/subprojects/packagefiles/keycodemapdb/meson.build", "pf1\n"));
-        for (const QString &repo : {virglRepo, subRepo}) {
+        for (const QString &repo : {virglRepo, rutabagaRepo, subRepo}) {
             git(repo, {"init", "-q", "-b", "main"});
             git(repo, {"add", "."});
             git(repo, {"commit", "-q", "-m", "first"});
@@ -766,15 +865,17 @@ sh -c 'echo $$ > %1; exec sleep 300'
         git(qemuRepo, {"add", "."});
         git(qemuRepo, {"commit", "-q", "-m", "first"});
 
-        /* host/: the real build.sh, its versions and patches */
+        /* host/: the real build.sh and components, their versions and patches */
         const QString host = m_tmp.filePath("e2e/host");
         QVERIFY(QDir().mkpath(host));
         QVERIFY(QFile::copy(realHost + "/build.sh", host + "/build.sh"));
+        QVERIFY(QFile::copy(realHost + "/components.conf", host + "/components.conf"));
         const auto versions = [&]() {
             return QString("QEMU_URL=file://%1\nQEMU_COMMIT=%2\nVIRGL_URL=file://%3\n"
-                           "VIRGL_COMMIT=%4\n")
+                           "VIRGL_COMMIT=%4\nRUTABAGA_URL=file://%5\nRUTABAGA_COMMIT=%6\n")
                 .arg(qemuRepo, git(qemuRepo, {"rev-parse", "HEAD"}), virglRepo,
-                     git(virglRepo, {"rev-parse", "HEAD"}))
+                     git(virglRepo, {"rev-parse", "HEAD"}), rutabagaRepo,
+                     git(rutabagaRepo, {"rev-parse", "HEAD"}))
                 .toUtf8();
         };
         QVERIFY(write(host + "/versions.conf", versions()));
@@ -784,6 +885,8 @@ sh -c 'echo $$ > %1; exec sleep 300'
                       QString(newFile).arg("MARK", "one").toUtf8()));
         QVERIFY(write(host + "/patches/virglrenderer/0001-mark.patch",
                       QString(newFile).arg("MARK", "virgl").toUtf8()));
+        QVERIFY(write(host + "/patches/rutabaga_gfx/0001-mark.patch",
+                      QString(newFile).arg("MARK", "rutabaga").toUtf8()));
         /* folder after folder: by their names alone, research's would come
            before the file it changes is there */
         QVERIFY(write(host + "/patches/qemu/fork/0002-base.patch",
@@ -806,7 +909,7 @@ sh -c 'echo $$ > %1; exec sleep 300'
         /* 1. from nothing */
         QString error = build(b, 300000);
         QVERIFY2(error.isEmpty(), qPrintable(error + "\n" + b.log()));
-        QCOMPARE(steps.size(), 8);
+        QCOMPARE(steps.size(), 10);
         const StackBuilder::Build first = StackBuilder::current(stack);
         QVERIFY(first.isValid());
         const QString stamp = StackBuilder::inputStamp(host);
@@ -830,25 +933,56 @@ sh -c 'echo $$ > %1; exec sleep 300'
                                         vkey.left(16));
         QVERIFY(QFileInfo::exists(first.virglPrefix + "/lib64/libvirglrenderer.so.1"));
         QVERIFY(!QFileInfo::exists(first.prefix + "/lib64/libvirglrenderer.so.1"));
+        /* rutabaga_gfx in its own, against that virglrenderer */
+        const QString rkey = run("bash", {host + "/build.sh", "--print-keys"})
+                                 .section("rutabaga_gfx ", 1).section('\n', 0, 0);
+        QCOMPARE(rkey.size(), 64);
+        QCOMPARE(first.rutabagaKey, rkey);
+        QCOMPARE(first.rutabagaPrefix, QFileInfo(stack).canonicalFilePath() + "/rutabaga_gfx/" +
+                                           rkey.left(16));
+        QCOMPARE(first.rutabagaPatches, QStringList({"0001-mark.patch"}));
+        QCOMPARE(first.rutabagaVersion, "0.1.85");
+        QVERIFY(QFileInfo::exists(first.rutabagaPrefix + "/lib64/librutabaga_gfx_ffi.so"));
+        QVERIFY(QFileInfo::exists(first.rutabagaPrefix + "/include/rutabaga_gfx/rutabaga_gfx_ffi.h"));
+        QVERIFY(QFileInfo::exists(work + "/src/rutabaga_gfx/MARK"));
+        QVERIFY(read(work + "/rutabaga_gfx-build/.vitrine-configure")
+                    .contains("--pkg-config-path=" + QFileInfo(work).canonicalFilePath() +
+                              "/virglrenderer-devel/lib64/pkgconfig "));
+        /* its crate, unpacked into the folder the wrap names, the archive kept */
+        const QString crate = work + "/src/rutabaga_gfx/subprojects/crate-1.0";
+        QCOMPARE(read(crate + "/crate.h"), "#define CRATE 0\n");
+        QVERIFY(read(crate + "/meson.build").startsWith("project('crate'"));
+        QVERIFY(QFileInfo::exists(work +
+                                  "/src/rutabaga_gfx/subprojects/packagecache/crate-1.0.tar.gz"));
+        QVERIFY(write(crate + "/KEPT", "\n"));
         /* the inputs, recorded for the app to tell what changed */
         QCOMPARE(read(first.prefix + "/share/vitrine/qemu.inputs"),
                  run("bash", {host + "/build.sh", "--print-inputs", "qemu"}));
         QCOMPARE(read(first.virglPrefix + "/share/vitrine/virglrenderer.inputs"),
                  run("bash", {host + "/build.sh", "--print-inputs", "virglrenderer"}));
+        QCOMPARE(read(first.rutabagaPrefix + "/share/vitrine/rutabaga_gfx.inputs"),
+                 run("bash", {host + "/build.sh", "--print-inputs", "rutabaga_gfx"}));
         /* configured for the stack's `current`, installed into its own folder:
            the descriptors name it */
         QCOMPARE(read(first.prefix + "/share/qemu/firmware/60-edk2-x86_64.json").trimmed(),
                  "{\"filename\": \"" + first.prefix + "/share/qemu/edk2-x86_64-code.fd\"}");
         QVERIFY(read(work + "/qemu-build/.vitrine-configure")
                     .contains("--prefix=" + QFileInfo(stack).canonicalFilePath() + "/current "));
-        /* compiled against virglrenderer at a path that stays: its include
-           folder is in most of QEMU's compile commands */
+        /* compiled against the libraries at paths that stay: their include
+           folders are in most of QEMU's compile commands */
         const QString devel = QFileInfo(work).canonicalFilePath() + "/virglrenderer-devel";
+        const QString rdevel = QFileInfo(work).canonicalFilePath() + "/rutabaga_gfx-devel";
         QVERIFY(read(work + "/qemu-build/.vitrine-configure")
-                    .contains("PKG_CONFIG_PATH=" + devel + "/lib64/pkgconfig "));
+                    .contains("PKG_CONFIG_PATH=" + devel + "/lib64/pkgconfig:" + rdevel +
+                              "/lib64/pkgconfig "));
         QVERIFY(read(devel + "/lib64/pkgconfig/virglrenderer.pc").startsWith("prefix=" + devel + '\n'));
         QCOMPARE(QFileInfo(devel + "/lib64/libvirglrenderer.so").symLinkTarget(),
                  first.virglPrefix + "/lib64/libvirglrenderer.so");
+        QVERIFY(read(rdevel + "/lib64/pkgconfig/rutabaga_gfx_ffi.pc")
+                    .startsWith("prefix=" + rdevel + '\n'));
+        QCOMPARE(QFileInfo(rdevel + "/lib64/librutabaga_gfx_ffi.so").symLinkTarget(),
+                 first.rutabagaPrefix + "/lib64/librutabaga_gfx_ffi.so");
+        QVERIFY(QFileInfo::exists(rdevel + "/include/rutabaga_gfx/rutabaga_gfx_ffi.h"));
         QVERIFY(QFileInfo::exists(work + "/src/qemu/MARK"));
         QCOMPARE(read(work + "/src/qemu/BASE"), "base, then research\n");
         QVERIFY(QFileInfo::exists(work + "/src/virglrenderer/MARK"));
@@ -860,16 +994,18 @@ sh -c 'echo $$ > %1; exec sleep 300'
         /* the run path build.sh checked */
         const QString dynamic = run("readelf", {"-d", first.qemuBinary()});
         QVERIFY2(dynamic.contains("RUNPATH") &&
-                     dynamic.contains("[" + first.virglPrefix + "/lib64]"),
+                     dynamic.contains("[" + first.virglPrefix + "/lib64:" +
+                                      first.rutabagaPrefix + "/lib64]"),
                  qPrintable(dynamic));
         QVERIFY(b.log().contains("loads " + first.virglPrefix + "/lib64/libvirglrenderer.so.1"));
+        QVERIFY(b.log().contains("loads " + first.rutabagaPrefix + "/lib64/librutabaga_gfx_ffi.so"));
 
         /* 2. nothing changed: nothing done */
         output.clear();
         QCOMPARE(build(b), "");
         QVERIFY2(log(output).contains("vitrine-build: up to date: " + first.prefix),
                  qPrintable(log(output)));
-        QVERIFY(!log(output).contains("step 2/8"));
+        QVERIFY(!log(output).contains("step 2/"));
         QCOMPARE(built.size(), 2);
 
         /* 3. a QEMU patch changed: a new prefix, virglrenderer as it was, and
@@ -894,9 +1030,13 @@ sh -c 'echo $$ > %1; exec sleep 300'
         QVERIFY(second.isValid());
         QVERIFY(second.prefix != first.prefix);
         QCOMPARE(second.virglPrefix, first.virglPrefix);
+        QCOMPARE(second.rutabagaPrefix, first.rutabagaPrefix);
         QVERIFY2(log(output).contains("vitrine-build: done: virglrenderer up to date " +
                                       first.virglPrefix) &&
-                     !log(output).contains("fetching virglrenderer"),
+                     !log(output).contains("fetching virglrenderer") &&
+                     log(output).contains("vitrine-build: done: rutabaga_gfx up to date " +
+                                          first.rutabagaPrefix) &&
+                     !log(output).contains("fetching rutabaga_gfx"),
                  qPrintable(log(output)));
         QVERIFY(log(output).contains("applying patches/qemu/fork/0001-mark.patch\n"
                                      "applying patches/qemu/fork/0002-base.patch\n"
@@ -1029,6 +1169,31 @@ sh -c 'echo $$ > %1; exec sleep 300'
         failure = buildOk();
         QVERIFY2(failure.isEmpty(), qPrintable(failure));
         QCOMPARE(read(work + "/src/qemu/BASE"), "base, then research\n");
+        /* rutabaga_gfx's crate: kept while its wrap and patch files stay, its
+           sources made again around it */
+        QVERIFY(write(host + "/patches/rutabaga_gfx/0001-mark.patch",
+                      QString(newFile).arg("MARK", "rutabaga two").toUtf8()));
+        failure = buildOk();
+        QVERIFY2(failure.isEmpty(), qPrintable(failure));
+        QCOMPARE(read(work + "/src/rutabaga_gfx/MARK"), "rutabaga two\n");
+        QVERIFY(QFileInfo::exists(crate + "/KEPT"));
+        /* unpacked again when they change, from the archive kept: where it
+           came from is gone */
+        QVERIFY(QFile::remove(crateArchive));
+        QVERIFY(write(host + "/patches/rutabaga_gfx/0002-crate.patch",
+                      "diff --git a/subprojects/packagefiles/crate-1-rs/meson.build "
+                      "b/subprojects/packagefiles/crate-1-rs/meson.build\n"
+                      "--- a/subprojects/packagefiles/crate-1-rs/meson.build\n"
+                      "+++ b/subprojects/packagefiles/crate-1-rs/meson.build\n"
+                      "@@ -1,2 +1,3 @@\n"
+                      " project('crate', 'c', version : '1.0')\n"
+                      " dep = declare_dependency(include_directories : include_directories('.'))\n"
+                      "+# changed\n"));
+        failure = buildOk();
+        QVERIFY2(failure.isEmpty(), qPrintable(failure));
+        QVERIFY(!QFileInfo::exists(crate + "/KEPT"));
+        QVERIFY(read(crate + "/meson.build").endsWith("# changed\n"));
+        QCOMPARE(read(crate + "/crate.h"), "#define CRATE 0\n");
 
         /* 7. virglrenderer alone: its folder, `current` as it was; then QEMU,
            against it, without building it again */
@@ -1046,6 +1211,7 @@ sh -c 'echo $$ > %1; exec sleep 300'
         }
         QCOMPARE(StackBuilder::current(stack).prefix, before.prefix);
         QVERIFY(!log(output).contains("component: qemu"));
+        QVERIFY(!log(output).contains("component: rutabaga_gfx"));
         QCOMPARE(components.size(), 1);
         QCOMPARE(components[0][0].toString(), "virglrenderer");
         QCOMPARE(components[0][1].toBool(), true);
@@ -1057,9 +1223,42 @@ sh -c 'echo $$ > %1; exec sleep 300'
         QVERIFY2(failure.isEmpty(), qPrintable(failure));
         QCOMPARE(StackBuilder::current(stack).virglPrefix, virglAlone);
         QVERIFY(log(output).contains("vitrine-build: done: virglrenderer up to date " + virglAlone));
-        /* QEMU configured again, against it */
+        /* QEMU configured again, against it; rutabaga_gfx, built against it, too */
         QVERIFY(!log(output).contains("configured already"));
+        QCOMPARE(components.size(), 3);
+
+        /* rutabaga_gfx alone: its folder, `current` as it was, virglrenderer as
+           it is; then QEMU, against it */
+        const StackBuilder::Build beforeRutabaga = StackBuilder::current(stack);
+        QVERIFY(write(host + "/patches/rutabaga_gfx/0001-mark.patch",
+                      QString(newFile).arg("MARK", "rutabaga three").toUtf8()));
+        components.clear();
+        output.clear();
+        {
+            QSignalSpy finished(&b, &StackBuilder::finished);
+            b.start("rutabaga_gfx");
+            QVERIFY(finished.wait(300000));
+            QVERIFY2(finished[0][0].toString().isEmpty(),
+                     qPrintable(finished[0][0].toString() + "\n" + log(output)));
+        }
+        QCOMPARE(StackBuilder::current(stack).prefix, beforeRutabaga.prefix);
+        QVERIFY(!log(output).contains("component: qemu"));
         QCOMPARE(components.size(), 2);
+        QCOMPARE(components[0][0].toString(), "virglrenderer");
+        QCOMPARE(components[0][1].toBool(), false);
+        QCOMPARE(components[1][0].toString(), "rutabaga_gfx");
+        QCOMPARE(components[1][1].toBool(), true);
+        const QString rutabagaAlone = components[1][2].toString();
+        QVERIFY(rutabagaAlone != beforeRutabaga.rutabagaPrefix);
+        QVERIFY(QFileInfo::exists(rutabagaAlone + "/share/vitrine/rutabaga_gfx.conf"));
+        components.clear();
+        failure = buildOk();
+        QVERIFY2(failure.isEmpty(), qPrintable(failure));
+        QCOMPARE(StackBuilder::current(stack).rutabagaPrefix, rutabagaAlone);
+        QVERIFY(log(output).contains("vitrine-build: done: rutabaga_gfx up to date " +
+                                     rutabagaAlone));
+        QVERIFY(!log(output).contains("configured already"));
+        QCOMPARE(components.size(), 3);
 
         /* 8. --clean: the build trees from nothing */
         QVERIFY(write(work + "/qemu-build/KEPT", "\n"));

@@ -31,6 +31,8 @@ static const char kManifest[] = "/share/vitrine/stack.conf";
 static const char kTag[] = "vitrine-build: ";
 /* The log kept of a build: QEMU's is about 1 MB */
 static const qsizetype kMaxLog = 4 << 20;
+/* The libraries of the stack, each in folders <stack>/<name>/<key> */
+static const QStringList kLibraries = {"virglrenderer", "rutabaga_gfx"};
 
 /*
  * NAME=value lines, as build.sh reads versions.conf: no shell, the name
@@ -116,7 +118,23 @@ StackBuilder::Build StackBuilder::Build::parse(const QString &prefix, const QByt
     build.virglPatches = values.value("VIRGL_PATCHES").split(' ', Qt::SkipEmptyParts);
     build.virglKey = values.value("VIRGL_KEY");
     build.virglPrefix = values.value("VIRGL_PREFIX");
+    build.rutabagaCommit = values.value("RUTABAGA_COMMIT");
+    build.rutabagaVersion = values.value("RUTABAGA_VERSION");
+    build.rutabagaPatches = values.value("RUTABAGA_PATCHES").split(' ', Qt::SkipEmptyParts);
+    build.rutabagaKey = values.value("RUTABAGA_KEY");
+    build.rutabagaPrefix = values.value("RUTABAGA_PREFIX");
     return build;
+}
+
+QString StackBuilder::Build::libraryPrefix(const QString &component) const
+{
+    if (component == "virglrenderer") {
+        return virglPrefix;
+    }
+    if (component == "rutabaga_gfx") {
+        return rutabagaPrefix;
+    }
+    return {};
 }
 
 StackBuilder::Build StackBuilder::Build::read(const QString &prefix)
@@ -324,12 +342,15 @@ QStringList StackBuilder::prune(const QString &stackDir, const QStringList &keep
     }
     needed << previous;
     needed.remove(QString());
-    /* the virglrenderer those kept are built against */
+    /* the libraries those kept are built against */
     QSet<QString> libraries;
     for (const QString &name : std::as_const(needed)) {
-        const QString library = Build::read(stack + '/' + name).virglPrefix;
-        if (!library.isEmpty()) {
-            libraries << QFileInfo(library).canonicalFilePath();
+        const Build build = Build::read(stack + '/' + name);
+        for (const QString &id : kLibraries) {
+            const QString library = build.libraryPrefix(id);
+            if (!library.isEmpty()) {
+                libraries << QFileInfo(library).canonicalFilePath();
+            }
         }
     }
     for (const QString &name : folders) {
@@ -338,35 +359,37 @@ QStringList StackBuilder::prune(const QString &stackDir, const QStringList &keep
             removed << stack + '/' + name;
         }
     }
-    /* of virglrenderer's, also the newest, which a build of it alone made,
-       for the next build of QEMU; those that never ended go */
-    const QString virgl = stack + "/virglrenderer";
-    QStringList complete;
-    QString newest;
-    QDateTime newestBuilt;
-    for (const QString &name : QDir(virgl).entryList(QDir::Dirs | QDir::NoDotAndDotDot)) {
-        const QHash<QString, QString> conf =
-            parseConf(readFile(virgl + '/' + name + "/share/vitrine/virglrenderer.conf"));
-        const QDateTime built = QDateTime::fromString(conf.value("BUILT"), Qt::ISODate);
-        if (!stampFolder.match(name).hasMatch()) {
-            continue;
-        }
-        if (conf.value("KEY").isEmpty()) {
-            if (QDir(virgl + '/' + name).removeRecursively()) {
-                removed << virgl + '/' + name;
+    /* of each library's folders, also the newest, which a build of it alone
+       made, for the next build of QEMU; those that never ended go */
+    for (const QString &id : kLibraries) {
+        const QString top = stack + '/' + id;
+        QStringList complete;
+        QString newest;
+        QDateTime newestBuilt;
+        for (const QString &name : QDir(top).entryList(QDir::Dirs | QDir::NoDotAndDotDot)) {
+            const QHash<QString, QString> conf =
+                parseConf(readFile(top + '/' + name + "/share/vitrine/" + id + ".conf"));
+            const QDateTime built = QDateTime::fromString(conf.value("BUILT"), Qt::ISODate);
+            if (!stampFolder.match(name).hasMatch()) {
+                continue;
             }
-            continue;
+            if (conf.value("KEY").isEmpty()) {
+                if (QDir(top + '/' + name).removeRecursively()) {
+                    removed << top + '/' + name;
+                }
+                continue;
+            }
+            complete << name;
+            if (newest.isEmpty() || built > newestBuilt) {
+                newest = name;
+                newestBuilt = built;
+            }
         }
-        complete << name;
-        if (newest.isEmpty() || built > newestBuilt) {
-            newest = name;
-            newestBuilt = built;
-        }
-    }
-    for (const QString &name : std::as_const(complete)) {
-        const QString dir = virgl + '/' + name;
-        if (name != newest && !libraries.contains(dir) && QDir(dir).removeRecursively()) {
-            removed << dir;
+        for (const QString &name : std::as_const(complete)) {
+            const QString dir = top + '/' + name;
+            if (name != newest && !libraries.contains(dir) && QDir(dir).removeRecursively()) {
+                removed << dir;
+            }
         }
     }
     /* what an install that never ended left beside the stack */
@@ -589,10 +612,10 @@ void StackBuilder::done(int code, bool crashed)
      * ended well is, even if Stop came after it did
      */
     const Build now = current(m_stack);
-    /* the folder of what was built is complete: a virglrenderer of its own */
-    const bool library = m_target == "virglrenderer";
+    /* the folder of what was built is complete: a library of its own */
+    const bool library = m_target != "qemu";
     const bool complete =
-        library ? !parseConf(readFile(m_prefix + "/share/vitrine/virglrenderer.conf"))
+        library ? !parseConf(readFile(m_prefix + "/share/vitrine/" + m_target + ".conf"))
                        .value("KEY").isEmpty()
                 : Build::read(m_prefix).isValid();
     if (now.isValid() && now.prefix != m_before) {

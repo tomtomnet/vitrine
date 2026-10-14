@@ -1,7 +1,7 @@
-From 3ff729c2efae77888f12f52e907f9a860d566fbe Mon Sep 17 00:00:00 2001
+From fa7a1be27aaaea6cca84de8dde0c9fbe24d36338 Mon Sep 17 00:00:00 2001
 From: tomtomnet <tompere8000@proton.me>
 Date: Fri, 2 Oct 2026 08:45:57 +0200
-Subject: [PATCH 1/4] virtio-gpu: guest vblank locked to the host's
+Subject: [PATCH 14/19] virtio-gpu: guest vblank locked to the host's
  presentation, flush fences, blob leak fix
 
 - x-host-vblank / x-vblank-lead / x-vblank-lead-auto / x-vblank-swap-target: the
@@ -13,7 +13,6 @@ Subject: [PATCH 1/4] virtio-gpu: guest vblank locked to the host's
   resizes; upstream has the same bug)
 
 Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
-Claude-Session: https://claude.ai/code/session_01M8iTzFPtyk2Gzbt6CLnRYK
 ---
  hw/display/trace-events          |   4 +
  hw/display/virtio-gpu-base.c     | 321 ++++++++++++++++++++++++++++++-
@@ -26,7 +25,7 @@ Claude-Session: https://claude.ai/code/session_01M8iTzFPtyk2Gzbt6CLnRYK
  8 files changed, 460 insertions(+), 9 deletions(-)
 
 diff --git a/hw/display/trace-events b/hw/display/trace-events
-index c5e7e42af..34f0a819b 100644
+index c5e7e42af2..34f0a819be 100644
 --- a/hw/display/trace-events
 +++ b/hw/display/trace-events
 @@ -28,6 +28,10 @@ vmware_update_rect_delayed_flush(void) "display update FIFO full - forcing flush
@@ -41,7 +40,7 @@ index c5e7e42af..34f0a819b 100644
  # virtio-gpu-3d.c
  # virtio-gpu.c
 diff --git a/hw/display/virtio-gpu-base.c b/hw/display/virtio-gpu-base.c
-index 270fbaae1..8295e611c 100644
+index 270fbaae10..8295e611c8 100644
 --- a/hw/display/virtio-gpu-base.c
 +++ b/hw/display/virtio-gpu-base.c
 @@ -152,6 +152,249 @@ virtio_gpu_gl_block(void *opaque, bool block)
@@ -394,7 +393,7 @@ index 270fbaae1..8295e611c 100644
      if (virtio_gpu_virgl_enabled(g->conf)) {
          /* use larger control queue in 3d mode */
 diff --git a/hw/display/virtio-gpu-gl.c b/hw/display/virtio-gpu-gl.c
-index b68b4e8e1..33196ef4e 100644
+index b68b4e8e1c..33196ef4e9 100644
 --- a/hw/display/virtio-gpu-gl.c
 +++ b/hw/display/virtio-gpu-gl.c
 @@ -80,6 +80,7 @@ static void virtio_gpu_gl_handle_ctrl(VirtIODevice *vdev, VirtQueue *vq)
@@ -414,7 +413,7 @@ index b68b4e8e1..33196ef4e 100644
      vgc->process_cmd = virtio_gpu_virgl_process_cmd;
      vgc->update_cursor_data = virtio_gpu_gl_update_cursor_data;
 diff --git a/hw/display/virtio-gpu-rutabaga.c b/hw/display/virtio-gpu-rutabaga.c
-index 3aafa4dc6..3c66596ce 100644
+index 3aafa4dc66..3c66596cef 100644
 --- a/hw/display/virtio-gpu-rutabaga.c
 +++ b/hw/display/virtio-gpu-rutabaga.c
 @@ -1084,6 +1084,7 @@ static void virtio_gpu_rutabaga_handle_ctrl(VirtIODevice *vdev, VirtQueue *vq)
@@ -426,7 +425,7 @@ index 3aafa4dc6..3c66596ce 100644
          cmd = virtqueue_pop(vq, sizeof(struct virtio_gpu_ctrl_command));
      }
 diff --git a/hw/display/virtio-gpu-udmabuf.c b/hw/display/virtio-gpu-udmabuf.c
-index d823332d9..a24006917 100644
+index d823332d9a..a240069173 100644
 --- a/hw/display/virtio-gpu-udmabuf.c
 +++ b/hw/display/virtio-gpu-udmabuf.c
 @@ -107,8 +107,9 @@ int virtio_gpu_create_udmabuf_fd(struct virtio_gpu_simple_resource *res)
@@ -442,7 +441,7 @@ index d823332d9..a24006917 100644
  
      return fd;
 diff --git a/hw/display/virtio-gpu-virgl.c b/hw/display/virtio-gpu-virgl.c
-index cfa7da47e..9e0dd332d 100644
+index cfa7da47e5..9e0dd332d0 100644
 --- a/hw/display/virtio-gpu-virgl.c
 +++ b/hw/display/virtio-gpu-virgl.c
 @@ -458,6 +458,14 @@ virtio_gpu_virgl_resource_unref(VirtIOGPU *g,
@@ -560,7 +559,7 @@ index cfa7da47e..9e0dd332d 100644
      if (cmd->cmd_hdr.flags & VIRTIO_GPU_FLAG_INFO_RING_IDX) {
          const uint32_t flags = VIRGL_RENDERER_FENCE_FLAG_MERGEABLE;
 diff --git a/hw/display/virtio-gpu.c b/hw/display/virtio-gpu.c
-index bb0f41bb1..df7a2a93c 100644
+index bb0f41bb1e..df7a2a93c2 100644
 --- a/hw/display/virtio-gpu.c
 +++ b/hw/display/virtio-gpu.c
 @@ -135,8 +135,16 @@ static void update_cursor(VirtIOGPU *g, struct virtio_gpu_update_cursor *cursor)
@@ -628,7 +627,7 @@ index bb0f41bb1..df7a2a93c 100644
  
  static void virtio_gpu_class_init(ObjectClass *klass, const void *data)
 diff --git a/include/hw/virtio/virtio-gpu.h b/include/hw/virtio/virtio-gpu.h
-index 5c9a6021a..f333fe495 100644
+index 5c9a6021af..f333fe4950 100644
 --- a/include/hw/virtio/virtio-gpu.h
 +++ b/include/hw/virtio/virtio-gpu.h
 @@ -92,6 +92,32 @@ struct virtio_gpu_scanout {

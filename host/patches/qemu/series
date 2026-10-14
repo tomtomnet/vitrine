@@ -1,0 +1,26 @@
+# The patches build.sh applies to QEMU, in this order (see ../README.md):
+# the research's series (research/: patches/qemu/series of
+# ~/Documents/virtio-gpu-desktop at 5f7e6af), then Vitrine's own (vitrine/).
+research/0001-ui-sdl2-follow-the-host-refresh-rate-tolerate-grab-b.patch
+research/0002-ui-sdl2-add-an-in-window-control-menu-Dear-ImGui.patch
+research/0003-Add-a-README-for-this-fork.patch
+research/0004-ui-sdl2-draw-the-menu-bar-without-a-border.patch
+research/0005-ui-sdl2-share-the-clipboard-with-the-guest.patch
+research/0006-contrib-add-vdagent-clipboard-bridge-for-Wayland-gue.patch
+research/0007-contrib-vdagent-clipboard-bridge-wait-for-XWayland-f.patch
+research/0008-hw-display-virtio-gpu-gl-tell-whether-the-guest-uses.patch
+research/0009-virtio-gpu-gl-disable-the-scanouts-on-reset-in-the-m.patch
+research/0010-virtio-gpu-virgl-give-guest-memory-blobs-a-udmabuf-f.patch
+research/0011-zero-copy-the-virglrenderer-patch-this-branch-needs-.patch
+research/0012-ui-sdl2-frame-and-input-latency-stats-x-query-displa.patch
+research/0013-README-zero-copy-and-frame-statistics-are-in-master.patch
+research/0014-virtio-gpu-guest-vblank-locked-to-the-host-s-present.patch
+research/0015-machine-x-vcpu-priority-QMP-command.patch
+research/0016-ui-sdl2-own-Wayland-swapchain-for-the-guest-s-frames.patch
+research/0017-ui-dbus-presentation-feedback-from-the-D-Bus-display.patch
+research/0018-The-fork-s-uncommitted-work-as-of-2026-10-12-to-be-s.patch
+research/fix-rutabaga-scanout-image-leak.patch
+research/virtio-gpu-rutabaga-scanout-blob.patch
+research/virtio-gpu-rutabaga-gl-context-scope.patch
+vitrine/0001-ui-sdl2-QEMU_SDL_POLL_FOCUSED-0-is-off.patch
+vitrine/0002-virtio-vga-forward-the-display-s-frame-feedback.patch

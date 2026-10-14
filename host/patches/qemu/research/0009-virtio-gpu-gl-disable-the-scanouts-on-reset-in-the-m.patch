@@ -1,8 +1,8 @@
-From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From fcfe43d3413bb22a617126837bd7cf3a099eee47 Mon Sep 17 00:00:00 2001
 From: tomtomnet <tompere8000@proton.me>
 Date: Fri, 25 Sep 2026 22:42:55 +0200
-Subject: [PATCH] virtio-gpu-gl: disable the scanouts on reset in the main
- thread
+Subject: [PATCH 09/19] virtio-gpu-gl: disable the scanouts on reset in the
+ main thread
 
 A guest reset of a virtio-gpu-gl device that virgl already drew on runs
 virtio_gpu_gl_reset() in a vCPU thread, and it disabled the scanouts
@@ -48,7 +48,6 @@ again. Before, the first aborted; now all surface switches run in the
 main thread and the display comes back.
 
 Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
-Claude-Session: https://claude.ai/code/session_014Q4Faji8f5ncpq4S3fVqfu
 ---
  .github/README.md             | 6 ++++++
  hw/display/virtio-gpu-gl.c    | 7 ++++---
@@ -57,7 +56,7 @@ Claude-Session: https://claude.ai/code/session_014Q4Faji8f5ncpq4S3fVqfu
  4 files changed, 18 insertions(+), 4 deletions(-)
 
 diff --git a/.github/README.md b/.github/README.md
-index cf1339ba4027a815ec73db7ddf29bfdd4d5a059b..9b9d93ab7b30e0628f23a0b250ad1ba076fe8aed 100644
+index cf1339ba40..9b9d93ab7b 100644
 --- a/.github/README.md
 +++ b/.github/README.md
 @@ -35,6 +35,12 @@ commits. The menu needs a Linux host.
@@ -74,7 +73,7 @@ index cf1339ba4027a815ec73db7ddf29bfdd4d5a059b..9b9d93ab7b30e0628f23a0b250ad1ba0
  ## Build on Fedora
  
 diff --git a/hw/display/virtio-gpu-gl.c b/hw/display/virtio-gpu-gl.c
-index 73d817488a1158009e6459f114bfc069982e6d70..b68b4e8e1c86773df1e7a71b550d07b56cdd17f5 100644
+index 73d817488a..b68b4e8e1c 100644
 --- a/hw/display/virtio-gpu-gl.c
 +++ b/hw/display/virtio-gpu-gl.c
 @@ -90,7 +90,6 @@ static void virtio_gpu_gl_handle_ctrl(VirtIODevice *vdev, VirtQueue *vq)
@@ -101,7 +100,7 @@ index 73d817488a1158009e6459f114bfc069982e6d70..b68b4e8e1c86773df1e7a71b550d07b5
      }
  }
 diff --git a/hw/display/virtio-gpu-virgl.c b/hw/display/virtio-gpu-virgl.c
-index 9550e2289b6b28323fb702c67a3b8e681cc0bfc3..a9edae71088064f9d9c52028850b9e69160dec5e 100644
+index 9550e2289b..a9edae7108 100644
 --- a/hw/display/virtio-gpu-virgl.c
 +++ b/hw/display/virtio-gpu-virgl.c
 @@ -1460,6 +1460,9 @@ static bool virtio_gpu_virgl_reset(VirtIOGPU *g)
@@ -115,7 +114,7 @@ index 9550e2289b6b28323fb702c67a3b8e681cc0bfc3..a9edae71088064f9d9c52028850b9e69
       * Virgl blob resource unmapping can be suspended and
       * deferred on unref, ensure that destruction is completed.
 diff --git a/ui/dbus-listener.c b/ui/dbus-listener.c
-index 624d0fb71d6b33baf44b4a97921489919b807606..257f7cff6bb90a364c26c0024213e27f105cb107 100644
+index 624d0fb71d..257f7cff6b 100644
 --- a/ui/dbus-listener.c
 +++ b/ui/dbus-listener.c
 @@ -618,7 +618,11 @@ static void dbus_scanout_texture(DisplayChangeListener *dcl,

@@ -1,12 +1,13 @@
 #!/bin/bash
 # SPDX-License-Identifier: GPL-2.0-or-later
 #
-# Builds Vitrine's QEMU: virglrenderer and upstream QEMU, each fetched at
-# the commit versions.conf pins and patched with the *.patch files of
-# patches/<component> and of its folders, or those its series file lists
-# (see patches_of), each installed into a folder of its own:
+# Builds Vitrine's QEMU: virglrenderer, rutabaga_gfx and upstream QEMU,
+# each fetched at the commit versions.conf pins and patched with the *.patch
+# files of patches/<component> and of its folders, or those its series file
+# lists (see patches_of), each installed into a folder of its own:
 #
 #   <stack>/virglrenderer/<key>/lib64/libvirglrenderer.so.1
+#   <stack>/rutabaga_gfx/<key>/lib64/librutabaga_gfx_ffi.so  for virtio-gpu-rutabaga
 #   <stack>/<stamp>/bin/qemu-system-x86_64, qemu-img and QEMU's other tools
 #   <stack>/<stamp>/share/qemu/               firmware, keymaps, qemu-options.hx
 #   <stack>/<stamp>/share/vitrine/stack.conf  what was built, written last
@@ -24,7 +25,8 @@
 #   build.sh [--deps|--print-deps|--print-stamp|--print-keys|--print-inputs COMPONENT]
 #            [--stack DIR|--prefix DIR] [--work DIR] [-j N] [--clean] [COMPONENT]
 #
-#   COMPONENT      virglrenderer or qemu: builds it and what it needs [qemu]
+#   COMPONENT      virglrenderer, rutabaga_gfx or qemu: builds it and what it
+#                  needs [qemu]
 #   --deps         install the build dependencies first (Fedora, sudo dnf)
 #   --print-deps   tell the missing build dependencies, then stop (status 1
 #                  if something is missing)
@@ -38,11 +40,13 @@
 #   -j N           parallel jobs [nproc]
 #   --clean        build trees from nothing: the incremental state in doubt
 #
-# QEMU gets an absolute RUNPATH to virglrenderer's lib64, never $ORIGIN:
-# once QEMU has file capabilities (cap_sys_nice), the loader ignores
-# LD_LIBRARY_PATH and $ORIGIN, and would load the system's virglrenderer.
-# virglrenderer's folder is named after its own key, so that a change of
-# QEMU alone keeps that path, and QEMU links as it did.
+# QEMU gets an absolute RUNPATH to the lib64 of virglrenderer and of
+# rutabaga_gfx, never $ORIGIN: once QEMU has file capabilities
+# (cap_sys_nice), the loader ignores LD_LIBRARY_PATH and $ORIGIN, and would
+# load the system's libraries (Fedora has both, older).  Their folders are
+# named after their own keys, so that a change of QEMU alone keeps those
+# paths, and QEMU links as it did.  rutabaga_gfx has no run path of its own:
+# the virglrenderer it needs is the one QEMU loads already.
 #
 # Lines starting with "vitrine-build: " are for the app:
 #   vitrine-build: step N/M: <what>
@@ -67,10 +71,11 @@ died=0
 die() { say "error: $*"; died=1; exit 1; }
 
 # The components, in build order, and those each is built against
-components=(virglrenderer qemu)
+components=(virglrenderer rutabaga_gfx qemu)
 deps_of() {
 	case "$1" in
-	qemu) echo virglrenderer ;;
+	rutabaga_gfx) echo virglrenderer ;;
+	qemu) echo virglrenderer rutabaga_gfx ;;
 	esac
 }
 
@@ -126,12 +131,15 @@ QEMU_URL=$(conf QEMU_URL)
 QEMU_COMMIT=$(conf QEMU_COMMIT)
 VIRGL_URL=$(conf VIRGL_URL)
 VIRGL_COMMIT=$(conf VIRGL_COMMIT)
-for v in QEMU_URL QEMU_COMMIT VIRGL_URL VIRGL_COMMIT; do
+RUTABAGA_URL=$(conf RUTABAGA_URL)
+RUTABAGA_COMMIT=$(conf RUTABAGA_COMMIT)
+for v in QEMU_URL QEMU_COMMIT VIRGL_URL VIRGL_COMMIT RUTABAGA_URL RUTABAGA_COMMIT; do
 	[ -n "${!v}" ] || die "versions.conf has no $v"
 done
 source_of() {
 	case "$1" in
 	virglrenderer) echo "$VIRGL_URL $VIRGL_COMMIT" ;;
+	rutabaga_gfx) echo "$RUTABAGA_URL $RUTABAGA_COMMIT" ;;
 	qemu) echo "$QEMU_URL $QEMU_COMMIT" ;;
 	esac
 }
@@ -188,10 +196,13 @@ print-inputs)
 esac
 mapfile -t qemu_patches < <(patches_of qemu)
 mapfile -t virgl_patches < <(patches_of virglrenderer)
-for p in ${qemu_patches[@]+"${qemu_patches[@]}"} ${virgl_patches[@]+"${virgl_patches[@]}"}; do
+mapfile -t rutabaga_patches < <(patches_of rutabaga_gfx)
+for p in ${qemu_patches[@]+"${qemu_patches[@]}"} ${virgl_patches[@]+"${virgl_patches[@]}"} \
+	${rutabaga_patches[@]+"${rutabaga_patches[@]}"}; do
 	[ -f "$here/$p" ] || die "$p, which a series file names, is not there"
 done
 vkey=$(key_of virglrenderer)
+rkey=$(key_of rutabaga_gfx)
 stamp=$(key_of qemu)
 
 # --- dependencies -------------------------------------------------------------
@@ -202,7 +213,7 @@ fedora=(git gcc gcc-c++ make meson ninja-build pkgconf-pkg-config python3 python
 	util-linux glib2-devel pixman-devel zlib-devel libslirp-devel SDL2-devel gtk3-devel libepoxy-devel
 	mesa-libgbm-devel mesa-libEGL-devel libdrm-devel libva-devel libusb1-devel
 	pulseaudio-libs-devel pipewire-devel spice-protocol libzstd-devel libpng-devel
-	libcap-ng-devel libattr-devel wayland-devel wayland-protocols-devel bzip2)
+	libcap-ng-devel libattr-devel wayland-devel wayland-protocols-devel bzip2 rust bindgen-cli)
 missing=()
 need_cmd() { local c; for c in "$@"; do command -v "$c" > /dev/null 2>&1 || missing+=("command $c"); done; }
 need_pc() { local m; for m in "$@"; do pkg-config --exists "$m" 2> /dev/null || missing+=("pkg-config $m"); done; }
@@ -212,6 +223,10 @@ check_deps() {
 	# virglrenderer
 	need_pc epoxy gbm egl libdrm libva
 	python3 -c 'import yaml' 2> /dev/null || missing+=("python3 module yaml")
+	# rutabaga_gfx: meson compiles its Rust with rustc (no cargo: its crates
+	# are meson subprojects) and makes bindings of C headers with bindgen,
+	# which loads libclang (Fedora's bindgen-cli brings it)
+	need_cmd rustc bindgen
 	# QEMU
 	need_pc glib-2.0 gio-unix-2.0 pixman-1 zlib slirp sdl2 gtk+-3.0 libusb-1.0 libpulse libpipewire-0.3 \
 		spice-protocol libzstd libpng libcap-ng wayland-client
@@ -254,13 +269,15 @@ esac
 # build ($qconf: the stack's `current`), since it compiles its prefix into
 # every file; a build installs it with DESTDIR into its stamp folder, where
 # QEMU finds its data and modules beside its binary (its install is
-# relocatable, meson's default).  virglrenderer is configured with its own
-# folder, which changes no command line of its compiles.
+# relocatable, meson's default).  virglrenderer and rutabaga_gfx are
+# configured with their own folders, which change no command line of their
+# compiles.
 if [ -n "$prefix" ]; then
 	mkdir -p "$prefix"
 	prefix=$(cd "$prefix" && pwd)
 	name=
 	vprefix=$prefix
+	rprefix=$prefix
 	qconf=$prefix
 else
 	mkdir -p "$stack"
@@ -268,12 +285,14 @@ else
 	name=${stamp:0:16}
 	prefix=$stack/$name
 	vprefix=$stack/virglrenderer/${vkey:0:16}
+	rprefix=$stack/rutabaga_gfx/${rkey:0:16}
 	qconf=$stack/current
 fi
 mkdir -p "$work"
 work=$(cd "$work" && pwd)
 manifest=$prefix/share/vitrine/stack.conf
 vmanifest=$vprefix/share/vitrine/virglrenderer.conf
+rmanifest=$rprefix/share/vitrine/rutabaga_gfx.conf
 # QEMU's configure installs Python packages with pip, whose cache would go
 # to the home folder; and so does a configure that make runs again
 export PIP_CACHE_DIR=$work/pip-cache
@@ -294,26 +313,32 @@ flip_current() {
 }
 
 # what is built already: the manifests, written last, with these keys.
-# QEMU's key has virglrenderer's: a QEMU built already names this
-# virglrenderer folder, built again if it went
+# QEMU's key has those of the libraries: a QEMU built already names these
+# library folders, built again if they went
 virgl_built() { [ -f "$vmanifest" ] && grep -qx "KEY=$vkey" "$vmanifest"; }
+rutabaga_built() { [ -f "$rmanifest" ] && grep -qx "KEY=$rkey" "$rmanifest"; }
 qemu_built() { [ -f "$manifest" ] && grep -qx "STAMP=$stamp" "$manifest"; }
 build_virgl=1
 ! virgl_built || build_virgl=0
+build_rutabaga=0
+[ "$target" = virglrenderer ] || rutabaga_built || build_rutabaga=1
 build_qemu=0
 [ "$target" != qemu ] || qemu_built || build_qemu=1
 
-if [ "$build_virgl" = 0 ] && [ "$build_qemu" = 0 ]; then
+if [ "$build_virgl" = 0 ] && [ "$build_rutabaga" = 0 ] && [ "$build_qemu" = 0 ]; then
 	# no Stop between switching `current` and saying so (see the end)
 	trap '' TERM INT HUP
 	say "done: virglrenderer up to date $vprefix"
-	if [ "$target" = qemu ]; then
+	[ "$target" = virglrenderer ] || say "done: rutabaga_gfx up to date $rprefix"
+	case "$target" in
+	qemu)
 		flip_current
 		say "done: qemu up to date $prefix"
 		say "up to date: $prefix"
-	else
-		say "up to date: $vprefix"
-	fi
+		;;
+	rutabaga_gfx) say "up to date: $rprefix" ;;
+	*) say "up to date: $vprefix" ;;
+	esac
 	exit 0
 fi
 
@@ -324,12 +349,13 @@ fi
 # failed or was stopped half-way is never taken for complete.
 partial=
 vpartial=
+rpartial=
 stage=
 on_exit() {
 	local rc=$?
 	if [ "$rc" -ne 0 ]; then
 		local d
-		for d in "$partial" "$vpartial" "$stage"; do
+		for d in "$partial" "$vpartial" "$rpartial" "$stage"; do
 			[ -z "$d" ] || rm -rf "$d"
 		done
 		[ "$died" = 1 ] || say "error: ${step:-the build} failed (status $rc)"
@@ -340,7 +366,7 @@ trap on_exit EXIT
 trap 'exit 143' TERM
 trap 'exit 130' INT
 trap 'exit 129' HUP
-steps=$((1 + 2 * build_virgl + 5 * build_qemu))
+steps=$((1 + 2 * build_virgl + 2 * build_rutabaga + 5 * build_qemu))
 n=0
 step=
 begin() { n=$((n + 1)); step=$1; say "step $n/$steps: $1"; }
@@ -356,11 +382,16 @@ command -v passt > /dev/null 2>&1 ||
 
 src=$work/src
 vbuild=$work/virglrenderer-build
+rbuild=$work/rutabaga_gfx-build
 qbuild=$work/qemu-build
+# what rutabaga_gfx and QEMU are compiled against of the libraries, at
+# paths that stay from build to build (see devel)
+vdev=$work/virglrenderer-devel
+rdev=$work/rutabaga_gfx-devel
 mkdir -p "$src"
 if [ "$clean" = 1 ]; then
 	echo "build trees from nothing (--clean)"
-	rm -rf "$vbuild" "$qbuild"
+	rm -rf "$vbuild" "$rbuild" "$qbuild"
 	rm -f "$src"/*.stamp
 fi
 
@@ -369,12 +400,44 @@ fi
 export GIT_TERMINAL_PROMPT=0 GIT_ASKPASS=
 git() { command git -c credential.helper= -c advice.detachedHead=false "$@"; }
 
+# wrap_dir DIR NAME: the folder subprojects/NAME.wrap of DIR unpacks into,
+# in DIR/subprojects: the wrap's directory, else its name
+wrap_dir() {
+	local w
+	w=$(sed -n 's/^[[:space:]]*directory[[:space:]]*=[[:space:]]*\([^[:space:]]*\).*/\1/p' \
+		"$1/subprojects/$2.wrap" 2> /dev/null | head -n 1)
+	# a folder of subprojects/, nothing else
+	case "$w" in
+	'' | */* | .*) w=$2 ;;
+	esac
+	echo "$w"
+}
+
+# wraps_named DIR NAME...: those of NAME that DIR has a wrap for; * stands
+# for all of its wraps
+wraps_named() {
+	local d=$1 s w
+	shift
+	for s in "$@"; do
+		if [ "$s" = "*" ]; then
+			for w in "$d"/subprojects/*.wrap; do
+				w=${w##*/}
+				echo "${w%.wrap}"
+			done
+		elif [ -f "$d/subprojects/$s.wrap" ]; then
+			echo "$s"
+		fi
+	done
+}
+
 # subprojects DIR NAME...: meson's subprojects NAME of DIR, downloaded as
 # its wraps and their patch files say now, so that configure, which may not
-# download (--disable-download), finds them: all the network use is in the
-# fetch steps.  Downloaded again when those change (meson would build a
-# stale one, its folder having a meson.build), or when a download was cut
-# short: DIR.subprojects says what they come from, once all are there.
+# download (--disable-download, --wrap-mode=nodownload), finds them: all the
+# network use is in the fetch steps.  Downloaded again when those change
+# (meson would build a stale one, its folder having a meson.build), or when
+# a download was cut short: DIR.subprojects says what they come from, once
+# all are there.  An archive (a wrap-file) comes from meson's cache of them
+# when it is there already.
 subprojects() {
 	local d=$1 s pd key
 	shift
@@ -387,7 +450,7 @@ subprojects() {
 	if [ "$(cat "$d.subprojects" 2> /dev/null)" != "$key" ]; then
 		rm -f "$d.subprojects"
 		for s in "$@"; do
-			rm -rf "${d:?}/subprojects/$s"
+			rm -rf "${d:?}/subprojects/$(wrap_dir "$d" "$s")"
 		done
 	fi
 	# meson's progress overwrites its line (\r, then an escape that erases
@@ -401,8 +464,8 @@ subprojects() {
 
 # checkout DIR URL COMMIT SUBPROJECTS PATCH...: DIR at COMMIT with the
 # patches applied, and its meson SUBPROJECTS (a list, of those it has a wrap
-# for) downloaded; left alone when it is already (DIR.stamp: the commit and
-# the patches' sha256).
+# for; * for all) downloaded; left alone when it is already (DIR.stamp: the
+# commit and the patches' sha256).
 #
 # The patched tree is made in an index of its own, the working tree left
 # alone: a patch that does not apply changes nothing.  Then git takes the
@@ -445,11 +508,14 @@ checkout() {
 	rm -f "$index"
 	# all the last build left goes, nested repositories too (-ff): meson's
 	# downloads are, and meson would build a stale one.  The downloads of
-	# SUBPROJECTS stay, for subprojects() to tell whether they still hold
-	for s in "${subs[@]}"; do
-		keep+=(-e "/subprojects/$s/")
+	# SUBPROJECTS stay (where the wraps the last build had unpacked, and
+	# meson's cache of archives), for subprojects() to tell whether they
+	# still hold
+	for s in $(wraps_named "$d" ${subs[@]+"${subs[@]}"}); do
+		keep+=(-e "/subprojects/$(wrap_dir "$d" "$s")/")
 	done
-	git -C "$d" clean -q -ffdx ${keep[@]+"${keep[@]}"}
+	keep+=(-e /subprojects/packagecache/)
+	git -C "$d" clean -q -ffdx "${keep[@]}"
 	# the files as they are, changed by hand too, which go back
 	git -C "$d" add -u
 	git -C "$d" read-tree -m -u "$tree"
@@ -460,14 +526,13 @@ checkout() {
 	echo "$commit $sums" > "$d.stamp"
 }
 
-# subprojects_of DIR NAME...: subprojects() for those of NAME DIR has a wrap for
+# subprojects_of DIR NAME...: subprojects() for those of NAME DIR has a wrap
+# for (* for all)
 subprojects_of() {
-	local d=$1 s
-	local -a have=()
+	local d=$1
+	local -a have
 	shift
-	for s in "$@"; do
-		[ ! -f "$d/subprojects/$s.wrap" ] || have+=("$s")
-	done
+	mapfile -t have < <(wraps_named "$d" "$@")
 	[ ${#have[@]} -eq 0 ] || subprojects "$d" "${have[@]}"
 }
 
@@ -483,25 +548,25 @@ put() {
 	mv -f "$2.new" "$2"
 }
 
-# devel FOLDER DEV: in DEV, what QEMU is compiled and linked against of the
-# virglrenderer in FOLDER: its headers and pkg-config file, its library
-# linked to.  At a path that stays from build to build: its include
-# folder is in most of QEMU's compile commands, which a new path would
-# all change (QEMU's RUNPATH names FOLDER itself)
+# devel MODULE LIBRARY FOLDER DEV: in DEV, what is compiled and linked
+# against of the library built in FOLDER: its headers, its pkg-config file
+# MODULE.pc, LIBRARY.so linked to.  At a path that stays from build to
+# build: its include folder is in most of QEMU's compile commands, which a
+# new path would all change (QEMU's RUNPATH names FOLDER itself)
 devel() {
-	local from=$1 dev=$2 f pc
+	local module=$1 lib=$2 from=$3 dev=$4 f pc
 	[ ! -d "$from/include" ] || (cd "$from/include" && find . -type f) | while read -r f; do
 		put "$from/include/$f" "$dev/include/$f"
 	done
 	[ ! -d "$dev/include" ] || (cd "$dev/include" && find . -type f) | while read -r f; do
 		[ -e "$from/include/$f" ] || rm -f "$dev/include/$f"
 	done
-	pc=$dev/virglrenderer.pc.new
+	pc=$dev/$module.pc.new
 	mkdir -p "$dev/lib64/pkgconfig"
-	sed "s|^prefix=.*|prefix=$dev|" "$from/lib64/pkgconfig/virglrenderer.pc" > "$pc"
-	put "$pc" "$dev/lib64/pkgconfig/virglrenderer.pc"
+	sed "s|^prefix=.*|prefix=$dev|" "$from/lib64/pkgconfig/$module.pc" > "$pc"
+	put "$pc" "$dev/lib64/pkgconfig/$module.pc"
 	rm -f "$pc"
-	ln -sfn "$from/lib64/libvirglrenderer.so" "$dev/lib64/libvirglrenderer.so"
+	ln -sfn "$from/lib64/$lib.so" "$dev/lib64/$lib.so"
 }
 
 # their paths in patches/<component>: research/0001-x.patch
@@ -565,11 +630,74 @@ if [ "$target" = virglrenderer ]; then
 	say "built: $vprefix"
 	exit 0
 fi
+devel virglrenderer libvirglrenderer "$vprefix" "$vdev"
+
+# --- rutabaga_gfx -------------------------------------------------------------
+say "component: rutabaga_gfx"
+if [ "$build_rutabaga" = 0 ]; then
+	echo "rutabaga_gfx built already: $rprefix"
+	say "done: rutabaga_gfx up to date $rprefix"
+else
+	[ -z "$name" ] || rpartial=$rprefix
+	if [ -n "$name" ]; then
+		rm -rf "$rprefix"
+	fi
+	rm -f "$rmanifest"
+	begin "fetching rutabaga_gfx"
+	# its crates are meson subprojects, all of its wraps: downloaded here, as
+	# the build may not (--wrap-mode=nodownload)
+	checkout "$src/rutabaga_gfx" "$RUTABAGA_URL" "$RUTABAGA_COMMIT" "*" ${rutabaga_patches[@]+"${rutabaga_patches[@]}"}
+
+	begin "building rutabaga_gfx"
+	# the C FFI QEMU's virtio-gpu-rutabaga uses, with virglrenderer's DRM native
+	# contexts beside cross-domain (virgl_renderer), as the research builds it;
+	# against virglrenderer at the path that stays.  Configured again in place
+	# when this line changes, as virglrenderer is
+	rargs=(--prefix="$rprefix" --libdir=lib64 --buildtype=release --wrap-mode=nodownload
+		--pkg-config-path="$vdev/lib64/pkgconfig" -Dffi=true -Dfeatures=virgl_renderer)
+	rline="$src/rutabaga_gfx ${rargs[*]} virglrenderer=$vkey"
+	if [ ! -f "$rbuild/build.ninja" ]; then
+		rm -rf "$rbuild"
+		meson setup "$rbuild" "$src/rutabaga_gfx" "${rargs[@]}"
+	elif ! configured "$rbuild" "$rline"; then
+		rm -f "$rbuild/.vitrine-configure"
+		meson setup --reconfigure "$rbuild" "$src/rutabaga_gfx" "${rargs[@]}" || {
+			echo "configuring again in place failed: from nothing"
+			rm -rf "$rbuild"
+			meson setup "$rbuild" "$src/rutabaga_gfx" "${rargs[@]}"
+		}
+	fi
+	echo "$rline" > "$rbuild/.vitrine-configure"
+	ninja -C "$rbuild" -j "$jobs"
+	meson install -C "$rbuild" --no-rebuild --quiet
+	[ -f "$rprefix/lib64/pkgconfig/rutabaga_gfx_ffi.pc" ] && [ -e "$rprefix/lib64/librutabaga_gfx_ffi.so" ] ||
+		die "rutabaga_gfx installed no librutabaga_gfx_ffi.so or rutabaga_gfx_ffi.pc"
+	mkdir -p "$(dirname "$rmanifest")"
+	key_lines rutabaga_gfx > "$rprefix/share/vitrine/rutabaga_gfx.inputs"
+	# what was built, written last: a folder with it is complete
+	cat > "$rmanifest.new" << EOF
+# What host/build.sh built here
+KEY=$rkey
+BUILT=$(date -u +%Y-%m-%dT%H:%M:%SZ)
+URL=$RUTABAGA_URL
+COMMIT=$RUTABAGA_COMMIT
+VERSION=$(PKG_CONFIG_PATH=$rprefix/lib64/pkgconfig pkg-config --modversion rutabaga_gfx_ffi)
+PATCHES=$(patch_names ${rutabaga_patches[@]+"${rutabaga_patches[@]}"})
+EOF
+	mv -f "$rmanifest.new" "$rmanifest"
+	rpartial=
+	say "done: rutabaga_gfx built $rprefix"
+fi
+if [ "$target" = rutabaga_gfx ]; then
+	trap '' TERM INT HUP
+	say "built: $rprefix"
+	exit 0
+fi
 
 # --- QEMU ---------------------------------------------------------------------
 say "component: qemu"
 if [ "$build_qemu" = 0 ]; then
-	# built already, with the virglrenderer made again above
+	# built already, with the libraries made again above
 	trap '' TERM INT HUP
 	flip_current
 	say "done: qemu up to date $prefix"
@@ -584,39 +712,43 @@ rm -f "$manifest"
 
 begin "fetching QEMU"
 # the subprojects this configuration builds: keycodemapdb, which configure
-# checks for; dtc for --enable-fdt=internal; imgui for --enable-sdl-gui
-checkout "$src/qemu" "$QEMU_URL" "$QEMU_COMMIT" "dtc imgui keycodemapdb" ${qemu_patches[@]+"${qemu_patches[@]}"}
+# checks for; dtc for --enable-fdt=internal
+checkout "$src/qemu" "$QEMU_URL" "$QEMU_COMMIT" "dtc keycodemapdb" ${qemu_patches[@]+"${qemu_patches[@]}"}
 
 begin "configuring QEMU"
+# the libraries' folders (one with --prefix), QEMU's RUNPATH
+runpath_libs=$vprefix/lib64
+[ "$rprefix" = "$vprefix" ] || runpath_libs+=:$rprefix/lib64
 qargs=(--prefix="$qconf" --target-list=x86_64-softmmu --without-default-features --disable-werror
 	--enable-kvm --enable-tcg --enable-pixman --enable-attr --enable-virtfs --enable-hmp
-	--enable-malloc-trim --enable-sdl --enable-sdl-gui --enable-gtk --enable-opengl --enable-virglrenderer
+	--enable-malloc-trim --enable-sdl --enable-gtk --enable-opengl --enable-virglrenderer
 	--enable-libusb --enable-pa --enable-pipewire --enable-spice-protocol --enable-passt --enable-gio
 	--enable-dbus-display --enable-slirp --enable-tpm --enable-vhost-kernel --enable-vhost-net
 	--enable-vhost-user --enable-zstd --enable-png --enable-tools --enable-fdt=internal --disable-docs
 	--disable-plugins --disable-containers --container-command=no --disable-download
-	"--extra-ldflags=-Wl,-rpath,$vprefix/lib64")
+	--enable-rutabaga-gfx "--extra-ldflags=-Wl,-rpath,$runpath_libs")
 # (no containers: configure would otherwise run podman to see if it works, which
 # sets up podman's storage in the user's home, for cross-builds we never do;
 # no download: the subprojects come with the sources, and Python's tooling
-# from the system and the wheels QEMU carries, rather than from PyPI)
+# from the system and the wheels QEMU carries, rather than from PyPI;
+# rutabaga_gfx: virtio-gpu-rutabaga, the nested desktop's device)
 #
 # Configured again in place when this line changes: QEMU's configure
 # clears meson's state (its probes start over) and keeps what was
 # compiled, which compiles again only where a command line changed.  The
-# line names the virglrenderer QEMU is built against: configure probes
-# what that offers (virgl_renderer_resource_set_guest_dmabuf, its version),
+# line names the libraries QEMU is built against: configure probes what
+# they offer (virgl_renderer_resource_set_guest_dmabuf, their versions),
 # and meson keeps what it found, which nothing else would make it look
 # again at
-vdev=$work/virglrenderer-devel
-devel "$vprefix" "$vdev"
-qline="$src/qemu ${qargs[*]} PKG_CONFIG_PATH=$vdev/lib64/pkgconfig virglrenderer=$vkey"
+devel rutabaga_gfx_ffi librutabaga_gfx_ffi "$rprefix" "$rdev"
+qpkg=$vdev/lib64/pkgconfig:$rdev/lib64/pkgconfig
+qline="$src/qemu ${qargs[*]} PKG_CONFIG_PATH=$qpkg virglrenderer=$vkey rutabaga_gfx=$rkey"
 if [ -f "$qbuild/build.ninja" ] && configured "$qbuild" "$qline"; then
 	echo "configured already"
 else
 	rm -f "$qbuild/.vitrine-configure"
 	mkdir -p "$qbuild"
-	(cd "$qbuild" && PKG_CONFIG_PATH="$vdev/lib64/pkgconfig${PKG_CONFIG_PATH:+:$PKG_CONFIG_PATH}" \
+	(cd "$qbuild" && PKG_CONFIG_PATH="$qpkg${PKG_CONFIG_PATH:+:$PKG_CONFIG_PATH}" \
 		"$src/qemu/configure" "${qargs[@]}")
 	echo "$qline" > "$qbuild/.vitrine-configure"
 fi
@@ -658,17 +790,32 @@ qemu=$prefix/bin/qemu-system-x86_64
 runpath=$(readelf -d "$qemu" | sed -n 's/.*(RUNPATH).*\[\(.*\)\]$/\1/p')
 case ":$runpath:" in
 *'$ORIGIN'*) die "the RUNPATH of qemu-system-x86_64 uses \$ORIGIN: $runpath" ;;
-*":$vprefix/lib64:"*) echo "RUNPATH $runpath" ;;
-*) die "qemu-system-x86_64 has no RUNPATH to $vprefix/lib64 (it has: ${runpath:-none})" ;;
 esac
-# what the loader finds, without what the environment adds; and with
-# modules, the virtio-gpu-gl one is what loads virglrenderer
-for f in "$qemu" "$prefix"/lib*/qemu/hw-display-virtio-gpu-gl.so; do
-	lib=$(env -u LD_LIBRARY_PATH -u LD_PRELOAD ldd "$f" | sed -n 's/^[[:space:]]*libvirglrenderer\.so[.0-9]* => \([^ ]*\).*/\1/p')
-	[ "$lib" = "$vprefix/lib64/libvirglrenderer.so.1" ] ||
-		die "$(basename "$f") loads ${lib:-no virglrenderer} instead of $vprefix/lib64/libvirglrenderer.so.1"
-	echo "$(basename "$f") loads $lib"
+for d in "$vprefix/lib64" "$rprefix/lib64"; do
+	case ":$runpath:" in
+	*":$d:"*) ;;
+	*) die "qemu-system-x86_64 has no RUNPATH to $d (it has: ${runpath:-none})" ;;
+	esac
 done
+echo "RUNPATH $runpath"
+# loads LIBRARY FOLDER FILE...: whether each FILE loads LIBRARY.so (any
+# version) from FOLDER, as the loader finds it without what the
+# environment adds
+loads() {
+	local name=$1 folder=$2 f lib
+	shift 2
+	for f; do
+		lib=$(env -u LD_LIBRARY_PATH -u LD_PRELOAD ldd "$f" |
+			sed -n "s/^[[:space:]]*${name//./\\.}\.so[.0-9]* => \([^ ]*\).*/\1/p")
+		case "$lib" in
+		"$folder/$name.so"*) echo "$(basename "$f") loads $lib" ;;
+		*) die "$(basename "$f") loads ${lib:-no $name} instead of $name from $folder" ;;
+		esac
+	done
+}
+# with modules, the virtio-gpu-gl and -rutabaga ones load the libraries
+loads libvirglrenderer "$vprefix/lib64" "$qemu" "$prefix"/lib*/qemu/hw-display-virtio-gpu-gl.so
+loads librutabaga_gfx_ffi "$rprefix/lib64" "$qemu" "$prefix"/lib*/qemu/hw-display-virtio-gpu-rutabaga.so
 version=$("$qemu" -version | sed -n 's/^QEMU emulator version \([^ ]*\).*/\1/p')
 [ -n "$version" ] || die "qemu-system-x86_64 -version failed"
 "$prefix/bin/qemu-img" --version > /dev/null || die "qemu-img --version failed"
@@ -676,7 +823,14 @@ props=$("$qemu" -device virtio-gpu-gl-pci,help)
 for p in drm_native_context x-host-vblank; do
 	grep -q "^ *$p=" <<< "$props" || die "virtio-gpu-gl-pci has no $p property: not the patched QEMU"
 done
-echo "QEMU $version, virtio-gpu-gl-pci with drm_native_context and x-host-vblank"
+# the nested desktop's device: cross-domain to the host's Wayland, and the
+# research series' native contexts and guest dma-bufs
+props=$("$qemu" -device virtio-gpu-rutabaga-pci,help)
+for p in cross-domain wayland-socket-path x-drm x-guest-dmabuf; do
+	grep -q "^ *$p=" <<< "$props" || die "virtio-gpu-rutabaga-pci has no $p property: not the patched QEMU"
+done
+echo "QEMU $version, virtio-gpu-gl-pci with drm_native_context and x-host-vblank," \
+	"virtio-gpu-rutabaga-pci with cross-domain and x-drm"
 
 # what was built, written last: a prefix with it is complete.  From here
 # on, a Stop would leave `current` switched to it while the app hears of
@@ -699,6 +853,12 @@ VIRGL_VERSION=$(PKG_CONFIG_PATH=$vprefix/lib64/pkgconfig pkg-config --modversion
 VIRGL_PATCHES=$(patch_names ${virgl_patches[@]+"${virgl_patches[@]}"})
 VIRGL_KEY=$vkey
 VIRGL_PREFIX=$vprefix
+RUTABAGA_URL=$RUTABAGA_URL
+RUTABAGA_COMMIT=$RUTABAGA_COMMIT
+RUTABAGA_VERSION=$(PKG_CONFIG_PATH=$rprefix/lib64/pkgconfig pkg-config --modversion rutabaga_gfx_ffi)
+RUTABAGA_PATCHES=$(patch_names ${rutabaga_patches[@]+"${rutabaga_patches[@]}"})
+RUTABAGA_KEY=$rkey
+RUTABAGA_PREFIX=$rprefix
 EOF
 mv -f "$manifest.new" "$manifest"
 partial=

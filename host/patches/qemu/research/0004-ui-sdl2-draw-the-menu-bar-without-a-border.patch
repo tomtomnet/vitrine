@@ -1,7 +1,7 @@
-From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From aa44acde1529241a923ecaf733d0ecbbc5db9706 Mon Sep 17 00:00:00 2001
 From: tomtomnet <tompere8000@proton.me>
 Date: Wed, 23 Sep 2026 14:31:11 +0200
-Subject: [PATCH] ui/sdl2: draw the menu bar without a border
+Subject: [PATCH 04/19] ui/sdl2: draw the menu bar without a border
 
 Dear ImGui frames its windows, the main menu bar included, with a one
 pixel border in the style's border color: a grey line ran around the
@@ -15,7 +15,7 @@ Co-Authored-By: Claude Opus 5.5 (1M context) <noreply@anthropic.com>
  1 file changed, 7 insertions(+), 1 deletion(-)
 
 diff --git a/ui/sdl2-gui.cpp b/ui/sdl2-gui.cpp
-index b4b26e5e81503a430f63c914bd1076d340df76ea..0cabe543d78037ec158f33e1b1e4e55282164038 100644
+index b4b26e5e81..0cabe543d7 100644
 --- a/ui/sdl2-gui.cpp
 +++ b/ui/sdl2-gui.cpp
 @@ -1256,7 +1256,13 @@ static void info_window(Uint64 now)

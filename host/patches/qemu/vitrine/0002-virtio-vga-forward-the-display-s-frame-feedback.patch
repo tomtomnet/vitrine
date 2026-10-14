@@ -13,9 +13,11 @@ fences were not held, and the D-Bus display copied every frame, the
 guest's buffers never going to the screen as they are (zero copy).
 virtio-gpu-gl-pci, whose console has virtio-gpu's ops, had all of it.
 
-Forward them as the other hooks are.  The device takes them while the VGA
-part shows the firmware too, as virtio-gpu-gl-pci's does while OVMF
-drives it: it raises no interrupt before the guest's driver is ready.
+Forward them as the other hooks are, gl_presented with the host's
+latching deadline that the series' 0018 added.  The device takes them
+while the VGA part shows the firmware too, as virtio-gpu-gl-pci's does
+while OVMF drives it: it raises no interrupt before the guest's driver
+is ready.
 
 Vitrine gives new Linux VMs virtio-vga-gl rather than virtio-gpu-gl-pci,
 which shows the firmware, the bootloader and the early boot on its VGA
@@ -31,13 +33,13 @@ With it: 61 ticks a second, zero copy with 1420 flushes held, 4.7 ms (p99
 4.8), 16.7 ms intervals; virtio-gpu-gl-pci, before as after: 61 ticks,
 zero copy, 4.6-4.7 ms.
 ---
- hw/display/virtio-vga.c | 68 ++++++++++++++++++++++++++++++++++++++++++++++++++
- 1 file changed, 68 insertions(+)
+ hw/display/virtio-vga.c | 70 ++++++++++++++++++++++++++++++++++++++++++++++++++
+ 1 file changed, 70 insertions(+)
 
 diff --git a/hw/display/virtio-vga.c b/hw/display/virtio-vga.c
 --- a/hw/display/virtio-vga.c
 +++ b/hw/display/virtio-vga.c
-@@ -75,6 +75,69 @@ static int virtio_vga_base_get_flags(void *opaque)
+@@ -75,6 +75,71 @@ static int virtio_vga_base_get_flags(void *opaque)
      return g->hw_ops->get_flags(g);
  }
  
@@ -51,14 +53,16 @@ diff --git a/hw/display/virtio-vga.c b/hw/display/virtio-vga.c
 +static void virtio_vga_base_gl_presented(void *opaque, uint32_t head,
 +                                         int64_t when_ns, int64_t period_ns,
 +                                         int64_t compositor_lead_ns,
-+                                         int64_t swap_lead_ns)
++                                         int64_t swap_lead_ns,
++                                         int64_t deadline_ns)
 +{
 +    VirtIOVGABase *vvga = opaque;
 +    VirtIOGPUBase *g = vvga->vgpu;
 +
 +    if (g->hw_ops->gl_presented) {
 +        g->hw_ops->gl_presented(g, head, when_ns, period_ns,
-+                                compositor_lead_ns, swap_lead_ns);
++                                compositor_lead_ns, swap_lead_ns,
++                                deadline_ns);
 +    }
 +}
 +
@@ -107,7 +111,7 @@ diff --git a/hw/display/virtio-vga.c b/hw/display/virtio-vga.c
  static const GraphicHwOps virtio_vga_base_ops = {
      .get_flags = virtio_vga_base_get_flags,
      .invalidate = virtio_vga_base_invalidate_display,
-@@ -82,6 +145,11 @@ static const GraphicHwOps virtio_vga_base_ops = {
+@@ -82,6 +147,11 @@ static const GraphicHwOps virtio_vga_base_ops = {
      .text_update = virtio_vga_base_text_update,
      .ui_info = virtio_vga_base_ui_info,
      .gl_block = virtio_vga_base_gl_block,
