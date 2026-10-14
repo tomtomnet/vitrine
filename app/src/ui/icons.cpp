@@ -187,8 +187,8 @@ private:
         QImage image(side, side, QImage::Format_ARGB32_Premultiplied);
         image.fill(Qt::transparent);
         QPainter p(&image);
-        /* where the shapes go, as a 22 pixels icon of KDE's has them in its 16 middle ones */
-        const int margin = qRound(side * 3 / 22.0);
+        /* where the shapes go: the 18 middle pixels of 22, as large as VMware's */
+        const int margin = qRound(side * 2 / 22.0);
         const QRect box(margin, margin, side - 2 * margin, side - 2 * margin);
         /* the darker edge: a device pixel, more at large ratios */
         const int edge = qMax(1, qRound(ratio * 0.9));
@@ -247,13 +247,16 @@ private:
         }
         case Control::Reset: {
             /* clockwise from the upper right round to the top, where the
-               arrowhead points on: the ring as Shut Down's, lower by half
-               what the arrowhead stands out above it, the whole in the middle */
-            const qreal head = line * 1.6;
+               arrowhead points on: the whole in the middle, lower by half
+               what the arrowhead stands out above the ring, the ring a little
+               smaller than Shut Down's, the rest of it in the margins */
+            const qreal head = line * 1.4;
+            const qreal out = head - line / 2.0;
             const QPointF centre(box.left() + box.width() / 2.0,
-                                 box.top() + box.height() / 2.0 + (head - line / 2.0) / 2);
-            const QRectF circle(centre - QPointF(radius, radius), QSizeF(2 * radius, 2 * radius));
-            const QPointF end(centre.x(), centre.y() - radius);
+                                 box.top() + box.height() / 2.0 + out / 2);
+            const qreal ring = radius - out / 4;
+            const QRectF circle(centre - QPointF(ring, ring), QSizeF(2 * ring, 2 * ring));
+            const QPointF end(centre.x(), centre.y() - ring);
             path.arcMoveTo(circle, 40);
             path.arcTo(circle, 40, -(360 - 50 - 8));
             p.strokePath(path, QPen(blue, line, Qt::SolidLine, Qt::FlatCap));
