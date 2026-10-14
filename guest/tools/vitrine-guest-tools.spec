@@ -2,7 +2,7 @@
 # exact version, and dnf takes an installed one of the same version as done.
 Name:           vitrine-guest-tools
 Version:        0.1.0
-Release:        19%{?dist}
+Release:        20%{?dist}
 Summary:        vitrine guest tools: patched virtio-gpu driver, settings and agent
 
 # the driver's sources (dkms/vendor, dkms/patches) are the kernel's: MIT
@@ -175,6 +175,13 @@ fi
 %dir %{_sharedstatedir}/%{name}
 
 %changelog
+* Wed Oct 14 2026 vitrine <noreply@anthropic.com> - 0.1.0-20
+- the agent tells what the VM's own screen (the virtio card) shows: a login
+  screen, the text console, or neither (protocol 3), in its status and as it
+  changes; vitrine's console shows the nested desktop's Screen view by it,
+  not as soon as an agent answers (before the login screen, during the
+  install at boot)
+
 * Wed Oct 14 2026 vitrine <noreply@anthropic.com> - 0.1.0-19
 - plasmalogin's XDG_DATA_DIRS in a nested-desktop boot: the session entry's
   folder in front of the service manager's, which keeps flatpak's exports

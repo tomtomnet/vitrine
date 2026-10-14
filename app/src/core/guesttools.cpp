@@ -247,6 +247,16 @@ void setPending(const QString &vmId, Pending pending)
     }
 }
 
+Screen parseScreen(const QJsonValue &value)
+{
+    if (!value.isString()) {
+        return Screen::Unknown;
+    }
+    /* what a later agent may tell besides (a splash, say): nothing to look at */
+    const QString what = value.toString();
+    return what == "login" ? Screen::Login : what == "console" ? Screen::Console : Screen::Nothing;
+}
+
 static QHash<QString, QString> stringHash(const QJsonObject &o)
 {
     QHash<QString, QString> h;
@@ -291,6 +301,7 @@ Report parseReport(const QJsonObject &s)
     r.installing = s["installing"].toBool();
     r.installedMedium = s["installed"].toObject()["medium"].toString();
     r.bootstrap = s["bootstrap"].toString();
+    r.screen = parseScreen(s["screen"]);
     if (const QJsonObject last = s["lastInstall"].toObject(); last["ok"].isBool()) {
         r.lastMedium = last["medium"].toString();
         r.lastOk = last["ok"].toBool();
@@ -304,7 +315,8 @@ Message parseMessage(const QByteArray &line)
     static const QHash<QString, Message::Type> types{
         {"hello", Message::Type::Hello},       {"status", Message::Type::Status},
         {"progress", Message::Type::Progress}, {"result", Message::Type::Result},
-        {"error", Message::Type::Error},       {"stats", Message::Type::Stats}};
+        {"error", Message::Type::Error},       {"stats", Message::Type::Stats},
+        {"screen", Message::Type::Screen}};
     QJsonParseError error;
     const QJsonDocument doc = QJsonDocument::fromJson(line, &error);
     const QJsonObject o = doc.object();
@@ -339,6 +351,9 @@ Message parseMessage(const QByteArray &line)
         break;
     case Message::Type::Stats:
         m.stats = o["stats"].toObject();
+        break;
+    case Message::Type::Screen:
+        m.screen = parseScreen(o["screen"]);
         break;
     case Message::Type::Invalid:
         break;
@@ -421,6 +436,27 @@ State evaluate(const Inputs &in)
         return State::Installing;
     }
     return in.waited ? State::NotInstalled : State::Unknown;
+}
+
+bool screenShown(const Inputs &in)
+{
+    if (!in.agentSeen) {
+        return false;
+    }
+    switch (in.report.screen) {
+    case Screen::Login:
+    case Screen::Console:
+        return true;
+    case Screen::Nothing:
+        return false;
+    case Screen::Unknown:
+        break;
+    }
+    /* an older agent: not while the tools install, at boot (before the
+       login screen starts) or by hand */
+    const QString &bootstrap = in.report.bootstrap;
+    return !in.report.tools.isEmpty() && !in.installing && bootstrap != "waiting" &&
+           bootstrap != "running";
 }
 
 QString failureReason(const QString &output)
@@ -801,6 +837,13 @@ void GuestToolsMonitor::handle(const Message &m)
         }
         emit statsReceived(m.stats);
         return;
+    case Message::Type::Screen:
+        /* what the VM's own screen shows now: the console's views follow it */
+        if (m.screen == m_in.report.screen) {
+            return;
+        }
+        m_in.report.screen = m.screen;
+        break;
     case Message::Type::Invalid:
         return;
     }

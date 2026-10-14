@@ -162,12 +162,15 @@ offers "Plasma (nested desktop)" in place of Plasma, and the guest's own
 automatic login into Plasma, if set, logs into it (vitrine sets none). The
 same disk boots as before with the box unchecked. With vitrine's window as
 the display, the session shows in the console, which then has three views:
-Boot (the VGA card's screen: the firmware, the boot loader, the first boot
-messages), Screen (the guest's own screen: its console and its login screen)
-and Desktop (the session). They change as the guest boots and its session
-starts or ends; the Console button's menu (its name says the view shown:
-Console 1, 2 or 3), View > Boot, Screen and Desktop, or Ctrl+Alt+1, 2 and 3
-choose one. Closing vitrine ends the session: the guest
+Boot (the VGA card's screen: the firmware, the boot loader, then the guest's
+text console, which moves there early in the boot: the boot and shutdown
+messages), Screen (the guest's own screen: its login screen) and Desktop
+(the session). They follow what the guest shows, as its guest tools' agent
+tells: Boot while it starts, installs the guest tools or shuts down, Screen
+once its login screen is up, Desktop while the session runs. The Console
+button's menu (its name says the view shown: Console 1, 2 or 3), View > Boot,
+Screen and Desktop, or Ctrl+Alt+1, 2 and 3 choose one; the choice holds until
+the guest shows something else. Closing vitrine ends the session: the guest
 goes back to its login screen, where you log in again from the Screen view.
 With QEMU's SDL or GTK window, or none, the session opens as a window of its
 own.

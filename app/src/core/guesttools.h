@@ -121,6 +121,16 @@ enum class Pending {
 Pending pending(const QString &vmId);
 void setPending(const QString &vmId, Pending pending);
 
+/*
+ * What the VM's own screen - the virtio-gpu card's: the console's Screen
+ * view for the nested desktop - shows, as the agent says (protocol 3, in its
+ * status and at each change): a login screen, the text console, or neither
+ * (nothing new there: the guest's console on QEMU's VGA, the Boot view, or
+ * a boot splash).  Unknown: an older agent, which does not say.
+ */
+enum class Screen { Unknown, Nothing, Console, Login };
+Screen parseScreen(const QJsonValue &value);
+
 /* What the agent reports (its status object) */
 struct Kernel {
     QString version;
@@ -155,6 +165,7 @@ struct Report {
     /* The install vitrine asked for at this boot: waiting, running, done,
        failed; empty when none was asked for (or an older agent) */
     QString bootstrap;
+    Screen screen = Screen::Unknown;
 };
 Report parseReport(const QJsonObject &status);
 
@@ -163,7 +174,7 @@ extern const int kStatsProtocol;
 
 /* A line of the agent */
 struct Message {
-    enum class Type { Invalid, Hello, Status, Progress, Result, Error, Stats };
+    enum class Type { Invalid, Hello, Status, Progress, Result, Error, Stats, Screen };
     Type type = Type::Invalid;
     qint64 id = -1;
     int protocol = 0;
@@ -176,6 +187,7 @@ struct Message {
     QString error;          // Result, Error
     bool rebootNeeded = false;
     QJsonObject stats;      // Stats: the guest's counters (VmStats::parseGuestCounters)
+    GuestTools::Screen screen = GuestTools::Screen::Unknown;   // Screen: what it shows now
 };
 Message parseMessage(const QByteArray &line);
 /* A command line for the agent: status, stats, install-from-medium, request-reboot, shutdown */
@@ -213,6 +225,14 @@ struct Inputs {
     QString rememberedTools;
 };
 State evaluate(const Inputs &in);
+/*
+ * The VM's own screen shows something to look at - the guest's login
+ * screen or its console - as its agent says.  An older agent does not say:
+ * the guest's system runs with the tools in and nothing installing, so its
+ * login screen comes, on its own screen in a nested-desktop boot.  False
+ * while no agent answered since the guest booted.
+ */
+bool screenShown(const Inputs &in);
 /* Why the stock driver runs, from the report */
 QString driverProblem(const Report &report);
 /* The installer's error from its output (the agent's result) or its record */
@@ -247,6 +267,9 @@ public:
     bool unsupported() const;
     /* The agent answered since the guest booted */
     bool hasAgent() const { return m_in.agentSeen; }
+    /* The VM's own screen shows the guest's login screen or console, as the
+       agent says (GuestTools::screenShown()) */
+    bool screenShown() const { return GuestTools::screenShown(m_in); }
     /* While installing: the installer's step */
     QString step() const { return m_step; }
     int stepCurrent() const { return m_current; }

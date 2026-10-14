@@ -207,28 +207,20 @@ VmConsole::VmConsole(Vm *vm, QWidget *parent)
         connect(vm->runner(), &VmRunner::stateChanged, this, &VmConsole::update);
         connect(vm->runner(), &VmRunner::suspendedChanged, this, &VmConsole::update);
         connect(vm->runner(), &VmRunner::waitsForDisplayChanged, this, &VmConsole::update);
-        /* a reboot shows the boot again, the guest's system up its own screen */
+        /* a reboot: the boot again, and the nested desktop served anew */
         connect(vm->runner(), &VmRunner::guestReset, this, [this]() {
             if (m_nested) {
-                m_views->reset();
+                renewNested();
             }
         });
         /*
-         * An agent of the guest's answered, qemu-ga or the guest tools': its
-         * system runs.  Not their ports opening, which the firmware does too
-         * (OVMF's virtio-serial driver opens the tools' port for a second).
+         * What the guest shows, as the guest tools' agent says.  Not an
+         * agent answering (qemu-ga's guest-get-osinfo, the agent's hello):
+         * both start early in the boot, before the tools' install at boot
+         * and long before the login screen.
          */
-        connect(vm->runner(), &VmRunner::guestOsInfo, this, [this]() {
-            if (m_nested) {
-                m_views->systemUp();
-            }
-        });
-        GuestToolsMonitor *tools = GuestToolsMonitor::of(vm);
-        connect(tools, &GuestToolsMonitor::changed, this, [this, tools]() {
-            if (m_nested && tools->hasAgent()) {
-                m_views->systemUp();
-            }
-        });
+        connect(GuestToolsMonitor::of(vm), &GuestToolsMonitor::changed, this,
+                &VmConsole::followGuest);
     }
     update();
 }
@@ -374,7 +366,36 @@ bool VmConsole::serveNested(const QString &socket, QString *error)
     });
     m_views->powerOn();
     applyView();
+    /* a QEMU found running: what its guest shows, if its agent said already */
+    followGuest();
     return true;
+}
+
+/*
+ * The guest restarted, its sessions with it: a new view serves the nested
+ * desktop's socket, and their connections go with the old one.  QEMU keeps
+ * one open across a reset it makes itself (the host's Reset): its window
+ * would still count as shown - the library keeps one such state for all its
+ * connections - so the next session's window would change nothing, and the
+ * console would never show it.
+ */
+void VmConsole::renewNested()
+{
+    const QString socket = m_nested->socket();
+    QString error;
+
+    dropNested();
+    if (!serveNested(socket, &error)) {
+        qWarning("vitrine: %s", qPrintable(error));
+    }
+}
+
+void VmConsole::followGuest()
+{
+    if (m_nested && m_vm) {
+        const GuestToolsMonitor *tools = GuestToolsMonitor::of(m_vm);
+        m_views->setGuest(tools->hasAgent(), tools->screenShown());
+    }
 }
 
 void VmConsole::dropNested()
@@ -479,13 +500,12 @@ void VmConsole::update()
     /*
      * The nested desktop of a QEMU found running: served again, for its
      * next session, as the last one ended with the vitrine that served it.
-     * Its login screen is on the guest's own screen.
+     * The guest may be anywhere, from its firmware to its login screen: the
+     * view follows what its agent says, once it answers.
      */
     if (const QString socket = runner->nestedSocket(); !socket.isEmpty() && !m_nested) {
         QString error;
-        if (serveNested(socket, &error)) {
-            m_views->systemUp();
-        } else {
+        if (!serveNested(socket, &error)) {
             qWarning("vitrine: %s", qPrintable(error));
         }
     }

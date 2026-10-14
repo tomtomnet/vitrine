@@ -839,9 +839,26 @@ private slots:
         QVERIFY(console->isFullScreen());
         action(w.get(), "Full Screen")->trigger();
         QVERIFY(!desktop->isFullScreen());
-        /* the session ended: the guest's login screen */
+        /* the session ended, and no agent of the guest's tells of a login
+           screen: the guest goes, its console on the boot's screen */
         desktop->guestMaps(false);
-        QCOMPARE(console->currentView(), ConsoleViews::View::Screen);
+        QCOMPARE(console->currentView(), ConsoleViews::View::Boot);
+        /* the host's Reset under the session: the boot, and the nested
+           desktop served anew, its connections with the old view; the next
+           session's window shows */
+        desktop->guestMaps(true);
+        QCOMPARE(console->currentView(), ConsoleViews::View::Desktop);
+        const QPointer<StandInDesktop> before = desktop;
+        emit m_store->find("alpha")->runner()->guestReset();
+        QCOMPARE(console->currentView(), ConsoleViews::View::Boot);
+        QTRY_COMPARE(consoleTab->text(), QString("Console 1"));
+        QTRY_VERIFY(!before);
+        desktop = qobject_cast<StandInDesktop *>(console->nestedView());
+        QVERIFY(desktop);
+        QCOMPARE(desktop->socket(), m_tmp.filePath("nested.sock"));
+        desktop->guestMaps(true);
+        QCOMPARE(console->currentView(), ConsoleViews::View::Desktop);
+        desktop->guestMaps(false);
 
         /* closing asks, and says the guest's session ends with it */
         desktop->guestMaps(true);

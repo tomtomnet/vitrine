@@ -8,7 +8,7 @@ Protocol: one JSON object per line, both ways.
   host -> guest  {"cmd": "status" | "stats" | "install-from-medium" | "request-reboot" |
                          "shutdown",
                   "id": N}
-  guest -> host  {"type": "hello", "protocol": 2, "agent": VERSION, "status": {...}}
+  guest -> host  {"type": "hello", "protocol": 3, "agent": VERSION, "status": {...}}
                  {"type": "status", "id": N, "status": {...}}
                  {"type": "stats", "id": N, "stats": {"time": S, "net": [...],
                                                       "memory": {...}}}
@@ -16,10 +16,14 @@ Protocol: one JSON object per line, both ways.
                  {"type": "result", "id": N, "cmd": CMD, "ok": BOOL, "error": TEXT,
                   "rebootNeeded": BOOL}
                  {"type": "error", "id": N, "error": TEXT}
+                 {"type": "screen", "screen": "login" | "console" | ""}
 The hello goes out each time the host side opens the port.  The commands are
 fixed actions: the host cannot make the guest run anything else.  stats (protocol
 2) is the guest's own counters, cheap to ask every second: vitrine's status bar
-shows them.  shutdown
+shows them.  screen (protocol 3; also in the status) is what the VM's own screen,
+the virtio-gpu card's, shows: a login screen, the text console, or neither; it
+goes out as it changes, and vitrine's console shows that screen or QEMU's VGA
+(the nested desktop's Screen and Boot views) by it.  shutdown
 powers the guest off at once, as root: Plasma answers the ACPI power button
 with its logout screen, which waits for someone to confirm.
 
@@ -46,7 +50,7 @@ import sys
 import time
 
 AGENT_VERSION = "@VERSION@"
-PROTOCOL = 2
+PROTOCOL = 3
 PORT = "/dev/virtio-ports/org.vitrine.agent.0"
 LABEL = "VITRINETOOL"
 STATE_DIR = "/var/lib/vitrine-guest-tools"
@@ -60,6 +64,9 @@ PACKAGES = ["vitrine-guest-tools", "mesa-dri-drivers", "mesa-vulkan-drivers", "m
             "gnome-shell", "kernel-core", "dkms", "kpipewire", "wl-cross-domain-proxy"]
 CAPSETS = {1: "virgl", 2: "virgl2", 3: "gfxstream-vulkan", 4: "venus", 5: "cross-domain",
            6: "drm"}
+# what the VM's own screen shows, looked at this often while the host listens
+SCREEN_POLL_MS = 1000
+KDGETMODE = 0x4B3B              # a console's mode: KD_TEXT 0, KD_GRAPHICS 1
 
 
 def log(text):
@@ -258,6 +265,125 @@ def nested():
             "running": running}
 
 
+class Seat:
+    """logind's seat0, through libsystemd's sd-login (no process per look):
+    the class of its active session - "greeter" while a login screen shows"""
+
+    def __init__(self):
+        self.lib = self.libc = None
+        try:
+            lib = ctypes.CDLL("libsystemd.so.0")
+            libc = ctypes.CDLL(None)
+        except OSError:
+            return
+        lib.sd_seat_get_active.argtypes = [ctypes.c_char_p, ctypes.POINTER(ctypes.c_void_p),
+                                           ctypes.c_void_p]
+        lib.sd_session_get_class.argtypes = [ctypes.c_char_p, ctypes.POINTER(ctypes.c_void_p)]
+        libc.free.argtypes = [ctypes.c_void_p]
+        self.lib, self.libc = lib, libc
+
+    def _take(self, pointer):
+        """The string sd-login allocated, freed"""
+        try:
+            return ctypes.string_at(pointer.value).decode(errors="replace")
+        finally:
+            self.libc.free(pointer)
+
+    def active_class(self):
+        if not self.lib:
+            return None
+        session = ctypes.c_void_p()
+        if self.lib.sd_seat_get_active(b"seat0", ctypes.byref(session), None) < 0 or \
+                not session.value:
+            return None
+        sid = self._take(session)
+        cls = ctypes.c_void_p()
+        if self.lib.sd_session_get_class(sid.encode(), ctypes.byref(cls)) < 0 or not cls.value:
+            return None
+        return self._take(cls)
+
+
+SEAT = None
+SCREEN_ERROR = None
+
+
+def device_driver(device):
+    """The driver of a DRM card's device: the virtio device's (virtio_gpu), or
+    that of the PCI device (bochs-drm), whose virtio child it may be"""
+    for d in [os.path.join(device, "driver")] + glob.glob(f"{device}/virtio*/driver"):
+        name = os.path.basename(os.path.realpath(d))
+        if os.path.exists(d) and name != "virtio-pci":
+            return name
+    return None
+
+
+def console_card():
+    """The driver of the card the text console shows on now; None while a
+    display server or a boot splash has the screen (the console in graphics
+    mode), or while the console is no framebuffer's.
+
+    Fedora's kernel makes no framebuffer devices (CONFIG_FB_DEVICE off: no
+    /dev/fb*, /sys/class/graphics/fb* or /proc/fb), so the card is fbcon's
+    own choice (CONFIG_FRAMEBUFFER_CONSOLE_DETECT_PRIMARY): the boot VGA's
+    as soon as its driver gives it a framebuffer - QEMU's VGA with
+    bochs-drm beside a virtio card, which keeps the boot's first lines -
+    else the one card there is (virtio-vga, or bochs-drm left out)."""
+    vt = read("/sys/class/tty/tty0/active") or ""
+    if not vt.startswith("tty"):
+        return None
+    try:
+        fd = os.open("/dev/tty0", os.O_RDONLY | os.O_NOCTTY | os.O_NONBLOCK | os.O_CLOEXEC)
+    except OSError:
+        return None
+    try:
+        mode = struct.unpack("i", fcntl.ioctl(fd, KDGETMODE, b"\0" * 4))[0]
+    except OSError:
+        return None
+    finally:
+        os.close(fd)
+    if mode != 0:
+        return None
+    # the framebuffer console bound (Fedora's takes over at the first text)
+    if not any(read(f"{v}/bind") == "1" and "frame buffer" in (read(f"{v}/name") or "")
+               for v in glob.glob("/sys/class/vtconsole/vtcon*")):
+        return None
+    cards = []
+    for card in glob.glob("/sys/class/drm/card[0-9]*"):
+        if "-" in os.path.basename(card):
+            continue
+        device = os.path.realpath(f"{card}/device")
+        driver = device_driver(device)
+        # the firmware's framebuffer, gone once a card's own driver came
+        if not driver or driver == "simple-framebuffer":
+            continue
+        # boot_vga: on the PCI device, the virtio device's parent
+        if "1" in (read(f"{device}/boot_vga"), read(f"{os.path.dirname(device)}/boot_vga")):
+            return driver
+        cards.append(driver)
+    return cards[0] if len(cards) == 1 else None
+
+
+def screen():
+    """What the VM's own screen, the virtio-gpu card's, shows: "login" while a
+    login screen runs (in a nested-desktop boot, there only: nested-boot gives
+    its KWin that card), "console" while the text console shows there, ""
+    otherwise (nothing new there: the console on QEMU's VGA, a boot splash)"""
+    global SEAT, SCREEN_ERROR
+    try:
+        if SEAT is None:
+            SEAT = Seat()
+        if SEAT.active_class() == "greeter":
+            return "login"
+        if console_card() == "virtio_gpu":
+            return "console"
+    except Exception as e:  # never the agent's end: the host would take it for a shutdown
+        # looked at every second: said once
+        if str(e) != SCREEN_ERROR:
+            SCREEN_ERROR = str(e)
+            log(f"screen: {e}")
+    return ""
+
+
 def preempt():
     """The kernel's preemption model: the one in parentheses"""
     text = read("/sys/kernel/debug/sched/preempt")
@@ -301,6 +427,7 @@ def status(installing=False):
         "lastInstall": load("last-install.json"),
         "bootstrap": bootstrap(),
         "nested": nested(),
+        "screen": screen(),
         # this agent's install, or one run by hand or by the bootstrap
         "installing": installing or os.path.exists(f"{RUN_DIR}/installer-active"),
     }
@@ -502,9 +629,29 @@ def agent_file_changed(started_with):
         return False
 
 
+class ScreenWatch:
+    """What the host was told the VM's own screen shows: told again as it changes"""
+
+    def __init__(self):
+        self.told = None
+
+    def status(self, st):
+        """@st, a status the host gets"""
+        self.told = st.get("screen")
+        return st
+
+    def check(self, port):
+        if port.connected:
+            now = screen()
+            if now != self.told:
+                self.told = now
+                port.send({"type": "screen", "screen": now})
+
+
 def serve():
     port = Port()
     install = None
+    shown = ScreenWatch()
     started_with = os.stat(__file__).st_mtime
     log(f"vitrine agent {AGENT_VERSION}, on {PORT}")
     while True:
@@ -513,15 +660,17 @@ def serve():
             continue
         if port.probe():
             port.send({"type": "hello", "protocol": PROTOCOL, "agent": AGENT_VERSION,
-                       "status": status(install is not None)})
+                       "status": shown.status(status(install is not None))})
         p = select.poll()
         if port.connected:
             p.register(port.fd, select.POLLIN | (select.POLLOUT if port.outbuf else 0))
         if install:
             p.register(install.fileno(), select.POLLIN)
         # while the host's end is closed, the port reads as hung up at once:
-        # look again in a while instead
-        events = p.poll(None if port.connected else 500)
+        # look again in a while instead; while it is open, what the screen
+        # shows is looked at as often
+        events = p.poll(SCREEN_POLL_MS if port.connected else 500)
+        shown.check(port)
         for fd, ev in events:
             if install and fd == install.fileno():
                 if not install.read():
@@ -539,14 +688,15 @@ def serve():
                 port.flush()
             if ev & select.POLLIN:
                 for message in port.read_messages():
-                    install = command(message, port, install)
+                    install = command(message, port, install, shown)
 
 
-def command(message, port, install):
+def command(message, port, install, shown):
     cmd = message.get("cmd")
     rid = message.get("id")
     if cmd == "status":
-        port.send({"type": "status", "id": rid, "status": status(install is not None)})
+        port.send({"type": "status", "id": rid,
+                   "status": shown.status(status(install is not None))})
     elif cmd == "stats":
         port.send({"type": "stats", "id": rid, "stats": stats()})
     elif cmd == "install-from-medium":
@@ -578,12 +728,14 @@ def install_once(medium, reboot):
     port.open()
     port.probe()
     install = Install(medium, None, port)
+    shown = ScreenWatch()
     hello = False
     while True:
         if port.probe() or (port.connected and not hello):
             hello = True
             port.send({"type": "hello", "protocol": PROTOCOL, "agent": AGENT_VERSION,
-                       "status": status(True)})
+                       "status": shown.status(status(True))})
+        shown.check(port)
         p = select.poll()
         p.register(install.fileno(), select.POLLIN)
         if port.connected:
@@ -610,7 +762,7 @@ def install_once(medium, reboot):
                 for message in port.read_messages():
                     if message.get("cmd") == "status":
                         port.send({"type": "status", "id": message.get("id"),
-                                   "status": status(True)})
+                                   "status": shown.status(status(True))})
                     elif message.get("cmd") == "stats":
                         port.send({"type": "stats", "id": message.get("id"),
                                    "stats": stats()})
