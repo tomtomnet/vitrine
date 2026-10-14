@@ -9,9 +9,10 @@
 #
 #   guest/build-medium.sh [--print-deps]
 #
-# In:  $RPMS_DIR [~/.local/share/vitrine/guest-tools/rpms/fcRELEASE]/
-#      {tools,mesa,kwin}/*.rpm (tools needed; without mesa or kwin the medium
-#      installs the guest's own)
+# In:  $RPMS_DIR [~/.local/share/vitrine/guest-tools/rpms/fcRELEASE]/PACKAGE/
+#      *.rpm, for the packages of the medium's deps in components.conf (tools
+#      needed; without Mesa, KWin or KPipeWire the medium keeps the guest's
+#      own, without the proxy there is no nested desktop)
 # Out: $OUT [~/.local/share/vitrine/guest-tools/vitrine-guest-tools-fcRELEASE.img]
 #      and its manifest beside it (.json: versions, packages, and the inputs
 #      of the packages and of this script, which tell vitrine whether the
@@ -58,11 +59,17 @@ fi
 [ "$action" = print-deps ] && exit 0
 ls "$rpms"/tools/vitrine-guest-tools-*.noarch.rpm > /dev/null 2>&1 ||
 	die "no vitrine-guest-tools package in $rpms/tools: run guest/build-rpms.sh tools first"
+# the packages on the medium: its deps in components.conf (those of an older
+# guest/ without the file)
+medium_packages=()
+read -r -a medium_packages < <(awk '/^[[:space:]]*\[/ { s = $0 }
+	s ~ /^[[:space:]]*\[medium\]/ && /^deps=/ { sub(/^deps=/, ""); print; exit }' "$here/components.conf" 2> /dev/null) || true
+[ ${#medium_packages[@]} -gt 0 ] || medium_packages=(tools mesa kwin)
 # not while build-rpms.sh replaces the packages
 exec 9> "$rpms/.lock"
 flock -n 9 || die "a build of the guest tools is running into $rpms"
-for t in mesa kwin; do
-	ls "$rpms/$t"/*.rpm > /dev/null 2>&1 ||
+for t in "${medium_packages[@]}"; do
+	[ "$t" = tools ] || ls "$rpms/$t"/*.rpm > /dev/null 2>&1 ||
 		say "warning: no $t packages in $rpms/$t (guest/build-rpms.sh $t): the medium keeps the guest's own"
 done
 
@@ -76,7 +83,9 @@ trap 'exit 143' TERM
 trap 'exit 129' HUP
 mkdir -p "$stage/repo"
 # what a guest may install: no debug info, no documentation
-find "$rpms"/tools "$rpms"/mesa "$rpms"/kwin -maxdepth 1 -name '*.rpm' 2> /dev/null |
+for t in "${medium_packages[@]}"; do
+	find "$rpms/$t" -maxdepth 1 -name '*.rpm' 2> /dev/null
+done |
 	grep -Ev -- '-(debuginfo|debugsource|doc)-' | while read -r f; do cp "$f" "$stage/repo/"; done
 
 say "phase: making the repository"
@@ -96,6 +105,8 @@ tools_evr=$(evr_of vitrine-guest-tools)
 tools_version=${tools_evr%-*}
 kwin_evr=$(evr_of kwin)
 mesa_evr=$(evr_of mesa-dri-drivers)
+kpipewire_evr=$(evr_of kpipewire)
+proxy_evr=$(evr_of wl-cross-domain-proxy)
 
 say "phase: adding the installer"
 for f in install bootstrap; do
@@ -124,7 +135,11 @@ What they install:
   driver) and the vitrine agent
 - Mesa ${mesa_evr:-(none on this medium)} with native context, in place of the Mesa installed
 - KWin ${kwin_evr:-(none on this medium)}, only on Plasma ${kwin_evr%%-*} guests
-Mesa and KWin are kept at those versions (dnf versionlock, 64-bit only).
+- KPipeWire ${kpipewire_evr:-(none on this medium)}, only on Plasma ${kpipewire_evr%%-*} guests
+- the nested desktop: its session, offered in the boots of a VM with the
+  Nested desktop box, and its proxy, wl-cross-domain-proxy ${proxy_evr:-(none on this medium)}
+Mesa, KWin, KPipeWire and the proxy are kept at those versions (dnf
+versionlock, 64-bit only).
 Secure Boot must be off: the driver is not signed.
 EOF
 
@@ -138,12 +153,13 @@ FEDORA_RELEASE=$release
 MEDIUM_ID=$medium_id
 KWIN_VERSION=${kwin_evr%%-*}
 MESA_VERSION=${mesa_evr%%-*}
+KPIPEWIRE_VERSION=${kpipewire_evr%%-*}
 EOF
 packages_json=$(awk '{ printf "%s{\"name\": \"%s\", \"evr\": \"%s\", \"arch\": \"%s\"}", (NR > 1 ? ", " : ""), $1, $2, $3 }' "$stage/packages.txt")
 # what it is made from: the inputs build-rpms.sh recorded for each package
 # on it, and this script's; other inputs in guest/ make it out of date
 inputs_json=
-for t in tools mesa kwin; do
+for t in "${medium_packages[@]}"; do
 	if ls "$rpms/$t"/*.rpm > /dev/null 2>&1 && [ -s "$rpms/$t/.inputs" ]; then
 		inputs_json+="\"$t\": \"$(head -c 64 "$rpms/$t/.inputs")\", "
 	fi
@@ -158,6 +174,8 @@ cat > "$stage/manifest.json" <<EOF
   "toolsVersion": "$tools_version",
   "mesa": "$mesa_evr",
   "kwin": "$kwin_evr",
+  "kpipewire": "$kpipewire_evr",
+  "proxy": "$proxy_evr",
   "built": "$(date -u +%Y-%m-%dT%H:%M:%SZ)",
   "inputs": {$inputs_json},
   "packages": [$packages_json]
@@ -178,5 +196,5 @@ mv -f "$img" "$out"
 mv -f "$manifest" "${out%.img}.json"
 echo
 echo "$out: $((kib / 1024)) MiB, tools $tools_evr, medium $medium_id"
-echo "  Mesa: ${mesa_evr:-none}   KWin: ${kwin_evr:-none}"
+echo "  Mesa: ${mesa_evr:-none}   KWin: ${kwin_evr:-none}   KPipeWire: ${kpipewire_evr:-none}   proxy: ${proxy_evr:-none}"
 say "built: $out"

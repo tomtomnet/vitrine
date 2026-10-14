@@ -1,0 +1,61 @@
+plasmashell's thumbnails of windows (the task manager's tooltips) import each
+PipeWire frame's dma-buf on the render thread, after the frame's buffer went
+back to the producer.  A window that keeps resizing makes the stream
+renegotiate all the time: PipeWire then removed the buffer and closed its
+fds before the import ("dmabuf import failed: Bad file descriptor",
+EGL_BAD_ALLOC), or the fds were reused by other files, and plasmashell's
+heap was corrupted right after (the research's nested desktop, 2026-10-08).
+The item now imports its own copies of the frame's fds, at the frame's own
+size rather than the size negotiated last.
+
+From the research (virtio-gpu-desktop patches/kpipewire, set k2), for
+KPipeWire 6.7.91; applies to 6.7.5 unchanged.
+
+--- a/src/pipewiresourceitem.cpp	2026-09-24 13:29:59.000000000 +0200
++++ b/src/pipewiresourceitem.cpp	2026-10-08 22:04:01.578035162 +0200
+@@ -23,6 +23,7 @@
+ #include <qpa/qplatformnativeinterface.h>
+ 
+ #include <EGL/eglext.h>
++#include <cstring>
+ #include <fcntl.h>
+ #include <libdrm/drm_fourcc.h>
+ #include <unistd.h>
+@@ -342,9 +343,35 @@
+         return;
+     }
+ 
+-    d->m_createNextTexture = [this, format, attribs]() -> QSGTexture * {
++    // The frame's fds belong to its PipeWire buffer, which goes back to the producer right after
++    // this. When the stream renegotiates before the render thread runs the lambda below (a window
++    // that keeps resizing makes it renegotiate all the time), PipeWire removes the buffer and
++    // closes its fds: the lambda then imported closed fds ("dmabuf import failed: Bad file
++    // descriptor", EGL_BAD_ALLOC) or fds already reused by other files. Keep our own copies for as
++    // long as the lambda lives.
++    auto ownFds = std::shared_ptr<QList<int>>(new QList<int>, [](QList<int> *fds) {
++        for (int fd : std::as_const(*fds)) {
++            close(fd);
++        }
++        delete fds;
++    });
++    DmaBufAttributes ownAttribs = attribs;
++    for (DmaBufPlane &plane : ownAttribs.planes) {
++        plane.fd = fcntl(plane.fd, F_DUPFD_CLOEXEC, 0);
++        if (plane.fd < 0) {
++            qCWarning(PIPEWIRE_LOGGING) << "could not duplicate a dmabuf fd" << strerror(errno);
++            return;
++        }
++        ownFds->append(plane.fd);
++    }
++
++    d->m_createNextTexture = [this, format, attribs = std::move(ownAttribs), ownFds]() -> QSGTexture * {
+         const EGLDisplay display = static_cast<EGLDisplay>(QGuiApplication::platformNativeInterface()->nativeResourceForIntegration("egldisplay"));
+-        const auto size = d->m_stream->size();
++        // The frame's own size: the stream's (d->m_stream->size()) is the size of the format
++        // negotiated last, and a window that keeps resizing renegotiates between a frame and this
++        // render - the buffer then looked smaller than the image asked of it, the import failed
++        // (EGL_BAD_ALLOC) and plasmashell's heap was corrupted right after.
++        const QSize size = attribs.width > 0 && attribs.height > 0 ? QSize(attribs.width, attribs.height) : d->m_stream->size();
+ 
+         EGLImageKHR image = GLHelpers::createImage(display, attribs, PipeWireSourceStream::spaVideoFormatToDrmFormat(format), size, nullptr);
+         if (image == EGL_NO_IMAGE_KHR) {

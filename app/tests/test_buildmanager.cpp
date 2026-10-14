@@ -174,6 +174,7 @@ class TestBuildManager : public QObject
                   "Name: vitrine-guest-tools\nVersion: 0.1.0\n") &&
             write(places.guestDir + "/mesa/mesa.spec", "Name: mesa\nVersion: 26.2.3\n") &&
             write(places.guestDir + "/kwin/kwin.spec", "Name: kwin\nVersion: 6.7.5\n") &&
+            write(places.guestDir + "/kpipewire/kpipewire.spec", "Name: kpipewire\nVersion: 6.7.5\n") &&
             QFile::copy(GuestToolsBuilder::guestDir() + "/components.conf",
                         places.guestDir + "/components.conf");
         if (!ok) {
@@ -246,15 +247,16 @@ private slots:
         BuildManager m;
         const Builds::Places places = setUp(m, "plan");
         QVERIFY(!places.hostDir.isEmpty());
-        const QStringList all = {"virglrenderer", "rutabaga_gfx", "qemu", "tools",
-                                 "mesa",          "kwin",         "medium"};
+        const QStringList all = {"virglrenderer", "rutabaga_gfx", "qemu",     "tools",
+                                 "mesa",          "kwin",         "kpipewire", "medium"};
 
-        QCOMPARE(m.components().size(), 7);
+        QCOMPARE(m.components().size(), 8);
         QCOMPARE(m.plan({"qemu"}), QStringList({"virglrenderer", "rutabaga_gfx", "qemu"}));
         QCOMPARE(m.plan({"virglrenderer"}), QStringList({"virglrenderer"}));
         QCOMPARE(m.plan({"rutabaga_gfx"}), QStringList({"virglrenderer", "rutabaga_gfx"}));
         QCOMPARE(m.plan({"mesa"}), QStringList({"mesa", "medium"}));
-        QCOMPARE(m.plan({"medium"}), QStringList({"tools", "mesa", "kwin", "medium"}));
+        QCOMPARE(m.plan({"medium"}),
+                 QStringList({"tools", "mesa", "kwin", "kpipewire", "medium"}));
         QCOMPARE(m.plan({"kwin", "virglrenderer"}),
                  QStringList({"virglrenderer", "kwin", "medium"}));
         QCOMPARE(m.outdated(), all);
@@ -311,10 +313,10 @@ private slots:
             QCOMPARE(m.durations(id).size(), 1);
         }
         QCOMPARE(m.queue(), QStringList({"virglrenderer", "rutabaga_gfx", "qemu", "tools", "mesa",
-                                         "kwin", "medium"}));
+                                         "kwin", "kpipewire", "medium"}));
         /* the components one after the other, each script once */
         QCOMPARE(read(places.hostDir + "/calls"), "qemu\n");
-        QCOMPARE(read(places.guestDir + "/rpms-calls"), "tools\nmesa\nkwin\n");
+        QCOMPARE(read(places.guestDir + "/rpms-calls"), "tools\nmesa\nkwin\nkpipewire\n");
         QCOMPARE(read(places.guestDir + "/medium-calls"), "medium\n");
 
         /* each its log, kept */
@@ -343,9 +345,9 @@ private slots:
         QVERIFY(task);
         QCOMPARE(task->kind(), Task::Kind::Build);
         QCOMPARE(task->state(), Task::State::Done);
-        QCOMPARE(task->title(), "7 components built");
+        QCOMPARE(task->title(), "8 components built");
         QCOMPARE(task->text(), "Built: virglrenderer, rutabaga_gfx, QEMU, vitrine-guest-tools, "
-                               "Mesa, KWin, Guest tools medium");
+                               "Mesa, KWin, KPipeWire, Guest tools medium");
         QCOMPARE(task->remaining(), -1);
         QCOMPARE(m.focus(), "medium");
 
@@ -371,6 +373,7 @@ private slots:
         QCOMPARE(m.progress("mesa").state, State::Failed);
         QCOMPARE(m.progress("mesa").error, "Building mesa failed (status 1)");
         QCOMPARE(m.progress("kwin").state, State::Skipped);
+        QCOMPARE(m.progress("kpipewire").state, State::Skipped);
         QCOMPARE(m.progress("medium").state, State::Skipped);
         QVERIFY(m.durations("mesa").isEmpty());
         QCOMPARE(m.focus(), "mesa");
