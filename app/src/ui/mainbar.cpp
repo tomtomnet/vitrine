@@ -188,6 +188,12 @@ QMenuBar *MainBar::addMenuBar()
     menuBar->setNativeMenuBar(false);
     /* as wide as its menus, all of them: never one in its own overflow menu */
     menuBar->setSizePolicy(QSizePolicy::Fixed, QSizePolicy::Fixed);
+    /* on the bar's background: some styles (Fusion) fill a menu bar with the
+       window's colour and draw a line under it, which the bar does not have.
+       The menus, windows of their own, keep the application's palette. */
+    QPalette palette = menuBar->palette();
+    palette.setBrush(QPalette::Window, Qt::transparent);
+    menuBar->setPalette(palette);
     addWidget(menuBar);
     return menuBar;
 }
