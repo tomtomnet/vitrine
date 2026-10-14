@@ -84,7 +84,8 @@ trap 'exit 129' HUP
 mkdir -p "$stage/repo"
 # what a guest may install: no debug info, no documentation
 for t in "${medium_packages[@]}"; do
-	find "$rpms/$t" -maxdepth 1 -name '*.rpm' 2> /dev/null
+	# (set -e: a package not built would end the loop)
+	find "$rpms/$t" -maxdepth 1 -name '*.rpm' 2> /dev/null || true
 done |
 	grep -Ev -- '-(debuginfo|debugsource|doc)-' | while read -r f; do cp "$f" "$stage/repo/"; done
 
