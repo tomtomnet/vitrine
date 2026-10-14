@@ -119,7 +119,18 @@ class TestConsoleViews : public QObject
 {
     Q_OBJECT
 
+    QTemporaryDir m_home;
+
 private slots:
+    /* the settings the guest tools' monitor keeps of a VM, and the rest, in here */
+    void initTestCase()
+    {
+        QVERIFY(m_home.isValid());
+        qputenv("XDG_DATA_HOME", m_home.filePath("data").toUtf8());
+        qputenv("XDG_CONFIG_HOME", m_home.filePath("config").toUtf8());
+        qputenv("XDG_CACHE_HOME", m_home.filePath("cache").toUtf8());
+    }
+
     /* From power-on: the boot, the guest's login screen, its desktop, and back */
     void automatic()
     {
