@@ -19,6 +19,7 @@
 #include <algorithm>
 #include <iterator>
 
+#include "core/guesttools.h"
 #include "core/paths.h"
 #include "core/vmconfig.h"
 #include "core/vmrunner.h"
@@ -462,6 +463,14 @@ void StatusStats::relayout()
     }
 }
 
+/* The guest tools are for this VM's guest: its system is one they are for,
+   or not known yet (GuestTools::supports()) */
+static bool toolsAreFor(const Vm *vm)
+{
+    const GuestTools::System system = GuestTools::system(vm->id());
+    return !system.isKnown() || GuestTools::supports(system, GuestTools::medium());
+}
+
 /* The notes of what the selected VM cannot show */
 void StatusStats::updateMenu()
 {
@@ -472,7 +481,8 @@ void StatusStats::updateMenu()
     if (runs) {
         switch (m_sampler->guestSource()) {
         case VmStats::GuestSource::NoAgent:
-            notes[Network] = tr("needs the guest tools");
+            notes[Network] = toolsAreFor(m_vm) ? tr("needs the guest tools")
+                                               : tr("not reported by this guest");
             break;
         case VmStats::GuestSource::OldAgent:
             notes[Network] = tr("needs newer guest tools");
@@ -542,7 +552,7 @@ static QString cpuDetails(const VmStats::Snapshot &s)
 }
 
 static QString memoryDetails(const VmStats::Snapshot &s, qint64 ramMiB,
-                             VmStats::GuestSource guest)
+                             VmStats::GuestSource guest, bool toolsFor)
 {
     using VmStats::formatBytes;
     const VmStats::Memory &m = s.qemuMemory;
@@ -576,7 +586,7 @@ static QString memoryDetails(const VmStats::Snapshot &s, qint64 ramMiB,
                          StatusStats::tr("of %1, its caches left out")
                              .arg(formatBytes(s.guestTotal))) +
                 "</table>";
-    } else if (guest == VmStats::GuestSource::NoAgent) {
+    } else if (guest == VmStats::GuestSource::NoAgent && toolsFor) {
         html += StatusStats::tr("<i>What the guest itself uses needs the guest tools.</i>");
     } else if (guest == VmStats::GuestSource::OldAgent) {
         html += StatusStats::tr("<i>What the guest itself uses needs newer guest tools.</i>");
@@ -730,7 +740,7 @@ QString StatusStats::tooltip(Stat stat) const
         break;
     case Memory:
         body = memoryDetails(s, m_vm ? VmConfig::memoryMiB(m_vm->runner()->runArgs()) : 0,
-                             m_sampler->guestSource());
+                             m_sampler->guestSource(), m_vm && toolsAreFor(m_vm));
         break;
     case Disk:
         body = diskDetails(s);
