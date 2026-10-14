@@ -208,3 +208,10 @@ else
 	patch -p5 --forward -F0 --no-backup-if-mismatch < patches/linux-drm-virtio-tiled-scanout.patch
 	say "tiled-scanout patch applied"
 fi
+
+if grep -q 'hide_virgl' virtgpu_ioctl.c; then
+	say "the hide-virgl patch is already in these sources, nothing to apply"
+else
+	patch -p5 --forward -F0 --no-backup-if-mismatch < patches/linux-drm-virtio-hide-virgl.patch
+	say "hide-virgl patch applied"
+fi

@@ -1,0 +1,119 @@
+Subject: FIX-J wayland backend: start at the host output's refresh
+ rate, not 60 Hz
+
+The nested output announced 60 Hz until its first frame was presented by the host. Clients
+started in that window keep it: Qt Quick reads the refresh rate when it creates its animation
+driver and never again, so plasmashell (started with the session) ran its animations on a
+60 Hz timer (Kickoff's search transition at 15 images instead of 50, 240 Hz host) or 4x fast
+on the vsync path until restarted. The backend now binds the host's wl_output globals and
+starts at the highest current refresh rate among them; the first presented frame still
+corrects it.
+
+From the research (virtio-gpu-desktop patches/kwin, 0034 FIX-J), ported to
+6.7.5.
+
+diff --git a/src/backends/wayland/wayland_display.cpp b/src/backends/wayland/wayland_display.cpp
+index e008665..579d215 100644
+--- a/src/backends/wayland/wayland_display.cpp
++++ b/src/backends/wayland/wayland_display.cpp
+@@ -204,6 +204,10 @@ WaylandDisplay::~WaylandDisplay()
+     if (m_keyboardShortcutsInhibitManager) {
+         zwp_keyboard_shortcuts_inhibit_manager_v1_destroy(m_keyboardShortcutsInhibitManager);
+     }
++    for (wl_output *output : m_hostOutputs) {
++        wl_output_destroy(output);
++    }
++    m_hostOutputs.clear();
+     if (m_registry) {
+         wl_registry_destroy(m_registry);
+     }
+@@ -375,11 +379,39 @@ zwp_keyboard_shortcuts_inhibit_manager_v1 *WaylandDisplay::keyboardShortcutsInhi
+     return m_keyboardShortcutsInhibitManager;
+ }
+ 
++// The host's outputs, for their refresh rate only: the nested output starts at the host's rate
++// instead of 60 Hz. Clients that start before the first presented frame (which tells the real rate)
++// otherwise see 60 Hz: Qt Quick keeps the refresh rate of its first window for the life of the
++// process, and plasmashell (started with the session) then ran animations at 60 Hz, or 4x fast,
++// on a 240 Hz host (2026-10-08).
++static const wl_output_listener s_hostOutputListener{
++    .geometry = [](void *, wl_output *, int32_t, int32_t, int32_t, int32_t, int32_t, const char *, const char *, int32_t) {},
++    .mode = [](void *data, wl_output *, uint32_t flags, int32_t, int32_t, int32_t refresh) {
++        if ((flags & WL_OUTPUT_MODE_CURRENT) && refresh > 0) {
++            auto rate = static_cast<uint32_t *>(data);
++            *rate = std::max(*rate, uint32_t(refresh));
++        }
++    },
++    .done = [](void *, wl_output *) {},
++    .scale = [](void *, wl_output *, int32_t) {},
++    .name = [](void *, wl_output *, const char *) {},
++    .description = [](void *, wl_output *, const char *) {},
++};
++
++uint32_t WaylandDisplay::hostRefreshRate() const
++{
++    return m_hostRefreshRate;
++}
++
+ void WaylandDisplay::registry_global(void *data, wl_registry *registry, uint32_t name, const char *interface, uint32_t version)
+ {
+     WaylandDisplay *display = static_cast<WaylandDisplay *>(data);
+ 
+-    if (strcmp(interface, wl_compositor_interface.name) == 0) {
++    if (strcmp(interface, wl_output_interface.name) == 0) {
++        auto output = static_cast<wl_output *>(wl_registry_bind(registry, name, &wl_output_interface, std::min(version, 2u)));
++        wl_output_add_listener(output, &s_hostOutputListener, &display->m_hostRefreshRate);
++        display->m_hostOutputs.push_back(output);
++    } else if (strcmp(interface, wl_compositor_interface.name) == 0) {
+         if (version < 4) {
+             qFatal("wl_compositor version 4 or later is required");
+         }
+diff --git a/src/backends/wayland/wayland_display.h b/src/backends/wayland/wayland_display.h
+index 2c5225e..4f95eb7 100644
+--- a/src/backends/wayland/wayland_display.h
++++ b/src/backends/wayland/wayland_display.h
+@@ -10,8 +10,10 @@
+ #include <QObject>
+ 
+ #include <memory>
++#include <vector>
+ 
+ struct wl_display;
++struct wl_output;
+ struct wl_registry;
+ struct wl_shm;
+ struct zwp_linux_dmabuf_v1;
+@@ -78,6 +80,8 @@ public:
+     KWayland::Client::XdgShell *xdgShell() const;
+     WaylandClient::LinuxDmabufV1 *linuxDmabuf() const;
+     wp_presentation *presentationTime() const;
++    /// the highest current refresh rate of the host's outputs (mHz), 0 if none was announced
++    uint32_t hostRefreshRate() const;
+     wp_tearing_control_manager_v1 *tearingControl() const;
+     ColorManager *colorManager() const;
+     wp_fractional_scale_manager_v1 *fractionalScale() const;
+@@ -97,6 +101,8 @@ private:
+     wl_registry *m_registry = nullptr;
+     wl_shm *m_shm = nullptr;
+     wp_presentation *m_presentationTime = nullptr;
++    std::vector<wl_output *> m_hostOutputs;
++    uint32_t m_hostRefreshRate = 0;
+     wp_tearing_control_manager_v1 *m_tearingControl = nullptr;
+     wp_fractional_scale_manager_v1 *m_fractionalScaleV1 = nullptr;
+     std::unique_ptr<WaylandClient::Viewporter> m_viewporter;
+diff --git a/src/backends/wayland/wayland_output.cpp b/src/backends/wayland/wayland_output.cpp
+index 1459993..0b62e3d 100644
+--- a/src/backends/wayland/wayland_output.cpp
++++ b/src/backends/wayland/wayland_output.cpp
+@@ -127,6 +127,11 @@ WaylandOutput::WaylandOutput(const QString &name, WaylandBackend *backend)
+     , m_cursor(std::make_unique<WaylandCursor>(backend))
+ {
+     m_renderLoop->setMaxPendingFrameCount(2);
++    // the host's refresh rate until the first presented frame tells the real one (see
++    // WaylandDisplay::hostRefreshRate)
++    if (const uint32_t rate = backend->display()->hostRefreshRate()) {
++        m_refreshRate = rate;
++    }
+     if (KWayland::Client::XdgDecorationManager *manager = m_backend->display()->xdgDecorationManager()) {
+         m_xdgDecoration.reset(manager->getToplevelDecoration(m_xdgShellSurface.get()));
+         m_xdgDecoration->setMode(KWayland::Client::XdgDecoration::Mode::ServerSide);

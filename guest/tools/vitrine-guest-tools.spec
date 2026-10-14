@@ -2,7 +2,7 @@
 # exact version, and dnf takes an installed one of the same version as done.
 Name:           vitrine-guest-tools
 Version:        0.1.0
-Release:        15%{?dist}
+Release:        19%{?dist}
 Summary:        vitrine guest tools: patched virtio-gpu driver, settings and agent
 
 # the driver's sources (dkms/vendor, dkms/patches) are the kernel's: MIT
@@ -21,6 +21,8 @@ Requires:       kmod
 # the agent
 Requires:       python3
 Requires:       util-linux
+# the nested desktop's session: the host's screens through its proxy
+Requires:       wayland-utils
 # the clipboard shared with the host: spice-vdagent talks to QEMU's
 # qemu-vdagent, and the bridge (clipboard/) passes Wayland copies on to it
 Requires:       spice-vdagent
@@ -38,9 +40,11 @@ What a Fedora guest needs to run well in vitrine: the virtio-gpu driver with
 vitrine's patches (host vblank, zero-copy display) as a DKMS module, its
 module options, the KWin settings for vitrine's KWin, a fix-up that makes the
 GPU's shared memory cacheable, full kernel preemption, a boot-time check of
-the driver, and the vitrine agent, which tells vitrine the state of the
-guest tools and installs their updates.  vitrine's Mesa and KWin come from
-the same tools medium.
+the driver, the nested desktop's session (a boot with the VM's Nested
+desktop box logs Plasma into a window of the host's desktop), and the
+vitrine agent, which tells vitrine the state of the guest tools and installs
+their updates.  vitrine's Mesa, KWin, KPipeWire and the nested desktop's
+proxy come from the same tools medium.
 
 %prep
 %autosetup
@@ -61,6 +65,24 @@ for f in systemd/*.service; do
 	sed 's/@VERSION@/%{version}/' "$f" > tmp && install -Dm 0644 tmp %{buildroot}%{_unitdir}/$(basename "$f")
 done
 install -Dm 0644 systemd/80-vitrine-guest-tools.preset %{buildroot}%{_presetdir}/80-vitrine-guest-tools.preset
+# the nested desktop (nested/: the research's session, nested/README.md): the
+# session, its settings, its entry for the login screen (found only in a
+# nested-desktop boot, vitrine-nested-boot.service), plasmalogin's and SDDM's
+# side of it, and no spice-vdagent clipboard beside the proxy's
+install -d %{buildroot}%{libexec}/nested/bin
+install -m 0755 nested/session %{buildroot}%{libexec}/nested/
+install -m 0755 nested/kwin_wayland_wrapper %{buildroot}%{libexec}/nested/bin/
+install -m 0644 nested/stats-overlay.qml %{buildroot}%{libexec}/nested/
+install -Dm 0644 nested/plasma.desktop %{buildroot}%{_datadir}/%{name}/wayland-sessions/plasma.desktop
+install -Dm 0644 nested/nested.conf %{buildroot}%{_sysconfdir}/%{name}/nested.conf
+install -Dm 0644 nested/README.md %{buildroot}%{_docdir}/%{name}/nested.md
+install -Dm 0644 systemd/plasmalogin.service.d/vitrine-nested.conf %{buildroot}%{_unitdir}/plasmalogin.service.d/vitrine-nested.conf
+for u in spice-vdagent.service 'app-vitrine\x2dclipboard\x2dbridge@autostart.service'; do
+	install -Dm 0644 systemd/user/vitrine-nested-no-vdagent.conf "%{buildroot}%{_userunitdir}/$u.d/vitrine-nested.conf"
+done
+install -Dm 0644 systemd/user/vitrine-nested-greeter.conf %{buildroot}%{_userunitdir}/plasma-login-kwin_wayland.service.d/vitrine-nested.conf
+install -d %{buildroot}%{_prefix}/lib/sddm/sddm.conf.d
+ln -s /run/vitrine-nested/sddm.conf %{buildroot}%{_prefix}/lib/sddm/sddm.conf.d/vitrine-nested.conf
 install -d %{buildroot}%{libexec}
 for f in libexec/* agent/vitrine-agent install; do
 	sed 's/@VERSION@/%{version}/' "$f" > tmp && install -m 0755 tmp %{buildroot}%{libexec}/$(basename "$f")
@@ -75,7 +97,7 @@ install -d %{buildroot}%{_sharedstatedir}/%{name}
 install -d %{buildroot}%{_sysconfdir}/modprobe.d
 touch %{buildroot}%{_sysconfdir}/modprobe.d/vitrine-virtio-gpu.conf
 
-%global units vitrine-agent.service vitrine-mtrr-hostmem-wb.service vitrine-virtio-gpu-check.service vitrine-kernel-settings.service
+%global units vitrine-agent.service vitrine-mtrr-hostmem-wb.service vitrine-virtio-gpu-check.service vitrine-kernel-settings.service vitrine-nested-boot.service
 
 %post
 %systemd_post %{units}
@@ -131,12 +153,54 @@ fi
 %{_unitdir}/vitrine-mtrr-hostmem-wb.service
 %{_unitdir}/vitrine-virtio-gpu-check.service
 %{_unitdir}/vitrine-kernel-settings.service
+%{_unitdir}/vitrine-nested-boot.service
+%dir %{_unitdir}/plasmalogin.service.d
+%{_unitdir}/plasmalogin.service.d/vitrine-nested.conf
+%dir %{_userunitdir}/spice-vdagent.service.d
+%{_userunitdir}/spice-vdagent.service.d/vitrine-nested.conf
+%dir %{_userunitdir}/app-vitrine*clipboard*bridge@autostart.service.d
+%{_userunitdir}/app-vitrine*clipboard*bridge@autostart.service.d/vitrine-nested.conf
+%dir %{_userunitdir}/plasma-login-kwin_wayland.service.d
+%{_userunitdir}/plasma-login-kwin_wayland.service.d/vitrine-nested.conf
+%dir %{_prefix}/lib/sddm
+%dir %{_prefix}/lib/sddm/sddm.conf.d
+%{_prefix}/lib/sddm/sddm.conf.d/vitrine-nested.conf
+%{_datadir}/%{name}
+%dir %{_sysconfdir}/%{name}
+%config(noreplace) %{_sysconfdir}/%{name}/nested.conf
+%doc %{_docdir}/%{name}/nested.md
 %{_presetdir}/80-vitrine-guest-tools.preset
 %{_sysconfdir}/xdg/autostart/vitrine-clipboard-bridge.desktop
 %{libexec}
 %dir %{_sharedstatedir}/%{name}
 
 %changelog
+* Wed Oct 14 2026 vitrine <noreply@anthropic.com> - 0.1.0-19
+- plasmalogin's XDG_DATA_DIRS in a nested-desktop boot: the session entry's
+  folder in front of the service manager's, which keeps flatpak's exports
+  (the research's finding)
+
+* Wed Oct 14 2026 vitrine <noreply@anthropic.com> - 0.1.0-18
+- in a nested-desktop boot the login screen draws on the VM's own screen
+  only (plasmalogin's KWin with KWIN_DRM_DEVICES): it drew on QEMU's VGA too,
+  and put its login form there, on the Boot view, while vitrine showed the
+  Screen view after a logout
+
+* Wed Oct 14 2026 vitrine <noreply@anthropic.com> - 0.1.0-17
+- the nested desktop's boot script runs: an apostrophe in a message broke it
+  (bash took it for a quote); the agent finds the proxy's process
+
+* Wed Oct 14 2026 vitrine <noreply@anthropic.com> - 0.1.0-16
+- the nested desktop: the research's session (its KWin nested on
+  wl-cross-domain-proxy), offered as "Plasma (nested desktop)" in place of
+  Plasma by plasmalogin and SDDM in the boots vitrine marks as nested (fw_cfg
+  crosvm_desktop=1, vitrine-nested-boot.service), where the guest's own
+  automatic login into Plasma logs into it; none of it in other boots
+- the driver's hide_virgl (the research's patch), set in nested-desktop
+  boots with blob_flush_fence 0; no spice-vdagent clipboard there (the proxy
+  shares it)
+- the agent reports hide_virgl and the nested desktop's state
+
 * Mon Oct 05 2026 vitrine <noreply@anthropic.com> - 0.1.0-15
 - the agent answers stats (protocol 2): the guest's network cards' byte
   counters and its memory, for vitrine's status bar; QEMU counts no network

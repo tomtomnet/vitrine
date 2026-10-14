@@ -426,7 +426,7 @@ void NestedView::updateGeometry()
                               "back here.")
             : m_mapped   ? QString()
                          : tr("The guest's desktop is not running.\nLog in to the guest's "
-                              "Plasma (crosvm window) session from the Screen view "
+                              "Plasma (nested desktop) session from the Screen view "
                               "(Ctrl+Alt+2).");
         embedded->update();
     }

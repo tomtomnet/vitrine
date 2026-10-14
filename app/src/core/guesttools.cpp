@@ -52,6 +52,8 @@ Medium parseManifest(const QByteArray &json, const QString &image)
     m.tools = o["tools"].toString();
     m.mesa = o["mesa"].toString();
     m.kwin = o["kwin"].toString();
+    m.kpipewire = o["kpipewire"].toString();
+    m.proxy = o["proxy"].toString();
     for (const QJsonValue &p : o["packages"].toArray()) {
         m.packages << QString("%1-%2.%3").arg(p["name"].toString(), p["evr"].toString(),
                                               p["arch"].toString());

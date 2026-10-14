@@ -13,9 +13,13 @@
 #   - dkms and the kernel headers (Fedora's: the newest kernel comes along
 #     when the running one's headers are gone from the repositories)
 #   - vitrine's Mesa (native context) in place of each Mesa package installed
-#   - vitrine's KWin, on a Plasma guest whose Plasma is the version it was
-#     built for (else the KWin installed stays)
-# then keeps Mesa and KWin at those versions (dnf versionlock).  Mesa is
+#   - vitrine's KWin and KPipeWire, on a Plasma guest whose Plasma is the
+#     version they were built for (else the ones installed stay)
+#   - the nested desktop's proxy, wl-cross-domain-proxy (the session, in
+#     vitrine-guest-tools, needs it in the boots of a VM with the Nested
+#     desktop box)
+# then keeps Mesa, KWin, KPipeWire and the proxy at those versions (dnf
+# versionlock).  Mesa is
 # 64-bit only for now: on a guest with 32-bit Mesa (Steam, Wine) it stays
 # Fedora's, as dnf wants both at one version.  A reboot finishes it.  It can run again any
 # time: it does what is missing, nothing when all is there.
@@ -124,8 +128,24 @@ EOF
 }
 
 # What the research setup (qemu-gui-experimental's guest image) put in, which
-# the tools replace: its DKMS module, units, kernel arguments and dnf exclude
+# the tools replace: its DKMS module, units, kernel arguments and dnf exclude;
+# and its nested desktop (crosvm-desktop's install-guest.sh), which would
+# offer a second nested session (/etc/crosvm-desktop/session.conf, settings
+# someone may have made, stays)
 migrate_research() {
+	if [ -e /usr/local/libexec/crosvm-desktop/session ] || [ -e /etc/systemd/system/crosvm-desktop-detect.service ]; then
+		say "removing the research setup's nested desktop (crosvm-desktop): vitrine's replaces it"
+		systemctl disable crosvm-desktop-fwcfg.service crosvm-desktop-detect.service \
+			crosvm-desktop-journal.service > /dev/null 2>&1 || true
+		rm -f /etc/systemd/system/crosvm-desktop-detect.service \
+			/etc/systemd/system/crosvm-desktop-fwcfg.service \
+			/etc/systemd/system/crosvm-desktop-journal.service \
+			/etc/plasmalogin.conf.d/zz-crosvm-desktop-autologin.conf \
+			/usr/share/wayland-sessions/plasma-crosvm-window.desktop \
+			/usr/local/bin/wl-cross-domain-proxy /usr/local/bin/crosvm-desktop-check
+		rm -rf /usr/local/libexec/crosvm-desktop /usr/local/share/crosvm-desktop
+		systemctl daemon-reload > /dev/null 2>&1 || true
+	fi
 	if [ -d /usr/src/virtio-gpu-nctx-1.0 ] || dkms status -m virtio-gpu-nctx 2> /dev/null | grep -q .; then
 		say "removing the research setup's driver (virtio-gpu-nctx)"
 		dkms remove virtio-gpu-nctx/1.0 --all > /dev/null 2>&1 || true
@@ -152,15 +172,18 @@ migrate_research() {
 
 if [ "$uninstall" = 1 ]; then
 	total=3
-	step "Removing the version locks of Mesa and KWin"
+	step "Removing the version locks of Mesa, KWin, KPipeWire and the proxy"
 	versionlock || die "cannot edit $lockfile"
 	step "Removing vitrine-guest-tools (driver, settings, agent)"
 	if installed vitrine-guest-tools; then
 		dnf -y remove vitrine-guest-tools || die "dnf remove failed"
 	fi
 	rm -f "$override"
-	step "Fedora's Mesa and KWin again"
-	names=$(rpm -qa --qf '%{NAME}\n' 'mesa-*' 'kwin*' | sort -u)
+	if installed wl-cross-domain-proxy; then
+		dnf -y remove wl-cross-domain-proxy || die "dnf remove failed"
+	fi
+	step "Fedora's Mesa, KWin and KPipeWire again"
+	names=$(rpm -qa --qf '%{NAME}\n' 'mesa-*' 'kwin*' 'kpipewire*' | sort -u)
 	# shellcheck disable=SC2086
 	[ -z "$names" ] || dnf -y distro-sync $names || die "dnf distro-sync failed: Fedora's repositories are needed"
 	rm -rf "$state"
@@ -171,7 +194,8 @@ if [ "$uninstall" = 1 ]; then
 fi
 
 [ -f "$medium/medium.env" ] || die "$medium is not a vitrine tools medium (no medium.env)"
-# TOOLS_VERSION, TOOLS_EVR, FEDORA_RELEASE, MEDIUM_ID, KWIN_VERSION
+# TOOLS_VERSION, TOOLS_EVR, FEDORA_RELEASE, MEDIUM_ID, KWIN_VERSION,
+# KPIPEWIRE_VERSION (an older medium has none)
 # shellcheck source=/dev/null
 . "$medium/medium.env"
 # a repository id of its own per medium: dnf would take the metadata it
@@ -256,7 +280,31 @@ if [ "$use_kwin" = 1 ]; then
 		esac
 	done
 fi
-want+=("${mesa[@]}" "${kwin_pkgs[@]}")
+# KPipeWire: as KWin, the medium's only for the Plasma it was built for
+kpipewire_pkgs=()
+if ! installed kpipewire; then
+	:
+elif [ -z "${KPIPEWIRE_VERSION:-}" ]; then
+	say "KPipeWire: none on this medium, the installed one stays"
+elif [ "$plasma" != "$KPIPEWIRE_VERSION" ]; then
+	say "KPipeWire: this guest has Plasma $plasma, the medium's KPipeWire is for $KPIPEWIRE_VERSION: the installed one stays"
+else
+	for name in $(medium_names '^kpipewire'); do
+		case "$name" in
+		kpipewire) kpipewire_pkgs+=("$(medium_nevra "$name")") ;;
+		*) installed "$name" x86_64 && kpipewire_pkgs+=("$(medium_nevra "$name")") ;;
+		esac
+	done
+	say "KPipeWire: vitrine's build for Plasma $KPIPEWIRE_VERSION"
+fi
+# the nested desktop's proxy, whatever the desktop: the session needs it
+proxy_pkgs=()
+if [ -n "$(medium_nevra wl-cross-domain-proxy)" ]; then
+	proxy_pkgs+=("$(medium_nevra wl-cross-domain-proxy)")
+else
+	say "the nested desktop: no proxy on this medium, the session falls back to Plasma on the VM's screen"
+fi
+want+=("${mesa[@]}" "${kwin_pkgs[@]}" "${kpipewire_pkgs[@]}" "${proxy_pkgs[@]}")
 
 # nothing to do when what this medium installs is all there
 up_to_date() {
@@ -338,7 +386,7 @@ fi
 
 step "Finishing"
 locks=()
-for p in "${mesa[@]}" "${kwin_pkgs[@]}"; do
+for p in "${mesa[@]}" "${kwin_pkgs[@]}" "${kpipewire_pkgs[@]}" "${proxy_pkgs[@]}"; do
 	locks+=("$(rpm -q --qf '%{NAME}=%{EPOCHNUM}:%{VERSION}-%{RELEASE}' "$p")")
 done
 versionlock "${locks[@]}" || die "cannot edit $lockfile"

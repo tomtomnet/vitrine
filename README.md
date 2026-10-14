@@ -119,12 +119,13 @@ changes, and the guest packages compile through ccache.
    (Ctrl+S) edits. A Linux VM whose 3D card lacks what new VMs get (native
    context, the host vblank timing) offers Update… on its Details tab.
 3. **Guest tools** for Fedora 44 x86-64 guests (virtio-gpu driver, Mesa, KWin
-   for Plasma 6.7.5, an agent). The Builds window (also Build… in
-   Machine > Install Guest Tools… and in Preferences) builds them in a Fedora
-   container with rootless podman, then makes the medium VMs install them
-   from: 20 to 40 minutes the first time (Mesa ~15-25 min, KWin ~10, tools
-   ~1), up to 10 GiB of memory. Mesa and KWin wait until that much is free,
-   unless told to build anyway. `guest/build-rpms.sh` then
+   and KPipeWire for Plasma 6.7.5, the nested desktop's session and proxy, an
+   agent). The Builds window (also Build… in Machine > Install Guest Tools…
+   and in Preferences) builds them in a Fedora container with rootless
+   podman, then makes the medium VMs install them from: 20 to 40 minutes the
+   first time (Mesa ~15-25 min, KWin ~10, the proxy and KPipeWire ~2 each,
+   tools ~1), up to 10 GiB of memory. Mesa and KWin wait until that much is
+   free, unless told to build anyway. `guest/build-rpms.sh` then
    `guest/build-medium.sh` do the same by hand.
 
    Then Machine > Install Guest Tools… > Install starts the VM with the tools
@@ -154,17 +155,20 @@ its next start.
 Nested desktop: the Display settings' Nested desktop checkbox runs the
 guest's KDE session in a KWin of its own, drawn as a window of this
 computer's desktop (virtio-gpu-rutabaga with cross-domain, beside the
-standard VGA). It needs vitrine's QEMU built with rutabaga and a guest with
-the nested session, "Plasma (crosvm window)", which the guest tools do not
-install yet. With vitrine's window as the display, the session shows in the
-console, which then has three views: Boot (the VGA card's screen: the
-firmware, the boot loader, the first boot messages), Screen (the guest's
-own screen: its console and its login screen) and Desktop (the session).
-They change as the guest boots and its session starts or ends; the
-switcher above them, View > Boot, Screen and Desktop, or Ctrl+Alt+1, 2 and
-3 choose one. Closing vitrine ends the session: the guest goes back to its
-login screen, where you log in again from the Screen view. With QEMU's SDL
-or GTK window, or none, the session opens as a window of its own.
+standard VGA). It needs vitrine's QEMU built with rutabaga and a Fedora KDE
+guest with the guest tools: in the boots of such a VM its login screen
+offers "Plasma (nested desktop)" in place of Plasma, and the guest's own
+automatic login into Plasma, if set, logs into it (vitrine sets none). The
+same disk boots as before with the box unchecked. With vitrine's window as
+the display, the session shows in the console, which then has three views:
+Boot (the VGA card's screen: the firmware, the boot loader, the first boot
+messages), Screen (the guest's own screen: its console and its login screen)
+and Desktop (the session). They change as the guest boots and its session
+starts or ends; the switcher above them, View > Boot, Screen and Desktop, or
+Ctrl+Alt+1, 2 and 3 choose one. Closing vitrine ends the session: the guest
+goes back to its login screen, where you log in again from the Screen view.
+With QEMU's SDL or GTK window, or none, the session opens as a window of its
+own.
 
 Shut Down goes through the guest's agent when it runs one: the guest tools',
 else QEMU's guest agent (Fedora installs qemu-guest-agent in VMs). Otherwise
@@ -179,7 +183,9 @@ guest's Wayland and X11 clipboards. On a Wayland host, text copied in the
 guest replaces the host clipboard only if vitrine's window had a key press,
 a click or the mouse entering it since the last host copy; copying in the
 guest with its keys or mouse does that. QEMU's SDL window shares the
-clipboard too, and on Wayland waits for a key or click in it.
+clipboard too, and on Wayland waits for a key or click in it. A nested
+desktop shares it through its own proxy instead, following the focus of its
+window; spice-vdagent does not start there.
 
 USB: Machine > USB Devices (also in the VM list's context menu) gives the
 host's USB devices to a running VM, whatever shows its screen, and takes them

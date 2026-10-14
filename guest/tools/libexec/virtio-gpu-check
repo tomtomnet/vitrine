@@ -4,8 +4,9 @@
 # modinfo only says what modprobe would load; the driver in use comes from
 # the initramfs.  The taint field is the honest answer: O (out of tree), with
 # a parameter only vitrine's patches add (another out-of-tree virtio-gpu
-# taints O as well), is ours.  Then it sets blob_flush_fence for the KWin
-# installed (below).
+# taints O as well), is ours.  Then it sets the options of this boot
+# (below): blob_flush_fence for the KWin installed, and those of a
+# nested-desktop boot.
 # Runs at boot, before the display manager; the
 # journal has its findings (journalctl -b -u vitrine-virtio-gpu-check).
 set -u
@@ -77,8 +78,20 @@ esac
 # time, as the driver reads it at each flush: the driver loads from the
 # initramfs, and dracut does not copy /etc/modprobe.d there, so the
 # installer's /etc/modprobe.d/vitrine-virtio-gpu.conf does not reach it.
+#
+# A nested-desktop boot (vitrine-nested-boot.service) runs as the research's
+# nested guests do: blob_flush_fence 0, the VM's screen showing only the login
+# screen; and hide_virgl 1: an app whose own Mesa lacks the GPU's native
+# context (a Flatpak runtime's) renders in software instead of through virgl,
+# whose buffers the nested desktop's KWin, on the native context, cannot show.
 fence=/sys/module/virtio_gpu/parameters/blob_flush_fence
-if [ -w "$fence" ]; then
+hide=/sys/module/virtio_gpu/parameters/hide_virgl
+if [ -e /run/vitrine-nested/nested ]; then
+	value=0
+	if [ -w "$hide" ] && [ "$(cat "$hide")" != 1 ]; then
+		echo 1 > "$hide" && echo "nested desktop: hide_virgl 1"
+	fi
+else
 	want=$(cat "$state/kwin" 2> /dev/null || true)
 	have=$(rpm -q kwin 2> /dev/null || true)
 	if [ -n "$want" ] && [ "$have" = "$want" ]; then
@@ -87,8 +100,8 @@ if [ -w "$fence" ]; then
 		value=1
 		[ -n "$want" ] && echo "<4>KWin is ${have:-not installed}, not the one of the guest tools ($want): blob_flush_fence 1; install the guest tools again"
 	fi
-	if [ "$(cat "$fence")" != "$value" ]; then
-		echo "$value" > "$fence" && echo "blob_flush_fence $value"
-	fi
+fi
+if [ -w "$fence" ] && [ "$(cat "$fence")" != "$value" ]; then
+	echo "$value" > "$fence" && echo "blob_flush_fence $value"
 fi
 exit $rc
