@@ -9,6 +9,8 @@
 #include <QTemporaryDir>
 #include <QToolButton>
 
+#include <cmath>
+
 #include "core/vmstore.h"
 #include "scales.h"
 #include "ui/icons.h"
@@ -22,8 +24,10 @@
  * one for one, on whole device pixels, in the middle of where it goes,
  * and for another ratio when rendered for one (a window moved to another
  * screen).  The VM list's icons with their badge are drawn at the ratio
- * asked, not scaled from pixmaps made for 1, 2 and 3.  The icons of a
- * role have the style's size for it.
+ * asked, not scaled from pixmaps made for 1, 2 and 3.  The VM's power
+ * buttons drawn for the ratio asked: crisp, in the middle, legible on a
+ * light and a dark window, grey when disabled.  The icons of a role have
+ * the style's size for it.
  */
 class TestIcons : public QObject
 {
@@ -37,6 +41,21 @@ class TestIcons : public QObject
     }
 
     static QIcon computer() { return Icons::themed({"computer"}, QStyle::SP_ComputerIcon); }
+
+    /* WCAG's contrast ratio of two colours, 1 to 21 */
+    static qreal contrast(QRgb a, QRgb b)
+    {
+        auto luminance = [](QRgb c) {
+            auto linear = [](int v) {
+                const qreal x = v / 255.0;
+                return x <= 0.04045 ? x / 12.92 : std::pow((x + 0.055) / 1.055, 2.4);
+            };
+            return 0.2126 * linear(qRed(c)) + 0.7152 * linear(qGreen(c)) +
+                   0.0722 * linear(qBlue(c));
+        };
+        const qreal la = luminance(a), lb = luminance(b);
+        return (qMax(la, lb) + 0.05) / (qMin(la, lb) + 0.05);
+    }
 
 private slots:
     void initTestCase()
@@ -160,6 +179,111 @@ private slots:
                 const QRgb green = with.pixel(middle + QPoint(qRound(-5 * ratio * size / 32), 0));
                 if (qGreen(green) < 200 || qRed(green) > 80 || qBlue(green) > 80) {
                     wrong << QString("%1: no badge").arg(size);
+                }
+            }
+            return wrong;
+        });
+    }
+
+    /*
+     * The VM's power buttons at the sizes of a menu's icons and of KDE's and
+     * Fusion's toolbars, at each scale: the pixmap of the ratio's size;
+     * Pause's bars and Force Off's square whole device pixels, Start's
+     * straight edge too; the ink in the middle; colours that stand out at
+     * 3:1 on Breeze's light and dark windows, the shape's edge on the light
+     * one (the darker shade of the filled shapes); grey when disabled
+     */
+    void controls()
+    {
+        Scales::sweep([](int n) {
+            const qreal ratio = n / 120.0;
+            const QRgb light = qRgb(239, 240, 241), dark = qRgb(32, 35, 38);
+            const QList<std::pair<Icons::Control, QString>> controls = {
+                {Icons::Control::Start, "Start"}, {Icons::Control::Pause, "Pause"},
+                {Icons::Control::ShutDown, "Shut Down"}, {Icons::Control::Reset, "Reset"},
+                {Icons::Control::ForceOff, "Force Off"}};
+            QStringList wrong;
+
+            for (const auto &[kind, name] : controls) {
+                const QIcon icon = Icons::control(kind);
+                for (int size : {16, 22, 24}) {
+                    const QString what = QString("%1 at %2").arg(name).arg(size);
+                    const QImage pixels = image(icon.pixmap(QSize(size, size), ratio));
+                    const int side = qRound(size * ratio);
+                    if (pixels.size() != QSize(side, side)) {
+                        wrong << QString("%1: %2x%3, not %4").arg(what).arg(pixels.width())
+                                     .arg(pixels.height()).arg(side);
+                        continue;
+                    }
+                    QRect ink;
+                    bool partial = false;
+                    qreal onLight = 0, onDark = 0;
+                    for (int y = 0; y < side; y++) {
+                        for (int x = 0; x < side; x++) {
+                            const QRgb p = pixels.pixel(x, y);
+                            if (qAlpha(p) > 0) {
+                                ink |= QRect(x, y, 1, 1);
+                            }
+                            partial = partial || (qAlpha(p) > 0 && qAlpha(p) < 255);
+                            if (qAlpha(p) == 255) {
+                                onLight = qMax(onLight, contrast(p, light));
+                                onDark = qMax(onDark, contrast(p, dark));
+                            }
+                        }
+                    }
+                    if (partial && (kind == Icons::Control::Pause ||
+                                    kind == Icons::Control::ForceOff)) {
+                        wrong << what + ": edges between device pixels";
+                    }
+                    /* Start: its straight edge, the first column of ink, opaque in its middle */
+                    if (kind == Icons::Control::Start) {
+                        for (int y = ink.top() + ink.height() / 4; y < ink.bottom() - ink.height() / 4;
+                             y++) {
+                            if (qAlpha(pixels.pixel(ink.left(), y)) != 255) {
+                                wrong << what + ": its straight edge between device pixels";
+                                break;
+                            }
+                        }
+                    }
+                    /* in the middle; Start a little right, where the eye puts it */
+                    const qreal dx = (ink.left() + ink.right() + 1) / 2.0 - side / 2.0;
+                    const qreal dy = (ink.top() + ink.bottom() + 1) / 2.0 - side / 2.0;
+                    const qreal right = kind == Icons::Control::Start ? 0.08 * side : 0;
+                    if (dx < -1 || dx > 1 + right || qAbs(dy) > 1) {
+                        wrong << QString("%1: its ink %2,%3 from the middle").arg(what).arg(dx)
+                                     .arg(dy);
+                    }
+                    if (ink.width() < side / 2 || ink.height() < side / 2) {
+                        wrong << QString("%1: its ink %2x%3 only").arg(what).arg(ink.width())
+                                     .arg(ink.height());
+                    }
+                    if (onLight < 3 || onDark < 3) {
+                        wrong << QString("%1: %2:1 on light, %3:1 on dark").arg(what)
+                                     .arg(onLight, 0, 'f', 1).arg(onDark, 0, 'f', 1);
+                    }
+                    /* the shape's edge on light: the first opaque pixel of the middle row */
+                    for (int x = 0; x < side; x++) {
+                        const QRgb p = pixels.pixel(x, side / 2);
+                        if (qAlpha(p) == 255) {
+                            if (contrast(p, light) < 3) {
+                                wrong << QString("%1: its edge %2:1 on light").arg(what)
+                                             .arg(contrast(p, light), 0, 'f', 1);
+                            }
+                            break;
+                        }
+                    }
+                    /* disabled: grey */
+                    const QImage off = image(icon.pixmap(QSize(size, size), ratio, QIcon::Disabled));
+                    for (int y = 0; y < off.height(); y++) {
+                        for (int x = 0; x < off.width(); x++) {
+                            const QColor c = QColor::fromRgba(off.pixel(x, y));
+                            if (c.alpha() > 128 && c.hsvSaturation() > 40) {
+                                wrong << what + ": colour when disabled";
+                                y = off.height();
+                                break;
+                            }
+                        }
+                    }
                 }
             }
             return wrong;

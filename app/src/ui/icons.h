@@ -23,6 +23,18 @@ enum class Badge { Play, Pause, Busy };
  */
 QIcon badged(const QIcon &base, const QColor &color, Badge badge);
 
+/* What a VM's power button does: Start also stands for Resume */
+enum class Control { Start, Pause, ShutDown, Reset, ForceOff };
+/*
+ * The icon of a VM's power button, in colour as VMware's are, the list's
+ * badges' colours: green Start, amber Pause, red Shut Down and Force Off,
+ * blue Reset.  Drawn for each size and pixel ratio asked, its straight
+ * edges on whole device pixels; the filled shapes edged with a darker
+ * shade, which a light background needs.  Disabled, as the style greys
+ * icons.
+ */
+QIcon control(Control kind);
+
 /*
  * @icon at @size (logical pixels) with its middle at @centre, on whole
  * device pixels of @painter's device: a pixmap made for that device's
