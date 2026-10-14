@@ -49,24 +49,33 @@ void ConsoleViews::choose(View view)
 
 void ConsoleViews::powerOn()
 {
-    m_systemUp = false;
+    m_up = false;
+    m_screen = false;
     m_desktop = false;
     show(View::Boot);
 }
 
 void ConsoleViews::reset()
 {
-    m_systemUp = false;
-    show(View::Boot);
+    /* the guest's window may go after the reset is told: no Screen then */
+    powerOn();
 }
 
-void ConsoleViews::systemUp()
+void ConsoleViews::setGuest(bool up, bool screen)
 {
-    if (!m_systemUp) {
-        m_systemUp = true;
-        if (m_view == View::Boot) {
-            show(View::Screen);
-        }
+    screen = screen && up;
+    const bool shows = screen && !m_screen;
+    const bool gone = !up && m_up;
+
+    m_up = up;
+    m_screen = screen;
+    if (m_desktop) {
+        return;
+    }
+    if (shows) {
+        show(View::Screen);
+    } else if (gone) {
+        show(View::Boot);
     }
 }
 
@@ -76,7 +85,17 @@ void ConsoleViews::setDesktop(bool shown)
         return;
     }
     m_desktop = shown;
-    show(shown ? View::Desktop : View::Screen);
+    if (shown) {
+        show(View::Desktop);
+    } else if (m_screen) {
+        /* the session ended, the login screen up already */
+        show(View::Screen);
+    } else if (!m_up) {
+        /* the guest shuts down or restarts: its console is on the VGA */
+        show(View::Boot);
+    }
+    /* else a logout, whose login screen comes, or a shutdown, whose agent
+       goes: setGuest() tells which */
 }
 
 bool ConsoleViews::hasDesktop() const

@@ -58,7 +58,7 @@ static const char kHello[] =
     R"j("tools":"0.1.0-1.fc44"},"installing":false}})j";
 
 /* QEMU's end of QMP, for a QEMU found running: answers every command,
-   query-status with running */
+   query-status with running; events on demand */
 class FakeQmp : public QObject
 {
 public:
@@ -68,6 +68,7 @@ public:
         m_server.listen(path);
         connect(&m_server, &QLocalServer::newConnection, this, [this]() {
             QLocalSocket *peer = m_server.nextPendingConnection();
+            m_peers << peer;
             connect(peer, &QLocalSocket::readyRead, this, [this, peer]() {
                 m_buffer += peer->readAll();
                 for (qsizetype nl; (nl = m_buffer.indexOf('\n')) >= 0;) {
@@ -84,9 +85,20 @@ public:
                         "\n");
         });
     }
+    /* to every monitor connection */
+    void event(const QString &name, const QJsonObject &data = {})
+    {
+        for (QLocalSocket *peer : std::as_const(m_peers)) {
+            if (peer && peer->state() == QLocalSocket::ConnectedState) {
+                peer->write(QJsonDocument(QJsonObject{{"event", name}, {"data", data}})
+                                .toJson(QJsonDocument::Compact) + '\n');
+            }
+        }
+    }
 
 private:
     QLocalServer m_server;
+    QList<QPointer<QLocalSocket>> m_peers;
     QByteArray m_buffer;
 };
 
@@ -315,6 +327,8 @@ private slots:
         QVERIFY(!r.rebootNeeded);
         QVERIFY(!r.installing);
         QCOMPARE(r.installedMedium, "32fe6c83b34e87e8");
+        /* an older agent: it does not say what the VM's own screen shows */
+        QCOMPARE(r.screen, Screen::Unknown);
 
         m = parseMessage(R"({"type":"status","id":7,"status":{"tools":null,"secureBoot":null}})");
         QCOMPARE(m.type, Message::Type::Status);
@@ -367,6 +381,82 @@ private slots:
         QCOMPARE(m.command, "shutdown");
         QVERIFY(!m.ok);
         QCOMPARE(m.error, "Operation inhibited");
+
+        /* what the VM's own screen shows (protocol 3): in the status, and as it changes */
+        m = parseMessage(R"({"type":"screen","screen":"login"})");
+        QCOMPARE(m.type, Message::Type::Screen);
+        QCOMPARE(m.id, -1);
+        QCOMPARE(m.screen, Screen::Login);
+        QCOMPARE(parseMessage(R"({"type":"screen","screen":"console"})").screen, Screen::Console);
+        QCOMPARE(parseMessage(R"({"type":"screen","screen":""})").screen, Screen::Nothing);
+        /* a word of a later agent: nothing to look at */
+        QCOMPARE(parseMessage(R"({"type":"screen","screen":"splash"})").screen, Screen::Nothing);
+        QCOMPARE(parseMessage(R"({"type":"screen"})").screen, Screen::Unknown);
+        QCOMPARE(parseMessage(R"({"type":"hello","protocol":3,"status":{"screen":"login"}})")
+                     .report.screen,
+                 Screen::Login);
+        QCOMPARE(parseMessage(R"({"type":"status","id":4,"status":{"screen":""}})").report.screen,
+                 Screen::Nothing);
+    }
+
+    /*
+     * Whether the VM's own screen shows something to look at, the console's
+     * Screen view: as the agent says; an older agent's, which does not
+     * say, while the tools are in and nothing installs (an install at boot
+     * comes before the login screen)
+     */
+    void screenShownByAgents_data()
+    {
+        QTest::addColumn<bool>("agent");
+        QTest::addColumn<QString>("status");
+        QTest::addColumn<bool>("installing");
+        QTest::addColumn<bool>("shown");
+
+        const QString tools = R"("tools":"0.1.0-20.fc44")";
+        auto status = [](const QString &items) { return "{" + items + "}"; };
+        QTest::newRow("its login screen") << true << status(tools + R"(,"screen":"login")")
+                                          << false << true;
+        QTest::newRow("its console") << true << status(tools + R"(,"screen":"console")") << false
+                                     << true;
+        QTest::newRow("nothing there yet") << true << status(tools + R"(,"screen":"")") << false
+                                           << false;
+        QTest::newRow("a later word") << true << status(tools + R"(,"screen":"splash")") << false
+                                      << false;
+        QTest::newRow("no agent since the boot")
+            << false << status(tools + R"(,"screen":"login")") << false << false;
+        QTest::newRow("the medium's agent, installing at boot")
+            << true << status(R"("tools":null,"installing":true,"bootstrap":"running","screen":"")")
+            << false << false;
+        QTest::newRow("its login screen, an install by hand under way")
+            << true << status(tools + R"(,"screen":"login")") << true << true;
+        QTest::newRow("older, tools in") << true << status(R"("tools":"0.1.0-19.fc44")") << false
+                                         << true;
+        QTest::newRow("older, after the install at boot")
+            << true << status(R"("tools":"0.1.0-19.fc44","bootstrap":"done")") << false << true;
+        QTest::newRow("older, no tools") << true << status(R"("tools":null)") << false << false;
+        QTest::newRow("older, installing at boot")
+            << true << status(R"("tools":"0.1.0-19.fc44","installing":true,"bootstrap":"running")")
+            << false << false;
+        QTest::newRow("older, the install at boot to come")
+            << true << status(R"("tools":"0.1.0-19.fc44","bootstrap":"waiting")") << false
+            << false;
+        QTest::newRow("older, an install by hand under way")
+            << true << status(R"("tools":"0.1.0-19.fc44")") << true << false;
+    }
+
+    void screenShownByAgents()
+    {
+        QFETCH(bool, agent);
+        QFETCH(QString, status);
+        QFETCH(bool, installing);
+        QFETCH(bool, shown);
+        Inputs in;
+
+        in.running = true;
+        in.agentSeen = agent;
+        in.report = parseReport(QJsonDocument::fromJson(status.toUtf8()).object());
+        in.installing = in.report.installing || installing;
+        QCOMPARE(GuestTools::screenShown(in), shown);
     }
 
     void states()
@@ -843,6 +933,102 @@ private slots:
         }
         QCOMPARE(system(id), (System{"fedora", "44", "Fedora Linux 44 (KDE Plasma)"}));
         QDir(dataDir()).removeRecursively();
+    }
+
+    /*
+     * What the VM's own screen shows, as the agent says it (protocol 3): in
+     * its hello, then each change; gone with the agent, as its port closes
+     * or the guest resets, whatever the agent said last.  An older agent
+     * does not say: its tools in, nothing installing
+     */
+    void screenFromAgent()
+    {
+        QTemporaryDir tmp;
+        const QString id = QString("vitrine-gt-screen-%1").arg(QCoreApplication::applicationPid());
+        const QString dir = tmp.filePath(id);
+        QVERIFY(QDir().mkpath(dir));
+        QFile args(dir + "/vm.args");
+        QVERIFY(args.open(QIODevice::WriteOnly));
+        args.write("-machine q35\n");
+        args.close();
+        const QStringList command = VmRunner(id, dir).commandLine(ArgsFile::parse("-machine q35\n"));
+        const QString runDir = QFileInfo(command.last()).absolutePath();
+
+        /* a QEMU found running, and the agent behind the port's socket */
+        FakeQmp qmp(runDir + "/qmp.sock");
+        QLocalServer agent;
+        QLocalServer::removeServer(runDir + "/agent.sock");
+        QVERIFY(agent.listen(runDir + "/agent.sock"));
+        QPointer<QLocalSocket> peer;
+        connect(&agent, &QLocalServer::newConnection, this,
+                [&]() { peer = agent.nextPendingConnection(); });
+        QProcess qemu;
+        qemu.start(FAKE_QEMU, {"-qmp", command[command.size() - 3]});
+        QVERIFY(qemu.waitForStarted());
+        QVERIFY(QTest::qWaitFor([&qemu]() {
+            QFile f(QString("/proc/%1/cmdline").arg(qemu.processId()));
+            return f.open(QIODevice::ReadOnly) && f.readAll().contains("-qmp");
+        }, 5000));
+        QFile pid(runDir + "/qemu.pid");
+        QVERIFY(pid.open(QIODevice::WriteOnly));
+        pid.write(QByteArray::number(qemu.processId()) + '\n');
+        pid.close();
+        const auto end = qScopeGuard([&]() {
+            qemu.kill();
+            qemu.waitForFinished();
+        });
+
+        VmStore store(tmp.path());
+        Vm *vm = store.find(id);
+        QVERIFY(vm);
+        GuestToolsMonitor *monitor = GuestToolsMonitor::of(vm);
+        vm->runner()->attach(vm->args());
+        QTRY_COMPARE(vm->runner()->state(), VmRunner::State::Running);
+        QTRY_VERIFY(peer);
+        QVERIFY(!monitor->screenShown());
+        auto say = [&peer](const QByteArray &line) { peer->write(line + '\n'); };
+
+        /* early in a boot: the agent runs, nothing on its screen yet */
+        QByteArray hello = kHello;
+        hello.replace(R"j("installing":false})j", R"j("installing":false,"screen":""})j");
+        QVERIFY(hello != kHello);
+        say(hello);
+        QTRY_VERIFY(monitor->hasAgent());
+        QVERIFY(!monitor->screenShown());
+        /* its login screen; the same again changes nothing */
+        QSignalSpy changed(monitor, &GuestToolsMonitor::changed);
+        say(R"({"type":"screen","screen":"login"})");
+        QTRY_VERIFY(monitor->screenShown());
+        QCOMPARE(changed.size(), 1);
+        say(R"({"type":"screen","screen":"login"})");
+        say(R"({"type":"screen","screen":"console"})");
+        QTRY_COMPARE(changed.size(), 2);
+        QVERIFY(monitor->screenShown());
+        say(R"({"type":"screen","screen":""})");
+        QTRY_VERIFY(!monitor->screenShown());
+        QVERIFY(monitor->hasAgent());
+
+        /* the guest resets: what its agent said goes with it */
+        say(R"({"type":"screen","screen":"login"})");
+        QTRY_VERIFY(monitor->screenShown());
+        qmp.event("RESET");
+        QTRY_VERIFY(!monitor->hasAgent());
+        QVERIFY(!monitor->screenShown());
+        /* the agent's port closes: the guest shuts down */
+        say(hello);
+        say(R"({"type":"screen","screen":"login"})");
+        QTRY_VERIFY(monitor->screenShown());
+        qmp.event("VSERPORT_CHANGE", {{"id", kPortId}, {"open", false}});
+        QTRY_VERIFY(!monitor->hasAgent());
+        QVERIFY(!monitor->screenShown());
+
+        /* an older agent: the tools in, nothing installing */
+        say(kHello);
+        QTRY_VERIFY(monitor->hasAgent());
+        QVERIFY(monitor->screenShown());
+        /* an install by hand, through it */
+        say(R"({"type":"progress","id":3,"step":"Installing the packages","current":2,"total":6})");
+        QTRY_VERIFY(!monitor->screenShown());
     }
 
     /*

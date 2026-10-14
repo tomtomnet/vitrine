@@ -839,9 +839,19 @@ private slots:
         QVERIFY(console->isFullScreen());
         action(w.get(), "Full Screen")->trigger();
         QVERIFY(!desktop->isFullScreen());
-        /* the session ended: the guest's login screen */
+        /* the session ended, and no agent of the guest's tells of a login
+           screen: the guest goes, its console on the boot's screen */
         desktop->guestMaps(false);
-        QCOMPARE(console->currentView(), ConsoleViews::View::Screen);
+        QCOMPARE(console->currentView(), ConsoleViews::View::Boot);
+        /* the host's Reset under the session: the boot, which the session's
+           window going after the reset keeps */
+        desktop->guestMaps(true);
+        QCOMPARE(console->currentView(), ConsoleViews::View::Desktop);
+        emit m_store->find("alpha")->runner()->guestReset();
+        QCOMPARE(console->currentView(), ConsoleViews::View::Boot);
+        desktop->guestMaps(false);
+        QCOMPARE(console->currentView(), ConsoleViews::View::Boot);
+        QTRY_COMPARE(consoleTab->text(), QString("Console 1"));
 
         /* closing asks, and says the guest's session ends with it */
         desktop->guestMaps(true);

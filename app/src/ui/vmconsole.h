@@ -111,6 +111,8 @@ private:
     void detach();
     /* The nested desktop's view goes, with the run */
     void dropNested();
+    /* What the guest says it shows (GuestToolsMonitor), to the views */
+    void followGuest();
     /* The view of m_views: its page, the D-Bus display's console, the keys */
     void applyView();
     void showMessage(const QString &title, const QString &text, const QString &button = {});
