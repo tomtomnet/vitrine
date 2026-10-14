@@ -231,12 +231,6 @@ signals:
     void shutdownWayChanged(GuestShutdown::Way way);
     /* The guest reboots, by itself or by Reset: QMP's RESET */
     void guestReset();
-    /*
-     * An agent of the guest's opened its port, qemu-ga's or the guest
-     * tools': the guest's system runs, at each boot.  For a VM found
-     * running, its qemu-ga if it is up.
-     */
-    void guestAgentOpened();
 
 private:
     struct Private;

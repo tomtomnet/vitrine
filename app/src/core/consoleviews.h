@@ -18,7 +18,7 @@ class QKeyEvent;
  *  - Desktop: the guest's KDE session (its nested KWin's window).
  *
  * It goes by itself: Boot from power-on; Screen once the guest's system
- * runs (an agent of the guest's came up: its login screen is next);
+ * runs (an agent of the guest's answered: its login screen is next);
  * Desktop once the guest's window comes (the nested KWin connected); back
  * to Screen when it goes (the session ended: the login screen is there),
  * and Boot on a reboot.  Not by the card's screen: the firmware drives it

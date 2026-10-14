@@ -12,6 +12,7 @@
 
 #include <utility>
 
+#include "core/guesttools.h"
 #include "core/vmconfig.h"
 #include "core/vmhardware.h"
 #include "core/vmrunner.h"
@@ -244,8 +245,19 @@ VmConsole::VmConsole(Vm *vm, QWidget *parent)
                 m_views->reset();
             }
         });
-        connect(vm->runner(), &VmRunner::guestAgentOpened, this, [this]() {
+        /*
+         * An agent of the guest's answered, qemu-ga or the guest tools': its
+         * system runs.  Not their ports opening, which the firmware does too
+         * (OVMF's virtio-serial driver opens the tools' port for a second).
+         */
+        connect(vm->runner(), &VmRunner::guestOsInfo, this, [this]() {
             if (m_nested) {
+                m_views->systemUp();
+            }
+        });
+        GuestToolsMonitor *tools = GuestToolsMonitor::of(vm);
+        connect(tools, &GuestToolsMonitor::changed, this, [this, tools]() {
+            if (m_nested && tools->hasAgent()) {
                 m_views->systemUp();
             }
         });
