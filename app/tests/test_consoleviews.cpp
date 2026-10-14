@@ -168,8 +168,9 @@ private slots:
         views.setGuest(true, true);
         QCOMPARE(views.view(), View::Screen);
         QCOMPARE(changed.size(), 3);
-        /* a reboot: the boot again, then the login screen when it comes back */
-        views.reset();
+        /* a reboot (the console serves the nested desktop anew): the boot
+           again, then the login screen when it comes back */
+        views.powerOn();
         QCOMPARE(views.view(), View::Boot);
         views.setGuest(true, false);
         QCOMPARE(views.view(), View::Boot);
@@ -200,7 +201,7 @@ private slots:
         /* done: its agent goes, then the guest restarts */
         views.setGuest(false, false);
         QCOMPARE(views.view(), View::Boot);
-        views.reset();
+        views.powerOn();
         QCOMPARE(views.view(), View::Boot);
         /* the agent of the tools now in, then the login screen */
         views.setGuest(true, false);
@@ -258,9 +259,11 @@ private slots:
 
     /*
      * The host's Reset while the session shows: QEMU tells the reset, and
-     * the session's window goes as the guest's proxy disconnects, after it
-     * at times.  That window going must not bring the guest's screen
-     * during the firmware (the user's report: Screen during a reboot)
+     * the session's window may go after it, as the guest's proxy
+     * disconnects.  That window going must not bring the guest's screen
+     * during the firmware (the user's report: Screen during a reboot).  (The
+     * console serves the nested desktop anew at a reset, which drops that
+     * window's view; the views hold without it too.)
      */
     void resetUnderSession()
     {
@@ -270,7 +273,7 @@ private slots:
         views.setGuest(true, true);
         views.setDesktop(true);
         views.setGuest(true, false);
-        views.reset();
+        views.powerOn();
         QCOMPARE(views.view(), View::Boot);
         QVERIFY(!views.hasDesktop());
         views.setDesktop(false);
@@ -355,7 +358,8 @@ private slots:
         QCOMPARE(views.view(), View::Screen);
         views.choose(View::Desktop);
         QCOMPARE(views.view(), View::Desktop);
-        views.reset();
+        /* a reboot */
+        views.powerOn();
         QCOMPARE(views.view(), View::Boot);
     }
 
@@ -458,15 +462,35 @@ private slots:
         desktop->guestMaps(true);
         QCOMPARE(console.currentView(), View::Desktop);
 
-        /* the host's Reset under the session; the window goes after it */
+        /*
+         * The host's Reset under the session: the boot, and the nested
+         * desktop served anew - QEMU keeps the session's connection open
+         * across that reset, whose window would count as shown still: the
+         * next session's would change nothing
+         */
+        const QPointer<StandInDesktop> before = desktop;
         qmp.event("RESET");
         QTRY_COMPARE(console.currentView(), View::Boot);
-        desktop->guestMaps(false);
-        QCOMPARE(console.currentView(), View::Boot);
+        QTRY_VERIFY(!before);
+        desktop = qobject_cast<StandInDesktop *>(console.nestedView());
+        QVERIFY(desktop);
+        QCOMPARE(desktop->socket(), runDir + "/nested.sock");
 
-        /* the next boot's login screen; a shutdown from it */
+        /* the next boot's login screen, a login: the new session shows */
         hello(R"({"tools":"0.1.0-20.fc44","installing":false,"screen":"login"})");
         QTRY_COMPARE(console.currentView(), View::Screen);
+        say(R"({"type":"screen","screen":""})");
+        QTRY_VERIFY(!tools->screenShown());
+        QCOMPARE(console.currentView(), View::Screen);
+        desktop->guestMaps(true);
+        QCOMPARE(console.currentView(), View::Desktop);
+        /* a logout: the window goes, the view waits for what the guest shows */
+        desktop->guestMaps(false);
+        QCOMPARE(console.currentView(), View::Desktop);
+        say(R"({"type":"screen","screen":"login"})");
+        QTRY_COMPARE(console.currentView(), View::Screen);
+
+        /* a shutdown from the login screen */
         say(R"({"type":"screen","screen":""})");
         QTRY_VERIFY(!tools->screenShown());
         QCOMPARE(console.currentView(), View::Screen);

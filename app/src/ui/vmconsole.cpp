@@ -207,10 +207,10 @@ VmConsole::VmConsole(Vm *vm, QWidget *parent)
         connect(vm->runner(), &VmRunner::stateChanged, this, &VmConsole::update);
         connect(vm->runner(), &VmRunner::suspendedChanged, this, &VmConsole::update);
         connect(vm->runner(), &VmRunner::waitsForDisplayChanged, this, &VmConsole::update);
-        /* a reboot shows the boot again */
+        /* a reboot: the boot again, and the nested desktop served anew */
         connect(vm->runner(), &VmRunner::guestReset, this, [this]() {
             if (m_nested) {
-                m_views->reset();
+                renewNested();
             }
         });
         /*
@@ -369,6 +369,25 @@ bool VmConsole::serveNested(const QString &socket, QString *error)
     /* a QEMU found running: what its guest shows, if its agent said already */
     followGuest();
     return true;
+}
+
+/*
+ * The guest restarted, its sessions with it: a new view serves the nested
+ * desktop's socket, and their connections go with the old one.  QEMU keeps
+ * one open across a reset it makes itself (the host's Reset): its window
+ * would still count as shown - the library keeps one such state for all its
+ * connections - so the next session's window would change nothing, and the
+ * console would never show it.
+ */
+void VmConsole::renewNested()
+{
+    const QString socket = m_nested->socket();
+    QString error;
+
+    dropNested();
+    if (!serveNested(socket, &error)) {
+        qWarning("vitrine: %s", qPrintable(error));
+    }
 }
 
 void VmConsole::followGuest()

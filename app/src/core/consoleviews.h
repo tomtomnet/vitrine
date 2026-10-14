@@ -12,10 +12,12 @@ class QKeyEvent;
  * shows in vitrine's window (NestedDesktop::Mode::Integrated):
  *
  *  - Boot: QEMU's console 0, the VGA card's screen - the firmware, the boot
- *    loader, the kernel's messages, and the guest's console while it is
- *    there (bochs-drm drives that card);
- *  - Screen: console 1, the virtio-gpu card's own - the login screen, and
- *    the guest's console when it is there;
+ *    loader, then the guest's text console: fbcon moves it there from the
+ *    virtio card early in the boot, as bochs-drm gives the boot VGA its
+ *    framebuffer (the boot's and the shutdown's messages);
+ *  - Screen: console 1, the virtio-gpu card's own - the login screen (the
+ *    guest tools put it there alone), and the console in a guest without
+ *    the VGA's driver; else it keeps the boot's first lines;
  *  - Desktop: the guest's KDE session (its nested KWin's window).
  *
  * It follows what the guest shows: Boot from power-on and at a reboot;
@@ -57,14 +59,12 @@ public:
 
     /* The user's choice */
     void choose(View view);
-    /* A run starts, or is found running: Boot */
-    void powerOn();
     /*
-     * The guest reboots: Boot.  Its session, its agent and its screen went
-     * with it: what is said of them late - their window going after the
-     * reset - moves nothing.
+     * A run starts, is found running, or the guest restarts (the console
+     * then serves its nested desktop anew): Boot, the guest's agent, screen
+     * and window forgotten
      */
-    void reset();
+    void powerOn();
     /*
      * What the guest says through the guest tools' agent: @up, the agent
      * answers (its system runs; the agent goes as the guest shuts down or

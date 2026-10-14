@@ -111,6 +111,8 @@ private:
     void detach();
     /* The nested desktop's view goes, with the run */
     void dropNested();
+    /* The guest restarted: the nested desktop's socket served anew */
+    void renewNested();
     /* What the guest says it shows (GuestToolsMonitor), to the views */
     void followGuest();
     /* The view of m_views: its page, the D-Bus display's console, the keys */

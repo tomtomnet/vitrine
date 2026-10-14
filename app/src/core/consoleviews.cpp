@@ -55,12 +55,6 @@ void ConsoleViews::powerOn()
     show(View::Boot);
 }
 
-void ConsoleViews::reset()
-{
-    /* the guest's window may go after the reset is told: no Screen then */
-    powerOn();
-}
-
 void ConsoleViews::setGuest(bool up, bool screen)
 {
     screen = screen && up;
@@ -91,7 +85,9 @@ void ConsoleViews::setDesktop(bool shown)
         /* the session ended, the login screen up already */
         show(View::Screen);
     } else if (!m_up) {
-        /* the guest shuts down or restarts: its console is on the VGA */
+        /* the guest shuts down or restarts: its console, on the VGA (on its
+           own screen only without the VGA's driver, which the agent no
+           longer tells) */
         show(View::Boot);
     }
     /* else a logout, whose login screen comes, or a shutdown, whose agent
