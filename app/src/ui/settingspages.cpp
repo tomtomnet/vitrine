@@ -512,8 +512,8 @@ void DisplayPage::update()
     m_nested->setEnabled(!nographic && !byHand && (m_nestedOffer.offered || hadNested));
     m_nestedHint->setText(
         byHand || nographic ? QString()
-        : s.nested          ? tr("For guests with the nested KDE session: Plasma (crosvm "
-                                 "window).")
+        : s.nested          ? tr("For Fedora KDE guests with the guest tools: their login "
+                                 "screen then offers Plasma (nested desktop).")
         : m_nestedOffer.offered
             ? tr("The guest's KDE session through a KWin of its own, as a window of this "
                  "computer's desktop or in Vitrine's (virtio-gpu-rutabaga).")
