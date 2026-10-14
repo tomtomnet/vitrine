@@ -1778,7 +1778,8 @@ bool UsbPage::isModified() const
 NetworkPage::NetworkPage(Vm *vm, QWidget *parent)
     : SettingsPage(parent), m_vm(vm), m_custom(new Banner(Banner::Information)),
       m_nat(new QCheckBox(tr("&Connect the VM to the network"))),
-      m_ssh(new QCheckBox(tr("&Forward a port of this computer to the guest's SSH server:"))),
+      /* not &Forward: the File menu has Alt+F */
+      m_ssh(new QCheckBox(tr("Forward a &port of this computer to the guest's SSH server:"))),
       m_port(new QSpinBox), m_sshInfo(Widgets::hint())
 {
     auto *layout = new QVBoxLayout(this);

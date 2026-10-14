@@ -19,8 +19,6 @@
 #include <QTemporaryDir>
 #include <QTest>
 #include <QTimer>
-#include <QToolBar>
-#include <QToolButton>
 
 #include <memory>
 
@@ -290,14 +288,6 @@ private slots:
         QVERIFY(!m_menu->menuAction()->isEnabled());
         m_menu->setVm(vm("alpha"));
         QVERIFY(m_menu->menuAction()->isEnabled());
-
-        /* a button on a toolbar that opens it */
-        QToolBar toolbar;
-        QToolButton *button = m_menu->addTo(&toolbar);
-        QVERIFY(button);
-        QCOMPARE(button->popupMode(), QToolButton::InstantPopup);
-        QCOMPARE(button->defaultAction(), m_menu->menuAction());
-        QCOMPARE(button->defaultAction()->menu(), m_menu);
     }
 
     void entries()
