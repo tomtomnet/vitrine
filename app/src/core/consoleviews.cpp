@@ -69,6 +69,7 @@ void ConsoleViews::powerOn()
     m_agentWait->stop();
     m_bootAfter = false;
     m_screenBefore = false;
+    m_systemDown = false;
     m_up = false;
     m_screen = false;
     m_desktop = false;
@@ -98,12 +99,25 @@ void ConsoleViews::setGuest(bool up, bool screen)
     }
     if (shows) {
         show(View::Screen);
+    } else if (gone && m_systemDown) {
+        /* the guest's system goes down, QEMU's guest agent gone already */
+        show(View::Boot);
     } else if (gone) {
         /* the guest shuts down or restarts, or the agent restarts itself
            (after a tools update it ran, after a crash): Boot once it has
            been gone for the wait */
         m_bootAfter = true;
         m_agentWait->start(s_agentWaitMs > 0 ? s_agentWaitMs : kAgentWaitMs);
+    }
+}
+
+void ConsoleViews::setQemuAgent(bool up)
+{
+    m_systemDown = !up;
+    if (!up && m_agentWait->isActive()) {
+        /* the guest's system goes down: the agent does not come back */
+        m_agentWait->stop();
+        agentGone();
     }
 }
 

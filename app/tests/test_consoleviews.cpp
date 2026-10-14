@@ -355,6 +355,81 @@ private slots:
         QCOMPARE(changed.size(), 3);
     }
 
+    /*
+     * The guest's system goes down: QEMU's guest agent closes its port too,
+     * which the guest tools' agent restarting itself does not do.  Boot at
+     * once, its shutdown messages there, in either order
+     */
+    void systemGoesDown()
+    {
+        ConsoleViews views;
+
+        /* a reboot from the login screen: the tools' agent, then qemu-ga */
+        views.powerOn();
+        views.setQemuAgent(true);
+        views.setGuest(true, true);
+        views.setGuest(false, false);
+        QCOMPARE(views.view(), View::Screen);
+        views.setQemuAgent(false);
+        QCOMPARE(views.view(), View::Boot);
+        QSignalSpy changed(&views, &ConsoleViews::viewChanged);
+        QTest::qWait(2 * kWaitMs);
+        QCOMPARE(changed.size(), 0);
+
+        /* qemu-ga first */
+        views.powerOn();
+        views.setQemuAgent(true);
+        views.setGuest(true, true);
+        views.setQemuAgent(false);
+        QCOMPARE(views.view(), View::Screen);
+        views.setGuest(false, false);
+        QCOMPARE(views.view(), View::Boot);
+
+        /* from the session, its window gone first: as soon as both agents are */
+        views.powerOn();
+        views.setQemuAgent(true);
+        views.setGuest(true, true);
+        views.setDesktop(true);
+        views.setGuest(true, false);
+        views.setDesktop(false);
+        views.setGuest(false, false);
+        QCOMPARE(views.view(), View::Desktop);
+        views.setQemuAgent(false);
+        QCOMPARE(views.view(), View::Boot);
+
+        /* qemu-ga restarting alone (an update of it) moves nothing, and an
+           agent's restart after it waits as any */
+        views.powerOn();
+        views.setQemuAgent(true);
+        views.setGuest(true, true);
+        views.setQemuAgent(false);
+        views.setQemuAgent(true);
+        QCOMPARE(views.view(), View::Screen);
+        views.setGuest(false, false);
+        QCOMPARE(views.view(), View::Screen);
+        views.setGuest(true, true);
+        QTest::qWait(2 * kWaitMs);
+        QCOMPARE(views.view(), View::Screen);
+
+        /* the user's choice during the wait holds through qemu-ga's going,
+           until the reset */
+        views.setGuest(false, false);
+        views.choose(View::Screen);
+        views.setQemuAgent(false);
+        QCOMPARE(views.view(), View::Screen);
+        views.powerOn();
+        QCOMPARE(views.view(), View::Boot);
+
+        /* the next boot knows nothing of the last one's qemu-ga: its own
+           agent's restart waits, qemu-ga not up yet */
+        views.setGuest(true, true);
+        views.setGuest(false, false);
+        QCOMPARE(views.view(), View::Screen);
+        views.setGuest(true, true);
+        QTest::qWait(2 * kWaitMs);
+        QCOMPARE(views.view(), View::Screen);
+    }
+
     /* The reset of a reboot during the wait: Boot at once, and no late change after it */
     void powerOnDuringTheWait()
     {
@@ -674,8 +749,23 @@ private slots:
         QTest::qWait(kWiringWaitMs + 200);
         QCOMPARE(console.currentView(), View::Screen);
 
-        /* a reboot from the login screen: its agent goes, then the reset,
-           which brings the boot's screen at once, before the wait's end */
+        /* a reboot from the login screen: its agent goes, then QEMU's guest
+           agent, as the system goes down: the boot's screen at once, before
+           the wait's end, with the shutdown's messages */
+        qmp.event("VSERPORT_CHANGE", {{"id", "vitrine-ga-port"}, {"open", true}});
+        qmp.event("VSERPORT_CHANGE", {{"id", GuestTools::kPortId}, {"open", false}});
+        QTRY_VERIFY(!tools->hasAgent());
+        QCOMPARE(console.currentView(), View::Screen);
+        qmp.event("VSERPORT_CHANGE", {{"id", "vitrine-ga-port"}, {"open", false}});
+        QTRY_COMPARE_WITH_TIMEOUT(console.currentView(), View::Boot, kWiringWaitMs / 2);
+        qmp.event("RESET");
+        QTest::qWait(50);
+        QCOMPARE(console.currentView(), View::Boot);
+        hello(R"({"tools":"0.1.0-20.fc44","installing":false,"screen":"login"})");
+        QTRY_COMPARE(console.currentView(), View::Screen);
+
+        /* the same without QEMU's guest agent: the reset brings the boot's
+           screen, before the wait's end */
         qmp.event("VSERPORT_CHANGE", {{"id", GuestTools::kPortId}, {"open", false}});
         QTRY_VERIFY(!tools->hasAgent());
         QCOMPARE(console.currentView(), View::Screen);

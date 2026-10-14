@@ -221,6 +221,13 @@ VmConsole::VmConsole(Vm *vm, QWidget *parent)
          */
         connect(GuestToolsMonitor::of(vm), &GuestToolsMonitor::changed, this,
                 &VmConsole::followGuest);
+        /* QEMU's guest agent: it goes as the guest's system goes down, not as
+           the guest tools' agent restarts itself */
+        connect(vm->runner(), &VmRunner::guestAgentChanged, this, [this](bool open) {
+            if (m_nested) {
+                m_views->setQemuAgent(open);
+            }
+        });
     }
     update();
 }

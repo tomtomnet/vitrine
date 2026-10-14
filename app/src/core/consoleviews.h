@@ -36,7 +36,10 @@ class QTimer;
  * wait, nothing moves but for something new on the guest's screen; gone
  * for good (a shutdown, a reboot), Boot - at the latest at the reboot's
  * reset (powerOn()), or when the run ends.  The desktop coming or the
- * user's choice meanwhile takes that Boot back.
+ * user's choice meanwhile takes that Boot back.  The wait ends at once as
+ * QEMU's guest agent goes too (setQemuAgent()), as the guest's system goes
+ * down: Boot then shows the shutdown's messages, which a reboot's reset
+ * would come after.
  *
  * Not as an agent answers: agents start early in a boot, seconds or minutes
  * (the guest tools' install at boot) before the login screen.  Nor by what
@@ -90,6 +93,13 @@ public:
      * agent has been gone for the wait; nothing while the desktop shows.
      */
     void setGuest(bool up, bool screen);
+    /*
+     * QEMU's guest agent (qemu-ga) opened its port, or closed it.  It closes
+     * it as the guest's system goes down, not as the guest tools' agent
+     * restarts: while it is closed, the agent that went or goes brings Boot
+     * without the wait.  A guest without qemu-ga says nothing: the wait.
+     */
+    void setQemuAgent(bool up);
     /* The guest's window came (Desktop), or went (see above) */
     void setDesktop(bool shown);
     bool hasDesktop() const;
@@ -111,4 +121,6 @@ private:
     QTimer *m_agentWait;
     bool m_screenBefore = false;
     bool m_bootAfter = false;
+    /* QEMU's guest agent closed its port: the guest's system goes down */
+    bool m_systemDown = false;
 };
