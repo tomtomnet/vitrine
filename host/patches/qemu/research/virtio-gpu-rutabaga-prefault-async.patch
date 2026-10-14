@@ -1,0 +1,114 @@
+From 489eed51eefc68d44dea265798496a5c3f5bd4e3 Mon Sep 17 00:00:00 2001
+From: virtio-gpu-desktop <local@localhost>
+Date: Wed, 14 Oct 2026 23:22:49 +0200
+Subject: [PATCH] virtio-gpu-rutabaga: queue the blob pre-fault on a vCPU
+ instead of waiting for it
+
+x-prefault-blobs ran KVM_PRE_FAULT_MEMORY through run_on_cpu() from the
+command bottom half. That bottom half holds the virtio-pci transport's
+re-entrancy guard (virtio_bh_io_new_guarded), and run_on_cpu() waits with
+the BQL released: every guest access to the device in that window was
+refused and dropped ("Blocked re-entrant IO on MemoryRegion: msix-table").
+Linux writes the MSI-X table when it moves an interrupt to another CPU
+(mask, new address and data, unmask); a lost unmask leaves the vector
+masked and a half-written message sends it to the wrong CPU or vector -
+the GPU's queue then goes quiet until the next move.
+
+Seen with a debug build logging each blocked access with its holder: app
+starts in the guest (fresh host-visible blobs, pre-faulted) while the
+GPU's interrupts moved between two vCPUs - writes to msix-table +0x1C
+(entry 1's mask: the control queue) and +0x14 dropped, the guard held by
+a bottom half. Without x-prefault-blobs, none.
+
+The pre-fault is now queued with async_run_on_cpu(): the guest gets its
+answer at once, vCPU 0 maps the range when it next runs its work (with
+the BQL held, so the mapping cannot change meanwhile); a page the guest
+touches first faults in as it would without the pre-fault. -ENOENT (the
+blob unmapped before the work ran) is not an error; any other failure
+turns the pre-fault off for the process.
+
+Same test without the debug build (24 app starts, this VM's KVM work
+only): waited for, 299 pre-faults and 2 KVM faults in the blob window,
+one "Blocked re-entrant IO"; queued, 292 pre-faults and 2,335 faults,
+none blocked; no pre-fault, 32,487 faults. Queuing keeps 93 % of what
+the pre-fault saves.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ hw/display/virtio-gpu-rutabaga.c | 39 +++++++++++++++++++++++---------
+ 1 file changed, 28 insertions(+), 11 deletions(-)
+
+diff --git a/hw/display/virtio-gpu-rutabaga.c b/hw/display/virtio-gpu-rutabaga.c
+index 6c91fb278f..905ce4cbdd 100644
+--- a/hw/display/virtio-gpu-rutabaga.c
++++ b/hw/display/virtio-gpu-rutabaga.c
+@@ -1012,38 +1012,55 @@ rutabaga_cmd_resource_create_blob(VirtIOGPU *g,
+ typedef struct RutabagaPrefault {
+     uint64_t gpa;
+     uint64_t size;
+-    int ret;
+ } RutabagaPrefault;
+ 
++/* cleared for good when KVM cannot pre-fault (a kernel without it) */
++static bool rutabaga_prefault_works = true;
++
+ static void rutabaga_prefault_on_cpu(CPUState *cpu, run_on_cpu_data data)
+ {
+     RutabagaPrefault *p = data.host_ptr;
++    int ret = kvm_cpu_pre_fault_memory(cpu, p->gpa, p->size);
+ 
+-    p->ret = kvm_cpu_pre_fault_memory(cpu, p->gpa, p->size);
++    /* -ENOENT: the blob was unmapped before this ran */
++    if (ret < 0 && ret != -ENOENT && rutabaga_prefault_works) {
++        warn_report("virtio-gpu-rutabaga: KVM_PRE_FAULT_MEMORY failed (%s): "
++                    "x-prefault-blobs off", strerror(-ret));
++        rutabaga_prefault_works = false;
++    }
++    g_free(p);
+ }
+ 
++/*
++ * Queued on a vCPU, not waited for: this runs in the command bottom half, which
++ * holds the virtio-pci transport's re-entrancy guard, and run_on_cpu() waits
++ * with the BQL released - the guest's accesses to the device meanwhile (the
++ * MSI-X vector mask and unmask Linux writes when it moves an interrupt to
++ * another CPU) were refused and lost ("Blocked re-entrant IO"). The guest
++ * gets its answer at once; a page it touches before vCPU 0 gets to the work
++ * faults in as it would without the pre-fault. The work runs with the BQL
++ * held, so the mapping cannot change under it.
++ */
+ static void virtio_gpu_rutabaga_prefault(VirtIOGPURutabaga *vr, uint64_t offset,
+                                          uint64_t size)
+ {
+     VirtIOGPUBase *vb = VIRTIO_GPU_BASE(vr);
+     MemoryRegionSection sec;
+-    RutabagaPrefault p = { .size = size };
++    RutabagaPrefault *p;
+ 
+-    if (!vr->prefault_blobs || !kvm_enabled() || !first_cpu) {
++    if (!vr->prefault_blobs || !rutabaga_prefault_works || !kvm_enabled() ||
++        !first_cpu) {
+         return;
+     }
+     sec = memory_region_find(&vb->hostmem, offset, size);
+     if (!sec.mr) {
+         return;
+     }
+-    p.gpa = sec.offset_within_address_space;
++    p = g_new(RutabagaPrefault, 1);
++    p->gpa = sec.offset_within_address_space;
++    p->size = size;
+     memory_region_unref(sec.mr);
+-    run_on_cpu(first_cpu, rutabaga_prefault_on_cpu, RUN_ON_CPU_HOST_PTR(&p));
+-    if (p.ret < 0) {
+-        warn_report("virtio-gpu-rutabaga: KVM_PRE_FAULT_MEMORY failed (%s): "
+-                    "x-prefault-blobs off", strerror(-p.ret));
+-        vr->prefault_blobs = false;
+-    }
++    async_run_on_cpu(first_cpu, rutabaga_prefault_on_cpu, RUN_ON_CPU_HOST_PTR(p));
+ }
+ 
+ static bool
+-- 
+2.56.0
+
