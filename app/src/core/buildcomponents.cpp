@@ -757,21 +757,25 @@ static Status hostStatus(const Component &c, const QList<Component> &all, const 
     if (!current.isValid()) {
         return s;
     }
-    s.state = Status::State::Outdated;
-    if (c.id == "virglrenderer" && !current.virglPrefix.isEmpty()) {
-        built = plainValues(readFile(current.virglPrefix + conf));
-        s.output = current.virglPrefix;
+    if (const QString library = current.libraryPrefix(c.id); !library.isEmpty()) {
+        s.state = Status::State::Outdated;
+        built = plainValues(readFile(library + conf));
+        s.output = library;
         s.built = QDateTime::fromString(built.value("BUILT"), Qt::ISODate);
         s.version = built.value("VERSION");
-        s.changes = changes(c, all,
-                            readFile(current.virglPrefix + "/share/vitrine/" + c.id + ".inputs"),
+        s.changes = changes(c, all, readFile(library + "/share/vitrine/" + c.id + ".inputs"),
                             now);
         return s;
     }
+    /* a library the current QEMU is built without (rutabaga_gfx, new) */
+    if (c.id != "virglrenderer") {
+        return s;
+    }
+    s.state = Status::State::Outdated;
     /* built into QEMU's own folder, before each had its own: what changed is not known */
     s.output = current.prefix + "/lib64";
     s.built = current.built;
-    s.version = c.id == "virglrenderer" ? current.virglVersion : QString();
+    s.version = current.virglVersion;
     s.changes = {Change()};
     return s;
 }

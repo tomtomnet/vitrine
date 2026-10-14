@@ -76,27 +76,48 @@ class TestBuildComponents : public QObject
     }
 
     /* @stack's `current` as build.sh leaves it for @host's inputs now: a
-       QEMU and the virglrenderer it is built against, with their inputs */
-    static bool builtStack(const QString &host, const QString &stack)
+       QEMU and the libraries it is built against, with their inputs; with
+       @rutabaga false, as an older Vitrine left it, without rutabaga_gfx */
+    static bool builtStack(const QString &host, const QString &stack, bool rutabaga = true)
     {
         Places places;
         places.hostDir = host;
         const QList<Component> all = load(places);
         const Component virgl = find(all, "virglrenderer");
+        const Component ffi = find(all, "rutabaga_gfx");
         const Component qemu = find(all, "qemu");
         const QString vkey = key(virgl, all);
-        const QString stamp = key(qemu, all);
+        const QString rkey = key(ffi, all);
         const QString library = stack + "/virglrenderer/" + vkey.left(16);
-        const QString prefix = stack + '/' + stamp.left(16);
+        const QString rlibrary = stack + "/rutabaga_gfx/" + rkey.left(16);
+        QByteArray inputs = inputLines(qemu, all);
         QFile::remove(stack + "/current");
+        QDir(rlibrary).removeRecursively();
+        /* an older one's inputs had no such line, and so another stamp */
+        if (!rutabaga) {
+            inputs.replace("dep rutabaga_gfx " + rkey.toLatin1() + '\n', "");
+        }
+        const QString stamp = QString::fromLatin1(
+            QCryptographicHash::hash(inputs, QCryptographicHash::Sha256).toHex());
+        const QString prefix = stack + '/' + stamp.left(16);
+        QByteArray manifest = "STAMP=" + stamp.toUtf8() +
+                              "\nBUILT=2026-10-12T09:00:00Z\nQEMU_VERSION=11.1.50\nVIRGL_KEY=" +
+                              vkey.toUtf8() + "\nVIRGL_PREFIX=" + library.toUtf8() + '\n';
+        if (rutabaga) {
+            manifest += "RUTABAGA_KEY=" + rkey.toUtf8() + "\nRUTABAGA_PREFIX=" +
+                        rlibrary.toUtf8() + '\n';
+            if (!write(rlibrary + "/share/vitrine/rutabaga_gfx.conf",
+                       "KEY=" + rkey.toUtf8() +
+                           "\nBUILT=2026-10-12T08:30:00Z\nVERSION=0.1.85\n") ||
+                !write(rlibrary + "/share/vitrine/rutabaga_gfx.inputs", inputLines(ffi, all))) {
+                return false;
+            }
+        }
         return write(library + "/share/vitrine/virglrenderer.conf",
                      "KEY=" + vkey.toUtf8() + "\nBUILT=2026-10-12T08:00:00Z\nVERSION=1.3.0\n") &&
                write(library + "/share/vitrine/virglrenderer.inputs", inputLines(virgl, all)) &&
-               write(prefix + "/share/vitrine/stack.conf",
-                     "STAMP=" + stamp.toUtf8() +
-                         "\nBUILT=2026-10-12T09:00:00Z\nQEMU_VERSION=11.1.50\nVIRGL_KEY=" +
-                         vkey.toUtf8() + "\nVIRGL_PREFIX=" + library.toUtf8() + '\n') &&
-               write(prefix + "/share/vitrine/qemu.inputs", inputLines(qemu, all)) &&
+               write(prefix + "/share/vitrine/stack.conf", manifest) &&
+               write(prefix + "/share/vitrine/qemu.inputs", inputs) &&
                QFile::link(stamp.left(16), stack + "/current");
     }
 
@@ -143,10 +164,13 @@ private slots:
         for (const Component &c : all) {
             ids << c.id;
         }
-        QCOMPARE(ids, QStringList({"virglrenderer", "qemu", "tools", "mesa", "kwin", "medium"}));
+        QCOMPARE(ids, QStringList({"virglrenderer", "rutabaga_gfx", "qemu", "tools", "mesa", "kwin",
+                                   "medium"}));
         QCOMPARE(find(all, "qemu").kind, Kind::Host);
         QCOMPARE(find(all, "qemu").title, "QEMU");
-        QCOMPARE(find(all, "qemu").deps, QStringList({"virglrenderer"}));
+        QCOMPARE(find(all, "qemu").deps, QStringList({"virglrenderer", "rutabaga_gfx"}));
+        QCOMPARE(find(all, "rutabaga_gfx").kind, Kind::Host);
+        QCOMPARE(find(all, "rutabaga_gfx").deps, QStringList({"virglrenderer"}));
         QCOMPARE(find(all, "mesa").kind, Kind::Package);
         QVERIFY(find(all, "mesa").heavy);
         QVERIFY(!find(all, "tools").heavy);
@@ -177,9 +201,10 @@ private slots:
 
         const QString keys = run({places.hostDir + "/build.sh", "--print-keys"}, &status);
         QCOMPARE(status, 0);
-        QCOMPARE(keys, QString("virglrenderer %1\nqemu %2\n")
-                           .arg(key(find(all, "virglrenderer"), all), key(find(all, "qemu"), all)));
-        for (const char *id : {"virglrenderer", "qemu"}) {
+        QCOMPARE(keys, QString("virglrenderer %1\nrutabaga_gfx %2\nqemu %3\n")
+                           .arg(key(find(all, "virglrenderer"), all),
+                                key(find(all, "rutabaga_gfx"), all), key(find(all, "qemu"), all)));
+        for (const char *id : {"virglrenderer", "rutabaga_gfx", "qemu"}) {
             QCOMPARE(run({places.hostDir + "/build.sh", "--print-inputs", id}).toUtf8(),
                      inputLines(find(all, id), all));
         }
@@ -282,6 +307,13 @@ private slots:
                  "amdgpu: force write-combining for host-visible blob mappings");
         QCOMPARE(subject(virgl, virglPatches[3]), "xe: sync-only execs (no batch buffer) pass again");
 
+        /* the research's diff, under a description of Vitrine's */
+        const Component ffi = find(all, "rutabaga_gfx");
+        const QList<Patch> ffiPatches = patches(ffi);
+        QCOMPARE(ffiPatches.size(), 1);
+        QCOMPARE(ffiPatches[0].origin, "Research");
+        QVERIFY(subject(ffi, ffiPatches[0]).startsWith("rutabaga_gfx: native contexts through the FFI"));
+
         /* a spec's Patch lines, a diff without a description: the comment over its line */
         const Component kwin = find(all, "kwin");
         const QList<Patch> kwinPatches = patches(kwin);
@@ -313,6 +345,9 @@ private slots:
         const Source qemu = source(find(all, "qemu"));
         QCOMPARE(qemu.url, "https://gitlab.com/qemu-project/qemu.git");
         QCOMPARE(qemu.revision.size(), 40);
+        const Source ffi = source(find(all, "rutabaga_gfx"));
+        QCOMPARE(ffi.url, "https://github.com/magma-gpu/rutabaga_gfx.git");
+        QCOMPARE(ffi.revision.size(), 40);
         const Source mesa = source(find(all, "mesa"));
         QCOMPARE(mesa.archive, "mesa-" + GuestToolsBuilder::version(find(all, "mesa").dir, "mesa") +
                                    ".tar.xz");
@@ -331,12 +366,14 @@ private slots:
     void hostStatus()
     {
         const QByteArray pins = "QEMU_URL=https://q/qemu.git\nQEMU_COMMIT=%1\n"
-                                "VIRGL_URL=https://v/virgl.git\nVIRGL_COMMIT=%2\n";
+                                "VIRGL_URL=https://v/virgl.git\nVIRGL_COMMIT=%2\n"
+                                "RUTABAGA_URL=https://r/rutabaga.git\nRUTABAGA_COMMIT=4444\n";
         const QString host =
             hostFixture("status-host", QString(pins).arg("1111", "2222").toUtf8(),
                         {{"qemu/fork/0001-a.patch", "a\n"},
                          {"qemu/research/0001-b.patch", "b\n"},
-                         {"virglrenderer/0001-v.patch", "v\n"}});
+                         {"virglrenderer/0001-v.patch", "v\n"},
+                         {"rutabaga_gfx/changes.patch", "r\n"}});
         QVERIFY(!host.isEmpty());
         Places places;
         places.hostDir = host;
@@ -357,6 +394,32 @@ private slots:
         Status virgl = statusOf("virglrenderer");
         QCOMPARE(virgl.state, Status::State::UpToDate);
         QCOMPARE(virgl.version, "1.3.0");
+        Status ffi = statusOf("rutabaga_gfx");
+        QCOMPARE(ffi.state, Status::State::UpToDate);
+        QCOMPARE(ffi.version, "0.1.85");
+
+        /* a rutabaga_gfx patch changed: it, and QEMU built against it */
+        QVERIFY(write(host + "/patches/rutabaga_gfx/changes.patch", "r, rebased\n"));
+        ffi = statusOf("rutabaga_gfx");
+        QCOMPARE(ffi.state, Status::State::Outdated);
+        QCOMPARE(summary(ffi.changes), "1 patch changed");
+        QCOMPARE(describe(ffi.changes[0]), "Patch changes.patch changed");
+        QCOMPARE(summary(statusOf("qemu").changes), "rutabaga_gfx changed");
+        QCOMPARE(statusOf("virglrenderer").state, Status::State::UpToDate);
+        QVERIFY(write(host + "/patches/rutabaga_gfx/changes.patch", "r\n"));
+        QCOMPARE(statusOf("qemu").state, Status::State::UpToDate);
+
+        /* a QEMU of an older Vitrine, built without it: it is not built yet,
+           and that QEMU is out of date */
+        QVERIFY(builtStack(host, places.stackDir, false));
+        QCOMPARE(statusOf("rutabaga_gfx").state, Status::State::NotBuilt);
+        const Status without = statusOf("qemu");
+        QCOMPARE(without.state, Status::State::Outdated);
+        QCOMPARE(without.changes.size(), 1);
+        QCOMPARE(describe(without.changes[0]), "Built without rutabaga_gfx");
+        QCOMPARE(summary(without.changes), "without rutabaga_gfx");
+        QVERIFY(builtStack(host, places.stackDir));
+        QCOMPARE(statusOf("qemu").state, Status::State::UpToDate);
 
         /* a QEMU patch changed: QEMU, not virglrenderer */
         QVERIFY(write(host + "/patches/qemu/research/0001-b.patch", "b, rebased\n"));
@@ -393,15 +456,18 @@ private slots:
         QCOMPARE(virgl.changes[0].now, "3333");
         QCOMPARE(describe(virgl.changes[0]), "Pinned to another commit: 3333, 2222 before");
         qemu = statusOf("qemu");
-        QCOMPARE(qemu.changes.size(), 1);
+        QCOMPARE(qemu.changes.size(), 2);
         QCOMPARE(qemu.changes[0].what, Change::What::Dependency);
         QCOMPARE(describe(qemu.changes[0]), "virglrenderer changed");
-        QCOMPARE(summary(qemu.changes), "virglrenderer changed");
+        QCOMPARE(summary(qemu.changes), "virglrenderer changed, rutabaga_gfx changed");
+        /* rutabaga_gfx too, built against it */
+        QCOMPARE(summary(statusOf("rutabaga_gfx").changes), "virglrenderer changed");
         /* the script changed: all of them */
         QVERIFY(builtStack(host, places.stackDir));
         QVERIFY(write(host + "/build.sh", read(host + "/build.sh") + "\n# changed\n"));
         QCOMPARE(summary(statusOf("virglrenderer").changes), "build script changed");
-        QCOMPARE(summary(statusOf("qemu").changes), "build script changed, virglrenderer changed");
+        QCOMPARE(summary(statusOf("qemu").changes),
+                 "build script changed, virglrenderer changed, rutabaga_gfx changed");
 
         /* a build of an older Vitrine, which kept no inputs */
         QVERIFY(QFile::remove(QFileInfo(places.stackDir + "/current").canonicalFilePath() +

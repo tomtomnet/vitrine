@@ -790,9 +790,10 @@ void BuildsWindow::showSource()
                          group->child(i)->text(StatusColumn).toHtmlEscaped();
         }
         html = id == "host"
-                   ? tr("<p><b>Vitrine's QEMU</b>: upstream QEMU and virglrenderer at pinned "
-                        "commits, with Vitrine's patches, for the display in Vitrine's window "
-                        "and 3D acceleration by the host GPU's own driver. Built into %1.</p>")
+                   ? tr("<p><b>Vitrine's QEMU</b>: upstream QEMU, virglrenderer and "
+                        "rutabaga_gfx at pinned commits, with Vitrine's patches, for the display "
+                        "in Vitrine's window, 3D acceleration by the host GPU's own driver and "
+                        "the guest's desktop nested in the host's. Built into %1.</p>")
                          .arg(Paths::stackDir().toHtmlEscaped())
                    : tr("<p><b>The guest tools</b>: the packages Fedora guests install from the "
                         "medium, built in a Fedora %1 container with podman, and the medium "

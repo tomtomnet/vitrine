@@ -5,11 +5,11 @@ The guest uses the host's GPU through virtio-gpu DRM native context, and the
 app shows the guest's display in its window through QEMU's D-Bus display, or
 leaves it to QEMU's own SDL or GTK window.
 
-QEMU, virglrenderer and the guest's graphics stack (virtio-gpu driver, Mesa,
-KWin) are used at pinned versions, with the patches vitrine needs kept in
-this repository: `host/versions.conf` and `host/patches` for the QEMU and
-virglrenderer vitrine builds (upstream QEMU with a series of patches,
-`host/patches/qemu/series`), `guest/` for the guest's.
+QEMU, virglrenderer, rutabaga_gfx and the guest's graphics stack (virtio-gpu
+driver, Mesa, KWin) are used at pinned versions, with the patches vitrine
+needs kept in this repository: `host/versions.conf` and `host/patches` for
+the QEMU, virglrenderer and rutabaga_gfx vitrine builds (upstream QEMU with a
+series of patches, `host/patches/qemu/series`), `guest/` for the guest's.
 
 Early development. It is built and tried on Fedora 44 KDE Plasma (Wayland)
 with an AMD Radeon 780M, with Fedora 44 KDE guests. It is not packaged.
@@ -52,7 +52,8 @@ sudo dnf install git gcc gcc-c++ make meson ninja-build pkgconf-pkg-config pytho
     glib2-devel pixman-devel zlib-devel libslirp-devel SDL2-devel gtk3-devel libepoxy-devel \
     mesa-libgbm-devel mesa-libEGL-devel libdrm-devel libva-devel libusb1-devel \
     pulseaudio-libs-devel pipewire-devel spice-protocol libzstd-devel libpng-devel \
-    libcap-ng-devel libattr-devel wayland-devel wayland-protocols-devel bzip2
+    libcap-ng-devel libattr-devel wayland-devel wayland-protocols-devel bzip2 \
+    rust bindgen-cli
 ```
 
 Building the guest tools (without createrepo_c, the script runs it in podman):
@@ -95,17 +96,17 @@ dragging its edge. Under the list, a button shows the long tasks under way
 task's window, or a menu of the tasks when there are several.
 
 File > Builds… (Ctrl+B) shows what vitrine builds: its QEMU (virglrenderer,
-QEMU) and the guest tools (their packages and medium), each with its
-source, its patches by origin, whether it is up to date and why not, when
-it was built, how long a build takes on this machine, and its log. A build
-redoes only what changed: a component built from the same inputs is not
-built again, a changed patch compiles only the files it changes, and the
-guest packages compile through ccache.
+rutabaga_gfx, QEMU) and the guest tools (their packages and medium), each
+with its source, its patches by origin, whether it is up to date and why
+not, when it was built, how long a build takes on this machine, and its
+log. A build redoes only what changed: a component built from the same
+inputs is not built again, a changed patch compiles only the files it
+changes, and the guest packages compile through ccache.
 
 1. **Build vitrine's QEMU.** The banner's Build… button (or File > Builds…)
-   opens the Builds window, whose Build button fetches QEMU and
-   virglrenderer at their pinned commits, patches them and installs them into
-   `~/.local/share/vitrine/stack` (a few minutes). VMs need it for their
+   opens the Builds window, whose Build button fetches QEMU, virglrenderer
+   and rutabaga_gfx at their pinned commits, patches them and installs them
+   into `~/.local/share/vitrine/stack` (a few minutes). VMs need it for their
    display in vitrine's window and for 3D. Until it is built, they use the
    system's QEMU, if there is one, except those that use what it lacks,
    such as the native context of new Linux VMs: these wait for the build.

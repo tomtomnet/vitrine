@@ -123,4 +123,20 @@ Vitrine's own, on top, for the research side to take over:
 |---|---|
 | `88c80b43864f8b875f83b631e68092d34b462762c5e713fa092f2353aa8e0323` | `0001-xe-sync-only-execs-pass-again.patch`: Xe execs without a batch buffer pass again (0001's check refused them too): Mesa sends them to wait for a queue to go idle, and ANV loses its device when they fail |
 
-Check: `cd host/patches && sha256sum qemu/*/*.patch virglrenderer/*.patch virglrenderer/*/*.patch`.
+## rutabaga_gfx (upstream at `4fb9f320`)
+
+`https://github.com/magma-gpu/rutabaga_gfx.git` at release 0.1.85, the
+research's base, for QEMU's `virtio-gpu-rutabaga` (cross-domain: the
+nested desktop). build.sh builds it with meson as the research does
+(`-Dffi=true -Dfeatures=virgl_renderer`, rustc and bindgen, its crates as
+meson subprojects downloaded in the fetch step) against Vitrine's
+virglrenderer, into a folder of its own that QEMU's RUNPATH names.
+
+| sha256 | patch |
+|---|---|
+| `8c47e8dd68891d3c7c00b824027731d0ab9624437a47eb26ba2ef22a2b3da67f` | `changes.patch`: the research's `patches/rutabaga_gfx/changes.diff` (commit `5f7e6af`) under a description of Vitrine's: native contexts through the FFI, `struct rutabaga_fence`'s ring index as a byte, polling for virglrenderer's fences, a logger, guest dma-bufs |
+
+Below its description the file is the research's diff, unchanged:
+`sed -n '/^diff --git/,$p' rutabaga_gfx/changes.patch` gives it back.
+
+Check: `cd host/patches && sha256sum qemu/*/*.patch virglrenderer/*.patch virglrenderer/*/*.patch rutabaga_gfx/*.patch`.
