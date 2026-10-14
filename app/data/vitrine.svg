@@ -1,15 +1,14 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <!-- SPDX-License-Identifier: CC-BY-3.0 -->
 <!--
-  vitrine's logo: QEMU's emu, Kew, behind a dark glass tile. Derived from
-  "Kew the Angry Emu" by Benoît Canet, published by the QEMU Community
+  vitrine's logo: QEMU's emu, Kew, on his Q behind a glass pane. Derived
+  from "Kew the Angry Emu" by Benoît Canet, published by the QEMU Community
   (https://lists.gnu.org/archive/html/qemu-devel/2012-02/msg02865.html;
   QEMU's ui/icons/qemu.svg), under CC BY 3.0
-  (https://creativecommons.org/licenses/by/3.0/). Changes: Kew's head and
-  neck taken from that file, enlarged and cut at the tile's edge, without
-  his Q, and placed behind a dark glass tile drawn for vitrine. This file is
-  under CC BY 3.0 as well. vitrine is not affiliated with or endorsed by the
-  QEMU project.
+  (https://creativecommons.org/licenses/by/3.0/). Changes: Kew and his Q
+  taken from that file and scaled, without the Q's gloss, and placed behind
+  a glass pane drawn for vitrine. This file is under CC BY 3.0 as well.
+  vitrine is not affiliated with or endorsed by the QEMU project.
 -->
 <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 32 32" width="32" height="32">
   <metadata>
@@ -20,7 +19,7 @@
         <dc:format>image/svg+xml</dc:format>
         <dc:type rdf:resource="http://purl.org/dc/dcmitype/StillImage"/>
         <dc:title>vitrine</dc:title>
-        <dc:description>vitrine's logo: QEMU's emu, Kew, behind a dark glass tile. Derived from Kew the Angry Emu by Benoît Canet (QEMU Community), CC BY 3.0. Changes: Kew's head and neck taken from that file, enlarged and cut at the tile's edge, without his Q, and placed behind a dark glass tile drawn for vitrine.</dc:description>
+        <dc:description>vitrine's logo: QEMU's emu, Kew, on his Q behind a glass pane. Derived from Kew the Angry Emu by Benoît Canet (QEMU Community), CC BY 3.0. Changes: Kew and his Q taken from that file and scaled, without the Q's gloss, and placed behind a glass pane drawn for vitrine.</dc:description>
         <dc:creator>
           <cc:Agent>
             <dc:title>Benoît Canet (Kew the Angry Emu), adapted by the vitrine project</dc:title>
@@ -32,25 +31,27 @@
     </rdf:RDF>
   </metadata>
   <defs>
-    <radialGradient id="deep" cx="15" cy="9" r="24" gradientUnits="userSpaceOnUse">
-      <stop offset="0" stop-color="#1b4a53"/>
-      <stop offset="1" stop-color="#081619"/>
-    </radialGradient>
+    <linearGradient id="tint" x1="2" y1="2" x2="30" y2="30" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#e9fdff" stop-opacity="0.50"/>
+      <stop offset="0.5" stop-color="#bfeff5" stop-opacity="0.22"/>
+      <stop offset="1" stop-color="#7fd3df" stop-opacity="0.36"/>
+    </linearGradient>
     <linearGradient id="rim" x1="2" y1="2" x2="30" y2="30" gradientUnits="userSpaceOnUse">
-      <stop offset="0" stop-color="#e6fcff"/>
-      <stop offset="0.48" stop-color="#9fe4ee"/>
+      <stop offset="0" stop-color="#ffffff"/>
+      <stop offset="0.48" stop-color="#b5ecf3"/>
       <stop offset="0.52" stop-color="#3fb0c1"/>
       <stop offset="1" stop-color="#1d8494"/>
     </linearGradient>
   </defs>
-  <!-- behind the glass: Kew -->
-  <rect x="2" y="2" width="28" height="28" rx="3" fill="url(#deep)"/>
-  <path d="M13.11,10.4 L25.03,12.12 L24.7,13.85 L12.78,12.13 Z" fill="#081619"/>
-  <circle cx="16.94" cy="9.40" r="2.10" fill="#081619"/>
-  <path d="M15.72,30 C15.04,27.3 13.81,24.75 13.3,22.01 C13.28,21.87 13.26,21.73 13.24,21.59 L13.24,21.18 L13.19,21.18 C12.99,19.57 12.92,17.83 14.09,16.57 C15.29,15.36 17.07,15.06 18.51,14.22 C18.83,14.03 19.17,13.88 19.51,13.77 C19.51,13.77 19.52,13.77 19.52,13.77 C20.52,13.46 21.59,13.47 22.62,13.64 C22.64,13.64 22.66,13.65 22.67,13.65 C22.77,13.67 22.87,13.68 22.96,13.7 C23.72,13.77 25.25,14.07 25.52,13.54 C24.47,12.65 22.97,12.71 21.69,12.36 C21.49,12.33 21.24,12.28 20.99,12.26 L19.74,11.98 L19.43,11.9 L19.43,11.91 L14.96,11.04 C14.89,10.98 14.81,10.91 14.74,10.86 L19.1,11.4 L19.1,11.38 C19.26,11.42 19.41,11.44 19.56,11.46 L19.56,11.47 L22.64,12.04 C23.17,12.24 23.74,12.39 24.27,12.42 C25.15,12.55 26.26,13.86 26.55,13.92 C26.41,12.54 25.03,11.93 23.89,11.52 C22.56,10.87 20.56,10.9 20.35,9.1 C20.3,8.98 20.24,8.85 20.17,8.73 L19.65,8.04 L19.67,8.03 C18.96,7.19 17.96,6.58 16.9,6.35 C15.85,5.99 14.67,5.63 13.55,5.48 C13.17,6.59 12.75,4.6 11.84,5.19 C11.04,5.29 11.15,5.5 10.56,4.99 L10.56,4.99 C10.54,5.69 9.32,5.08 9.27,5.88 C7.92,5.28 9.38,6.8 9.24,6.94 L9.23,6.94 L9.13,6.93 C9.07,6.91 8.97,6.87 8.83,6.78 C7.89,7.53 7.86,9.1 6.89,9.96 C6.25,11.34 6.1,12.84 5.63,14.27 C5.4,15.65 5.2,17.02 5.54,18.4 C5.64,19.52 5.32,21.04 6.34,21.83 C7.85,23.07 9.11,24.65 10.38,26.14 C11.39,27.38 12.34,28.67 13.24,30 Z M16.29,8.24 C16.58,8.23 16.91,8.29 17.24,8.4 C18.13,8.71 18.7,9.35 18.53,9.84 C18.36,10.33 17.51,10.48 16.62,10.17 C15.74,9.87 15.16,9.23 15.33,8.74 C15.44,8.43 15.81,8.25 16.29,8.24 Z" fill="#ff6600"/>
-  <!-- the glass: a reflection across it, glints, its edge -->
+  <!-- the glass's own tint, seen around Kew -->
+  <rect x="2" y="2" width="28" height="28" rx="3" fill="url(#tint)"/>
+  <!-- behind the glass: Kew on his Q -->
+  <path d="M16,3.75 C9.24,3.75 3.75,9.2 3.75,15.93 C3.75,22.67 9.24,28.12 16,28.12 C18.22,28.12 20.29,27.54 22.08,26.52 L22.72,28.12 L23.25,28.12 L27.63,28.12 L27.66,28.12 L25.73,23.34 C27.31,21.29 28.25,18.72 28.25,15.93 C28.25,9.2 22.77,3.75 16,3.75 Z" fill="#000000"/>
+  <path d="M12.75,5.76 C12.74,6.24 11.9,5.82 11.87,6.37 C10.94,5.95 11.94,7 11.85,7.09 L11.84,7.09 L11.77,7.09 C11.73,7.07 11.66,7.04 11.57,6.98 C10.92,7.5 10.9,8.57 10.24,9.16 C9.8,10.11 9.69,11.13 9.37,12.12 C9.22,13.06 9.08,14 9.31,14.95 C9.38,15.71 9.16,16.76 9.86,17.3 C10.9,18.15 11.76,19.23 12.63,20.25 C13.99,21.93 15.2,23.73 16.27,25.61 C16.34,25.15 16.51,26.55 16.82,26.64 C16.71,25.94 16.57,24.83 16.51,23.97 C16.16,21.71 15.05,19.66 14.63,17.42 C14.62,17.33 14.6,17.23 14.59,17.13 L14.59,16.85 L14.55,16.85 C14.42,15.75 14.37,14.56 15.17,13.69 C15.99,12.87 17.21,12.66 18.2,12.08 C18.42,11.95 18.65,11.85 18.89,11.77 C18.89,11.77 18.89,11.77 18.89,11.77 C19.58,11.56 20.31,11.57 21.02,11.68 C21.03,11.69 21.04,11.69 21.05,11.69 C21.12,11.7 21.19,11.71 21.25,11.73 C21.77,11.77 22.82,11.98 23,11.62 C22.29,11.01 21.25,11.05 20.38,10.81 C20.24,10.78 20.07,10.75 19.9,10.74 L19.04,10.55 L18.83,10.49 L18.83,10.5 L15.77,9.9 C15.72,9.86 15.67,9.81 15.62,9.78 L18.6,10.15 L18.6,10.14 C18.71,10.16 18.81,10.18 18.92,10.19 L18.92,10.2 L21.03,10.59 C21.39,10.72 21.78,10.83 22.15,10.85 C22.75,10.94 23.51,11.83 23.71,11.88 C23.61,10.93 22.67,10.51 21.89,10.23 C20.97,9.79 19.61,9.8 19.46,8.57 C19.42,8.49 19.38,8.4 19.34,8.32 L18.98,7.85 L18.99,7.84 C18.51,7.27 17.82,6.85 17.1,6.69 C16.37,6.44 15.56,6.19 14.8,6.09 C14.54,6.86 14.25,5.49 13.63,5.89 C13.08,5.96 13.16,6.1 12.75,5.76 Z M16.68,7.98 C16.88,7.98 17.1,8.02 17.33,8.09 C17.94,8.3 18.33,8.74 18.21,9.08 C18.1,9.42 17.51,9.52 16.9,9.31 C16.3,9.1 15.9,8.66 16.02,8.33 C16.09,8.12 16.35,7.99 16.68,7.98 Z" fill="#ff6600"/>
+  <!-- the glass: reflections, edge -->
   <path d="M2 20 L20 2 L24 2 L2 24 Z" fill="#ffffff" fill-opacity="0.16"/>
   <path d="M2 25.5 L25.5 2 L27 2 L2 27 Z" fill="#ffffff" fill-opacity="0.10"/>
-  <path d="M19.5 28.5 L28.5 19.5 L28.5 21 L21 28.5 Z M24 28.5 L28.5 24 L28.5 25 L25 28.5 Z" fill="#e6fcff" fill-opacity="0.7"/>
+  
   <rect x="2.5" y="2.5" width="27" height="27" rx="2.5" fill="none" stroke="url(#rim)" stroke-width="1"/>
+  <rect x="2.15" y="2.15" width="27.7" height="27.7" rx="2.85" fill="none" stroke="#14707f" stroke-opacity="0.6" stroke-width="0.3"/>
 </svg>
