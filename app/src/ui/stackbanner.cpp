@@ -19,7 +19,8 @@ StackBanner::StackBanner(QWidget *parent)
     StackBuilder *builder = StackBuilder::instance();
 
     setObjectName("stackBanner");
-    layout->setContentsMargins(6, 6, 6, 0);
+    /* as much room under it as around it: the list of VMs touched it */
+    layout->setContentsMargins(6, 6, 6, 6);
     layout->addWidget(m_warning);
     layout->addWidget(m_note);
     for (Banner *banner : {m_warning, m_note}) {
