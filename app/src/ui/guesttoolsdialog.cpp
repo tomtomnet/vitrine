@@ -148,8 +148,8 @@ static QString forWhom(Vm *vm, const GuestTools::Medium &medium)
                    .arg(monitor->system().displayName().toHtmlEscaped());
     }
     return text + ' ' +
-           GuestToolsDialog::tr("vitrine does not know yet what this guest runs: QEMU's guest "
-                                "agent (qemu-guest-agent) tells it while the VM runs.");
+           GuestToolsDialog::tr("What this guest runs is not known yet: QEMU's guest agent "
+                                "(qemu-guest-agent) tells vitrine while the VM runs.");
 }
 
 /* What the tools of @medium install in @vm, and how */

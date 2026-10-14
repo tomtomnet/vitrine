@@ -152,9 +152,9 @@ private slots:
             << "kde" << "" << false << "This guest runs KDE Linux, which the guest tools are "
                                        "not for.";
         QTest::newRow("never said")
-            << "linux" << "" << true << "vitrine does not know yet what this guest runs";
+            << "linux" << "" << true << "What this guest runs is not known yet";
         QTest::newRow("never said, no #guest")
-            << "unknown" << "" << true << "vitrine does not know yet what this guest runs";
+            << "unknown" << "" << true << "What this guest runs is not known yet";
         QTest::newRow("set up for windows")
             << "windows" << "" << false << "This VM is set up for Windows.";
         QTest::newRow("set up for another system")
