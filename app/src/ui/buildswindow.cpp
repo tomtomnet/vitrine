@@ -1399,6 +1399,13 @@ QString BuildsWindow::kwinSource(const Component &c)
         !kwin.differs.isEmpty()) {
         html += para(why);
     }
+    if (kwin.owner == Owner::Vitrine && !kwin.isOutdated() && kwin.build.isValid() &&
+        kwin.build.rpm("kwin").digest != kwin.kwin.digest && kwin.differs.isEmpty()) {
+        html += para(tr("Another build than the one installed is ready (KWin %1, built %2): "
+                        "Install… replaces it.")
+                         .arg(kwin.build.evr, QLocale().toString(kwin.build.built.toLocalTime().date(),
+                                                                 "d MMMM yyyy")));
+    }
     if (kwin.nextLogin) {
         html += para(tr("The running desktop still runs the KWin it started with: the one "
                         "installed now runs from the next login."));

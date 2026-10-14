@@ -76,7 +76,8 @@ install_set() {
 	local arg file sum name arch digest evr have have_digest have_evr c kwin=0
 	local -a names=() files=() up=() down=() re=() was=() actions=()
 	[ $# -gt 0 ] || die "no packages given"
-	tmp=$(mktemp -d /var/tmp/vitrine-kwin.XXXXXX)
+	# root's own: pkexec gives no TMPDIR, so /var/tmp, on disk rather than in memory
+	tmp=$(mktemp -d "${TMPDIR:-/var/tmp}/vitrine-kwin.XXXXXX")
 	trap 'rm -rf "$tmp"' EXIT
 	say "step: checking the packages"
 	for arg; do

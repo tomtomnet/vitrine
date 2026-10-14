@@ -403,6 +403,7 @@ if(BUILD_TESTING)
             guesttoolsbuilder
             hostdevices
             hostkvm
+            hostkwin
             hostmemory
             hostsettings
             importer
@@ -478,6 +479,9 @@ if(BUILD_TESTING)
     # the scripts of guest/, against a stand-in for podman
     target_compile_definitions(test_guesttoolsbuilder PRIVATE
         GUEST_SOURCE_DIR="${PROJECT_SOURCE_DIR}/guest")
+    # host/kwin's scripts and pinned recipe, against stand-ins for rpm and dnf
+    target_compile_definitions(test_hostkwin PRIVATE
+        HOST_KWIN_SOURCE_DIR="${PROJECT_SOURCE_DIR}/host/kwin")
     # the same stand-in, for QEMUs found running
     target_compile_definitions(test_vmrunner PRIVATE FAKE_QEMU="$<TARGET_FILE:fake-qemu>")
     add_dependencies(test_vmrunner fake-qemu)

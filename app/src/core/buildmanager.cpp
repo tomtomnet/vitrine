@@ -664,10 +664,11 @@ qint64 BuildManager::remainingOf(const QString &id) const
     case State::Building: {
         const qint64 elapsed = m_clocks.contains(id) ? m_clocks.value(id).elapsed() : 0;
         const qint64 phase = m_phaseClocks.contains(id) ? m_phaseClocks.value(id).elapsed() : 0;
-        const bool compiling = component(id).kind == Kind::Host
-                                   ? p.phase.startsWith("compiling ") ||
-                                         p.phase.startsWith("building ")
-                                   : m_tools && m_tools->isCompiling();
+        const Kind kind = component(id).kind;
+        const bool compiling = kind == Kind::Host     ? p.phase.startsWith("compiling ") ||
+                                                            p.phase.startsWith("building ")
+                               : kind == Kind::System ? m_kwin && m_kwin->isCompiling()
+                                                      : m_tools && m_tools->isCompiling();
         /* from the compiler's count: the rest of it at its pace, and what
            comes after compiling (installing, packaging) */
         if (compiling && p.total > 0 && p.done > 0 && qint64(p.done) * m_countFrom >= p.total &&

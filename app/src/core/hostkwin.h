@@ -198,6 +198,8 @@ struct Status {
     QString lockedAt;       // at what
     QStringList outdated;   // Vitrine's KWin against the system now: "plasma-workspace 6.7.91 6.8.0"
     bool nextLogin = false; // installed or reverted after the session's KWin started
+    bool versionlock = false;   // dnf has its versionlock command
+    bool pkexec = false;        // pkexec is there to ask for the password
 
     /* "Built for this Plasma and Qt, not installed": what the row says */
     QString summary() const;

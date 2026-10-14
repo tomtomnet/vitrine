@@ -546,6 +546,8 @@ Status status(const System &system, const Recipe &recipe, const QList<Build> &bu
     s.plasma = plasma.version;
     s.series = recipe.series;
     s.tag = recipe.tag;
+    s.versionlock = system.versionlock;
+    s.pkexec = system.pkexec;
     if (!system.isPlasmaHost() || system.fedora.isEmpty()) {
         return s;
     }
@@ -656,26 +658,35 @@ static QString nameNow(const QString &line)
 
 QString Status::summary() const
 {
-    switch (offer) {
-    case Offer::Hidden:
+    if (offer == Offer::Hidden) {
         return {};
-    case Offer::Unsupported:
-        return tr("Not available for this computer");
-    case Offer::NoSet:
-        return tr("No host set for KWin %1").arg(plasma);
-    case Offer::Offered:
-        break;
     }
-    switch (owner) {
-    case Owner::Vitrine:
+    /* Vitrine's own KWin first: out of date, it matters whatever else holds */
+    if (owner == Owner::Vitrine) {
         if (!outdated.isEmpty()) {
             return tr("Out of date: %1 is installed").arg(nameNow(outdated.first()));
         }
         if (!locked) {
             return tr("Installed, not version-locked");
         }
+        if (build.isValid() && build.rpm("kwin").digest != kwin.digest && differs.isEmpty()) {
+            return tr("Installed and locked; another build is ready");
+        }
         return nextLogin ? tr("Installed and locked, from the next login")
                          : tr("Installed and locked");
+    }
+    switch (offer) {
+    case Offer::Hidden:
+    case Offer::Offered:
+        break;
+    case Offer::Unsupported:
+        return tr("Not available for this computer");
+    case Offer::NoSet:
+        return tr("No host set for KWin %1").arg(plasma);
+    }
+    switch (owner) {
+    case Owner::Vitrine:
+        break;
     case Owner::Foreign:
         return kwin.isLocal() ? tr("Another KWin is installed: %1").arg(kwin.evr())
                               : tr("KWin is version-locked, not by Vitrine");
@@ -739,6 +750,12 @@ bool Status::canInstall(QString *why) const
         reason = tr("This build is installed and locked.");
     } else if (!kwin.isValid()) {
         reason = tr("KWin is not installed.");
+    } else if (!versionlock) {
+        reason = tr("dnf has no versionlock command here, which would keep updates from replacing "
+                    "this KWin: Vitrine does not install it without one.");
+    } else if (!pkexec) {
+        reason = tr("pkexec (polkit) is missing: Vitrine installs it with the administrator's "
+                    "password, through pkexec.");
     }
     if (why) {
         *why = reason;
@@ -759,6 +776,10 @@ bool Status::canRevert(QString *why) const
     case Owner::Distribution:
         reason = tr("The distribution's KWin is installed.");
         break;
+    }
+    if (reason.isEmpty() && !pkexec) {
+        reason = tr("pkexec (polkit) is missing: Vitrine reverts it with the administrator's "
+                    "password, through pkexec.");
     }
     if (why) {
         *why = reason;

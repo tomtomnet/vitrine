@@ -18,3 +18,14 @@ endif()
 install(CODE "file(REMOVE_RECURSE \"\$ENV{DESTDIR}${vitrine_patches}\")")
 install(DIRECTORY patches/ DESTINATION ${VITRINE_HOST_DESTINATION}/patches
     FILES_MATCHING PATTERN "*.patch" PATTERN "series" PATTERN "README.md")
+# The host's KWin (kwin/README.md): its scripts, which keep their modes, and
+# the research's recipe as Vitrine pins it.  The folder goes first too: its
+# key sums up every file of research/, and a file a newer copy dropped would
+# change it.
+if(IS_ABSOLUTE "${VITRINE_HOST_DESTINATION}")
+    set(vitrine_kwin "${VITRINE_HOST_DESTINATION}/kwin")
+else()
+    set(vitrine_kwin "\${CMAKE_INSTALL_PREFIX}/${VITRINE_HOST_DESTINATION}/kwin")
+endif()
+install(CODE "file(REMOVE_RECURSE \"\$ENV{DESTDIR}${vitrine_kwin}\")")
+install(DIRECTORY kwin/ DESTINATION ${VITRINE_HOST_DESTINATION}/kwin USE_SOURCE_PERMISSIONS)
