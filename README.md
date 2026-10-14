@@ -164,8 +164,9 @@ the display, the session shows in the console, which then has three views:
 Boot (the VGA card's screen: the firmware, the boot loader, the first boot
 messages), Screen (the guest's own screen: its console and its login screen)
 and Desktop (the session). They change as the guest boots and its session
-starts or ends; the switcher above them, View > Boot, Screen and Desktop, or
-Ctrl+Alt+1, 2 and 3 choose one. Closing vitrine ends the session: the guest
+starts or ends; the Console button's menu (its name says the view shown:
+Console 1, 2 or 3), View > Boot, Screen and Desktop, or Ctrl+Alt+1, 2 and 3
+choose one. Closing vitrine ends the session: the guest
 goes back to its login screen, where you log in again from the Screen view.
 With QEMU's SDL or GTK window, or none, the session opens as a window of its
 own.
