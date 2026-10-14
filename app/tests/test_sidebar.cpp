@@ -1,4 +1,5 @@
 // SPDX-License-Identifier: GPL-2.0-or-later
+#include <QContextMenuEvent>
 #include <QDialog>
 #include <QDir>
 #include <QLabel>
@@ -330,6 +331,32 @@ private slots:
         QCOMPARE(shown, 2);
         QVERIFY(tasks.tasks().isEmpty());
         QVERIFY(!button->isVisible());
+    }
+
+    /* From the keyboard: Tab reaches it, Space shows the details, the menu key the menu */
+    void keyboard()
+    {
+        TaskList tasks;
+        Window w(&tasks);
+        settle(w.top.get());
+        TaskButton *button = w.button();
+        int shown = 0;
+
+        tasks.setDetails(Task::Kind::QemuBuild, [&shown](Task *) { shown++; });
+        tasks.add(Task::Kind::QemuBuild, "QEMU build");
+        layOut();
+        QCOMPARE(button->focusPolicy() & Qt::TabFocus, Qt::TabFocus);
+        button->setFocus(Qt::TabFocusReason);
+        QVERIFY(button->hasFocus());
+        QTest::keyClick(button, Qt::Key_Space);
+        QCOMPARE(shown, 1);
+        /* the menu key's, as Qt makes it of the key from the platform */
+        QContextMenuEvent menuKey(QContextMenuEvent::Keyboard, button->rect().center(),
+                                  button->mapToGlobal(button->rect().center()));
+        QApplication::sendEvent(button, &menuKey);
+        QTRY_VERIFY(button->menu() && button->menu()->isVisible());
+        QCOMPARE(entries(button->menu()), QStringList({"QEMU build"}));
+        button->menu()->close();
     }
 
     /* Several: their number, a menu of them with their progress, Clear Finished */
