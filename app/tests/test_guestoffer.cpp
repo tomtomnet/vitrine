@@ -6,6 +6,7 @@
 #include <QFileInfo>
 #include <QLabel>
 #include <QPushButton>
+#include <QScopeGuard>
 #include <QSettings>
 #include <QTemporaryDir>
 #include <QTest>
@@ -205,6 +206,51 @@ private slots:
         QVERIFY2(text.contains("The guest tools are for Fedora 44 guests"), qPrintable(text));
         QVERIFY2(text.contains(said), qPrintable(text));
         delete dialog;
+    }
+
+    /*
+     * No medium built yet: any Fedora is offered (the build makes the one
+     * for 44), and a guest known to run another system hears so before a
+     * build, beside the build's banner
+     */
+    void noMedium()
+    {
+        const QString image = GuestTools::dataDir() + "/vitrine-guest-tools-fc44.img";
+        QVERIFY(QFile::rename(image, image + ".away"));
+        const auto back = qScopeGuard([image]() { QFile::rename(image + ".away", image); });
+        QVERIFY(!GuestTools::medium().isValid());
+        /* the VMs as the app finds them then */
+        VmStore store(m_tmp.filePath("vms"));
+
+        GuestToolsBanner banner;
+        banner.setVm(store.find("fedora43"));
+        QVERIFY(!banner.isHidden());
+        QCOMPARE(button(banner), "Install Guest Tools…");
+        banner.setVm(store.find("kde"));
+        QVERIFY(banner.isHidden());
+
+        for (const QString &id : {QString("kde"), QString("fedora43")}) {
+            GuestToolsDialog::run(nullptr, store.find(id));
+            GuestToolsDialog *dialog = opened();
+            QVERIFY(dialog);
+            dialog->setAttribute(Qt::WA_DeleteOnClose, false);
+            const QString text = shownText(dialog);
+            if (id == "kde") {
+                QVERIFY2(text.contains("This guest runs KDE Linux, which the guest tools are not "
+                                       "for."),
+                         qPrintable(text));
+            } else {
+                QVERIFY2(text.contains("This guest runs Fedora Linux 43 (Workstation Edition)."),
+                         qPrintable(text));
+                QVERIFY2(!text.contains("not for"), qPrintable(text));
+            }
+            for (QAbstractButton *b : dialog->findChild<QDialogButtonBox *>()->buttons()) {
+                if (b->text() == "&Install") {
+                    QVERIFY(!b->isEnabled());
+                }
+            }
+            delete dialog;
+        }
     }
 
     /* What the guest says, as it says it: the prompt follows */

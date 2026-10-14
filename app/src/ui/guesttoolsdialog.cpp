@@ -85,6 +85,12 @@ void GuestToolsDialog::run(QWidget *parent, Vm *vm)
     dialog->show();
 }
 
+/* No medium: GuestToolsBuildBanner says so, with Build… */
+static QString notBuilt()
+{
+    return GuestToolsDialog::tr("The guest tools are not built yet: build them first.");
+}
+
 /* Why the tools cannot go into @vm now; empty if they can */
 static QString obstacle(Vm *vm, const GuestTools::Medium &medium)
 {
@@ -93,11 +99,8 @@ static QString obstacle(Vm *vm, const GuestTools::Medium &medium)
     const GuestTools::System system = monitor->system();
     const QString qemu = VmConfig::qemuBinary(args);
 
-    /* GuestToolsBuildBanner says so, with Build… */
-    if (!medium.isValid()) {
-        return GuestToolsDialog::tr("The guest tools are not built yet: build them first.");
-    }
-    /* what the guest said it runs; else what the VM's settings say, if not Linux */
+    /* what the guest said it runs; else what the VM's settings say, if not
+       Linux: before the medium, as a build would not change it */
     if (monitor->unsupported()) {
         return GuestToolsDialog::tr("This guest runs %1, which the guest tools are not for.")
             .arg(system.displayName());
@@ -107,6 +110,9 @@ static QString obstacle(Vm *vm, const GuestTools::Medium &medium)
         return os == "windows"
                    ? GuestToolsDialog::tr("This VM is set up for Windows.")
                    : GuestToolsDialog::tr("This VM is set up for another system than Linux.");
+    }
+    if (!medium.isValid()) {
+        return notBuilt();
     }
     if (!GuestTools::canBootstrap(args, qemu.isEmpty() ? "qemu-system-x86_64" : qemu)) {
         return GuestToolsDialog::tr("The guest tools are for x86-64 Fedora guests, on a "
@@ -276,9 +282,9 @@ void GuestToolsDialog::refresh()
     const QString problem = obstacle(m_vm, medium);
 
     m_what->setText(what(m_vm, medium));
-    /* without a medium, the build banner tells it */
+    /* the medium missing: the build banner tells it */
     m_warning->setText(problem.toHtmlEscaped());
-    m_warning->setVisible(!problem.isEmpty() && medium.isValid());
+    m_warning->setVisible(!problem.isEmpty() && problem != notBuilt());
     m_install->setText(running ? tr("&Restart and Install") : tr("&Install"));
     m_install->setEnabled(problem.isEmpty());
     m_mediumButton->setEnabled(problem.isEmpty());
@@ -500,11 +506,11 @@ void GuestToolsBanner::update()
     const GuestToolsMonitor *monitor = GuestToolsMonitor::of(m_vm);
     const State state = monitor->state();
     const QString text = monitor->text();
+    const GuestTools::Inputs in = monitor->inputs();
     /* a guest known to run a system the tools are not for: nothing to install */
     const bool other = monitor->unsupported();
     /* the install asked for at this start did not happen: said, offered or not */
-    const bool asked = state == State::NotInstalled && monitor->inputs().running &&
-                       monitor->inputs().bootstrapRun;
+    const bool asked = state == State::NotInstalled && in.running && in.bootstrapRun;
     QString button;
     bool warning = false;
 
