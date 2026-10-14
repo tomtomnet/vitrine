@@ -58,7 +58,12 @@ boot only, sets up in /run:
   other boots, which SDDM skips). The guest's own automatic login into
   Plasma (`/etc/plasmalogin.conf`, which System Settings writes) then logs
   into the nested desktop;
-- shared-memory huge pages (`CROSVM_DESKTOP_SHMEM_HUGEPAGES`).
+- shared-memory huge pages (`CROSVM_DESKTOP_SHMEM_HUGEPAGES`);
+- the login screen on the VM's own screen only: plasmalogin's KWin gets
+  `KWIN_DRM_DEVICES` with the virtio card (`/run/vitrine-nested/greeter-kwin.env`,
+  read by the drop-in `plasma-login-kwin_wayland.service.d/vitrine-nested.conf`).
+  It drew on QEMU's VGA too (bochs-drm) and put its login form there, on the
+  Boot view, while vitrine showed the Screen view.
 
 `vitrine-virtio-gpu-check.service` then sets the driver's options of such a
 boot: `blob_flush_fence=0` and `hide_virgl=1`. spice-vdagent and vitrine's

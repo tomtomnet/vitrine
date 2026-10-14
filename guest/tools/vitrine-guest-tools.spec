@@ -2,7 +2,7 @@
 # exact version, and dnf takes an installed one of the same version as done.
 Name:           vitrine-guest-tools
 Version:        0.1.0
-Release:        17%{?dist}
+Release:        18%{?dist}
 Summary:        vitrine guest tools: patched virtio-gpu driver, settings and agent
 
 # the driver's sources (dkms/vendor, dkms/patches) are the kernel's: MIT
@@ -80,6 +80,7 @@ install -Dm 0644 systemd/plasmalogin.service.d/vitrine-nested.conf %{buildroot}%
 for u in spice-vdagent.service 'app-vitrine\x2dclipboard\x2dbridge@autostart.service'; do
 	install -Dm 0644 systemd/user/vitrine-nested-no-vdagent.conf "%{buildroot}%{_userunitdir}/$u.d/vitrine-nested.conf"
 done
+install -Dm 0644 systemd/user/vitrine-nested-greeter.conf %{buildroot}%{_userunitdir}/plasma-login-kwin_wayland.service.d/vitrine-nested.conf
 install -d %{buildroot}%{_prefix}/lib/sddm/sddm.conf.d
 ln -s /run/vitrine-nested/sddm.conf %{buildroot}%{_prefix}/lib/sddm/sddm.conf.d/vitrine-nested.conf
 install -d %{buildroot}%{libexec}
@@ -159,6 +160,8 @@ fi
 %{_userunitdir}/spice-vdagent.service.d/vitrine-nested.conf
 %dir %{_userunitdir}/app-vitrine*clipboard*bridge@autostart.service.d
 %{_userunitdir}/app-vitrine*clipboard*bridge@autostart.service.d/vitrine-nested.conf
+%dir %{_userunitdir}/plasma-login-kwin_wayland.service.d
+%{_userunitdir}/plasma-login-kwin_wayland.service.d/vitrine-nested.conf
 %dir %{_prefix}/lib/sddm
 %dir %{_prefix}/lib/sddm/sddm.conf.d
 %{_prefix}/lib/sddm/sddm.conf.d/vitrine-nested.conf
@@ -172,6 +175,12 @@ fi
 %dir %{_sharedstatedir}/%{name}
 
 %changelog
+* Wed Oct 14 2026 vitrine <noreply@anthropic.com> - 0.1.0-18
+- in a nested-desktop boot the login screen draws on the VM's own screen
+  only (plasmalogin's KWin with KWIN_DRM_DEVICES): it drew on QEMU's VGA too,
+  and put its login form there, on the Boot view, while vitrine showed the
+  Screen view after a logout
+
 * Wed Oct 14 2026 vitrine <noreply@anthropic.com> - 0.1.0-17
 - the nested desktop's boot script runs: an apostrophe in a message broke it
   (bash took it for a quote); the agent finds the proxy's process
