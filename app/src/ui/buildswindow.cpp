@@ -22,6 +22,7 @@
 #include <QStyledItemDelegate>
 #include <QTabWidget>
 #include <QTreeWidget>
+#include <QTreeWidgetItemIterator>
 #include <QUrl>
 #include <QVBoxLayout>
 #include <QtConcurrent>
@@ -112,7 +113,7 @@ QIcon stateIcon(State run, StatusState state)
     case State::Building:
         return Icons::themed({"run-build", "run-build-install"}, QStyle::SP_BrowserReload);
     case State::Failed:
-        return Icons::themed({"dialog-error", "emblem-error"}, QStyle::SP_MessageBoxCritical);
+        return Icons::themed({"emblem-error", "dialog-error"}, QStyle::SP_MessageBoxCritical);
     case State::Stopped:
     case State::Skipped:
         return Icons::themed({"process-stop"}, QStyle::SP_BrowserStop);
@@ -121,7 +122,7 @@ QIcon stateIcon(State run, StatusState state)
     }
     switch (state) {
     case StatusState::UpToDate:
-        return Icons::themed({"task-complete", "emblem-success", "dialog-ok-apply"},
+        return Icons::themed({"emblem-success", "emblem-checked", "dialog-ok-apply"},
                              QStyle::SP_DialogApplyButton);
     case StatusState::Outdated:
     case StatusState::NotBuilt:
@@ -253,8 +254,8 @@ QString BuildsWindow::duration(qint64 ms)
 {
     const qint64 minutes = (ms + 30000) / 60000;
 
-    if (ms < 45000) {
-        return tr("less than a minute");
+    if (ms < 59500) {
+        return tr("%1 s").arg(qMax<qint64>(1, (ms + 500) / 1000));
     }
     if (minutes < 60) {
         return tr("%1 min").arg(minutes);
@@ -294,7 +295,7 @@ BuildsWindow::BuildsWindow(QWidget *parent)
       m_all(new QPushButton), m_stop(new QPushButton(tr("&Stop")))
 {
     auto *layout = new QVBoxLayout(this);
-    auto *split = new Splitter(Qt::Vertical);
+    auto *split = m_split = new Splitter(Qt::Vertical);
     auto *sourceScroll = new QScrollArea;
     auto *patchSplit = new Splitter(Qt::Vertical);
     auto *bottom = new QHBoxLayout;
@@ -361,7 +362,7 @@ BuildsWindow::BuildsWindow(QWidget *parent)
     patchSplit->addWidget(m_patches);
     patchSplit->addWidget(m_patchText);
     patchSplit->setStretchFactor(0, 1);
-    patchSplit->setStretchFactor(1, 2);
+    patchSplit->setStretchFactor(1, 1);
     m_tabs->addTab(patchSplit, tr("&Patches"));
 
     m_log->setObjectName("log");
@@ -471,9 +472,8 @@ BuildsWindow::BuildsWindow(QWidget *parent)
 
 BuildsWindow::~BuildsWindow() = default;
 
-void BuildsWindow::showEvent(QShowEvent *event)
+void BuildsWindow::shown()
 {
-    QDialog::showEvent(event);
     /* the sources may have changed meanwhile */
     if (!m_manager->isRunning()) {
         m_manager->refresh();
@@ -524,6 +524,7 @@ void BuildsWindow::fill()
     }
     m_tree->expandAll();
     refreshItems();
+    fitTree();
     if (!was.isEmpty()) {
         select(was);
     }
@@ -696,6 +697,31 @@ void BuildsWindow::refreshGroup(const QString &group)
                                              : QString());
 }
 
+void BuildsWindow::fitTree()
+{
+    /* all the rows at once, the details below taking the rest */
+    int rows = 0;
+    for (QTreeWidgetItemIterator it(m_tree); *it; ++it) {
+        rows++;
+    }
+    const int row = m_tree->sizeHintForRow(0) > 0 ? m_tree->sizeHintForRow(0)
+                                                  : fontMetrics().height() + 8;
+    const int height = m_tree->header()->sizeHint().height() + row * (rows + 1) +
+                       2 * m_tree->frameWidth();
+    const QList<int> sizes = m_split->sizes();
+    const int total = sizes.value(0) + sizes.value(1);
+    if (total > height) {
+        m_split->setSizes({height, total - height});
+    }
+}
+
+void BuildsWindow::showEvent(QShowEvent *event)
+{
+    QDialog::showEvent(event);
+    fitTree();
+    shown();
+}
+
 QString BuildsWindow::selected() const
 {
     const QTreeWidgetItem *item = m_tree->currentItem();
@@ -797,8 +823,7 @@ void BuildsWindow::showSource()
         html += " — " + tr("no sources to build it from.").toHtmlEscaped();
         break;
     case StatusState::Outdated:
-        html += " — " + tr("out of date: what is built was built from other sources:")
-                            .toHtmlEscaped();
+        html += " — " + tr("out of date. Changed since its build:").toHtmlEscaped();
         break;
     }
     html += "</p>";
@@ -884,7 +909,9 @@ void BuildsWindow::showSource()
         rows += row(tr("Built against:"), titles.join(", "));
     }
     if (status.built.isValid()) {
-        QString built = QLocale().toString(status.built.toLocalTime(), QLocale::LongFormat);
+        const QDateTime when = status.built.toLocalTime();
+        QString built = QLocale().toString(when.date(), "d MMMM yyyy") + ", " +
+                        QLocale().toString(when.time(), QLocale::ShortFormat);
         const QList<qint64> took = m_manager->durations(id);
         if (!took.isEmpty()) {
             built = tr("%1, in %2").arg(built, duration(took.last()));
@@ -899,7 +926,7 @@ void BuildsWindow::showSource()
     rows += row(tr("A build takes:"),
                 (m_manager->durations(id).isEmpty()
                      ? tr("about %1 the first time").arg(duration(m_manager->estimateMs(id)))
-                     : tr("about %1, as its last builds on this machine")
+                     : tr("about %1 (its last builds on this machine)")
                            .arg(duration(m_manager->estimateMs(id))))
                     .toHtmlEscaped());
     if (c.id == "qemu" && !Paths::customQemuBinary().isEmpty()) {
@@ -1177,7 +1204,8 @@ void BuildsWindow::updateCache()
                             .arg(dirs.join('\n')));
     connect(watcher, &QFutureWatcher<qint64>::finished, this, [this, watcher]() {
         m_cacheSize = watcher->result();
-        m_cache->setText(tr("Build cache: %1").arg(bytes(m_cacheSize)));
+        m_cache->setText(m_cacheSize > 0 ? tr("Build cache: %1").arg(bytes(m_cacheSize))
+                                         : tr("Build cache: empty"));
         watcher->deleteLater();
     });
     watcher->setFuture(QtConcurrent::run([dirs]() {

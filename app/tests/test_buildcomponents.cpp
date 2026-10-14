@@ -242,7 +242,7 @@ private slots:
         const Component qemu = find(all, "qemu");
         const QList<Patch> qemuPatches = patches(qemu);
         QCOMPARE(qemuPatches.size(), StackBuilder::patches(qemu.dir, "qemu").size());
-        QCOMPARE(qemuPatches.first().origin, "The qemu-gui fork");
+        QCOMPARE(qemuPatches.first().origin, "qemu-gui fork");
         QCOMPARE(qemuPatches.last().origin, "Vitrine");
         QStringList origins;
         for (const Patch &p : qemuPatches) {
@@ -250,7 +250,7 @@ private slots:
                 origins << p.origin;
             }
         }
-        QCOMPARE(origins, QStringList({"The qemu-gui fork", "Research", "Vitrine"}));
+        QCOMPARE(origins, QStringList({"qemu-gui fork", "Research", "Vitrine"}));
         /* a git format-patch Subject, its [PATCH] tag gone */
         QCOMPARE(subject(qemu, qemuPatches.first()),
                  "ui/sdl2: follow the host refresh rate, tolerate grab border");

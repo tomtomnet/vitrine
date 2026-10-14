@@ -15,6 +15,7 @@ class QLabel;
 class QPlainTextEdit;
 class QPushButton;
 class QTabWidget;
+class QSplitter;
 class QTreeWidget;
 class QTreeWidgetItem;
 
@@ -60,6 +61,10 @@ protected:
 
 private:
     void fill();
+    /* The tree as high as its rows, the details below the rest */
+    void fitTree();
+    /* Shown: the states again, the cache's size */
+    void shown();
     void refreshItems();
     void refreshItem(const QString &id);
     void refreshGroup(const QString &group);
@@ -82,6 +87,7 @@ private:
     QStringList selectedComponents() const;
 
     BuildManager *m_manager;
+    QSplitter *m_split = nullptr;
     Banner *m_memory;
     QLabel *m_header;
     QLabel *m_missing;
