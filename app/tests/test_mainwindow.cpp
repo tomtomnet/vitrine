@@ -31,7 +31,7 @@
 /*
  * The main window's rows: one bar under the title for the menus, the
  * actions and the VM's tabs, the menu bar shown on request; the list of
- * VMs hidden and shown, a drop-down of the VMs in the bar meanwhile; the
+ * VMs collapsed to a strip of icons and expanded, never hidden; the
  * shortcuts of every menu with the menu bar hidden; and the bar at every
  * width the window can have, at every scale: nothing in an overflow menu,
  * the actions' text going in order.
@@ -82,9 +82,27 @@ QListWidget *list(const QWidget *window)
     return window->findChild<QListWidget *>("vms");
 }
 
-QComboBox *chooser(const QWidget *window)
+/* The side with the list, collapsed to its icons or not */
+QWidget *sidebar(const QWidget *window)
 {
-    return window->findChild<QComboBox *>("vmChooser");
+    return window->findChild<QWidget *>("sidebar");
+}
+
+bool collapsed(const QWidget *window)
+{
+    const QWidget *side = sidebar(window);
+    return side && side->property("collapsed").toBool();
+}
+
+/* What F9 and the bar's list button do, as View has it now */
+QAction *collapseAction(const QWidget *window)
+{
+    for (QAction *a : window->findChildren<QAction *>()) {
+        if (a->shortcut() == QKeySequence(Qt::Key_F9)) {
+            return a;
+        }
+    }
+    return nullptr;
 }
 
 QToolButton *menuButton(const QWidget *window)
@@ -404,7 +422,7 @@ private slots:
     /*
      * Every action is in a menu, which the menu button has too; every
      * action of the bar is in a menu, but the button of the list, which
-     * does what Show Library does, and the menu button
+     * does what F9 does, and the menu button
      */
     void everyActionInAMenu()
     {
@@ -427,11 +445,12 @@ private slots:
                 continue;
             }
             if (a->objectName() == "listButton") {
-                QAction *library = action(w.get(), "Show Library");
-                const bool shown = library->isChecked();
+                QVERIFY(menus.contains(collapseAction(w.get())));
+                const bool was = collapsed(w.get());
                 a->trigger();
-                QCOMPARE(library->isChecked(), !shown);
+                QCOMPARE(collapsed(w.get()), !was);
                 a->trigger();
+                QCOMPARE(collapsed(w.get()), was);
                 continue;
             }
             QVERIFY2(menus.contains(a), qPrintable(plain(a->text()) + " in no menu"));
@@ -549,69 +568,55 @@ private slots:
     }
 
     /*
-     * F9 and the bar's button hide and show the list, remembered; the VMs
-     * in the bar meanwhile; the list as wide as it was, however it went
+     * F9 and the bar's button collapse the list to a strip of the VMs'
+     * icons and expand it back, as wide as it was, the actions saying
+     * which they do; remembered; never hidden
      */
     void library()
     {
         int width = 0;
-        /* KDE's style where it is installed: it does not widen a combo box's
-           list to its items as Fusion does */
-        if (QStyleFactory::keys().contains("Breeze", Qt::CaseInsensitive)) {
-            useStyle("Breeze", 10);
-        }
+        int strip = 0;
         {
             auto w = window();
             settle(w.get());
             QListWidget *vms = list(w.get());
+            QWidget *side = sidebar(w.get());
+            QVERIFY(side);
             QVERIFY(vms->isVisible());
-            QComboBox *vmChooser = chooser(w.get());
-            QVERIFY2(vmChooser, "no VMs in the bar");
-            QVERIFY(!vmChooser->isVisible());
-            auto *splitter = qobject_cast<QSplitter *>(vms->parentWidget());
+            QVERIFY(!collapsed(w.get()));
+            auto *splitter = qobject_cast<QSplitter *>(side->parentWidget());
             QVERIFY(splitter);
             splitter->setSizes({333, w->width() - 333});
             layOut();
-            width = vms->width();
+            width = side->width();
             QVERIFY(qAbs(width - 333) <= 1);
+            QAction *f9 = collapseAction(w.get());
+            QVERIFY(f9);
+            QCOMPARE(plain(f9->text()), QString("Collapse the List of VMs"));
 
             QTest::keyClick(vms, Qt::Key_F9);
             layOut();
-            QVERIFY(!vms->isVisible());
-            QVERIFY(vmChooser->isVisible());
-            QCOMPARE(vmChooser->currentText(), w->current()->name());
-            /* its list as wide as the items want, their names bold */
-            vmChooser->showPopup();
-            QTRY_VERIFY(vmChooser->view()->isVisible());
-            const QString longest = "A Virtual Machine With a Rather Long Name";
-            QFont bold = vmChooser->view()->font();
-            bold.setBold(true);
-            const int item =
-                vmChooser->view()->sizeHintForIndex(
-                    vmChooser->model()->index(vmChooser->findText(longest), 0)).width() +
-                QFontMetrics(bold).horizontalAdvance(longest) -
-                QFontMetrics(vmChooser->view()->font()).horizontalAdvance(longest);
-            QVERIFY2(vmChooser->view()->viewport()->width() >= item,
-                     qPrintable(QString("the list of VMs %1 wide for an item %2 wide")
-                                    .arg(vmChooser->view()->viewport()->width())
-                                    .arg(item)));
-            vmChooser->hidePopup();
-            QTRY_VERIFY(!vmChooser->view()->isVisible());
-            /* another VM from the bar */
-            const int bravo = vmChooser->findText("Bravo");
-            QVERIFY(bravo >= 0);
-            vmChooser->setCurrentIndex(bravo);
-            emit vmChooser->activated(bravo);
-            QTRY_COMPARE(w->current(), m_store->find("bravo"));
+            QVERIFY(collapsed(w.get()));
+            QVERIFY(vms->isVisible());
+            strip = side->width();
+            /* its icons, each as wide as the list's */
+            QVERIFY2(strip >= vms->iconSize().width() && strip < 2 * vms->iconSize().width(),
+                     qPrintable(QString("a strip %1 wide for icons %2 wide")
+                                    .arg(strip).arg(vms->iconSize().width())));
+            QCOMPARE(plain(f9->text()), QString("Expand the List of VMs"));
+            /* the VMs as before: another one chosen there */
+            w->select("bravo");
+            QCOMPARE(w->current(), m_store->find("bravo"));
+            QCOMPARE(vms->currentItem()->text(), QString("Bravo"));
             w->close();
         }
         {
             auto w = window();
             settle(w.get());
-            QVERIFY(!list(w.get())->isVisible());
-            QVERIFY(chooser(w.get())->isVisible());
+            QWidget *side = sidebar(w.get());
+            QVERIFY(collapsed(w.get()));
+            QCOMPARE(side->width(), strip);
             QCOMPARE(w->current(), m_store->find("bravo"));
-            QCOMPARE(chooser(w.get())->currentText(), QString("Bravo"));
             /* the bar's button */
             QAction *button = nullptr;
             for (QAction *a : bar(w.get())->actions()) {
@@ -620,23 +625,19 @@ private slots:
                 }
             }
             QVERIFY(button);
+            QCOMPARE(plain(button->text()), QString("Expand the List of VMs"));
             button->trigger();
             layOut();
-            QVERIFY(list(w.get())->isVisible());
-            QVERIFY(!chooser(w.get())->isVisible());
-            QVERIFY2(qAbs(list(w.get())->width() - width) <= 1,
-                     qPrintable(QString("the list %1 wide, was %2")
-                                    .arg(list(w.get())->width())
-                                    .arg(width)));
-            /* the list's selection is the bar's */
-            w->select("alpha");
-            QCOMPARE(chooser(w.get())->currentText(), QString("Alpha"));
+            QVERIFY(!collapsed(w.get()));
+            QVERIFY2(qAbs(side->width() - width) <= 1,
+                     qPrintable(QString("the list %1 wide, was %2").arg(side->width()).arg(width)));
+            QCOMPARE(plain(button->text()), QString("Collapse the List of VMs"));
             w->close();
         }
         auto w = window();
         settle(w.get());
-        QVERIFY(list(w.get())->isVisible());
-        QVERIFY(qAbs(list(w.get())->width() - width) <= 1);
+        QVERIFY(!collapsed(w.get()));
+        QVERIFY(qAbs(sidebar(w.get())->width() - width) <= 1);
     }
 
     /* F10: the menus under the bar's button, or the menu bar's first one */
@@ -661,7 +662,7 @@ private slots:
         QApplication::activePopupWidget()->close();
     }
 
-    /* No VM yet: the welcome page, and nothing in the bar to choose a tab or a VM */
+    /* No VM yet: the welcome page, nothing in the bar to choose a tab; the list collapses all the same */
     void noVms()
     {
         QTemporaryDir empty;
@@ -672,13 +673,13 @@ private slots:
         for (QToolButton *tab : tabButtons(&w)) {
             QVERIFY(!tab->isEnabled());
         }
-        action(&w, "Show Library")->trigger();
+        collapseAction(&w)->trigger();
         layOut();
-        QComboBox *vms = chooser(&w);
-        QVERIFY2(vms, "no VMs in the bar");
-        QVERIFY(!vms->isEnabled());
+        QVERIFY(collapsed(&w));
+        QVERIFY(list(&w)->isVisible());
         QVERIFY(barProblems(&w, "no VMs").isEmpty());
-        action(&w, "Show Library")->trigger();
+        collapseAction(&w)->trigger();
+        QVERIFY(!collapsed(&w));
     }
 
     /* An older vitrine's toolbar menu could hide the bar: it shows, with the menus */
@@ -698,7 +699,7 @@ private slots:
     /*
      * At every width the window can have, the bar shows all its items
      * in its width, the actions' text going in order, Fusion and Breeze,
-     * the list shown and hidden, the menu bar hidden and shown, at a
+     * the list expanded and collapsed, the menu bar hidden and shown, at a
      * range of scales
      */
     void fits_data()
@@ -731,7 +732,7 @@ private slots:
                     auto w = window();
                     settle(w.get());
                     if (!libraryShown) {
-                        action(w.get(), "Show Library")->trigger();
+                        collapseAction(w.get())->trigger();
                     }
                     if (menuBarShown) {
                         if (QAction *a = action(w.get(), "Show Menu Bar")) {
@@ -748,7 +749,7 @@ private slots:
                         layOutOnly();
                         const QString where = QString("%1 n=%2%3%4 %5 wide (least %6)")
                                                   .arg(style).arg(n)
-                                                  .arg(libraryShown ? "" : " no list")
+                                                  .arg(libraryShown ? "" : " list collapsed")
                                                   .arg(menuBarShown ? " menu bar" : "")
                                                   .arg(w->width()).arg(least);
                         wrong << barProblems(w.get(), where);

@@ -214,6 +214,8 @@ qt_add_library(vitrine_ui STATIC
     src/ui/shutdownnotice.h
     src/ui/settingspages.cpp
     src/ui/settingspages.h
+    src/ui/sidebar.cpp
+    src/ui/sidebar.h
     src/ui/snapshotview.cpp
     src/ui/snapshotview.h
     src/ui/systems.cpp
@@ -222,6 +224,8 @@ qt_add_library(vitrine_ui STATIC
     src/ui/stackbanner.h
     src/ui/statusstats.cpp
     src/ui/statusstats.h
+    src/ui/taskbutton.cpp
+    src/ui/taskbutton.h
     src/ui/textdialog.cpp
     src/ui/textdialog.h
     src/ui/udmabufnotifier.cpp
@@ -399,6 +403,7 @@ if(BUILD_TESTING)
             dialogs
             icons
             mainwindow
+            sidebar
             statusstats
             systems)
         qt_add_executable(test_${name} tests/test_${name}.cpp tests/scales.h)

@@ -16,6 +16,7 @@
 #include "core/stackbuilder.h"
 #include "ui/banner.h"
 #include "ui/icons.h"
+#include "ui/taskbutton.h"
 #include "ui/widgets.h"
 
 using State = GuestToolsBuilder::State;
@@ -219,6 +220,9 @@ GuestToolsBuildDialog::GuestToolsBuildDialog(QWidget *parent)
             &GuestToolsBuildDialog::updateState);
     connect(StackBuilder::instance(), &StackBuilder::finished, this,
             &GuestToolsBuildDialog::updateState);
+
+    /* the build's task, in the main window's list: seen here once it is over */
+    TaskButton::followSeen(this, [this]() { return m_builder->task(); });
 
     /* a build running already, started from another window: where it is */
     m_log->setPlainText(tail(m_builder->log(), kLogLines));

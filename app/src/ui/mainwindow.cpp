@@ -35,6 +35,7 @@
 #include "core/paths.h"
 #include "core/qemuinfo.h"
 #include "core/stackbuilder.h"
+#include "core/tasks.h"
 #include "core/vmconfig.h"
 #include "core/vmhardware.h"
 #include "core/vmrunner.h"
@@ -57,6 +58,7 @@
 #include "ui/qemudocs.h"
 #include "ui/referencepanel.h"
 #include "ui/shutdownnotice.h"
+#include "ui/sidebar.h"
 #include "ui/textdialog.h"
 #include "ui/udmabufnotifier.h"
 #include "ui/uiconfig.h"
@@ -69,8 +71,6 @@
 #include "ui/vmwindow.h"
 #include "ui/widgets.h"
 #include "vmview/vmview.h"
-
-enum { IdRole = Qt::UserRole, StateRole, StateColorRole };
 
 /*
  * The theme's computer with a badge for the state, the same for every VM:
@@ -111,74 +111,9 @@ static bool hasWindow(const Vm *vm)
     return VmConfig::screen(vm->runner()->runArgs()) == VmConfig::Screen::OwnWindow;
 }
 
-/* The name in bold, the state under it */
-class VmItemDelegate : public QStyledItemDelegate
-{
-public:
-    using QStyledItemDelegate::QStyledItemDelegate;
-
-    void paint(QPainter *painter, const QStyleOptionViewItem &option,
-               const QModelIndex &index) const override
-    {
-        QStyleOptionViewItem opt = option;
-        initStyleOption(&opt, index);
-        const QWidget *widget = opt.widget;
-        QStyle *style = widget ? widget->style() : QApplication::style();
-        const QString name = opt.text;
-        const QString state = index.data(StateRole).toString();
-        const bool selected = opt.state & QStyle::State_Selected;
-        const QPalette::ColorGroup group =
-            !(opt.state & QStyle::State_Enabled) ? QPalette::Disabled
-            : (opt.state & QStyle::State_Active) ? QPalette::Normal
-                                                 : QPalette::Inactive;
-        QFont bold = opt.font;
-        QColor stateColor = index.data(StateColorRole).value<QColor>();
-
-        opt.text.clear();
-        style->drawControl(QStyle::CE_ItemViewItem, &opt, painter, widget);
-
-        bold.setBold(true);
-        const QRect rect = style->subElementRect(QStyle::SE_ItemViewItemText, &opt, widget)
-                               .adjusted(4, 0, -4, 0);
-        const QFontMetrics boldMetrics(bold);
-        const QFontMetrics metrics(opt.font);
-        int y = rect.top() + (rect.height() - boldMetrics.height() - metrics.height()) / 2;
-
-        if (!stateColor.isValid() || selected) {
-            stateColor = opt.palette.color(group, selected ? QPalette::HighlightedText
-                                                           : QPalette::PlaceholderText);
-        }
-        painter->save();
-        painter->setFont(bold);
-        painter->setPen(opt.palette.color(group, selected ? QPalette::HighlightedText
-                                                          : QPalette::Text));
-        painter->drawText(QRect(rect.left(), y, rect.width(), boldMetrics.height()),
-                          Qt::AlignLeft | Qt::AlignVCenter,
-                          boldMetrics.elidedText(name, Qt::ElideRight, rect.width()));
-        y += boldMetrics.height();
-        painter->setFont(opt.font);
-        painter->setPen(stateColor);
-        painter->drawText(QRect(rect.left(), y, rect.width(), metrics.height()),
-                          Qt::AlignLeft | Qt::AlignVCenter,
-                          metrics.elidedText(state, Qt::ElideRight, rect.width()));
-        painter->restore();
-    }
-
-    QSize sizeHint(const QStyleOptionViewItem &option, const QModelIndex &index) const override
-    {
-        QSize size = QStyledItemDelegate::sizeHint(option, index);
-        QFont bold = option.font;
-
-        bold.setBold(true);
-        size.setHeight(qMax(size.height(), QFontMetrics(bold).height() +
-                                               QFontMetrics(option.font).height() + 12));
-        return size;
-    }
-};
-
 MainWindow::MainWindow(VmStore *store, QWidget *parent)
-    : QMainWindow(parent), m_store(store), m_list(new QListWidget),
-      m_right(new QStackedWidget), m_pane(new VmPane), m_details(m_pane->details()),
+    : QMainWindow(parent), m_store(store), m_sidebar(new Sidebar(TaskList::instance())),
+      m_list(m_sidebar->list()), m_right(new QStackedWidget), m_pane(new VmPane), m_details(m_pane->details()),
       m_splitter(new QSplitter), m_qemuStatus(new QLabel), m_running(new QLabel),
       m_consoles(new QStackedWidget),
       m_noConsole(new QWidget), m_input(new QLabel), m_stats(new StatusStats)
@@ -193,16 +128,20 @@ MainWindow::MainWindow(VmStore *store, QWidget *parent)
     createActions();
     GuestToolsDialog::setStarter([this](Vm *vm) { select(vm->id()); start(); });
 
-    m_list->setObjectName("vms");
-    /* a large icon beside the two lines of each VM */
-    const int large = style()->pixelMetric(QStyle::PM_LargeIconSize, nullptr, m_list);
-    m_list->setIconSize(QSize(large, large));
-    m_chooser->view()->setIconSize(m_list->iconSize());
-    m_list->setItemDelegate(new VmItemDelegate(m_list));
+    /* the list as the sidebar sets it up (its icons, its items), its menu ours */
     m_list->setContextMenuPolicy(Qt::CustomContextMenu);
-    m_list->setMinimumWidth(200);
-    /* the list is the side of the window, as the pages are the side of the settings */
-    m_list->setFrameShape(QFrame::NoFrame);
+    /* the tasks' button shows the builds' windows: once this window is gone, none */
+    const QPointer<MainWindow> self(this);
+    TaskList::instance()->setDetails(Task::Kind::QemuBuild, [self](Task *) {
+        if (self) {
+            self->buildQemu();
+        }
+    });
+    TaskList::instance()->setDetails(Task::Kind::GuestToolsBuild, [self](Task *) {
+        if (self) {
+            GuestToolsBuildDialog::present(self);
+        }
+    });
 
     welcomeText->setAlignment(Qt::AlignCenter);
     create->setText(m_new->text().remove('&'));
@@ -218,12 +157,15 @@ MainWindow::MainWindow(VmStore *store, QWidget *parent)
     m_consoles->addWidget(m_noConsole);
     m_pane->setConsole(m_consoles);
 
-    m_splitter->addWidget(m_list);
+    m_splitter->addWidget(m_sidebar);
     m_splitter->addWidget(m_right);
     m_splitter->setStretchFactor(0, 0);
     m_splitter->setStretchFactor(1, 1);
     m_splitter->setChildrenCollapsible(false);
     m_splitter->setSizes({260, 800});
+    /* its handle collapses and expands the list */
+    m_sidebar->setSplitter(m_splitter);
+    connect(m_sidebar, &Sidebar::collapsedChanged, this, &MainWindow::libraryCollapsed);
     setCentralWidget(m_splitter);
     /* Vitrine's QEMU not built, out of date, building */
     connect(StackBanner::addTo(this), &StackBanner::buildRequested, this, &MainWindow::buildQemu);
@@ -315,8 +257,12 @@ MainWindow::MainWindow(VmStore *store, QWidget *parent)
     /* hidden by an older vitrine's toolbar menu, it would hide the menus now */
     m_bar->show();
     m_splitter->restoreState(settings.value("mainwindow/splitter").toByteArray());
-    m_library->setChecked(settings.value("mainwindow/library", true).toBool());
-    showLibrary(m_library->isChecked());
+    /* the list's width expanded, collapsed or not; an older vitrine hid it, now collapsed */
+    if (settings.contains("mainwindow/listWidth")) {
+        m_sidebar->setExpandedWidth(settings.value("mainwindow/listWidth").toInt());
+    }
+    m_sidebar->setCollapsed(!settings.value("mainwindow/library", true).toBool());
+    libraryCollapsed(m_sidebar->isCollapsed());
     m_menuBar->setChecked(settings.value("mainwindow/menubar", false).toBool());
     showMenuBar(m_menuBar->isChecked());
     select(settings.value("mainwindow/current").toString());
@@ -413,17 +359,16 @@ void MainWindow::createActions()
                           QKeySequence(Qt::CTRL | Qt::ALT | Qt::Key_F),
                           &MainWindow::toggleFullScreen);
     m_fullScreen->setToolTip(tr("The VM's screen alone, on the whole monitor (Ctrl+Alt+F)"));
-    m_library = new QAction(tr("Show &Library"), this);
-    m_library->setCheckable(true);
-    m_library->setChecked(true);
+    /* the list collapsed to its icons, for more room, or expanded: never
+       hidden.  Its texts and icon say what it does (libraryCollapsed()). */
+    m_library = new QAction(this);
     m_library->setShortcut(QKeySequence(Qt::Key_F9));
-    m_library->setToolTip(tr("The list of VMs, or more room for the console"));
-    connect(m_library, &QAction::toggled, this, &MainWindow::showLibrary);
-    /* the same in the bar, an arrow out of the side or into it: not shown
-       pressed all the time the list shows, as a checked button would be */
+    connect(m_library, &QAction::triggered, this,
+            [this]() { m_sidebar->setCollapsed(!m_sidebar->isCollapsed()); });
+    /* the same in the bar, an arrow into the side or out of it */
     m_listButton = new QAction(this);
     m_listButton->setObjectName("listButton");
-    connect(m_listButton, &QAction::triggered, m_library, &QAction::toggle);
+    connect(m_listButton, &QAction::triggered, m_library, &QAction::trigger);
     /* KDE's: the menus behind the bar's button by default, for the room */
     m_menuBar = new QAction(Icons::themed({"show-menu"}, QStyle::SP_TitleBarMenuButton),
                             tr("Show Menu &Bar"), this);
@@ -547,16 +492,6 @@ void MainWindow::createActions()
     addToolBar(m_bar);
     m_bar->addAction(m_listButton);
     m_bar->setIconOnly(m_listButton);
-    auto *chooser = new VmChooser;
-    m_chooser = chooser;
-    m_chooser->setModel(m_list->model());
-    /* each VM as the list has it: the name, its state under it */
-    m_chooser->setItemDelegate(new VmItemDelegate(m_chooser));
-    chooser->setStateRole(StateRole);
-    m_chooser->setToolTip(tr("The virtual machine shown"));
-    m_chooserAction = m_bar->addWidget(m_chooser);
-    connect(m_list, &QListWidget::currentRowChanged, m_chooser, &QComboBox::setCurrentIndex);
-    connect(m_chooser, &QComboBox::activated, m_list, qOverload<int>(&QListWidget::setCurrentRow));
     m_bar->addAction(m_new);
     m_bar->addSeparator();
     m_bar->addActions({m_start, m_pause, m_shutDown, m_forceOff});
@@ -574,16 +509,20 @@ void MainWindow::createActions()
     m_pane->setTabBarShown(false);
 }
 
-void MainWindow::showLibrary(bool shown)
+void MainWindow::libraryCollapsed(bool collapsed)
 {
-    m_list->setVisible(shown);
-    m_chooserAction->setVisible(!shown);
-    m_listButton->setIcon(
-        shown ? Icons::themed({"sidebar-collapse", "view-left-close"}, QStyle::SP_ArrowLeft)
-              : Icons::themed({"sidebar-expand", "view-left-new"}, QStyle::SP_ArrowRight));
-    m_listButton->setText(shown ? tr("Hide the List of VMs") : tr("Show the List of VMs"));
-    m_listButton->setToolTip(shown ? tr("Hide the list of VMs, for more room (F9)")
-                                   : tr("Show the list of VMs (F9)"));
+    const QIcon icon =
+        collapsed ? Icons::themed({"sidebar-expand", "view-left-new"}, QStyle::SP_ArrowRight)
+                  : Icons::themed({"sidebar-collapse", "view-left-close"}, QStyle::SP_ArrowLeft);
+
+    m_library->setIcon(icon);
+    m_library->setText(collapsed ? tr("Expand the &List of VMs") : tr("Collapse the &List of VMs"));
+    m_listButton->setIcon(icon);
+    m_listButton->setText(collapsed ? tr("Expand the List of VMs") : tr("Collapse the List of VMs"));
+    m_listButton->setToolTip(collapsed ? tr("Expand the list of VMs (F9)")
+                                       : tr("Collapse the list of VMs to their icons, for more "
+                                            "room (F9)"));
+    m_library->setToolTip(m_listButton->toolTip());
 }
 
 void MainWindow::showMenuBar(bool shown)
@@ -997,8 +936,8 @@ bool MainWindow::eventFilter(QObject *watched, QEvent *event)
         static_cast<QWidget *>(watched)->window() == this) {
         m_lastPress.start();
     }
-    /* the arrows, Home, End... going through the list of VMs, or the bar's drop-down of them */
-    if (event->type() == QEvent::KeyPress && (watched == m_list || watched == m_chooser)) {
+    /* the arrows, Home, End... going through the list of VMs */
+    if (event->type() == QEvent::KeyPress && watched == m_list) {
         m_lastListKey.start();
     }
     /* once Qt gave the focus back to the widget that had it */
@@ -1033,7 +972,7 @@ void MainWindow::focusScreen(FocusCause cause)
     if (cause == FocusCause::Activated && m_lastPress.isValid() && m_lastPress.elapsed() < 500) {
         return;
     }
-    if (cause == FocusCause::Switched && (m_list->hasFocus() || m_chooser->hasFocus()) &&
+    if (cause == FocusCause::Switched && m_list->hasFocus() &&
         m_lastListKey.isValid() && m_lastListKey.elapsed() < 500) {
         return;
     }
@@ -1107,8 +1046,6 @@ void MainWindow::updateActions()
     for (QAction *tab : m_pane->tabActions()) {
         tab->setEnabled(m_list->count() > 0);
     }
-    /* the action's: the bar enables its widget as the action is */
-    m_chooserAction->setEnabled(m_list->count() > 0);
 
     const VmConsole *console = currentConsole();
     VmView *view = console ? console->view() : nullptr;
@@ -1493,7 +1430,8 @@ void MainWindow::closeEvent(QCloseEvent *event)
     settings.setValue("mainwindow/geometry", saveGeometry());
     settings.setValue("mainwindow/state", saveState());
     settings.setValue("mainwindow/splitter", m_splitter->saveState());
-    settings.setValue("mainwindow/library", m_library->isChecked());
+    settings.setValue("mainwindow/library", !m_sidebar->isCollapsed());
+    settings.setValue("mainwindow/listWidth", m_sidebar->expandedWidth());
     settings.setValue("mainwindow/menubar", m_menuBar->isChecked());
     settings.setValue("mainwindow/current", vm ? vm->id() : QString());
     settings.setValue("mainwindow/tab", int(m_pane->tab()));

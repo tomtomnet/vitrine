@@ -11,7 +11,6 @@
 
 class MainBar;
 class QAction;
-class QComboBox;
 class QMenu;
 class QemuBuildDialog;
 class QLabel;
@@ -21,6 +20,7 @@ class QSplitter;
 class UpdateNotifier;
 class UsbMenu;
 class QStackedWidget;
+class Sidebar;
 class StatusStats;
 class Vm;
 class VmConsole;
@@ -59,8 +59,9 @@ protected:
 
 private:
     void createActions();
-    /* The list of VMs on the left, or the bar's drop-down of them instead */
-    void showLibrary(bool shown);
+    /* The list of VMs collapsed to its icons, or expanded: what F9 and the
+       bar's button say they do */
+    void libraryCollapsed(bool collapsed);
     /* The menu bar, or its menus behind the bar's menu button instead */
     void showMenuBar(bool shown);
     /* F10: the menus, from the menu bar or the bar's button */
@@ -111,6 +112,8 @@ private:
     void releaseInput();
 
     VmStore *m_store;
+    /* The list of VMs and the tasks' button under it */
+    Sidebar *m_sidebar;
     QListWidget *m_list;
     QStackedWidget *m_right;
     VmPane *m_pane;
@@ -180,10 +183,7 @@ private:
     QAction *m_quit;
     /* The one bar under the title: actions, tabs, menu button */
     MainBar *m_bar;
-    /* The VMs in the bar while the list is hidden, and its action there */
-    QComboBox *m_chooser;
-    QAction *m_chooserAction;
-    /* In the bar: hides or shows the list (m_library) */
+    /* In the bar: collapses or expands the list (m_library) */
     QAction *m_listButton;
     /* The menu bar shown, else its menus behind m_menuButton */
     QAction *m_menuBar;
