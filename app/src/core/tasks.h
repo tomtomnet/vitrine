@@ -47,7 +47,8 @@ public:
     void setTitle(const QString &title);
     void setText(const QString &text);
     void setProgress(qint64 done, qint64 total);
-    /* It ended, once: Done, Failed (@text: why) or Stopped */
+    /* It ended, once: Done, Failed or Stopped; @text, what it made or why
+       it failed, replaces what it was doing */
     void finish(State state, const QString &text = {});
 
     /* What shows its details, instead of what its kind has (TaskList::setDetails()) */

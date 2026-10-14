@@ -3,7 +3,10 @@
 
 #include <QDateTime>
 #include <QObject>
+#include <QPointer>
 #include <QStringList>
+
+#include "core/tasks.h"
 
 class QProcess;
 
@@ -135,6 +138,8 @@ public:
     QStringList warnings() const { return m_warnings; }
     /* The last build ended with Stop */
     bool wasStopped() const { return m_cancelled && !m_process; }
+    /* The build's in the app's tasks (TaskList), until seen; null if none */
+    Task *task() const { return m_task; }
 
 signals:
     void started();
@@ -174,4 +179,5 @@ private:
     QString m_prefix;           // the one built, or up to date
     QString m_stack;            // of the build running
     QString m_before;           // the prefix `current` named when it started
+    QPointer<Task> m_task;
 };

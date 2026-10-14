@@ -76,7 +76,10 @@ private slots:
         QSignalSpy doneFinished(done, &Task::finished);
 
         failed->setText("Step 2 of 4: building Mesa");
+        done->setText("Step 5 of 5: installing");
         done->finish(Task::State::Done);
+        /* nothing to say but that it is done */
+        QCOMPARE(done->text(), QString());
         failed->finish(Task::State::Failed, "Build dependencies are missing");
         stopped->finish(Task::State::Stopped);
         QCOMPARE(finished.size(), 3);

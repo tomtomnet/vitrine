@@ -101,27 +101,7 @@ QString GuestToolsBuildDialog::explain(State state)
 
 QString GuestToolsBuildDialog::progressText(const GuestToolsBuilder *builder, bool percent)
 {
-    QStringList detail;
-    QString text;
-
-    if (builder->step() < 1) {
-        return tr("starting");
-    }
-    text = tr("step %1 of %2: %3")
-               .arg(builder->step())
-               .arg(builder->steps().size())
-               .arg(builder->stepText());
-    if (builder->isWaiting()) {
-        detail << tr("waiting for memory");
-    } else {
-        if (!builder->phase().isEmpty()) {
-            detail << builder->phase();
-        }
-        if (percent && builder->progressTotal() > 0) {
-            detail << tr("%1%").arg(builder->progressDone() * 100 / builder->progressTotal());
-        }
-    }
-    return detail.isEmpty() ? text : text + " (" + detail.join(", ") + ")";
+    return builder->progressText(percent);
 }
 
 void GuestToolsBuildDialog::present(QWidget *from)

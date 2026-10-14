@@ -6,6 +6,7 @@
 #include <QTemporaryDir>
 #include <QTest>
 
+#include "core/tasks.h"
 #include "core/vmcloner.h"
 #include "core/vmstore.h"
 
@@ -61,12 +62,26 @@ private slots:
 
         VmCloner cloner(&store);
         QSignalSpy finished(&cloner, &VmCloner::finished);
+        QStringList texts;
+        connect(TaskList::instance(), &TaskList::taskChanged, this,
+                [&texts](Task *task) { texts << task->text(); });
         cloner.start(source, "Fedora copy");
+        /* a task of the app's while it copies */
+        QVERIFY(cloner.task());
+        QCOMPARE(cloner.task()->kind(), Task::Kind::Clone);
+        QCOMPARE(cloner.task()->title(), "Clone of Fedora");
+        QVERIFY(cloner.task()->isRunning());
         QVERIFY(finished.wait(10000));
         QCOMPARE(finished[0][1].toString(), "");
         Vm *clone = finished[0][0].value<Vm *>();
         QVERIFY(clone);
         QCOMPARE(clone->name(), "Fedora copy");
+        disconnect(TaskList::instance(), &TaskList::taskChanged, this, nullptr);
+        QVERIFY2(texts.contains("Copying disk.qcow2"), qPrintable(texts.join('\n')));
+        QCOMPARE(cloner.task()->state(), Task::State::Done);
+        QCOMPARE(cloner.task()->text(), "New VM: Fedora copy");
+        QCOMPARE(cloner.task()->fraction(), 1.0);
+        cloner.task()->dismiss();
 
         /* what it writes, copied into its folder */
         QCOMPARE(read(clone->dir() + "/OVMF_CODE.fd"), "code");
@@ -112,6 +127,32 @@ private slots:
         QCOMPARE(finished[0][1].toString(), "Cancelled");
         QTRY_COMPARE(store.vms().size(), 1);
         QVERIFY(!QFileInfo::exists(tmp.filePath("vms/Big-copy")));
+        QCOMPARE(cloner.task()->state(), Task::State::Stopped);
+        cloner.task()->dismiss();
+    }
+
+    /* A copy that fails: the clone goes, its task says why */
+    void failure()
+    {
+        QTemporaryDir tmp;
+        VmStore store(tmp.filePath("vms"));
+        QString error;
+        Vm *source = store.create("Locked", &error);
+
+        write(source->dir() + "/disk.img", "disk");
+        QVERIFY(QFile::setPermissions(source->dir() + "/disk.img", QFileDevice::WriteOwner));
+        QVERIFY(source->save(ArgsFile::parse("-name Locked\n-hda disk.img\n")));
+        VmCloner cloner(&store);
+        QSignalSpy finished(&cloner, &VmCloner::finished);
+        cloner.start(source, "Locked copy");
+        QVERIFY(finished.wait(10000));
+        QVERIFY(!finished[0][0].value<Vm *>());
+        const QString why = finished[0][1].toString();
+        QVERIFY2(why.contains("Permission denied"), qPrintable(why));
+        QTRY_COMPARE(store.vms().size(), 1);
+        QCOMPARE(cloner.task()->state(), Task::State::Failed);
+        QCOMPARE(cloner.task()->text(), why);
+        cloner.task()->dismiss();
     }
 };
 

@@ -49,10 +49,8 @@ void Task::finish(State state, const QString &text)
         return;
     }
     m_state = state;
-    if (!text.isEmpty()) {
-        m_text = text;
-    }
-    /* how far it went is no longer what it shows */
+    /* what it did last is no longer what it does */
+    m_text = text;
     emit changed();
     emit finished();
 }

@@ -3,9 +3,11 @@
 
 #include <QList>
 #include <QObject>
+#include <QPointer>
 #include <QStringList>
 
 #include "core/argsfile.h"
+#include "core/tasks.h"
 
 class QProcess;
 class QTimer;
@@ -49,6 +51,8 @@ public:
     void start(Vm *source, const QString &name);
     /* The clone is removed */
     void cancel();
+    /* The clone's in the app's tasks (TaskList), until seen; null if none */
+    Task *task() const { return m_task; }
 
 signals:
     /* In bytes */
@@ -68,4 +72,6 @@ private:
     QTimer *m_timer;
     qint64 m_done = 0;
     qint64 m_total = 0;
+    QPointer<Task> m_task;
+    bool m_cancelled = false;
 };
