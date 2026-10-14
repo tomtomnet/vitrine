@@ -94,6 +94,19 @@ public:
      * main one.  Empty unless the running QEMU shows in vitrine's window.
      */
     QString displaySocket() const;
+    /*
+     * The socket of the nested desktop shown in vitrine's window
+     * (NestedDesktop::Mode::Integrated), which QEMU's cross-domain connects
+     * to, while the VM is active: the console serves it (its Desktop view).
+     * Empty for other runs.
+     */
+    QString nestedSocket() const;
+    /*
+     * How that socket is served, as it must be before QEMU starts: @serve
+     * listens on @socket, or says why it cannot.  Without it, or when it
+     * fails, such a VM does not start.
+     */
+    void setNestedHost(const std::function<bool(const QString &socket, QString *error)> &serve);
     /* The socket of the vitrine agent's port (guest tools), while active */
     QString agentSocket() const;
     /* The socket of the port of QEMU's guest agent (qemu-ga) that Shut Down

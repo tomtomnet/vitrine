@@ -88,10 +88,68 @@ private slots:
             {"-device virtio-vga\n-device secondary-vga\n", Graphics::Custom},
             {"-vga std\n-device virtio-gpu-pci\n", Graphics::Custom},
             {"-nographic\n", Graphics::Custom},
+            /* the nested desktop: rutabaga with cross-domain beside q35's VGA */
+            {"-vga std\n-device virtio-gpu-rutabaga-pci,cross-domain=on\n", Graphics::Nested},
+            {"-device virtio-gpu-rutabaga-pci,cross-domain=on\n", Graphics::Nested},
+            {"-device VGA\n-device virtio-gpu-rutabaga-pci,cross-domain=on\n", Graphics::Nested},
+            {"-device virtio-gpu-rutabaga-pci,x-drm=on,cross-domain\n-vga none\n-device VGA\n",
+             Graphics::Nested},
+            {"-vga none\n-device virtio-gpu-rutabaga-pci,cross-domain=on\n", Graphics::Custom},
+            {"-nodefaults\n-device virtio-gpu-rutabaga-pci,cross-domain=on\n", Graphics::Custom},
+            {"-machine virt\n-device virtio-gpu-rutabaga-pci,cross-domain=on\n", Graphics::Custom},
+            {"-vga std\n-device virtio-gpu-rutabaga-pci\n", Graphics::Custom},
+            {"-vga std\n-device VGA\n-device virtio-gpu-rutabaga-pci,cross-domain=on\n",
+             Graphics::Custom},
+            {"-device virtio-vga-rutabaga,cross-domain=on\n", Graphics::Custom},
         };
         for (const auto &[args, kind] : cases) {
             QVERIFY2(graphics(ArgsFile::parse(args)).kind == kind, args);
         }
+    }
+
+    /* The nested desktop's card in place of another, and another in its place */
+    void nestedCard()
+    {
+        const QString rutabaga = "virtio-gpu-rutabaga-pci,cross-domain=on";
+        ArgsFile a = ArgsFile::parse(kScript);
+
+        setNestedCard(a, rutabaga);
+        QCOMPARE(text(a), "-accel kvm,honor-guest-pat=on\n"
+                          "-machine q35,memory-backend=mem\n"
+                          "-vga std\n"
+                          "-device virtio-gpu-rutabaga-pci,cross-domain=on\n"
+                          "-display sdl\n");
+        QVERIFY(graphics(a).kind == Graphics::Nested);
+
+        /* a 2D card in its place: no VGA beside a VGA card, nor beside the other */
+        Graphics g = graphics(a);
+        g.kind = Graphics::Virtio;
+        g.device = "virtio-vga";
+        setGraphics(a, g);
+        QCOMPARE(text(a), "-accel kvm,honor-guest-pat=on\n"
+                          "-machine q35,memory-backend=mem\n"
+                          "-vga none\n"
+                          "-device virtio-vga\n"
+                          "-display sdl\n");
+        /* with a VGA of its own, which goes with it; OpenGL for a 3D card */
+        a = ArgsFile::parse("-device VGA\n-device virtio-gpu-rutabaga-pci,cross-domain=on,id=gpu\n"
+                            "-display sdl\n");
+        g = graphics(a);
+        g.kind = Graphics::Accelerated;
+        g.device = "virtio-gpu-gl-pci";
+        setGraphics(a, g);
+        QCOMPARE(text(a), "-device virtio-gpu-gl-pci,id=gpu\n-vga none\n-display sdl,gl=on\n");
+
+        /* no card yet: before the display, OpenGL there for the card's screen */
+        a = ArgsFile::parse("-machine q35\n-display dbus,p2p=yes\n");
+        setNestedCard(a, rutabaga);
+        QCOMPARE(text(a), "-machine q35\n-vga std\n-device virtio-gpu-rutabaga-pci,cross-domain=on\n"
+                          "-display dbus,p2p=yes,gl=on\n");
+        /* nor a display: after the machine */
+        a = ArgsFile::parse("-machine q35\n-m 1G\n");
+        setNestedCard(a, rutabaga);
+        QCOMPARE(text(a), "-machine q35\n-vga std\n-device virtio-gpu-rutabaga-pci,cross-domain=on\n"
+                          "-m 1G\n");
     }
 
     /* vitrine's window: the D-Bus display on a socket of its own, with OpenGL */

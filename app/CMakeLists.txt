@@ -1,6 +1,26 @@
 # The Qt application: the VM manager and its windows
 
 find_package(Qt6 6.4 REQUIRED COMPONENTS Core Concurrent DBus Gui Network Widgets)
+find_package(PkgConfig REQUIRED)
+pkg_check_modules(WAYLAND REQUIRED IMPORTED_TARGET wayland-client wayland-egl)
+pkg_get_variable(WAYLAND_PROTOCOLS_DIR wayland-protocols pkgdatadir)
+find_program(WAYLAND_SCANNER wayland-scanner REQUIRED)
+
+# The core's own Wayland: the socket the compositor treats as a sandbox's,
+# which QEMU's nested desktop connects to (core/waylandsandbox.h)
+set(CORE_PROTOCOL_DIR ${CMAKE_CURRENT_BINARY_DIR}/core-protocols)
+set(CORE_PROTOCOL_SOURCES)
+foreach(xml staging/security-context/security-context-v1.xml)
+    get_filename_component(name ${xml} NAME_WE)
+    set(hdr ${CORE_PROTOCOL_DIR}/${name}-client-protocol.h)
+    set(src ${CORE_PROTOCOL_DIR}/${name}-protocol.c)
+    add_custom_command(OUTPUT ${hdr} ${src}
+        COMMAND ${CMAKE_COMMAND} -E make_directory ${CORE_PROTOCOL_DIR}
+        COMMAND ${WAYLAND_SCANNER} client-header ${WAYLAND_PROTOCOLS_DIR}/${xml} ${hdr}
+        COMMAND ${WAYLAND_SCANNER} private-code ${WAYLAND_PROTOCOLS_DIR}/${xml} ${src}
+        DEPENDS ${WAYLAND_PROTOCOLS_DIR}/${xml})
+    list(APPEND CORE_PROTOCOL_SOURCES ${hdr} ${src})
+endforeach()
 
 # Everything but the windows, so that tests can use it
 qt_add_library(vitrine_core STATIC
@@ -38,6 +58,8 @@ qt_add_library(vitrine_core STATIC
     src/core/hostsettings.h
     src/core/importer.cpp
     src/core/importer.h
+    src/core/nesteddesktop.cpp
+    src/core/nesteddesktop.h
     src/core/optionvalue.cpp
     src/core/optionvalue.h
     src/core/paths.cpp
@@ -74,8 +96,11 @@ qt_add_library(vitrine_core STATIC
     src/core/vmstore.h
     src/core/vmtemplate.cpp
     src/core/vmtemplate.h
+    src/core/waylandsandbox.cpp
+    src/core/waylandsandbox.h
+    ${CORE_PROTOCOL_SOURCES}
 )
-target_include_directories(vitrine_core PUBLIC src)
+target_include_directories(vitrine_core PUBLIC src PRIVATE ${CORE_PROTOCOL_DIR})
 # host/ and guest/ of the source tree: what a build tree's app builds its
 # QEMU and the guest tools with
 target_compile_definitions(vitrine_core PRIVATE
@@ -87,8 +112,9 @@ target_compile_definitions(vitrine_core PRIVATE
 qt_add_resources(vitrine_core guestbootstrap PREFIX /guest BASE ../guest
     FILES ../guest/bootstrap/vitrine-tools-bootstrap.service
           ../guest/bootstrap/multi-user.target.conf)
-target_link_libraries(vitrine_core PUBLIC
-    Qt6::Core Qt6::Concurrent Qt6::Gui Qt6::Network)
+target_link_libraries(vitrine_core
+    PUBLIC Qt6::Core Qt6::Concurrent Qt6::Gui Qt6::Network
+    PRIVATE PkgConfig::WAYLAND)
 target_compile_options(vitrine_core PRIVATE -Wall -Wextra)
 
 # The VM display: QEMU's D-Bus display in a native Wayland surface. The
@@ -96,13 +122,9 @@ target_compile_options(vitrine_core PRIVATE -Wall -Wextra)
 # display client (embed-poc); see src/vmview/README.md.
 set(QT_NO_PRIVATE_MODULE_WARNING ON)
 find_package(Qt6 6.5 REQUIRED COMPONENTS Gui GuiPrivate Widgets)
-find_package(PkgConfig REQUIRED)
 pkg_check_modules(GIO REQUIRED IMPORTED_TARGET gio-2.0 gio-unix-2.0)
 pkg_check_modules(EGL REQUIRED IMPORTED_TARGET egl)
-pkg_check_modules(WAYLAND REQUIRED IMPORTED_TARGET wayland-client wayland-egl)
 pkg_check_modules(GBM REQUIRED IMPORTED_TARGET gbm libdrm)
-pkg_get_variable(WAYLAND_PROTOCOLS_DIR wayland-protocols pkgdatadir)
-find_program(WAYLAND_SCANNER wayland-scanner REQUIRED)
 
 # Wayland protocols Qt does not expose: presentation feedback, dma-buf
 # feedback, shortcut inhibition (keyboard grab), pointer lock and relative
@@ -369,6 +391,7 @@ if(BUILD_TESTING)
             hostmemory
             hostsettings
             importer
+            nesteddesktop
             optionvalue
             perfstats
             qemuinfo
