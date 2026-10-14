@@ -2,7 +2,7 @@
 # exact version, and dnf takes an installed one of the same version as done.
 Name:           vitrine-guest-tools
 Version:        0.1.0
-Release:        18%{?dist}
+Release:        19%{?dist}
 Summary:        vitrine guest tools: patched virtio-gpu driver, settings and agent
 
 # the driver's sources (dkms/vendor, dkms/patches) are the kernel's: MIT
@@ -175,6 +175,11 @@ fi
 %dir %{_sharedstatedir}/%{name}
 
 %changelog
+* Wed Oct 14 2026 vitrine <noreply@anthropic.com> - 0.1.0-19
+- plasmalogin's XDG_DATA_DIRS in a nested-desktop boot: the session entry's
+  folder in front of the service manager's, which keeps flatpak's exports
+  (the research's finding)
+
 * Wed Oct 14 2026 vitrine <noreply@anthropic.com> - 0.1.0-18
 - in a nested-desktop boot the login screen draws on the VM's own screen
   only (plasmalogin's KWin with KWIN_DRM_DEVICES): it drew on QEMU's VGA too,

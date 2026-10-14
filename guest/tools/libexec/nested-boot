@@ -63,7 +63,9 @@ label() {
 			echo "<4>could not relabel $*: the login manager may not read it"
 	fi
 }
-echo "XDG_DATA_DIRS=$sessions:/usr/local/share:/usr/share" > "$run/plasmalogin.env"
+# (in front of the service manager's own, which this unit gets: flatpak's
+# environment generator puts its exports there, which plasmalogin would lose)
+echo "XDG_DATA_DIRS=$sessions:${XDG_DATA_DIRS:-/usr/local/share:/usr/share}" > "$run/plasmalogin.env"
 cat > "$run/sddm.conf" << EOF
 # vitrine guest tools, this nested-desktop boot only: "Plasma (nested desktop)" in
 # place of Plasma
