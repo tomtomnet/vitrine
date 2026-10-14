@@ -19,12 +19,12 @@ its `Subject:`, else the first line of its description.
 patches that go on top, in this order:
 
 1. `qemu/research/`: the research's QEMU series, its `patches/qemu/series`
-   at commit `8557524` (2026-10-14), each patch without its
+   at commit `3907327` (2026-10-14), each patch without its
    `Claude-Session:` line and otherwise unchanged. Since 2026-10-14 this
    series is the source of the research's QEMU; the qemu-gui fork
    (`https://github.com/tomtomnet/qemu-gui`) it started from is no longer
    used. 0001-0017 are the fork's commits, 0018-0024 the work the fork had
-   not committed on 2026-10-12, split by topic, and the last four are for
+   not committed on 2026-10-12, split by topic, and the last five are for
    `virtio-gpu-rutabaga`, the nested desktop's device.
 2. `qemu/vitrine/`: Vitrine's own changes, as new files here rather than
    edits of the others.
@@ -61,12 +61,13 @@ patches that go on top, in this order:
 | `6572397833517b8e19675ac556935458bed10be5208f36150ec28e5573cf01d3` | `virtio-gpu-rutabaga-scanout-blob.patch`: `SET_SCANOUT_BLOB` on displays with GL: the guest's GPU-rendered login screen on its own console |
 | `7241c150b19b49f6c598f3b3a527b48f5bcb8ad66e43123e29bb7f0fa8c1bce6` | `virtio-gpu-rutabaga-gl-context-scope.patch`: virglrenderer's GL context kept apart from the display's, so that the VGA and virtio-gpu consoles show with `-display dbus,gl=on` |
 | `b31e726f02fd8ec2955092744453b7b802bfd51bd9720a60844eccaddf36a429` | `virtio-gpu-rutabaga-reset-contexts.patch`: a reset the guest did not see coming (QMP `system_reset`, Machine > Reset) destroys the guest's rutabaga contexts, so that the next boot's contexts do not meet stale ones of the same ids; the errors a guest can cause logged at most 20 a second |
+| `4886a52e553e50b3e40f0a3f3169b0a674281435c41e0fb36e7cd2a24e1be09b` | `virtio-gpu-rutabaga-prefault-async.patch`: `x-prefault-blobs` queues the blob pre-fault on a vCPU (`async_run_on_cpu()`) instead of waiting for it in the command bottom half, which holds the device's re-entrancy guard: the guest's MSI-X table writes meanwhile (an interrupt moved to another CPU) were dropped ("Blocked re-entrant IO") |
 
 When the research's series moves (`r` its repository, `c` the commit,
 `v` this folder):
 
 ```sh
-r=~/Documents/virtio-gpu-desktop c=8557524 v=~/Documents/vitrine/host/patches/qemu
+r=~/Documents/virtio-gpu-desktop c=3907327 v=~/Documents/vitrine/host/patches/qemu
 rm -f "$v"/research/*.patch
 for p in $(git -C "$r" show "$c:patches/qemu/series" | sed 's/#.*//'); do
     git -C "$r" show "$c:patches/qemu/$p" | grep -v '^Claude-Session:' > "$v/research/$p"
