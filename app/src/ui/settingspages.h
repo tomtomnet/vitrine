@@ -9,6 +9,7 @@
 #include <QWidget>
 
 #include "core/argsfile.h"
+#include "core/nesteddesktop.h"
 #include "core/vmconfig.h"
 #include "core/vmhardware.h"
 
@@ -121,8 +122,10 @@ private:
 
 /*
  * Where the screen shows (vitrine's window, QEMU's GTK or SDL window, or
- * none), what QEMU's window does, and the graphics card, with vitrine's
- * settings for its 3D: DRM native context, Venus, the frame timing
+ * none), the nested desktop (the guest's KDE session as a window of its
+ * own, or in vitrine's: NestedDesktop), what QEMU's window does, and the
+ * graphics card, with vitrine's settings for its 3D: DRM native context,
+ * Venus, the frame timing
  */
 class DisplayPage : public SettingsPage
 {
@@ -144,6 +147,8 @@ private:
         QString screen;
         /* the options of QEMU's window that it has, e.g. show-cursor */
         QMap<QString, bool> options;
+        /* the nested desktop, whose card takes the card's place */
+        bool nested = false;
         /* the card chosen: a driver of the list, or the VM's own as it is */
         QString card;
         bool nativeContext = false;
@@ -157,6 +162,8 @@ private:
     void update();
     /* The 3D card chosen in the list, or empty */
     QString chosen3dCard() const;
+    /* The nested desktop's card in the list, or the card it replaced back */
+    void nestedToggled(bool on);
 
     Banner *m_custom;
     /* The screen's place, by -display; none current for another (m_custom says it) */
@@ -164,6 +171,12 @@ private:
     QLabel *m_displayHint;
     /* What of the list the VM's QEMU lacks */
     QLabel *m_displayLacks;
+    QCheckBox *m_nested;
+    QLabel *m_nestedHint;
+    /* what the VM's QEMU has of it, asked once per load() */
+    NestedDesktop::Offer m_nestedOffer;
+    /* the card of the list before the nested desktop's took its place */
+    QString m_cardBeforeNested;
     QLabel *m_windowLabel;
     QMap<QString, QCheckBox *> m_options;
     QComboBox *m_card;

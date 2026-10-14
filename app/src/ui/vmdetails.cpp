@@ -18,6 +18,7 @@
 #include "core/diskinfo.h"
 #include "core/gpucontexts.h"
 #include "core/hostdevices.h"
+#include "core/nesteddesktop.h"
 #include "core/paths.h"
 #include "core/qemuinfo.h"
 #include "core/stackbuilder.h"
@@ -333,6 +334,16 @@ QString VmDetails::html() const
         }
         display << std::pair(tr("DRM native context"), text(native))
                 << std::pair(tr("Venus"), text(venus));
+    }
+    switch (NestedDesktop::mode(args)) {
+    case NestedDesktop::Mode::Integrated:
+        display << std::pair(tr("Nested desktop"), text(tr("in Vitrine's window")));
+        break;
+    case NestedDesktop::Mode::OwnWindow:
+        display << std::pair(tr("Nested desktop"), text(tr("in a window of its own")));
+        break;
+    case NestedDesktop::Mode::Off:
+        break;
     }
     section(tr("Display"), display);
 
