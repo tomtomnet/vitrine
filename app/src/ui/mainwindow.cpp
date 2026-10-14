@@ -9,6 +9,7 @@
 #include <QDialog>
 #include <QDir>
 #include <QFileInfo>
+#include <QFocusEvent>
 #include <QLabel>
 #include <QListWidget>
 #include <QMenu>
@@ -952,6 +953,27 @@ bool MainWindow::eventFilter(QObject *watched, QEvent *event)
     /* the arrows, Home, End... going through the list of VMs */
     if (event->type() == QEvent::KeyPress && watched == m_list) {
         m_lastListKey.start();
+    }
+    /*
+     * The menu bar taking the keys from the VM's screen: a menu opened with
+     * the mouse while the screen had them, closed with Escape, leaves Qt's
+     * menu bar in its keyboard mode, in styles that have it (Fusion), where
+     * a letter opens a menu. Back to the screen, once Qt is done with the
+     * menu.
+     */
+    if (event->type() == QEvent::FocusOut && watched->isWidgetType() &&
+        static_cast<QFocusEvent *>(event)->reason() == Qt::MenuBarFocusReason) {
+        const VmConsole *console = currentConsole();
+        const QWidget *screen = console && console->view() ? console->view()->widget() : nullptr;
+        const auto *widget = static_cast<QWidget *>(watched);
+        if (screen && (widget == screen || screen->isAncestorOf(widget))) {
+            QTimer::singleShot(0, this, [this]() {
+                VmConsole *console = currentConsole();
+                if (console && m_menus->hasFocus() && !QApplication::activePopupWidget()) {
+                    console->focusScreen();
+                }
+            });
+        }
     }
     /* once Qt gave the focus back to the widget that had it */
     if (watched == this && event->type() == QEvent::WindowActivate) {
