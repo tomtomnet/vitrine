@@ -84,7 +84,15 @@ int main(int argc, char **argv)
     QApplication::setApplicationDisplayName(QObject::tr("Vitrine"));
     QApplication::setApplicationVersion(VITRINE_VERSION);
     QApplication::setDesktopFileName("vitrine");
-    QApplication::setWindowIcon(Icons::app());
+    /*
+     * The windows' icon by its name in the icon theme, where installing
+     * puts it: the compositor then draws it from the file.  Pixels sent
+     * for an icon without a name (xdg-toplevel-icon) came out with red and
+     * cyan fringes in KWin's title bar wherever the logo is light and half
+     * transparent, as its glass is (Qt 6.11, KWin 6.7.91).  Not installed
+     * anywhere: those pixels all the same.
+     */
+    QApplication::setWindowIcon(QIcon::fromTheme("vitrine", Icons::app()));
 
     const QString socketPath = Paths::runtimeDir() + "/manager.sock";
     QLockFile lock(Paths::runtimeDir() + "/manager.lock");
