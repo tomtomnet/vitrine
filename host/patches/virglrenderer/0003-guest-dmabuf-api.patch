@@ -37,7 +37,7 @@ index c608a4a0..060f65ed 100644
 +      return -EINVAL;
 +
 +   off_t size = lseek(fd, 0, SEEK_END);
-+   if (size <= 0 || (size_t)size < vrend_get_iovec_size(res->iov, res->iov_count))
++   if (size <= 0 || (size_t)size < virgl_get_iovec_size(res->iov, res->iov_count))
 +      return -EINVAL;
 +
 +   res->fd_type = VIRGL_RESOURCE_FD_DMABUF;

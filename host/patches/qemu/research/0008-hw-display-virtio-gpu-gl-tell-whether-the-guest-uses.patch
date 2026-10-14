@@ -1,8 +1,8 @@
-From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From 7d3dabd9f7ec7533b56eacaa71290bf19459465c Mon Sep 17 00:00:00 2001
 From: tomtomnet <tompere8000@proton.me>
 Date: Fri, 25 Sep 2026 15:43:31 +0200
-Subject: [PATCH] hw/display/virtio-gpu-gl: tell whether the guest uses native
- context
+Subject: [PATCH 08/19] hw/display/virtio-gpu-gl: tell whether the guest uses
+ native context
 
 DRM native context needs a Mesa built with it in the guest: most
 distributions leave it out, and the guest then falls back to virgl
@@ -19,7 +19,6 @@ Nothing else changes; context creation only checks the return value it
 used to ignore.
 
 Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
-Claude-Session: https://claude.ai/code/session_014Q4Faji8f5ncpq4S3fVqfu
 ---
  .github/README.md              |  8 +++++
  hw/display/virtio-gpu-gl.c     | 58 ++++++++++++++++++++++++++++++++++
@@ -28,7 +27,7 @@ Claude-Session: https://claude.ai/code/session_014Q4Faji8f5ncpq4S3fVqfu
  4 files changed, 93 insertions(+), 5 deletions(-)
 
 diff --git a/.github/README.md b/.github/README.md
-index 1d18b6271bae7d7f7e1e5f4fc1a7ec5c5b74b616..cf1339ba4027a815ec73db7ddf29bfdd4d5a059b 100644
+index 1d18b6271b..cf1339ba40 100644
 --- a/.github/README.md
 +++ b/.github/README.md
 @@ -27,6 +27,14 @@ commits. The menu needs a Linux host.
@@ -47,7 +46,7 @@ index 1d18b6271bae7d7f7e1e5f4fc1a7ec5c5b74b616..cf1339ba4027a815ec73db7ddf29bfdd
  ## Build on Fedora
  
 diff --git a/hw/display/virtio-gpu-gl.c b/hw/display/virtio-gpu-gl.c
-index 2b7a41c4664303ca185ac4d006286129c096fcc5..73d817488a1158009e6459f114bfc069982e6d70 100644
+index 2b7a41c466..73d817488a 100644
 --- a/hw/display/virtio-gpu-gl.c
 +++ b/hw/display/virtio-gpu-gl.c
 @@ -17,6 +17,7 @@
@@ -137,7 +136,7 @@ index 2b7a41c4664303ca185ac4d006286129c096fcc5..73d817488a1158009e6459f114bfc069
  
  static const TypeInfo virtio_gpu_gl_info = {
 diff --git a/hw/display/virtio-gpu-virgl.c b/hw/display/virtio-gpu-virgl.c
-index f45571060fead3026a6aecb5f84c75362d43f7f1..9550e2289b6b28323fb702c67a3b8e681cc0bfc3 100644
+index f45571060f..9550e2289b 100644
 --- a/hw/display/virtio-gpu-virgl.c
 +++ b/hw/display/virtio-gpu-virgl.c
 @@ -498,6 +498,16 @@ void virtio_gpu_virgl_resource_destroy(VirtIOGPU *g,
@@ -185,7 +184,7 @@ index f45571060fead3026a6aecb5f84c75362d43f7f1..9550e2289b6b28323fb702c67a3b8e68
  
  static void virgl_cmd_context_destroy(VirtIOGPU *g,
 diff --git a/include/hw/virtio/virtio-gpu.h b/include/hw/virtio/virtio-gpu.h
-index 631dfc63a4d4fe7de333147b86afa6459a6d5daa..efc6874f2ea676ab9bea8431f504e7c7eba81688 100644
+index 631dfc63a4..efc6874f2e 100644
 --- a/include/hw/virtio/virtio-gpu.h
 +++ b/include/hw/virtio/virtio-gpu.h
 @@ -266,6 +266,12 @@ struct VirtIOGPUGL {

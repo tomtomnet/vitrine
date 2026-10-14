@@ -1,8 +1,8 @@
-From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From de9dc5d3a75239ac3bde8ff971a51733a7e5da51 Mon Sep 17 00:00:00 2001
 From: tomtomnet <tompere8000@proton.me>
 Date: Wed, 23 Sep 2026 17:25:43 +0200
-Subject: [PATCH] contrib/vdagent-clipboard-bridge: wait for XWayland, fix
- Hyprland docs
+Subject: [PATCH 07/19] contrib/vdagent-clipboard-bridge: wait for XWayland,
+ fix Hyprland docs
 
 Hyprland runs no desktop autostart entries, so neither spice-vdagent nor
 the bridge started there, and the README showed hyprland.conf lines,
@@ -20,7 +20,7 @@ Co-Authored-By: Claude Opus 5.5 (1M context) <noreply@anthropic.com>
  2 files changed, 38 insertions(+), 19 deletions(-)
 
 diff --git a/.github/README.md b/.github/README.md
-index a8d2fb9430565e9e7e9915e5745c956fac201963..1d18b6271bae7d7f7e1e5f4fc1a7ec5c5b74b616 100644
+index a8d2fb9430..1d18b6271b 100644
 --- a/.github/README.md
 +++ b/.github/README.md
 @@ -135,15 +135,25 @@ it works with any desktop; I tested it with KDE Plasma, Hyprland and niri.
@@ -59,7 +59,7 @@ index a8d2fb9430565e9e7e9915e5745c956fac201963..1d18b6271bae7d7f7e1e5f4fc1a7ec5c
  Good to know:
  - Only text is shared.
 diff --git a/contrib/vdagent-clipboard-bridge/vdagent-clipboard-bridge b/contrib/vdagent-clipboard-bridge/vdagent-clipboard-bridge
-index adc05c447eceae6d9db9692adb72dbe0851bc7b1..cdca86789254abe057a5a6c42f75a0deccf6c758 100755
+index adc05c447e..cdca867892 100755
 --- a/contrib/vdagent-clipboard-bridge/vdagent-clipboard-bridge
 +++ b/contrib/vdagent-clipboard-bridge/vdagent-clipboard-bridge
 @@ -23,6 +23,7 @@ import os

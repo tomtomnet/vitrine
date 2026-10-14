@@ -9,8 +9,8 @@ class QProcess;
 
 /*
  * Vitrine's QEMU: upstream QEMU and virglrenderer at the commits of
- * host/versions.conf, with host/patches (for QEMU: the qemu-gui fork's
- * commits, the research series, vitrine's), which host/build.sh builds into
+ * host/versions.conf, with host/patches (for QEMU: the research's series,
+ * then vitrine's patches), which host/build.sh builds into
  * folders of their own under Paths::stackDir() (QEMU in <stamp>/, and
  * `current` pointing to the last complete build; virglrenderer in
  * virglrenderer/<key>/).  This runs build.sh and follows its progress; the

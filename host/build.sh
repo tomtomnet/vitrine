@@ -584,13 +584,13 @@ rm -f "$manifest"
 
 begin "fetching QEMU"
 # the subprojects this configuration builds: keycodemapdb, which configure
-# checks for; dtc for --enable-fdt=internal; imgui for --enable-sdl-gui
-checkout "$src/qemu" "$QEMU_URL" "$QEMU_COMMIT" "dtc imgui keycodemapdb" ${qemu_patches[@]+"${qemu_patches[@]}"}
+# checks for; dtc for --enable-fdt=internal
+checkout "$src/qemu" "$QEMU_URL" "$QEMU_COMMIT" "dtc keycodemapdb" ${qemu_patches[@]+"${qemu_patches[@]}"}
 
 begin "configuring QEMU"
 qargs=(--prefix="$qconf" --target-list=x86_64-softmmu --without-default-features --disable-werror
 	--enable-kvm --enable-tcg --enable-pixman --enable-attr --enable-virtfs --enable-hmp
-	--enable-malloc-trim --enable-sdl --enable-sdl-gui --enable-gtk --enable-opengl --enable-virglrenderer
+	--enable-malloc-trim --enable-sdl --enable-gtk --enable-opengl --enable-virglrenderer
 	--enable-libusb --enable-pa --enable-pipewire --enable-spice-protocol --enable-passt --enable-gio
 	--enable-dbus-display --enable-slirp --enable-tpm --enable-vhost-kernel --enable-vhost-net
 	--enable-vhost-user --enable-zstd --enable-png --enable-tools --enable-fdt=internal --disable-docs

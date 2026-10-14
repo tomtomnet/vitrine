@@ -1,7 +1,7 @@
-From f784c00e34b2c858472ab8d315b44014fcc37f18 Mon Sep 17 00:00:00 2001
+From 30461d5f14b480ec93251f49b47403d621c275eb Mon Sep 17 00:00:00 2001
 From: tomtomnet <tompere8000@proton.me>
 Date: Fri, 2 Oct 2026 08:45:57 +0200
-Subject: [PATCH 3/4] ui/sdl2: own Wayland swapchain for the guest's frames,
+Subject: [PATCH 16/19] ui/sdl2: own Wayland swapchain for the guest's frames,
  partial copies, stats
 
 - the guest's scanout is copied into dmabuf buffers of QEMU's own
@@ -12,7 +12,6 @@ Subject: [PATCH 3/4] ui/sdl2: own Wayland swapchain for the guest's frames,
 - frame and input statistics, presentation feedback for the vblank regulator
 
 Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
-Claude-Session: https://claude.ai/code/session_01M8iTzFPtyk2Gzbt6CLnRYK
 ---
  include/ui/sdl2.h              |   90 +++
  ui/meson.build                 |   13 +
@@ -29,7 +28,7 @@ Claude-Session: https://claude.ai/code/session_01M8iTzFPtyk2Gzbt6CLnRYK
  create mode 100644 ui/wayland/linux-dmabuf-v1.xml
 
 diff --git a/include/ui/sdl2.h b/include/ui/sdl2.h
-index af5986cf2..dde78d268 100644
+index af5986cf21..dde78d2687 100644
 --- a/include/ui/sdl2.h
 +++ b/include/ui/sdl2.h
 @@ -22,6 +22,7 @@
@@ -158,7 +157,7 @@ index af5986cf2..dde78d268 100644
  void sdl2_process_key(struct sdl2_console *scon,
                        SDL_KeyboardEvent *ev);
 diff --git a/ui/meson.build b/ui/meson.build
-index 2da9ef014..c331e7d70 100644
+index 2da9ef0143..c331e7d704 100644
 --- a/ui/meson.build
 +++ b/ui/meson.build
 @@ -174,6 +174,7 @@ if sdl.found()
@@ -191,7 +190,7 @@ index 2da9ef014..c331e7d70 100644
    sdl_ss.add(when: opengl, if_true: files('sdl2-gl.c'))
    sdl_ss.add(when: x11, if_true: files('x_keymap.c'))
 diff --git a/ui/sdl2-gl.c b/ui/sdl2-gl.c
-index fb87c221a..b26a2e1dc 100644
+index fb87c221a0..b26a2e1dc9 100644
 --- a/ui/sdl2-gl.c
 +++ b/ui/sdl2-gl.c
 @@ -27,6 +27,7 @@
@@ -379,7 +378,7 @@ index fb87c221a..b26a2e1dc 100644
  
  bool sdl2_gl_has_dmabuf(DisplayChangeListener *dcl)
 diff --git a/ui/sdl2-gui.cpp b/ui/sdl2-gui.cpp
-index 0cabe543d..3e29db2e4 100644
+index 0cabe543d7..3e29db2e4d 100644
 --- a/ui/sdl2-gui.cpp
 +++ b/ui/sdl2-gui.cpp
 @@ -963,6 +963,7 @@ static void stats_items(std::vector<StatusItem> &items)
@@ -573,7 +572,7 @@ index 0cabe543d..3e29db2e4 100644
  #endif
      {
 diff --git a/ui/sdl2-gui.h b/ui/sdl2-gui.h
-index d3f798903..342c99637 100644
+index d3f798903e..342c99637c 100644
 --- a/ui/sdl2-gui.h
 +++ b/ui/sdl2-gui.h
 @@ -57,6 +57,14 @@ int sdl2_gui_docked_height(void);
@@ -603,7 +602,7 @@ index d3f798903..342c99637 100644
  bool sdl2_gui_display_guest_size(int *w, int *h);
  
 diff --git a/ui/sdl2-stats.c b/ui/sdl2-stats.c
-index ae8bc73b5..63bb383b3 100644
+index ae8bc73b55..63bb383b3c 100644
 --- a/ui/sdl2-stats.c
 +++ b/ui/sdl2-stats.c
 @@ -30,6 +30,8 @@
@@ -1071,7 +1070,7 @@ index ae8bc73b5..63bb383b3 100644
      for (i = 0; i < NPRESENTS; i++) {
 diff --git a/ui/sdl2-swapchain.c b/ui/sdl2-swapchain.c
 new file mode 100644
-index 000000000..186c37e32
+index 0000000000..186c37e32d
 --- /dev/null
 +++ b/ui/sdl2-swapchain.c
 @@ -0,0 +1,1057 @@
@@ -2133,7 +2132,7 @@ index 000000000..186c37e32
 +    return true;
 +}
 diff --git a/ui/sdl2.c b/ui/sdl2.c
-index 58fd92708..f4bad9a7f 100644
+index 58fd92708b..f4bad9a7fb 100644
 --- a/ui/sdl2.c
 +++ b/ui/sdl2.c
 @@ -34,6 +34,8 @@
@@ -2637,7 +2636,7 @@ index 58fd92708..f4bad9a7f 100644
      int i;
      SDL_SysWMinfo info;
 diff --git a/ui/trace-events b/ui/trace-events
-index d59697bee..68851e147 100644
+index d59697bee1..68851e147f 100644
 --- a/ui/trace-events
 +++ b/ui/trace-events
 @@ -144,7 +144,16 @@ sdl2_stats_flush(int con, uint64_t seq, int64_t t) "con %d flush %" PRIu64 " at
@@ -2668,7 +2667,7 @@ index d59697bee..68851e147 100644
  egl_init_d3d11_device(void *p) "d3d device: %p"
 diff --git a/ui/wayland/linux-dmabuf-v1.xml b/ui/wayland/linux-dmabuf-v1.xml
 new file mode 100644
-index 000000000..7d727f75d
+index 0000000000..7d727f75d2
 --- /dev/null
 +++ b/ui/wayland/linux-dmabuf-v1.xml
 @@ -0,0 +1,623 @@

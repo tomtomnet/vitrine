@@ -11,7 +11,7 @@ class QmpClient;
 /*
  * Whether the guest of a running VM draws through DRM native context, as
  * asked, or fell back to virgl: most distributions build Mesa without
- * native context.  Vitrine's QEMU (a patch from the qemu-gui fork) counts
+ * native context.  Vitrine's QEMU (a patch of its series) counts
  * the contexts the guest creates on its virtio-gpu-gl device, and says
  * whether it offered native context (qom-get of x-drm-offered,
  * x-drm-contexts, x-virgl-contexts).

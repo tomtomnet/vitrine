@@ -1,0 +1,323 @@
+From 3ea8a88b582463f6e89f6d53d3c2f4de9823399f Mon Sep 17 00:00:00 2001
+From: virtio-gpu-desktop <local@localhost>
+Date: Wed, 14 Oct 2026 14:06:29 +0200
+Subject: [PATCH] virtio-gpu-rutabaga: keep virglrenderer's GL context apart
+ from a GL display's
+
+rutabaga's virglrenderer keeps an EGL context of its own and remembers
+which context it made current; a display with GL (-display dbus,gl=on,
+sdl,gl=on) keeps QEMU's current in the same thread. Each side then ran in
+the other's context: the display could not export the textures of the
+guest's 2D consoles ("dbus_scanout_texture: failed to export dmabuf for
+texture") and virglrenderer's read-backs failed ("glReadPixels failed: GL
+error 1280"), so with the D-Bus display gl=on the VGA card's console and
+the virtio-gpu's text console stayed black.
+
+Put the display's context back after rutabaga_init() (virglrenderer makes
+its own current when it starts), and run rutabaga's calls that may use GL
+inside a scope that forces virglrenderer's context current
+(virgl_renderer_force_ctx_0(), what virtio-gpu-gl does before each command;
+looked up at run time - rutabaga links virglrenderer - when virgl contexts
+are enabled) and puts the display's back afterwards, so that QEMU's display
+code, also called from the commands, always finds its own. While no other
+context is current (no GL display: the nested desktop's default) the scope
+does nothing.
+
+Tested 2026-10-14 on a Radeon 780M, D-Bus display gl=on: the VGA console
+shows the early boot, the virtio-gpu text console shows its VTs (a getty),
+the greeter still shows through blob scanouts, QEMU logs no GL error; the
+default (no display) nested desktop runs as before.
+---
+ hw/display/virtio-gpu-rutabaga.c | 142 +++++++++++++++++++++++++------
+ 1 file changed, 117 insertions(+), 25 deletions(-)
+
+diff --git a/hw/display/virtio-gpu-rutabaga.c b/hw/display/virtio-gpu-rutabaga.c
+index 18ceb768bf..ec02215427 100644
+--- a/hw/display/virtio-gpu-rutabaga.c
++++ b/hw/display/virtio-gpu-rutabaga.c
+@@ -17,6 +17,10 @@
+ 
+ #include <glib/gmem.h>
+ #include <rutabaga_gfx/rutabaga_gfx_ffi.h>
++#ifdef CONFIG_OPENGL
++#include <epoxy/egl.h>
++#endif
++#include <dlfcn.h>
+ 
+ #define CHECK(condition, cmd)                                                 \
+     do {                                                                      \
+@@ -33,6 +37,78 @@ struct rutabaga_aio_data {
+     struct rutabaga_fence fence;
+ };
+ 
++/*
++ * rutabaga's virglrenderer keeps an EGL context of its own and remembers which
++ * context it made current; a display with GL (-display dbus,gl=on, sdl,gl=on)
++ * keeps QEMU's current in the same thread. Each side then works in the other's
++ * context: the display cannot export the textures of the guest's 2D consoles -
++ * the VGA card's, the virtio-gpu's text console - ("failed to export dmabuf for
++ * texture": they stay black) and virglrenderer's GL fails. So rutabaga's calls
++ * that may use GL run between rutabaga_gl_enter() and rutabaga_gl_leave():
++ * virglrenderer's context forced current (virgl_renderer_force_ctx_0(), what
++ * virtio-gpu-gl does before each command; looked up at run time, rutabaga links
++ * virglrenderer) and the display's put back after, so that QEMU's display code
++ * - called from the commands too - always finds its own. Nothing happens while
++ * no other context is current (no GL display: the nested desktop's default).
++ */
++static void (*rutabaga_virgl_force_ctx_0)(void);
++
++typedef struct RutabagaGlScope {
++#ifdef CONFIG_OPENGL
++    EGLDisplay dpy;
++    EGLSurface draw, read;
++    EGLContext ctx;
++#endif
++    bool active;
++} RutabagaGlScope;
++
++#ifdef CONFIG_OPENGL
++static EGLContext rutabaga_virgl_ctx = EGL_NO_CONTEXT;
++#endif
++
++static void rutabaga_gl_enter(RutabagaGlScope *s)
++{
++    s->active = false;
++    if (!rutabaga_virgl_force_ctx_0) {
++        return;
++    }
++#ifdef CONFIG_OPENGL
++    s->ctx = eglGetCurrentContext();
++    if (s->ctx != EGL_NO_CONTEXT && s->ctx == rutabaga_virgl_ctx) {
++        return;
++    }
++    if (s->ctx != EGL_NO_CONTEXT) {
++        s->dpy = eglGetCurrentDisplay();
++        s->draw = eglGetCurrentSurface(EGL_DRAW);
++        s->read = eglGetCurrentSurface(EGL_READ);
++        s->active = true;
++    }
++    rutabaga_virgl_force_ctx_0();
++    rutabaga_virgl_ctx = eglGetCurrentContext();
++#else
++    rutabaga_virgl_force_ctx_0();
++#endif
++}
++
++static void rutabaga_gl_leave(RutabagaGlScope *s)
++{
++#ifdef CONFIG_OPENGL
++    if (s->active) {
++        eglMakeCurrent(s->dpy, s->draw, s->read, s->ctx);
++    }
++#endif
++}
++
++/* a rutabaga call that may use virglrenderer's GL (all of them return int32_t) */
++#define RGL(call) ({                         \
++    RutabagaGlScope rgl_scope_;              \
++    int32_t rgl_ret_;                        \
++    rutabaga_gl_enter(&rgl_scope_);          \
++    rgl_ret_ = (call);                       \
++    rutabaga_gl_leave(&rgl_scope_);          \
++    rgl_ret_;                                \
++})
++
+ static void
+ virtio_gpu_rutabaga_update_cursor(VirtIOGPU *g, struct virtio_gpu_scanout *s,
+                                   uint32_t resource_id)
+@@ -63,9 +139,9 @@ virtio_gpu_rutabaga_update_cursor(VirtIOGPU *g, struct virtio_gpu_scanout *s,
+     transfer_iovec.iov_base = s->current_cursor->data;
+     transfer_iovec.iov_len = res->width * res->height * 4;
+ 
+-    rutabaga_resource_transfer_read(vr->rutabaga, 0,
++    RGL(rutabaga_resource_transfer_read(vr->rutabaga, 0,
+                                     resource_id, &transfer,
+-                                    &transfer_iovec);
++                                    &transfer_iovec));
+ }
+ 
+ static void
+@@ -101,7 +177,7 @@ rutabaga_cmd_create_resource_2d(VirtIOGPU *g,
+     rc_3d.nr_samples = 0;
+     rc_3d.flags = VIRTIO_GPU_RESOURCE_FLAG_Y_0_TOP;
+ 
+-    result = rutabaga_resource_create_3d(vr->rutabaga, c2d.resource_id, &rc_3d);
++    result = RGL(rutabaga_resource_create_3d(vr->rutabaga, c2d.resource_id, &rc_3d));
+     CHECK(!result, cmd);
+ 
+     res = virtio_gpu_simple_resource_new(c2d.resource_id, c2d.width,
+@@ -136,7 +212,7 @@ rutabaga_cmd_create_resource_3d(VirtIOGPU *g,
+     rc_3d.nr_samples = c3d.nr_samples;
+     rc_3d.flags = c3d.flags;
+ 
+-    result = rutabaga_resource_create_3d(vr->rutabaga, c3d.resource_id, &rc_3d);
++    result = RGL(rutabaga_resource_create_3d(vr->rutabaga, c3d.resource_id, &rc_3d));
+     CHECK(!result, cmd);
+ 
+     res = virtio_gpu_simple_resource_new(c3d.resource_id, c3d.width,
+@@ -207,7 +283,7 @@ virtio_gpu_rutabaga_resource_unref(VirtIOGPU *g,
+         virtio_gpu_rutabaga_unmap_slot(vr, slot);
+     }
+ 
+-    result = rutabaga_resource_unref(vr->rutabaga, res->resource_id);
++    result = RGL(rutabaga_resource_unref(vr->rutabaga, res->resource_id));
+     if (result) {
+         error_setg_errno(errp,
+                         (int)result,
+@@ -269,8 +345,8 @@ rutabaga_cmd_context_create(VirtIOGPU *g,
+     trace_virtio_gpu_cmd_ctx_create(cc.hdr.ctx_id,
+                                     cc.debug_name);
+ 
+-    result = rutabaga_context_create(vr->rutabaga, cc.hdr.ctx_id,
+-                                     cc.context_init, cc.debug_name, cc.nlen);
++    result = RGL(rutabaga_context_create(vr->rutabaga, cc.hdr.ctx_id,
++                                     cc.context_init, cc.debug_name, cc.nlen));
+     CHECK(!result, cmd);
+ }
+ 
+@@ -286,7 +362,7 @@ rutabaga_cmd_context_destroy(VirtIOGPU *g,
+     VIRTIO_GPU_FILL_CMD(cd);
+     trace_virtio_gpu_cmd_ctx_destroy(cd.hdr.ctx_id);
+ 
+-    result = rutabaga_context_destroy(vr->rutabaga, cd.hdr.ctx_id);
++    result = RGL(rutabaga_context_destroy(vr->rutabaga, cd.hdr.ctx_id));
+     CHECK(!result, cmd);
+ }
+ 
+@@ -446,9 +522,9 @@ rutabaga_cmd_resource_flush(VirtIOGPU *g, struct virtio_gpu_ctrl_command *cmd)
+     transfer_iovec.iov_base = pixman_image_get_data(res->image);
+     transfer_iovec.iov_len = res->width * res->height * 4;
+ 
+-    result = rutabaga_resource_transfer_read(vr->rutabaga, 0,
++    result = RGL(rutabaga_resource_transfer_read(vr->rutabaga, 0,
+                                              rf.resource_id, &transfer,
+-                                             &transfer_iovec);
++                                             &transfer_iovec));
+     CHECK(!result, cmd);
+ 
+     for (i = 0; i < vb->conf.max_outputs; i++) {
+@@ -556,7 +632,7 @@ rutabaga_cmd_submit_3d(VirtIOGPU *g,
+     rutabaga_cmd.cmd = buf;
+     rutabaga_cmd.cmd_size = cs.size;
+ 
+-    result = rutabaga_submit_command(vr->rutabaga, &rutabaga_cmd);
++    result = RGL(rutabaga_submit_command(vr->rutabaga, &rutabaga_cmd));
+     CHECK(!result, cmd);
+ }
+ 
+@@ -580,8 +656,8 @@ rutabaga_cmd_transfer_to_host_2d(VirtIOGPU *g,
+     transfer.h = t2d.r.height;
+     transfer.d = 1;
+ 
+-    result = rutabaga_resource_transfer_write(vr->rutabaga, 0, t2d.resource_id,
+-                                              &transfer);
++    result = RGL(rutabaga_resource_transfer_write(vr->rutabaga, 0, t2d.resource_id,
++                                              &transfer));
+     CHECK(!result, cmd);
+ }
+ 
+@@ -609,8 +685,8 @@ rutabaga_cmd_transfer_to_host_3d(VirtIOGPU *g,
+     transfer.layer_stride = t3d.layer_stride;
+     transfer.offset = t3d.offset;
+ 
+-    result = rutabaga_resource_transfer_write(vr->rutabaga, t3d.hdr.ctx_id,
+-                                              t3d.resource_id, &transfer);
++    result = RGL(rutabaga_resource_transfer_write(vr->rutabaga, t3d.hdr.ctx_id,
++                                              t3d.resource_id, &transfer));
+     CHECK(!result, cmd);
+ }
+ 
+@@ -638,8 +714,8 @@ rutabaga_cmd_transfer_from_host_3d(VirtIOGPU *g,
+     transfer.layer_stride = t3d.layer_stride;
+     transfer.offset = t3d.offset;
+ 
+-    result = rutabaga_resource_transfer_read(vr->rutabaga, t3d.hdr.ctx_id,
+-                                             t3d.resource_id, &transfer, NULL);
++    result = RGL(rutabaga_resource_transfer_read(vr->rutabaga, t3d.hdr.ctx_id,
++                                             t3d.resource_id, &transfer, NULL));
+     CHECK(!result, cmd);
+ }
+ 
+@@ -709,8 +785,8 @@ rutabaga_cmd_ctx_attach_resource(VirtIOGPU *g,
+     trace_virtio_gpu_cmd_ctx_res_attach(att_res.hdr.ctx_id,
+                                         att_res.resource_id);
+ 
+-    result = rutabaga_context_attach_resource(vr->rutabaga, att_res.hdr.ctx_id,
+-                                              att_res.resource_id);
++    result = RGL(rutabaga_context_attach_resource(vr->rutabaga, att_res.hdr.ctx_id,
++                                              att_res.resource_id));
+     CHECK(!result, cmd);
+ }
+ 
+@@ -727,8 +803,8 @@ rutabaga_cmd_ctx_detach_resource(VirtIOGPU *g,
+     trace_virtio_gpu_cmd_ctx_res_detach(det_res.hdr.ctx_id,
+                                         det_res.resource_id);
+ 
+-    result = rutabaga_context_detach_resource(vr->rutabaga, det_res.hdr.ctx_id,
+-                                              det_res.resource_id);
++    result = RGL(rutabaga_context_detach_resource(vr->rutabaga, det_res.hdr.ctx_id,
++                                              det_res.resource_id));
+     CHECK(!result, cmd);
+ }
+ 
+@@ -864,9 +940,9 @@ rutabaga_cmd_resource_create_blob(VirtIOGPU *g,
+     vecs.iovecs = res->iov;
+     vecs.num_iovecs = res->iov_cnt;
+ 
+-    result = rutabaga_resource_create_blob(vr->rutabaga, cblob.hdr.ctx_id,
++    result = RGL(rutabaga_resource_create_blob(vr->rutabaga, cblob.hdr.ctx_id,
+                                            cblob.resource_id, &rc_blob, &vecs,
+-                                           handle.os_handle >= 0 ? &handle : NULL);
++                                           handle.os_handle >= 0 ? &handle : NULL));
+ 
+     if (result && cblob.blob_mem != VIRTIO_GPU_BLOB_MEM_HOST3D) {
+         virtio_gpu_cleanup_mapping(g, res);
+@@ -1206,7 +1282,7 @@ virtio_gpu_rutabaga_process_cmd(VirtIOGPU *g,
+ 
+     trace_virtio_gpu_fence_ctrl(cmd->cmd_hdr.fence_id, cmd->cmd_hdr.type);
+ 
+-    result = rutabaga_create_fence(vr->rutabaga, &fence);
++    result = RGL(rutabaga_create_fence(vr->rutabaga, &fence));
+     CHECK(!result, cmd);
+ }
+ 
+@@ -1325,7 +1401,7 @@ static void virtio_gpu_rutabaga_poll_cb(void *opaque)
+ {
+     VirtIOGPURutabaga *vr = opaque;
+ 
+-    rutabaga_poll(vr->rutabaga);
++    RGL(rutabaga_poll(vr->rutabaga));
+ }
+ 
+ static bool virtio_gpu_rutabaga_init(VirtIOGPU *g, Error **errp)
+@@ -1403,11 +1479,27 @@ static bool virtio_gpu_rutabaga_init(VirtIOGPU *g, Error **errp)
+         }
+     }
+ 
++#ifdef CONFIG_OPENGL
++    /* virglrenderer makes its context current when it starts: the display's goes back */
++    EGLContext init_ctx = eglGetCurrentContext();
++    EGLDisplay init_dpy = eglGetCurrentDisplay();
++    EGLSurface init_draw = eglGetCurrentSurface(EGL_DRAW);
++    EGLSurface init_read = eglGetCurrentSurface(EGL_READ);
++#endif
+     result = rutabaga_init(&builder, &vr->rutabaga);
++#ifdef CONFIG_OPENGL
++    if (init_ctx != EGL_NO_CONTEXT) {
++        eglMakeCurrent(init_dpy, init_draw, init_read, init_ctx);
++    }
++#endif
+     if (result) {
+         error_setg_errno(errp, -result, "Failed to init rutabaga");
+         return false;
+     }
++    /* virgl contexts mean virglrenderer's GL, kept apart from a GL display's (above) */
++    if (vr->capset_mask & (1ULL << RUTABAGA_CAPSET_VIRGL2)) {
++        rutabaga_virgl_force_ctx_0 = dlsym(RTLD_DEFAULT, "virgl_renderer_force_ctx_0");
++    }
+ 
+     vr->poll_fd = -1;
+     if (!rutabaga_poll_descriptor(vr->rutabaga, &vr->poll_fd) && vr->poll_fd >= 0) {
+-- 
+2.56.0
+

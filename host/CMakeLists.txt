@@ -4,7 +4,8 @@ include(GNUInstallDirs)
 set(VITRINE_HOST_DESTINATION ${CMAKE_INSTALL_DATADIR}/vitrine/host)
 install(PROGRAMS build.sh DESTINATION ${VITRINE_HOST_DESTINATION})
 install(FILES versions.conf components.conf DESTINATION ${VITRINE_HOST_DESTINATION})
-# build.sh applies every *.patch it finds, and installing never removes a
+# build.sh applies every *.patch it finds, or those a series file names in
+# its order (without it, another order), and installing never removes a
 # file: a patch a newer Vitrine dropped would stay in an installation made
 # over an older one, and fail to apply.  The folder goes first, under the
 # install's DESTDIR (the prefix is the configured one: the top-level guard
@@ -16,4 +17,4 @@ else()
 endif()
 install(CODE "file(REMOVE_RECURSE \"\$ENV{DESTDIR}${vitrine_patches}\")")
 install(DIRECTORY patches/ DESTINATION ${VITRINE_HOST_DESTINATION}/patches
-    FILES_MATCHING PATTERN "*.patch" PATTERN "README.md")
+    FILES_MATCHING PATTERN "*.patch" PATTERN "series" PATTERN "README.md")

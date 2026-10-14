@@ -8,8 +8,8 @@ leaves it to QEMU's own SDL or GTK window.
 QEMU, virglrenderer and the guest's graphics stack (virtio-gpu driver, Mesa,
 KWin) are used at pinned versions, with the patches vitrine needs kept in
 this repository: `host/versions.conf` and `host/patches` for the QEMU and
-virglrenderer vitrine builds (upstream QEMU, with the qemu-gui fork's commits
-among its patches), `guest/` for the guest's.
+virglrenderer vitrine builds (upstream QEMU with a series of patches,
+`host/patches/qemu/series`), `guest/` for the guest's.
 
 Early development. It is built and tried on Fedora 44 KDE Plasma (Wayland)
 with an AMD Radeon 780M, with Fedora 44 KDE guests. It is not packaged.

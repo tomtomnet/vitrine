@@ -1,7 +1,7 @@
-From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From dbe437c57aec236a26e5b99ece4145bf11c90b1c Mon Sep 17 00:00:00 2001
 From: tomtomnet <tompere8000@proton.me>
 Date: Wed, 23 Sep 2026 14:15:13 +0200
-Subject: [PATCH] ui/sdl2: add an in-window control menu (Dear ImGui)
+Subject: [PATCH 02/19] ui/sdl2: add an in-window control menu (Dear ImGui)
 
 A menu bar at the top of the SDL window, like xemu's:
 
@@ -94,7 +94,7 @@ Co-Authored-By: Claude Opus 5.5 (1M context) <noreply@anthropic.com>
  create mode 100644 ui/sdl2-gui.h
 
 diff --git a/include/net/net.h b/include/net/net.h
-index fdf6a2ddd441fd5a2b9b6afec18aea03ff8582b7..a7667456d2fc6dafbeda50ccd9a337afffc739bd 100644
+index fdf6a2ddd4..a7667456d2 100644
 --- a/include/net/net.h
 +++ b/include/net/net.h
 @@ -192,6 +192,8 @@ void *qemu_get_nic_opaque(NetClientState *nc);
@@ -107,7 +107,7 @@ index fdf6a2ddd441fd5a2b9b6afec18aea03ff8582b7..a7667456d2fc6dafbeda50ccd9a337af
  int qemu_can_send_packet(NetClientState *nc);
  ssize_t qemu_sendv_packet(NetClientState *nc, const struct iovec *iov,
 diff --git a/include/ui/sdl2.h b/include/ui/sdl2.h
-index bcfe3bc98145fc6e8b296e6c594872f586e1734a..d1097ba95815df0985bd5858a2b5e2a215332646 100644
+index bcfe3bc981..d1097ba958 100644
 --- a/include/ui/sdl2.h
 +++ b/include/ui/sdl2.h
 @@ -48,6 +48,10 @@ struct sdl2_console {
@@ -137,7 +137,7 @@ index bcfe3bc98145fc6e8b296e6c594872f586e1734a..d1097ba95815df0985bd5858a2b5e2a2
  
  void sdl2_process_key(struct sdl2_console *scon,
 diff --git a/meson.build b/meson.build
-index cfac634cf13e4c0bf27a8bb8f45fa7d272e87bda..c6dae01cba2c5415b9b9c21d427b2db4c1b6b515 100644
+index cfac634cf1..c6dae01cba 100644
 --- a/meson.build
 +++ b/meson.build
 @@ -82,7 +82,8 @@ python = import('python').find_installation()
@@ -196,7 +196,7 @@ index cfac634cf13e4c0bf27a8bb8f45fa7d272e87bda..c6dae01cba2c5415b9b9c21d427b2db4
  summary_info += {'pixman':            pixman}
  summary_info += {'VTE support':       vte}
 diff --git a/meson_options.txt b/meson_options.txt
-index 6c2de6296f783e3964e6317e7daf442ba613d6cd..150333541497269b32675bca6317f78799da39cd 100644
+index 6c2de6296f..1503335414 100644
 --- a/meson_options.txt
 +++ b/meson_options.txt
 @@ -222,6 +222,8 @@ option('sdl', type : 'feature', value : 'auto',
@@ -209,7 +209,7 @@ index 6c2de6296f783e3964e6317e7daf442ba613d6cd..150333541497269b32675bca6317f787
         description: 'seccomp support')
  option('smartcard', type : 'feature', value : 'auto',
 diff --git a/net/net.c b/net/net.c
-index d7fa637ce51af798c7cc23e29a47b56e191d1fa9..615bfbf1555ccbf49b155fe9fab6320179d6f07a 100644
+index d7fa637ce5..615bfbf155 100644
 --- a/net/net.c
 +++ b/net/net.c
 @@ -826,6 +826,15 @@ static ssize_t nc_sendv_compat(NetClientState *nc, const struct iovec *iov,
@@ -253,7 +253,7 @@ index d7fa637ce51af798c7cc23e29a47b56e191d1fa9..615bfbf1555ccbf49b155fe9fab63201
          nc->receive_disabled = 1;
      }
 diff --git a/scripts/meson-buildoptions.sh b/scripts/meson-buildoptions.sh
-index 08c9fbb62cd3323d68c30c720a808900f1f82d69..f88419574b752b480909b4c8846247c96ad600a8 100644
+index 08c9fbb62c..f88419574b 100644
 --- a/scripts/meson-buildoptions.sh
 +++ b/scripts/meson-buildoptions.sh
 @@ -188,6 +188,7 @@ meson_options_help() {
@@ -274,7 +274,7 @@ index 08c9fbb62cd3323d68c30c720a808900f1f82d69..f88419574b752b480909b4c8846247c9
      --disable-sdl-image) printf "%s" -Dsdl_image=disabled ;;
      --enable-seccomp) printf "%s" -Dseccomp=enabled ;;
 diff --git a/subprojects/.gitignore b/subprojects/.gitignore
-index 3559b2c758f4bda8c344b82d188f25efcdae7ceb..c3ff0c30612dd60b90b5bdbbc3911b3dfafe458c 100644
+index 3559b2c758..c3ff0c3061 100644
 --- a/subprojects/.gitignore
 +++ b/subprojects/.gitignore
 @@ -3,6 +3,7 @@
@@ -287,7 +287,7 @@ index 3559b2c758f4bda8c344b82d188f25efcdae7ceb..c3ff0c30612dd60b90b5bdbbc3911b3d
  /slirp
 diff --git a/subprojects/imgui.wrap b/subprojects/imgui.wrap
 new file mode 100644
-index 0000000000000000000000000000000000000000..127e8b33bdfb165654094d61c703df213e86511a
+index 0000000000..127e8b33bd
 --- /dev/null
 +++ b/subprojects/imgui.wrap
 @@ -0,0 +1,9 @@
@@ -302,7 +302,7 @@ index 0000000000000000000000000000000000000000..127e8b33bdfb165654094d61c703df21
 +imgui = imgui_dep
 diff --git a/subprojects/packagefiles/imgui/imgui_impl_opengl3_epoxy.cpp b/subprojects/packagefiles/imgui/imgui_impl_opengl3_epoxy.cpp
 new file mode 100644
-index 0000000000000000000000000000000000000000..6495aa2c1cf5e3180d79260cf2e1f4065e75b947
+index 0000000000..6495aa2c1c
 --- /dev/null
 +++ b/subprojects/packagefiles/imgui/imgui_impl_opengl3_epoxy.cpp
 @@ -0,0 +1,8 @@
@@ -316,7 +316,7 @@ index 0000000000000000000000000000000000000000..6495aa2c1cf5e3180d79260cf2e1f406
 +#include "backends/imgui_impl_opengl3.cpp"
 diff --git a/subprojects/packagefiles/imgui/meson.build b/subprojects/packagefiles/imgui/meson.build
 new file mode 100644
-index 0000000000000000000000000000000000000000..1893d44404257258a4c1d2f47a2c6a285e35627f
+index 0000000000..1893d44404
 --- /dev/null
 +++ b/subprojects/packagefiles/imgui/meson.build
 @@ -0,0 +1,38 @@
@@ -360,14 +360,14 @@ index 0000000000000000000000000000000000000000..1893d44404257258a4c1d2f47a2c6a28
 +  dependencies: imgui_deps)
 diff --git a/subprojects/packagefiles/imgui/meson_options.txt b/subprojects/packagefiles/imgui/meson_options.txt
 new file mode 100644
-index 0000000000000000000000000000000000000000..26d2c4fea8de305f84a05ef9a6aee23733cb96b8
+index 0000000000..26d2c4fea8
 --- /dev/null
 +++ b/subprojects/packagefiles/imgui/meson_options.txt
 @@ -0,0 +1,2 @@
 +option('opengl', type : 'feature', value : 'auto',
 +       description: 'OpenGL 3 renderer backend (uses libepoxy)')
 diff --git a/ui/meson.build b/ui/meson.build
-index 39829a2c6e23b2aecf0c9d6e46447765ffa08988..02d86e590508caaad6382f53a8820f0178a8c6d4 100644
+index 39829a2c6e..02d86e5905 100644
 --- a/ui/meson.build
 +++ b/ui/meson.build
 @@ -172,6 +172,7 @@ if sdl.found()
@@ -379,7 +379,7 @@ index 39829a2c6e23b2aecf0c9d6e46447765ffa08988..02d86e590508caaad6382f53a8820f01
  endif
  
 diff --git a/ui/sdl2-2d.c b/ui/sdl2-2d.c
-index 68a3aff7151a1a97948941ce7099006578a815ae..40cf9511846669e398f2006be6add3bdc9747ccc 100644
+index 68a3aff715..40cf951184 100644
 --- a/ui/sdl2-2d.c
 +++ b/ui/sdl2-2d.c
 @@ -28,14 +28,11 @@
@@ -433,7 +433,7 @@ index 68a3aff7151a1a97948941ce7099006578a815ae..40cf9511846669e398f2006be6add3bd
  
  bool sdl2_2d_check_format(DisplayChangeListener *dcl,
 diff --git a/ui/sdl2-gl.c b/ui/sdl2-gl.c
-index f41fc8bb963440f534d849ceb64a8c14a3d6977e..e0e734b2af09e08d4ed2f994414343f851c2cdd1 100644
+index f41fc8bb96..e0e734b2af 100644
 --- a/ui/sdl2-gl.c
 +++ b/ui/sdl2-gl.c
 @@ -55,9 +55,11 @@ static void sdl2_gl_render_surface(struct sdl2_console *scon)
@@ -523,7 +523,7 @@ index f41fc8bb963440f534d849ceb64a8c14a3d6977e..e0e734b2af09e08d4ed2f994414343f8
  #ifdef CONFIG_GBM
 diff --git a/ui/sdl2-gui-vm.c b/ui/sdl2-gui-vm.c
 new file mode 100644
-index 0000000000000000000000000000000000000000..b834eeba3a89ffbd9f561cb58ed2fbf452357b36
+index 0000000000..b834eeba3a
 --- /dev/null
 +++ b/ui/sdl2-gui-vm.c
 @@ -0,0 +1,1482 @@
@@ -2011,7 +2011,7 @@ index 0000000000000000000000000000000000000000..b834eeba3a89ffbd9f561cb58ed2fbf4
 +}
 diff --git a/ui/sdl2-gui.cpp b/ui/sdl2-gui.cpp
 new file mode 100644
-index 0000000000000000000000000000000000000000..b4b26e5e81503a430f63c914bd1076d340df76ea
+index 0000000000..b4b26e5e81
 --- /dev/null
 +++ b/ui/sdl2-gui.cpp
 @@ -0,0 +1,1874 @@
@@ -3891,7 +3891,7 @@ index 0000000000000000000000000000000000000000..b4b26e5e81503a430f63c914bd1076d3
 +}
 diff --git a/ui/sdl2-gui.h b/ui/sdl2-gui.h
 new file mode 100644
-index 0000000000000000000000000000000000000000..d3f798903e1fa0598d20f752a2172264789cf355
+index 0000000000..d3f798903e
 --- /dev/null
 +++ b/ui/sdl2-gui.h
 @@ -0,0 +1,189 @@
@@ -4085,7 +4085,7 @@ index 0000000000000000000000000000000000000000..d3f798903e1fa0598d20f752a2172264
 +
 +#endif /* UI_SDL2_GUI_H */
 diff --git a/ui/sdl2.c b/ui/sdl2.c
-index c438c518223a25f664d9cf991c03be38992cc90d..10b17b00ac4e160ef0c642b21dfc68f45819a069 100644
+index c438c51822..10b17b00ac 100644
 --- a/ui/sdl2.c
 +++ b/ui/sdl2.c
 @@ -39,6 +39,10 @@

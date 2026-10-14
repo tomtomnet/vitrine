@@ -1,7 +1,7 @@
-From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From 7215c6d49f64ae6689a953758d8abc69b233aac2 Mon Sep 17 00:00:00 2001
 From: tomtomnet <tompere8000@proton.me>
 Date: Wed, 23 Sep 2026 15:21:54 +0200
-Subject: [PATCH] ui/sdl2: share the clipboard with the guest
+Subject: [PATCH 05/19] ui/sdl2: share the clipboard with the guest
 
 The SDL display had no clipboard peer, unlike the GTK, VNC and D-Bus
 displays, so with qemu-vdagent,clipboard=on no text went between the
@@ -39,7 +39,7 @@ Co-Authored-By: Claude Opus 5.5 (1M context) <noreply@anthropic.com>
  create mode 100644 ui/sdl2-clipboard.c
 
 diff --git a/include/ui/sdl2.h b/include/ui/sdl2.h
-index d1097ba95815df0985bd5858a2b5e2a215332646..5417ea31a988bf23484c4fee0b737cf2eea55809 100644
+index d1097ba958..5417ea31a9 100644
 --- a/include/ui/sdl2.h
 +++ b/include/ui/sdl2.h
 @@ -74,6 +74,15 @@ static inline int sdl2_guest_height(struct sdl2_console *scon, int h)
@@ -59,7 +59,7 @@ index d1097ba95815df0985bd5858a2b5e2a215332646..5417ea31a988bf23484c4fee0b737cf2
                        SDL_KeyboardEvent *ev);
  void sdl2_release_modifiers(struct sdl2_console *scon);
 diff --git a/ui/meson.build b/ui/meson.build
-index 02d86e590508caaad6382f53a8820f0178a8c6d4..c5ceef290acaf46e49b57a2ab4a6917c016148ae 100644
+index 02d86e5905..c5ceef290a 100644
 --- a/ui/meson.build
 +++ b/ui/meson.build
 @@ -167,6 +167,7 @@ if sdl.found()
@@ -72,7 +72,7 @@ index 02d86e590508caaad6382f53a8820f0178a8c6d4..c5ceef290acaf46e49b57a2ab4a6917c
    ))
 diff --git a/ui/sdl2-clipboard.c b/ui/sdl2-clipboard.c
 new file mode 100644
-index 0000000000000000000000000000000000000000..cf4c093f5391d5e4035031c098955f0b7b96c9ec
+index 0000000000..cf4c093f53
 --- /dev/null
 +++ b/ui/sdl2-clipboard.c
 @@ -0,0 +1,203 @@
@@ -280,7 +280,7 @@ index 0000000000000000000000000000000000000000..cf4c093f5391d5e4035031c098955f0b
 +    qemu_clipboard_peer_register(&sdl2_cbpeer);
 +}
 diff --git a/ui/sdl2.c b/ui/sdl2.c
-index 10b17b00ac4e160ef0c642b21dfc68f45819a069..746b65a803fe701c7b183871dbf87eab97e8bbe5 100644
+index 10b17b00ac..746b65a803 100644
 --- a/ui/sdl2.c
 +++ b/ui/sdl2.c
 @@ -787,6 +787,7 @@ static void handle_windowevent(SDL_Event *ev)
@@ -328,7 +328,7 @@ index 10b17b00ac4e160ef0c642b21dfc68f45819a069..746b65a803fe701c7b183871dbf87eab
      sdl_cursor_hidden = SDL_CreateCursor(&data, &data, 8, 1, 0, 0);
      sdl_cursor_normal = SDL_GetCursor();
 diff --git a/ui/trace-events b/ui/trace-events
-index 339a61f34153ed0af9896af624a4ad8e51f797ad..706fe3b6a82abb67823331048d09e0c3d68979fe 100644
+index 339a61f341..706fe3b6a8 100644
 --- a/ui/trace-events
 +++ b/ui/trace-events
 @@ -134,6 +134,10 @@ input_event_abs(int conidx, const char *axis, int value) "con %d, axis %s, value

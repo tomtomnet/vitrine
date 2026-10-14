@@ -57,12 +57,12 @@ private slots:
 
     void json()
     {
-        const UpdateCheck::Project project{"qemu-gui", "tomtomnet/qemu-gui", "master", "abc"};
+        const UpdateCheck::Project project{"other", "tomtomnet/other", "master", "abc"};
         const UpdateCheck::Result r = UpdateCheck::parse(project, kAhead);
         const QList<UpdateCheck::Result> back = UpdateCheck::fromJson(UpdateCheck::toJson({r}));
 
         QCOMPARE(back.size(), 1);
-        QCOMPARE(back[0].project.name, "qemu-gui");
+        QCOMPARE(back[0].project.name, "other");
         QCOMPARE(back[0].project.commit, "abc");
         QCOMPARE(back[0].newCommits, 3);
         QCOMPARE(back[0].subjects, r.subjects);
@@ -118,13 +118,13 @@ private slots:
         UpdateCheck check;
         QSignalSpy finished(&check, &UpdateCheck::finished);
         check.check({{"vitrine", "tomtomnet/vitrine", "main", "abc"},
-                     {"qemu-gui", "tomtomnet/qemu-gui", "master", "def"},
+                     {"other", "tomtomnet/other", "master", "def"},
                      {"unknown", "x/y", "main", {}}});
         QVERIFY(finished.wait(10000));
         qunsetenv("VITRINE_GITHUB_API");
 
         requests.sort();
-        QCOMPARE(requests, QStringList({"GET /repos/tomtomnet/qemu-gui/compare/def...master HTTP/1.1",
+        QCOMPARE(requests, QStringList({"GET /repos/tomtomnet/other/compare/def...master HTTP/1.1",
                                         "GET /repos/tomtomnet/vitrine/compare/abc...main HTTP/1.1"}));
         auto results = finished[0][0].value<QList<UpdateCheck::Result>>();
         QCOMPARE(results.size(), 2);

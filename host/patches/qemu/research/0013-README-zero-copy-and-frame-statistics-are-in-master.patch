@@ -1,16 +1,15 @@
-From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From b921552ecf2ec046275c54ae0f30fe955cf59b36 Mon Sep 17 00:00:00 2001
 From: tomtomnet <tompere8000@proton.me>
 Date: Mon, 28 Sep 2026 18:06:55 +0200
-Subject: [PATCH] README: zero-copy and frame statistics are in master
+Subject: [PATCH 13/19] README: zero-copy and frame statistics are in master
 
 Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
-Claude-Session: https://claude.ai/code/session_01M8iTzFPtyk2Gzbt6CLnRYK
 ---
  .github/README.md | 57 +++++++++--------------------------------------
  1 file changed, 10 insertions(+), 47 deletions(-)
 
 diff --git a/.github/README.md b/.github/README.md
-index 9effc340798c9810dbaea6c9b20ca907c1594dbf..ef2186c25166a49da3b95c1a07d199689e7d0ef4 100644
+index 9effc34079..ef2186c251 100644
 --- a/.github/README.md
 +++ b/.github/README.md
 @@ -9,52 +9,6 @@ refresh rate.

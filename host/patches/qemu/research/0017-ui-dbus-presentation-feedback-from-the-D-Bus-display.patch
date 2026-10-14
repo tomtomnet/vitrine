@@ -1,7 +1,7 @@
-From 1fdb1c3752101f25fc585d199c3198e796c7bc1f Mon Sep 17 00:00:00 2001
+From 9b48726d5c19cb57d6c7b753431ca40cdd2486e3 Mon Sep 17 00:00:00 2001
 From: tomtomnet <tompere8000@proton.me>
 Date: Fri, 2 Oct 2026 08:45:57 +0200
-Subject: [PATCH 4/4] ui/dbus: presentation feedback from the D-Bus display
+Subject: [PATCH 17/19] ui/dbus: presentation feedback from the D-Bus display
  client
 
 org.qemu.Display1 gains a Presented call: the client reports when a frame
@@ -9,7 +9,6 @@ reached the screen, which drives the guest's vblank like the SDL window's
 wp_presentation feedback does.
 
 Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
-Claude-Session: https://claude.ai/code/session_01M8iTzFPtyk2Gzbt6CLnRYK
 ---
  include/ui/console.h | 16 +++++++++++
  ui/console.c         | 24 ++++++++++++++++
@@ -20,7 +19,7 @@ Claude-Session: https://claude.ai/code/session_01M8iTzFPtyk2Gzbt6CLnRYK
  6 files changed, 199 insertions(+), 8 deletions(-)
 
 diff --git a/include/ui/console.h b/include/ui/console.h
-index 58ca8de19..2dcdf9f1f 100644
+index 58ca8de196..2dcdf9f1ff 100644
 --- a/include/ui/console.h
 +++ b/include/ui/console.h
 @@ -342,6 +342,18 @@ typedef struct GraphicHwOps {
@@ -54,7 +53,7 @@ index 58ca8de19..2dcdf9f1f 100644
  void qemu_console_early_init(void);
  
 diff --git a/ui/console.c b/ui/console.c
-index 14f148118..f6eb2c4a2 100644
+index 14f148118e..f6eb2c4a23 100644
 --- a/ui/console.c
 +++ b/ui/console.c
 @@ -209,6 +209,30 @@ void qemu_console_hw_gl_block(QemuConsole *con, bool block)
@@ -89,7 +88,7 @@ index 14f148118..f6eb2c4a2 100644
  {
      return con->window_id;
 diff --git a/ui/dbus-console.c b/ui/dbus-console.c
-index 947c3b3a5..93f82b4fd 100644
+index 947c3b3a54..93f82b4fdf 100644
 --- a/ui/dbus-console.c
 +++ b/ui/dbus-console.c
 @@ -57,6 +57,7 @@ struct _DBusDisplayConsole {
@@ -230,7 +229,7 @@ index 947c3b3a5..93f82b4fd 100644
      return ddc;
  }
 diff --git a/ui/dbus-display1.xml b/ui/dbus-display1.xml
-index a23ca0b8b..b1d44c649 100644
+index a23ca0b8b1..b1d44c6492 100644
 --- a/ui/dbus-display1.xml
 +++ b/ui/dbus-display1.xml
 @@ -663,6 +663,24 @@
@@ -297,7 +296,7 @@ index a23ca0b8b..b1d44c649 100644
 +  </interface>
  </node>
 diff --git a/ui/dbus-listener.c b/ui/dbus-listener.c
-index 257f7cff6..1257f521b 100644
+index 257f7cff6b..1257f521b8 100644
 --- a/ui/dbus-listener.c
 +++ b/ui/dbus-listener.c
 @@ -86,6 +86,8 @@ struct _DBusDisplayListener {
@@ -380,7 +379,7 @@ index 257f7cff6..1257f521b 100644
      con = qemu_console_lookup_by_index(dbus_display_console_get_index(console));
      assert(con);
 diff --git a/ui/dbus.h b/ui/dbus.h
-index d2cc17664..b77b5b9a4 100644
+index d2cc176648..b77b5b9a45 100644
 --- a/ui/dbus.h
 +++ b/ui/dbus.h
 @@ -110,6 +110,10 @@ dbus_display_listener_get_console(DBusDisplayListener *ddl);

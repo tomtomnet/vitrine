@@ -242,7 +242,7 @@ private slots:
         const Component qemu = find(all, "qemu");
         const QList<Patch> qemuPatches = patches(qemu);
         QCOMPARE(qemuPatches.size(), StackBuilder::patches(qemu.dir, "qemu").size());
-        QCOMPARE(qemuPatches.first().origin, "qemu-gui fork");
+        QCOMPARE(qemuPatches.first().origin, "Research");
         QCOMPARE(qemuPatches.last().origin, "Vitrine");
         QStringList origins;
         for (const Patch &p : qemuPatches) {
@@ -250,11 +250,27 @@ private slots:
                 origins << p.origin;
             }
         }
-        QCOMPARE(origins, QStringList({"qemu-gui fork", "Research", "Vitrine"}));
-        /* a git format-patch Subject, its [PATCH] tag gone */
+        QCOMPARE(origins, QStringList({"Research", "Vitrine"}));
+        /* the series' order, not the names': the blob scanouts come first */
+        QStringList names;
+        for (const Patch &p : qemuPatches) {
+            names << p.name();
+        }
+        QVERIFY(names.indexOf("virtio-gpu-rutabaga-scanout-blob.patch") >= 0);
+        QVERIFY(names.indexOf("virtio-gpu-rutabaga-scanout-blob.patch") <
+                names.indexOf("virtio-gpu-rutabaga-gl-context-scope.patch"));
+        /* a git format-patch Subject, its [PATCH 01/19] tag gone */
         QCOMPARE(subject(qemu, qemuPatches.first()),
                  "ui/sdl2: follow the host refresh rate, tolerate grab border");
-        QVERIFY(text(qemu, qemuPatches.first()).startsWith("From 0000000000000000000000000000000000000000"));
+        QVERIFY(text(qemu, qemuPatches.first()).startsWith("From "));
+        /* the copies carry no links to the sessions that wrote them */
+        for (const Component &c : all) {
+            for (const Patch &p : patches(c)) {
+                QVERIFY2(!text(c, p).contains("Claude-Session:") &&
+                             !text(c, p).contains("claude.ai/code"),
+                         qPrintable(p.path));
+            }
+        }
 
         /* a plain diff's description: its first line */
         const Component virgl = find(all, "virglrenderer");

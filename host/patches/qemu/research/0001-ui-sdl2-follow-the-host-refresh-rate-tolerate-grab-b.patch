@@ -1,7 +1,8 @@
-From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From 195f05079d5a5c3b9421c981b3e138b6ace7f598 Mon Sep 17 00:00:00 2001
 From: tomtomnet <tompere8000@proton.me>
 Date: Wed, 23 Sep 2026 14:15:13 +0200
-Subject: [PATCH] ui/sdl2: follow the host refresh rate, tolerate grab border
+Subject: [PATCH 01/19] ui/sdl2: follow the host refresh rate, tolerate grab
+ border
 
 Two things make an SDL window feel sluggish on a high refresh rate display:
 
@@ -30,7 +31,7 @@ grab does not toggle on every event near the edge.
  2 files changed, 87 insertions(+), 17 deletions(-)
 
 diff --git a/include/ui/sdl2.h b/include/ui/sdl2.h
-index 9daf5ecffae72f1cd50718416db30803eba147c2..bcfe3bc98145fc6e8b296e6c594872f586e1734a 100644
+index 9daf5ecffa..bcfe3bc981 100644
 --- a/include/ui/sdl2.h
 +++ b/include/ui/sdl2.h
 @@ -41,6 +41,8 @@ struct sdl2_console {
@@ -43,7 +44,7 @@ index 9daf5ecffae72f1cd50718416db30803eba147c2..bcfe3bc98145fc6e8b296e6c594872f5
      bool gui_keysym;
      SDL_GLContext winctx;
 diff --git a/ui/sdl2.c b/ui/sdl2.c
-index 1c97d23a47c4fe30c5c8e054af247426a7ef177a..c438c518223a25f664d9cf991c03be38992cc90d 100644
+index 1c97d23a47..c438c51822 100644
 --- a/ui/sdl2.c
 +++ b/ui/sdl2.c
 @@ -59,8 +59,68 @@ static SDL_Cursor *guest_sprite;
@@ -217,5 +218,3 @@ index 1c97d23a47c4fe30c5c8e054af247426a7ef177a..c438c518223a25f664d9cf991c03be38
      }
  }
  
-
-base-commit: 3876503faff51ce3a132dbbd0ab42c10f2269319
