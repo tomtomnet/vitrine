@@ -1925,16 +1925,19 @@ bool NetworkPage::isModified() const
 
 /* Machine */
 
-MachinePage::MachinePage(QWidget *parent)
-    : SettingsPage(parent), m_topology(new QCheckBox(tr("Set the &topology"))),
+MachinePage::MachinePage(Vm *vm, QWidget *parent)
+    : SettingsPage(parent), m_vm(vm), m_topology(new QCheckBox(tr("Set the &topology"))),
       m_sockets(new QSpinBox), m_cores(new QSpinBox), m_threads(new QSpinBox),
       m_count(Widgets::hint()), m_model(new QComboBox), m_modelInfo(Widgets::hint()),
       m_machine(new QComboBox), m_machineInfo(Widgets::hint()),
       m_defaultQemu(new QRadioButton), m_ownQemu(new QRadioButton(tr("This &build:"))),
-      m_qemuPath(new QLineEdit), m_qemuInfo(Widgets::hint())
+      m_qemuPath(new QLineEdit), m_qemuInfo(Widgets::hint()), m_firmware(new QComboBox),
+      m_firmwareInfo(Widgets::hint()), m_resetVars(new QPushButton(tr("&Reset UEFI Variables…"))),
+      m_bootMenu(new QCheckBox(tr("Show the boot men&u when the VM starts")))
 {
     auto *layout = new QVBoxLayout(this);
     auto *form = Widgets::form();
+    auto *resetRow = new QHBoxLayout;
 
     m_topology->setObjectName("topology");
     m_sockets->setObjectName("sockets");
@@ -1997,11 +2000,39 @@ MachinePage::MachinePage(QWidget *parent)
     qemu->addLayout(ownRow);
     form->addRow(Widgets::label(tr("&QEMU:"), m_defaultQemu), qemu);
     form->addRow(QString(), m_qemuInfo);
+
+    /* the boot: what was the Boot page, in the same columns */
+    form->addSection(tr("Boot"));
+    m_firmware->setObjectName("firmware");
+    m_bootMenu->setObjectName("bootMenu");
+    /* for a system that no longer starts, its variables damaged */
+    m_resetVars->setObjectName("resetVars");
+    resetRow->addWidget(m_resetVars);
+    resetRow->addStretch();
+    connect(m_resetVars, &QPushButton::clicked, this, &MachinePage::resetVars);
+    if (m_vm) {
+        connect(m_vm->runner(), &VmRunner::stateChanged, this, &MachinePage::updateResetVars);
+    }
+    form->addRow(tr("F&irmware:"), m_firmware);
+    form->addRow(QString(), m_firmwareInfo);
+    form->addRow(QString(), resetRow);
+    /* one place for it: with the devices */
+    form->addRow(tr("Start from:"), Widgets::note(tr("The devices checked in the boot order "
+                                                     "of the Storage page, in that order.")));
+    form->addRow(QString(), m_bootMenu);
     layout->addLayout(form);
     layout->addStretch();
 
     connect(qemuGroup, &QButtonGroup::buttonToggled, this, &MachinePage::updateQemu);
     connect(m_qemuPath, &QLineEdit::textChanged, this, &MachinePage::updateQemu);
+    connect(m_firmware, &QComboBox::currentIndexChanged, this, &MachinePage::describeFirmware);
+    /* the firmware there is for the machine: ARM's virt boots with UEFI only */
+    connect(m_machine, &QComboBox::currentTextChanged, this, [this]() {
+        if (shownMachine().startsWith("virt") != m_firmwareVirt) {
+            fillFirmware(VmConfig::FirmwareKind(m_firmware->currentData().toInt()));
+        }
+        describeFirmware();
+    });
     updateQemu();
 }
 
@@ -2128,6 +2159,8 @@ void MachinePage::load(const ArgsFile &args)
 {
     m_loadedCpus = VmConfig::cpus(args);
     m_loadedMachine = VmConfig::machineType(args);
+    /* first: the machine shown below changes the firmware list */
+    m_loadedFirmware = VmConfig::firmwareKind(args);
     {
         const QSignalBlocker a(m_sockets), b(m_cores), c(m_threads), d(m_topology);
         /* what -smp leaves out, as QEMU works it out, e.g. 2 sockets for "8,cores=4" */
@@ -2161,6 +2194,12 @@ void MachinePage::load(const ArgsFile &args)
     }
     updateQemu();
     describe();
+
+    m_loadedBootMenu = VmConfig::bootMenu(args);
+    m_bootMenu->setChecked(m_loadedBootMenu);
+    fillFirmware(m_loadedFirmware);
+    describeFirmware();
+    updateResetVars();
 }
 
 bool MachinePage::topologyChanged() const
@@ -2244,6 +2283,24 @@ void MachinePage::save(ArgsFile &args)
         VmConfig::setQemuBinary(args, chosenQemu());
         m_loadedQemu = chosenQemu();
     }
+
+    /* the boot, for the machine saved above */
+    using VmConfig::FirmwareKind;
+    const auto kind = FirmwareKind(m_firmware->currentData().toInt());
+    if (kind != m_loadedFirmware && kind != FirmwareKind::Custom) {
+        if (kind == FirmwareKind::Bios) {
+            VmConfig::useBios(args);
+        } else if (const std::optional<Firmware> fw = FirmwareDb::find(
+                       kind == FirmwareKind::UefiSecureBoot, VmConfig::machineType(args))) {
+            /* copied into the VM folder when the settings are applied */
+            FirmwareDb::apply(args, *fw, m_staging.path());
+        }
+        m_loadedFirmware = kind;
+    }
+    if (m_bootMenu->isChecked() != m_loadedBootMenu) {
+        VmConfig::setBootMenu(args, m_bootMenu->isChecked());
+        m_loadedBootMenu = m_bootMenu->isChecked();
+    }
 }
 
 bool MachinePage::isModified() const
@@ -2252,79 +2309,42 @@ bool MachinePage::isModified() const
 
     return m_model->currentText().trimmed() != m_loadedCpus.model ||
            (!machine.isEmpty() && machine != m_loadedMachine) || chosenQemu() != m_loadedQemu ||
-           topologyChanged();
+           topologyChanged() || m_firmware->currentData().toInt() != int(m_loadedFirmware) ||
+           m_bootMenu->isChecked() != m_loadedBootMenu;
 }
 
-/* Boot */
-
-BootPage::BootPage(Vm *vm, QWidget *parent)
-    : SettingsPage(parent), m_vm(vm), m_firmware(new QComboBox),
-      m_firmwareInfo(Widgets::hint()), m_resetVars(new QPushButton(tr("&Reset UEFI Variables…"))),
-      m_bootMenu(new QCheckBox(tr("Show the boot men&u when the VM starts")))
+QString MachinePage::shownMachine() const
 {
-    auto *layout = new QVBoxLayout(this);
-    auto *form = Widgets::form();
-    auto *resetRow = new QHBoxLayout;
-
-    m_firmware->setObjectName("firmware");
-    m_bootMenu->setObjectName("bootMenu");
-    /* for a system that no longer starts, its variables damaged */
-    m_resetVars->setObjectName("resetVars");
-    resetRow->addWidget(m_resetVars);
-    resetRow->addStretch();
-    connect(m_resetVars, &QPushButton::clicked, this, &BootPage::resetVars);
-    if (m_vm) {
-        connect(m_vm->runner(), &VmRunner::stateChanged, this, &BootPage::updateResetVars);
-    }
-
-    form->addRow(tr("F&irmware:"), m_firmware);
-    form->addRow(QString(), m_firmwareInfo);
-    form->addRow(QString(), resetRow);
-    /* one place for it: with the devices */
-    form->addRow(tr("Start from:"), Widgets::note(tr("The devices checked in the boot order "
-                                                     "of the Storage page, in that order.")));
-    form->addRow(QString(), m_bootMenu);
-    layout->addLayout(form);
-    layout->addStretch();
-    connect(m_firmware, &QComboBox::currentIndexChanged, this, &BootPage::describeFirmware);
+    const QString machine = m_machine->currentText().trimmed();
+    return machine.isEmpty() ? m_loadedMachine : machine;
 }
 
-QIcon BootPage::icon() const
-{
-    return Icons::themed({"system-reboot", "media-playback-start"}, QStyle::SP_MediaPlay);
-}
-
-void BootPage::load(const ArgsFile &args)
+void MachinePage::fillFirmware(VmConfig::FirmwareKind choose)
 {
     using VmConfig::FirmwareKind;
+    const QString machine = shownMachine();
+    const QSignalBlocker block(m_firmware);
 
-    m_machine = VmConfig::machineType(args);
-    const bool virt = m_machine.startsWith("virt");
-    m_loadedFirmware = VmConfig::firmwareKind(args);
-    {
-        const QSignalBlocker block(m_firmware);
-        m_firmware->clear();
-        /* ARM's virt boots with UEFI only */
-        if (!virt) {
-            m_firmware->addItem(tr("BIOS (SeaBIOS), for old systems"), int(FirmwareKind::Bios));
-        } else if (m_loadedFirmware == FirmwareKind::Bios) {
-            m_firmware->addItem(tr("None"), int(FirmwareKind::Bios));
-        }
-        m_firmware->addItem(tr("UEFI"), int(FirmwareKind::Uefi));
-        if (!virt || FirmwareDb::find(true, m_machine)) {
-            m_firmware->addItem(tr("UEFI with Secure Boot"), int(FirmwareKind::UefiSecureBoot));
-        }
-        if (m_loadedFirmware == FirmwareKind::Custom) {
-            m_firmware->addItem(tr("Set by hand"), int(FirmwareKind::Custom));
-        }
-        m_firmware->setCurrentIndex(m_firmware->findData(int(m_loadedFirmware)));
-        m_firmware->setEnabled(m_loadedFirmware != FirmwareKind::Custom);
+    m_firmwareVirt = machine.startsWith("virt");
+    m_firmware->clear();
+    /* ARM's virt boots with UEFI only */
+    if (!m_firmwareVirt) {
+        m_firmware->addItem(tr("BIOS (SeaBIOS), for old systems"), int(FirmwareKind::Bios));
+    } else if (m_loadedFirmware == FirmwareKind::Bios) {
+        m_firmware->addItem(tr("None"), int(FirmwareKind::Bios));
     }
-
-    m_loadedBootMenu = VmConfig::bootMenu(args);
-    m_bootMenu->setChecked(m_loadedBootMenu);
-    describeFirmware();
-    updateResetVars();
+    m_firmware->addItem(tr("UEFI"), int(FirmwareKind::Uefi));
+    if (!m_firmwareVirt || m_loadedFirmware == FirmwareKind::UefiSecureBoot ||
+        FirmwareDb::find(true, machine)) {
+        m_firmware->addItem(tr("UEFI with Secure Boot"), int(FirmwareKind::UefiSecureBoot));
+    }
+    if (m_loadedFirmware == FirmwareKind::Custom) {
+        m_firmware->addItem(tr("Set by hand"), int(FirmwareKind::Custom));
+    }
+    const int chosen = m_firmware->findData(int(choose));
+    m_firmware->setCurrentIndex(chosen >= 0 ? chosen
+                                            : m_firmware->findData(int(m_loadedFirmware)));
+    m_firmware->setEnabled(m_loadedFirmware != FirmwareKind::Custom);
 }
 
 /* The variable store in the VM folder, by the saved arguments, if it can be made again */
@@ -2339,7 +2359,7 @@ static FirmwareFiles::File resettableVars(const Vm *vm)
     return {};
 }
 
-void BootPage::updateResetVars()
+void MachinePage::updateResetVars()
 {
     const bool running = m_vm && m_vm->runner()->isActive();
 
@@ -2350,7 +2370,7 @@ void BootPage::updateResetVars()
                                          "entries and keys go back to those of a new VM."));
 }
 
-void BootPage::resetVars()
+void MachinePage::resetVars()
 {
     const FirmwareFiles::File vars = resettableVars(m_vm);
 
@@ -2360,43 +2380,17 @@ void BootPage::resetVars()
     }
 }
 
-void BootPage::save(ArgsFile &args)
+void MachinePage::describeFirmware()
 {
     using VmConfig::FirmwareKind;
     const auto kind = FirmwareKind(m_firmware->currentData().toInt());
-
-    if (kind != m_loadedFirmware && kind != FirmwareKind::Custom) {
-        if (kind == FirmwareKind::Bios) {
-            VmConfig::useBios(args);
-        } else if (const std::optional<Firmware> fw = FirmwareDb::find(
-                       kind == FirmwareKind::UefiSecureBoot, m_machine)) {
-            /* copied into the VM folder when the dialog applies */
-            FirmwareDb::apply(args, *fw, m_staging.path());
-        }
-        m_loadedFirmware = kind;
-    }
-    if (m_bootMenu->isChecked() != m_loadedBootMenu) {
-        VmConfig::setBootMenu(args, m_bootMenu->isChecked());
-        m_loadedBootMenu = m_bootMenu->isChecked();
-    }
-}
-
-bool BootPage::isModified() const
-{
-    return m_firmware->currentData().toInt() != int(m_loadedFirmware) ||
-           m_bootMenu->isChecked() != m_loadedBootMenu;
-}
-
-void BootPage::describeFirmware()
-{
-    using VmConfig::FirmwareKind;
-    const auto kind = FirmwareKind(m_firmware->currentData().toInt());
+    const QString machine = shownMachine();
 
     if (kind == FirmwareKind::Custom) {
         m_firmwareInfo->setText(tr("The firmware is set by hand: change it on the Arguments "
                                    "page."));
     } else if ((kind == FirmwareKind::Uefi || kind == FirmwareKind::UefiSecureBoot) &&
-               !FirmwareDb::find(kind == FirmwareKind::UefiSecureBoot, m_machine)) {
+               !FirmwareDb::find(kind == FirmwareKind::UefiSecureBoot, machine)) {
         m_firmwareInfo->setText(tr("No such UEFI firmware was found: install edk2-ovmf "
                                    "(edk2-aarch64 on ARM)."));
     } else if (kind != m_loadedFirmware) {
@@ -2414,7 +2408,7 @@ void BootPage::describeFirmware()
     }
 }
 
-bool BootPage::commit(const ArgsFile &args, const QString &vmDir, QString *error)
+bool MachinePage::commit(const ArgsFile &args, const QString &vmDir, QString *error)
 {
     const QDir staging(m_staging.path());
 

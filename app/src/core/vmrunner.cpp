@@ -130,24 +130,31 @@ static bool addsAgent(const ArgsFile &args, const QString &qemu)
 /*
  * qemu-ga's port of the VM's own, which Shut Down can still ask the guest
  * agent through: the socket QEMU listens on for its chardev (a relative
- * path in the VM's folder @dir, where QEMU runs), and the chardev's id.
- * None when the chardev is no socket QEMU listens on.
+ * path in the VM's folder @dir, where QEMU runs), the chardev's id, and the
+ * port's own id, if it has one (VSERPORT_CHANGE tells by it when the guest
+ * opens the port).  None when the chardev is no socket QEMU listens on.
  */
-static std::pair<QString, QString> ownAgentSocket(const ArgsFile &args, const QString &dir)
-{
+struct OwnAgent {
+    QString socket;
     QString chardev;
+    QString port;
+};
+static OwnAgent ownAgentSocket(const ArgsFile &args, const QString &dir)
+{
+    QString chardev, id;
 
     for (int i : args.indexesOf("device")) {
         const OptionValue port = args.valueAt(i);
         if (port.implied() == "virtserialport" && port.get("name") == "org.qemu.guest_agent.0") {
             chardev = port.get("chardev");
+            id = port.get("id");
         }
     }
     for (int i : args.indexesOf("chardev")) {
         const OptionValue c = args.valueAt(i);
         if (!chardev.isEmpty() && c.get("id") == chardev && c.implied() == "socket" &&
             !c.get("path").isEmpty() && c.has("server") && c.flag("server", true)) {
-            return {QDir(dir).absoluteFilePath(c.get("path")), chardev};
+            return {QDir(dir).absoluteFilePath(c.get("path")), chardev, id};
         }
     }
     return {};
@@ -258,11 +265,12 @@ struct VmRunner::Private
     bool embedded = false;      // its screen in vitrine's window: displaySocket()
     qint64 pid = 0;             // QEMU
     QList<Helper> helpers;      // virtiofsd started for this run
-    GuestAgent *agent = nullptr;    // mounting the shares
+    GuestAgent *agent = nullptr;    // asking what the guest runs, mounting the shares
     GuestShutdown *shutdown;        // powerdown()'s ways
     bool guestAgentPort = false;    // the run has qemu-ga's port, agentPath()
     QString guestAgentSocket;       // qemu-ga's port Shut Down uses: its socket
     QString guestAgentChardev;      // and its chardev
+    QString guestAgentPortId;       // and the port's id, empty if it has none
     bool connecting = false;
     bool heldForDisplay = false;    // started paused (-S) for its screen
     bool waitingForDisplay = false; // and waiting for it now: waitsForDisplay()
@@ -317,9 +325,15 @@ struct VmRunner::Private
     void waitForDisplay();
     void endDisplayWait(bool timedOut);
     void event(const QString &name, const QJsonObject &data);
-    void mountShares();
+    /*
+     * qemu-ga came up: what the guest runs (guestOsInfo()), then, with
+     * @mount, the shares the guest did not mount, on the same connection:
+     * qemu-ga's socket takes one client at a time
+     */
+    void guestAgentUp(bool mount);
     void mountNext(QList<VmConfig::Share> shares, QStringList mounted, QStringList problems);
     void endMounts(const QStringList &mounted, const QStringList &problems);
+    void dropAgent();
     QmpClient::Callback reportErrors(const QString &command);
 };
 
@@ -360,10 +374,11 @@ QStringList VmRunner::Private::guestAgentPortArgs(const QString &controller) con
 
 void VmRunner::Private::useGuestAgent()
 {
-    const auto [own, chardev] = ownAgentSocket(args, dir);
+    const OwnAgent own = ownAgentSocket(args, dir);
 
-    guestAgentSocket = guestAgentPort ? agentPath() : own;
-    guestAgentChardev = guestAgentPort ? "vitrine-ga" : chardev;
+    guestAgentSocket = guestAgentPort ? agentPath() : own.socket;
+    guestAgentChardev = guestAgentPort ? "vitrine-ga" : own.chardev;
+    guestAgentPortId = guestAgentPort ? kAgentPort : own.socket.isEmpty() ? QString() : own.port;
     shutdown->setGuestAgent(guestAgentSocket,
                             [this](const auto &answer) { guestAgentOpen(answer); });
 }
@@ -526,15 +541,13 @@ void VmRunner::Private::cleanup()
     guestAgentPort = false;
     guestAgentSocket.clear();
     guestAgentChardev.clear();
+    guestAgentPortId.clear();
     qmp->disconnectFromSocket();
     for (const Helper &h : std::as_const(helpers)) {
         signalIfOurs(h.pid, h.marker, SIGTERM);
     }
     helpers.clear();
-    if (agent) {
-        agent->deleteLater();
-        agent = nullptr;
-    }
+    dropAgent();
     pid = 0;
     removeRuntimeFiles();
 }
@@ -645,6 +658,8 @@ void VmRunner::Private::escalate()
 
 void VmRunner::Private::qmpReady()
 {
+    const bool found = phase == Phase::Attach;
+
     poll->stop();
     phase = Phase::Idle;
     connecting = false;
@@ -661,6 +676,15 @@ void VmRunner::Private::qmpReady()
             setState(result["running"].toBool() ? State::Running : State::Paused);
         }
     });
+    /* a guest that booted before: what it runs, if its qemu-ga is up (the
+       vitrine that started it mounted the shares) */
+    if (found && !guestAgentSocket.isEmpty()) {
+        guestAgentOpen([this](bool open) {
+            if (open && !agent) {
+                guestAgentUp(false);
+            }
+        });
+    }
 }
 
 /* Starting, until displayReady() or the time is up */
@@ -753,8 +777,9 @@ void VmRunner::Private::event(const QString &name, const QJsonObject &data)
 {
     /* qemu-ga opened its port: the guest has booted */
     if (name == "VSERPORT_CHANGE") {
-        if (data["id"].toString() == kAgentPort && data["open"].toBool()) {
-            mountShares();
+        if (!guestAgentPortId.isEmpty() && data["id"].toString() == guestAgentPortId &&
+            data["open"].toBool()) {
+            guestAgentUp(true);
         }
         return;
     }
@@ -775,24 +800,55 @@ void VmRunner::Private::event(const QString &name, const QJsonObject &data)
     }
 }
 
-void VmRunner::Private::mountShares()
+void VmRunner::Private::guestAgentUp(bool mount)
 {
-    const QList<VmConfig::Share> shares = sharesToMount(args);
+    /* the shares, through the runner's port only: a port of the VM's own may
+       be some other program's business */
+    const QList<VmConfig::Share> shares =
+        mount && guestAgentPort ? sharesToMount(args) : QList<VmConfig::Share>();
 
-    if (shares.isEmpty() || !guestAgentPort) {
+    if (guestAgentSocket.isEmpty()) {
         return;
     }
-    if (agent) {
-        agent->deleteLater();
-    }
-    agent = new GuestAgent(q);
-    QObject::connect(agent, &GuestAgent::ready, q, [this, shares]() {
-        mountNext(shares, {}, {});
+    /* another boot of the guest: what the last one left undone goes */
+    dropAgent();
+    auto *asking = new GuestAgent(q);
+    agent = asking;
+    QObject::connect(asking, &GuestAgent::ready, q, [this, asking, shares]() {
+        asking->execute("guest-get-osinfo", {},
+                        [this, asking, shares](const QJsonValue &result, const QString &error) {
+            if (agent != asking) {
+                return;
+            }
+            /* qemu-ga older than 2.10 has no guest-get-osinfo */
+            if (error.isEmpty()) {
+                emit q->guestOsInfo(result.toObject());
+            } else {
+                qInfo("qemu-ga, guest-get-osinfo: %s", qPrintable(error));
+            }
+            /* the run may have ended meanwhile */
+            if (agent != asking) {
+                return;
+            }
+            if (shares.isEmpty()) {
+                dropAgent();
+            } else {
+                mountNext(shares, {}, {});
+            }
+        });
     });
-    QObject::connect(agent, &GuestAgent::failed, q, [this](const QString &error) {
-        endMounts({}, {error});
+    QObject::connect(asking, &GuestAgent::failed, q, [this, asking, shares](const QString &error) {
+        if (agent != asking) {
+            return;
+        }
+        if (shares.isEmpty()) {
+            qInfo("qemu-ga: %s", qPrintable(error));
+            dropAgent();
+        } else {
+            endMounts({}, {error});
+        }
     });
-    agent->connectToSocket(agentPath());
+    asking->connectToSocket(guestAgentSocket);
 }
 
 void VmRunner::Private::mountNext(QList<VmConfig::Share> shares, QStringList mounted,
@@ -803,10 +859,15 @@ void VmRunner::Private::mountNext(QList<VmConfig::Share> shares, QStringList mou
         return;
     }
     const VmConfig::Share share = shares.takeFirst();
+    GuestAgent *mounting = agent;
     agent->exec("/bin/sh",
                 {"-c", kMount, share.tag, share.mount, share.readonly ? "ro" : "rw",
                  mountEscape(share.tag)},
                 [=, this](const GuestAgent::ExecResult &r) mutable {
+        /* dropped: the run ended, or the guest booted again */
+        if (agent != mounting) {
+            return;
+        }
         if (!r.error.isEmpty()) {
             problems << QString("%1: %2").arg(share.mount, r.error);
         } else if (r.exitCode == kConfined) {
@@ -830,12 +891,18 @@ void VmRunner::Private::mountNext(QList<VmConfig::Share> shares, QStringList mou
 
 void VmRunner::Private::endMounts(const QStringList &mounted, const QStringList &problems)
 {
-    if (agent) {
-        agent->disconnectFromSocket();
-        agent->deleteLater();
-        agent = nullptr;
-    }
+    dropAgent();
     emit q->sharesMounted(mounted, problems);
+}
+
+/* Its answers that come as it goes are void: its callbacks check it is agent */
+void VmRunner::Private::dropAgent()
+{
+    if (GuestAgent *dropped = std::exchange(agent, nullptr)) {
+        dropped->disconnect(q);
+        dropped->disconnectFromSocket();
+        dropped->deleteLater();
+    }
 }
 
 /* Errors of QEMU, not those of the connection closing with QEMU */

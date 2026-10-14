@@ -20,13 +20,12 @@
 #include <QSignalBlocker>
 #include <QSpinBox>
 #include <QStackedWidget>
-#include <QStyleOptionViewItem>
-#include <QStylePainter>
 #include <QTabBar>
 #include <QTabWidget>
 #include <QTimer>
-#include <QToolButton>
 #include <QVBoxLayout>
+
+#include <iterator>
 
 #include "core/vmrunner.h"
 #include "core/vmstore.h"
@@ -61,102 +60,9 @@ public:
     }
 };
 
-/*
- * Advanced, under the simple pages: shows and hides the advanced ones.
- * Drawn as a row of the lists of pages, its arrow where their icons are
- * and its name where theirs are; a tool button centres both.
- */
-class SectionButton : public QToolButton
-{
-public:
-    explicit SectionButton(const QListWidget *list) : m_list(list)
-    {
-        setCheckable(true);
-        setAutoRaise(true);
-        setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Fixed);
-    }
-
-    QSize sizeHint() const override
-    {
-        QRect icon, text;
-        rowParts(QRect(0, 0, QWIDGETSIZE_MAX / 2, rowHeight()), &icon, &text);
-        return QSize(text.left() + fontMetrics().horizontalAdvance(this->text()) +
-                         textMargin() + m_list->spacing(),
-                     rowHeight());
-    }
-
-protected:
-    void paintEvent(QPaintEvent *) override
-    {
-        QStylePainter painter(this);
-        QStyleOptionToolButton panel;
-        QStyleOption arrow;
-        QRect icon, text;
-
-        /* its hover and focus as a tool button's, not sunken while open */
-        initStyleOption(&panel);
-        panel.state &= ~QStyle::State_On;
-        panel.text.clear();
-        panel.icon = QIcon();
-        panel.features &= ~QStyleOptionToolButton::Arrow;
-        painter.drawComplexControl(QStyle::CC_ToolButton, panel);
-
-        rowParts(QRect(m_list->spacing(), 0, width() - 2 * m_list->spacing(), height()), &icon,
-                 &text);
-        arrow.initFrom(this);
-        arrow.rect = icon;
-        painter.drawPrimitive(isChecked()        ? QStyle::PE_IndicatorArrowDown
-                              : isRightToLeft() ? QStyle::PE_IndicatorArrowLeft
-                                                : QStyle::PE_IndicatorArrowRight,
-                              arrow);
-        /* inside its rectangle as the style draws an item's text */
-        painter.drawItemText(text.adjusted(textMargin(), 0, -textMargin(), 0),
-                             Qt::AlignLeft | Qt::AlignVCenter, m_list->palette(), isEnabled(),
-                             this->text(), QPalette::Text);
-    }
-
-private:
-    /* Between an item's text and the sides of its text rectangle (QCommonStyle's) */
-    int textMargin() const
-    {
-        return m_list->style()->pixelMetric(QStyle::PM_FocusFrameHMargin, nullptr, m_list) + 1;
-    }
-
-    /* A row of the list as high as its items, with their spacing */
-    int rowHeight() const
-    {
-        return (m_list->count() > 0 ? m_list->sizeHintForRow(0) : QToolButton::sizeHint().height()) +
-               2 * m_list->spacing();
-    }
-
-    /* Where an item of the list in @row has its icon and its text */
-    void rowParts(const QRect &row, QRect *icon, QRect *text) const
-    {
-        QStyleOptionViewItem item;
-
-        item.initFrom(m_list);
-        item.widget = m_list;
-        item.rect = row;
-        item.features = QStyleOptionViewItem::HasDisplay | QStyleOptionViewItem::HasDecoration;
-        item.decorationSize = m_list->iconSize();
-        item.decorationPosition = QStyleOptionViewItem::Left;
-        item.decorationAlignment = Qt::AlignCenter;
-        item.displayAlignment = Qt::AlignLeft | Qt::AlignVCenter;
-        item.text = this->text();
-        item.font = m_list->font();
-        item.fontMetrics = QFontMetrics(item.font);
-        item.direction = layoutDirection();
-        *icon = m_list->style()->subElementRect(QStyle::SE_ItemViewItemDecoration, &item, m_list);
-        *text = m_list->style()->subElementRect(QStyle::SE_ItemViewItemText, &item, m_list);
-    }
-
-    const QListWidget *m_list;
-};
-
 VmPane::VmPane(QWidget *parent)
     : QWidget(parent), m_check(new QTimer(this)), m_tabs(new QTabWidget),
-      m_console(new QWidget), m_details(new VmDetails), m_side(new QWidget),
-      m_list(new QListWidget), m_more(new SectionButton(m_list)), m_advanced(new QListWidget),
+      m_console(new QWidget), m_details(new VmDetails), m_list(new QListWidget),
       m_title(new QLabel),
       m_stack(new QStackedWidget), m_snapshots(new SnapshotView), m_log(new LogView), m_running(new Banner(Banner::Information)),
       /* no mnemonic: the pages use D */
@@ -201,38 +107,19 @@ VmPane::VmPane(QWidget *parent)
         });
     }
 
-    /* the pages down the side, as the settings dialog had them, on the tab:
-       the simple ones, then Advanced, folded */
+    /* the pages down the side, as the settings dialog had them, on the tab,
+       all of them in one list */
     m_list->setObjectName("pages");
-    m_advanced->setObjectName("advancedPages");
     m_stack->setObjectName("pageStack");
     /* the pages' icons between the small and the large size: the toolbar's */
     const int icons = style()->pixelMetric(QStyle::PM_ToolBarIconSize, nullptr, this);
-    for (QListWidget *list : {m_list, m_advanced}) {
-        list->setIconSize(QSize(icons, icons));
-        list->setSpacing(1);
-        list->setSizePolicy(QSizePolicy::Fixed, QSizePolicy::Fixed);
-        list->setFrameShape(QFrame::NoFrame);
-        list->viewport()->setAutoFillBackground(false);
-        list->setVerticalScrollBarPolicy(Qt::ScrollBarAlwaysOff);
-        list->setHorizontalScrollBarPolicy(Qt::ScrollBarAlwaysOff);
-    }
-    m_more->setObjectName("advanced");
-    m_more->setText(tr("Advanced"));
-    m_more->setToolTip(tr("The machine, its boot, PCI devices, and the QEMU command line "
-                          "itself"));
-    m_advanced->hide();
-    {
-        auto *side = new QVBoxLayout(m_side);
-        side->setContentsMargins(0, 0, 0, 0);
-        side->setSpacing(0);
-        side->addWidget(m_list);
-        /* apart from the simple pages, as the groups of a layout are */
-        side->addSpacing(style()->pixelMetric(QStyle::PM_LayoutVerticalSpacing, nullptr, this));
-        side->addWidget(m_more);
-        side->addWidget(m_advanced);
-        side->addStretch();
-    }
+    m_list->setIconSize(QSize(icons, icons));
+    m_list->setSpacing(1);
+    m_list->setSizePolicy(QSizePolicy::Fixed, QSizePolicy::Fixed);
+    m_list->setFrameShape(QFrame::NoFrame);
+    m_list->viewport()->setAutoFillBackground(false);
+    m_list->setVerticalScrollBarPolicy(Qt::ScrollBarAlwaysOff);
+    m_list->setHorizontalScrollBarPolicy(Qt::ScrollBarAlwaysOff);
     line->setFrameShape(QFrame::VLine);
     line->setFrameShadow(QFrame::Sunken);
     /* the name of the page over it, above the titles of its parts */
@@ -257,7 +144,8 @@ VmPane::VmPane(QWidget *parent)
     pageLayout->addLayout(footer);
     settingsLayout->setContentsMargins(0, 0, 0, 0);
     settingsLayout->setSpacing(0);
-    settingsLayout->addWidget(m_side);
+    /* at the top, as high as its rows: it does not scroll */
+    settingsLayout->addWidget(m_list, 0, Qt::AlignTop);
     settingsLayout->addWidget(line);
     settingsLayout->addWidget(page, 1);
 
@@ -276,15 +164,12 @@ VmPane::VmPane(QWidget *parent)
      * not by the row becoming current: keyboard focus coming into a list
      * makes its first row current, without selecting it
      */
-    for (QListWidget *list : {m_list, m_advanced}) {
-        connect(list, &QListWidget::itemSelectionChanged, this, [this, list]() {
-            const QList<QListWidgetItem *> items = list->selectedItems();
-            if (!items.isEmpty()) {
-                pageChosen(list, list->row(items.first()));
-            }
-        });
-    }
-    connect(m_more, &QToolButton::toggled, this, &VmPane::showAdvanced);
+    connect(m_list, &QListWidget::itemSelectionChanged, this, [this]() {
+        const QList<QListWidgetItem *> items = m_list->selectedItems();
+        if (!items.isEmpty()) {
+            switchTo(m_list->row(items.first()));
+        }
+    });
     connect(m_apply, &QPushButton::clicked, this, &VmPane::apply);
     /*
      * Ctrl+S while the Settings tab shows, wherever the keys are in the
@@ -311,9 +196,37 @@ VmPane::VmPane(QWidget *parent)
 
 VmPane::~VmPane()
 {
-    /* the lists go after the members: no page to load then */
+    /* the list goes after the members: no page to load then */
     disconnect(m_list, nullptr, this, nullptr);
-    disconnect(m_advanced, nullptr, this, nullptr);
+}
+
+/* By name, as the settings file keeps it */
+static const char *const kPageKeys[] = {"general",  "hardware", "display", "storage",
+                                        "shares",   "usb",      "network", "machine",
+                                        "pci",      "arguments"};
+static_assert(std::size(kPageKeys) == size_t(VmPane::Arguments) + 1);
+
+QString VmPane::pageKey(Page page)
+{
+    return kPageKeys[qBound(0, int(page), int(Arguments))];
+}
+
+VmPane::Page VmPane::savedPage(const QVariant &saved)
+{
+    const QString key = saved.toString();
+    bool isIndex = false;
+    const int index = key.toInt(&isIndex);
+
+    for (int i = 0; i <= Arguments; i++) {
+        if (key == kPageKeys[i]) {
+            return Page(i);
+        }
+    }
+    /* an older vitrine's index: Boot (8) was between Machine and PCI Devices */
+    if (!isIndex || index < 0 || index > 10) {
+        return General;
+    }
+    return index <= Machine ? Page(index) : index == 8 ? Machine : Page(index - 1);
 }
 
 Vm *VmPane::vm() const
@@ -342,7 +255,7 @@ void VmPane::setVm(Vm *vm)
     buildPages();
 }
 
-/* A list as tall as its items: the lists of pages do not scroll */
+/* A list as tall as its items: the list of pages does not scroll */
 static void fitHeight(QListWidget *list)
 {
     int height = 2 * list->frameWidth() + list->spacing();
@@ -362,10 +275,9 @@ void VmPane::buildPages()
     m_current = -1;
     {
         /* the page shown in the end is loaded below, once */
-        const QSignalBlocker blocker(m_list), advancedBlocker(m_advanced);
+        const QSignalBlocker blocker(m_list);
 
         m_list->clear();
-        m_advanced->clear();
         /* the scroll areas, with the pages */
         while (m_stack->count() > 0) {
             QWidget *old = m_stack->widget(0);
@@ -377,9 +289,8 @@ void VmPane::buildPages()
             m_pages = {new GeneralPage(m_vm),  new HardwarePage,
                        new DisplayPage,         new StoragePage(m_vm->dir()),
                        new SharesPage,          new UsbPage,
-                       new NetworkPage(m_vm),   new MachinePage,
-                       new BootPage(m_vm),      new PciPage,
-                       new ArgumentsPage(m_vm->dir())};
+                       new NetworkPage(m_vm),   new MachinePage(m_vm),
+                       new PciPage,             new ArgumentsPage(m_vm->dir())};
         }
         /* scrolled, not the window grown, when a page does not fit */
         for (SettingsPage *page : std::as_const(m_pages)) {
@@ -391,29 +302,19 @@ void VmPane::buildPages()
             scroll->setHorizontalScrollBarPolicy(Qt::ScrollBarAlwaysOff);
             scroll->setMinimumWidth(scroll->widget()->minimumSizeHint().width() +
                                     scroll->verticalScrollBar()->sizeHint().width());
-            (m_stack->count() < FirstAdvanced ? m_list : m_advanced)
-                ->addItem(new QListWidgetItem(page->icon(), page->title()));
+            m_list->addItem(new QListWidgetItem(page->icon(), page->title()));
             m_stack->addWidget(scroll);
             watchEdits(page);
         }
         if (!m_pages.isEmpty()) {
-            const int width = qMax(m_list->sizeHintForColumn(0),
-                                   m_advanced->sizeHintForColumn(0)) +
-                              2 * m_list->frameWidth() + 16;
-            m_list->setFixedWidth(width);
-            m_advanced->setFixedWidth(width);
-            /* a row as high as the lists' now that they have some */
-            m_more->updateGeometry();
-            m_side->setFixedWidth(qMax(width, m_more->sizeHint().width()));
+            m_list->setFixedWidth(m_list->sizeHintForColumn(0) + 2 * m_list->frameWidth() + 16);
             fitHeight(m_list);
-            fitHeight(m_advanced);
         }
-        m_more->setVisible(!m_pages.isEmpty());
     }
     m_args = m_vm ? m_vm->args() : ArgsFile();
     m_loaded = m_args.toText();
     if (!m_pages.isEmpty()) {
-        selectPage(qBound(0, int(page), int(m_pages.size()) - 1));
+        m_list->setCurrentRow(qBound(0, int(page), int(m_pages.size()) - 1));
     }
     updateFooter();
 }
@@ -421,38 +322,6 @@ void VmPane::buildPages()
 void VmPane::setConsole(QWidget *console)
 {
     m_console->layout()->addWidget(console);
-}
-
-void VmPane::pageChosen(QListWidget *list, int row)
-{
-    QListWidget *other = list == m_list ? m_advanced : m_list;
-
-    if (row < 0) {
-        return;
-    }
-    {
-        /* one page current in both lists; set through the view, so that
-           focus coming in leaves it so rather than making row 0 current */
-        const QSignalBlocker block(other);
-        other->setCurrentIndex(QModelIndex());
-        other->clearSelection();
-    }
-    switchTo(list == m_list ? row : FirstAdvanced + row);
-}
-
-void VmPane::selectPage(int page)
-{
-    if (page >= FirstAdvanced) {
-        m_more->setChecked(true);
-        m_advanced->setCurrentRow(page - FirstAdvanced);
-    } else {
-        m_list->setCurrentRow(page);
-    }
-}
-
-void VmPane::showAdvanced(bool on)
-{
-    m_advanced->setVisible(on);
 }
 
 VmPane::Tab VmPane::tab() const
@@ -480,7 +349,7 @@ void VmPane::setPage(Page page)
 {
     m_page = Page(qBound(0, int(page), int(Arguments)));
     if (m_page < m_pages.size()) {
-        selectPage(m_page);
+        m_list->setCurrentRow(m_page);
     }
 }
 

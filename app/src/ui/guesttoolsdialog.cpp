@@ -85,19 +85,34 @@ void GuestToolsDialog::run(QWidget *parent, Vm *vm)
     dialog->show();
 }
 
+/* No medium: GuestToolsBuildBanner says so, with Build… */
+static QString notBuilt()
+{
+    return GuestToolsDialog::tr("The guest tools are not built yet: build them first.");
+}
+
 /* Why the tools cannot go into @vm now; empty if they can */
 static QString obstacle(Vm *vm, const GuestTools::Medium &medium)
 {
     const ArgsFile &args = vm->args();
     const GuestToolsMonitor *monitor = GuestToolsMonitor::of(vm);
+    const GuestTools::System system = monitor->system();
     const QString qemu = VmConfig::qemuBinary(args);
 
-    /* GuestToolsBuildBanner says so, with Build… */
-    if (!medium.isValid()) {
-        return GuestToolsDialog::tr("The guest tools are not built yet: build them first.");
+    /* what the guest said it runs; else what the VM's settings say, if not
+       Linux: before the medium, as a build would not change it */
+    if (monitor->unsupported()) {
+        return GuestToolsDialog::tr("This guest runs %1, which the guest tools are not for.")
+            .arg(system.displayName());
     }
-    if (const QString os = VmConfig::guest(args).os; !os.isEmpty() && os != "linux") {
-        return GuestToolsDialog::tr("The guest tools are for Fedora Linux guests.");
+    if (const QString os = VmConfig::guest(args).os;
+        !system.isKnown() && !os.isEmpty() && os != "linux") {
+        return os == "windows"
+                   ? GuestToolsDialog::tr("This VM is set up for Windows.")
+                   : GuestToolsDialog::tr("This VM is set up for another system than Linux.");
+    }
+    if (!medium.isValid()) {
+        return notBuilt();
     }
     if (!GuestTools::canBootstrap(args, qemu.isEmpty() ? "qemu-system-x86_64" : qemu)) {
         return GuestToolsDialog::tr("The guest tools are for x86-64 Fedora guests, on a "
@@ -120,15 +135,37 @@ static QString obstacle(Vm *vm, const GuestTools::Medium &medium)
     return {};
 }
 
+/* Whom the tools are for, and what @vm's guest runs, as far as it said */
+static QString forWhom(Vm *vm, const GuestTools::Medium &medium)
+{
+    const GuestToolsMonitor *monitor = GuestToolsMonitor::of(vm);
+    const QString text =
+        GuestToolsDialog::tr("The guest tools are for %1 guests: they make them run well in "
+                             "vitrine.")
+            .arg(GuestTools::supportedSystems(medium).toHtmlEscaped());
+
+    /* another system: the warning under it says so */
+    if (monitor->unsupported()) {
+        return text;
+    }
+    if (monitor->system().isKnown()) {
+        return text + ' ' +
+               GuestToolsDialog::tr("This guest runs %1.")
+                   .arg(monitor->system().displayName().toHtmlEscaped());
+    }
+    return text + ' ' +
+           GuestToolsDialog::tr("What this guest runs is not known yet: QEMU's guest agent "
+                                "(qemu-guest-agent) tells vitrine while the VM runs.");
+}
+
 /* What the tools of @medium install in @vm, and how */
 static QString what(Vm *vm, const GuestTools::Medium &medium)
 {
     const bool running = vm->runner()->isActive();
     QString what;
 
-    what = GuestToolsDialog::tr("<p>The guest tools make a Fedora %1 guest run well in vitrine. "
-                                "They install:</p><ul>")
-               .arg(GuestTools::kFedoraRelease);
+    what = "<p>" + forWhom(vm, medium) + "</p>";
+    what += GuestToolsDialog::tr("<p>They install:</p><ul>");
     what += GuestToolsDialog::tr("<li>vitrine's virtio-gpu driver, built again for each new "
                                  "kernel (DKMS), with its settings</li>");
     if (!medium.mesa.isEmpty()) {
@@ -245,9 +282,9 @@ void GuestToolsDialog::refresh()
     const QString problem = obstacle(m_vm, medium);
 
     m_what->setText(what(m_vm, medium));
-    /* without a medium, the build banner tells it */
+    /* the medium missing: the build banner tells it */
     m_warning->setText(problem.toHtmlEscaped());
-    m_warning->setVisible(!problem.isEmpty() && medium.isValid());
+    m_warning->setVisible(!problem.isEmpty() && problem != notBuilt());
     m_install->setText(running ? tr("&Restart and Install") : tr("&Install"));
     m_install->setEnabled(problem.isEmpty());
     m_mediumButton->setEnabled(problem.isEmpty());
@@ -443,25 +480,21 @@ void GuestToolsBanner::setVm(Vm *vm)
     if (vm) {
         connect(GuestToolsMonitor::of(vm), &GuestToolsMonitor::changed, this,
                 &GuestToolsBanner::update);
-        /* its settings, which say whether the tools are for it (toolsGuest()) */
+        /* its settings: the 3D card the tools' driver is for (offered()) */
         connect(vm, &Vm::changed, this, &GuestToolsBanner::update);
     }
     update();
 }
 
-/* A guest the tools are for, as far as its settings tell: Linux (the
-   #guest directive) with an accelerated virtio GPU; without the directive,
-   not Windows (Hyper-V enlightenments) */
-static bool toolsGuest(const ArgsFile &args)
+/*
+ * The tools are offered to @vm: its guest is known to run a system they are
+ * for (it said so, through an agent, when it last ran), with the 3D card
+ * their driver is for.  Not while what it runs is not known.
+ */
+static bool offered(Vm *vm)
 {
-    const QString os = VmConfig::guest(args).os;
-    const QString text = args.toText();
-
-    if (VmConfig::graphics(args).kind != VmConfig::Graphics::Accelerated) {
-        return false;
-    }
-    return os.isEmpty() ? !text.contains("hv-relaxed") && !text.contains("hv_relaxed")
-                        : os == "linux";
+    return GuestToolsMonitor::of(vm)->supported() &&
+           VmConfig::graphics(vm->args()).kind == VmConfig::Graphics::Accelerated;
 }
 
 void GuestToolsBanner::update()
@@ -473,18 +506,24 @@ void GuestToolsBanner::update()
     const GuestToolsMonitor *monitor = GuestToolsMonitor::of(m_vm);
     const State state = monitor->state();
     const QString text = monitor->text();
+    const GuestTools::Inputs in = monitor->inputs();
+    /* a guest known to run a system the tools are not for: nothing to install */
+    const bool other = monitor->unsupported();
+    /* the install asked for at this start did not happen: said, offered or not */
+    const bool asked = state == State::NotInstalled && in.running && in.bootstrapRun;
     QString button;
     bool warning = false;
 
     switch (state) {
     case State::NotInstalled:
-        button = tr("Install Guest Tools…");
+        button = other ? QString() : tr("Install Guest Tools…");
+        warning = asked && other;
         break;
     case State::Pending:
         button = tr("Cancel");
         break;
     case State::Failed:
-        button = tr("Try Again…");
+        button = other ? QString() : tr("Try Again…");
         warning = true;
         break;
     case State::RebootNeeded:
@@ -492,7 +531,7 @@ void GuestToolsBanner::update()
         break;
     case State::DriverNotActive:
     case State::MesaNotActive:
-        button = tr("Install Again…");
+        button = other ? QString() : tr("Install Again…");
         warning = true;
         break;
     case State::UpdateAvailable:
@@ -504,7 +543,9 @@ void GuestToolsBanner::update()
     default:
         break;
     }
-    if (text.isEmpty() || (state == State::NotInstalled && !toolsGuest(m_vm->args()))) {
+    /* the offers: to install them, to update them */
+    if (text.isEmpty() || (state == State::NotInstalled && !asked && !offered(m_vm)) ||
+        (state == State::UpdateAvailable && other)) {
         hide();
         return;
     }

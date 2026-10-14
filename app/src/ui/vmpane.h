@@ -16,7 +16,7 @@ class QPushButton;
 class QStackedWidget;
 class QTabWidget;
 class QTimer;
-class QToolButton;
+class QVariant;
 class SettingsPage;
 class SnapshotView;
 class Vm;
@@ -29,8 +29,8 @@ class VmDetails;
  * pages all edit a copy of the VM's arguments, which keeps their
  * changes from page to page until Apply saves them.
  *
- * The simple pages are listed first; the advanced ones, down to the
- * command line itself, under Advanced, folded until opened.
+ * The pages are all in one list, from the simple ones down to the command
+ * line itself.
  */
 class VmPane : public QWidget
 {
@@ -40,10 +40,18 @@ public:
     enum Tab { Console, Details, Settings, Snapshots, Logs };
     enum Page {
         General, Hardware, Display, Storage, SharedFolders, UsbDevices, Network,
-        /* under Advanced */
-        Machine, Boot, PciDevices, Arguments,
+        /* with the firmware and the boot */
+        Machine,
+        PciDevices, Arguments,
     };
-    static constexpr Page FirstAdvanced = Machine;
+    /*
+     * The page as the settings file keeps it, by name, and back.  An index
+     * kept by an older vitrine, which had a Boot page between Machine and
+     * PCI Devices, lands on the same page, Boot on Machine, where its
+     * content is now; anything else on General.
+     */
+    static QString pageKey(Page page);
+    static Page savedPage(const QVariant &saved);
 
     explicit VmPane(QWidget *parent = nullptr);
     ~VmPane() override;
@@ -92,11 +100,6 @@ signals:
 
 private:
     void buildPages();
-    /* A row of a list of pages was selected */
-    void pageChosen(QListWidget *list, int row);
-    /* Makes @page current in its list, opening Advanced for it */
-    void selectPage(int page);
-    void showAdvanced(bool on);
     void switchTo(int page);
     void vmChanged();
     void updateFooter();
@@ -114,10 +117,7 @@ private:
     QList<QAction *> m_tabActions;
     QWidget *m_console;
     VmDetails *m_details;
-    QWidget *m_side;
     QListWidget *m_list;
-    QToolButton *m_more;
-    QListWidget *m_advanced;
     QLabel *m_title;
     QStackedWidget *m_stack;
     SnapshotView *m_snapshots;

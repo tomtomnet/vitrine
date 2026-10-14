@@ -5,6 +5,7 @@
 #include <QListWidget>
 #include <QPainter>
 #include <QPushButton>
+#include <QScrollBar>
 #include <QStyleFactory>
 #include <QTemporaryDir>
 #include <QToolButton>
@@ -300,23 +301,24 @@ private slots:
     }
 
     /*
-     * Advanced, under the settings pages, in line with them: its name where
-     * a row of the list has its name, its arrow in the column of their icons
+     * The list of the settings pages, all of them in it: as wide as their
+     * longest name and as high as its rows at every scale, in Breeze as in
+     * Fusion - no row cut or out of sight, none wider than the list
      */
-    void sectionRow_data()
+    void pageList_data()
     {
         sizes_data();
     }
 
-    void sectionRow()
+    void pageList()
     {
         QFETCH(QString, style);
         QApplication::setStyle(style);
-        QFile args(m_tmp.filePath("section/vm.args"));
-        QVERIFY(QDir().mkpath(m_tmp.filePath("section")));
+        QFile args(m_tmp.filePath("pagelist/vm.args"));
+        QVERIFY(QDir().mkpath(m_tmp.filePath("pagelist")));
         QVERIFY(args.open(QIODevice::WriteOnly) && args.write("-m 1G\n") > 0);
         args.close();
-        Vm vm(m_tmp.filePath("section"));
+        Vm vm(m_tmp.filePath("pagelist"));
 
         /* made once: shown, then its window destroyed, at each scale */
         struct Pane : VmPane {
@@ -325,62 +327,31 @@ private slots:
         pane.setVm(&vm);
         pane.setTab(VmPane::Settings);
         auto *pages = pane.findChild<QListWidget *>("pages");
-        auto *advanced = pane.findChild<QToolButton *>("advanced");
-        QVERIFY(pages && advanced);
-        /* a row of the same name in the list, to compare with */
-        pages->addItem(new QListWidgetItem(computer(), advanced->text()));
-        pages->setFixedHeight(pages->height() + pages->sizeHintForRow(0) * 2);
+        QVERIFY(pages);
+        QCOMPARE(pages->count(), int(VmPane::Arguments) + 1);
         pane.resize(900, 700);
 
         Scales::sweep([&](int) {
             using namespace Scales;
             QStringList wrong;
             settle(&pane);
-            const qreal ratio = pane.devicePixelRatio();
-            const QImage shot = grab(&pane);
-            const QRect list = geometryIn(pages, &pane);
-            const QRgb background = shot.pixel(qRound(list.right() * ratio) - 2,
-                                               qRound(list.bottom() * ratio) - 2);
+            const QRect viewport = pages->viewport()->rect();
+            const int widest = pages->sizeHintForColumn(0);
 
-            /* the runs of columns with ink in the device rows of @r */
-            auto inkRuns = [&](const QRect &r) {
-                QList<std::pair<int, int>> runs;
-                const int y0 = qCeil(r.top() * ratio), y1 = qFloor((r.bottom() + 1) * ratio) - 1;
-                for (int x = qCeil(r.left() * ratio); x < qFloor((r.right() + 1) * ratio); x++) {
-                    bool ink = false;
-                    for (int y = y0; y <= y1 && !ink; y++) {
-                        ink = difference(shot.pixel(x, y), background) > 90;
-                    }
-                    if (!ink) {
-                        continue;
-                    }
-                    /* a gap of two columns or more parts the icon from the name */
-                    if (!runs.isEmpty() && x <= runs.last().second + 2) {
-                        runs.last().second = x;
-                    } else {
-                        runs << std::pair(x, x);
-                    }
+            if (widest > viewport.width()) {
+                wrong << QString("rows %1 wide, the list %2").arg(widest).arg(viewport.width());
+            }
+            for (int i = 0; i < pages->count(); i++) {
+                const QRect row = pages->visualItemRect(pages->item(i));
+                if (row.isEmpty() || !viewport.contains(row)) {
+                    wrong << QString("%1 at %2,%3 %4x%5, out of the list's %6x%7")
+                                 .arg(pages->item(i)->text()).arg(row.x()).arg(row.y())
+                                 .arg(row.width()).arg(row.height()).arg(viewport.width())
+                                 .arg(viewport.height());
                 }
-                return runs;
-            };
-            const QRect last = pages->visualItemRect(pages->item(pages->count() - 1))
-                                   .translated(geometryIn(pages->viewport(), &pane).topLeft());
-            const auto row = inkRuns(last);
-            const auto button = inkRuns(geometryIn(advanced, &pane));
-            /* icon (or arrow), then the name's letters */
-            if (row.size() < 2 || button.size() < 2) {
-                wrong << QString("%1 runs of ink in the row, %2 in Advanced").arg(row.size())
-                             .arg(button.size());
-            } else {
-                if (qAbs(row[1].first - button[1].first) > 1) {
-                    wrong << QString("Advanced's name at %1, a row's at %2 (device pixels)")
-                                 .arg(button[1].first).arg(row[1].first);
-                }
-                if (button[0].first < row[0].first || button[0].second > row[0].second) {
-                    wrong << QString("Advanced's arrow at %1-%2, the icon at %3-%4")
-                                 .arg(button[0].first).arg(button[0].second)
-                                 .arg(row[0].first).arg(row[0].second);
-                }
+            }
+            if (pages->verticalScrollBar()->maximum() > 0) {
+                wrong << QString("the list scrolls by %1").arg(pages->verticalScrollBar()->maximum());
             }
             pane.hide();
             pane.destroy();
@@ -445,11 +416,9 @@ private slots:
         /* the list of the settings pages */
         VmPane pane;
         const int toolbar = QApplication::style()->pixelMetric(QStyle::PM_ToolBarIconSize);
-        for (const char *name : {"pages", "advancedPages"}) {
-            auto *list = pane.findChild<QListWidget *>(name);
-            QVERIFY(list);
-            QCOMPARE(list->iconSize(), QSize(toolbar, toolbar));
-        }
+        auto *pages = pane.findChild<QListWidget *>("pages");
+        QVERIFY(pages);
+        QCOMPARE(pages->iconSize(), QSize(toolbar, toolbar));
     }
 };
 

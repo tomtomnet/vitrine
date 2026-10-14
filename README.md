@@ -124,6 +124,12 @@ several.
    starts the VM with the medium alone: open VITRINETOOL in the guest's file
    manager, then run `sudo bash /run/media/$USER/VITRINETOOL/install`.
 
+   A VM's Console and Details tabs offer them only once its guest has said
+   it runs Fedora 44: QEMU's guest agent tells at each boot (Fedora installs
+   qemu-guest-agent in VMs), the tools' agent once they are in. Other guests,
+   and guests that never said, get no offer; Install Guest Tools… shows what
+   the guest was found to run.
+
    After an update of vitrine, the guest tools medium may be out of date:
    Update… rebuilds only the packages whose sources changed, and VMs with
    older tools then offer Update….

@@ -144,11 +144,11 @@ public:
     QString status = "running";
     QStringList commands;
     /* to every monitor connection */
-    void event(const QString &name)
+    void event(const QString &name, const QJsonObject &data = {})
     {
         for (QLocalSocket *peer : std::as_const(m_peers)) {
             if (peer->state() == QLocalSocket::ConnectedState) {
-                peer->write(QJsonDocument(QJsonObject{{"event", name}, {"data", QJsonObject()}})
+                peer->write(QJsonDocument(QJsonObject{{"event", name}, {"data", data}})
                                 .toJson(QJsonDocument::Compact) + '\n');
             }
         }
@@ -184,6 +184,73 @@ private:
 
     QLocalServer m_server;
     QList<QLocalSocket *> m_peers;
+    QHash<QLocalSocket *, QByteArray> m_buffers;
+};
+
+/*
+ * qemu-ga behind QEMU's socket: answers guest-sync, guest-get-osinfo with
+ * @osInfo, and runs any program at once, successfully; the commands it got
+ * (guest-sync aside), each with the number of its connection
+ */
+class FakeQga : public QObject
+{
+public:
+    explicit FakeQga(const QString &path)
+    {
+        QLocalServer::removeServer(path);
+        m_server.listen(path);
+        connect(&m_server, &QLocalServer::newConnection, this, [this]() {
+            QLocalSocket *peer = m_server.nextPendingConnection();
+            const int connection = ++connections;
+            connect(peer, &QLocalSocket::readyRead, this,
+                    [this, peer, connection]() { read(peer, connection); });
+        });
+    }
+    QJsonObject osInfo{{"id", "fedora"}, {"version-id", "44"},
+                       {"pretty-name", "Fedora Linux 44 (KDE Plasma Desktop Edition)"}};
+    QList<std::pair<int, QString>> commands;
+    int connections = 0;
+
+    QStringList executed() const
+    {
+        QStringList names;
+        for (const auto &[connection, name] : commands) {
+            names << name;
+        }
+        return names;
+    }
+
+private:
+    void read(QLocalSocket *peer, int connection)
+    {
+        QByteArray &buffer = m_buffers[peer];
+        buffer += peer->readAll();
+        for (qsizetype nl; (nl = buffer.indexOf('\n')) >= 0;) {
+            QByteArray line = buffer.left(nl);
+            buffer.remove(0, nl + 1);
+            line = line.mid(line.lastIndexOf('\xff') + 1);
+            const QJsonObject m = QJsonDocument::fromJson(line).object();
+            QJsonValue result = QJsonObject();
+
+            if (m["execute"] == "guest-sync-delimited") {
+                peer->write("\xff" + QJsonDocument(QJsonObject{{"return", m["arguments"]["id"]}})
+                                         .toJson(QJsonDocument::Compact) + '\n');
+                continue;
+            }
+            commands << std::pair(connection, m["execute"].toString());
+            if (m["execute"] == "guest-get-osinfo") {
+                result = osInfo;
+            } else if (m["execute"] == "guest-exec") {
+                result = QJsonObject{{"pid", 42}};
+            } else if (m["execute"] == "guest-exec-status") {
+                result = QJsonObject{{"exited", true}, {"exitcode", 0}};
+            }
+            peer->write(QJsonDocument(QJsonObject{{"return", result}, {"id", m["id"]}})
+                            .toJson(QJsonDocument::Compact) + '\n');
+        }
+    }
+
+    QLocalServer m_server;
     QHash<QLocalSocket *, QByteArray> m_buffers;
 };
 
@@ -555,6 +622,74 @@ private slots:
         QCOMPARE(runner->guestAgentSocket(), "");
         QCOMPARE(runner->shutdownWay(), Way::None);
         delete runner;
+    }
+
+    /*
+     * What the guest runs, from qemu-ga: asked for a guest found running
+     * whose agent's port is open, and at each boot, as qemu-ga opens its
+     * port, before the shares are mounted on the same connection (QEMU's
+     * socket takes one client at a time)
+     */
+    void guestOsInfo()
+    {
+        const QString share = tmp.filePath(id + "-share");
+        QVERIFY(QDir().mkpath(share));
+        const ArgsFile args = ArgsFile::parse(QString("-machine q35\n#share tag=pub,path=%1,"
+                                                      "mount=/mnt/pub\n").arg(share));
+        const QStringList command = VmRunner(id, tmp.path()).commandLine(args);
+        const QString chardev = "socket,id=vitrine-ga,path=" + runDir + "/qga.sock,server=on,"
+                                "wait=off";
+        QVERIFY(command.contains(chardev));
+        FakeMonitor monitor(runDir + "/qmp.sock");
+        FakeQga qga(runDir + "/qga.sock");
+        QProcess qemu;
+        /* the QEMU of a vitrine that added qemu-ga's port, found running */
+        QVERIFY(startStandIn(qemu, FAKE_QEMU, {"-chardev", chardev, "-qmp",
+                                               command[command.size() - 3]}));
+        QFile pid(runDir + "/qemu.pid"), kept(runDir + "/run.args");
+        QVERIFY(pid.open(QIODevice::WriteOnly));
+        pid.write(QByteArray::number(qemu.processId()) + '\n');
+        pid.close();
+        QVERIFY(kept.open(QIODevice::WriteOnly));
+        kept.write(args.toText().toUtf8());
+        kept.close();
+        const auto end = qScopeGuard([&]() {
+            qemu.kill();
+            qemu.waitForFinished();
+        });
+
+        VmRunner runner(id, tmp.path());
+        QList<QJsonObject> said;
+        QSignalSpy mounted(&runner, &VmRunner::sharesMounted);
+        connect(&runner, &VmRunner::guestOsInfo, this,
+                [&said](const QJsonObject &info) { said << info; });
+        runner.attach(args);
+        QTRY_COMPARE(runner.state(), VmRunner::State::Running);
+        QCOMPARE(runner.guestAgentSocket(), runDir + "/qga.sock");
+        /* found running: asked, the shares left as they are */
+        QTRY_COMPARE(said.size(), 1);
+        QCOMPARE(said.first()["id"].toString(), "fedora");
+        QCOMPARE(said.first()["version-id"].toString(), "44");
+        QCOMPARE(qga.executed(), QStringList{"guest-get-osinfo"});
+        QTest::qWait(100);
+        QVERIFY(mounted.isEmpty());
+
+        /* the guest booted again: asked again, then the shares, on one connection */
+        qga.osInfo = QJsonObject{{"id", "arch"}, {"pretty-name", "Arch Linux"}};
+        monitor.event("VSERPORT_CHANGE", {{"id", "vitrine-ga-port"}, {"open", true}});
+        QTRY_COMPARE(mounted.size(), 1);
+        QCOMPARE(mounted.first().at(0).toStringList(), QStringList{"/mnt/pub"});
+        QCOMPARE(said.size(), 2);
+        QCOMPARE(said.last()["id"].toString(), "arch");
+        QCOMPARE(qga.executed(), QStringList({"guest-get-osinfo", "guest-get-osinfo",
+                                              "guest-exec", "guest-exec-status"}));
+        QCOMPARE(qga.commands[1].first, qga.commands[3].first);
+        QCOMPARE(qga.connections, 2);
+        /* another port's opening (the guest tools' agent's): no question */
+        monitor.event("VSERPORT_CHANGE", {{"id", "vitrine-agent-port"}, {"open", true}});
+        QTest::qWait(200);
+        QCOMPARE(said.size(), 2);
+        QCOMPARE(qga.connections, 2);
     }
 
     /* systemd in the guest mounts what it reads from SMBIOS, as if in /etc/fstab */
