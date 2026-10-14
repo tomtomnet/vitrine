@@ -8,6 +8,7 @@
 #include <QTimer>
 #include <QUuid>
 
+#include "core/tasks.h"
 #include "core/vmconfig.h"
 #include "core/vmrunner.h"
 #include "core/vmstore.h"
@@ -49,6 +50,24 @@ VmCloner::VmCloner(VmStore *store, QObject *parent)
             emit progress(m_done + QFileInfo(m_copies.first().to).size(), m_total);
         }
     });
+    /* the app's tasks follow the clone: first, so that the windows that
+       hear of it find its task as it is */
+    connect(this, &VmCloner::progress, this, [this](qint64 done, qint64 total) {
+        if (m_task) {
+            m_task->setProgress(done, total);
+        }
+    });
+    connect(this, &VmCloner::finished, this, [this](Vm *clone, const QString &error) {
+        /* a start refused has no task of its own */
+        if (!m_task) {
+            return;
+        }
+        if (clone) {
+            m_task->finish(Task::State::Done, tr("New VM: %1").arg(clone->name()));
+        } else {
+            m_task->finish(m_cancelled ? Task::State::Stopped : Task::State::Failed, error);
+        }
+    });
 }
 
 VmCloner::~VmCloner()
@@ -57,6 +76,13 @@ VmCloner::~VmCloner()
         m_process->disconnect(this);
         m_process->kill();
         m_process->waitForFinished(3000);
+    }
+    /* the app quits, the copy half made: nothing to keep */
+    if (isRunning()) {
+        release(true);
+        if (m_task) {
+            m_task->finish(Task::State::Stopped);
+        }
     }
 }
 
@@ -134,13 +160,29 @@ void VmCloner::start(Vm *source, const QString &name)
                                   "through its writes.").arg(source->name()));
         return;
     }
-    m_clone = m_store->create(name, &error);
-    if (!m_clone) {
+    /* cloned already: the first copy to end would free it */
+    if (!source->runner()->busy().isEmpty()) {
+        emit finished(nullptr, source->runner()->busy());
+        return;
+    }
+    /* no VM of the list until its disks are there */
+    m_dir = m_store->newFolder(name, &error);
+    if (m_dir.isEmpty()) {
         emit finished(nullptr, error);
         return;
     }
+    /* in the app's tasks: this clone, the last one's leaving them */
+    if (m_task) {
+        m_task->dismiss();
+    }
+    m_task = TaskList::instance()->add(Task::Kind::Clone, tr("Clone of %1").arg(source->name()));
+    m_cancelled = false;
+    /* its disks are read meanwhile: off, and their snapshots as they are */
+    m_source = source;
+    source->runner()->setBusy(tr("%1 is being cloned: it can start once its disks are copied")
+                                  .arg(source->name()));
     m_copies.clear();
-    m_args = plan(source->args(), name, source->dir(), m_clone->dir(), &m_copies);
+    m_args = plan(source->args(), name, source->dir(), m_dir, &m_copies);
     m_done = 0;
     m_total = 0;
     for (const Copy &c : std::as_const(m_copies)) {
@@ -155,12 +197,11 @@ void VmCloner::copyNext()
     QString error;
 
     if (m_copies.isEmpty()) {
-        Vm *clone = m_clone;
-        m_timer->stop();
-        m_clone = nullptr;
-        if (!clone->save(m_args, &error)) {
-            QDir(clone->dir()).removeRecursively();
-            m_store->reload();
+        const QString dir = m_dir;
+        release(false);
+        /* its vm.args last: a VM of the list from now on (the folder goes on failure) */
+        Vm *clone = m_store->createIn(dir, m_args, &error);
+        if (!clone) {
             emit finished(nullptr, error);
             return;
         }
@@ -170,6 +211,9 @@ void VmCloner::copyNext()
     }
 
     const Copy copy = m_copies.first();
+    if (m_task) {
+        m_task->setText(tr("Copying %1").arg(QFileInfo(copy.from).fileName()));
+    }
     QDir().mkpath(QFileInfo(copy.to).absolutePath());
     m_process = new QProcess(this);
     m_process->setProcessChannelMode(QProcess::MergedChannels);
@@ -201,6 +245,7 @@ void VmCloner::cancel()
     if (!isRunning()) {
         return;
     }
+    m_cancelled = true;
     if (m_process) {
         m_process->disconnect(this);
         m_process->kill();
@@ -213,13 +258,21 @@ void VmCloner::cancel()
 
 void VmCloner::fail(const QString &error)
 {
-    Vm *clone = m_clone;
+    /* a new folder, half made: nothing to keep */
+    release(true);
+    emit finished(nullptr, error);
+}
 
+void VmCloner::release(bool remove)
+{
     m_timer->stop();
     m_copies.clear();
-    m_clone = nullptr;
-    /* a new folder, half made: nothing to keep */
-    QDir(clone->dir()).removeRecursively();
-    m_store->reload();
-    emit finished(nullptr, error);
+    if (remove && !m_dir.isEmpty()) {
+        m_store->dropFolder(m_dir);
+    }
+    m_dir.clear();
+    if (m_source) {
+        m_source->runner()->setBusy({});
+    }
+    m_source = nullptr;
 }

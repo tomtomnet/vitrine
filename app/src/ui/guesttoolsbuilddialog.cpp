@@ -16,6 +16,7 @@
 #include "core/stackbuilder.h"
 #include "ui/banner.h"
 #include "ui/icons.h"
+#include "ui/taskbutton.h"
 #include "ui/widgets.h"
 
 using State = GuestToolsBuilder::State;
@@ -101,27 +102,7 @@ QString GuestToolsBuildDialog::explain(State state)
 
 QString GuestToolsBuildDialog::progressText(const GuestToolsBuilder *builder, bool percent)
 {
-    QStringList detail;
-    QString text;
-
-    if (builder->step() < 1) {
-        return tr("starting");
-    }
-    text = tr("step %1 of %2: %3")
-               .arg(builder->step())
-               .arg(builder->steps().size())
-               .arg(builder->stepText());
-    if (builder->isWaiting()) {
-        detail << tr("waiting for memory");
-    } else {
-        if (!builder->phase().isEmpty()) {
-            detail << builder->phase();
-        }
-        if (percent && builder->progressTotal() > 0) {
-            detail << tr("%1%").arg(builder->progressDone() * 100 / builder->progressTotal());
-        }
-    }
-    return detail.isEmpty() ? text : text + " (" + detail.join(", ") + ")";
+    return builder->progressText(percent);
 }
 
 void GuestToolsBuildDialog::present(QWidget *from)
@@ -239,6 +220,9 @@ GuestToolsBuildDialog::GuestToolsBuildDialog(QWidget *parent)
             &GuestToolsBuildDialog::updateState);
     connect(StackBuilder::instance(), &StackBuilder::finished, this,
             &GuestToolsBuildDialog::updateState);
+
+    /* the build's task, in the main window's list: seen here once it is over */
+    TaskButton::followSeen(this, [this]() { return m_builder->task(); });
 
     /* a build running already, started from another window: where it is */
     m_log->setPlainText(tail(m_builder->log(), kLogLines));

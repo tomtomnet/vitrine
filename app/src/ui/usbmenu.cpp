@@ -5,8 +5,6 @@
 #include <QFile>
 #include <QMessageBox>
 #include <QTimer>
-#include <QToolBar>
-#include <QToolButton>
 
 #include <unistd.h>
 
@@ -121,18 +119,6 @@ Vm *UsbMenu::vm() const
 void UsbMenu::updateEnabled()
 {
     menuAction()->setEnabled(m_vm && runs(m_vm));
-}
-
-QToolButton *UsbMenu::addTo(QToolBar *toolbar)
-{
-    toolbar->addAction(menuAction());
-    auto *button = qobject_cast<QToolButton *>(toolbar->widgetForAction(menuAction()));
-    if (button) {
-        /* a click opens the menu: the action itself does nothing */
-        button->setPopupMode(QToolButton::InstantPopup);
-        button->setObjectName("usbDevicesButton");
-    }
-    return button;
 }
 
 void UsbMenu::setSaveGuard(const std::function<bool(Vm *)> &guard)

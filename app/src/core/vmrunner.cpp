@@ -249,6 +249,7 @@ struct VmRunner::Private
     State state = State::Stopped;
     Phase phase = Phase::Idle;
     QString error;
+    QString busy;               // why it may not start now
     QmpClient *qmp;
     QTimer *poll;
     QTimer *killTimer;
@@ -981,6 +982,16 @@ QString VmRunner::errorString() const
     return d->error;
 }
 
+QString VmRunner::busy() const
+{
+    return d->busy;
+}
+
+void VmRunner::setBusy(const QString &why)
+{
+    d->busy = why;
+}
+
 QString VmRunner::logPath() const
 {
     return d->logPath();
@@ -1400,6 +1411,10 @@ void VmRunner::start(const ArgsFile &args)
     d->command.clear();
     d->embedded = VmConfig::screen(args) == VmConfig::Screen::Embedded;
     d->heldForDisplay = pausedForDisplay(args);
+    if (!d->busy.isEmpty()) {
+        d->fail(d->busy);
+        return;
+    }
     if (QString why; needsQemuBuild(args, &why)) {
         d->fail(why);
         return;

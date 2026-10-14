@@ -3,6 +3,7 @@
 
 #include <QList>
 #include <QObject>
+#include <QSet>
 
 #include "core/argsfile.h"
 
@@ -59,7 +60,21 @@ public:
     Vm *find(const QString &id) const;
     /* A new folder named after @name, holding a vm.args with just -name */
     Vm *create(const QString &name, QString *error = nullptr);
-    /* Moves the folder of @vm, disks included, to the trash */
+    /*
+     * A new, empty folder named after @name, for a VM made there in steps
+     * (a clone, its disks copied first): not a VM of the list until
+     * createIn() gives it its vm.args, or dropFolder() gives it up; empty
+     * on failure.  A store loading the folder later (the app killed
+     * meanwhile) moves it to the trash: nothing to start, and no GiB lost.
+     */
+    QString newFolder(const QString &name, QString *error = nullptr);
+    /* The VM of @args in @dir, a folder of newFolder(): in the list.  On
+       failure, the folder goes. */
+    Vm *createIn(const QString &dir, const ArgsFile &args, QString *error = nullptr);
+    /* A folder of newFolder() given up, and removed */
+    void dropFolder(const QString &dir);
+    /* Moves the folder of @vm, disks included, to the trash; not while it
+       runs or is busy (VmRunner::busy()) */
     bool remove(Vm *vm, QString *error = nullptr);
     /* Picks up folders added or removed outside the manager */
     void reload();
@@ -80,11 +95,15 @@ signals:
 private:
     /* The VMs of the folder as found there; the running ones stay */
     void sync();
+    /* The folders of newFolder() left by an app that ended before their VM was made */
+    void removeInterrupted();
     /* In the list, its vm.args watched */
     void adopt(Vm *vm);
     QString m_dir;
     QList<Vm *> m_vms;
     QFileSystemWatcher *m_watcher;
+    /* The folders of newFolder() whose VM is being made */
+    QSet<QString> m_making;
 };
 
 /* qemu-img create -f qcow2 @path @bytes */

@@ -48,6 +48,8 @@ qt_add_library(vitrine_core STATIC
     src/core/snapshots.h
     src/core/stackbuilder.cpp
     src/core/stackbuilder.h
+    src/core/tasks.cpp
+    src/core/tasks.h
     src/core/udmabuf.cpp
     src/core/udmabuf.h
     src/core/updatecheck.cpp
@@ -208,12 +210,16 @@ qt_add_library(vitrine_ui STATIC
     src/ui/shutdownnotice.h
     src/ui/settingspages.cpp
     src/ui/settingspages.h
+    src/ui/sidebar.cpp
+    src/ui/sidebar.h
     src/ui/snapshotview.cpp
     src/ui/snapshotview.h
     src/ui/stackbanner.cpp
     src/ui/stackbanner.h
     src/ui/statusstats.cpp
     src/ui/statusstats.h
+    src/ui/taskbutton.cpp
+    src/ui/taskbutton.h
     src/ui/textdialog.cpp
     src/ui/textdialog.h
     src/ui/udmabufnotifier.cpp
@@ -323,6 +329,7 @@ if(BUILD_TESTING)
             qmpclient
             snapshots
             stackbuilder
+            tasks
             udmabuf
             updatecheck
             usbhotplug
@@ -363,6 +370,7 @@ if(BUILD_TESTING)
             dialogs
             icons
             mainwindow
+            sidebar
             statusstats)
         qt_add_executable(test_${name} tests/test_${name}.cpp tests/scales.h)
         target_link_libraries(test_${name} PRIVATE vitrine_ui Qt6::GuiPrivate Qt6::Test)

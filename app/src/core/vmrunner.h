@@ -40,6 +40,13 @@ public:
     bool isSuspended() const;
     /* Why the last start failed or QEMU stopped abnormally */
     QString errorString() const;
+    /*
+     * Why the VM may not start now, while something else has its files:
+     * its disks being copied for a clone.  start() refuses it meanwhile,
+     * with that as the error; empty: free.
+     */
+    QString busy() const;
+    void setBusy(const QString &why);
     /* <dir>/qemu.log: the output of QEMU and virtiofsd during the last run */
     QString logPath() const;
     /*
