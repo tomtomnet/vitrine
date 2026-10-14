@@ -51,6 +51,8 @@ struct Medium {
     QString tools;          // vitrine-guest-tools' version-release
     QString mesa;           // version-release, empty if none on it
     QString kwin;
+    QString kpipewire;
+    QString proxy;          // the nested desktop's (wl-cross-domain-proxy)
     QStringList packages;   // name-version-release.arch
     bool isValid() const { return !image.isEmpty(); }
 };

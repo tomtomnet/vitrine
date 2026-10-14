@@ -177,11 +177,21 @@ static QString what(Vm *vm, const GuestTools::Medium &medium)
         what += GuestToolsDialog::tr("<li>KWin %1, if the guest's Plasma is %2</li>")
                     .arg(medium.kwin.toHtmlEscaped(), medium.kwin.section('-', 0, 0));
     }
+    if (!medium.kpipewire.isEmpty() && (desktop.isEmpty() || desktop == "kde")) {
+        what += GuestToolsDialog::tr("<li>KPipeWire %1 (Plasma's window thumbnails), if the "
+                                     "guest's Plasma is %2</li>")
+                    .arg(medium.kpipewire.toHtmlEscaped(), medium.kpipewire.section('-', 0, 0));
+    }
+    if (!medium.proxy.isEmpty() && (desktop.isEmpty() || desktop == "kde")) {
+        what += GuestToolsDialog::tr("<li>the nested desktop, which the VM's Nested desktop "
+                                     "setting turns on: Plasma as a window of this computer's "
+                                     "desktop</li>");
+    }
     what += GuestToolsDialog::tr("<li>the vitrine agent, which tells vitrine how the guest is "
                                  "doing</li></ul>");
-    what += GuestToolsDialog::tr("<p>Mesa and KWin then stay at these versions until the next "
-                                 "guest tools. The guest needs the network: dkms and the kernel "
-                                 "headers come from Fedora.</p>");
+    what += GuestToolsDialog::tr("<p>Mesa, KWin and KPipeWire then stay at these versions until "
+                                 "the next guest tools. The guest needs the network: dkms and the "
+                                 "kernel headers come from Fedora.</p>");
     what += running ? GuestToolsDialog::tr("<p><b>vitrine shuts the VM down and starts it again"
                                            "</b> with the tools medium. The guest installs them "
                                            "before its desktop starts, which takes a few "
