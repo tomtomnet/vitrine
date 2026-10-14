@@ -15,9 +15,9 @@ class VmStore;
 /*
  * Clones a stopped VM under a new name, showing what it copies.  Closing
  * it during the copy does not stop it: the copy goes on, a task of the
- * app's, whose details show the dialog again; Stop stops it.  Not modal
- * then, the dialog goes once it is closed with nothing left to show:
- * the copy over and its task gone.
+ * app's, whose details show the dialog again, no longer modal; Stop stops
+ * it.  The dialog goes once it is closed with nothing left to show: the
+ * copy over and its task gone.
  */
 class CloneDialog : public QDialog
 {

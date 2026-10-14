@@ -16,6 +16,7 @@
 #include <QStyleFactory>
 #include <QTabBar>
 #include <QTemporaryDir>
+#include <QTimer>
 #include <QToolBar>
 #include <QToolButton>
 #include <QWidgetAction>
@@ -24,6 +25,7 @@
 #include <memory>
 
 #include "core/paths.h"
+#include "core/tasks.h"
 #include "core/vmrunner.h"
 #include "core/vmstore.h"
 #include "scales.h"
@@ -662,6 +664,29 @@ private slots:
         /* the line under its name as it was: no error of its own */
         QCOMPARE(vms->currentItem()->data(Qt::UserRole + 1).toString(), before);
         bravo->runner()->setBusy({});
+    }
+
+    /* Closing with a task under way: asked, and not closed on Cancel */
+    void closeWithTasks()
+    {
+        auto w = window();
+        settle(w.get());
+        QPointer<Task> task = TaskList::instance()->add(Task::Kind::Clone, "Clone of Alpha");
+        QString asked;
+
+        QTimer::singleShot(100, w.get(), [&asked]() {
+            if (auto *box = qobject_cast<QMessageBox *>(QApplication::activeModalWidget())) {
+                asked = box->text() + ' ' + box->informativeText();
+                box->reject();
+            }
+        });
+        w->close();
+        QVERIFY2(asked.contains("Clone of Alpha"), qPrintable(asked));
+        QVERIFY(w->isVisible());
+        task->finish(Task::State::Done);
+        task->dismiss();
+        w->close();
+        QVERIFY(!w->isVisible());
     }
 
     /* F10: the menus under the bar's button, or the menu bar's first one */

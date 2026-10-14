@@ -441,6 +441,43 @@ private slots:
         QTRY_VERIFY(tasks.tasks().isEmpty());
     }
 
+    /* Away from the front before its time is up, a success waits for the window again, as long */
+    void lingerAgain()
+    {
+        TaskList tasks;
+        Window w(&tasks);
+        settle(w.top.get());
+        TaskButton *button = w.button();
+        QWidget other;
+        other.resize(200, 100);
+
+        button->setLinger(400);
+        Task *done = tasks.add(Task::Kind::QemuBuild, "QEMU build");
+        done->finish(Task::State::Done);
+        QTest::qWait(200);
+        settle(&other);
+        QTest::qWait(500);
+        QCOMPARE(tasks.tasks().size(), 1);
+        w.top->activateWindow();
+        QVERIFY(QTest::qWaitForWindowActive(w.top.get()));
+        /* the whole time again, not what was left of it */
+        QTest::qWait(250);
+        QCOMPARE(tasks.tasks().size(), 1);
+        QTRY_VERIFY(tasks.tasks().isEmpty());
+    }
+
+    /* Without the list it goes under, no window of its own */
+    void noParent()
+    {
+        TaskList tasks;
+        QListWidget list;
+        tasks.add(Task::Kind::Clone, "Clone of Alpha");
+        TaskButton button(&tasks, &list);
+        tasks.add(Task::Kind::QemuBuild, "QEMU build");
+        QVERIFY(!button.isVisible());
+        QVERIFY(!button.isWindow() || !button.windowHandle() || !button.windowHandle()->isVisible());
+    }
+
     /* A task's own window, in front when it ends or later: seen */
     void followSeen()
     {
@@ -508,9 +545,10 @@ private slots:
         QTest::qWait(50);
         QVERIFY(dialog && dialog->isCloning());
         QVERIFY(!source->runner()->busy().isEmpty());
-        /* its details: the dialog again, the copy going on */
+        /* its details: the dialog again, the copy going on, the window free meanwhile */
         task->showDetails();
         QVERIFY(dialog->isVisible());
+        QCOMPARE(dialog->windowModality(), Qt::NonModal);
         QVERIFY(task);
         dialog->reject();
         /* done unseen: kept for its task, whose details are the new VM */
@@ -570,7 +608,38 @@ private slots:
         QVERIFY(!QFileInfo::exists(tmp.filePath("vms/Slow-clone-2")));
         QVERIFY(source->runner()->busy().isEmpty());
         QCOMPARE(store.vms().size(), 2);
+
+        /* the app quits during a copy, its dialog closed: the copy goes, its task stopped */
+        {
+            QWidget top;
+            top.resize(600, 400);
+            settle(&top);
+            dialog = new CloneDialog(&store, source, &top);
+            dialog->open();
+            QVERIFY(QTest::qWaitForWindowExposed(dialog));
+            dialog->accept();
+            task = dialog->findChild<VmCloner *>()->task();
+            dialog->reject();
+            QVERIFY(task && task->isRunning());
+        }
+        QVERIFY(!dialog);
+        QVERIFY(task);
+        QCOMPARE(task->state(), Task::State::Stopped);
+        QVERIFY(!QFileInfo::exists(tmp.filePath("vms/Slow-clone-2")));
+        QVERIFY(source->runner()->busy().isEmpty());
+        task->dismiss();
         std::signal(SIGPIPE, pipe);
+    }
+
+    /* As the window shows, the keys go to the VMs, not to the tasks' button */
+    void focus()
+    {
+        TaskList tasks;
+        tasks.add(Task::Kind::QemuBuild, "QEMU build");
+        Window w(&tasks);
+        settle(w.top.get());
+        QTRY_VERIFY(w.list()->hasFocus());
+        QVERIFY(!w.button()->hasFocus());
     }
 
     /* Collapsed, the VMs' icons and the task's are their pixmaps, on whole device pixels */
@@ -587,6 +656,9 @@ private slots:
             w.side->setCollapsed(true);
             w.list()->setCurrentRow(-1);
             ::settle(w.top.get());
+            /* the pointer off the button and the list: no hover on them */
+            QTest::mouseMove(w.top.get(), QPoint(w.top->width() - 5, 5));
+            QCoreApplication::processEvents();
             const qreal ratio = w.top->devicePixelRatio();
             const QImage shot = grab(w.top.get());
             const QRgb base = w.list()->palette().color(QPalette::Base).rgb();

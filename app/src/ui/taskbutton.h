@@ -3,8 +3,8 @@
 
 #include <QAbstractButton>
 #include <QElapsedTimer>
+#include <QHash>
 #include <QPointer>
-#include <QSet>
 
 #include <functional>
 
@@ -43,7 +43,8 @@ public:
 
     bool isCompact() const { return m_compact; }
     void setCompact(bool compact);
-    /* How long a success stays once the window is in front, in ms */
+    /* How long a success stays with the window in front, in ms: counted
+       again from the start each time the window comes back there */
     int linger() const { return m_linger; }
     void setLinger(int ms) { m_linger = ms; }
     /* What it shows: "QEMU build" or "2 tasks"; "45%", "Failed" */
@@ -102,7 +103,7 @@ private:
     QPointer<QMenu> m_menu;
     QTimer *m_spinner;
     QElapsedTimer m_spinClock;
-    /* The successes whose time to go is counted */
-    QSet<const Task *> m_lingering;
+    /* The successes' time to go, running while the window is in front */
+    QHash<const Task *, QTimer *> m_lingering;
     bool m_hovered = false;
 };

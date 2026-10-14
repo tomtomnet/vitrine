@@ -2,6 +2,7 @@
 #include "sidebar.h"
 
 #include <QApplication>
+#include <QGuiApplication>
 #include <QHelpEvent>
 #include <QListWidget>
 #include <QMouseEvent>
@@ -185,8 +186,8 @@ bool VmItemDelegate::helpEvent(QHelpEvent *event, QAbstractItemView *view,
 }
 
 Sidebar::Sidebar(TaskList *tasks, QWidget *parent)
-    : QWidget(parent), m_list(new QListWidget), m_delegate(new VmItemDelegate(m_list)),
-      m_tasks(new TaskButton(tasks, m_list))
+    : QWidget(parent), m_list(new QListWidget(this)), m_delegate(new VmItemDelegate(m_list)),
+      m_tasks(new TaskButton(tasks, m_list, this))
 {
     auto *layout = new QVBoxLayout(this);
 
@@ -195,6 +196,8 @@ Sidebar::Sidebar(TaskList *tasks, QWidget *parent)
     layout->setSpacing(0);
     layout->addWidget(m_list, 1);
     layout->addWidget(m_tasks);
+    /* the VMs first, which take the keys as the window shows; then the tasks */
+    setTabOrder(m_list, m_tasks);
     /* the list's background under the button too: one pane, the side of the window */
     setBackgroundRole(QPalette::Base);
     setAutoFillBackground(true);
@@ -225,6 +228,21 @@ int Sidebar::minimumExpandedWidth() const
 
 void Sidebar::setCollapsed(bool collapsed)
 {
+    endLostDrag();
+    applyCollapsed(collapsed);
+}
+
+void Sidebar::endLostDrag()
+{
+    /* the handle's release went elsewhere (a popup, the compositor took
+       the pointer): the drag is over all the same */
+    if (m_dragging && !(QGuiApplication::mouseButtons() & Qt::LeftButton)) {
+        endDrag();
+    }
+}
+
+void Sidebar::applyCollapsed(bool collapsed)
+{
     /* as wide as it was left: raising the limits first resizes the strip
        to the narrowest list, which resizeEvent() would take for the user's */
     const int expanded = m_expandedWidth;
@@ -254,6 +272,7 @@ void Sidebar::setCollapsed(bool collapsed)
 
 void Sidebar::setExpandedWidth(int width)
 {
+    endLostDrag();
     m_expandedWidth = qMax(width, minimumExpandedWidth());
     if (!m_collapsed && !m_dragging) {
         setSplitterWidth(m_expandedWidth);
@@ -314,12 +333,12 @@ void Sidebar::handleMoved()
     const int width = m_splitter->sizes().value(0);
 
     if (width < (strip + least) / 2) {
-        setCollapsed(true);
+        applyCollapsed(true);
         if (width != strip) {
             setSplitterWidth(strip);
         }
     } else {
-        setCollapsed(false);
+        applyCollapsed(false);
         if (width < least) {
             setSplitterWidth(least);
         }

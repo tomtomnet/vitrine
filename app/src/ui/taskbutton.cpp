@@ -436,7 +436,8 @@ void TaskButton::refresh()
     const QList<Task *> tasks = m_tasks->tasks();
     QString tip;
 
-    setVisible(!tasks.isEmpty());
+    /* none without the list it goes under: it would be a window of its own */
+    setVisible(parentWidget() && !tasks.isEmpty());
     if (tasks.size() == 1) {
         const Task *task = tasks.first();
         const QString status = statusOf(task);
@@ -532,17 +533,26 @@ void TaskButton::popupMenu(const QPoint &at, bool above)
 void TaskButton::lingerSuccesses()
 {
     const QWidget *top = window();
+    const bool front = top && top != this && top->isActiveWindow();
 
-    if (!top || !top->isActiveWindow()) {
-        return;
-    }
     for (Task *task : m_tasks->tasks()) {
-        const bool success = task->state() == Task::State::Done ||
-                             task->state() == Task::State::Stopped;
-        if (success && !m_lingering.contains(task)) {
-            m_lingering.insert(task);
-            /* with the task as receiver: none once it is gone */
-            QTimer::singleShot(m_linger, task, &Task::dismiss);
+        if (task->state() != Task::State::Done && task->state() != Task::State::Stopped) {
+            continue;
+        }
+        QTimer *timer = m_lingering.value(task);
+        if (!timer) {
+            /* the task's: gone with it */
+            timer = new QTimer(task);
+            timer->setSingleShot(true);
+            timer->setInterval(m_linger);
+            connect(timer, &QTimer::timeout, task, &Task::dismiss);
+            m_lingering.insert(task, timer);
+        }
+        /* at a stretch: away from the front, counted again from the start */
+        if (front && !timer->isActive()) {
+            timer->start();
+        } else if (!front) {
+            timer->stop();
         }
     }
 }

@@ -1437,6 +1437,22 @@ void MainWindow::closeEvent(QCloseEvent *event)
             return;
         }
     }
+    /* the tasks under way end with the app: a build stops, a clone's copy
+       is removed (the copy went on with its dialog closed) */
+    QStringList tasks;
+    for (const Task *task : TaskList::instance()->tasks()) {
+        if (task->isRunning()) {
+            tasks << task->title();
+        }
+    }
+    if (!tasks.isEmpty() &&
+        !Widgets::confirm(this, QMessageBox::Warning, tr("Close Vitrine"),
+                          tr("Closing Vitrine stops what is under way: %1. A clone stopped "
+                             "before its end is removed.").arg(tasks.join(", ")),
+                          tr("&Close Anyway"), m_quit->icon())) {
+        event->ignore();
+        return;
+    }
     leaveScreens();
     settings.setValue("mainwindow/geometry", saveGeometry());
     settings.setValue("mainwindow/state", saveState());

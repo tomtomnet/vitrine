@@ -17,6 +17,8 @@
 #include "core/vmrunner.h"
 
 static const char kArgsFile[] = "vm.args";
+/* In a folder of newFolder() until its VM is made: one without vm.args was left so */
+static const char kMaking[] = ".vitrine-making";
 
 Vm::Vm(const QString &dir, QObject *parent)
     : QObject(parent), m_dir(QDir(dir).absolutePath())
@@ -97,6 +99,7 @@ VmStore::VmStore(const QString &dir, QObject *parent)
 {
     forgetCardUpdate();
     QDir().mkpath(m_dir);
+    removeInterrupted();
     m_watcher->addPath(m_dir);
     connect(m_watcher, &QFileSystemWatcher::directoryChanged, this, &VmStore::reload);
     connect(m_watcher, &QFileSystemWatcher::fileChanged, this, [this](const QString &path) {
@@ -174,6 +177,18 @@ QString VmStore::newFolder(const QString &name, QString *error)
         }
         return {};
     }
+    /* what it is, for the store that finds it later without its VM */
+    QFile marker(dir.filePath(id) + '/' + kMaking);
+    if (!marker.open(QIODevice::WriteOnly) ||
+        marker.write("vitrine is making a VM in this folder: without a vm.args once vitrine "
+                     "ended, it was interrupted, and goes to the trash at its next start.\n") < 0) {
+        if (error) {
+            *error = marker.errorString();
+        }
+        QDir(dir.filePath(id)).removeRecursively();
+        return {};
+    }
+    m_making.insert(dir.filePath(id));
     return dir.filePath(id);
 }
 
@@ -183,11 +198,38 @@ Vm *VmStore::createIn(const QString &dir, const ArgsFile &args, QString *error)
 
     if (!vm->save(args, error)) {
         delete vm;
-        QDir(dir).removeRecursively();
+        dropFolder(dir);
         return nullptr;
     }
+    m_making.remove(dir);
+    QFile::remove(dir + '/' + kMaking);
     adopt(vm);
     return vm;
+}
+
+void VmStore::dropFolder(const QString &dir)
+{
+    m_making.remove(dir);
+    QDir(dir).removeRecursively();
+}
+
+void VmStore::removeInterrupted()
+{
+    const QDir dir(m_dir);
+
+    for (const QString &id : dir.entryList(QDir::Dirs | QDir::NoDotAndDotDot)) {
+        const QString path = dir.filePath(id);
+        /* this app's own, being made: not interrupted */
+        if (m_making.contains(path) || !QFileInfo::exists(path + '/' + kMaking) ||
+            QFileInfo::exists(path + '/' + kArgsFile)) {
+            continue;
+        }
+        /* copies of another VM's disks, or nothing: the trash, should one be wanted */
+        if (!QFile::moveToTrash(path)) {
+            qWarning("vitrine: cannot move %s, a VM folder never finished, to the trash",
+                     qPrintable(path));
+        }
+    }
 }
 
 void VmStore::adopt(Vm *vm)
@@ -248,6 +290,7 @@ void VmStore::setDir(const QString &dir)
     m_watcher->removePath(m_dir);
     m_dir = path;
     QDir().mkpath(m_dir);
+    removeInterrupted();
     m_watcher->addPath(m_dir);
     sync();
     emit dirChanged(m_dir);

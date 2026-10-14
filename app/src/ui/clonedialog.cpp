@@ -102,9 +102,9 @@ CloneDialog::CloneDialog(VmStore *store, Vm *source, QWidget *parent)
     });
     connect(m_cloner, &VmCloner::finished, this, &CloneDialog::finished);
     /* the copy's task: seen here once it is over, gone with it if the dialog is closed */
-    TaskButton::followSeen(this, [this]() { return m_cloner->task(); });
+    TaskButton::followSeen(this, [this]() { return m_cloner ? m_cloner->task() : nullptr; });
     connect(TaskList::instance(), &TaskList::removed, this, [this](Task *task) {
-        if (task == m_cloner->task()) {
+        if (m_cloner && task == m_cloner->task()) {
             QTimer::singleShot(0, this, &CloneDialog::goIfDone);
         }
     });
@@ -118,6 +118,10 @@ CloneDialog::~CloneDialog()
     if (Task *task = m_cloner->task()) {
         task->setDetails({});
     }
+    /* a copy going on (the app quits) stops now, while the dialog is
+       whole: the end of its task reaches what watches the dialog */
+    delete m_cloner;
+    m_cloner = nullptr;
 }
 
 Vm *CloneDialog::clone() const
@@ -127,7 +131,7 @@ Vm *CloneDialog::clone() const
 
 bool CloneDialog::isCloning() const
 {
-    return m_cloner->isRunning();
+    return m_cloner && m_cloner->isRunning();
 }
 
 void CloneDialog::accept()
@@ -153,9 +157,11 @@ void CloneDialog::accept()
 
 void CloneDialog::reject()
 {
-    /* the copy goes on unseen: its task tells how far */
+    /* the copy goes on unseen: its task tells how far.  Shown again
+       (present()), the dialog no longer keeps the window from the VMs. */
     if (isCloning()) {
         hide();
+        setWindowModality(Qt::NonModal);
         return;
     }
     QDialog::reject();
@@ -223,7 +229,7 @@ void CloneDialog::hideEvent(QHideEvent *event)
 
 void CloneDialog::goIfDone()
 {
-    const Task *task = m_cloner->task();
+    const Task *task = m_cloner ? m_cloner->task() : nullptr;
 
     if (isVisible() || isCloning() || (task && TaskList::instance()->tasks().contains(task))) {
         return;

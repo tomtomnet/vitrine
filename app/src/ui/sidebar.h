@@ -102,6 +102,10 @@ private:
     void handleMoved();
     /* The handle released: as wide as it was left, within its limits */
     void endDrag();
+    /* A drag whose release went elsewhere: over */
+    void endLostDrag();
+    /* Collapsed or expanded, during a drag or not */
+    void applyCollapsed(bool collapsed);
 
     QListWidget *m_list;
     VmItemDelegate *m_delegate;

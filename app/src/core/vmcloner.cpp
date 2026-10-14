@@ -268,7 +268,7 @@ void VmCloner::release(bool remove)
     m_timer->stop();
     m_copies.clear();
     if (remove && !m_dir.isEmpty()) {
-        QDir(m_dir).removeRecursively();
+        m_store->dropFolder(m_dir);
     }
     m_dir.clear();
     if (m_source) {

@@ -3,6 +3,7 @@
 #include <QFile>
 #include <QRegularExpression>
 #include <QSignalSpy>
+#include <QStandardPaths>
 #include <QTemporaryDir>
 #include <QTest>
 
@@ -210,6 +211,41 @@ private slots:
         QVERIFY(!QFileInfo::exists(tmp.filePath("vms/Slow-copy")));
         QVERIFY(source->runner()->busy().isEmpty());
         QCOMPARE(store.vms().size(), 1);
+    }
+
+    /*
+     * The app killed during a copy: the folder of the clone, never a VM,
+     * goes to the trash when a store loads the folder again; not the one
+     * a store makes itself
+     */
+    void interruptedFolder()
+    {
+        /* in the home, the test's, where the trash is: not in /tmp, a file system without
+           one; and the data folder the trash is in, as a home has it */
+        QTemporaryDir tmp(QDir::home().filePath("interrupted-XXXXXX"));
+        QVERIFY(QDir().mkpath(QStandardPaths::writableLocation(QStandardPaths::GenericDataLocation)));
+        QString error;
+        QString left;
+        {
+            VmStore store(tmp.filePath("vms"));
+            left = store.newFolder("Half made", &error);
+            QVERIFY2(!left.isEmpty(), qPrintable(error));
+            write(left + "/disk.qcow2", "half a disk");
+            /* its own, being made: kept as the folder is loaded again */
+            store.setDir(tmp.filePath("other"));
+            store.setDir(tmp.filePath("vms"));
+            QVERIFY(QFileInfo::exists(left + "/disk.qcow2"));
+            QVERIFY(store.vms().isEmpty());
+        }
+        /* a folder with its VM, and one of the user's without any: kept */
+        VmStore made(tmp.filePath("vms"));
+        QVERIFY(made.create("Made", &error));
+        QVERIFY(QDir().mkpath(tmp.filePath("vms/notes")));
+        VmStore again(tmp.filePath("vms"));
+        QVERIFY(!QFileInfo::exists(left));
+        QCOMPARE(again.vms().size(), 1);
+        QVERIFY(QFileInfo::exists(tmp.filePath("vms/notes")));
+        QVERIFY(!QFileInfo::exists(again.vms().first()->dir() + "/.vitrine-making"));
     }
 
     /* A copy that fails: the clone goes, its task says why */
