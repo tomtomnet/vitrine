@@ -474,6 +474,36 @@ subprojects_of() {
 # configured DIR LINE: whether build tree DIR was configured with LINE
 configured() { [ -f "$1/.vitrine-configure" ] && [ "$(cat "$1/.vitrine-configure")" = "$2" ]; }
 
+# put FILE DEST: DEST with FILE's content, written only if it differs: what
+# depends on it does not compile again
+put() {
+	cmp -s "$1" "$2" && return 0
+	mkdir -p "$(dirname "$2")"
+	cp "$1" "$2.new"
+	mv -f "$2.new" "$2"
+}
+
+# devel FOLDER DEV: in DEV, what QEMU is compiled and linked against of the
+# virglrenderer in FOLDER: its headers and pkg-config file, its library
+# linked to.  At a path that stays from build to build: its include
+# folder is in most of QEMU's compile commands, which a new path would
+# all change (QEMU's RUNPATH names FOLDER itself)
+devel() {
+	local from=$1 dev=$2 f pc
+	[ ! -d "$from/include" ] || (cd "$from/include" && find . -type f) | while read -r f; do
+		put "$from/include/$f" "$dev/include/$f"
+	done
+	[ ! -d "$dev/include" ] || (cd "$dev/include" && find . -type f) | while read -r f; do
+		[ -e "$from/include/$f" ] || rm -f "$dev/include/$f"
+	done
+	pc=$dev/virglrenderer.pc.new
+	mkdir -p "$dev/lib64/pkgconfig"
+	sed "s|^prefix=.*|prefix=$dev|" "$from/lib64/pkgconfig/virglrenderer.pc" > "$pc"
+	put "$pc" "$dev/lib64/pkgconfig/virglrenderer.pc"
+	rm -f "$pc"
+	ln -sfn "$from/lib64/libvirglrenderer.so" "$dev/lib64/libvirglrenderer.so"
+}
+
 # their paths in patches/<component>: research/0001-x.patch
 patch_names() { local p; for p in "$@"; do printf '%s ' "${p#patches/*/}"; done; }
 
@@ -578,13 +608,15 @@ qargs=(--prefix="$qconf" --target-list=x86_64-softmmu --without-default-features
 # what that offers (virgl_renderer_resource_set_guest_dmabuf, its version),
 # and meson keeps what it found, which nothing else would make it look
 # again at
-qline="$src/qemu ${qargs[*]} PKG_CONFIG_PATH=$vprefix/lib64/pkgconfig virglrenderer=$vkey"
+vdev=$work/virglrenderer-devel
+devel "$vprefix" "$vdev"
+qline="$src/qemu ${qargs[*]} PKG_CONFIG_PATH=$vdev/lib64/pkgconfig virglrenderer=$vkey"
 if [ -f "$qbuild/build.ninja" ] && configured "$qbuild" "$qline"; then
 	echo "configured already"
 else
 	rm -f "$qbuild/.vitrine-configure"
 	mkdir -p "$qbuild"
-	(cd "$qbuild" && PKG_CONFIG_PATH="$vprefix/lib64/pkgconfig${PKG_CONFIG_PATH:+:$PKG_CONFIG_PATH}" \
+	(cd "$qbuild" && PKG_CONFIG_PATH="$vdev/lib64/pkgconfig${PKG_CONFIG_PATH:+:$PKG_CONFIG_PATH}" \
 		"$src/qemu/configure" "${qargs[@]}")
 	echo "$qline" > "$qbuild/.vitrine-configure"
 fi

@@ -841,6 +841,14 @@ sh -c 'echo $$ > %1; exec sleep 300'
                  "{\"filename\": \"" + first.prefix + "/share/qemu/edk2-x86_64-code.fd\"}");
         QVERIFY(read(work + "/qemu-build/.vitrine-configure")
                     .contains("--prefix=" + QFileInfo(stack).canonicalFilePath() + "/current "));
+        /* compiled against virglrenderer at a path that stays: its include
+           folder is in most of QEMU's compile commands */
+        const QString devel = QFileInfo(work).canonicalFilePath() + "/virglrenderer-devel";
+        QVERIFY(read(work + "/qemu-build/.vitrine-configure")
+                    .contains("PKG_CONFIG_PATH=" + devel + "/lib64/pkgconfig "));
+        QVERIFY(read(devel + "/lib64/pkgconfig/virglrenderer.pc").startsWith("prefix=" + devel + '\n'));
+        QCOMPARE(QFileInfo(devel + "/lib64/libvirglrenderer.so").symLinkTarget(),
+                 first.virglPrefix + "/lib64/libvirglrenderer.so");
         QVERIFY(QFileInfo::exists(work + "/src/qemu/MARK"));
         QCOMPARE(read(work + "/src/qemu/BASE"), "base, then research\n");
         QVERIFY(QFileInfo::exists(work + "/src/virglrenderer/MARK"));
