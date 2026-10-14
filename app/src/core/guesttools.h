@@ -62,6 +62,36 @@ Medium medium(const QString &release = kFedoraRelease);
 /* The manifest (the .json beside the image), for the image @image */
 Medium parseManifest(const QByteArray &json, const QString &image);
 
+/*
+ * The system a guest runs, as it says itself: os-release's ID, VERSION_ID
+ * and PRETTY_NAME, through vitrine's agent (the tools in) or QEMU's guest
+ * agent, qemu-ga (guest-get-osinfo).  Not known until one of them answered.
+ */
+struct System {
+    QString id;             // fedora, arch, kde-linux...
+    QString version;        // 44; none for a rolling release
+    QString name;           // Fedora Linux 44 (KDE Plasma Desktop Edition)
+
+    bool isKnown() const { return !id.isEmpty(); }
+    /* For the user: its name, else its id and version */
+    QString displayName() const;
+    bool operator==(const System &other) const = default;
+};
+/* qemu-ga's answer to guest-get-osinfo */
+System parseOsInfo(const QJsonObject &info);
+/* What the guest of the VM @vmId said it runs, the last time one of its
+   agents answered; unknown if none ever did */
+System system(const QString &vmId);
+void setSystem(const QString &vmId, const System &system);
+/*
+ * The tools are for @system: the one place that says which systems they
+ * are for, as their installer checks.  Fedora, at the release of @medium,
+ * or any release while no medium is built.  (Arch may follow.)
+ */
+bool supports(const System &system, const Medium &medium);
+/* Those systems, as the user reads them: "Fedora 44" */
+QString supportedSystems(const Medium &medium);
+
 /* What the runner adds to a VM's command line */
 /* Its virtio-serial controller, for the agents' ports: on x86-64 and ARM
    machines with PCI */
@@ -98,7 +128,7 @@ struct Kernel {
 struct Report {
     QString tools;          // vitrine-guest-tools' version-release; empty if not installed
     QString agent;
-    QString osId, osVersion, osName;
+    System os;
     QString kernel;
     QList<Kernel> kernels;
     std::optional<bool> secureBoot;     // none without UEFI
@@ -203,6 +233,16 @@ public:
     GuestTools::State state() const;
     GuestTools::Inputs inputs() const { return m_in; }
     const GuestTools::Report &report() const { return m_in.report; }
+    /* What the guest runs, as its agents said last, at this run or an
+       earlier one (GuestTools::system()) */
+    GuestTools::System system() const { return m_system; }
+    /*
+     * The guest is known to run a system the tools are for
+     * (GuestTools::supports()), or known to run another: neither while
+     * none of its agents ever said
+     */
+    bool supported() const;
+    bool unsupported() const;
     /* The agent answered since the guest booted */
     bool hasAgent() const { return m_in.agentSeen; }
     /* While installing: the installer's step */
@@ -257,8 +297,11 @@ private:
     void answerShutdown(bool took);
     /* What this run showed, for while the VM is off */
     void remember();
+    /* What an agent said the guest runs, kept for the VM: true if it changed */
+    bool setSystem(const GuestTools::System &system);
 
     Vm *m_vm;
+    GuestTools::System m_system;
     QLocalSocket *m_socket;
     QTimer *m_retry;
     QTimer *m_grace;

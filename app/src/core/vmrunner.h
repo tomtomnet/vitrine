@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: GPL-2.0-or-later
 #pragma once
 
+#include <QJsonObject>
 #include <QObject>
 #include <QStringList>
 
@@ -188,6 +189,12 @@ signals:
      * folders with a mount point were mounted there, or not
      */
     void sharesMounted(const QStringList &mounted, const QStringList &problems);
+    /*
+     * QEMU's guest agent said what system the guest runs (its answer to
+     * guest-get-osinfo: id, version-id, pretty-name...): at each boot of
+     * the guest, as the agent comes up, and for a VM found running
+     */
+    void guestOsInfo(const QJsonObject &info);
     /* powerdown() tries @way; None: the request is over (the guest shuts
        down, or the run ended) */
     void shutdownWayChanged(GuestShutdown::Way way);

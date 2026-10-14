@@ -16,10 +16,12 @@ class Vm;
 class VmSnapshots;
 
 /*
- * Install Guest Tools: what they install, how (the VM restarts and the guest
- * installs them before its desktop starts, then restarts once more), a
- * snapshot of the disks first.  It shuts the VM down, takes the snapshot,
- * and starts the VM again with the tools medium and the bootstrap.
+ * Install Guest Tools: the systems they are for and what the guest runs,
+ * what they install, how (the VM restarts and the guest installs them
+ * before its desktop starts, then restarts once more), a snapshot of the
+ * disks first.  It shuts the VM down, takes the snapshot, and starts the VM
+ * again with the tools medium and the bootstrap.  For any VM, but not into
+ * a guest known to run another system (GuestTools::supports()).
  *
  * Never in the way of the VM's screen, where the guest may ask what to do
  * when asked to shut down (Plasma's logout screen): not modal, and hidden
@@ -85,7 +87,10 @@ private:
 
 /*
  * How the guest tools of a VM are doing, across the top of its page, with
- * the button that goes with it: Install..., Restart Guest, Update...
+ * the button that goes with it: Install..., Restart Guest, Update...  They
+ * are offered to a guest known to run a system they are for, as it said
+ * through an agent when it last ran (GuestTools::supports()), not to one
+ * that never said.
  */
 class GuestToolsBanner : public QWidget
 {

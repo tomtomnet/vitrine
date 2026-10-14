@@ -292,9 +292,7 @@ private slots:
         const Report &r = m.report;
         QCOMPARE(r.tools, "0.1.0-1.fc44");
         QCOMPARE(r.agent, "0.1.0");
-        QCOMPARE(r.osId, "fedora");
-        QCOMPARE(r.osVersion, "44");
-        QCOMPARE(r.osName, "Fedora Linux 44 (KDE Plasma)");
+        QCOMPARE(r.os, (System{"fedora", "44", "Fedora Linux 44 (KDE Plasma)"}));
         QCOMPARE(r.kernel, "7.2.7-200.fc44.x86_64");
         QCOMPARE(r.kernels.size(), 2);
         QCOMPARE(r.kernels[0].driver, "installed");
@@ -427,8 +425,12 @@ private slots:
         in.report.tools.clear();
         QCOMPARE(evaluate(in), State::NotInstalled);
         in.report.tools = medium.tools;
-        in.report.osVersion = "45";
+        in.report.os.version = "45";
         QCOMPARE(evaluate(in), State::Unsupported);
+        /* an agent that does not say what the guest runs: not another system */
+        in.report.os = {};
+        QCOMPARE(evaluate(in), State::Installed);
+        in.report.os = {"fedora", "45", ""};
         in.running = false;
         QCOMPARE(evaluate(in), State::Unknown);
 
@@ -447,7 +449,7 @@ private slots:
 
         /* the installer of this medium failed where the host did not see it */
         in.running = true;
-        in.report.osVersion = "44";
+        in.report.os.version = "44";
         in.report.lastMedium = medium.mediumId;
         in.report.lastOk = false;
         QCOMPARE(evaluate(in), State::Failed);
@@ -472,6 +474,96 @@ private slots:
         QCOMPARE(evaluate(in), State::Installing);
         in.bootstrapExpired = true;
         QCOMPARE(evaluate(in), State::Installed);
+    }
+
+    /*
+     * The systems the tools are for, in one place: Fedora at the release of
+     * the medium, any while none is built; what a guest's agents said, and
+     * how vitrine keeps it per VM
+     */
+    void systems_data()
+    {
+        QTest::addColumn<QString>("id");
+        QTest::addColumn<QString>("version");
+        QTest::addColumn<bool>("withMedium");      // the medium for 44 built
+        QTest::addColumn<bool>("supported");
+
+        QTest::newRow("fedora 44") << "fedora" << "44" << true << true;
+        QTest::newRow("fedora 43") << "fedora" << "43" << true << false;
+        QTest::newRow("fedora 45") << "fedora" << "45" << true << false;
+        QTest::newRow("fedora 43, no medium") << "fedora" << "43" << false << true;
+        QTest::newRow("arch") << "arch" << "" << true << false;
+        QTest::newRow("arch, no medium") << "arch" << "" << false << false;
+        QTest::newRow("kde linux") << "kde-linux" << "" << true << false;
+        QTest::newRow("ubuntu") << "ubuntu" << "24.04" << false << false;
+        QTest::newRow("windows") << "mswindows" << "10" << true << false;
+        QTest::newRow("unknown") << "" << "" << true << false;
+        QTest::newRow("unknown, no medium") << "" << "" << false << false;
+    }
+
+    void systems()
+    {
+        QFETCH(QString, id);
+        QFETCH(QString, version);
+        QFETCH(bool, withMedium);
+        QFETCH(bool, supported);
+        QDir(dataDir()).removeRecursively();
+        if (withMedium) {
+            writeMedium();
+        }
+        const Medium m = GuestTools::medium();
+        QCOMPARE(m.isValid(), withMedium);
+
+        QCOMPARE(supports(System{id, version, ""}, m), supported);
+        /* the medium's release, or the one a build makes */
+        QCOMPARE(supportedSystems(m), "Fedora 44");
+        QDir(dataDir()).removeRecursively();
+    }
+
+    /* qemu-ga's guest-get-osinfo, as it answers for Linux and Windows */
+    void osInfo()
+    {
+        const System fedora = parseOsInfo(QJsonObject{
+            {"name", "Fedora Linux"}, {"kernel-release", "7.2.7-200.fc44.x86_64"},
+            {"version", "44 (KDE Plasma Desktop Edition)"},
+            {"variant", "KDE Plasma Desktop Edition"},
+            {"pretty-name", "Fedora Linux 44 (KDE Plasma Desktop Edition)"},
+            {"version-id", "44"}, {"variant-id", "kde"},
+            {"kernel-version", "#1 SMP PREEMPT_DYNAMIC"}, {"machine", "x86_64"},
+            {"id", "fedora"}});
+        QCOMPARE(fedora, (System{"fedora", "44", "Fedora Linux 44 (KDE Plasma Desktop Edition)"}));
+        QCOMPARE(fedora.displayName(), "Fedora Linux 44 (KDE Plasma Desktop Edition)");
+        /* a rolling release: no VERSION_ID */
+        const System arch = parseOsInfo(QJsonObject{
+            {"name", "Arch Linux"}, {"pretty-name", "Arch Linux"}, {"id", "arch"},
+            {"kernel-release", "6.17.1-arch1-1"}, {"machine", "x86_64"}});
+        QCOMPARE(arch, (System{"arch", "", "Arch Linux"}));
+        const System windows = parseOsInfo(QJsonObject{
+            {"name", "Microsoft Windows"}, {"pretty-name", "Windows 10 Pro"},
+            {"id", "mswindows"}, {"version", "Microsoft Windows 10"}, {"version-id", "10"},
+            {"variant", "client"}, {"variant-id", "client"}, {"kernel-version", "10.0"},
+            {"machine", "x86_64"}});
+        QCOMPARE(windows, (System{"mswindows", "10", "Windows 10 Pro"}));
+        /* no pretty name: the name; neither: the id and the version */
+        QCOMPARE(parseOsInfo(QJsonObject{{"id", "x"}, {"name", "X OS"}}).displayName(), "X OS");
+        QCOMPARE(parseOsInfo(QJsonObject{{"id", "x"}, {"version-id", "3"}}).displayName(), "x 3");
+        QCOMPARE(parseOsInfo(QJsonObject{{"id", "x"}}).displayName(), "x");
+        QVERIFY(!parseOsInfo(QJsonObject()).isKnown());
+    }
+
+    /* Kept per VM, as written, until another answer; an unknown one forgets */
+    void systemSetting()
+    {
+        const QString id = "vitrine-test-system";
+        const System kde{"kde-linux", "", "KDE Linux, \"rolling\" = 1; [x]"};
+        QVERIFY(!system(id).isKnown());
+        setSystem(id, kde);
+        QCOMPARE(system(id), kde);
+        QVERIFY(!GuestTools::system("vitrine-test-other").isKnown());
+        setSystem(id, {"fedora", "44", "Fedora Linux 44 (KDE Plasma Desktop Edition)"});
+        QCOMPARE(system(id).version, "44");
+        setSystem(id, {});
+        QVERIFY(!system(id).isKnown());
     }
 
     void failures()
@@ -654,6 +746,100 @@ private slots:
         report();
         QTRY_VERIFY(!changed.isEmpty());
         QCOMPARE(pending(id), Pending::Bootstrap);
+    }
+
+    /*
+     * What the guest runs, as its agents say: the guest tools' agent in its
+     * report, qemu-ga through the runner; kept for the VM, which the next
+     * monitor of it (the app's next start) knows from the start.  An agent
+     * that does not say leaves what an earlier one said.
+     */
+    void systemFromAgents()
+    {
+        QTemporaryDir tmp;
+        const QString id = QString("vitrine-gt-system-%1").arg(QCoreApplication::applicationPid());
+        const QString dir = tmp.filePath(id);
+        QVERIFY(QDir().mkpath(dir));
+        QFile args(dir + "/vm.args");
+        QVERIFY(args.open(QIODevice::WriteOnly));
+        args.write("-machine q35\n");
+        args.close();
+        const QStringList command = VmRunner(id, dir).commandLine(ArgsFile::parse("-machine q35\n"));
+        const QString runDir = QFileInfo(command.last()).absolutePath();
+        const auto forget = qScopeGuard([&]() { setSystem(id, {}); });
+        writeMedium();
+
+        /* qemu-ga, at a boot of the guest */
+        {
+            VmStore store(tmp.path());
+            Vm *vm = store.find(id);
+            QVERIFY(vm);
+            GuestToolsMonitor *monitor = GuestToolsMonitor::of(vm);
+            QVERIFY(!monitor->system().isKnown());
+            QVERIFY(!monitor->supported() && !monitor->unsupported());
+            QSignalSpy changed(monitor, &GuestToolsMonitor::changed);
+            emit vm->runner()->guestOsInfo(
+                QJsonObject{{"id", "kde-linux"}, {"pretty-name", "KDE Linux"}});
+            QCOMPARE(changed.size(), 1);
+            QCOMPARE(monitor->system(), (System{"kde-linux", "", "KDE Linux"}));
+            QVERIFY(!monitor->supported() && monitor->unsupported());
+            /* the same again: no change */
+            emit vm->runner()->guestOsInfo(
+                QJsonObject{{"id", "kde-linux"}, {"pretty-name", "KDE Linux"}});
+            QCOMPARE(changed.size(), 1);
+            /* nothing said: kept */
+            emit vm->runner()->guestOsInfo(QJsonObject());
+            QCOMPARE(monitor->system().id, "kde-linux");
+        }
+        QCOMPARE(system(id).id, "kde-linux");
+
+        /* the guest tools' agent, in a run found going */
+        FakeQmp qmp(runDir + "/qmp.sock");
+        QLocalServer agent;
+        QLocalServer::removeServer(runDir + "/agent.sock");
+        QVERIFY(agent.listen(runDir + "/agent.sock"));
+        QPointer<QLocalSocket> peer;
+        connect(&agent, &QLocalServer::newConnection, this,
+                [&]() { peer = agent.nextPendingConnection(); });
+        QProcess qemu;
+        qemu.start(FAKE_QEMU, {"-qmp", command[command.size() - 3]});
+        QVERIFY(qemu.waitForStarted());
+        QVERIFY(QTest::qWaitFor([&qemu]() {
+            QFile f(QString("/proc/%1/cmdline").arg(qemu.processId()));
+            return f.open(QIODevice::ReadOnly) && f.readAll().contains("-qmp");
+        }, 5000));
+        QFile pid(runDir + "/qemu.pid");
+        QVERIFY(pid.open(QIODevice::WriteOnly));
+        pid.write(QByteArray::number(qemu.processId()) + '\n');
+        pid.close();
+        const auto end = qScopeGuard([&]() {
+            qemu.kill();
+            qemu.waitForFinished();
+        });
+        {
+            VmStore store(tmp.path());
+            Vm *vm = store.find(id);
+            QVERIFY(vm);
+            GuestToolsMonitor *monitor = GuestToolsMonitor::of(vm);
+            QCOMPARE(monitor->system(), (System{"kde-linux", "", "KDE Linux"}));
+            vm->runner()->attach(vm->args());
+            QTRY_COMPARE(vm->runner()->state(), VmRunner::State::Running);
+            QTRY_VERIFY(peer);
+            peer->write(QByteArray(kHello) + '\n');
+            QTRY_VERIFY(monitor->hasAgent());
+            QCOMPARE(monitor->system(), (System{"fedora", "44", "Fedora Linux 44 (KDE Plasma)"}));
+            QVERIFY(monitor->supported() && !monitor->unsupported());
+            /* an older agent, which does not say */
+            QByteArray older = kHello;
+            older.replace(R"j("os":{"id":"fedora","version":"44","name":"Fedora Linux 44 (KDE Plasma)"},)j",
+                          "");
+            QVERIFY(older != kHello);
+            peer->write(older.replace(R"j("type":"hello")j", R"j("type":"status")j") + '\n');
+            QTest::qWait(200);
+            QCOMPARE(monitor->system().id, "fedora");
+        }
+        QCOMPARE(system(id), (System{"fedora", "44", "Fedora Linux 44 (KDE Plasma)"}));
+        QDir(dataDir()).removeRecursively();
     }
 
     /*

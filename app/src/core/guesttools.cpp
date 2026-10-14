@@ -70,6 +70,66 @@ Medium medium(const QString &release)
     return parseManifest(manifest.readAll(), image);
 }
 
+QString System::displayName() const
+{
+    if (!name.isEmpty()) {
+        return name;
+    }
+    return version.isEmpty() ? id : id + ' ' + version;
+}
+
+System parseOsInfo(const QJsonObject &info)
+{
+    /* os-release's PRETTY_NAME, else its NAME; Windows has no os-release,
+       qemu-ga makes them up from the registry (mswindows, Windows 10 Pro) */
+    return {info["id"].toString(), info["version-id"].toString(),
+            info["pretty-name"].toString(info["name"].toString())};
+}
+
+/* A group of three keys, each read as it was written */
+static QString systemKey(const QString &vmId)
+{
+    return "guesttools/system/" + vmId;
+}
+
+System system(const QString &vmId)
+{
+    QSettings s(Paths::settingsPath(), QSettings::IniFormat);
+
+    s.beginGroup(systemKey(vmId));
+    return {s.value("id").toString(), s.value("version").toString(), s.value("name").toString()};
+}
+
+void setSystem(const QString &vmId, const System &system)
+{
+    QSettings s(Paths::settingsPath(), QSettings::IniFormat);
+
+    s.remove(systemKey(vmId));
+    if (system.isKnown()) {
+        s.beginGroup(systemKey(vmId));
+        s.setValue("id", system.id);
+        s.setValue("version", system.version);
+        s.setValue("name", system.name);
+    }
+}
+
+bool supports(const System &system, const Medium &medium)
+{
+    /* the installer refuses another release: the medium's dnf repository
+       has its packages, built for that one */
+    if (system.id == "fedora") {
+        return !medium.isValid() || medium.fedora.isEmpty() || system.version == medium.fedora;
+    }
+    return false;
+}
+
+QString supportedSystems(const Medium &medium)
+{
+    return QObject::tr("Fedora %1")
+        .arg(medium.isValid() && !medium.fedora.isEmpty() ? medium.fedora
+                                                          : QString(kFedoraRelease));
+}
+
 /* The target of @qemu, qemu-system-TARGET; another name is the host's */
 static QString targetOf(const QString &qemu)
 {
@@ -204,9 +264,7 @@ Report parseReport(const QJsonObject &s)
 
     r.tools = s["tools"].toString();
     r.agent = s["agent"].toString();
-    r.osId = os["id"].toString();
-    r.osVersion = os["version"].toString();
-    r.osName = os["name"].toString();
+    r.os = {os["id"].toString(), os["version"].toString(), os["name"].toString()};
     r.kernel = s["kernel"].toString();
     for (const QJsonValue &k : s["kernels"].toArray()) {
         r.kernels << Kernel{k["version"].toString(), k["headers"].toBool(),
@@ -336,8 +394,8 @@ State evaluate(const Inputs &in)
         if (r.tools.isEmpty()) {
             return State::NotInstalled;
         }
-        if (in.medium.isValid() && !in.medium.fedora.isEmpty() &&
-            (r.osId != "fedora" || r.osVersion != in.medium.fedora)) {
+        /* in a guest upgraded since to another release */
+        if (r.os.isKnown() && !supports(r.os, in.medium)) {
             return State::Unsupported;
         }
         if (r.rebootNeeded) {
@@ -426,6 +484,7 @@ GuestToolsMonitor::GuestToolsMonitor(Vm *vm)
                                                       : State::Unknown;
     m_in.rememberedTools = last.section(' ', 1);
     m_in.medium = GuestTools::medium();
+    m_system = GuestTools::system(vm->id());
 
     m_retry->setSingleShot(true);
     m_retry->setInterval(kRetryMs);
@@ -469,6 +528,13 @@ GuestToolsMonitor::GuestToolsMonitor(Vm *vm)
         }
     });
     connect(vm->runner(), &VmRunner::stateChanged, this, &GuestToolsMonitor::runnerChanged);
+    /* what the guest runs, which says whether the tools are for it, from
+       qemu-ga at each boot: before the tools are in, it is the one to say */
+    connect(vm->runner(), &VmRunner::guestOsInfo, this, [this](const QJsonObject &info) {
+        if (setSystem(parseOsInfo(info))) {
+            emit changed();
+        }
+    });
     connect(this, &GuestToolsMonitor::changed, this, &GuestToolsMonitor::remember);
     /* a new medium, built from the app: the VMs with older tools offer it */
     connect(GuestToolsBuilder::instance(), &GuestToolsBuilder::built, this, [this]() {
@@ -541,6 +607,27 @@ void GuestToolsMonitor::remember()
         m_in.remembered = value == "not-installed" ? State::NotInstalled : State::Installed;
         m_in.rememberedTools = value.section(' ', 1);
     }
+}
+
+bool GuestToolsMonitor::setSystem(const System &system)
+{
+    /* an agent that did not say (an older one) leaves what an earlier one said */
+    if (!system.isKnown() || system == m_system) {
+        return false;
+    }
+    m_system = system;
+    GuestTools::setSystem(m_vm->id(), system);
+    return true;
+}
+
+bool GuestToolsMonitor::supported() const
+{
+    return GuestTools::supports(m_system, m_in.medium);
+}
+
+bool GuestToolsMonitor::unsupported() const
+{
+    return m_system.isKnown() && !GuestTools::supports(m_system, m_in.medium);
 }
 
 State GuestToolsMonitor::state() const
@@ -659,6 +746,7 @@ void GuestToolsMonitor::handle(const Message &m)
         m_in.report = m.report;
         m_in.installing = m.report.installing;
         m_in.medium = GuestTools::medium();
+        setSystem(m.report.os);
         m_grace->stop();
         if (!m.report.tools.isEmpty() && !m.report.installing) {
             m_in.failed = false;
@@ -816,11 +904,18 @@ QString GuestToolsMonitor::text() const
                       "smoother.");
         }
         if (m_in.bootstrapRun) {
+            /* what the guest turned out to run, after the install was asked for */
+            if (unsupported()) {
+                return tr("The guest did not install the guest tools at its start: they are "
+                          "for %1, and this guest runs %2.")
+                    .arg(supportedSystems(m_in.medium).toHtmlEscaped(),
+                         m_system.displayName().toHtmlEscaped());
+            }
             return tr("The guest did not install the guest tools at its start: that needs "
-                      "Fedora %1 with systemd 256 or later. To install them by hand, attach "
+                      "%1 with systemd 256 or later. To install them by hand, attach "
                       "the tools medium and run %2 in the guest.")
-                .arg(kFedoraRelease, code("sudo bash /run/media/$USER/" + QString(kLabel) +
-                                          "/install"));
+                .arg(supportedSystems(m_in.medium).toHtmlEscaped(),
+                     code("sudo bash /run/media/$USER/" + QString(kLabel) + "/install"));
         }
         return tr("The guest tools are not installed in this VM: vitrine's graphics driver, "
                   "Mesa with native context and KWin make a Fedora guest smoother.");
@@ -863,9 +958,9 @@ QString GuestToolsMonitor::text() const
         return tr("Guest tools %1 are available; this guest has %2.")
             .arg(m_in.medium.tools.toHtmlEscaped(), r.tools.toHtmlEscaped());
     case State::Unsupported:
-        return tr("The guest tools are for Fedora %1; this guest is %2.")
-            .arg(m_in.medium.fedora.toHtmlEscaped(),
-                 (r.osName.isEmpty() ? r.osId : r.osName).toHtmlEscaped());
+        return tr("The guest tools are for %1; this guest runs %2.")
+            .arg(supportedSystems(m_in.medium).toHtmlEscaped(),
+                 r.os.displayName().toHtmlEscaped());
     }
     return {};
 }
