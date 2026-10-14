@@ -463,6 +463,8 @@ private slots:
         const QList<QToolButton *> tabs = tabButtons(w.get());
         QCOMPARE(tabs.size(), 5);
         QCOMPARE(plain(tabs[0]->text()), QString("Console"));
+        /* one view only: no menu, no number */
+        QVERIFY(!tabs[0]->menu());
         QCOMPARE(plain(tabs[4]->text()), QString("Logs"));
         /* nothing between the bar and the window's content */
         QWidget *central = w->centralWidget();
@@ -791,8 +793,15 @@ private slots:
         };
         QVERIFY(viewAction(1) && viewAction(2) && viewAction(3));
         QTRY_VERIFY(viewAction(1)->isEnabled() && viewAction(1)->isChecked());
-        /* over the views, on the console's screen page (the VM does not run here) */
-        QVERIFY(!console->findChild<QWidget *>("viewSwitcher")->isHidden());
+        /* the views in the Console tab's menu, the tab's name with the one shown; no
+           row of buttons over the screen (the user's idea) */
+        QToolButton *consoleTab = tabButtons(w.get()).value(0);
+        QVERIFY(consoleTab);
+        QTRY_VERIFY(consoleTab->menu());
+        QCOMPARE(consoleTab->popupMode(), QToolButton::MenuButtonPopup);
+        QCOMPARE(consoleTab->menu()->actions().size(), 3);
+        QCOMPARE(consoleTab->text(), QString("Console 1"));
+        QVERIFY(!console->findChild<QWidget *>("viewSwitcher"));
 
         /* the nested KWin connected: its desktop, with the keys */
         desktop->guestConnects(1);
@@ -803,7 +812,7 @@ private slots:
         /* the VM does not run here: QEMU would drop the keys, the guest gets none */
         QVERIFY(!desktop->inputEnabled());
         QVERIFY(viewAction(3)->isChecked());
-        QVERIFY(console->findChild<QToolButton *>("viewDesktop")->isChecked());
+        QTRY_COMPARE(consoleTab->text(), QString("Console 3"));
 
         /* AZERTY: &, é and " on the keys of 1, 2 and 3 (XKB's keycodes 10, 11, 12) */
         const auto press = [&w](Qt::Key key, quint32 keycode, const QString &text) {

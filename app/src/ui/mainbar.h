@@ -22,6 +22,11 @@ public:
     void setCompact(bool compact);
     /* As wide as its layout makes it, compact or not */
     int widthFor(bool compact) const;
+    /*
+     * @menu under @tab's button, which then has an arrow beside its name
+     * (a click on the name still chooses the tab); none: a plain button
+     */
+    void setTabMenu(QAction *tab, QMenu *menu);
 
 protected:
     void changeEvent(QEvent *event) override;

@@ -54,7 +54,7 @@ VmConsole::VmConsole(Vm *vm, QWidget *parent)
     : QWidget(parent), m_vm(vm), m_pages(new QStackedWidget), m_name(new QLabel),
       m_state(new QLabel), m_error(new Banner(Banner::Warning)), m_start(new QPushButton),
       m_summary(new QLabel), m_messageTitle(new QLabel), m_messageText(new QLabel),
-      m_messageButton(new QPushButton), m_screen(new QWidget), m_switcher(new QWidget),
+      m_messageButton(new QPushButton), m_screen(new QWidget),
       m_viewPages(new QStackedWidget), m_dbusPage(new QWidget),
       m_screenLayout(new QVBoxLayout(m_dbusPage)), m_desktopPage(new QWidget),
       m_desktopLayout(new QVBoxLayout(m_desktopPage)), m_ownWindowText(new QLabel),
@@ -151,48 +151,16 @@ VmConsole::VmConsole(Vm *vm, QWidget *parent)
         m_pages->addWidget(page);
     }
 
-    /* Screen: the view's widget, alone; with the nested desktop, its views under their switcher */
+    /* Screen: the view's widget, alone; with the nested desktop, the view chosen (the
+       Console tab's menu, the View menu, Ctrl+Alt+1/2/3) */
     {
-        static const char *const names[] = {
-            QT_TR_NOOP("Boot"), QT_TR_NOOP("Screen"), QT_TR_NOOP("Desktop")};
-        static const char *const tips[] = {
-            QT_TR_NOOP("The VGA card's screen: the firmware, the boot loader and the first boot "
-                       "messages (Ctrl+Alt+1)"),
-            QT_TR_NOOP("The guest's own screen: its console and its login screen (Ctrl+Alt+2)"),
-            QT_TR_NOOP("The guest's desktop session (Ctrl+Alt+3)")};
         auto *column = new QVBoxLayout(m_screen);
-        auto *row = new QHBoxLayout(m_switcher);
-        auto *keys = new QLabel(tr("Ctrl+Alt+1, 2, 3"));
-
         column->setContentsMargins(0, 0, 0, 0);
         column->setSpacing(0);
-        row->setContentsMargins(6, 2, 6, 2);
-        row->setSpacing(2);
-        m_switcher->setObjectName("viewSwitcher");
-        for (int i = 0; i < 3; i++) {
-            auto *button = new QToolButton;
-            button->setObjectName(QString("view%1").arg(QLatin1String(names[i])));
-            button->setText(tr(names[i]));
-            button->setToolTip(tr(tips[i]));
-            button->setCheckable(true);
-            button->setAutoExclusive(true);
-            button->setAutoRaise(true);
-            /* the keys stay with the screen */
-            button->setFocusPolicy(Qt::NoFocus);
-            connect(button, &QToolButton::clicked, this,
-                    [this, i]() { showView(ConsoleViews::View(i)); });
-            row->addWidget(button);
-            m_viewButtons[i] = button;
-        }
-        row->addStretch();
-        keys->setEnabled(false);
-        row->addWidget(keys);
-        m_switcher->hide();
         m_screenLayout->setContentsMargins(0, 0, 0, 0);
         m_desktopLayout->setContentsMargins(0, 0, 0, 0);
         m_viewPages->addWidget(m_dbusPage);
         m_viewPages->addWidget(m_desktopPage);
-        column->addWidget(m_switcher);
         column->addWidget(m_viewPages, 1);
         m_pages->addWidget(m_screen);
     }
@@ -404,7 +372,6 @@ bool VmConsole::serveNested(const QString &socket, QString *error)
             m_nested->setFullScreen(!m_nested->isFullScreen());
         }
     });
-    m_switcher->show();
     m_views->powerOn();
     applyView();
     return true;
@@ -417,7 +384,6 @@ void VmConsole::dropNested()
     }
     /* nestedView() is null while it goes */
     delete std::exchange(m_nested, nullptr);
-    m_switcher->hide();
     m_views->powerOn();
     applyView();
 }
@@ -431,9 +397,6 @@ void VmConsole::applyView()
 {
     const ConsoleViews::View view = m_views->view();
 
-    for (int i = 0; i < 3; i++) {
-        m_viewButtons[i]->setChecked(int(view) == i);
-    }
     if (!m_nested) {
         m_viewPages->setCurrentWidget(m_dbusPage);
         return;

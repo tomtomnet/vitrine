@@ -10,7 +10,9 @@
 #include <QTimer>
 #include <QVBoxLayout>
 
+#include "core/buildmanager.h"
 #include "core/guesttools.h"
+#include "core/guesttoolsbuilder.h"
 #include "core/snapshots.h"
 #include "core/vmconfig.h"
 #include "core/vmhardware.h"
@@ -86,6 +88,22 @@ void GuestToolsDialog::run(QWidget *parent, Vm *vm)
 }
 
 /* No medium: GuestToolsBuildBanner says so, with Build… */
+/*
+ * A build under way makes the medium again (the Builds window remakes it
+ * after any of its packages): installing now would put in the tools it
+ * replaces, and offer an update a few minutes later (the user saw Install
+ * open during one)
+ */
+static bool mediumBeingBuilt()
+{
+    const BuildManager *builds = BuildManager::instance();
+    const GuestToolsBuilder *builder = GuestToolsBuilder::instance();
+
+    return (builds && builds->isRunning() &&
+            (builds->current() == "medium" || builds->queue().contains("medium"))) ||
+           (builder && builder->isRunning());
+}
+
 static QString notBuilt()
 {
     return GuestToolsDialog::tr("The guest tools are not built yet: build them first.");
@@ -277,6 +295,14 @@ GuestToolsDialog::GuestToolsDialog(Vm *vm, QWidget *parent)
     });
     /* a build made the medium meanwhile */
     connect(build, &GuestToolsBuildBanner::mediumChanged, this, &GuestToolsDialog::refresh);
+    /* a build starting or ending: Install waits for it, or goes on once it is done */
+    if (BuildManager *builds = BuildManager::instance()) {
+        connect(builds, &BuildManager::runStarted, this, &GuestToolsDialog::refresh);
+        connect(builds, &BuildManager::runFinished, this, &GuestToolsDialog::buildDone);
+    }
+    if (GuestToolsBuilder *builder = GuestToolsBuilder::instance()) {
+        connect(builder, &GuestToolsBuilder::finished, this, &GuestToolsDialog::buildDone);
+    }
     refresh();
     setMinimumWidth(Widgets::em(this) * 34);
     Widgets::resizeToWidth(this, sizeHint().width());
@@ -295,12 +321,46 @@ void GuestToolsDialog::refresh()
     /* the medium missing: the build banner tells it */
     m_warning->setText(problem.toHtmlEscaped());
     m_warning->setVisible(!problem.isEmpty() && problem != notBuilt());
-    m_install->setText(running ? tr("&Restart and Install") : tr("&Install"));
-    m_install->setEnabled(problem.isEmpty());
-    m_mediumButton->setEnabled(problem.isEmpty());
+    const bool building = mediumBeingBuilt();
+
+    if (building) {
+        m_install->setText(running ? tr("&Restart and Install When Built")
+                                   : tr("&Install When Built"));
+    } else {
+        m_install->setText(running ? tr("&Restart and Install") : tr("&Install"));
+    }
+    /* no medium yet, but one on its way: Install waits for it too */
+    m_install->setEnabled(problem.isEmpty() || (building && problem == notBuilt()));
+    m_mediumButton->setEnabled(problem.isEmpty() && !building);
     if (isVisible()) {
         fit();
     }
+}
+
+void GuestToolsDialog::buildDone(const QString &error)
+{
+    if (!m_vm) {
+        return;
+    }
+    if (m_step != Step::WaitingForBuild) {
+        refresh();
+        return;
+    }
+    if (!error.isEmpty()) {
+        stopWaiting(tr("The build did not end well (%1): nothing was installed.").arg(error));
+        return;
+    }
+    /* a run of the host only, or a part of the run: the medium is still to come */
+    if (mediumBeingBuilt()) {
+        return;
+    }
+    m_step = Step::Idle;
+    if (const QString problem = obstacle(m_vm, GuestTools::medium()); !problem.isEmpty()) {
+        stopWaiting(problem);
+        return;
+    }
+    refresh();
+    go(m_mediumOnly);
 }
 
 void GuestToolsDialog::fit()
@@ -311,6 +371,10 @@ void GuestToolsDialog::fit()
 void GuestToolsDialog::reject()
 {
     switch (m_step) {
+    case Step::WaitingForBuild:
+        /* nothing asked of the VM yet */
+        m_step = Step::Idle;
+        break;
     case Step::ShuttingDown:
         /* Cancel, Escape, the window's X or the banner's Cancel: no install
            after all, nor restart (the guest was asked already) */
@@ -369,6 +433,11 @@ void GuestToolsDialog::go(bool medium)
     m_install->setEnabled(false);
     m_mediumButton->setEnabled(false);
     m_snapshot->setEnabled(false);
+    if (mediumBeingBuilt()) {
+        m_step = Step::WaitingForBuild;
+        setProgress(tr("The guest tools install as soon as the build under way is done."));
+        return;
+    }
     GuestToolsMonitor::of(m_vm)->setPending(medium ? Pending::Medium : Pending::Bootstrap);
     if (m_vm->runner()->isActive()) {
         m_step = Step::ShuttingDown;

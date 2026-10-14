@@ -14,11 +14,14 @@
 
 #include "core/guestshutdown.h"
 #include "core/guesttools.h"
+#include "core/guesttoolsbuilder.h"
 #include "core/paths.h"
 #include "core/vmrunner.h"
 #include "core/vmstore.h"
 #include "ui/guesttoolsdialog.h"
 #include "ui/shutdownnotice.h"
+
+#include "guesttoolsstandins.h"
 
 #include <csignal>
 
@@ -102,6 +105,54 @@ class TestGuestToolsDialog : public QObject
         QVERIFY(json.open(QIODevice::WriteOnly));
         json.write(R"({"label": "VITRINETOOL", "mediumId": "32fe6c83b34e87e8", "fedora": "44",
                       "tools": "0.1.0-1.fc44", "packages": []})");
+    }
+
+    static bool writeFile(const QString &path, const QByteArray &data, bool executable = false)
+    {
+        QDir().mkpath(QFileInfo(path).path());
+        QFile file(path);
+        if (!file.open(QIODevice::WriteOnly) || file.write(data) != data.size()) {
+            return false;
+        }
+        file.close();
+        return !executable ||
+               file.setPermissions(file.permissions() | QFileDevice::ExeOwner | QFileDevice::ExeUser);
+    }
+
+    /*
+     * The guest tools' builder making the medium again, with stand-ins for
+     * its scripts that hold the first package until releaseBuild(@name)
+     */
+    GuestToolsBuilder *startHeldBuild(const QString &name)
+    {
+        const QString dir = m_tmp.filePath(name);
+        const QByteArray rpms = QByteArray(kRpmsStandIn).replace("@HASH@", kInputsHash);
+        if (!writeFile(dir + "/guest/tools/vitrine-guest-tools.spec",
+                       "Name: vitrine-guest-tools\nVersion: 0.1.0\n") ||
+            !writeFile(dir + "/guest/tools/install", "#!/bin/bash\n", true) ||
+            !writeFile(dir + "/guest/mesa/mesa.spec", "Name: mesa\nVersion:        26.2.3\nRelease: 1\n") ||
+            !writeFile(dir + "/guest/kwin/kwin.spec", "Name: kwin\nVersion: %{kf6_version}\n") ||
+            !writeFile(dir + "/guest/rpm-build-inside.sh", "#!/bin/bash\n", true) ||
+            !writeFile(dir + "/guest/build-rpms.sh", rpms, true) ||
+            !writeFile(dir + "/guest/build-medium.sh", kMediumStandIn, true) ||
+            !writeFile(dir + "/meminfo", "MemAvailable:   64000000 kB\n")) {
+            return nullptr;
+        }
+        qputenv("GATE", ("tools:" + dir + "/go").toUtf8());
+        GuestToolsBuilder *b = GuestToolsBuilder::instance();
+        b->setGuestDir(dir + "/guest");
+        b->setRpmsDir(dir + "/rpms");
+        b->setCacheDir(dir + "/cache");
+        b->setMeminfo(dir + "/meminfo");
+        b->setMemoryPoll(50);
+        b->start();
+        return b->isRunning() ? b : nullptr;
+    }
+
+    void releaseBuild(const QString &name)
+    {
+        QVERIFY(writeFile(m_tmp.filePath(name + "/go"), "go"));
+        qunsetenv("GATE");
     }
 
     /* @machine (vm() by default) running, its dialog open, Restart and Install clicked */
@@ -419,6 +470,50 @@ private slots:
         vm()->runner()->forceOff();
         QTRY_VERIFY_WITH_TIMEOUT(!vm()->runner()->isActive(), 15000);
         QCOMPARE(bar.currentMessage(), "Something else");
+    }
+    /*
+     * While a build makes the medium again, Install waits for it: the user
+     * saw Install open during one, which would have put in the tools the
+     * build replaces.  Install When Built, Attach Medium Only off; the VM
+     * starts once the build is done
+     */
+    void installWhenBuilt()
+    {
+        GuestToolsBuilder *b = startHeldBuild("when-built");
+        QVERIFY(b);
+        GuestToolsDialog::run(m_window, vm());
+        GuestToolsDialog *dialog = GuestToolsDialog::of(vm());
+        QVERIFY(dialog);
+        QPushButton *install = button(dialog, "Install When Built");
+        QVERIFY(install);
+        QVERIFY(install->isEnabled());
+        QPushButton *medium = button(dialog, "Attach Medium Only");
+        QVERIFY(medium);
+        QVERIFY(!medium->isEnabled());
+        install->click();
+        QVERIFY(m_started.isEmpty());
+        releaseBuild("when-built");
+        QTRY_VERIFY_WITH_TIMEOUT(!b->isRunning(), 30000);
+        QTRY_COMPARE_WITH_TIMEOUT(m_started.size(), 1, 10000);
+        QCOMPARE(m_started.first(), vm());
+    }
+
+    /* Install When Built, then Cancel: nothing starts once the build is done */
+    void cancelWhenBuilt()
+    {
+        GuestToolsBuilder *b = startHeldBuild("cancel-built");
+        QVERIFY(b);
+        GuestToolsDialog::run(m_window, vm());
+        GuestToolsDialog *dialog = GuestToolsDialog::of(vm());
+        QVERIFY(dialog);
+        QPushButton *install = button(dialog, "Install When Built");
+        QVERIFY(install);
+        install->click();
+        dialog->reject();
+        releaseBuild("cancel-built");
+        QTRY_VERIFY_WITH_TIMEOUT(!b->isRunning(), 30000);
+        QTest::qWait(500);
+        QVERIFY(m_started.isEmpty());
     }
 };
 

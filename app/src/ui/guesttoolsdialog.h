@@ -58,6 +58,8 @@ private:
        depends on the medium, which a build may make meanwhile */
     void refresh();
     void go(bool medium);
+    /* A build ended (@error empty when all was built): what waited for it goes on */
+    void buildDone(const QString &error);
     void next();
     void fail(const QString &error);
     /* Its content changed: as high as it is at its width */
@@ -67,8 +69,10 @@ private:
     /* The progress line, under the notes */
     void setProgress(const QString &text);
 
-    /* Done: failed, cancelled or given up, nothing more to do but close */
-    enum class Step { Idle, ShuttingDown, Snapshot, Starting, Done };
+    /* Done: failed, cancelled or given up, nothing more to do but close;
+       WaitingForBuild: Install or Attach chosen while a build remakes the
+       medium, which they then use */
+    enum class Step { Idle, WaitingForBuild, ShuttingDown, Snapshot, Starting, Done };
     QPointer<Vm> m_vm;
     Step m_step = Step::Idle;
     bool m_mediumOnly = false;
