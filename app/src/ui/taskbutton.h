@@ -85,6 +85,9 @@ private:
     void lingerSuccesses();
     /* Turning while the tasks running cannot tell how far they are */
     bool spins() const;
+    /* Where the ring goes, and what it covers */
+    QPointF ringCentre() const;
+    QRect ringRect() const;
 
     TaskList *m_tasks;
     QListWidget *m_list;

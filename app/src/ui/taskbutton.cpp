@@ -9,6 +9,7 @@
 #include <QPainterPath>
 #include <QStyleOptionViewItem>
 #include <QTimer>
+#include <QtMath>
 
 #include <algorithm>
 
@@ -284,7 +285,7 @@ TaskButton::TaskButton(TaskList *tasks, QListWidget *list, QWidget *parent)
     setAttribute(Qt::WA_Hover);
     setSizePolicy(QSizePolicy::Preferred, QSizePolicy::Fixed);
     m_spinner->setInterval(kFrameMs);
-    connect(m_spinner, &QTimer::timeout, this, [this]() { update(); });
+    connect(m_spinner, &QTimer::timeout, this, [this]() { update(ringRect()); });
     connect(this, &QAbstractButton::clicked, this, &TaskButton::activate);
     connect(tasks, &TaskList::added, this, &TaskButton::refresh);
     connect(tasks, &TaskList::taskChanged, this, &TaskButton::refresh);
@@ -385,6 +386,22 @@ QMenu *TaskButton::menu() const
 int TaskButton::ringSize() const
 {
     return style()->pixelMetric(QStyle::PM_SmallIconSize, nullptr, this) + 10;
+}
+
+QPointF TaskButton::ringCentre() const
+{
+    /* where the VMs have their icon, its middle in their icons' middle */
+    const qreal x = VmItemDelegate::iconInset(m_list) + m_list->iconSize().width() / 2.0;
+
+    return QPointF(isRightToLeft() ? width() - x : x, height() / 2.0);
+}
+
+QRect TaskButton::ringRect() const
+{
+    const QPointF centre = ringCentre();
+    const int half = ringSize() / 2 + 2;
+
+    return QRect(qFloor(centre.x()) - half, qFloor(centre.y()) - half, 2 * half + 2, 2 * half + 2);
 }
 
 QSize TaskButton::sizeHint() const
@@ -528,7 +545,6 @@ void TaskButton::paintEvent(QPaintEvent *)
     const QList<Task *> tasks = m_tasks->tasks();
     const QPalette palette = m_list->palette();
     const int inset = VmItemDelegate::iconInset(m_list);
-    const int icon = m_list->iconSize().width();
     const qreal angle = m_spinner->isActive() ? (m_spinClock.elapsed() % kTurnMs) * 360.0 / kTurnMs
                                               : 0;
     QPainter painter(this);
@@ -559,10 +575,7 @@ void TaskButton::paintEvent(QPaintEvent *)
     }
     style()->drawControl(QStyle::CE_ItemViewItem, &option, &painter, m_list);
 
-    /* the ring where the VMs have their icon, its middle in their icons' middle */
-    const qreal x = inset + icon / 2.0;
-    const QPointF centre(isRightToLeft() ? width() - x : x, height() / 2.0);
-    paintRing(&painter, centre, ringSize(), style()->pixelMetric(QStyle::PM_SmallIconSize),
+    paintRing(&painter, ringCentre(), ringSize(), style()->pixelMetric(QStyle::PM_SmallIconSize),
               ringOf(tasks, palette), angle, palette, option.state & QStyle::State_Selected);
     if (m_compact) {
         return;

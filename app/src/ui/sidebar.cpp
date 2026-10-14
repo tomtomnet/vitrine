@@ -31,8 +31,8 @@ QStyleOptionViewItem sampleItem(const QWidget *list)
     option.initFrom(list);
     option.widget = list;
     option.rect = QRect(0, 0, 400, 2 * icon.height());
+    /* the icon's size is what the styles lay out, not the icon */
     option.features = QStyleOptionViewItem::HasDecoration | QStyleOptionViewItem::HasDisplay;
-    option.icon = Icons::themed({"computer"}, QStyle::SP_ComputerIcon);
     option.decorationSize = icon;
     option.decorationPosition = QStyleOptionViewItem::Left;
     option.decorationAlignment = Qt::AlignCenter;
