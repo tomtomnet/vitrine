@@ -35,10 +35,12 @@ with an AMD Radeon 780M, with Fedora 44 KDE guests. It is not packaged.
 
 ## Dependencies (Fedora)
 
-Building the app:
+Building the app (wayland-devel brings wayland-scanner, which with
+wayland-protocols and python3 generates the Wayland protocol code the app
+uses):
 
 ```
-sudo dnf install cmake ninja-build gcc gcc-c++ pkgconf-pkg-config git \
+sudo dnf install cmake ninja-build gcc gcc-c++ pkgconf-pkg-config git python3 \
     qt6-qtbase-devel qt6-qtbase-private-devel glib2-devel mesa-libEGL-devel \
     mesa-libgbm-devel libdrm-devel wayland-devel wayland-protocols-devel
 ```
@@ -217,6 +219,7 @@ AI-generated contributions.
 
 GPL-2.0-or-later, see [LICENSE](LICENSE). Patches to other projects are under
 the licenses of the files they change, and files with their own license header
-keep that license. vitrine's own logo, `app/data/vitrine.svg`, is derived from
+keep that license: `app/src/nested`'s copy of the research side's vmview
+library is MIT ([its licence](app/src/nested/LICENSE)). vitrine's own logo, `app/data/vitrine.svg`, is derived from
 QEMU's logo, "Kew the Angry Emu" by Benoît Canet, and is under CC BY 3.0
 ([its note](app/data/README.md)).

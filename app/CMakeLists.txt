@@ -168,6 +168,46 @@ target_compile_definitions(vitrine_vmview PRIVATE QT_NO_KEYWORDS)
 set_source_files_properties(src/vmview/vmview.cpp src/vmview/vmclipboard.cpp
     src/vmview/viewsurface.cpp PROPERTIES COMPILE_OPTIONS "-Wall;-Wextra")
 
+# The nested desktop in the window: the research side's vmview library in
+# src/nested, as it comes (src/nested/README.md), built as its own CMake
+# does: the protocol code of protocols.txt from wayland-protocols, and the
+# forwarder's table of them (gen_protocols.py)
+find_package(Python3 REQUIRED COMPONENTS Interpreter)
+pkg_get_variable(WAYLAND_XML_DIR wayland-scanner pkgdatadir)
+set(NESTED_DIR ${CMAKE_CURRENT_SOURCE_DIR}/src/nested)
+set(NESTED_GEN_DIR ${CMAKE_CURRENT_BINARY_DIR}/nested-protocols)
+file(STRINGS ${NESTED_DIR}/protocols.txt NESTED_PROTOCOL_LINES REGEX "^[^#].*\\.xml$")
+set(NESTED_PROTOCOL_SOURCES)
+foreach(xml ${NESTED_PROTOCOL_LINES})
+    if(NOT IS_ABSOLUTE ${xml})
+        set(xml ${WAYLAND_PROTOCOLS_DIR}/${xml})
+    endif()
+    get_filename_component(name ${xml} NAME_WE)
+    add_custom_command(OUTPUT ${NESTED_GEN_DIR}/${name}-protocol.c
+        COMMAND ${CMAKE_COMMAND} -E make_directory ${NESTED_GEN_DIR}
+        COMMAND ${WAYLAND_SCANNER} private-code ${xml} ${NESTED_GEN_DIR}/${name}-protocol.c
+        DEPENDS ${xml})
+    list(APPEND NESTED_PROTOCOL_SOURCES ${NESTED_GEN_DIR}/${name}-protocol.c)
+endforeach()
+add_custom_command(OUTPUT ${NESTED_GEN_DIR}/protocols_table.cpp
+    COMMAND ${CMAKE_COMMAND} -E make_directory ${NESTED_GEN_DIR}
+    COMMAND Python3::Interpreter ${NESTED_DIR}/gen_protocols.py ${WAYLAND_XML_DIR}/wayland.xml
+            ${WAYLAND_PROTOCOLS_DIR} ${NESTED_DIR}/protocols.txt ${NESTED_GEN_DIR}/protocols_table.cpp
+    DEPENDS ${NESTED_DIR}/gen_protocols.py ${NESTED_DIR}/protocols.txt)
+add_library(nestedvmview STATIC
+    src/nested/protocols.h
+    src/nested/vmview.cpp
+    src/nested/vmview.h
+    ${NESTED_GEN_DIR}/protocols_table.cpp
+    ${NESTED_PROTOCOL_SOURCES})
+target_include_directories(nestedvmview PRIVATE ${NESTED_DIR})
+target_link_libraries(nestedvmview PUBLIC PkgConfig::WAYLAND)
+# no Qt in it
+set_target_properties(nestedvmview PROPERTIES POSITION_INDEPENDENT_CODE ON
+    AUTOMOC OFF AUTOUIC OFF AUTORCC OFF)
+target_compile_options(nestedvmview PRIVATE
+    -Wall -Wextra -Wno-unused-parameter -Wno-missing-field-initializers)
+
 # The windows, a library of their own so that tests can use them
 qt_add_library(vitrine_ui STATIC
     src/ui/argseditor.cpp

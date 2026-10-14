@@ -1,0 +1,31 @@
+# SPDX-License-Identifier: MIT
+# SPDX-FileCopyrightText: 2026 tomtomnet
+# Protocols the forwarder knows (wayland-protocols paths, or absolute). Only interfaces from these files
+# can cross; a host global whose interface is not here is never shown to the guest. Core wayland.xml
+# is always in (its interfaces come from libwayland-client itself).
+stable/xdg-shell/xdg-shell.xml
+stable/linux-dmabuf/linux-dmabuf-v1.xml
+stable/presentation-time/presentation-time.xml
+stable/viewporter/viewporter.xml
+stable/tablet/tablet-v2.xml
+staging/fractional-scale/fractional-scale-v1.xml
+staging/cursor-shape/cursor-shape-v1.xml
+staging/commit-timing/commit-timing-v1.xml
+staging/fifo/fifo-v1.xml
+staging/tearing-control/tearing-control-v1.xml
+staging/single-pixel-buffer/single-pixel-buffer-v1.xml
+staging/alpha-modifier/alpha-modifier-v1.xml
+staging/content-type/content-type-v1.xml
+staging/xdg-activation/xdg-activation-v1.xml
+staging/color-management/color-management-v1.xml
+staging/color-representation/color-representation-v1.xml
+staging/xdg-system-bell/xdg-system-bell-v1.xml
+staging/pointer-warp/pointer-warp-v1.xml
+unstable/xdg-output/xdg-output-unstable-v1.xml
+unstable/pointer-constraints/pointer-constraints-unstable-v1.xml
+unstable/relative-pointer/relative-pointer-unstable-v1.xml
+unstable/pointer-gestures/pointer-gestures-unstable-v1.xml
+unstable/keyboard-shortcuts-inhibit/keyboard-shortcuts-inhibit-unstable-v1.xml
+unstable/primary-selection/primary-selection-unstable-v1.xml
+unstable/text-input/text-input-unstable-v3.xml
+unstable/idle-inhibit/idle-inhibit-unstable-v1.xml

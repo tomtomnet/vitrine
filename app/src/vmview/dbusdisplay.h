@@ -19,7 +19,7 @@ public:
     ~DBusDisplay() override;
 
     bool connectPeer(int fd, QString *err);  // takes ownership of fd
-    bool selectConsole(QString *err);        // first graphic console
+    bool selectConsole(QString *err, int index = -1);   // that console, or the first graphic one
     bool registerListener(int peerFd, QString *err);
 
     void applyUiInfo(uint32_t width, uint32_t height, uint32_t refreshMilliHz,
