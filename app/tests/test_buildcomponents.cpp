@@ -466,6 +466,11 @@ private slots:
         QCOMPARE(describe(medium.changes[0]), "Mesa changed");
         QVERIFY(write(guest + "/build-medium.sh", "#!/bin/bash\n# other\n"));
         QCOMPARE(summary(statusOf("medium").changes), "build script changed, Mesa changed");
+        /* a package it was made without: not built then */
+        QVERIFY(write(guest + "/kwin/kwin.spec", "Name: kwin\nVersion: 6.7.5\n"));
+        medium = statusOf("medium");
+        QCOMPARE(describe(medium.changes.last()), "Built without KWin");
+        QCOMPARE(summary(medium.changes), "build script changed, Mesa changed, without KWin");
     }
 };
 

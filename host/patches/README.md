@@ -5,6 +5,12 @@ pins and applies with `git apply` the `*.patch` files of
 `patches/<component>/` and of its folders, in the C order of their paths
 (`LC_ALL=C sort`): a folder's patches in name order, the folders in name
 order. Folders deeper down, hidden files and other names are not applied.
+A `patches/<component>/series` file, if there is one, names the patches
+instead, one per line in the order they apply (`#` comments).
+
+The Builds window shows the patches of a folder as coming from what
+`host/components.conf` names it (`origin.fork=qemu-gui fork`), each by
+its `Subject:`, else the first line of its description.
 
 ## qemu (upstream at `3876503f`)
 

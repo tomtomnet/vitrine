@@ -634,7 +634,9 @@ QString describe(const Change &change)
         }
         break;
     case Change::What::Dependency:
-        return change.how == Change::How::Added ? tr("Built with %1 now").arg(change.name)
+        /* one it has now, which what is built was made without (a package
+           not built yet, which the medium has not) */
+        return change.how == Change::How::Added ? tr("Built without %1").arg(change.name)
                                                 : tr("%1 changed").arg(change.name);
     case Change::What::Unknown:
         break;
@@ -675,7 +677,8 @@ QString summary(const QList<Change> &changes)
             files++;
             break;
         case Change::What::Dependency:
-            parts << tr("%1 changed").arg(change.name);
+            parts << (change.how == Change::How::Added ? tr("without %1").arg(change.name)
+                                                       : tr("%1 changed").arg(change.name));
             break;
         case Change::What::Unknown:
             parts << tr("built from other sources");
