@@ -78,10 +78,11 @@ QPushButton *Banner::addButton(const QString &text)
 }
 
 /*
- * The parts for @width.  The icon and the buttons go on the middle of the
- * text's first line, which is in the middle of the first row: as high as
- * the tallest of the line, the icon and the buttons.  Lines that follow
- * go under, beside the empty space under the icon and the buttons.
+ * The parts for @width.  The text, all its lines, and each button in the
+ * middle of the banner's height, which is the tallest of them: as much room
+ * above as under each (the user saw two lines of text low in their banner
+ * and the button high, when both followed the first line).  The icon goes
+ * on the middle of the text's first line, as a message box has it.
  */
 Banner::Geometry Banner::arrange(int width) const
 {
@@ -92,7 +93,7 @@ Banner::Geometry Banner::arrange(int width) const
     const qreal line = QFontMetricsF(m_text->font()).height();
     QList<QSize> sizes;
     int buttonsWidth = 0;
-    qreal row = qMax(line, qreal(icon));
+    int tallest = 0;
     Geometry g;
 
     for (const QPushButton *button : m_buttons) {
@@ -100,40 +101,29 @@ Banner::Geometry Banner::arrange(int width) const
             const QSize size = button->sizeHint().expandedTo(button->minimumSize());
             sizes << size;
             buttonsWidth += gap + size.width();
-            row = qMax(row, qreal(size.height()));
+            tallest = qMax(tallest, size.height());
         }
     }
     const int textLeft = m.left() + icon + gap;
     const int textWidth = qMax(1, width - m.right() - buttonsWidth - textLeft);
     const int textHeight = qMax(qCeil(line), m_text->heightForWidth(textWidth));
-    /* the text on a whole pixel, its line's middle wherever that puts it */
-    int textTop = qRound((row - line) / 2);
-    QList<int> tops;
-    int first = textTop;
+    /* the text with its icon, which stands out of a line lower than it */
+    const int above = qMax(0, qCeil((icon - line) / 2));
+    const int block = above + qMax(textHeight, qCeil((line + icon) / 2));
+    const int inner = qMax(block, tallest);
+    /* the text on a whole pixel, in the middle */
+    const int textTop = (inner - block) / 2 + above;
 
-    for (const QSize &size : std::as_const(sizes)) {
-        tops << qRound(textTop + line / 2 - size.height() / 2.0);
-        first = qMin(first, tops.last());
-    }
-    first = qMin(first, qFloor(textTop + (line - icon) / 2));
-    /* nothing above the margin */
-    textTop -= first;
-    int bottom = textTop + textHeight;
-    for (int &top : tops) {
-        top -= first;
-    }
     g.line = m.top() + textTop + line / 2;
-    bottom = qMax(bottom, qCeil(textTop + (line + icon) / 2));
     g.text = QRect(textLeft, m.top() + textTop, textWidth, textHeight);
-    /* right to left from the margin, in their order */
+    /* right to left from the margin, in their order, each in the middle */
     int x = width - m.right();
     for (qsizetype i = sizes.size() - 1; i >= 0; i--) {
         x -= sizes[i].width();
-        g.buttons.prepend(QRect(QPoint(x, m.top() + tops[i]), sizes[i]));
-        bottom = qMax(bottom, tops[i] + sizes[i].height());
+        g.buttons.prepend(QRect(QPoint(x, m.top() + (inner - sizes[i].height()) / 2), sizes[i]));
         x -= gap;
     }
-    g.height = m.top() + bottom + m.bottom();
+    g.height = m.top() + inner + m.bottom();
     return g;
 }
 

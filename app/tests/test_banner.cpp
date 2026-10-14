@@ -16,8 +16,9 @@
 #include "ui/icons.h"
 
 /*
- * Banners, at every scale (scales.h): the icon and the buttons on the
- * middle of the text's first line, the icon drawn crisp, the text not cut,
+ * Banners, at every scale (scales.h): the text and the buttons in the
+ * middle of the banner, the icon on the middle of the text's first line,
+ * the icon drawn crisp, the text not cut,
  * the banner as high as its content and its margins wherever it is, its
  * border on whole device pixels.  The dialog of the guest tools, whose
  * banner a layout with room to spare made three times too high, as high
@@ -131,12 +132,27 @@ QStringList checkBanner(QWidget *window, Banner *banner, bool warning)
                      .arg(centre).arg(middle * ratio);
     }
 
-    /* the buttons: on whole logical pixels, so half a logical pixel at most off */
-    for (const QPushButton *button : parts.buttons) {
-        const QRect b = geometryIn(button, window);
-        if (qAbs(b.top() + b.height() / 2.0 - middle) > 0.5 + 1e-6) {
-            wrong << QString("button %1's middle %2, the first line's %3")
-                         .arg(button->text()).arg(b.top() + b.height() / 2.0).arg(middle);
+    /* the text, all its lines, and the buttons in the middle of the banner
+       between its margins: on whole logical pixels, so half a logical pixel
+       at most off (the icon may make the text's room larger: not then) */
+    {
+        const int above = style->pixelMetric(QStyle::PM_LayoutTopMargin, nullptr, banner);
+        const int below = style->pixelMetric(QStyle::PM_LayoutBottomMargin, nullptr, banner);
+        const qreal contentMiddle = (box.top() + above + box.top() + box.height() - below) / 2.0;
+        const int iconSize = style->pixelMetric(QStyle::PM_SmallIconSize, nullptr, banner);
+        const int textHeight = qMax(qCeil(line), need);
+        if (iconSize <= line &&
+            qAbs(text.top() + textHeight / 2.0 - contentMiddle) > 0.5 + 1e-6) {
+            wrong << QString("text's middle %1, the banner's %2")
+                         .arg(text.top() + textHeight / 2.0).arg(contentMiddle);
+        }
+        for (const QPushButton *button : parts.buttons) {
+            const QRect b = geometryIn(button, window);
+            if (qAbs(b.top() + b.height() / 2.0 - contentMiddle) > 0.5 + 1e-6) {
+                wrong << QString("button %1's middle %2, the banner's %3")
+                             .arg(button->text()).arg(b.top() + b.height() / 2.0)
+                             .arg(contentMiddle);
+            }
         }
     }
 
