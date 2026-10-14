@@ -57,7 +57,7 @@ MAX_LINE = 65536
 STEP = re.compile(r"^== \[(\d+)/(\d+)\] (.*)$")
 PACKAGES = ["vitrine-guest-tools", "mesa-dri-drivers", "mesa-vulkan-drivers", "mesa-libEGL",
             "mesa-libgbm", "kwin", "kwin-common", "kwin-libs", "plasma-workspace",
-            "gnome-shell", "kernel-core", "dkms"]
+            "gnome-shell", "kernel-core", "dkms", "kpipewire", "wl-cross-domain-proxy"]
 CAPSETS = {1: "virgl", 2: "virgl2", 3: "gfxstream-vulkan", 4: "venus", 5: "cross-domain",
            6: "drm"}
 
@@ -143,7 +143,8 @@ def kernels():
 def driver():
     taint = read("/sys/module/virtio_gpu/taint")
     params = {}
-    for name in ("blob_flush_fence", "tiled_scanout", "host_vblank", "flip_grace_us", "import_3d"):
+    for name in ("blob_flush_fence", "tiled_scanout", "host_vblank", "flip_grace_us", "import_3d",
+                 "hide_virgl"):
         value = read(f"/sys/module/virtio_gpu/parameters/{name}")
         if value is not None:
             params[name] = value
@@ -241,6 +242,22 @@ def bootstrap():
     return "done" if props.get("ExecMainExitTimestampMonotonic", "0") != "0" else "waiting"
 
 
+def nested():
+    """The nested desktop (the VM's Nested desktop box): whether this boot is
+    one (vitrine-nested-boot.service read crosvm_desktop=1 in QEMU's fw_cfg),
+    whether its session and proxy are installed, and whether a session runs"""
+    running = False
+    for comm in glob.glob("/proc/[0-9]*/comm"):
+        # the kernel keeps 15 characters of a command's name
+        if read(comm) == "wl-cross-domai":
+            running = True
+            break
+    return {"boot": os.path.exists("/run/vitrine-nested/nested"),
+            "session": os.path.exists("/usr/libexec/vitrine-guest-tools/nested/session"),
+            "proxy": os.path.exists("/usr/bin/wl-cross-domain-proxy"),
+            "running": running}
+
+
 def preempt():
     """The kernel's preemption model: the one in parentheses"""
     text = read("/sys/kernel/debug/sched/preempt")
@@ -283,6 +300,7 @@ def status(installing=False):
         # bootstrap's when this agent holds the port
         "lastInstall": load("last-install.json"),
         "bootstrap": bootstrap(),
+        "nested": nested(),
         # this agent's install, or one run by hand or by the bootstrap
         "installing": installing or os.path.exists(f"{RUN_DIR}/installer-active"),
     }

@@ -2,7 +2,9 @@
 Description=vitrine: check that the patched virtio-gpu driver runs
 Documentation=file:/usr/src/vitrine-virtio-gpu-@VERSION@/prepare.sh
 ConditionVirtualization=vm
-# it may lower blob_flush_fence before a compositor uses the GPU
+# it may lower blob_flush_fence before a compositor uses the GPU; the
+# options of a nested-desktop boot differ
+After=vitrine-nested-boot.service
 Before=display-manager.service plasmalogin.service sddm.service gdm.service
 
 [Service]

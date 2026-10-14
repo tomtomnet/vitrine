@@ -1,0 +1,18 @@
+# vitrine guest tools: is this boot a nested-desktop one (the VM's Nested
+# desktop box)?  What it sets up then, in /run: see the script.
+[Unit]
+Description=vitrine: the nested desktop, when this boot is one
+Documentation=file:/usr/libexec/vitrine-guest-tools/nested-boot
+ConditionVirtualization=vm
+DefaultDependencies=no
+# qemu_fw_cfg may be loaded already; its sysfs is needed before /run is read
+After=systemd-modules-load.service
+Before=sysinit.target vitrine-virtio-gpu-check.service display-manager.service plasmalogin.service sddm.service
+
+[Service]
+Type=oneshot
+ExecStart=/usr/libexec/vitrine-guest-tools/nested-boot
+RemainAfterExit=yes
+
+[Install]
+WantedBy=sysinit.target

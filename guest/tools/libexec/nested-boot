@@ -1,0 +1,90 @@
+#!/bin/bash
+# vitrine guest tools: is this boot a nested-desktop one?  Early at boot, as
+# root (vitrine-nested-boot.service), before the display manager and the
+# driver check.
+#
+# vitrine checks a VM's Nested desktop box by giving it virtio-gpu-rutabaga
+# with cross-domain, and by passing the words crosvm_desktop=1 (with
+# crosvm_desktop_guest_dmabuf=1 and crosvm_desktop_label=NAME) through QEMU's
+# fw_cfg, opt/org.drm-native-context/cmdline: the guest's own GRUB boots its
+# own kernels, so the words cannot be on the kernel's command line (a direct
+# kernel boot may put them there: read as well).  The research's
+# crosvm-desktop-fwcfg and crosvm-desktop-detect, in one.
+#
+# A nested-desktop boot gets, all of it in /run (gone at the next boot):
+#  - /run/vitrine-nested/nested, and the words in /run/vitrine-nested/cmdline,
+#    which the session reads;
+#  - "Plasma (nested desktop)" in place of Plasma at the login screen: the
+#    session entry /usr/share/vitrine-guest-tools/wayland-sessions/
+#    plasma.desktop goes first among the places the display manager looks
+#    for plasma.desktop - for plasmalogin by its XDG_DATA_DIRS
+#    (/run/vitrine-nested/plasmalogin.env, which its unit's drop-in reads),
+#    for SDDM by its SessionDir (/run/vitrine-nested/sddm.conf, which a link
+#    in /usr/lib/sddm/sddm.conf.d names).  The guest's own automatic login
+#    into Plasma, if it has one, then logs into the nested desktop; vitrine
+#    sets none.  The login screen offers it first;
+#  - shared-memory huge pages, CROSVM_DESKTOP_SHMEM_HUGEPAGES of
+#    /etc/vitrine-guest-tools/nested.conf.
+# Any other boot gets none of it: the main line, as before.
+set -u
+run=/run/vitrine-nested
+conf=/etc/vitrine-guest-tools/nested.conf
+sessions=/usr/share/vitrine-guest-tools
+fw=/sys/firmware/qemu_fw_cfg/by_name/opt/org.drm-native-context/cmdline/raw
+
+rm -rf "$run"
+[ -d /sys/firmware/qemu_fw_cfg ] || modprobe -q qemu_fw_cfg 2> /dev/null || true
+words=
+[ -r "$fw" ] && words=$(tr -d '\0\n' < "$fw")
+read -r cmdline < /proc/cmdline
+case " $cmdline $words " in
+*" crosvm_desktop=1 "*) ;;
+*)
+	echo "not a nested-desktop boot: the main line"
+	exit 0
+	;;
+esac
+mkdir -p "$run"
+printf '%s %s\n' "$cmdline" "$words" > "$run/cmdline"
+touch "$run/nested"
+echo "a nested-desktop boot (${words:-the kernel's command line})"
+
+# The display manager reads these: their label is its runtime files', for
+# SELinux (a file made here is var_run_t, which the login manager may not
+# read: it would skip it, the research saw it on 2026-10-05)
+label() {
+	if command -v chcon > /dev/null && [ -e /sys/fs/selinux/enforce ]; then
+		chcon -t xdm_var_run_t "$@" 2> /dev/null || chcon -t etc_t "$@" 2> /dev/null ||
+			echo "<4>could not relabel $*: the login manager may not read it"
+	fi
+}
+echo "XDG_DATA_DIRS=$sessions:/usr/local/share:/usr/share" > "$run/plasmalogin.env"
+cat > "$run/sddm.conf" << EOF
+# vitrine guest tools, this nested-desktop boot only: "Plasma (nested desktop)" in
+# place of Plasma
+[Wayland]
+SessionDir=$sessions/wayland-sessions,/usr/local/share/wayland-sessions,/usr/share/wayland-sessions
+EOF
+label "$run/plasmalogin.env" "$run/sddm.conf"
+
+# Huge pages for shared memory (the research, 2026-10-09): the clients' wl_shm
+# buffers are memfds; with 4 KiB pages every new buffer of a resizing window
+# costs thousands of guest page faults and a page-by-page zero-copy mapping.
+thp=$(
+	CROSVM_DESKTOP_SHMEM_HUGEPAGES=within_size
+	# shellcheck disable=SC1090
+	[ -r "$conf" ] && . "$conf" > /dev/null 2>&1
+	printf '%s' "${CROSVM_DESKTOP_SHMEM_HUGEPAGES:-within_size}"
+)
+case $thp in
+within_size | always | advise | never)
+	if echo "$thp" > /sys/kernel/mm/transparent_hugepage/shmem_enabled 2> /dev/null; then
+		echo "shared-memory huge pages: $thp"
+	else
+		echo "<4>could not set shared-memory huge pages to $thp"
+	fi
+	;;
+keep) ;;
+*) echo "<4>CROSVM_DESKTOP_SHMEM_HUGEPAGES=$thp is not within_size, always, advise, never or keep" ;;
+esac
+exit 0

@@ -335,9 +335,9 @@ private slots:
 
         /* the driver's patches, in the order prepare.sh applies them */
         const QList<Patch> toolsPatches = patches(find(all, "tools"));
-        QCOMPARE(toolsPatches.size(), 12);
+        QCOMPARE(toolsPatches.size(), 13);
         QCOMPARE(toolsPatches.first().name(), "linux-drm-virtio-attach-imported-dmabufs.patch");
-        QCOMPARE(toolsPatches.last().name(), "linux-drm-virtio-tiled-scanout.patch");
+        QCOMPARE(toolsPatches.last().name(), "linux-drm-virtio-hide-virgl.patch");
         /* the nested desktop's: the research's work on the proxy, KPipeWire's k2 */
         const QList<Patch> proxyPatches = patches(find(all, "proxy"));
         QCOMPARE(proxyPatches.size(), 1);
