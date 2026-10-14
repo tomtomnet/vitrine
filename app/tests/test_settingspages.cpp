@@ -327,6 +327,14 @@ private slots:
                 choosable(display, "none"));
         QVERIFY(lacks->isVisibleTo(&page));
         QCOMPARE(lacks->text(), "This VM's QEMU has no GTK display.");
+        /* the keys go past it */
+        choose(display, "dbus");
+        QTest::keyClick(display, Qt::Key_Down);
+        QCOMPARE(chosen(display), "sdl");
+        QTest::keyClick(display, Qt::Key_Up);
+        QCOMPARE(chosen(display), "dbus");
+        choose(display, "sdl");
+        QVERIFY(!page.isModified());
         QVERIFY(!native->isEnabled() && !timing->isEnabled());
         QVERIFY(venus->isEnabled());
         venus->setChecked(true);

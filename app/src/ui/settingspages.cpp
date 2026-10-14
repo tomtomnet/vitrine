@@ -522,8 +522,8 @@ void DisplayPage::load(const ArgsFile &args)
     const QString display = g.display;
     QString choice;
     QString custom;
-    /* in the list for a screen none of its choices: what the VM has, in short */
-    QString own;
+    /* what the list shows for a screen none of its entries: what the VM has, in short */
+    QString placeholder;
 
     m_args = args;
     /* the screen: no choice for one shown elsewhere, or in another window */
@@ -538,32 +538,32 @@ void DisplayPage::load(const ArgsFile &args)
 
     if (args.indexOf("nographic") >= 0) {
         custom = tr("This VM has no screen (-nographic): change it on the Arguments page.");
-        own = tr("No screen (-nographic)");
+        placeholder = tr("No screen (-nographic)");
     } else if (screen == VmConfig::Screen::None && choice.isEmpty() &&
                (display.isEmpty() || display == "default" || display == "none" ||
                 display == "egl-headless")) {
         custom = tr("This VM shows its screen over VNC or SPICE only. Choosing below adds a "
                     "window.");
-        own = tr("VNC or SPICE only");
+        placeholder = tr("VNC or SPICE only");
     } else if (screen == VmConfig::Screen::None && choice.isEmpty()) {
         custom = tr("This VM shows its screen nowhere Vitrine can (-display %1). Choosing "
                     "below replaces it.")
                      .arg(display.toHtmlEscaped());
-        own = tr("Elsewhere (-display %1)").arg(display);
+        placeholder = tr("Elsewhere (-display %1)").arg(display);
     } else if (screen == VmConfig::Screen::OwnWindow && choice.isEmpty()) {
         const bool qemuDefault = display.isEmpty() || display == "default";
         custom = qemuDefault ? tr("The screen shows in QEMU's default window.")
                              : tr("The screen shows in QEMU's %1 window.")
                                    .arg(display.toUpper().toHtmlEscaped());
-        own = qemuDefault ? tr("QEMU's default window")
-                          : tr("QEMU's %1 window").arg(display.toUpper());
+        placeholder = qemuDefault ? tr("QEMU's default window")
+                                  : tr("QEMU's %1 window").arg(display.toUpper());
     }
     m_custom->setText(custom);
     m_custom->setVisible(!custom.isEmpty());
-    /* none of the list current, which would make an untouched page modified */
+    /* then no entry current: one would make an untouched page modified */
     {
         const QSignalBlocker block(m_display);
-        m_display->setPlaceholderText(own);
+        m_display->setPlaceholderText(placeholder);
         m_display->setCurrentIndex(choice.isEmpty() ? -1 : m_display->findData(choice));
     }
 
