@@ -59,6 +59,46 @@ class TestIcons : public QObject
     }
 
 private slots:
+    /*
+     * The Builds window's status icons keep their colours on a selected row
+     * (KDE's theme turned its green check all white there): keepColours()
+     * gives the Normal pixmap where Selected or Active is asked, and the
+     * up-to-date check is the same in both, green with its white check
+     */
+    void keepsColours()
+    {
+        QPixmap red(16, 16), white(16, 16);
+        red.fill(Qt::red);
+        white.fill(Qt::white);
+        QIcon theme;
+        theme.addPixmap(red, QIcon::Normal);
+        theme.addPixmap(white, QIcon::Selected);
+        theme.addPixmap(white, QIcon::Active);
+        const QIcon kept = Icons::keepColours(theme);
+        for (QIcon::Mode mode : {QIcon::Selected, QIcon::Active}) {
+            const QImage image = kept.pixmap(QSize(16, 16), 1.0, mode).toImage();
+            QCOMPARE(image.pixelColor(8, 8), QColor(Qt::red));
+        }
+
+        const QIcon check = Icons::upToDate();
+        for (qreal ratio : {1.0, 1.5, 2.0}) {
+            const QImage normal = check.pixmap(QSize(16, 16), ratio, QIcon::Normal).toImage();
+            const QImage selected = check.pixmap(QSize(16, 16), ratio, QIcon::Selected).toImage();
+            QCOMPARE(normal.size(), QSize(qRound(16 * ratio), qRound(16 * ratio)));
+            QCOMPARE(selected, normal);
+            /* green near a corner, inside the rounded edge; the check's white somewhere */
+            const QColor green = normal.pixelColor(qRound(3 * ratio), qRound(13 * ratio));
+            QVERIFY2(green.green() > 150 && green.red() < 80, qPrintable(green.name()));
+            int whitest = 0;
+            for (int y = 0; y < normal.height(); y++) {
+                for (int x = 0; x < normal.width(); x++) {
+                    whitest = qMax(whitest, normal.pixelColor(x, y).lightness());
+                }
+            }
+            QVERIFY2(whitest > 240, qPrintable(QString::number(whitest)));
+        }
+    }
+
     void initTestCase()
     {
         Scales::quieter();

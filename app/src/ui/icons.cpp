@@ -326,6 +326,122 @@ QIcon control(Control kind)
     return QIcon(new ControlEngine(kind));
 }
 
+namespace {
+
+/* The base icon, its Normal mode where Selected or Active is asked */
+class KeepColoursEngine : public QIconEngine
+{
+public:
+    explicit KeepColoursEngine(const QIcon &base) : m_base(base) {}
+
+    void paint(QPainter *painter, const QRect &rect, QIcon::Mode mode,
+               QIcon::State state) override
+    {
+        m_base.paint(painter, rect, Qt::AlignCenter, keep(mode), state);
+    }
+
+    QPixmap pixmap(const QSize &size, QIcon::Mode mode, QIcon::State state) override
+    {
+        return m_base.pixmap(size, keep(mode), state);
+    }
+
+    QPixmap scaledPixmap(const QSize &size, QIcon::Mode mode, QIcon::State state,
+                         qreal scale) override
+    {
+        return m_base.pixmap(size, scale, keep(mode), state);
+    }
+
+    QSize actualSize(const QSize &size, QIcon::Mode mode, QIcon::State state) override
+    {
+        return m_base.actualSize(size, keep(mode), state);
+    }
+
+    QList<QSize> availableSizes(QIcon::Mode mode, QIcon::State state) override
+    {
+        return m_base.availableSizes(keep(mode), state);
+    }
+
+    QIconEngine *clone() const override { return new KeepColoursEngine(m_base); }
+    QString key() const override { return QStringLiteral("vitrine-keep-colours"); }
+
+private:
+    static QIcon::Mode keep(QIcon::Mode mode)
+    {
+        return mode == QIcon::Selected || mode == QIcon::Active ? QIcon::Normal : mode;
+    }
+
+    QIcon m_base;
+};
+
+/* Up to date: Breeze's emblem-success (16 units) without its frame */
+class UpToDateEngine : public QIconEngine
+{
+public:
+    void paint(QPainter *painter, const QRect &rect, QIcon::Mode mode,
+               QIcon::State state) override
+    {
+        const qreal ratio = painter->device() ? painter->device()->devicePixelRatio() : 1.0;
+        painter->drawPixmap(rect, scaledPixmap(rect.size(), mode, state, ratio));
+    }
+
+    QPixmap pixmap(const QSize &size, QIcon::Mode mode, QIcon::State state) override
+    {
+        return scaledPixmap(size, mode, state, 1.0);
+    }
+
+    QPixmap scaledPixmap(const QSize &size, QIcon::Mode mode, QIcon::State,
+                         qreal scale) override
+    {
+        const int side = qMax(1, qRound(qMin(size.width(), size.height()) * scale));
+        const qreal u = side / 16.0;
+        QImage image(side, side, QImage::Format_ARGB32_Premultiplied);
+        image.fill(Qt::transparent);
+        {
+            QPainter p(&image);
+            QPainterPath box, check;
+
+            p.setRenderHint(QPainter::Antialiasing);
+            if (mode == QIcon::Disabled) {
+                p.setOpacity(0.5);
+            }
+            box.addRoundedRect(QRectF(0, 0, side, side), 2 * u, 2 * u);
+            p.fillPath(box, QColor(0x27, 0xae, 0x60));
+            check.moveTo(12.586 * u, 3.586 * u);
+            check.lineTo(6.5 * u, 9.672 * u);
+            check.lineTo(3.414 * u, 6.586 * u);
+            check.lineTo(2 * u, 8 * u);
+            check.lineTo(6.5 * u, 12.5 * u);
+            check.lineTo(14 * u, 5 * u);
+            check.closeSubpath();
+            p.fillPath(check, Qt::white);
+        }
+        QPixmap pixmap = QPixmap::fromImage(image);
+        pixmap.setDevicePixelRatio(scale);
+        return pixmap;
+    }
+
+    QSize actualSize(const QSize &size, QIcon::Mode, QIcon::State) override
+    {
+        const int side = qMin(size.width(), size.height());
+        return QSize(side, side);
+    }
+
+    QIconEngine *clone() const override { return new UpToDateEngine; }
+    QString key() const override { return QStringLiteral("vitrine-up-to-date"); }
+};
+
+}
+
+QIcon keepColours(const QIcon &icon)
+{
+    return QIcon(new KeepColoursEngine(icon));
+}
+
+QIcon upToDate()
+{
+    return QIcon(new UpToDateEngine);
+}
+
 void paint(QPainter *painter, const QIcon &icon, int size, const QPointF &centre,
            QIcon::Mode mode, QIcon::State state)
 {

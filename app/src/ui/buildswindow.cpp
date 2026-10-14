@@ -113,7 +113,8 @@ QIcon stateIcon(State run, StatusState state)
     case State::Building:
         return Icons::themed({"run-build", "run-build-install"}, QStyle::SP_BrowserReload);
     case State::Failed:
-        return Icons::themed({"emblem-error", "dialog-error"}, QStyle::SP_MessageBoxCritical);
+        return Icons::keepColours(
+            Icons::themed({"emblem-error", "dialog-error"}, QStyle::SP_MessageBoxCritical));
     case State::Stopped:
     case State::Skipped:
         return Icons::themed({"process-stop"}, QStyle::SP_BrowserStop);
@@ -122,16 +123,16 @@ QIcon stateIcon(State run, StatusState state)
     }
     switch (state) {
     case StatusState::UpToDate:
-        return Icons::themed({"emblem-success", "emblem-checked", "dialog-ok-apply"},
-                             QStyle::SP_DialogApplyButton);
+        /* Breeze's check without its frame, the user's pick of the two */
+        return Icons::upToDate();
     case StatusState::Outdated:
     case StatusState::NotBuilt:
-        return Icons::themed({"update-high", "system-software-update"},
-                             QStyle::SP_MessageBoxWarning);
+        return Icons::keepColours(Icons::themed({"update-high", "system-software-update"},
+                                                QStyle::SP_MessageBoxWarning));
     case StatusState::NoSources:
         break;
     }
-    return Icons::themed({"dialog-warning"}, QStyle::SP_MessageBoxWarning);
+    return Icons::keepColours(Icons::themed({"dialog-warning"}, QStyle::SP_MessageBoxWarning));
 }
 
 /*
