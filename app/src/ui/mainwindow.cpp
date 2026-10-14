@@ -31,6 +31,7 @@
 #include <algorithm>
 #include <memory>
 
+#include "core/buildmanager.h"
 #include "core/hostsettings.h"
 #include "core/paths.h"
 #include "core/qemuinfo.h"
@@ -40,9 +41,9 @@
 #include "core/vmhardware.h"
 #include "core/vmrunner.h"
 #include "core/vmstore.h"
+#include "ui/buildswindow.h"
 #include "ui/clonedialog.h"
 #include "ui/firmwarerepair.h"
-#include "ui/guesttoolsbuilddialog.h"
 #include "ui/guesttoolsdialog.h"
 #include "ui/hosttuningnotifier.h"
 #include "ui/icons.h"
@@ -52,7 +53,6 @@
 #include "ui/memorymonitor.h"
 #include "ui/newvmdialog.h"
 #include "ui/preferencesdialog.h"
-#include "ui/qemubuilddialog.h"
 #include "ui/stackbanner.h"
 #include "ui/statusstats.h"
 #include "ui/qemudocs.h"
@@ -132,14 +132,9 @@ MainWindow::MainWindow(VmStore *store, QWidget *parent)
     m_list->setContextMenuPolicy(Qt::CustomContextMenu);
     /* the tasks' button shows the builds' windows: once this window is gone, none */
     const QPointer<MainWindow> self(this);
-    TaskList::instance()->setDetails(Task::Kind::QemuBuild, [self](Task *) {
+    TaskList::instance()->setDetails(Task::Kind::Build, [self](Task *) {
         if (self) {
-            self->buildQemu();
-        }
-    });
-    TaskList::instance()->setDetails(Task::Kind::GuestToolsBuild, [self](Task *) {
-        if (self) {
-            GuestToolsBuildDialog::present(self);
+            self->showBuilds(BuildManager::instance()->focus());
         }
     });
 
@@ -168,10 +163,23 @@ MainWindow::MainWindow(VmStore *store, QWidget *parent)
     connect(m_sidebar, &Sidebar::collapsedChanged, this, &MainWindow::libraryCollapsed);
     setCentralWidget(m_splitter);
     /* Vitrine's QEMU not built, out of date, building */
-    connect(StackBanner::addTo(this), &StackBanner::buildRequested, this, &MainWindow::buildQemu);
+    connect(StackBanner::addTo(this), &StackBanner::buildRequested, this,
+            [this]() { showBuilds("qemu"); });
 
     m_qemuStatus->setObjectName("qemuStatus");
     m_updates = new UpdateNotifier(this);
+    /* a build of Vitrine's QEMU: the update check knows it; and the VMs'
+       QEMU, if it is another one now, its options */
+    connect(StackBuilder::instance(), &StackBuilder::started, this,
+            [this]() { m_qemuBefore = Paths::qemuBinary(); });
+    connect(StackBuilder::instance(), &StackBuilder::built, this, [this]() {
+        m_updates->revalidate();
+        if (Paths::qemuBinary() != m_qemuBefore) {
+            m_qemuBefore = Paths::qemuBinary();
+            QemuDocs::reloadPreferred();
+            m_details->refresh();
+        }
+    });
     m_input->setObjectName("input");
     m_input->setContentsMargins(0, 0, fontMetrics().averageCharWidth() * 3, 0);
     m_input->hide();
@@ -292,9 +300,12 @@ void MainWindow::createActions()
     m_import = action(tr("&Import VM…"), {"document-import"}, QStyle::SP_DialogOpenButton,
                       QKeySequence(Qt::CTRL | Qt::Key_I), &MainWindow::importVm);
     m_import->setToolTip(tr("Create a virtual machine from a QEMU launch script"));
-    m_build = action(tr("&Build QEMU…"), {"run-build", "run-build-install"},
-                     QStyle::SP_BrowserReload, QKeySequence(Qt::CTRL | Qt::Key_B),
-                     &MainWindow::buildQemu);
+    m_build = new QAction(Icons::themed({"run-build", "run-build-install"},
+                                        QStyle::SP_BrowserReload),
+                          tr("&Builds…"), this);
+    m_build->setShortcut(QKeySequence(Qt::CTRL | Qt::Key_B));
+    m_build->setToolTip(tr("Vitrine's QEMU and the guest tools: what is built, and building them"));
+    connect(m_build, &QAction::triggered, this, [this]() { showBuilds(); });
     m_settings = new QAction(Icons::themed({"configure", "preferences-system"},
                                            QStyle::SP_FileDialogDetailedView),
                              tr("&Settings"), this);
@@ -409,12 +420,8 @@ void MainWindow::createActions()
     file->addAction(m_new);
     file->addAction(m_import);
     file->addSeparator();
+    /* Vitrine's QEMU and the guest tools, built or updated, or the build under way */
     file->addAction(m_build);
-    /* the guest tools' medium, as QEMU: built or updated, or the build under way */
-    file->addAction(Icons::themed({"run-build-install", "system-software-install"},
-                                  QStyle::SP_DialogApplyButton),
-                    tr("Build &Guest Tools…"), this,
-                    [this]() { GuestToolsBuildDialog::present(this); });
     file->addAction(m_preferences);
     file->addAction(m_reference);
     file->addSeparator();
@@ -683,7 +690,7 @@ void MainWindow::failed(Vm *vm, const QString &error)
                                                  ? tr("Show the &Build…")
                                                  : tr("&Build Vitrine's QEMU…"),
                                              QMessageBox::ActionRole);
-        connect(button, &QPushButton::clicked, this, &MainWindow::buildQemu);
+        connect(button, &QPushButton::clicked, this, [this]() { showBuilds("qemu"); });
         box->setDefaultButton(button);
     }
     /* not for a start refused before QEMU ran: that log is of another run */
@@ -1101,20 +1108,10 @@ void MainWindow::importVm()
     }
 }
 
-void MainWindow::buildQemu()
+void MainWindow::showBuilds(const QString &component)
 {
-    if (!m_buildDialog) {
-        /* not modal: the VMs stay at hand during a build */
-        m_buildDialog = new QemuBuildDialog(this);
-        connect(m_buildDialog, &QemuBuildDialog::built, m_updates, &UpdateNotifier::revalidate);
-        connect(m_buildDialog, &QemuBuildDialog::qemuChanged, this, [this]() {
-            QemuDocs::reloadPreferred();
-            m_details->refresh();
-        });
-    }
-    m_buildDialog->show();
-    m_buildDialog->raise();
-    m_buildDialog->activateWindow();
+    /* not modal: the VMs stay at hand during a build */
+    BuildsWindow::present(this, component);
 }
 
 void MainWindow::bringToFront()

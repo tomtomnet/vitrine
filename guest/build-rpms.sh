@@ -9,35 +9,45 @@
 #          caches for radeonsi/iris over virtio, RADV's virtio probe fix
 #   kwin   KWin 6.7.5 + the VM frame pacing and zero-copy patches; for Plasma
 #          6.7.5 guests only (guest/kwin/kwin.spec)
+# A package is a folder of guest/ with its spec; components.conf gives
+# their order (the app's Builds window shows them from there).
 #
-#   guest/build-rpms.sh [--force] [--verbose] [tools] [mesa] [kwin]  (default: all three)
-#   guest/build-rpms.sh --print-inputs [tools] [mesa] [kwin]
+#   guest/build-rpms.sh [--force] [--verbose] [PACKAGE...]  (default: all of them)
+#   guest/build-rpms.sh --print-inputs [PACKAGE...]
 #   guest/build-rpms.sh --print-deps
 #
 # A package is built again only when its inputs changed (its directory here,
-# and the scripts that build it), or with --force.  Each one goes to a
-# directory of its own, replaced only once a build succeeded: a failed or
-# stopped build keeps the last good one.  Mesa takes ~15-25 min, KWin ~10,
-# tools ~1.  Stopping the script (Ctrl+C, SIGTERM) stops its container.
+# and the script that builds it in the container), or with --force.  Each
+# one goes to a directory of its own, replaced only once a build succeeded:
+# a failed or stopped build keeps the last good one, and the one it
+# replaced is kept as PACKAGE.previous: inputs that go back to it bring it
+# back, without a build.  The compilers go through ccache, whose cache stays
+# for the next build: an update compiles again only the files it changes,
+# although rpmbuild unpacks all the sources again.  Mesa takes ~15-25 min
+# from nothing, KWin ~10, tools ~1.  Stopping the script (Ctrl+C, SIGTERM)
+# stops its container.
 #   --verbose       the build's output here too, not only in its log
 #   --print-inputs  print "PACKAGE HASH" for each package: the hash of its
-#                   inputs, which its build records in PACKAGE/.inputs
+#                   inputs, which its build records in PACKAGE/.inputs (and
+#                   the lines it sums up in PACKAGE/.inputs.list)
 #   --print-deps    tell what the build needs that is missing, then stop
 #                   (status 1 if something is)
 #
 # Output: $RPMS_DIR [~/.local/share/vitrine/guest-tools/rpms/fcRELEASE]/PACKAGE/,
 #   one build at a time into it.
-# Downloads (dnf's cache, source tarballs): $CACHE_DIR
-#   [~/.cache/vitrine/guest-build/fcRELEASE], kept for the next run.
+# Downloads (dnf's cache, source tarballs) and the compiler cache (ccache/):
+#   $CACHE_DIR [~/.cache/vitrine/guest-build/fcRELEASE], kept for the next run.
 # Environment: FEDORA_RELEASE [44], FEDORA_IMAGE [registry.fedoraproject.org/
 #   fedora:RELEASE], JOBS [nproc, at most 8], MEMORY [10g: the container's
 #   memory cap; KWin's LTO link and Mesa's parallel compiles take several
-#   GiB], DEBUGINFO [0; 1 keeps debuginfo packages].
+#   GiB], DEBUGINFO [0; 1 keeps debuginfo packages], CCACHE [1; 0: no
+#   compiler cache], CCACHE_MAXSIZE [8G].
 #
 # Lines starting with "vitrine-build: " are for vitrine, as host/build.sh's:
 #   vitrine-build: building: PACKAGE (log: FILE)
 #   vitrine-build: phase: WHAT     what the build in the container does now
 #   vitrine-build: up to date: DIRECTORY
+#   vitrine-build: restored: DIRECTORY   the build before, of the same inputs
 #   vitrine-build: built: DIRECTORY
 #   vitrine-build: missing: COMMAND
 #   vitrine-build: install: THE COMMAND INSTALLING WHAT IS MISSING
@@ -54,29 +64,49 @@ say() { echo "vitrine-build: $*"; }
 die() { say "error: $*" >&2; exit 1; }
 usage() { sed -n '3,/^set /{/^#/p}' "$here/build-rpms.sh" | sed 's/^# \{0,1\}//'; }
 
+# The packages: a folder here with one spec, in the order of components.conf
+is_package() {
+	[[ $1 =~ ^[A-Za-z0-9][A-Za-z0-9_.+-]*$ ]] &&
+		[ "$(find "$here/$1" -maxdepth 1 -name '*.spec' 2> /dev/null | wc -l)" = 1 ]
+}
+all_packages() {
+	local p
+	{
+		sed -n 's/^[[:space:]]*\[\([^]]*\)\][[:space:]]*$/\1/p' "$here/components.conf" 2> /dev/null
+		find "$here" -mindepth 1 -maxdepth 1 -type d -printf '%f\n' | LC_ALL=C sort
+	} | awk '!seen[$0]++' | while read -r p; do
+		! is_package "$p" || echo "$p"
+	done
+}
+
 action=build
 force=0
 verbose=0
 targets=()
 for a in "$@"; do
 	case "$a" in
-	tools|mesa|kwin) targets+=("$a") ;;
 	--force) force=1 ;;
 	-v|--verbose) verbose=1 ;;
 	--print-inputs) action=print-inputs ;;
 	--print-deps) action=print-deps ;;
 	-h|--help) usage; exit 0 ;;
-	*) echo "unknown argument $a (see --help)" >&2; exit 2 ;;
+	-*) echo "unknown argument $a (see --help)" >&2; exit 2 ;;
+	*)
+		is_package "$a" || { echo "no package $a: no folder $a with its spec in $here" >&2; exit 2; }
+		targets+=("$a")
+		;;
 	esac
 done
-[ ${#targets[@]} -gt 0 ] || targets=(tools mesa kwin)
+[ ${#targets[@]} -gt 0 ] || mapfile -t targets < <(all_packages)
 
-# What a package's build depends on: its directory and the build scripts, in
-# the C locale's order (sort's own would change with the user's locale)
-inputs_hash() {
+# What a package's build depends on: its directory and the script that
+# builds it in the container, in the C locale's order (sort's own would
+# change with the user's locale); a build records these lines, and their hash
+inputs_lines() {
 	(cd "$here" && find "$1" rpm-build-inside.sh -type f -print0 | LC_ALL=C sort -z |
-		xargs -0 sha256sum) | sha256sum | cut -d' ' -f1
+		xargs -0 sha256sum)
 }
+inputs_hash() { inputs_lines "$1" | sha256sum | cut -d' ' -f1; }
 
 if [ "$action" = print-inputs ]; then
 	for t in "${targets[@]}"; do
@@ -101,6 +131,11 @@ fi
 [ "$action" = print-deps ] && exit 0
 
 mkdir -p "$out" "$cache/dnf" "$cache/sources"
+ccache=()
+if [ "${CCACHE:-1}" != 0 ]; then
+	mkdir -p "$cache/ccache"
+	ccache=(-v "$cache/ccache:/ccache" -e CCACHE_MAXSIZE="${CCACHE_MAXSIZE:-8G}")
+fi
 # one build at a time into $out: two would replace each other's packages
 exec 9> "$out/.lock"
 flock -n 9 || die "another build of the guest tools is running into $out"
@@ -141,6 +176,15 @@ for t in "${targets[@]}"; do
 		say "up to date: $out/$t"
 		continue
 	fi
+	# the build before, of these inputs: back in its place, the other one kept
+	if [ "$force" = 0 ] && [ "$(cat "$out/$t.previous/.inputs" 2> /dev/null)" = "$hash" ]; then
+		rm -rf "$out/.$t.swap"
+		[ ! -d "$out/$t" ] || mv "$out/$t" "$out/.$t.swap"
+		mv "$out/$t.previous" "$out/$t"
+		[ ! -d "$out/.$t.swap" ] || mv "$out/.$t.swap" "$out/$t.previous"
+		say "restored: $out/$t"
+		continue
+	fi
 	log=$out/$t.log
 	new=$out/.$t.new
 	rm -rf "$new"
@@ -159,7 +203,7 @@ for t in "${targets[@]}"; do
 	# in the foreground before it runs a trap); without the lock's descriptor
 	podman run --rm --name "$container" --security-opt label=disable --memory="${MEMORY:-10g}" \
 		-v "$here:/src:ro" -v "$new:/out" -v "$cache/dnf:/var/cache/libdnf5" \
-		-v "$cache/sources:/sources" \
+		-v "$cache/sources:/sources" ${ccache[@]+"${ccache[@]}"} \
 		-e JOBS="${JOBS:-$(( $(nproc) < 8 ? $(nproc) : 8 ))}" -e DEBUGINFO="${DEBUGINFO:-0}" \
 		"$image" bash /src/rpm-build-inside.sh "$t" >> "$log" 2>&1 9>&- &
 	pid=$!
@@ -174,12 +218,13 @@ for t in "${targets[@]}"; do
 	# the log to its end
 	[ -z "$follow" ] || wait "$follow" || true
 	if [ "$rc" = 0 ]; then
+		inputs_lines "$t" > "$new/.inputs.list"
 		echo "$hash" > "$new/.inputs"
-		rm -rf "$out/$t.old"
-		[ -d "$out/$t" ] && mv "$out/$t" "$out/$t.old"
+		# the one it replaces stays, the one before that goes
+		rm -rf "$out/$t.previous"
+		[ ! -d "$out/$t" ] || mv "$out/$t" "$out/$t.previous"
 		mv "$new" "$out/$t"
 		new=
-		rm -rf "$out/$t.old"
 		[ "$verbose" = 1 ] || tail -n 2 "$log"
 		say "built: $out/$t"
 	else

@@ -344,7 +344,7 @@ when it draws through virgl.
   get them on the Arguments page of the VM's settings.
 - The host's virglrenderer needs the native context renderer of its GPU,
   which most distributions leave out. Vitrine builds its own with QEMU
-  (`host/build.sh`, which File > Build QEMU runs), with the renderers of AMD
+  (`host/build.sh`, which File > Builds runs), with the renderers of AMD
   GPUs and of Intel GPUs on the i915 or Xe driver. Its QEMU is an x86_64
   one: Qualcomm, Apple and Mali hosts need another QEMU and virglrenderer.
 - On AMD, that virglrenderer also carries a

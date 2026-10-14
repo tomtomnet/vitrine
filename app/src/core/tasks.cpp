@@ -43,12 +43,21 @@ void Task::setProgress(qint64 done, qint64 total)
     }
 }
 
+void Task::setRemaining(qint64 seconds)
+{
+    if (seconds != m_remaining) {
+        m_remaining = seconds;
+        emit changed();
+    }
+}
+
 void Task::finish(State state, const QString &text)
 {
     if (!isRunning() || state == State::Running) {
         return;
     }
     m_state = state;
+    m_remaining = -1;
     /* what it did last is no longer what it does */
     m_text = text;
     emit changed();

@@ -21,9 +21,9 @@
 #include <sys/types.h>
 #include <unistd.h>
 
+#include "core/buildcomponents.h"
 #include "core/guesttoolsbuilder.h"
 #include "core/paths.h"
-#include "core/tasks.h"
 
 /* What a complete build has, written last */
 static const char kManifest[] = "/share/vitrine/stack.conf";
@@ -114,6 +114,8 @@ StackBuilder::Build StackBuilder::Build::parse(const QString &prefix, const QByt
     build.virglCommit = values.value("VIRGL_COMMIT");
     build.virglVersion = values.value("VIRGL_VERSION");
     build.virglPatches = values.value("VIRGL_PATCHES").split(' ', Qt::SkipEmptyParts);
+    build.virglKey = values.value("VIRGL_KEY");
+    build.virglPrefix = values.value("VIRGL_PREFIX");
     return build;
 }
 
@@ -131,6 +133,7 @@ StackBuilder::Line StackBuilder::Line::parse(const QString &text)
 {
     static const QRegularExpression ninja("^\\[(\\d+)/(\\d+)\\] ");
     static const QRegularExpression step("^step (\\d+)/(\\d+): (.*)$");
+    static const QRegularExpression done("^done: (\\S+) (built|up to date) (.*)$");
     static const QList<std::pair<QString, Kind>> kinds = {
         {"missing: ", Missing}, {"install: ", Install},   {"warning: ", Warning},
         {"up to date: ", UpToDate}, {"built: ", Built}, {"error: ", Error},
@@ -157,6 +160,18 @@ StackBuilder::Line StackBuilder::Line::parse(const QString &text)
         result.done = m.captured(1).toInt();
         result.total = m.captured(2).toInt();
         result.text = m.captured(3);
+        return result;
+    }
+    if (line.startsWith("component: ")) {
+        result.kind = Component;
+        result.component = result.text = line.mid(11).trimmed();
+        return result;
+    }
+    if (const QRegularExpressionMatch m = done.match(line); m.hasMatch()) {
+        result.kind = Done;
+        result.component = m.captured(1);
+        result.built = m.captured(2) == "built";
+        result.folder = result.text = m.captured(3);
         return result;
     }
     for (const auto &[prefix, kind] : kinds) {
@@ -207,59 +222,19 @@ StackBuilder::Versions StackBuilder::versions(const QString &hostDir)
     return Versions::parse(readFile(hostDir + "/versions.conf"));
 }
 
-/*
- * As build.sh's patches_of: the *.patch files of patches/<component> and
- * of its folders (not deeper), in the C order of their paths.  Matched with
- * case, as bash's glob is: a .PATCH file is none; and neither matches
- * hidden files or folders.
- */
 QStringList StackBuilder::patches(const QString &hostDir, const QString &component)
 {
-    const QString path = "patches/" + component;
-    const QDir dir(hostDir + '/' + path);
-    QStringList list;
-    const auto add = [&list](const QDir &folder, const QString &prefix) {
-        const QStringList names =
-            folder.entryList({"*.patch"}, QDir::Files | QDir::CaseSensitive, QDir::NoSort);
-        for (const QString &name : names) {
-            list << prefix + name;
-        }
-    };
-
-    if (hostDir.isEmpty()) {
-        return {};
-    }
-    add(dir, path + '/');
-    for (const QString &folder : dir.entryList(QDir::Dirs | QDir::NoDotAndDotDot, QDir::NoSort)) {
-        add(QDir(dir.filePath(folder)), path + '/' + folder + '/');
-    }
-    std::sort(list.begin(), list.end());
-    return list;
+    return Builds::patchPaths(hostDir, "patches/" + component);
 }
 
-/*
- * As build.sh: the sha256 of the lines that sha256sum prints for
- * versions.conf, build.sh, then the patches of qemu and of virglrenderer.
- */
+/* QEMU's key, which has virglrenderer's: build.sh's stamp */
 QString StackBuilder::inputStamp(const QString &hostDir)
 {
-    QStringList files = {"versions.conf", "build.sh"};
-    QByteArray lines;
+    Builds::Places places;
+    places.hostDir = hostDir;
+    const QList<Builds::Component> all = Builds::load(places);
 
-    if (hostDir.isEmpty()) {
-        return {};
-    }
-    files << patches(hostDir, "qemu") << patches(hostDir, "virglrenderer");
-    for (const QString &name : std::as_const(files)) {
-        QFile file(hostDir + '/' + name);
-        QCryptographicHash hash(QCryptographicHash::Sha256);
-
-        if (!file.open(QIODevice::ReadOnly) || !hash.addData(&file)) {
-            return {};
-        }
-        lines += hash.result().toHex() + "  " + name.toUtf8() + '\n';
-    }
-    return QString::fromLatin1(QCryptographicHash::hash(lines, QCryptographicHash::Sha256).toHex());
+    return Builds::key(Builds::find(all, "qemu"), all);
 }
 
 StackBuilder::Build StackBuilder::current(const QString &stackDir)
@@ -319,7 +294,8 @@ QStringList StackBuilder::prune(const QString &stackDir, const QStringList &keep
         return canonical.startsWith(stack + '/')
                    ? canonical.mid(stack.size() + 1).section('/', 0, 0) : QString();
     };
-    needed << folderOf(stack + "/current");
+    const QString current = folderOf(stack + "/current");
+    needed << current;
     for (const QString &binary : keep) {
         needed << folderOf(binary);
     }
@@ -334,9 +310,69 @@ QStringList StackBuilder::prune(const QString &stackDir, const QStringList &keep
             needed << folderOf(QString::fromLocal8Bit(cmdline.readAll().split('\0').value(0)));
         }
     }
-    for (const QString &name : QDir(stack).entryList(QDir::Dirs | QDir::NoDotAndDotDot)) {
+    /* the build before `current`: the newest complete one but it */
+    const QStringList folders = QDir(stack).entryList(QDir::Dirs | QDir::NoDotAndDotDot);
+    QString previous;
+    QDateTime previousBuilt;
+    for (const QString &name : folders) {
+        const Build build = Build::read(stack + '/' + name);
+        if (stampFolder.match(name).hasMatch() && name != current && build.isValid() &&
+            (previous.isEmpty() || build.built > previousBuilt)) {
+            previous = name;
+            previousBuilt = build.built;
+        }
+    }
+    needed << previous;
+    needed.remove(QString());
+    /* the virglrenderer those kept are built against */
+    QSet<QString> libraries;
+    for (const QString &name : std::as_const(needed)) {
+        const QString library = Build::read(stack + '/' + name).virglPrefix;
+        if (!library.isEmpty()) {
+            libraries << QFileInfo(library).canonicalFilePath();
+        }
+    }
+    for (const QString &name : folders) {
         if (stampFolder.match(name).hasMatch() && !needed.contains(name) &&
             QDir(stack + '/' + name).removeRecursively()) {
+            removed << stack + '/' + name;
+        }
+    }
+    /* of virglrenderer's, also the newest, which a build of it alone made,
+       for the next build of QEMU; those that never ended go */
+    const QString virgl = stack + "/virglrenderer";
+    QStringList complete;
+    QString newest;
+    QDateTime newestBuilt;
+    for (const QString &name : QDir(virgl).entryList(QDir::Dirs | QDir::NoDotAndDotDot)) {
+        const QHash<QString, QString> conf =
+            parseConf(readFile(virgl + '/' + name + "/share/vitrine/virglrenderer.conf"));
+        const QDateTime built = QDateTime::fromString(conf.value("BUILT"), Qt::ISODate);
+        if (!stampFolder.match(name).hasMatch()) {
+            continue;
+        }
+        if (conf.value("KEY").isEmpty()) {
+            if (QDir(virgl + '/' + name).removeRecursively()) {
+                removed << virgl + '/' + name;
+            }
+            continue;
+        }
+        complete << name;
+        if (newest.isEmpty() || built > newestBuilt) {
+            newest = name;
+            newestBuilt = built;
+        }
+    }
+    for (const QString &name : std::as_const(complete)) {
+        const QString dir = virgl + '/' + name;
+        if (name != newest && !libraries.contains(dir) && QDir(dir).removeRecursively()) {
+            removed << dir;
+        }
+    }
+    /* what an install that never ended left beside the stack */
+    for (const QString &name :
+         QDir(stack).entryList({".stage-*"}, QDir::Dirs | QDir::Hidden | QDir::NoDotAndDotDot)) {
+        if (QDir(stack + '/' + name).removeRecursively()) {
             removed << stack + '/' + name;
         }
     }
@@ -366,32 +402,6 @@ StackBuilder *StackBuilder::instance()
 
 StackBuilder::StackBuilder(QObject *parent) : QObject(parent)
 {
-    /* the app's tasks follow the build: first, so that the windows that
-       hear of it find its task as it is */
-    connect(this, &StackBuilder::stepStarted, this,
-            [this](int step, int total, const QString &text) {
-        if (m_task) {
-            m_task->setText(tr("Step %1 of %2: %3").arg(step).arg(total).arg(text));
-            /* busy until ninja tells how far it is */
-            m_task->setProgress(0, 0);
-        }
-    });
-    connect(this, &StackBuilder::progress, this, [this](int done, int total) {
-        if (m_task) {
-            m_task->setProgress(done, total);
-        }
-    });
-    connect(this, &StackBuilder::finished, this, [this](const QString &error) {
-        /* a start refused has no task of its own: that of the last build is finished */
-        if (!m_task) {
-            return;
-        }
-        if (error.isEmpty()) {
-            m_task->finish(Task::State::Done, current(m_stack).summary());
-        } else {
-            m_task->finish(wasStopped() ? Task::State::Stopped : Task::State::Failed, error);
-        }
-    });
 }
 
 StackBuilder::~StackBuilder()
@@ -407,7 +417,7 @@ StackBuilder::~StackBuilder()
     }
 }
 
-void StackBuilder::start()
+void StackBuilder::start(const QString &target, bool clean)
 {
     const QString host = m_hostDir.isEmpty() ? hostDir() : m_hostDir;
     const QString stack = m_stackDir.isEmpty() ? Paths::stackDir() : m_stackDir;
@@ -429,6 +439,7 @@ void StackBuilder::start()
     m_prefix.clear();
     m_stack = stack;
     m_before = current(stack).prefix;
+    m_target = target.isEmpty() ? QStringLiteral("qemu") : target;
 
     if (!isHostDir(host)) {
         m_error = tr("This installation of Vitrine has no host/build.sh to build its QEMU with");
@@ -441,14 +452,6 @@ void StackBuilder::start()
         emit finished(m_error);
         return;
     }
-
-    /* in the app's tasks: this build, the last one's leaving them */
-    if (m_task) {
-        m_task->dismiss();
-    }
-    m_task = TaskList::instance()->add(Task::Kind::QemuBuild,
-                                       state(host, stack) == State::Outdated ? tr("QEMU update")
-                                                                             : tr("QEMU build"));
 
     m_process = new QProcess(this);
     m_process->setProcessChannelMode(QProcess::MergedChannels);
@@ -466,8 +469,15 @@ void StackBuilder::start()
         done(code, status == QProcess::CrashExit);
     });
 
-    const QStringList args = {host + "/build.sh", "--stack", stack, "--work", work,
-                              "-j", QString::number(jobs)};
+    QStringList args = {host + "/build.sh", "--stack", stack, "--work", work,
+                        "-j", QString::number(jobs)};
+    if (clean) {
+        args << "--clean";
+    }
+    /* the whole stack is build.sh's default */
+    if (!target.isEmpty() && target != "qemu") {
+        args << target;
+    }
     m_log = "$ " + args.join(' ') + '\n';
     emit output(m_log);
     m_process->start("bash", args);
@@ -508,11 +518,14 @@ void StackBuilder::readOutput()
         const qsizetype cut = m_log.indexOf('\n', m_log.size() - kMaxLog * 3 / 4);
         m_log.remove(0, cut < 0 ? m_log.size() - kMaxLog * 3 / 4 : cut + 1);
     }
-    emit output(text);
+    /* line by line, each told once handled: what follows a component's
+       line is that component's */
     m_partial += text;
     while ((end = m_partial.indexOf('\n')) >= 0) {
-        handleLine(m_partial.left(end));
+        const QString line = m_partial.left(end + 1);
         m_partial.remove(0, end + 1);
+        handleLine(line.chopped(1));
+        emit output(line);
     }
 }
 
@@ -546,6 +559,12 @@ void StackBuilder::handleLine(const QString &text)
     case Line::Error:
         m_error = line.text;
         break;
+    case Line::Component:
+        emit componentStarted(line.component);
+        break;
+    case Line::Done:
+        emit componentDone(line.component, line.built, line.folder);
+        break;
     case Line::Other:
         break;
     }
@@ -554,8 +573,10 @@ void StackBuilder::handleLine(const QString &text)
 void StackBuilder::done(int code, bool crashed)
 {
     if (!m_partial.isEmpty()) {
-        handleLine(m_partial);
+        const QString line = m_partial;
         m_partial.clear();
+        handleLine(line);
+        emit output(line);
     }
     m_process->deleteLater();
     m_process = nullptr;
@@ -568,13 +589,19 @@ void StackBuilder::done(int code, bool crashed)
      * ended well is, even if Stop came after it did
      */
     const Build now = current(m_stack);
+    /* the folder of what was built is complete: a virglrenderer of its own */
+    const bool library = m_target == "virglrenderer";
+    const bool complete =
+        library ? !parseConf(readFile(m_prefix + "/share/vitrine/virglrenderer.conf"))
+                       .value("KEY").isEmpty()
+                : Build::read(m_prefix).isValid();
     if (now.isValid() && now.prefix != m_before) {
         m_cancelled = false;
         emit built(now.qemuBinary());
         emit finished({});
         return;
     }
-    if (code == 0 && !crashed && Build::read(m_prefix).isValid()) {
+    if (code == 0 && !crashed && complete) {
         m_cancelled = false;
     }
     if (m_cancelled) {
@@ -589,12 +616,13 @@ void StackBuilder::done(int code, bool crashed)
         emit finished(error);
         return;
     }
-    const Build build = Build::read(m_prefix);
-    if (!build.isValid()) {
+    if (!complete) {
         emit finished(tr("build.sh ended without a complete build"));
         return;
     }
     /* first: when the windows hear of it, the rest of the app knows already */
-    emit built(build.qemuBinary());
+    if (!library) {
+        emit built(Build::read(m_prefix).qemuBinary());
+    }
     emit finished({});
 }

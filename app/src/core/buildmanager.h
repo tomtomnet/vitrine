@@ -1,0 +1,199 @@
+// SPDX-License-Identifier: GPL-2.0-or-later
+#pragma once
+
+#include <QDateTime>
+#include <QElapsedTimer>
+#include <QHash>
+#include <QObject>
+#include <QPointer>
+#include <QStringList>
+
+#include "core/buildcomponents.h"
+#include "core/tasks.h"
+
+class GuestToolsBuilder;
+class QTimer;
+class StackBuilder;
+
+/*
+ * The app's builds: the components (Builds::load()), what is built of them,
+ * and the run that builds some of them, one at a time, whichever window
+ * shows it.  A run takes those asked for and what they need that is not
+ * built from their sources now, in build order, and after a package of the
+ * guest tools their medium, which the VMs install from.  StackBuilder runs
+ * host/build.sh for the host's, GuestToolsBuilder the guest's scripts
+ * (which waits for memory before a heavy package); this follows their
+ * lines, per component.
+ *
+ * Each component has its log, kept beside the cache, and the durations of
+ * its last builds on this machine, kept with the data: the estimate of a
+ * build is their median, else the minutes components.conf gives.  A
+ * component building tells what is left from its compiler's count once it
+ * compiles.  The run is one task of the app's (TaskList): its title the
+ * component building, its progress the whole run's, what is left with it.
+ */
+class BuildManager : public QObject
+{
+    Q_OBJECT
+
+public:
+    /* A component in a run */
+    enum class State {
+        Idle,           // in no run
+        Queued,
+        Waiting,        // for memory, before a heavy package
+        Building,
+        Built,
+        UpToDate,       // built already: nothing done
+        Restored,       // the build before brought back: nothing compiled
+        Failed,
+        Stopped,
+        Skipped,        // not built: one before it failed
+    };
+
+    struct Progress {
+        State state = State::Idle;
+        QString phase;          // "compiling QEMU", "installing the build dependencies"
+        int done = 0;           // of its counted phase; total 0 when it cannot tell
+        int total = 0;
+        qint64 elapsedMs = 0;
+        qint64 remainingMs = -1;
+        QString error;
+    };
+
+    /* The app's */
+    static BuildManager *instance();
+
+    explicit BuildManager(QObject *parent = nullptr);
+    ~BuildManager() override;
+
+    /* Defaults: Builds::Places::defaults(), StackBuilder's and
+       GuestToolsBuilder's instance(), the files in Paths' folders */
+    void setPlaces(const Builds::Places &places);
+    void setBuilders(StackBuilder *stack, GuestToolsBuilder *tools);
+    void setHistoryFile(const QString &path);
+    void setLogDir(const QString &path);
+    /* How often the estimate is worked out again while a run goes on */
+    void setTick(int ms);
+    /* When a compiler's count is trusted for what is left: after @ms in
+       its phase, once 1/@part of it is done (15 s, 50) */
+    void setCountFrom(qint64 ms, int part)
+    {
+        m_countAfterMs = ms;
+        m_countFrom = part;
+    }
+
+    QList<Builds::Component> components() const;
+    Builds::Component component(const QString &id) const;
+    Builds::Status status(const QString &id) const;
+    /* The components and their state again: the sources may have changed */
+    void refresh();
+
+    /* What building @ids takes: them and what they need that is not built
+       from their sources now, then the medium after a package; in order */
+    QStringList plan(const QStringList &ids) const;
+    /* What is not built from its sources now: what "Update All" builds */
+    QStringList outdated() const;
+
+    bool isRunning() const { return m_running; }
+    /* Builds plan(@ids); @clean: the host's build trees from nothing */
+    void build(const QStringList &ids, bool clean = false);
+    void buildOutdated();
+    /* Stops the component building; those after it are not built */
+    void cancel();
+    /* A heavy package waiting for memory: goes on now */
+    void proceed();
+    bool isWaiting() const;
+
+    /* Of the run going on, or of the last one */
+    QStringList queue() const { return m_queue; }
+    QString current() const { return m_current; }
+    Progress progress(const QString &id) const;
+    /* What to show of the run: the component building, else the one that
+       failed, else the last one */
+    QString focus() const;
+    /* The component's log: of the run, else the one kept of its last build */
+    QString log(const QString &id) const;
+    /* What is left of the run, ms; -1 while it cannot tell */
+    qint64 remainingMs() const;
+    /* How long building @id takes, ms: from this machine's builds, else
+       components.conf's minutes */
+    qint64 estimateMs(const QString &id) const;
+    /* Its last durations, ms, the newest last */
+    QList<qint64> durations(const QString &id) const;
+    /* Why the last run failed; empty if it did not */
+    QString error() const { return m_error; }
+    /* The run's in the app's tasks, until seen; null if none */
+    Task *task() const { return m_task; }
+
+    /* The build cache: the sources and build trees, the downloads, the
+       compiler cache; what is built is elsewhere, and stays */
+    QStringList cacheDirs() const;
+    void setCacheDirs(const QStringList &dirs) { m_cacheDirs = dirs; }
+    /* Removes them, unless a build runs, here or from a terminal (the
+       scripts' locks); false, and why, if not all of it went */
+    bool clearCache(QString *error);
+
+signals:
+    void runStarted();
+    /* @error is empty when all was built */
+    void runFinished(const QString &error);
+    /* A component's state, phase or progress, its estimate */
+    void progressChanged(const QString &id);
+    /* The statuses were worked out again */
+    void statusChanged();
+    void output(const QString &id, const QString &text);
+
+private:
+    /* The run's next part: the host's components, or the guest's */
+    void nextPart();
+    void startHost(const QStringList &ids);
+    void startGuest(const QStringList &ids);
+    void partFinished(const QString &error, bool stopped);
+    void finishRun(const QString &error, bool stopped);
+
+    void setCurrent(const QString &id);
+    void setState(const QString &id, State state);
+    void componentDone(const QString &id, State state);
+    void append(const QString &id, const QString &text);
+    void saveLog(const QString &id);
+    void record(const QString &id, qint64 ms);
+    void loadHistory() const;
+    void saveHistory();
+    void update();
+    void updateTask();
+    qint64 remainingOf(const QString &id) const;
+
+    Builds::Places m_places;
+    bool m_placesSet = false;
+    QPointer<StackBuilder> m_stack;
+    QPointer<GuestToolsBuilder> m_tools;
+    QString m_historyFile;
+    QString m_logDir;
+    QStringList m_cacheDirs;
+
+    mutable bool m_loaded = false;
+    mutable QList<Builds::Component> m_components;
+    mutable QHash<QString, Builds::Status> m_status;
+
+    bool m_running = false;
+    bool m_cancelled = false;
+    bool m_clean = false;
+    QStringList m_queue;
+    QStringList m_part;             // of the queue, the part running
+    QString m_current;
+    QString m_logTo;                /* the component whose lines come now */
+    QString m_error;
+    QHash<QString, Progress> m_progress;
+    QHash<QString, QElapsedTimer> m_clocks;
+    QHash<QString, QElapsedTimer> m_phaseClocks;
+    QHash<QString, QString> m_logs;
+    mutable QHash<QString, QList<qint64>> m_history;
+    mutable bool m_historyLoaded = false;
+    QElapsedTimer m_runClock;
+    qint64 m_countAfterMs = 15000;
+    int m_countFrom = 50;
+    QTimer *m_tick;
+    QPointer<Task> m_task;
+    QStringList m_connected;        // the builders followed
+};

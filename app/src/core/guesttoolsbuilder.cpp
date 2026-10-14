@@ -21,11 +21,11 @@
 #include <sys/types.h>
 #include <unistd.h>
 
+#include "core/buildcomponents.h"
 #include "core/guesttools.h"
 #include "core/hostmemory.h"
 #include "core/paths.h"
 #include "core/stackbuilder.h"
-#include "core/tasks.h"
 
 /* The scripts' lines for the app start with it, as host/build.sh's */
 static const char kTag[] = "vitrine-build: ";
@@ -60,10 +60,12 @@ static QString release()
     return QString::fromLatin1(GuestTools::kFedoraRelease);
 }
 
-/* What a package's spec is called, in its folder */
-static QString specOf(const QString &package)
+/* The component of @package in @guestDir's components.conf */
+static Builds::Component componentOf(const QString &guestDir, const QString &package)
 {
-    return package == "tools" ? QStringLiteral("vitrine-guest-tools.spec") : package + ".spec";
+    Builds::Places places;
+    places.guestDir = guestDir;
+    return Builds::find(Builds::load(places), package);
 }
 
 GuestToolsBuilder::Line GuestToolsBuilder::Line::parse(const QString &text)
@@ -74,8 +76,8 @@ GuestToolsBuilder::Line GuestToolsBuilder::Line::parse(const QString &text)
     static const QRegularExpression section("^Executing\\(%(\\w+)\\)");
     static const QList<std::pair<QString, Kind>> kinds = {
         {"building: ", Building}, {"phase: ", Phase},     {"up to date: ", UpToDate},
-        {"built: ", Built},       {"missing: ", Missing}, {"install: ", Install},
-        {"warning: ", Warning},   {"error: ", Error},
+        {"built: ", Built},       {"restored: ", Restored}, {"missing: ", Missing},
+        {"install: ", Install},   {"warning: ", Warning},   {"error: ", Error},
     };
     QString line = text;
     Line result;
@@ -178,14 +180,16 @@ QString GuestToolsBuilder::manifestOf(const QString &image)
 
 QStringList GuestToolsBuilder::packages(const QString &guestDir)
 {
+    Builds::Places places;
     QStringList list;
 
     if (guestDir.isEmpty()) {
         return {};
     }
-    for (const char *package : {"tools", "mesa", "kwin"}) {
-        if (QFileInfo(guestDir + '/' + package + '/' + specOf(package)).isFile()) {
-            list << package;
+    places.guestDir = guestDir;
+    for (const Builds::Component &c : Builds::load(places)) {
+        if (c.kind == Builds::Kind::Package) {
+            list << c.id;
         }
     }
     return list;
@@ -195,8 +199,9 @@ QString GuestToolsBuilder::version(const QString &guestDir, const QString &packa
 {
     static const QRegularExpression line("^Version:\\s*(\\S+)\\s*$",
                                          QRegularExpression::MultilineOption);
-    const QRegularExpressionMatch m = line.match(
-        QString::fromUtf8(readFile(guestDir + '/' + package + '/' + specOf(package))));
+    const Builds::Component c = componentOf(guestDir, package);
+    const QRegularExpressionMatch m =
+        line.match(QString::fromUtf8(readFile(guestDir + '/' + c.values.value("spec"))));
 
     /* a macro is no version to show */
     return m.hasMatch() && !m.captured(1).contains('%') ? m.captured(1) : QString();
@@ -238,7 +243,7 @@ static bool listFiles(const QString &root, const QString &path, QList<QByteArray
  * of the package's folder and rpm-build-inside.sh, in the C locale's order
  * of their paths
  */
-QString GuestToolsBuilder::inputsHash(const QString &guestDir, const QString &package)
+QByteArray GuestToolsBuilder::inputLines(const QString &guestDir, const QString &package)
 {
     QList<QByteArray> files;
     QByteArray lines;
@@ -257,7 +262,16 @@ QString GuestToolsBuilder::inputsHash(const QString &guestDir, const QString &pa
         }
         lines += hash.result().toHex() + "  " + name + '\n';
     }
-    return QString::fromLatin1(QCryptographicHash::hash(lines, QCryptographicHash::Sha256).toHex());
+    return lines;
+}
+
+QString GuestToolsBuilder::inputsHash(const QString &guestDir, const QString &package)
+{
+    const QByteArray lines = inputLines(guestDir, package);
+
+    return lines.isEmpty() ? QString()
+                           : QString::fromLatin1(
+                                 QCryptographicHash::hash(lines, QCryptographicHash::Sha256).toHex());
 }
 
 QString GuestToolsBuilder::mediumHash(const QString &guestDir)
@@ -307,30 +321,32 @@ GuestToolsBuilder::State GuestToolsBuilder::state()
     return state(guestDir(), mediumImage());
 }
 
+GuestToolsBuilder::Step GuestToolsBuilder::step(const QString &guestDir, const QString &name)
+{
+    const Builds::Component c = componentOf(guestDir, name);
+    const QString title = c.isValid() ? c.title : name;
+    const QString version = GuestToolsBuilder::version(guestDir, name);
+
+    if (name == "medium") {
+        return {name, tr("making the medium"), false};
+    }
+    return {name, version.isEmpty() ? tr("building %1").arg(title)
+                                    : tr("building %1 %2").arg(title, version),
+            c.heavy};
+}
+
 QList<GuestToolsBuilder::Step> GuestToolsBuilder::plan(const QString &guestDir,
                                                        const QString &rpmsDir)
 {
     QList<Step> steps;
 
     for (const QString &package : packages(guestDir)) {
-        const QString version = GuestToolsBuilder::version(guestDir, package);
         const QString built = builtInputs(rpmsDir, package);
-        Step step{package, {}, package != "tools"};
-
-        if (!built.isEmpty() && built == inputsHash(guestDir, package)) {
-            continue;
+        if (built.isEmpty() || built != inputsHash(guestDir, package)) {
+            steps << step(guestDir, package);
         }
-        if (package == "mesa") {
-            step.text = version.isEmpty() ? tr("building Mesa") : tr("building Mesa %1").arg(version);
-        } else if (package == "kwin") {
-            step.text = version.isEmpty() ? tr("building KWin") : tr("building KWin %1").arg(version);
-        } else {
-            step.text = version.isEmpty() ? tr("building vitrine-guest-tools")
-                                          : tr("building vitrine-guest-tools %1").arg(version);
-        }
-        steps << step;
     }
-    steps << Step{"medium", tr("making the medium"), false};
+    steps << step(guestDir, "medium");
     return steps;
 }
 
@@ -394,33 +410,6 @@ GuestToolsBuilder::GuestToolsBuilder(QObject *parent)
 {
     m_memoryTimer->setInterval(2000);
     connect(m_memoryTimer, &QTimer::timeout, this, &GuestToolsBuilder::checkMemory);
-
-    /* the app's tasks follow the build: first, so that the windows that
-       hear of it find its task as it is */
-    const auto follow = [this]() {
-        if (m_task && m_running) {
-            QString text = progressText(false);
-            text[0] = text[0].toUpper();
-            m_task->setText(text);
-            /* nothing moves while it waits for memory */
-            m_task->setProgress(isWaiting() ? 0 : m_done, isWaiting() ? 0 : m_total);
-        }
-    };
-    connect(this, &GuestToolsBuilder::stepStarted, this, follow);
-    connect(this, &GuestToolsBuilder::phaseChanged, this, follow);
-    connect(this, &GuestToolsBuilder::progress, this, follow);
-    connect(this, &GuestToolsBuilder::waitingChanged, this, follow);
-    connect(this, &GuestToolsBuilder::finished, this, [this](const QString &error) {
-        /* a start refused has no task of its own: that of the last build is finished */
-        if (!m_task) {
-            return;
-        }
-        if (error.isEmpty()) {
-            m_task->finish(Task::State::Done);
-        } else {
-            m_task->finish(m_stopped ? Task::State::Stopped : Task::State::Failed, error);
-        }
-    });
 }
 
 GuestToolsBuilder::~GuestToolsBuilder()
@@ -444,11 +433,30 @@ void GuestToolsBuilder::setMemoryPoll(int ms)
 
 void GuestToolsBuilder::start()
 {
+    const QString guest = m_guestDir.isEmpty() ? guestDir() : m_guestDir;
+
+    if (!m_running) {
+        begin(plan(guest, m_rpmsDir.isEmpty() ? rpmsDir() : m_rpmsDir));
+    }
+}
+
+void GuestToolsBuilder::start(const QStringList &steps)
+{
+    const QString guest = m_guestDir.isEmpty() ? guestDir() : m_guestDir;
+    QList<Step> list;
+
     if (m_running) {
         return;
     }
+    for (const QString &name : steps) {
+        list << step(guest, name);
+    }
+    begin(list);
+}
+
+void GuestToolsBuilder::begin(const QList<Step> &steps)
+{
     const QString guest = m_guestDir.isEmpty() ? guestDir() : m_guestDir;
-    const QString rpms = m_rpmsDir.isEmpty() ? rpmsDir() : m_rpmsDir;
     const QList<Requirement> needed = missing();
 
     m_plan.clear();
@@ -485,17 +493,8 @@ void GuestToolsBuilder::start()
         finish(tr("Build dependencies are missing"));
         return;
     }
-    m_plan = plan(guest, rpms);
+    m_plan = steps;
     m_running = true;
-    /* in the app's tasks: this build, the last one's leaving them */
-    if (m_task) {
-        m_task->dismiss();
-    }
-    m_task = TaskList::instance()->add(Task::Kind::GuestToolsBuild,
-                                       state(guest, m_image.isEmpty() ? mediumImage() : m_image) ==
-                                               State::Outdated
-                                           ? tr("Guest tools update")
-                                           : tr("Guest tools build"));
     emit started();
     next();
 }
@@ -509,6 +508,7 @@ void GuestToolsBuilder::next()
     const Step &step = m_plan.at(m_index);
 
     setPhase({}, Counting::None);
+    m_restored = false;
     emit stepStarted(m_index + 1, int(m_plan.size()), step.text);
     if (step.heavy) {
         checkMemory();
@@ -765,6 +765,9 @@ void GuestToolsBuilder::handleLine(const QString &text)
     case Line::Error:
         m_error = line.text;
         break;
+    case Line::Restored:
+        m_restored = true;
+        break;
     case Line::Building:
     case Line::UpToDate:
     case Line::Built:
@@ -808,14 +811,17 @@ void GuestToolsBuilder::stepDone(int code, bool crashed)
             finish(tr("build-medium.sh ended without a medium"));
             return;
         }
+    } else {
+        emit packageDone(m_plan.at(m_index).name, m_restored);
     }
     next();
 }
 
 void GuestToolsBuilder::finish(const QString &error, bool stopped)
 {
-    /* a build that ended well made the medium, its last step */
-    const bool medium = m_running && error.isEmpty();
+    /* a build that ended well made the medium, if that was its last step */
+    const bool medium = m_running && error.isEmpty() && !m_plan.isEmpty() &&
+                        m_plan.last().name == "medium";
 
     m_running = false;
     m_memoryTimer->stop();

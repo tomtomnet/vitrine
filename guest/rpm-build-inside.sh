@@ -3,18 +3,28 @@
 # Runs inside the Fedora container of build-rpms.sh: build one package from
 # its spec and the files beside it in /src/PACKAGE, put the binary RPMs in /out.
 # Its "vitrine-build: phase: " lines tell vitrine what it does (build-rpms.sh).
+# With /ccache mounted, the compilers go through ccache, its cache there.
 set -eu
+shopt -s nullglob
 t=$1
 say() { echo "vitrine-build: $*"; }
-case "$t" in
-mesa) dir=/src/mesa; spec=mesa.spec ;;
-kwin) dir=/src/kwin; spec=kwin.spec ;;
-tools) dir=/src/tools; spec=vitrine-guest-tools.spec ;;
-*) echo "unknown package $t" >&2; exit 2 ;;
-esac
+dir=/src/$t
+specs=("$dir"/*.spec)
+[ ${#specs[@]} = 1 ] || { echo "no package $t: $dir has no spec, or several" >&2; exit 2; }
+spec=$(basename "${specs[0]}")
 dnf=(dnf -y --setopt=keepcache=True --setopt=install_weak_deps=False)
+cache=0
+[ ! -d /ccache ] || cache=1
 say "phase: installing rpmbuild"
-"${dnf[@]}" install rpm-build rpmdevtools 'dnf5-command(builddep)'
+"${dnf[@]}" install rpm-build rpmdevtools 'dnf5-command(builddep)' $([ "$cache" = 0 ] || echo ccache)
+if [ "$cache" = 1 ]; then
+	# the files an update does not change come from the cache, although
+	# rpmbuild unpacks all the sources again: by ccache's names of the
+	# compilers, first in PATH, as rpmbuild's flags set CC=gcc, which keeps
+	# meson from taking ccache by itself
+	export CCACHE_DIR=/ccache PATH=/usr/lib64/ccache:$PATH
+	ccache --zero-stats > /dev/null
+fi
 
 top=/root/rpmbuild
 mkdir -p "$top/SOURCES" "$top/SPECS"
@@ -58,3 +68,4 @@ say "phase: building the packages"
 rpmbuild -bb "${defs[@]}" "$spec"
 find "$top/RPMS" -name '*.rpm' -exec cp {} /out/ \;
 echo "built: $(find "$top/RPMS" -name '*.rpm' | wc -l) packages"
+[ "$cache" = 0 ] || ccache --show-stats

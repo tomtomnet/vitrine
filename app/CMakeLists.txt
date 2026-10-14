@@ -6,6 +6,10 @@ find_package(Qt6 6.4 REQUIRED COMPONENTS Core Concurrent DBus Gui Network Widget
 qt_add_library(vitrine_core STATIC
     src/core/argsfile.cpp
     src/core/argsfile.h
+    src/core/buildcomponents.cpp
+    src/core/buildcomponents.h
+    src/core/buildmanager.cpp
+    src/core/buildmanager.h
     src/core/cardsettings.cpp
     src/core/cardsettings.h
     src/core/diskinfo.cpp
@@ -170,12 +174,14 @@ qt_add_library(vitrine_ui STATIC
     src/ui/argseditor.h
     src/ui/banner.cpp
     src/ui/banner.h
+    src/ui/buildswindow.cpp
+    src/ui/buildswindow.h
     src/ui/clonedialog.cpp
     src/ui/clonedialog.h
     src/ui/firmwarerepair.cpp
     src/ui/firmwarerepair.h
-    src/ui/guesttoolsbuilddialog.cpp
-    src/ui/guesttoolsbuilddialog.h
+    src/ui/guesttoolsbuildbanner.cpp
+    src/ui/guesttoolsbuildbanner.h
     src/ui/guesttoolsdialog.cpp
     src/ui/guesttoolsdialog.h
     src/ui/hosttuningnotifier.cpp
@@ -200,8 +206,6 @@ qt_add_library(vitrine_ui STATIC
     src/ui/newvmdialog.h
     src/ui/preferencesdialog.cpp
     src/ui/preferencesdialog.h
-    src/ui/qemubuilddialog.cpp
-    src/ui/qemubuilddialog.h
     src/ui/qemudocs.cpp
     src/ui/qemudocs.h
     src/ui/referencepanel.cpp
@@ -309,6 +313,8 @@ if(BUILD_TESTING)
     endfunction()
     foreach(name
             argsfile
+            buildcomponents
+            buildmanager
             cardsettings
             diskinfo
             firmware

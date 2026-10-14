@@ -51,11 +51,8 @@ QColor negative(const QPalette &palette)
 QIcon kindIcon(Task::Kind kind)
 {
     switch (kind) {
-    case Task::Kind::QemuBuild:
+    case Task::Kind::Build:
         return Icons::themed({"run-build", "run-build-install"}, QStyle::SP_BrowserReload);
-    case Task::Kind::GuestToolsBuild:
-        return Icons::themed({"run-build-install", "system-software-install"},
-                             QStyle::SP_DialogApplyButton);
     case Task::Kind::Clone:
         return Icons::themed({"edit-copy"}, QStyle::SP_FileDialogNewFolder);
     case Task::Kind::Other:
@@ -68,6 +65,24 @@ QIcon kindIcon(Task::Kind kind)
 QString percent(double fraction)
 {
     return fraction < 0 ? QString() : TaskButton::tr("%1%").arg(int(fraction * 100));
+}
+
+/* "about 18 min left"; nothing once over, or while it cannot tell */
+QString remainingOf(const Task *task)
+{
+    const qint64 seconds = task->remaining();
+    const qint64 minutes = (seconds + 30) / 60;
+
+    if (!task->isRunning() || seconds < 0) {
+        return {};
+    }
+    if (seconds < 45) {
+        return TaskButton::tr("less than a minute left");
+    }
+    if (minutes < 60) {
+        return TaskButton::tr("about %1 min left").arg(minutes);
+    }
+    return TaskButton::tr("about %1 h %2 min left").arg(minutes / 60).arg(minutes % 60);
 }
 
 /* What a task shows beside its title: how far, or how it ended */
@@ -357,6 +372,9 @@ QString TaskButton::describe(const Task *task)
     if (!task->text().isEmpty()) {
         line += " — " + task->text();
     }
+    if (const QString left = remainingOf(task); !left.isEmpty()) {
+        line += " · " + left;
+    }
     return line;
 }
 
@@ -447,6 +465,9 @@ void TaskButton::refresh()
         }
         if (!task->text().isEmpty()) {
             tip += "<br>" + task->text().toHtmlEscaped();
+        }
+        if (const QString left = remainingOf(task); !left.isEmpty()) {
+            tip += "<br>" + (left.left(1).toUpper() + left.mid(1)).toHtmlEscaped();
         }
     } else if (!tasks.isEmpty()) {
         QStringList lines{"<b>" + title().toHtmlEscaped() + "</b>"};

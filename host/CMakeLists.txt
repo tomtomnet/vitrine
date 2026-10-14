@@ -3,7 +3,7 @@
 include(GNUInstallDirs)
 set(VITRINE_HOST_DESTINATION ${CMAKE_INSTALL_DATADIR}/vitrine/host)
 install(PROGRAMS build.sh DESTINATION ${VITRINE_HOST_DESTINATION})
-install(FILES versions.conf DESTINATION ${VITRINE_HOST_DESTINATION})
+install(FILES versions.conf components.conf DESTINATION ${VITRINE_HOST_DESTINATION})
 # build.sh applies every *.patch it finds, and installing never removes a
 # file: a patch a newer Vitrine dropped would stay in an installation made
 # over an older one, and fail to apply.  The folder goes first, under the

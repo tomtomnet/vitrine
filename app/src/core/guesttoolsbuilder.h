@@ -5,10 +5,7 @@
 #include <QHash>
 #include <QList>
 #include <QObject>
-#include <QPointer>
 #include <QStringList>
-
-#include "core/tasks.h"
 
 class QProcess;
 class QTimer;
@@ -58,6 +55,7 @@ public:
             Percent,        // [ 45%]: make's (CMake)
             UpToDate,
             Built,
+            Restored,       // vitrine-build: restored: DIRECTORY, the build before kept
             Missing,
             Install,
             Warning,
@@ -101,13 +99,17 @@ public:
     /* The manifest beside @image */
     static QString manifestOf(const QString &image);
 
-    /* The packages @guestDir builds: tools, mesa, kwin, those it has */
+    /* The packages @guestDir builds, those of its components.conf that it
+       has a spec for: tools, mesa, kwin */
     static QStringList packages(const QString &guestDir);
     /* The Version of @package's spec, "" if none */
     static QString version(const QString &guestDir, const QString &package);
     /* What build-rpms.sh's inputs_hash() prints: @package's folder and the
        build script; empty if a file cannot be read */
     static QString inputsHash(const QString &guestDir, const QString &package);
+    /* The lines it sums up, which a build records in PACKAGE/.inputs.list:
+       sha256sum's, for the files of @package's folder and the build script */
+    static QByteArray inputLines(const QString &guestDir, const QString &package);
     /* What build-medium.sh records of itself */
     static QString mediumHash(const QString &guestDir);
     /* The inputs @package's last build in @rpmsDir was made from; empty if none */
@@ -118,6 +120,8 @@ public:
     /* The steps a build takes now: the packages not built from @guestDir's
        sources in @rpmsDir, then the medium */
     static QList<Step> plan(const QString &guestDir, const QString &rpmsDir);
+    /* The step that builds @name, a package or "medium" */
+    static Step step(const QString &guestDir, const QString &name);
 
     /* The commands the scripts need that are not in PATH */
     static QList<Requirement> missing();
@@ -143,7 +147,10 @@ public:
 
     /* A script runs, or the build waits for memory */
     bool isRunning() const { return m_running; }
+    /* The packages that are out of date, then the medium */
     void start();
+    /* These steps (packages, "medium"), in this order */
+    void start(const QStringList &steps);
     /* Stops the script and what it runs (the whole process group; the
        script removes its container), or the wait */
     void cancel();
@@ -165,6 +172,8 @@ public:
     QString stepText() const { return m_index >= 0 ? m_plan.value(m_index).text : QString(); }
     /* What the step does now: "installing the build dependencies", "compiling" */
     QString phase() const { return m_phase; }
+    /* The step compiles (rpmbuild's %build), its progress the compiler's */
+    bool isCompiling() const { return m_counting == Counting::Compile; }
     /* "step 2 of 4: building Mesa 26.2.3 (compiling, 35%)", the phase's
        percent only with @percent; "starting" before the first step */
     QString progressText(bool percent = true) const;
@@ -179,8 +188,6 @@ public:
     bool wasStopped() const { return m_stopped; }
     /* Why the last build failed; empty if it ended well or was stopped */
     QString error() const { return m_failure; }
-    /* The build's in the app's tasks (TaskList), until seen; null if none */
-    Task *task() const { return m_task; }
 
 signals:
     void started();
@@ -196,10 +203,14 @@ signals:
     void finished(const QString &error);
     /* After a build that ended well: a new medium */
     void built();
+    /* A package of a step is there: built, or the build before it brought
+       back (@restored) */
+    void packageDone(const QString &package, bool restored);
 
 private:
     enum class Counting { None, Dnf, Compile };
 
+    void begin(const QList<Step> &plan);
     void next();
     void checkMemory();
     void run();
@@ -239,5 +250,5 @@ private:
     QStringList m_warnings;
     QString m_error;            // the scripts' last error line
     QString m_failure;
-    QPointer<Task> m_task;
+    bool m_restored = false;    // the step's package was brought back, not built
 };

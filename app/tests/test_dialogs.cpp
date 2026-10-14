@@ -15,10 +15,10 @@
 #include "core/vmstore.h"
 #include "scales.h"
 #include "ui/clonedialog.h"
-#include "ui/guesttoolsbuilddialog.h"
+#include "ui/guesttoolsbuildbanner.h"
 #include "ui/guesttoolsdialog.h"
 #include "ui/newvmdialog.h"
-#include "ui/qemubuilddialog.h"
+#include "ui/buildswindow.h"
 #include "ui/textdialog.h"
 
 /*
@@ -79,8 +79,7 @@ class TestDialogs : public QObject
         const QList<std::pair<QString, std::function<QWidget *()>>> dialogs = {
             {"New VM", [this]() { return new NewVmDialog(m_store); }},
             {"Clone", [this]() { return new CloneDialog(m_store, vm()); }},
-            {"QEMU build", []() { return new QemuBuildDialog; }},
-            {"Guest tools build", []() { return new GuestToolsBuildDialog; }},
+            {"Builds", []() { return new BuildsWindow; }},
             {"Command line", []() {
                  TextDialog::showText(nullptr, "Command Line", "qemu-system-x86_64 -m 4G");
                  return opened("TextDialog");
@@ -186,7 +185,8 @@ private slots:
         });
     }
 
-    /* No medium yet: Install waits, the banner's Build… opens the build window over it */
+    /* No medium yet: Install waits, the banner's Build… opens the Builds window over it,
+       on the medium */
     void guestToolsBuild()
     {
         GuestToolsDialog::run(nullptr, vm());
@@ -211,21 +211,22 @@ private slots:
         }
 
         build->click();
-        QWidget *window = opened("GuestToolsBuildDialog");
+        auto *window = qobject_cast<BuildsWindow *>(opened("BuildsWindow"));
         QVERIFY(window);
         QCOMPARE(window->parentWidget(), dialog);
         QVERIFY(window->isVisible());
-        QCOMPARE(window->windowTitle(), "Build Guest Tools");
+        QCOMPARE(window->windowTitle(), "Builds");
+        QCOMPARE(window->selected(), "medium");
         /* the same window again, not a second one */
         build->click();
         int windows = 0;
         for (QWidget *top : QApplication::topLevelWidgets()) {
-            windows += top->inherits("GuestToolsBuildDialog") && top->isVisible();
+            windows += top->inherits("BuildsWindow") && top->isVisible();
         }
         QCOMPARE(windows, 1);
         window->close();
         dialog->close();
-        QTRY_VERIFY(!opened("GuestToolsBuildDialog") && !opened("GuestToolsDialog"));
+        QTRY_VERIFY(!opened("BuildsWindow") && !opened("GuestToolsDialog"));
     }
 
     void buttons_data()

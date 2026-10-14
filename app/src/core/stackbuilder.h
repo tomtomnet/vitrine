@@ -3,22 +3,20 @@
 
 #include <QDateTime>
 #include <QObject>
-#include <QPointer>
 #include <QStringList>
-
-#include "core/tasks.h"
 
 class QProcess;
 
 /*
  * Vitrine's QEMU: upstream QEMU and virglrenderer at the commits of
  * host/versions.conf, with host/patches (for QEMU: the qemu-gui fork's
- * commits, the research series, vitrine's), which host/build.sh builds into a
- * prefix of their own under Paths::stackDir() (<stamp>/, and `current`
- * pointing to the last complete build).  This runs build.sh and follows
- * its progress; the static functions tell what is built and whether it is
- * what host/ asks for.  The stamp sums up build.sh's inputs: a build of
- * other inputs is out of date.
+ * commits, the research series, vitrine's), which host/build.sh builds into
+ * folders of their own under Paths::stackDir() (QEMU in <stamp>/, and
+ * `current` pointing to the last complete build; virglrenderer in
+ * virglrenderer/<key>/).  This runs build.sh and follows its progress; the
+ * static functions tell what is built and whether it is what host/ asks
+ * for.  The stamp is QEMU's key (Builds::key()), which sums up its inputs
+ * and virglrenderer's: a build of other inputs is out of date.
  */
 class StackBuilder : public QObject
 {
@@ -48,6 +46,10 @@ public:
         QString virglCommit;
         QString virglVersion;
         QStringList virglPatches;
+        /* the virglrenderer it is built against, in a folder of its own;
+           none in a build of an older Vitrine (in the prefix's lib64) */
+        QString virglKey;
+        QString virglPrefix;
 
         bool isValid() const { return !stamp.isEmpty(); }
         QString qemuBinary() const;
@@ -67,11 +69,18 @@ public:
 
     /* A line of build.sh's output */
     struct Line {
-        enum Kind { Other, Step, Progress, Missing, Install, Warning, UpToDate, Built, Error };
+        enum Kind {
+            Other, Step, Progress, Missing, Install, Warning, UpToDate, Built, Error,
+            Component,      // component: NAME, whose lines follow
+            Done,           // done: NAME built|up to date FOLDER
+        };
         Kind kind = Other;
         int done = 0;               // Step: its number; Progress: ninja's [done/total]
         int total = 0;
         QString text;               // the description, dependency, command, prefix or message
+        QString component;          // Component, Done: its name
+        bool built = false;         // Done: built, not up to date already
+        QString folder;             // Done: where it is
 
         static Line parse(const QString &line);
     };
@@ -87,8 +96,9 @@ public:
     static Versions versions(const QString &hostDir);
     /*
      * The patches build.sh applies to @component ("qemu"), in its order:
-     * the *.patch files of @hostDir/patches/@component and of its folders,
-     * as paths in @hostDir (patches/qemu/research/0001-x.patch)
+     * those patches/@component/series names, else the *.patch files of
+     * @hostDir/patches/@component and of its folders, as paths in @hostDir
+     * (patches/qemu/research/0001-x.patch)
      */
     static QStringList patches(const QString &hostDir, const QString &component);
     /* The stamp of @hostDir's inputs: what `build.sh --print-stamp` prints */
@@ -100,11 +110,14 @@ public:
     static State state();
     /*
      * Removes the builds of @stackDir nothing needs any more, some 170 MB
-     * each: all but `current`, those a running process was started from
-     * (any VM's QEMU, also of another vitrine), and those of the binaries
-     * in @keep (the QEMU of the preferences, those of the VMs' #qemu).
-     * Leftovers of builds that never ended go too.  Nothing while a build
-     * holds the stack's lock.  Returns the folders removed.
+     * each: all but `current`, the build before it (for going back: inputs
+     * that come back to it need no build), those a running process was
+     * started from (any VM's QEMU, also of another vitrine), and those of
+     * the binaries in @keep (the QEMU of the preferences, those of the VMs'
+     * #qemu); and the virglrenderer folders none of those kept is built
+     * against, but the newest.  Leftovers of builds that never ended go
+     * too.  Nothing while a build holds the stack's lock.  Returns the
+     * folders removed.
      */
     static QStringList prune(const QString &stackDir, const QStringList &keep);
     /* The cores, but no more than the memory affords, about 1 GiB each */
@@ -123,7 +136,12 @@ public:
     void setJobs(int jobs) { m_jobs = jobs; }
 
     bool isRunning() const { return m_process != nullptr; }
-    void start();
+    /*
+     * Builds @target ("virglrenderer", or "qemu", the default: the whole
+     * stack) and what it needs; @clean: its build trees from nothing
+     * (build.sh --clean)
+     */
+    void start(const QString &target = {}, bool clean = false);
     /* Stops build.sh and what it runs: the whole process group */
     void cancel();
 
@@ -138,13 +156,17 @@ public:
     QStringList warnings() const { return m_warnings; }
     /* The last build ended with Stop */
     bool wasStopped() const { return m_cancelled && !m_process; }
-    /* The build's in the app's tasks (TaskList), until seen; null if none */
-    Task *task() const { return m_task; }
+    /* What the last build was for: "qemu", "virglrenderer" */
+    QString target() const { return m_target; }
 
 signals:
     void started();
     void stepStarted(int step, int total, const QString &text);
-    /* The output, as it comes */
+    /* build.sh goes on with @component ("virglrenderer", "qemu") */
+    void componentStarted(const QString &component);
+    /* It is there: built now, or up to date already */
+    void componentDone(const QString &component, bool built, const QString &folder);
+    /* The output, line by line as it comes, each once handled */
     void output(const QString &text);
     /* From ninja's [done/total] */
     void progress(int done, int total);
@@ -179,5 +201,5 @@ private:
     QString m_prefix;           // the one built, or up to date
     QString m_stack;            // of the build running
     QString m_before;           // the prefix `current` named when it started
-    QPointer<Task> m_task;
+    QString m_target;
 };
