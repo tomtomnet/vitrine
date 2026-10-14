@@ -36,6 +36,19 @@ enum class Control { Start, Pause, ShutDown, Reset, ForceOff };
 QIcon control(Control kind);
 
 /*
+ * @icon in its own colours where a selected row asks it (QIcon::Selected,
+ * Active): KDE's theme recolours colourful emblems there to the
+ * selection's text colour, which turned a green check all white
+ */
+QIcon keepColours(const QIcon &icon);
+/*
+ * Up to date: a green square with a white check, as Breeze's
+ * emblem-success without the frame Breeze draws around it, drawn for
+ * each size and pixel ratio asked
+ */
+QIcon upToDate();
+
+/*
  * @icon at @size (logical pixels) with its middle at @centre, on whole
  * device pixels of @painter's device: a pixmap made for that device's
  * pixel ratio, put there as it is.  At 1.25 or 1.5 (Wayland's fractional
