@@ -11,6 +11,9 @@
 
 class Banner;
 class BuildManager;
+namespace Builds {
+struct Component;
+}
 class QLabel;
 class QPlainTextEdit;
 class QPushButton;
@@ -21,12 +24,13 @@ class QTreeWidgetItem;
 
 /*
  * The builds of what Vitrine builds (BuildManager), in one window, not
- * modal: Vitrine's QEMU (virglrenderer, rutabaga_gfx, QEMU) and the guest
- * tools (their packages and the medium), each with its state and why, when
- * it was built and how long a build of it takes; the selected one's
- * source, patches by origin (their text on demand) and log.  Build for the
- * selected one, Update All for what is out of date, Stop; the cache's
- * size, and Clear.  The builds go on when it closes.
+ * modal: Vitrine's QEMU (virglrenderer, rutabaga_gfx, QEMU), the guest
+ * tools (their packages and the medium) and, optional, the host's desktop
+ * (the host's KWin), each with its state and why, when it was built and how
+ * long a build of it takes; the selected one's source, patches by origin
+ * (their text on demand) and log.  Build for the selected one, Update All
+ * for what is out of date, Stop; Install… and Revert… for the host's KWin;
+ * the cache's size, and Clear.  The builds go on when it closes.
  */
 class BuildsWindow : public QDialog
 {
@@ -40,7 +44,7 @@ public:
        already if it is over that one, else a new one */
     static BuildsWindow *present(QWidget *from, const QString &component = {});
 
-    /* The component shown: "qemu", or a group: "host", "guest" */
+    /* The component shown: "qemu", or a group: "host", "guest", "system" */
     void select(const QString &component);
     QString selected() const;
 
@@ -81,6 +85,10 @@ private:
     void clearCache();
     void buildSelected(bool clean = false);
     void contextMenu(const QPoint &at);
+    /* The host's KWin's part of the details: what it is, the system's state */
+    QString kwinSource(const Builds::Component &c);
+    /* The host's KWin, or its group, is selected */
+    bool kwinSelected() const;
     /* The size of @path, counted in the background; -1 until then */
     qint64 size(const QString &path);
     /* The components of the selection: one, or a group's */
@@ -103,6 +111,10 @@ private:
     QPushButton *m_build;
     QPushButton *m_all;
     QPushButton *m_stop;
+    QPushButton *m_install;
+    QPushButton *m_revert;
+    /* the Log tab of the host's KWin shows its last install or revert */
+    bool m_showInstall = false;
     QHash<QString, QTreeWidgetItem *> m_items;
     QHash<QString, QTreeWidgetItem *> m_groups;
     QString m_shownPatches;

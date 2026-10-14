@@ -10,12 +10,15 @@
 
 #include <utility>
 
+#include "core/hostkwin.h"
+
 /*
  * What Vitrine builds: the components host/components.conf and
  * guest/components.conf describe (virglrenderer, rutabaga_gfx and QEMU;
- * the guest tools' packages and the medium made of them), each with its
- * source, its patches and what it is built against; and whether what is
- * built is what the sources make now, and if not, why.
+ * the guest tools' packages and the medium made of them), and the host's
+ * KWin of host/kwin/components.conf, each with its source, its patches and
+ * what it is built against; and whether what is built is what the sources
+ * make now, and if not, why.
  *
  * The scripts build them (host/build.sh, guest/build-rpms.sh,
  * guest/build-medium.sh) and record with each build the lines of inputs
@@ -28,13 +31,14 @@ enum class Kind {
     Host,       // host/build.sh: fetched at a pinned commit, patched, built
     Package,    // guest/build-rpms.sh: a spec and the files beside it
     Medium,     // guest/build-medium.sh: the medium of the packages
+    System,     // host/kwin/build.sh: installed into the host's system (HostKwin)
 };
 
 struct Component {
-    QString id;                     // virglrenderer, rutabaga_gfx, qemu, tools, mesa, kwin, medium
+    QString id;                     // virglrenderer, rutabaga_gfx, qemu, tools, mesa, kwin, medium, host-kwin
     QString title;                  // "QEMU"
     Kind kind = Kind::Host;
-    QString dir;                    // the host/ or guest/ folder it is described in
+    QString dir;                    // the host/, guest/ or host/kwin/ folder it is described in
     QHash<QString, QString> values; // its NAME=value lines
     QStringList deps;
     bool heavy = false;             // takes up to the container's memory cap
@@ -58,6 +62,12 @@ struct Places {
     QString stackDir;               // Paths::stackDir()
     QString rpmsDir;                // GuestToolsBuilder::rpmsDir()
     QString mediumImage;            // GuestToolsBuilder::mediumImage()
+    /* The host's KWin: its folder (HostKwin::sourceDir()), empty where it is
+       not offered; its builds' folder, and what HostKwin makes of them and
+       of the system (HostKwinMonitor's, with the builds read again) */
+    QString kwinDir;
+    QString kwinOut;
+    HostKwin::Status kwin;
 
     static Places defaults();
 };
@@ -94,7 +104,7 @@ struct Status {
 /* The [sections] of a components.conf, in order, with their NAME=value lines */
 QList<std::pair<QString, QHash<QString, QString>>> parseConf(const QByteArray &conf);
 
-/* The components of @places' host/ and guest/, in build order, host/'s first */
+/* The components of @places' host/, guest/ and host/kwin/, in build order, host/'s first */
 QList<Component> load(const Places &places);
 /* Of @list: the one called @id, or none */
 Component find(const QList<Component> &list, const QString &id);

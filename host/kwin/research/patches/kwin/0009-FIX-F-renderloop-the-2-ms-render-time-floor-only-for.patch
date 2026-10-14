@@ -1,0 +1,35 @@
+From 14ad7c79f2f2d3234c481a243fb2d12c9ef1d68e Mon Sep 17 00:00:00 2001
+From: tomtomnet <tompere8000@proton.me>
+Date: Sat, 3 Oct 2026 14:43:09 +0200
+Subject: [PATCH 9/9] FIX-F renderloop: the 2 ms render-time floor only for
+ frames the compositor rendered (6.7 semantics; 5338c2e9a7 extended it to
+ direct-scanout frames)
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ src/core/renderloop.cpp | 9 +++++++--
+ 1 file changed, 7 insertions(+), 2 deletions(-)
+
+diff --git a/src/core/renderloop.cpp b/src/core/renderloop.cpp
+index 86874cd186..0a08006cd7 100644
+--- a/src/core/renderloop.cpp
++++ b/src/core/renderloop.cpp
+@@ -207,8 +207,13 @@ void RenderLoopPrivate::notifyFrameCompleted(std::chrono::nanoseconds timestamp,
+         renderJournal.skip(timestamp);
+     } else if (renderTime) {
+         // timings are pretty unpredictable in the sub-millisecond range; this minimum
+-        // ensures that when CPU or GPU power states change, we don't drop any frames
+-        const std::chrono::nanoseconds minimumTime = std::chrono::milliseconds(2);
++        // ensures that when CPU or GPU power states change, we don't drop any frames.
++        // Not for a frame the compositor did not render (direct scanout: it only
++        // imported and tested a client's buffer), as up to 6.7, where the minimum was
++        // part of the OpenGL render time query: 5338c2e9a7 made such frames count as
++        // 2 ms, so the compositor wakes up ~1.8 ms earlier for a fullscreen client
++        // (a game, a virtual machine's zero-copy window) and shows its frames later
++        const std::chrono::nanoseconds minimumTime = (frame && !frame->renderedByCompositor()) ? std::chrono::nanoseconds::zero() : std::chrono::milliseconds(2);
+         renderJournal.add(std::max(minimumTime, renderTime->end - renderTime->start), timestamp);
+     }
+     if (s_lateFlipCompensation && mode == PresentationMode::VSync && frame) {
+-- 
+2.55.0
+

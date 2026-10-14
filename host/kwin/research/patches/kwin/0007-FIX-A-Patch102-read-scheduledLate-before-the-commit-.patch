@@ -1,0 +1,38 @@
+From e3953156a887947fd47ff00a87be835396d662b0 Mon Sep 17 00:00:00 2001
+From: tomtomnet <tompere8000@proton.me>
+Date: Sat, 3 Oct 2026 14:32:50 +0200
+Subject: [PATCH 7/9] FIX-A Patch102: read scheduledLate before the commit
+ ioctl (race with DrmAtomicCommit::pageFlipped on the main thread)
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ src/backends/drm/drm_commit_thread.cpp | 6 +++++-
+ 1 file changed, 5 insertions(+), 1 deletion(-)
+
+diff --git a/src/backends/drm/drm_commit_thread.cpp b/src/backends/drm/drm_commit_thread.cpp
+index 1a4b716568..99ead55916 100644
+--- a/src/backends/drm/drm_commit_thread.cpp
++++ b/src/backends/drm/drm_commit_thread.cpp
+@@ -152,6 +152,10 @@ void DrmCommitThread::submit()
+ {
+     DrmAtomicCommit *commit = m_commits.front().get();
+     const auto vrr = commit->isVrr();
++    // read before the ioctl: once it returned, the main thread may already handle
++    // the pageflip event and clear the commit's frames (DrmAtomicCommit::pageFlipped
++    // runs without m_mutex)
++    const bool scheduledLate = commit->scheduledLate();
+     const auto success = commit->commit();
+     if (success) {
+         m_vrr = vrr.value_or(m_vrr);
+@@ -167,7 +171,7 @@ void DrmCommitThread::submit()
+         const auto targetTimestamp = m_targetPageflipTime - m_baseSafetyMargin;
+         // this is how much safety we need to add or remove to achieve that next time
+         const auto safetyDifference = targetTimestamp - m_lastCommitTime;
+-        if (safetyDifference < std::chrono::nanoseconds::zero() && commit->scheduledLate()) {
++        if (safetyDifference < std::chrono::nanoseconds::zero() && scheduledLate) {
+             // the frame was requested too late for its vblank and rendered at
+             // once; being late here says nothing about the safety margin, and
+             // growing it would only make every following frame wait longer
+-- 
+2.55.0
+

@@ -9,7 +9,8 @@ QEMU, virglrenderer, rutabaga_gfx and the guest's graphics stack (virtio-gpu
 driver, Mesa, KWin) are used at pinned versions, with the patches vitrine
 needs kept in this repository: `host/versions.conf` and `host/patches` for
 the QEMU, virglrenderer and rutabaga_gfx vitrine builds (upstream QEMU with a
-series of patches, `host/patches/qemu/series`), `guest/` for the guest's.
+series of patches, `host/patches/qemu/series`), `guest/` for the guest's,
+and `host/kwin` for the optional host KWin.
 
 Early development. It is built and tried on Fedora 44 KDE Plasma (Wayland)
 with an AMD Radeon 780M, with Fedora 44 KDE guests. It is not packaged.
@@ -98,12 +99,12 @@ dragging its edge. Under the list, a button shows the long tasks under way
 a menu of the tasks when there are several.
 
 File > Builds… (Ctrl+B) shows what vitrine builds: its QEMU (virglrenderer,
-rutabaga_gfx, QEMU) and the guest tools (their packages and medium), each
-with its source, its patches by origin, whether it is up to date and why
-not, when it was built and how long that took, and its log. A build
-redoes only what changed: a component built from the same inputs is not
-built again, a changed patch compiles only the files it changes, and the
-guest packages compile through ccache.
+rutabaga_gfx, QEMU), the guest tools (their packages and medium) and,
+optional, the host's KWin, each with its source, its patches by origin,
+whether it is up to date and why not, when it was built and how long that
+took, and its log. A build redoes only what changed: a component built
+from the same inputs is not built again, a changed patch compiles only the
+files it changes, and the guest packages compile through ccache.
 
 1. **Build vitrine's QEMU.** The banner's Build… button (or File > Builds…)
    opens the Builds window, whose Build button fetches QEMU, virglrenderer
@@ -171,6 +172,22 @@ goes back to its login screen, where you log in again from the Screen view.
 With QEMU's SDL or GTK window, or none, the session opens as a window of its
 own.
 
+Host desktop (optional): the Builds window also offers this computer's own
+KWin with the research's host set: steadier frames and quicker input in
+VMs, and the pointer grab inside the Desktop view. The research has sets
+for Plasma 6.7.91 (the KDE SIG's beta COPR) and 6.8, none for Fedora 44's
+own 6.7.5: the window says so. Build builds it in a Fedora container
+(`host/kwin/build.sh`, about 15 minutes, up to 10 GiB of memory). Install…
+says what it does first, then, with the administrator's password, replaces
+kwin, kwin-common and kwin-libs and version-locks them (`dnf versionlock`);
+it takes effect at the next login. It must match the installed Plasma and
+Qt: after an update of either, build and install it again, or Revert…,
+which puts the distribution's KWin back. A banner says when the installed
+one no longer matches. A KWin that vitrine did not install (another patched
+build) is named before anything replaces it, and vitrine never reverts it.
+`host/kwin/README.md` has the details, and the commands that put the
+distribution's KWin back from a text console.
+
 Shut Down goes through the guest's agent when it runs one: the guest tools',
 else QEMU's guest agent (Fedora installs qemu-guest-agent in VMs). Otherwise
 it presses the VM's power button, which some guests answer with a question
@@ -204,7 +221,9 @@ disk, `qemu.log`), or another folder chosen in Preferences, where vitrine
 lists every folder holding a `vm.args`; vitrine's QEMU in `~/.local/share/vitrine/stack/`, the
 guest tools in `~/.local/share/vitrine/guest-tools/`, QEMU's build trees in
 `~/.cache/vitrine/stack-build/`, the guest tools' downloads in
-`~/.cache/vitrine/guest-build/`, settings in `~/.config/vitrine/settings.conf`.
+`~/.cache/vitrine/guest-build/`, the host's KWin builds in
+`~/.local/share/vitrine/host-kwin/` and its downloads in
+`~/.cache/vitrine/host-kwin-build/`, settings in `~/.config/vitrine/settings.conf`.
 
 ## Install
 

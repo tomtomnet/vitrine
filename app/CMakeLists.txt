@@ -54,6 +54,10 @@ qt_add_library(vitrine_core STATIC
     src/core/hostdevices.h
     src/core/hostkvm.cpp
     src/core/hostkvm.h
+    src/core/hostkwin.cpp
+    src/core/hostkwin.h
+    src/core/hostkwinbuilder.cpp
+    src/core/hostkwinbuilder.h
     src/core/hostmemory.cpp
     src/core/hostmemory.h
     src/core/hostsettings.cpp
@@ -253,6 +257,10 @@ qt_add_library(vitrine_ui STATIC
     src/ui/guesttoolsbuildbanner.h
     src/ui/guesttoolsdialog.cpp
     src/ui/guesttoolsdialog.h
+    src/ui/hostkwinbanner.cpp
+    src/ui/hostkwinbanner.h
+    src/ui/hostkwindialog.cpp
+    src/ui/hostkwindialog.h
     src/ui/hosttuningnotifier.cpp
     src/ui/hosttuningnotifier.h
     src/ui/hosttuningprefs.cpp
@@ -395,6 +403,7 @@ if(BUILD_TESTING)
             guesttoolsbuilder
             hostdevices
             hostkvm
+            hostkwin
             hostmemory
             hostsettings
             importer
@@ -470,6 +479,9 @@ if(BUILD_TESTING)
     # the scripts of guest/, against a stand-in for podman
     target_compile_definitions(test_guesttoolsbuilder PRIVATE
         GUEST_SOURCE_DIR="${PROJECT_SOURCE_DIR}/guest")
+    # host/kwin's scripts and pinned recipe, against stand-ins for rpm and dnf
+    target_compile_definitions(test_hostkwin PRIVATE
+        HOST_KWIN_SOURCE_DIR="${PROJECT_SOURCE_DIR}/host/kwin")
     # the same stand-in, for QEMUs found running
     target_compile_definitions(test_vmrunner PRIVATE FAKE_QEMU="$<TARGET_FILE:fake-qemu>")
     add_dependencies(test_vmrunner fake-qemu)
