@@ -94,7 +94,8 @@ public:
         p.setBrush(m_color);
         p.drawEllipse(badge);
         p.setPen(Qt::NoPen);
-        p.setBrush(Qt::white);
+        /* the sign white, but dark on a light badge (the paused one's yellow) */
+        p.setBrush(qGray(m_color.rgb()) > 160 ? QColor(0x23, 0x26, 0x29) : QColor(Qt::white));
         switch (m_badge) {
         case Badge::Pause:
             p.drawRect(QRectF(c.x() - 3.0 * unit, c.y() - 3.5 * unit, 2.2 * unit, 7 * unit));
@@ -213,7 +214,8 @@ private:
     {
         /* Breeze's (KDE's) palette: the VM list's badges */
         const QColor green = flat.isValid() ? flat : QColor(0x27, 0xae, 0x60);
-        const QColor amber = flat.isValid() ? flat : QColor(0xf6, 0x74, 0x00);
+        /* yellow rather than Breeze's orange, the user's choice */
+        const QColor yellow = flat.isValid() ? flat : QColor(0xf5, 0xc2, 0x11);
         const QColor red = flat.isValid() ? flat : QColor(0xda, 0x44, 0x53);
         const QColor blue = flat.isValid() ? flat : QColor(0x29, 0x80, 0xb9);
         QImage image(side, side, QImage::Format_ARGB32_Premultiplied);
@@ -251,7 +253,8 @@ private:
             const int top = box.top() + (box.height() - high) / 2;
             path.addRect(left, top, bar, high);
             path.addRect(left + bar + gap, top, bar, high);
-            fillEdged(&p, path, amber, amber.darker(137), edge);
+            /* a darker edge than the others': a light yellow needs it to show on light */
+            fillEdged(&p, path, yellow, yellow.darker(175), edge);
             break;
         }
         case Control::ForceOff: {

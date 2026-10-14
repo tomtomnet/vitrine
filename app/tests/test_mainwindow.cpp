@@ -33,8 +33,8 @@
 #include "ui/vmpane.h"
 
 /*
- * The main window's rows: one bar under the title, VMware's, with the
- * menus, the VM's power buttons and its tabs; the list of VMs collapsed to
+ * The main window's rows: one bar under the title, with the menus and
+ * the VM's tabs; the list of VMs collapsed to
  * a strip of icons and expanded, never hidden; the shortcuts of every menu,
  * F10 and Alt with a menu's letter; and the bar at every width the window
  * can have, at every scale: nothing in an overflow menu, the menus whole,
@@ -50,7 +50,7 @@ const char kAlpha[] = "-name Alpha\n-machine q35\n-m 2G\n-display dbus,p2p=yes,g
 const char kBravo[] = "-name Bravo\n-machine q35\n-m 1G\n-display sdl\n";
 const char kLong[] = "-name A Virtual Machine With a Rather Long Name\n-machine q35\n-m 1G\n";
 
-/* The VM's power buttons, in the bar's order */
+/* The VM's power actions, in the Machine menu alone */
 const QStringList kPower = {"Start", "Pause", "Shut Down", "Reset", "Force Off"};
 /* Actions that were in the bar, in the menus only now */
 const QStringList kMenusOnly = {"New…", "Full Screen", "Send Ctrl+Alt+Del", "USB Devices"};
@@ -351,9 +351,9 @@ private slots:
     }
 
     /*
-     * One row above the VMs, VMware's: the list's button, the menus, the
-     * VM's power buttons as icons, its tabs at the end; no menu bar above
-     * it, nor the actions that are in the menus only now
+     * One row above the VMs: the list's button, the menus, the VM's tabs at
+     * the end; no menu bar above it, no separator in it, nor the actions
+     * that are in the menus only (the power ones too, the user's choice)
      */
     void oneBar()
     {
@@ -374,10 +374,11 @@ private slots:
             QVERIFY2(other == menus || !other->isVisible(), "a menu bar besides the bar's");
         }
 
-        /* in order: what the bar shows, but the separators and the stretch */
+        /* in order: what the bar shows, but the stretch; no separator */
         QStringList order;
         for (QAction *a : b->actions()) {
             QWidget *widget = b->widgetForAction(a);
+            QVERIFY2(!a->isVisible() || !a->isSeparator(), "a separator in the bar");
             if (!a->isVisible() || !widget || a->isSeparator()) {
                 continue;
             }
@@ -391,15 +392,9 @@ private slots:
                 order << nameOf(a);
             }
         }
-        QCOMPARE(order, QStringList({"list", "menus"}) + kPower + QStringList{"tabs"});
-        for (const QString &name : kPower) {
-            auto *button = qobject_cast<QToolButton *>(b->widgetForAction(action(w.get(), name)));
-            QVERIFY(button);
-            QCOMPARE(button->toolButtonStyle(), Qt::ToolButtonIconOnly);
-            QVERIFY(!button->icon().isNull());
-        }
+        QCOMPARE(order, QStringList({"list", "menus", "tabs"}));
         const QList<QAction *> inMenus = menuActions(w.get());
-        for (const QString &name : kMenusOnly) {
+        for (const QString &name : kMenusOnly + kPower) {
             QAction *a = action(w.get(), name);
             QVERIFY2(a, qPrintable(name + ": no such action"));
             QVERIFY2(inMenus.contains(a), qPrintable(name + " in no menu"));

@@ -3,14 +3,12 @@
 
 #include <QAction>
 #include <QHBoxLayout>
-#include <QHelpEvent>
 #include <QKeyEvent>
 #include <QLayout>
 #include <QMenu>
 #include <QMenuBar>
 #include <QStyle>
 #include <QToolButton>
-#include <QToolTip>
 
 namespace {
 
@@ -210,47 +208,6 @@ TabSwitcher *MainBar::addTabs(const QList<QAction *> &tabs)
     m_tabs = new TabSwitcher(tabs);
     addWidget(m_tabs);
     return m_tabs;
-}
-
-void MainBar::addIconButtons(const QList<QAction *> &actions)
-{
-    for (QAction *action : actions) {
-        addAction(action);
-        if (auto *button = qobject_cast<QToolButton *>(widgetForAction(action))) {
-            button->setToolButtonStyle(Qt::ToolButtonIconOnly);
-            button->setProperty("namedInToolTip", true);
-            button->installEventFilter(this);
-        }
-    }
-}
-
-QString MainBar::toolTipOf(const QAction *action)
-{
-    /* the name as a button's text has it, without the mnemonic */
-    QString tip = action->iconText();
-    const QString more = action->toolTip();
-
-    if (!action->shortcut().isEmpty()) {
-        tip += QString(" (%1)").arg(action->shortcut().toString(QKeySequence::NativeText));
-    }
-    /* the action's own tooltip, if it has one: by default, its name */
-    if (more != action->iconText()) {
-        tip += '\n' + more;
-    }
-    return tip;
-}
-
-bool MainBar::eventFilter(QObject *watched, QEvent *event)
-{
-    if (event->type() == QEvent::ToolTip && watched->property("namedInToolTip").toBool()) {
-        auto *button = static_cast<QToolButton *>(watched);
-        if (const QAction *action = button->defaultAction()) {
-            QToolTip::showText(static_cast<QHelpEvent *>(event)->globalPos(), toolTipOf(action),
-                               button);
-            return true;
-        }
-    }
-    return QToolBar::eventFilter(watched, event);
 }
 
 int MainBar::neededWidth(bool compact, bool least) const

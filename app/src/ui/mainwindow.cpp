@@ -94,7 +94,7 @@ static QIcon vmIcon(VmRunner::State state)
             break;
         case VmRunner::State::Paused:
             cache.insert(int(state),
-                         Icons::badged(base, QColor(0xf6, 0x74, 0x00), Icons::Badge::Pause));
+                         Icons::badged(base, QColor(0xf5, 0xc2, 0x11), Icons::Badge::Pause));
             break;
         default:
             cache.insert(int(state),
@@ -398,6 +398,9 @@ void MainWindow::createActions()
     m_bar = new MainBar(tr("Main Toolbar"), this);
     m_bar->setObjectName("toolbar");
     m_bar->setToolButtonStyle(Qt::ToolButtonIconOnly);
+    /* low, as KDE's own bars: small icons, the list's button its only one */
+    const int small = style()->pixelMetric(QStyle::PM_SmallIconSize, nullptr, m_bar);
+    m_bar->setIconSize(QSize(small, small));
     addToolBar(m_bar);
     m_bar->addAction(m_listButton);
     m_menus = m_bar->addMenuBar();
@@ -468,9 +471,7 @@ void MainWindow::createActions()
     /* F10, which no menu has */
     addAction(m_openMenu);
 
-    /* icons alone, VMware's: their names in their tooltips */
-    m_bar->addSeparator();
-    m_bar->addIconButtons({m_start, m_pause, m_shutDown, m_reset, m_forceOff});
+    /* the VM's power actions in the Machine menu alone, as the user prefers */
     m_bar->addStretch();
     m_bar->addTabs(m_pane->tabActions());
     /* the tabs replace the pane's own */

@@ -68,24 +68,13 @@ public:
     /* The tabs of a pane, as VmPane::tabActions() gives them */
     TabSwitcher *addTabs(const QList<QAction *> &tabs);
     /*
-     * Buttons for @actions, icons alone, whose tooltips name them with their
-     * shortcuts first: what the text beside an icon would say
-     */
-    void addIconButtons(const QList<QAction *> &actions);
-
-    /*
      * The width the bar needs, its tabs @compact or not, as its layout lays
      * it out: its items' preferred widths, or the least they can take (@least)
      */
     int neededWidth(bool compact, bool least = false) const;
 
-    /* The tooltip of @action's button among those of addIconButtons() */
-    static QString toolTipOf(const QAction *action);
-
 protected:
     bool event(QEvent *event) override;
-    /* The tooltips of addIconButtons() */
-    bool eventFilter(QObject *watched, QEvent *event) override;
     void resizeEvent(QResizeEvent *event) override;
 
 private:

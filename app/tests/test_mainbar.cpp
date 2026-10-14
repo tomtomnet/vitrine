@@ -1,12 +1,10 @@
 // SPDX-License-Identifier: GPL-2.0-or-later
 #include <QActionGroup>
 #include <QApplication>
-#include <QHelpEvent>
 #include <QMainWindow>
 #include <QMenuBar>
 #include <QTest>
 #include <QToolButton>
-#include <QToolTip>
 #include <QVBoxLayout>
 
 #include "ui/mainbar.h"
@@ -147,41 +145,6 @@ private slots:
         }
         const auto *overflow = bar->findChild<QToolButton *>("qt_toolbar_ext_button");
         QVERIFY2(!overflow || !overflow->isVisible(), "the bar's overflow button shows");
-    }
-
-    /* Buttons with an icon alone: their tooltips name them, with their shortcuts */
-    void iconButtons()
-    {
-        QMainWindow window;
-        auto *bar = new MainBar("Bar");
-        window.addToolBar(bar);
-        auto *start = new QAction("S&tart", &window);
-        start->setShortcut(QKeySequence(Qt::CTRL | Qt::Key_Return));
-        auto *off = new QAction("&Force Off", &window);
-        off->setToolTip("Stop the VM at once");
-        bar->addIconButtons({start, off});
-        window.show();
-        QVERIFY(QTest::qWaitForWindowExposed(&window));
-
-        const QString startTip =
-            "Start (" + QKeySequence(Qt::CTRL | Qt::Key_Return).toString(QKeySequence::NativeText) +
-            ")";
-        QCOMPARE(MainBar::toolTipOf(start), startTip);
-        QCOMPARE(MainBar::toolTipOf(off), QString("Force Off\nStop the VM at once"));
-        for (QAction *a : {start, off}) {
-            auto *button = qobject_cast<QToolButton *>(bar->widgetForAction(a));
-            QVERIFY(button);
-            QCOMPARE(button->toolButtonStyle(), Qt::ToolButtonIconOnly);
-        }
-        /* as a hover shows it, and its new name after a change */
-        start->setText("&Resume");
-        auto *button = bar->widgetForAction(start);
-        const QPoint at = button->rect().center();
-        QHelpEvent help(QEvent::ToolTip, at, button->mapToGlobal(at));
-        QApplication::sendEvent(button, &help);
-        QTRY_VERIFY(QToolTip::isVisible());
-        QCOMPARE(QToolTip::text(), QString(startTip).replace("Start", "Resume"));
-        QToolTip::hideText();
     }
 };
 
