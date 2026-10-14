@@ -2,7 +2,7 @@
 # exact version, and dnf takes an installed one of the same version as done.
 Name:           vitrine-guest-tools
 Version:        0.1.0
-Release:        16%{?dist}
+Release:        17%{?dist}
 Summary:        vitrine guest tools: patched virtio-gpu driver, settings and agent
 
 # the driver's sources (dkms/vendor, dkms/patches) are the kernel's: MIT
@@ -172,6 +172,10 @@ fi
 %dir %{_sharedstatedir}/%{name}
 
 %changelog
+* Wed Oct 14 2026 vitrine <noreply@anthropic.com> - 0.1.0-17
+- the nested desktop's boot script runs: an apostrophe in a message broke it
+  (bash took it for a quote); the agent finds the proxy's process
+
 * Wed Oct 14 2026 vitrine <noreply@anthropic.com> - 0.1.0-16
 - the nested desktop: the research's session (its KWin nested on
   wl-cross-domain-proxy), offered as "Plasma (nested desktop)" in place of

@@ -47,7 +47,7 @@ esac
 mkdir -p "$run"
 printf '%s %s\n' "$cmdline" "$words" > "$run/cmdline"
 touch "$run/nested"
-echo "a nested-desktop boot (${words:-the kernel's command line})"
+echo "a nested-desktop boot (${words:-on the kernel command line})"
 
 # The display manager reads these: their label is its runtime files', for
 # SELinux (a file made here is var_run_t, which the login manager may not
