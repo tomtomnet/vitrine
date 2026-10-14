@@ -328,13 +328,16 @@ void Sidebar::handleMoved()
 
 bool Sidebar::eventFilter(QObject *watched, QEvent *event)
 {
-    if (m_splitter && m_splitter->count() >= 2 && watched == m_splitter->handle(1)) {
-        const auto *mouse = static_cast<QMouseEvent *>(event);
-        if (event->type() == QEvent::MouseButtonPress && mouse->button() == Qt::LeftButton) {
+    const bool press = event->type() == QEvent::MouseButtonPress;
+    const bool release = event->type() == QEvent::MouseButtonRelease;
+
+    if ((press || release) && m_splitter && m_splitter->count() >= 2 &&
+        watched == m_splitter->handle(1) &&
+        static_cast<QMouseEvent *>(event)->button() == Qt::LeftButton) {
+        if (press) {
             m_dragging = true;
             applyLimits();
-        } else if (event->type() == QEvent::MouseButtonRelease &&
-                   mouse->button() == Qt::LeftButton && m_dragging) {
+        } else if (m_dragging) {
             /* after the handle's own release, which moves it there when the
                splitter's resize is not opaque (a rubber band meanwhile) */
             QMetaObject::invokeMethod(this, &Sidebar::endDrag, Qt::QueuedConnection);
