@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-2.0-or-later
 // The stats overlay of the nested desktop (wl-cross-domain-proxy --overlay-command, Ctrl+Alt+S):
 // a layer-shell window above everything in the top-left corner, click-through, that never takes
 // the keyboard. It reads the proxy's JSON file (its path is the argument after "--") four times a

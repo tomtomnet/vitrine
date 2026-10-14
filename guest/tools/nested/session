@@ -1,4 +1,5 @@
 #!/bin/bash
+# SPDX-License-Identifier: GPL-2.0-or-later
 # "Plasma (nested desktop)": the whole Plasma session as one window of the
 # host's desktop - in vitrine's window, or a window of its own. The session's
 # KWin runs nested (its Wayland backend) on wl-cross-domain-proxy, which

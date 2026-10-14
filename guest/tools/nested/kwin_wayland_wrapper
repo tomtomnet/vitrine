@@ -1,4 +1,5 @@
 #!/bin/sh
+# SPDX-License-Identifier: GPL-2.0-or-later
 # crosvm-desktop: plasma-kwin_wayland.service runs this instead of
 # /usr/bin/kwin_wayland_wrapper during a "Plasma (crosvm window)" login only
 # (a runtime drop-in written by that session). It adds the nested-window

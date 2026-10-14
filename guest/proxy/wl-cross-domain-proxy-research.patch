@@ -1,18 +1,32 @@
 The research's work on wl-cross-domain-proxy (virtio-gpu-desktop,
-src/wl-cross-domain-proxy at its commit 5799347; the proxy last changed in
-fdd935d), as one diff against upstream c6ce1ca89fb4, the commit it started
-from (patches/wl-cross-domain-proxy/BASE.md there).  What the nested desktop
+src/wl-cross-domain-proxy at its commit b973b6b), as one diff against
+upstream c6ce1ca89fb4, the commit it started from
+(patches/wl-cross-domain-proxy/BASE.md there).  What the nested desktop
 needs of the proxy beyond upstream: the presentation clock translated into
 the guest's, fence waits before a frame reaches the host, the host's pointer
 grab and shortcut capture, the clipboard following the window's focus, an
 opaque toplevel, resizes settled before they reach the guest, AMD DCC
 modifiers left out of the dma-buf feedback (the host can scan the frames out
-then), statistics and their overlay.  Same licence as the proxy: MIT, the
-ChromiumOS part (src/cross_domain) BSD-style.
+then), statistics and their overlay.
+
+Licence: these changes are GPL-2.0-or-later (the research's, the user's
+choice of 2026-10-14); Victoria Brekenfeld's proxy stays MIT, with her
+notice in LICENSE, and the ChromiumOS part (src/cross_domain) BSD-style:
+the tree as a whole is GPL-2.0-or-later AND MIT (its README and Cargo.toml
+say so).
 
 diff -ruN a/Cargo.toml b/Cargo.toml
 --- a/Cargo.toml
 +++ b/Cargo.toml
+@@ -2,7 +2,7 @@
+ name = "wl-cross-domain-proxy"
+ version = "0.1.0"
+ edition = "2024"
+-license = "MIT"
++license = "GPL-2.0-or-later AND MIT"
+ authors = ["Victoria Brekenfeld <codeberg@drakulix.de>"]
+ readme = "README.md"
+ repository = "https://codeberg.org/drakulix/wl-cross-domain-proxy"
 @@ -21,7 +21,7 @@
  libc = "0.2.177"
  log = "0.4.28"
@@ -22,6 +36,25 @@ diff -ruN a/Cargo.toml b/Cargo.toml
  sd-listen-fds = "0.2.0"
  smallvec = "1.15.1"
  wayland-protocols = { version = "0.32.9", features = ["server", "staging", "unstable"] }
+diff -ruN a/README.md b/README.md
+--- a/README.md
++++ b/README.md
+@@ -1,5 +1,15 @@
+ ## wl-cross-domain-proxy
+ 
++## Licence of this tree
++
++This is Victoria Brekenfeld's wl-cross-domain-proxy (MIT, see LICENSE - her copyright and permission notice stay
++with her code) with changes made for the virtio-gpu-desktop project in 2026 (frame pacing, clipboard, the seat and
++grab handling, the stats overlay, batching, DCC filtering and more). Those changes are under the GNU General Public
++License, version 2 or later, and this tree as a whole is distributed under GPL-2.0-or-later (the text:
++../../LICENSE); SPDX expression of the tree: GPL-2.0-or-later AND MIT. The upstream project itself is unaffected:
++its own code remains available from it under MIT.
++
++
+ A simple proxy for the wayland protocol across virtio-gpu cross-domain context.
+ 
+ ## What?
 diff -ruN a/src/args.rs b/src/args.rs
 --- a/src/args.rs
 +++ b/src/args.rs

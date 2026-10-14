@@ -6,7 +6,7 @@ wl-cross-domain-proxy (guest/proxy) over virtio-gpu cross-domain.
 
 These files are the research's crosvm-desktop session
 (`~/Documents/virtio-gpu-desktop`, `src/crosvm-desktop/host-package/guest/files`
-at commit 5799347). `UPSTREAM.sha256` has their hashes there:
+at commit b973b6b). `UPSTREAM.sha256` has their hashes there:
 `sha256sum -c UPSTREAM.sha256` fails only for the files changed below.
 
 | file | installed as |
@@ -28,6 +28,15 @@ login; their journal service (crosvm debug boots), `crosvm-desktop-check` and
 |---|---|---|
 | `session` | header comment; `conf`, `launcher_words`, `LIBEXEC` and `PROXY` paths | vitrine's package layout: no files in /usr/local; the boot's words in /run/vitrine-nested |
 | `nested.conf` | header comment; no `CROSVM_DESKTOP_AUTOLOGIN` (a note instead); `CROSVM_DESKTOP_STATS=off`; a note on the `CROSVM_DESKTOP_KWIN_ENV` settings vitrine's KWin 6.7.5 knows; `vitrine-nested-boot.service` for their detect service | vitrine sets no automatic login (the user's decision, 2026-10-14): the guest's own, if any, logs into the nested desktop; no numbers in the window's title, as the research's own guests |
+
+## Licences
+
+The research's session files, and vitrine's changes to them, are
+GPL-2.0-or-later (the research's licence since b973b6b, the user's choice;
+each file's SPDX line). The proxy (guest/proxy) is Victoria Brekenfeld's
+wl-cross-domain-proxy, MIT, with the research's changes, GPL-2.0-or-later:
+the tree is GPL-2.0-or-later AND MIT. The research's patches to KWin,
+KPipeWire, Mesa and the virtio-gpu driver keep those projects' licences.
 
 ## How a boot becomes a nested-desktop one
 
