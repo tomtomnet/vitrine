@@ -37,9 +37,11 @@ die() { say "error: $*" >&2; exit 1; }
 usage() { sed -n '/^#   install.sh install/,/^#       digest/p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,3\}//'; }
 
 # The KWin packages installed: those made from KWin's source RPM (kwin-x11
-# has its own)
+# has its own), but its debug information, which an install leaves alone
+# and whose repository is seldom enabled
 kwin_installed() {
-	rpm -qa --qf '%{NAME} %{SOURCERPM}\n' | awk '$2 ~ /^kwin-[0-9]/ { print $1 }' | LC_ALL=C sort -u
+	rpm -qa --qf '%{NAME} %{SOURCERPM}\n' |
+		awk '$2 ~ /^kwin-[0-9]/ && $1 !~ /-debug(info|source)$/ { print $1 }' | LC_ALL=C sort -u
 }
 
 # Of the names given, those dnf's versionlock has an entry for

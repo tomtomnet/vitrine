@@ -896,8 +896,13 @@ private slots:
         QCOMPARE(read(m_state + "/locks/kwin").trimmed(), "6.7.91-1.hl39.fc44");
 
         QFile::remove(m_state + "/fail");
+        /* debug information an install left alone: not reverted either */
+        QVERIFY(write(m_state + "/installed/kwin-debuginfo", pkg("kwin-debuginfo", "6.7.91-1.fc44", "dbg")));
+        QFile::remove(m_state + "/calls");
         out = installScript({"revert", "v-kwin"}, &status);
         QVERIFY2(status == 0, qPrintable(out));
+        QVERIFY2(read(m_state + "/calls").contains("distro-sync kwin kwin-common kwin-libs\n"),
+                 read(m_state + "/calls").constData());
         QCOMPARE(installed("kwin"), "distro");
         QCOMPARE(installed("kwin-libs"), "distro");
         QVERIFY(!QFileInfo::exists(m_state + "/locks/kwin"));
