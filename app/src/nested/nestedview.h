@@ -49,7 +49,8 @@ class NestedView : public DesktopView
 public:
     /* Serves @socket (an old socket there is replaced); null with @error */
     static NestedView *create(const QString &socket, QString *error, QObject *parent = nullptr);
-    /* Stops serving: the guest's session loses its window */
+    /* Stops serving: the guest's window is closed first (vmview_destroy()), which
+       ends its session, as its nested KWin quits */
     ~NestedView() override;
 
     QString socket() const override;
