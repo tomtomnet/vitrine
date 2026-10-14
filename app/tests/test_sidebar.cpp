@@ -312,16 +312,7 @@ private slots:
         task->setProgress(45, 100);
         QCOMPARE(button->status(), QString("45%"));
         QVERIFY(button->toolTip().contains("Copying disk.qcow2"));
-        /* what is left, when it knows */
-        QVERIFY(!button->toolTip().contains("left"));
-        task->setRemaining(18 * 60 + 5);
-        QVERIFY2(button->toolTip().contains("About 18 min left"), qPrintable(button->toolTip()));
-        QCOMPARE(TaskButton::describe(task),
-                 "Clone of Alpha · 45% — Copying disk.qcow2 · about 18 min left");
-        task->setRemaining(30);
-        QVERIFY(TaskButton::describe(task).endsWith(" · less than a minute left"));
-        task->setRemaining(2 * 3600 + 5 * 60);
-        QVERIFY(TaskButton::describe(task).endsWith(" · about 2 h 5 min left"));
+        QCOMPARE(TaskButton::describe(task), "Clone of Alpha · 45% — Copying disk.qcow2");
         const QImage still = button->grab().toImage();
         QTest::qWait(250);
         QCOMPARE(button->grab().toImage(), still);
@@ -335,9 +326,6 @@ private slots:
         button->setLinger(30);
         task->finish(Task::State::Failed, "No space left on device");
         QCOMPARE(button->status(), QString("Failed"));
-        /* over: nothing left to tell */
-        QCOMPARE(task->remaining(), -1);
-        QVERIFY(!button->toolTip().contains("min left"));
         QVERIFY(button->toolTip().contains("No space left on device"));
         QTest::qWait(150);
         QCOMPARE(tasks.tasks().size(), 1);

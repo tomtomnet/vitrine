@@ -156,8 +156,6 @@ QList<Component> load(const Places &places)
         }
         for (const auto &[id, values] : parseConf(conf)) {
             Component c;
-            bool ok = false;
-            const int minutes = values.value("minutes").toInt(&ok);
 
             c.id = id;
             c.title = values.value("title", id);
@@ -168,7 +166,6 @@ QList<Component> load(const Places &places)
                      : values.value("kind") == "medium" ? Kind::Medium
                                                          : Kind::Package;
             c.deps = values.value("deps").split(' ', Qt::SkipEmptyParts);
-            c.minutes = ok && minutes > 0 ? minutes : 10;
             c.heavy = values.value("heavy") == "1";
             /* a package is its spec */
             if (c.kind == Kind::Package && !QFileInfo(dir + '/' + values.value("spec")).isFile()) {

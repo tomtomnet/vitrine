@@ -161,8 +161,8 @@ void HostKwinBuilder::run()
     /*
      * A process group of its own, which Stop signals as a whole: the script
      * removes its container, podman goes with it.  And stopped if Vitrine
-     * goes without stopping it: the container would go on for its 15
-     * minutes and its GiB.
+     * goes without stopping it: the container would go on for the rest of
+     * its build and its GiB.
      */
     const pid_t app = ::getpid();
     m_process->setChildProcessModifier([app]() {

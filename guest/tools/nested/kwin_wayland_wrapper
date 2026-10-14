@@ -1,0 +1,35 @@
+#!/bin/sh
+# SPDX-License-Identifier: GPL-2.0-or-later
+# crosvm-desktop: plasma-kwin_wayland.service runs this instead of
+# /usr/bin/kwin_wayland_wrapper during a "Plasma (crosvm window)" login only
+# (a runtime drop-in written by that session). It adds the nested-window
+# options, then runs the real wrapper. Without that session's variables, or
+# without its proxy socket, it changes nothing.
+if [ "${CROSVM_DESKTOP_SESSION:-0}" = 1 ] && [ -n "${CROSVM_DESKTOP_HOST_DISPLAY:-}" ] &&
+    [ -S "$CROSVM_DESKTOP_HOST_DISPLAY" ]; then
+    set -- "$@" \
+        --wayland-display "$CROSVM_DESKTOP_HOST_DISPLAY" \
+        --width "${CROSVM_DESKTOP_WIDTH:-1600}" \
+        --height "${CROSVM_DESKTOP_HEIGHT:-900}" \
+        --scale "${CROSVM_DESKTOP_SCALE:-2}"
+    if [ "${CROSVM_DESKTOP_FULLSCREEN:-0}" = 1 ]; then
+        set -- "$@" --fullscreen=1
+    fi
+    # KWin settings of the guest's environment that this session's KWin should not
+    # get (tuned for a VM display, not for a nested one): CROSVM_DESKTOP_KWIN_UNSET
+    for v in ${CROSVM_DESKTOP_KWIN_UNSET:-}; do
+        unset "$v"
+    done
+    # nested KWin's overlay layers (subsurfaces above its output) off unless asked for:
+    # the nested desktop froze in 3 of 7 test runs with them, when a window opened
+    # (2026-10-06), and in none of 3 without (CROSVM_DESKTOP_NESTED_OVERLAYS)
+    if [ "${CROSVM_DESKTOP_NESTED_OVERLAYS:-0}" != 1 ]; then
+        export KWIN_USE_OVERLAYS=0
+    fi
+    # KWin settings this session's KWin gets on top (VAR=VALUE ...): CROSVM_DESKTOP_KWIN_ENV - KWin's own
+    # and Mesa's (GALLIUM_*, MESA_*, AMD_*, RADV_*: driver knobs for this KWin only, 2026-10-13)
+    for kv in ${CROSVM_DESKTOP_KWIN_ENV:-}; do
+        case $kv in KWIN_*=* | GALLIUM_*=* | MESA_*=* | AMD_*=* | RADV_*=*) export "$kv" ;; esac
+    done
+fi
+exec /usr/bin/kwin_wayland_wrapper "$@"

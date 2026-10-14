@@ -1,0 +1,11 @@
+[Desktop Entry]
+Type=Application
+Name=Plasma (nested desktop)
+Comment=Plasma as a window of the host's desktop: the VM's nested desktop
+# vitrine guest tools: in a nested-desktop boot the display manager finds this
+# entry first for plasma.desktop (vitrine-nested-boot.service), in any other
+# boot not at all
+Exec=/usr/libexec/plasma-dbus-run-session-if-needed /usr/libexec/vitrine-guest-tools/nested/session
+TryExec=/usr/libexec/vitrine-guest-tools/nested/session
+DesktopNames=KDE
+X-KDE-PluginInfo-Version=1

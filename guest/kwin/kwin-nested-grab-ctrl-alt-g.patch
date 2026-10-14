@@ -1,0 +1,76 @@
+Subject: FIX: wayland backend: grab the pointer with Ctrl+Alt+G, not Right Ctrl
+
+A nested KWin locked the host pointer (relative motion, the host's shortcuts inhibited) on every
+press of Right Ctrl, also when that key was only the Ctrl of an ordinary shortcut in the nested
+session. The VM desktop (wl-cross-domain-proxy) follows QEMU's SDL and GTK windows instead: Ctrl+Alt+G
+toggles the grab and the G never reaches the session; Right Ctrl is an ordinary key again. The window
+title says so (the user's request, 2026-10-12).
+
+
+From the research (virtio-gpu-desktop patches/kwin, 0045), applies to 6.7.5
+as it is.
+
+diff --git a/src/backends/wayland/wayland_backend.cpp b/src/backends/wayland/wayland_backend.cpp
+index 856fb68..f2b1fc8 100644
+--- a/src/backends/wayland/wayland_backend.cpp
++++ b/src/backends/wayland/wayland_backend.cpp
+@@ -62,18 +62,29 @@ WaylandInputDevice::WaylandInputDevice(KWayland::Client::Keyboard *keyboard, Way
+             Q_EMIT keyChanged(key, KeyboardKeyState::Released, std::chrono::milliseconds(time), this);
+         }
+         m_pressedKeys.clear();
++        m_swallowedKeys.clear();
+     });
+     connect(keyboard, &Keyboard::keyChanged, this, [this](quint32 key, Keyboard::KeyState nativeState, quint32 time) {
+         KeyboardKeyState state;
+         switch (nativeState) {
+         case Keyboard::KeyState::Pressed:
+-            if (key == KEY_RIGHTCTRL) {
++            // Ctrl+Alt+G grabs or releases the pointer, as QEMU's SDL and GTK windows do, and
++            // its G stays out of the nested session. It was Right Ctrl: every press of it, also
++            // as an ordinary Ctrl in a shortcut, toggled the grab.
++            if (key == KEY_G
++                && (m_pressedKeys.contains(KEY_LEFTCTRL) || m_pressedKeys.contains(KEY_RIGHTCTRL))
++                && (m_pressedKeys.contains(KEY_LEFTALT) || m_pressedKeys.contains(KEY_RIGHTALT))) {
+                 m_seat->backend()->togglePointerLock();
++                m_swallowedKeys.insert(key);
++                return;
+             }
+             state = KeyboardKeyState::Pressed;
+             m_pressedKeys.insert(key);
+             break;
+         case Keyboard::KeyState::Released:
++            if (m_swallowedKeys.remove(key)) {
++                return;
++            }
+             m_pressedKeys.remove(key);
+             state = KeyboardKeyState::Released;
+             break;
+diff --git a/src/backends/wayland/wayland_backend.h b/src/backends/wayland/wayland_backend.h
+index 288c55a..d111574 100644
+--- a/src/backends/wayland/wayland_backend.h
++++ b/src/backends/wayland/wayland_backend.h
+@@ -99,6 +99,8 @@ private:
+     std::unique_ptr<KWayland::Client::PointerSwipeGesture> m_swipeGesture;
+ 
+     QSet<quint32> m_pressedKeys;
++    // keys of the grab chord kept from the session (their release too)
++    QSet<quint32> m_swallowedKeys;
+ };
+ 
+ class WaylandInputBackend : public InputBackend
+diff --git a/src/backends/wayland/wayland_output.cpp b/src/backends/wayland/wayland_output.cpp
+index 0b62e3d..50bfa61 100644
+--- a/src/backends/wayland/wayland_output.cpp
++++ b/src/backends/wayland/wayland_output.cpp
+@@ -527,9 +527,9 @@ void WaylandOutput::updateWindowTitle()
+ {
+     QString grab;
+     if (m_hasPointerLock) {
+-        grab = i18n("Press right control to ungrab pointer");
++        grab = i18n("Press Ctrl+Alt+G to release the pointer");
+     } else if (m_backend->display()->pointerConstraints()) {
+-        grab = i18n("Press right control key to grab pointer");
++        grab = i18n("Press Ctrl+Alt+G to grab the pointer");
+     }
+ 
+     QString title = i18nc("Title of nested KWin Wayland with Wayland socket identifier as argument",

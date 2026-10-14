@@ -43,13 +43,10 @@ public:
     qint64 total() const { return m_total; }
     /* From 0 to 1, or -1 while it cannot tell (busy) */
     double fraction() const;
-    /* What is left of it, in seconds; -1 while it cannot tell */
-    qint64 remaining() const { return m_remaining; }
 
     void setTitle(const QString &title);
     void setText(const QString &text);
     void setProgress(qint64 done, qint64 total);
-    void setRemaining(qint64 seconds);
     /* It ended, once: Done, Failed or Stopped; @text, what it made or why
        it failed, replaces what it was doing */
     void finish(State state, const QString &text = {});
@@ -81,7 +78,6 @@ private:
     State m_state = State::Running;
     qint64 m_done = 0;
     qint64 m_total = 0;
-    qint64 m_remaining = -1;
     std::function<void()> m_details;
     bool m_dismissed = false;
 };

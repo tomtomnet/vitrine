@@ -106,7 +106,8 @@ private:
         if (json.open(QIODevice::WriteOnly)) {
             json.write(R"({"label": "VITRINETOOL", "mediumId": "32fe6c83b34e87e8", "fedora": "44",
                           "tools": "0.1.0-1.fc44", "mesa": "26.2.3-1.xe.fc44",
-                          "kwin": "6.7.5-1.21.fc44", "packages": [
+                          "kwin": "6.7.5-1.21.fc44", "kpipewire": "6.7.5-1.1.fc44",
+                          "proxy": "0.1.0^gitc6ce1ca.r5799347-1.fc44", "packages": [
                           {"name": "kwin", "evr": "6.7.5-1.21.fc44", "arch": "x86_64"},
                           {"name": "vitrine-guest-tools", "evr": "0.1.0-1.fc44", "arch": "noarch"}]})");
         }
@@ -165,6 +166,8 @@ private slots:
         QCOMPARE(m.fedora, "44");
         QCOMPARE(m.tools, "0.1.0-1.fc44");
         QCOMPARE(m.kwin, "6.7.5-1.21.fc44");
+        QCOMPARE(m.kpipewire, "6.7.5-1.1.fc44");
+        QCOMPARE(m.proxy, "0.1.0^gitc6ce1ca.r5799347-1.fc44");
         QCOMPARE(m.packages, QStringList({"kwin-6.7.5-1.21.fc44.x86_64",
                                           "vitrine-guest-tools-0.1.0-1.fc44.noarch"}));
         QVERIFY(!parseManifest("{}", image).isValid());

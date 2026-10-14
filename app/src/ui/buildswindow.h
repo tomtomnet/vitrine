@@ -55,7 +55,7 @@ public:
     /* "Built on 5 October 2026: vitrine-guest-tools 0.1.0-14, Mesa 26.2.3, KWin 6.7.5" */
     static QString describeGuestTools();
     static QString explain(GuestToolsBuilder::State state);
-    /* "18 min", "1 h 20 min", "less than a minute" */
+    /* "40 s", "18 min", "1 h 20 min": how long a build took */
     static QString duration(qint64 ms);
 
 protected:

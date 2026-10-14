@@ -1,0 +1,63 @@
+Flatpak apps in a guest whose compositor renders on the DRM native context:
+the module option hide_virgl=1 tells userspace there is no virgl (no 3D
+features, no virgl capsets).
+
+A Flatpak runtime brings its own Mesa.  When that Mesa lacks this GPU's
+native context (Flathub's GL.default//25.08: built without amdgpu-virtio), it
+renders through virgl, and the compositor - on the native context - cannot
+import those buffers ("ErrorInvalidExternalHandle"): black windows (Mission
+Center, GitHub Desktop, 2026-10-08).  Without virgl such a Mesa falls back to
+software rendering (llvmpipe, wl_shm), which shows; a Mesa with the native
+context (the guest's own, runtime 26.08) is unaffected.  The device keeps its
+virgl capset (crosvm needs it for 2D resources); only what userspace is told
+changes.  Read at each query (0644): set it on the kernel command line or in
+modprobe.d.
+
+--- a/drivers/gpu/drm/virtio/virtgpu_ioctl.c	2026-10-08 14:27:36.148629988 +0200
++++ b/drivers/gpu/drm/virtio/virtgpu_ioctl.c	2026-10-08 14:27:36.155599776 +0200
+@@ -26,6 +26,7 @@
+  */
+ 
+ #include <linux/file.h>
++#include <linux/moduleparam.h>
+ #include <linux/sync_file.h>
+ #include <linux/uaccess.h>
+ 
+@@ -38,6 +39,18 @@
+ 				    VIRTGPU_BLOB_FLAG_USE_SHAREABLE | \
+ 				    VIRTGPU_BLOB_FLAG_USE_CROSS_DEVICE)
+ 
++/*
++ * A compositor on a DRM native context cannot import the buffers of a client
++ * that renders through virgl: a Flatpak runtime whose Mesa lacks this GPU's
++ * native context picks virgl, and its windows stay black.  With hide_virgl=1
++ * userspace is told there is no virgl (no 3D features, no virgl capsets), so
++ * such a Mesa falls back to software rendering, which any compositor shows.
++ * Only what userspace is told changes.
++ */
++static int virtio_gpu_modparam_hide_virgl;
++MODULE_PARM_DESC(hide_virgl, "Tell userspace there is no virgl (3D features, virgl capsets), so that a Mesa without this GPU's native context renders in software rather than through virgl (default 0)");
++module_param_named(hide_virgl, virtio_gpu_modparam_hide_virgl, int, 0644);
++
+ /* Must be called with &virtio_gpu_fpriv.struct_mutex held. */
+ static void virtio_gpu_create_context_locked(struct virtio_gpu_device *vgdev,
+ 					     struct virtio_gpu_fpriv *vfpriv)
+@@ -94,7 +107,7 @@
+ 
+ 	switch (param->param) {
+ 	case VIRTGPU_PARAM_3D_FEATURES:
+-		value = vgdev->has_virgl_3d ? 1 : 0;
++		value = vgdev->has_virgl_3d && !virtio_gpu_modparam_hide_virgl ? 1 : 0;
+ 		break;
+ 	case VIRTGPU_PARAM_CAPSET_QUERY_FIX:
+ 		value = 1;
+@@ -113,6 +126,9 @@
+ 		break;
+ 	case VIRTGPU_PARAM_SUPPORTED_CAPSET_IDs:
+ 		value = vgdev->capset_id_mask;
++		if (virtio_gpu_modparam_hide_virgl)
++			value &= ~((1 << VIRTIO_GPU_CAPSET_VIRGL) |
++				   (1 << VIRTIO_GPU_CAPSET_VIRGL2));
+ 		break;
+ 	case VIRTGPU_PARAM_EXPLICIT_DEBUG_NAME:
+ 		value = vgdev->has_context_init ? 1 : 0;

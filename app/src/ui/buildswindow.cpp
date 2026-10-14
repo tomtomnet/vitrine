@@ -53,7 +53,7 @@ enum Role {
     ProgressRole,               // 0 to 1 while it builds, else none
 };
 
-enum Column { NameColumn, StatusColumn, BuiltColumn, TimeColumn };
+enum Column { NameColumn, StatusColumn, BuiltColumn };
 
 /* The lines of a log a window shows: the manager keeps more */
 constexpr int kLogLines = 5000;
@@ -363,8 +363,8 @@ BuildsWindow::BuildsWindow(QWidget *parent)
 
     /* the components, by what they make */
     m_tree->setObjectName("components");
-    m_tree->setColumnCount(4);
-    m_tree->setHeaderLabels({tr("Component"), tr("Status"), tr("Built"), tr("Time")});
+    m_tree->setColumnCount(3);
+    m_tree->setHeaderLabels({tr("Component"), tr("Status"), tr("Built")});
     m_tree->setRootIsDecorated(true);
     m_tree->setUniformRowHeights(true);
     m_tree->setAllColumnsShowFocus(true);
@@ -374,7 +374,6 @@ BuildsWindow::BuildsWindow(QWidget *parent)
     m_tree->header()->setSectionResizeMode(NameColumn, QHeaderView::ResizeToContents);
     m_tree->header()->setSectionResizeMode(StatusColumn, QHeaderView::Stretch);
     m_tree->header()->setSectionResizeMode(BuiltColumn, QHeaderView::ResizeToContents);
-    m_tree->header()->setSectionResizeMode(TimeColumn, QHeaderView::ResizeToContents);
     split->addWidget(m_tree);
 
     /* the selected one: where it comes from, its patches, its log */
@@ -663,7 +662,6 @@ void BuildsWindow::refreshItem(const QString &id)
     const BuildManager::Progress p = m_manager->progress(id);
     const bool running = m_manager->isRunning();
     QString text;
-    QString time;
 
     if (!item || !c.isValid()) {
         return;
@@ -747,16 +745,6 @@ void BuildsWindow::refreshItem(const QString &id)
                                       ? QLocale().toString(status.built.toLocalTime(),
                                                            QLocale::LongFormat)
                                       : QString());
-    if (p.state == State::Building && p.remainingMs >= 0) {
-        time = tr("%1 left").arg(duration(p.remainingMs));
-    } else if (status.state != StatusState::NoSources) {
-        time = tr("~%1").arg(duration(m_manager->estimateMs(id)));
-    }
-    item->setText(TimeColumn, time);
-    item->setToolTip(TimeColumn, m_manager->durations(id).isEmpty()
-                                     ? tr("A first build: about %1").arg(duration(m_manager->estimateMs(id)))
-                                     : tr("About %1, from its last builds on this machine")
-                                           .arg(duration(m_manager->estimateMs(id))));
     refreshGroup(groupOf(c.kind));
 }
 
@@ -766,8 +754,6 @@ void BuildsWindow::refreshGroup(const QString &group)
     int outdated = 0;
     int building = 0;
     int failed = 0;
-    qint64 estimate = 0;
-    qint64 remaining = 0;
     bool all = true;
 
     if (!item) {
@@ -777,15 +763,10 @@ void BuildsWindow::refreshGroup(const QString &group)
         const QString id = item->child(i)->data(NameColumn, IdRole).toString();
         const StatusState state = m_manager->status(id).state;
         const BuildManager::Progress p = m_manager->progress(id);
-        if (state != StatusState::UpToDate) {
-            outdated++;
-            estimate += m_manager->estimateMs(id);
-        }
+        outdated += state != StatusState::UpToDate;
         all = all && state == StatusState::NotBuilt;
-        if (p.state == State::Building || p.state == State::Waiting || p.state == State::Queued) {
-            building++;
-            remaining += qMax<qint64>(0, p.remainingMs);
-        }
+        building += p.state == State::Building || p.state == State::Waiting ||
+                    p.state == State::Queued;
         failed += p.state == State::Failed;
     }
     item->setText(StatusColumn, building > 0 ? tr("Building")
@@ -796,12 +777,7 @@ void BuildsWindow::refreshGroup(const QString &group)
     /* optional, and about the system rather than a build: its one component's */
     if (group == "system" && item->childCount() == 1 && building == 0 && failed == 0) {
         item->setText(StatusColumn, item->child(0)->text(StatusColumn));
-        item->setText(TimeColumn, QString());
-        return;
     }
-    item->setText(TimeColumn, building > 0    ? tr("%1 left").arg(duration(remaining))
-                              : outdated > 0 ? tr("~%1").arg(duration(estimate))
-                                             : QString());
 }
 
 void BuildsWindow::fitTree()
@@ -1050,12 +1026,6 @@ void BuildsWindow::showSource()
         rows += row(tr("Output:"), "<code>" + status.output.toHtmlEscaped() + "</code>" +
                                        (used >= 0 ? " — " + bytes(used).toHtmlEscaped() : QString()));
     }
-    rows += row(tr("A build takes:"),
-                (m_manager->durations(id).isEmpty()
-                     ? tr("about %1 the first time").arg(duration(m_manager->estimateMs(id)))
-                     : tr("about %1 (its last builds on this machine)")
-                           .arg(duration(m_manager->estimateMs(id))))
-                    .toHtmlEscaped());
     if (c.id == "qemu" && !Paths::customQemuBinary().isEmpty()) {
         rows += row(tr("In use:"), tr("no: the preferences choose another QEMU, %1")
                                        .arg(Paths::customQemuBinary())
@@ -1232,22 +1202,16 @@ void BuildsWindow::updateButtons()
                                                 : tr("&Build %1").arg(title));
     m_build->setEnabled(!running && !todo.isEmpty());
     const QStringList plan = todo.isEmpty() ? QStringList() : m_manager->plan(todo);
-    qint64 estimate = 0;
     QStringList titles;
     for (const QString &c : plan) {
-        estimate += m_manager->estimateMs(c);
         titles << m_manager->component(c).title;
     }
-    m_build->setToolTip(plan.isEmpty() ? QString()
-                                       : tr("Builds %1: about %2")
-                                             .arg(titles.join(", "), duration(estimate)));
+    m_build->setToolTip(plan.isEmpty() ? QString() : tr("Builds %1").arg(titles.join(", ")));
 
     const QStringList outdated = m_manager->outdated();
     bool anyBuilt = false;
-    estimate = 0;
     titles.clear();
     for (const QString &c : outdated) {
-        estimate += m_manager->estimateMs(c);
         titles << m_manager->component(c).title;
     }
     for (const Component &c : m_manager->components()) {
@@ -1257,8 +1221,7 @@ void BuildsWindow::updateButtons()
     m_all->setText(anyBuilt ? tr("Update &All") : tr("Build &All"));
     m_all->setEnabled(!running && !outdated.isEmpty());
     m_all->setToolTip(outdated.isEmpty() ? tr("All is up to date")
-                                         : tr("Builds %1: about %2")
-                                               .arg(titles.join(", "), duration(estimate)));
+                                         : tr("Builds %1").arg(titles.join(", ")));
     m_stop->setVisible(running);
     m_background->setVisible(running);
     m_clear->setEnabled(!running);
@@ -1292,7 +1255,6 @@ void BuildsWindow::updateHeader()
     if (m_manager->isRunning()) {
         const QString id = m_manager->current();
         const QStringList queue = m_manager->queue();
-        const qint64 remaining = m_manager->remainingMs();
         const QString title = m_manager->component(id.isEmpty() ? queue.value(0) : id).title;
         text = queue.size() > 1 ? tr("Building %1 (%2 of %3)")
                                       .arg(title)
@@ -1301,8 +1263,6 @@ void BuildsWindow::updateHeader()
                                 : tr("Building %1").arg(title);
         if (m_manager->isWaiting()) {
             text = tr("%1: waiting for memory.").arg(text);
-        } else if (remaining >= 0) {
-            text = tr("%1: about %2 left.").arg(text, duration(remaining));
         } else {
             text += '.';
         }
@@ -1310,20 +1270,13 @@ void BuildsWindow::updateHeader()
         return;
     }
     const QStringList outdated = m_manager->outdated();
-    qint64 estimate = 0;
-    for (const QString &id : outdated) {
-        estimate += m_manager->estimateMs(id);
-    }
     if (m_manager->components().isEmpty()) {
         text = tr("This installation of Vitrine has nothing to build: no host/ or guest/ folder.");
     } else if (outdated.isEmpty()) {
         text = tr("All is built from this version's sources.");
     } else {
-        text = outdated.size() == 1
-                   ? tr("1 component to build: about %1.").arg(duration(estimate))
-                   : tr("%1 components to build: about %2.")
-                         .arg(outdated.size())
-                         .arg(duration(estimate));
+        text = outdated.size() == 1 ? tr("1 component to build.")
+                                    : tr("%1 components to build.").arg(outdated.size());
     }
     if (!m_manager->error().isEmpty()) {
         text = tr("The last build failed: %1.").arg(m_manager->error()) + ' ' + text;
@@ -1493,12 +1446,9 @@ QString BuildsWindow::kwinSource(const Component &c)
         rows += row(tr("Output:"), "<code>" + status.output.toHtmlEscaped() + "</code>" +
                                        (used >= 0 ? " — " + bytes(used).toHtmlEscaped() : QString()));
     }
-    rows += row(tr("A build takes:"),
-                (m_manager->durations(c.id).isEmpty()
-                     ? tr("about %1 the first time, up to 10 GiB of memory")
-                           .arg(duration(m_manager->estimateMs(c.id)))
-                     : tr("about %1 (its last builds on this machine)")
-                           .arg(duration(m_manager->estimateMs(c.id))))
+    rows += row(tr("A build needs:"),
+                tr("up to %1 GiB of memory, in its container")
+                    .arg(GuestToolsBuilder::memoryCapMiB() / 1024)
                     .toHtmlEscaped());
     return html + "<table>" + rows + "</table>" +
            para(tr("Installing replaces the compositor, as root, version-locked: after each "
