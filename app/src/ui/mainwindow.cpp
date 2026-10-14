@@ -1173,9 +1173,10 @@ void MainWindow::start()
     if (m_askingUsb.contains(vm->id())) {
         return;
     }
-    /* it waits for Vitrine's QEMU: start() refuses it, which failed()
-       reports with the build at hand, before USB access is asked */
-    if (VmRunner::needsQemuBuild(vm->args())) {
+    /* it waits for Vitrine's QEMU, or for the copy of its disks for a
+       clone: start() refuses it, which failed() reports (with the build at
+       hand), before USB access is asked and the firmware checked */
+    if (VmRunner::needsQemuBuild(vm->args()) || !vm->runner()->busy().isEmpty()) {
         m_starting.insert(vm->id());
         vm->runner()->start(vm->args());
         return;
@@ -1281,10 +1282,11 @@ void MainWindow::cloneVm()
     if (vm == m_pane->vm() && !m_pane->confirmChanges(tr("Apply them before cloning it?"))) {
         return;
     }
-    CloneDialog dialog(m_store, vm, this);
-    if (dialog.exec() == QDialog::Accepted && dialog.clone()) {
-        select(dialog.clone()->id());
-    }
+    /* not waited for: closed during the copy, it goes on as a task; the
+       dialog goes by itself */
+    auto *dialog = new CloneDialog(m_store, vm, this);
+    connect(dialog, &CloneDialog::cloned, this, [this](Vm *clone) { select(clone->id()); });
+    dialog->open();
 }
 
 void MainWindow::remove()

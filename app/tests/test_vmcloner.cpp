@@ -8,7 +8,10 @@
 
 #include "core/tasks.h"
 #include "core/vmcloner.h"
+#include "core/vmrunner.h"
 #include "core/vmstore.h"
+
+#include <sys/stat.h>
 
 class TestVmCloner : public QObject
 {
@@ -129,6 +132,84 @@ private slots:
         QVERIFY(!QFileInfo::exists(tmp.filePath("vms/Big-copy")));
         QCOMPARE(cloner.task()->state(), Task::State::Stopped);
         cloner.task()->dismiss();
+    }
+
+    /*
+     * While it copies, the app goes on: the clone is no VM of the list yet,
+     * the source does not start, nor go, nor gets cloned again; the clone
+     * is in the list once complete, the source free again
+     */
+    void background()
+    {
+        QTemporaryDir tmp;
+        VmStore store(tmp.filePath("vms"));
+        QString error;
+        Vm *source = store.create("Slow", &error);
+
+        /* its disk a pipe: cp waits for what the test writes into it */
+        QVERIFY(::mkfifo(QFile::encodeName(source->dir() + "/disk.img").constData(), 0600) == 0);
+        QVERIFY(source->save(ArgsFile::parse("-name Slow\n-hda disk.img\n")));
+        VmCloner cloner(&store);
+        QSignalSpy finished(&cloner, &VmCloner::finished);
+        cloner.start(source, "Slow copy");
+        QVERIFY(cloner.isRunning());
+        QVERIFY(finished.isEmpty());
+        QCOMPARE(store.vms(), QList<Vm *>({source}));
+        QVERIFY(QFileInfo(tmp.filePath("vms/Slow-copy")).isDir());
+        QVERIFY(!QFileInfo::exists(tmp.filePath("vms/Slow-copy/vm.args")));
+        /* the folder seen meanwhile: still no VM */
+        store.reload();
+        QCOMPARE(store.vms().size(), 1);
+
+        const QString busy = source->runner()->busy();
+        QVERIFY2(busy.contains("Slow is being cloned"), qPrintable(busy));
+        QSignalSpy failed(source->runner(), &VmRunner::failed);
+        source->runner()->start(source->args());
+        QCOMPARE(failed.size(), 1);
+        QCOMPARE(failed[0][0].toString(), busy);
+        QCOMPARE(source->runner()->state(), VmRunner::State::Stopped);
+        QVERIFY(!store.remove(source, &error));
+        QCOMPARE(error, busy);
+        VmCloner again(&store);
+        QSignalSpy refused(&again, &VmCloner::finished);
+        again.start(source, "Slow copy 2");
+        QCOMPARE(refused.size(), 1);
+        QCOMPARE(refused[0][1].toString(), busy);
+        QVERIFY(!again.task());
+
+        QFile disk(source->dir() + "/disk.img");
+        QVERIFY(disk.open(QIODevice::WriteOnly));
+        disk.write("disk");
+        disk.close();
+        QVERIFY(finished.wait(10000));
+        Vm *clone = finished[0][0].value<Vm *>();
+        QVERIFY(clone);
+        QCOMPARE(store.vms().size(), 2);
+        QVERIFY(store.vms().contains(clone));
+        QCOMPARE(read(clone->dir() + "/disk.img"), "disk");
+        QVERIFY(source->runner()->busy().isEmpty());
+        cloner.task()->dismiss();
+    }
+
+    /* The app quits during a copy: the half-made clone goes, the source is free */
+    void quitDuringCopy()
+    {
+        QTemporaryDir tmp;
+        VmStore store(tmp.filePath("vms"));
+        QString error;
+        Vm *source = store.create("Slow", &error);
+
+        QVERIFY(::mkfifo(QFile::encodeName(source->dir() + "/disk.img").constData(), 0600) == 0);
+        QVERIFY(source->save(ArgsFile::parse("-name Slow\n-hda disk.img\n")));
+        {
+            VmCloner cloner(&store);
+            cloner.start(source, "Slow copy");
+            QVERIFY(cloner.isRunning());
+            QVERIFY(QFileInfo(tmp.filePath("vms/Slow-copy")).isDir());
+        }
+        QVERIFY(!QFileInfo::exists(tmp.filePath("vms/Slow-copy")));
+        QVERIFY(source->runner()->busy().isEmpty());
+        QCOMPARE(store.vms().size(), 1);
     }
 
     /* A copy that fails: the clone goes, its task says why */

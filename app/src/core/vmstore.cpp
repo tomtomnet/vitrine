@@ -135,6 +135,18 @@ Vm *VmStore::find(const QString &id) const
 
 Vm *VmStore::create(const QString &name, QString *error)
 {
+    const QString dir = newFolder(name, error);
+    ArgsFile args;
+
+    if (dir.isEmpty()) {
+        return nullptr;
+    }
+    VmConfig::setName(args, name.trimmed());
+    return createIn(dir, args, error);
+}
+
+QString VmStore::newFolder(const QString &name, QString *error)
+{
     static const QRegularExpression unsafe("[^\\w.-]+",
                                            QRegularExpression::UseUnicodePropertiesOption);
     const QDir dir(m_dir);
@@ -160,16 +172,18 @@ Vm *VmStore::create(const QString &name, QString *error)
         if (error) {
             *error = tr("Cannot create %1").arg(dir.filePath(id));
         }
-        return nullptr;
+        return {};
     }
+    return dir.filePath(id);
+}
 
-    ArgsFile args;
-    Vm *vm = new Vm(dir.filePath(id), this);
+Vm *VmStore::createIn(const QString &dir, const ArgsFile &args, QString *error)
+{
+    Vm *vm = new Vm(dir, this);
 
-    VmConfig::setName(args, name.trimmed());
     if (!vm->save(args, error)) {
         delete vm;
-        QDir(dir.filePath(id)).removeRecursively();
+        QDir(dir).removeRecursively();
         return nullptr;
     }
     adopt(vm);
@@ -196,6 +210,13 @@ bool VmStore::remove(Vm *vm, QString *error)
     if (vm->runner()->isActive()) {
         if (error) {
             *error = tr("%1 is running").arg(vm->name());
+        }
+        return false;
+    }
+    /* its disks being copied for a clone, say */
+    if (!vm->runner()->busy().isEmpty()) {
+        if (error) {
+            *error = vm->runner()->busy();
         }
         return false;
     }

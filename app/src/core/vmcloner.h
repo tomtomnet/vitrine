@@ -22,6 +22,11 @@ class VmStore;
  * CD/DVD images, kernels and the like, stay shared, and the network cards
  * get new MAC addresses, the VM a new UUID.  The VM must be stopped: the
  * disks of a running one would be copied halfway through its writes.
+ *
+ * The copy may take minutes, the app going on meanwhile: the source is
+ * busy until it ends (VmRunner::busy(): it does not start, its disks keep
+ * their snapshots), and the clone is a VM of the list once complete, its
+ * vm.args written last.
  */
 class VmCloner : public QObject
 {
@@ -47,7 +52,7 @@ public:
     /* The files a clone of @vm copies, with their sizes */
     static QList<std::pair<QString, qint64>> filesToCopy(const Vm *vm);
 
-    bool isRunning() const { return m_clone != nullptr; }
+    bool isRunning() const { return !m_dir.isEmpty(); }
     void start(Vm *source, const QString &name);
     /* The clone is removed */
     void cancel();
@@ -63,9 +68,14 @@ signals:
 private:
     void copyNext();
     void fail(const QString &error);
+    /* The copies over: the source free again, and the clone's folder gone if @remove */
+    void release(bool remove);
 
     VmStore *m_store;
-    Vm *m_clone = nullptr;
+    /* The VM copied, busy meanwhile */
+    QPointer<Vm> m_source;
+    /* The folder of the clone being made, empty but then */
+    QString m_dir;
     ArgsFile m_args;
     QList<Copy> m_copies;
     QProcess *m_process = nullptr;

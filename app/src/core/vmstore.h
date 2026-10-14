@@ -59,7 +59,17 @@ public:
     Vm *find(const QString &id) const;
     /* A new folder named after @name, holding a vm.args with just -name */
     Vm *create(const QString &name, QString *error = nullptr);
-    /* Moves the folder of @vm, disks included, to the trash */
+    /*
+     * A new, empty folder named after @name, for a VM made there in steps
+     * (a clone, its disks copied first): not a VM of the list until
+     * createIn() gives it its vm.args; empty on failure
+     */
+    QString newFolder(const QString &name, QString *error = nullptr);
+    /* The VM of @args in @dir, a folder of newFolder(): in the list.  On
+       failure, the folder goes. */
+    Vm *createIn(const QString &dir, const ArgsFile &args, QString *error = nullptr);
+    /* Moves the folder of @vm, disks included, to the trash; not while it
+       runs or is busy (VmRunner::busy()) */
     bool remove(Vm *vm, QString *error = nullptr);
     /* Picks up folders added or removed outside the manager */
     void reload();

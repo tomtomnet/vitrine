@@ -1,6 +1,8 @@
 // SPDX-License-Identifier: GPL-2.0-or-later
 #include <QDialog>
 #include <QDir>
+#include <QLabel>
+#include <QPushButton>
 #include <QHBoxLayout>
 #include <QHelpEvent>
 #include <QListWidget>
@@ -10,14 +12,21 @@
 #include <QSignalSpy>
 #include <QSplitter>
 #include <QStyleFactory>
+#include <QTemporaryDir>
 #include <QToolTip>
 
 #include <QtMath>
 
 #include <memory>
 
+#include <sys/stat.h>
+
 #include "core/tasks.h"
+#include "core/vmcloner.h"
+#include "core/vmrunner.h"
+#include "core/vmstore.h"
 #include "scales.h"
+#include "ui/clonedialog.h"
 #include "ui/icons.h"
 #include "ui/sidebar.h"
 #include "ui/taskbutton.h"
@@ -427,6 +436,110 @@ private slots:
         dialog.activateWindow();
         QVERIFY(QTest::qWaitForWindowActive(&dialog));
         QTRY_VERIFY(!task);
+    }
+
+    /*
+     * A clone goes on with its dialog closed, a task whose details show
+     * the dialog again; done unseen, its details are the new VM; the
+     * dialog goes once there is nothing left to show
+     */
+    void cloneInBackground()
+    {
+        QTemporaryDir tmp;
+        VmStore store(tmp.filePath("vms"));
+        QString error;
+        Vm *source = store.create("Slow", &error);
+        /* its disk a pipe: the copy waits for what the test writes */
+        const QString disk = source->dir() + "/disk.img";
+        QVERIFY(::mkfifo(QFile::encodeName(disk).constData(), 0600) == 0);
+        QVERIFY(source->save(ArgsFile::parse("-name Slow\n-hda disk.img\n")));
+        const auto feed = [&disk]() {
+            QFile f(disk);
+            QVERIFY(f.open(QIODevice::WriteOnly));
+            f.write("disk");
+        };
+        QWidget window;
+        window.resize(600, 400);
+        settle(&window);
+
+        QPointer<CloneDialog> dialog = new CloneDialog(&store, source, &window);
+        QSignalSpy cloned(dialog.data(), &CloneDialog::cloned);
+        dialog->open();
+        QVERIFY(QTest::qWaitForWindowExposed(dialog));
+        dialog->accept();
+        QVERIFY(dialog->isCloning());
+        QPointer<Task> task = dialog->findChild<VmCloner *>()->task();
+        QVERIFY(task);
+        QCOMPARE(task->title(), QString("Clone of Slow"));
+        QVERIFY(task->hasDetails());
+        /* closed: the copy goes on, the source still busy */
+        dialog->reject();
+        QVERIFY(!dialog->isVisible());
+        QTest::qWait(50);
+        QVERIFY(dialog && dialog->isCloning());
+        QVERIFY(!source->runner()->busy().isEmpty());
+        /* its details: the dialog again, the copy going on */
+        task->showDetails();
+        QVERIFY(dialog->isVisible());
+        QVERIFY(task);
+        dialog->reject();
+        /* done unseen: kept for its task, whose details are the new VM */
+        feed();
+        QTRY_VERIFY(!dialog->isCloning());
+        QCOMPARE(task->state(), Task::State::Done);
+        QVERIFY(cloned.isEmpty());
+        QTest::qWait(50);
+        QVERIFY(dialog);
+        task->showDetails();
+        QCOMPARE(cloned.size(), 1);
+        QCOMPARE(cloned[0][0].value<Vm *>()->name(), QString("Slow clone"));
+        QTRY_VERIFY(!dialog);
+        QTRY_VERIFY(!task);
+        QVERIFY(source->runner()->busy().isEmpty());
+
+        /* failed unseen: its details show why */
+        dialog = new CloneDialog(&store, source, &window);
+        dialog->open();
+        QVERIFY(QTest::qWaitForWindowExposed(dialog));
+        dialog->accept();
+        task = dialog->findChild<VmCloner *>()->task();
+        dialog->reject();
+        /* the copy's folder gone under it */
+        QVERIFY(QDir(tmp.filePath("vms/Slow-clone-2")).removeRecursively());
+        feed();
+        QTRY_VERIFY(!dialog->isCloning());
+        QCOMPARE(task->state(), Task::State::Failed);
+        QVERIFY(!dialog->isVisible());
+        task->showDetails();
+        QVERIFY(dialog->isVisible());
+        QTRY_VERIFY(!task);
+        bool told = false;
+        for (const QLabel *label : dialog->findChildren<QLabel *>()) {
+            told = told || (label->isVisible() && label->text().contains("could not be cloned"));
+        }
+        QVERIFY(told);
+        dialog->reject();
+        QTRY_VERIFY(!dialog);
+
+        /* Stop: the copy and the dialog go */
+        dialog = new CloneDialog(&store, source, &window);
+        dialog->open();
+        QVERIFY(QTest::qWaitForWindowExposed(dialog));
+        dialog->accept();
+        task = dialog->findChild<VmCloner *>()->task();
+        auto *stop = dialog->findChild<QPushButton *>();
+        for (QPushButton *b : dialog->findChildren<QPushButton *>()) {
+            if (b->text().remove('&') == "Stop") {
+                stop = b;
+            }
+        }
+        QVERIFY(stop && stop->isVisible());
+        stop->click();
+        QCOMPARE(task->state(), Task::State::Stopped);
+        QTRY_VERIFY(!dialog);
+        QVERIFY(!QFileInfo::exists(tmp.filePath("vms/Slow-clone-2")));
+        QVERIFY(source->runner()->busy().isEmpty());
+        QCOMPARE(store.vms().size(), 2);
     }
 
     /* Collapsed, the VMs' icons and the task's are their pixmaps, on whole device pixels */
