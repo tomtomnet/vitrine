@@ -30,8 +30,8 @@ enum class Control { Start, Pause, ShutDown, Reset, ForceOff };
  * badges' colours: green Start, amber Pause, red Shut Down and Force Off,
  * blue Reset.  Drawn for each size and pixel ratio asked, its straight
  * edges on whole device pixels; the filled shapes edged with a darker
- * shade, which a light background needs.  Disabled, as the style greys
- * icons.
+ * shade, which a light background needs.  Disabled, flat in the colour
+ * of disabled text, half transparent, as KDE's theme icons are.
  */
 QIcon control(Control kind);
 

@@ -119,12 +119,16 @@ private:
     Badge m_badge;
 };
 
-/* @path filled with @fill, inside an edge @edge device pixels wide of @dark */
+/* @path filled with @fill, inside an edge @edge device pixels wide of @dark, if any */
 void fillEdged(QPainter *painter, const QPainterPath &path, const QColor &fill,
                const QColor &dark, int edge)
 {
     QPainterPathStroker stroker;
 
+    if (edge <= 0) {
+        painter->fillPath(path, fill);
+        return;
+    }
     stroker.setWidth(2 * edge);
     stroker.setJoinStyle(Qt::MiterJoin);
     painter->fillPath(path, dark);
@@ -157,10 +161,17 @@ public:
         if (side <= 0) {
             return QPixmap();
         }
-        QPixmap pixmap = QPixmap::fromImage(draw(side, scale));
+        /* disabled: flat, in the colour of disabled text, half transparent,
+           as KDE shows the theme's icons; the style's greying would make
+           them lighter on a dark window */
+        const QColor flat =
+            mode == QIcon::Disabled
+                ? QGuiApplication::palette().color(QPalette::Disabled, QPalette::ButtonText)
+                : QColor();
+        QPixmap pixmap = QPixmap::fromImage(draw(side, scale, flat));
         pixmap.setDevicePixelRatio(scale);
-        if (mode != QIcon::Normal) {
-            /* greyed, or as the style shows an icon under the pointer or selected */
+        if (mode == QIcon::Active || mode == QIcon::Selected) {
+            /* as the style shows an icon under the pointer, or selected */
             QStyleOption option(0);
             option.palette = QGuiApplication::palette();
             pixmap = QApplication::style()->generatedIconPixmap(mode, pixmap, &option);
@@ -178,20 +189,23 @@ public:
     QString key() const override { return QStringLiteral("vitrine-control"); }
 
 private:
-    /* The icon @side device pixels square, for a pixel ratio of @ratio */
-    QImage draw(int side, qreal ratio) const
+    /* The icon @side device pixels square, for a pixel ratio of @ratio: in
+       colour, or all of it @flat without the darker edges */
+    QImage draw(int side, qreal ratio, const QColor &flat) const
     {
         /* Breeze's (KDE's) palette: the VM list's badges */
-        const QColor green(0x27, 0xae, 0x60), amber(0xf6, 0x74, 0x00), red(0xda, 0x44, 0x53),
-            blue(0x29, 0x80, 0xb9);
+        const QColor green = flat.isValid() ? flat : QColor(0x27, 0xae, 0x60);
+        const QColor amber = flat.isValid() ? flat : QColor(0xf6, 0x74, 0x00);
+        const QColor red = flat.isValid() ? flat : QColor(0xda, 0x44, 0x53);
+        const QColor blue = flat.isValid() ? flat : QColor(0x29, 0x80, 0xb9);
         QImage image(side, side, QImage::Format_ARGB32_Premultiplied);
         image.fill(Qt::transparent);
         QPainter p(&image);
         /* where the shapes go: the 18 middle pixels of 22, as large as VMware's */
         const int margin = qRound(side * 2 / 22.0);
         const QRect box(margin, margin, side - 2 * margin, side - 2 * margin);
-        /* the darker edge: a device pixel, more at large ratios */
-        const int edge = qMax(1, qRound(ratio * 0.9));
+        /* the darker edge: a device pixel, more at large ratios; none when flat */
+        const int edge = flat.isValid() ? 0 : qMax(1, qRound(ratio * 0.9));
         /* the lines of the rings, whole device pixels wide */
         const int line = qMax(2, qRound(box.width() * 0.15));
         const qreal radius = box.width() / 2.0 - line / 2.0;
@@ -268,6 +282,10 @@ private:
             p.fillPath(arrow, blue);
             break;
         }
+        }
+        if (flat.isValid()) {
+            p.setCompositionMode(QPainter::CompositionMode_DestinationIn);
+            p.fillRect(image.rect(), QColor(0, 0, 0, 128));
         }
         return image;
     }

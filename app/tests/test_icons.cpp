@@ -26,7 +26,7 @@
  * screen).  The VM list's icons with their badge are drawn at the ratio
  * asked, not scaled from pixmaps made for 1, 2 and 3.  The VM's power
  * buttons drawn for the ratio asked: crisp, in the middle, legible on a
- * light and a dark window, grey when disabled.  The icons of a role have
+ * light and a dark window, disabled as the theme's icons.  The icons of a role have
  * the style's size for it.
  */
 class TestIcons : public QObject
@@ -191,7 +191,8 @@ private slots:
      * Pause's bars and Force Off's square whole device pixels, Start's
      * straight edge too; the ink in the middle; colours that stand out at
      * 3:1 on Breeze's light and dark windows, the shape's edge on the light
-     * one (the darker shade of the filled shapes); grey when disabled
+     * one (the darker shade of the filled shapes); disabled, the colour of
+     * disabled text, half transparent
      */
     void controls()
     {
@@ -272,17 +273,25 @@ private slots:
                             break;
                         }
                     }
-                    /* disabled: grey */
+                    /* disabled: the colour of disabled text, half transparent */
+                    const QRgb text = QGuiApplication::palette()
+                                          .color(QPalette::Disabled, QPalette::ButtonText).rgb();
                     const QImage off = image(icon.pixmap(QSize(size, size), ratio, QIcon::Disabled));
+                    int most = 0;
                     for (int y = 0; y < off.height(); y++) {
                         for (int x = 0; x < off.width(); x++) {
-                            const QColor c = QColor::fromRgba(off.pixel(x, y));
-                            if (c.alpha() > 128 && c.hsvSaturation() > 40) {
-                                wrong << what + ": colour when disabled";
+                            const QRgb p = off.pixel(x, y);
+                            most = qMax(most, qAlpha(p));
+                            /* the whole pixels: an edge's, halved, is rounded too much */
+                            if (qAlpha(p) >= 126 && Scales::difference(qUnpremultiply(p), text) > 6) {
+                                wrong << what + ": not the colour of disabled text, disabled";
                                 y = off.height();
                                 break;
                             }
                         }
+                    }
+                    if (qAbs(most - 128) > 1) {
+                        wrong << QString("%1: %2 opaque at most, disabled").arg(what).arg(most);
                     }
                 }
             }
