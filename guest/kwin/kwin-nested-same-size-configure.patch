@@ -1,0 +1,32 @@
+Subject: wayland backend: no new mode for a same-size configure
+
+The nested output made a new mode for every configure that carries a size,
+focus changes included: each one an output mode change for every client of
+kde_output_device_v2 (plasmashell, KScreen).  A configure that keeps the size
+and scale keeps the mode.
+
+From the research (virtio-gpu-desktop patches/kwin, 0033 FIX-I), its Wayland
+backend half only.  The other half keeps a removed mode's resources, and so
+its id, for 10 s: since KWin's kde_output_device_v2 version 26 destroys a
+removed mode's resources at once, a client that read the next mode event
+before the removal was disconnected ("not a valid new object id ...
+mode(n)", plasmashell).  KWin 6.7.5 has version 23, which never destroys
+them: no id is reused, nothing to fix.
+
+diff --git a/src/backends/wayland/wayland_output.cpp b/src/backends/wayland/wayland_output.cpp
+index 00d97af..1459993 100644
+--- a/src/backends/wayland/wayland_output.cpp
++++ b/src/backends/wayland/wayland_output.cpp
+@@ -499,6 +499,12 @@ void WaylandOutput::handleConfigure(const QSize &size, XdgShellSurface::States s
+ void WaylandOutput::applyConfigure(const QSize &size, quint32 serial)
+ {
+     m_xdgShellSurface->ackConfigure(serial);
++    // a configure that keeps the size (a focus change) keeps the mode too: a new mode is a mode
++    // change for every client of kde_output_device_v2
++    if (!size.isEmpty() && m_state.currentMode && m_state.scale == m_pendingScale
++        && m_state.currentMode->size() == size * m_pendingScale) {
++        return;
++    }
+     if (!size.isEmpty()) {
+         auto mode = std::make_shared<OutputMode>(OutputModeline(size * m_pendingScale, m_refreshRate));
+ 

@@ -1,0 +1,84 @@
+Subject: FIX wayland backend: apply the host's preferred scale when it
+ arrives
+
+The nested output stored wp_fractional_scale_v1.preferred_scale and applied it only with the next
+configure that carries a size. A window nobody resizes may never get one (a host that sends none, or a
+proxy that turns same-size configures into 0x0), so the nested desktop kept drawing at its first scale -
+3200x1800 frames for a 1600x900 window on a host at 1.3 that scaled them down - or switched at some
+later configure, a focus change say. A new preferred scale now makes a new mode of the same logical
+size at once (unless a configure is on its way, which applies it too), as does a configure without a
+size. The scale asked for with --scale stays until the host prefers another one: the pending scale
+started at 1.0, which a sized configure before the host's first preferred_scale applied.
+
+From the research (virtio-gpu-desktop patches/kwin, 0046), applies to 6.7.5
+as it is.
+
+diff --git a/src/backends/wayland/wayland_output.cpp b/src/backends/wayland/wayland_output.cpp
+index 50bfa61..42b2d82 100644
+--- a/src/backends/wayland/wayland_output.cpp
++++ b/src/backends/wayland/wayland_output.cpp
+@@ -111,7 +111,11 @@ void WaylandCursor::sync()
+ 
+ void WaylandOutput::handleFractionalScaleChanged(void *data, struct wp_fractional_scale_v1 *wp_fractional_scale_v1, uint32_t scale120)
+ {
+-    reinterpret_cast<WaylandOutput *>(data)->m_pendingScale = scale120 / 120.0;
++    auto output = reinterpret_cast<WaylandOutput *>(data);
++    output->m_pendingScale = scale120 / 120.0;
++    // a new scale comes without a configure (the window keeps its logical size), and the next
++    // configure with a size may never come for a window nobody resizes
++    output->applyPendingScale();
+ }
+ 
+ const wp_fractional_scale_v1_listener WaylandOutput::s_fractionalScaleListener{
+@@ -479,6 +483,8 @@ void WaylandOutput::init(const QSize &pixelSize, qreal scale, bool fullscreen)
+     initialState.currentMode = mode;
+     initialState.scale = scale;
+     setState(initialState);
++    // the scale asked for stays until the host prefers another one
++    m_pendingScale = scale;
+ 
+     m_xdgShellSurface->setFullscreen(fullscreen);
+     m_surface->commit(KWayland::Client::Surface::CommitFlag::None);
+@@ -520,9 +526,30 @@ void WaylandOutput::applyConfigure(const QSize &size, quint32 serial)
+         setState(next);
+ 
+         Q_EMIT m_backend->outputsQueried();
++    } else {
++        applyPendingScale();
+     }
+ }
+ 
++void WaylandOutput::applyPendingScale()
++{
++    // before the first configure, or with a configure on its way (that applies the scale too)
++    if (!m_ready || !m_state.currentMode || m_configureThrottleTimer.isActive() || qFuzzyCompare(m_state.scale, m_pendingScale)) {
++        return;
++    }
++    const QSize logicalSize(std::round(m_state.currentMode->size().width() / m_state.scale),
++                            std::round(m_state.currentMode->size().height() / m_state.scale));
++    auto mode = std::make_shared<OutputMode>(OutputModeline(logicalSize * m_pendingScale, m_refreshRate));
++
++    State next = m_state;
++    next.modes = {mode};
++    next.currentMode = mode;
++    next.scale = m_pendingScale;
++    setState(next);
++
++    Q_EMIT m_backend->outputsQueried();
++}
++
+ void WaylandOutput::updateWindowTitle()
+ {
+     QString grab;
+diff --git a/src/backends/wayland/wayland_output.h b/src/backends/wayland/wayland_output.h
+index 943edee..d1cc05c 100644
+--- a/src/backends/wayland/wayland_output.h
++++ b/src/backends/wayland/wayland_output.h
+@@ -115,6 +115,7 @@ private:
+     void handleConfigure(const QSize &size, KWayland::Client::XdgShellSurface::States states, quint32 serial);
+     void updateWindowTitle();
+     void applyConfigure(const QSize &size, quint32 serial);
++    void applyPendingScale();
+     void updateColor();
+     void inhibitShortcuts(bool inhibit);
+ 

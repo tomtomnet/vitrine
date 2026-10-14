@@ -1,0 +1,123 @@
+Subject: wayland backend: match presentation feedback events to their frame
+
+The presented and discarded handlers took the oldest pending frame whatever feedback
+object the event came for. Feedback events of different frames come in any order: a frame
+replaced before it was shown gets discarded while the frame before it still waits for
+presented (commit-timing makes that common). The wrong frame was then dropped, its feedback
+object destroyed with its presented event, and every later presentation was attributed to
+the frame before it for the rest of the session - a nested desktop at 240 Hz stayed at half
+rate (2026-10-07, crosvm, after fast window operations under host GPU load). Match each
+event to its frame by the feedback object; a presented frame drops the older ones still
+waiting (they can no longer be shown).
+
+From the research (virtio-gpu-desktop patches/kwin, 0028 FIX-H), ported to
+6.7.5: its frames have no commitTime yet.
+
+diff --git a/src/backends/wayland/wayland_output.cpp b/src/backends/wayland/wayland_output.cpp
+index 95374f4..00d97af 100644
+--- a/src/backends/wayland/wayland_output.cpp
++++ b/src/backends/wayland/wayland_output.cpp
+@@ -210,7 +210,7 @@ void WaylandOutput::updateColor()
+ static void handleDiscarded(void *data,
+                             struct wp_presentation_feedback *wp_presentation_feedback)
+ {
+-    reinterpret_cast<WaylandOutput *>(data)->frameDiscarded();
++    reinterpret_cast<WaylandOutput *>(data)->frameDiscarded(wp_presentation_feedback);
+ }
+ 
+ static void handlePresented(void *data,
+@@ -228,7 +228,7 @@ static void handlePresented(void *data,
+     if (refresh != 0) {
+         refreshRate = 1'000'000'000'000 / refresh;
+     }
+-    reinterpret_cast<WaylandOutput *>(data)->framePresented(timestamp, refreshRate);
++    reinterpret_cast<WaylandOutput *>(data)->framePresented(wp_presentation_feedback, timestamp, refreshRate);
+ }
+ 
+ static void handleSyncOutput(void *data, struct wp_presentation_feedback *, struct wl_output *)
+@@ -284,6 +284,24 @@ WaylandOutput::FrameData::FrameData(FrameData &&move)
+ {
+ }
+ 
++// (erasing a frame in the middle of m_frames moves the later ones down)
++WaylandOutput::FrameData &WaylandOutput::FrameData::operator=(FrameData &&move)
++{
++    if (this != &move) {
++        if (presentationFeedback) {
++            wp_presentation_feedback_destroy(presentationFeedback);
++        }
++        if (frameCallback) {
++            wl_callback_destroy(frameCallback);
++        }
++        outputFrame = std::move(move.outputFrame);
++        presentationFeedback = std::exchange(move.presentationFeedback, nullptr);
++        frameCallback = std::exchange(move.frameCallback, nullptr);
++        frameCallbackTime = std::exchange(move.frameCallbackTime, std::nullopt);
++    }
++    return *this;
++}
++
+ WaylandOutput::FrameData::~FrameData()
+ {
+     if (presentationFeedback) {
+@@ -336,13 +354,34 @@ bool WaylandOutput::present(const QList<OutputLayer *> &layersToUpdate, const st
+     return true;
+ }
+ 
+-void WaylandOutput::frameDiscarded()
++// Feedback events are matched to their frame by the feedback object, not by order: the events
++// of different frames may come in any order - a frame replaced before it was shown gets its
++// discarded event while the frame before it still waits for presented (commit-timing makes
++// that common). Taking the oldest frame for each event then dropped the wrong one, whose
++// presented event was lost with its destroyed feedback object, and every later presentation
++// was attributed to the frame before it for the rest of the session: a nested desktop at
++// 240 Hz stuck at half rate (2026-10-07).
++void WaylandOutput::frameDiscarded(struct wp_presentation_feedback *feedback)
+ {
+-    m_frames.pop_front();
++    const auto it = std::ranges::find_if(m_frames, [feedback](const FrameData &frame) {
++        return frame.presentationFeedback == feedback;
++    });
++    if (it != m_frames.end()) {
++        m_frames.erase(it);
++    }
+ }
+ 
+-void WaylandOutput::framePresented(std::chrono::nanoseconds timestamp, uint32_t refreshRate)
++void WaylandOutput::framePresented(struct wp_presentation_feedback *feedback, std::chrono::nanoseconds timestamp, uint32_t refreshRate)
+ {
++    const auto it = std::ranges::find_if(m_frames, [feedback](const FrameData &frame) {
++        return frame.presentationFeedback == feedback;
++    });
++    if (it == m_frames.end()) {
++        return;
++    }
++    // older frames can no longer be shown: dropped (their OutputFrame reports it when it goes)
++    m_frames.erase(m_frames.begin(), it);
++
+     if (refreshRate != this->refreshRate()) {
+         m_refreshRate = refreshRate;
+         const auto mode = std::make_shared<OutputMode>(OutputModeline(pixelSize(), m_refreshRate));
+diff --git a/src/backends/wayland/wayland_output.h b/src/backends/wayland/wayland_output.h
+index 9d420d5..943edee 100644
+--- a/src/backends/wayland/wayland_output.h
++++ b/src/backends/wayland/wayland_output.h
+@@ -103,8 +103,8 @@ public:
+     bool testPresentation(const std::shared_ptr<OutputFrame> &frame) override;
+     bool present(const QList<OutputLayer *> &layersToUpdate, const std::shared_ptr<OutputFrame> &frame) override;
+ 
+-    void frameDiscarded();
+-    void framePresented(std::chrono::nanoseconds timestamp, uint32_t refreshRate);
++    void frameDiscarded(struct wp_presentation_feedback *feedback);
++    void framePresented(struct wp_presentation_feedback *feedback, std::chrono::nanoseconds timestamp, uint32_t refreshRate);
+ 
+     void applyChanges(const OutputConfiguration &config) override;
+ 
+@@ -138,6 +138,7 @@ private:
+     {
+         explicit FrameData(const std::shared_ptr<OutputFrame> &frame, struct wp_presentation_feedback *presentationFeedback, struct wl_callback *frameCallback);
+         FrameData(FrameData &&move);
++        FrameData &operator=(FrameData &&move);
+         ~FrameData();
+ 
+         std::shared_ptr<OutputFrame> outputFrame;

@@ -1,6 +1,6 @@
 Name:    kwin
 Version: 6.7.5
-Release: 1.22%{?dist}
+Release: 1.23%{?dist}
 Summary: KDE Window manager
 
 License: BSD-2-Clause AND BSD-3-Clause AND CC0-1.0 AND GPL-2.0-only AND GPL-2.0-or-later AND GPL-3.0-only AND GPL-3.0-or-later AND LGPL-2.0-only AND LGPL-2.0-or-later AND LGPL-2.1-only AND LGPL-2.1-or-later AND LGPL-3.0-only AND (GPL-2.0-only OR GPL-3.0-only) AND (LGPL-2.1-only OR LGPL-3.0-only) AND MIT
@@ -53,6 +53,22 @@ Patch115: kwin-dmabuf-release-wait-readers.patch
 # of 1 ms, and the composite timer (a timerfd) keeps the planned time instead of waking up
 # to a millisecond early
 Patch116: kwin-frame-slack-precise-timer.patch
+## The nested desktop: the research's fixes for the Wayland backend, which only a KWin
+## nested in a window of the host's desktop runs (the guest's own KWin on the VM's screen
+## never does)
+# presentation feedback matched to its frame, not taken in order
+Patch117: kwin-nested-feedback-pairing.patch
+# a configure that keeps the window's size keeps the output's mode (a focus change was a
+# mode change for every client)
+Patch118: kwin-nested-same-size-configure.patch
+# the output starts at the host's refresh rate, not 60 Hz (plasmashell's animations kept it)
+Patch119: kwin-nested-host-refresh.patch
+# Ctrl+Alt+G grabs and releases the pointer, as QEMU's windows; Right Ctrl is a key again
+Patch120: kwin-nested-grab-ctrl-alt-g.patch
+# the host's preferred scale applied when it arrives, not at the next resize
+Patch121: kwin-nested-preferred-scale.patch
+# the pointer grab committed at once, not at the next frame of an idle desktop
+Patch122: kwin-nested-commit-pointer-lock.patch
 
 
 # Base
@@ -322,6 +338,12 @@ ln -sr %{buildroot}%{_kf6_bindir}/kwin_wayland %{buildroot}%{_bindir}/kwin
 
 
 %changelog
+* Wed Oct 14 2026 vitrine <noreply@anthropic.com> - 6.7.5-1.23
+- the nested desktop's Wayland backend fixes, from the research (its group A, ported to
+  6.7.5): presentation feedback matched to its frame, no new mode for a same-size
+  configure, the host's refresh rate at start, the pointer grab on Ctrl+Alt+G and
+  committed at once, the host's preferred scale applied when it arrives
+
 * Sun Oct 04 2026 tomtomnet <tompere8000@proton.me> - 6.7.5-1.22
 - kwin-late-frame-scheduling: read the commit's scheduledLate() before the commit ioctl (after it, the main thread may handle the page flip and clear the commit's frames: a data race, found by static review)
 
