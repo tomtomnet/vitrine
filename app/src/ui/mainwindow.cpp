@@ -463,7 +463,10 @@ void MainWindow::createActions()
                "<p>Creates and runs QEMU virtual machines. Each VM is its QEMU command "
                "line, which the settings edit and you can edit as text.</p>"
                "<p>Written by AI: Anthropic's Claude, through Claude Code.</p>"
-               "<p>License: GPL-2.0-or-later</p>")
+               "<p>License: GPL-2.0-or-later</p>"
+               /* CC BY 3.0 asks for its credit where the authors are named */
+               "<p>Logo: QEMU's emu, from \"Kew the Angry Emu\" by Benoît Canet "
+               "(QEMU Community), CC BY 3.0.</p>")
                 .arg(QApplication::applicationVersion()));
     });
     help->addAction(tr("About &Qt"), qApp, &QApplication::aboutQt);
