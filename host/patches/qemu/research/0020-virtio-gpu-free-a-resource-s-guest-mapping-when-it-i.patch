@@ -1,0 +1,63 @@
+From b61032c2db7b78a9cf84234153a48a8e1ab078df Mon Sep 17 00:00:00 2001
+From: tomtomnet <tompere8000@proton.me>
+Date: Wed, 14 Oct 2026 19:00:43 +0200
+Subject: [PATCH 20/24] virtio-gpu: free a resource's guest mapping when it is
+ unreferenced (virgl, rutabaga)
+
+virgl_renderer_resource_detach_iov() hands back only the iovecs: the addresses
+virtio_gpu_create_mapping_iov() recorded were never freed, nor, for rutabaga, the mapping
+itself - a guest resizing windows makes and drops such buffers all the time. The resource's
+mapping now goes through virtio_gpu_cleanup_mapping() on unref, in both devices.
+
+The user's unref leak fix (v2, 2026-10-12), split out of the snapshot of the fork's
+uncommitted work.
+---
+ hw/display/virtio-gpu-rutabaga.c |  2 ++
+ hw/display/virtio-gpu-virgl.c    | 14 +++-----------
+ 2 files changed, 5 insertions(+), 11 deletions(-)
+
+diff --git a/hw/display/virtio-gpu-rutabaga.c b/hw/display/virtio-gpu-rutabaga.c
+index 3c66596cef..1be15a4816 100644
+--- a/hw/display/virtio-gpu-rutabaga.c
++++ b/hw/display/virtio-gpu-rutabaga.c
+@@ -164,6 +164,8 @@ virtio_gpu_rutabaga_resource_unref(VirtIOGPU *g,
+     }
+ 
+     QTAILQ_REMOVE(&g->reslist, res, next);
++
++    virtio_gpu_cleanup_mapping(g, res);
+     g_free(res);
+ }
+ 
+diff --git a/hw/display/virtio-gpu-virgl.c b/hw/display/virtio-gpu-virgl.c
+index 9e0dd332d0..927bd06b43 100644
+--- a/hw/display/virtio-gpu-virgl.c
++++ b/hw/display/virtio-gpu-virgl.c
+@@ -451,21 +451,13 @@ virtio_gpu_virgl_resource_unref(VirtIOGPU *g,
+     virgl_renderer_resource_detach_iov(res->base.resource_id,
+                                        &res_iovs,
+                                        &num_iovs);
+-    if (res_iovs != NULL && num_iovs != 0) {
+-        virtio_gpu_cleanup_mapping_iov(g, res_iovs, num_iovs);
+-    }
++    res->base.iov = res_iovs;
++    res->base.iov_cnt = num_iovs;
+     virgl_renderer_resource_unref(res->base.resource_id);
+ 
+     QTAILQ_REMOVE(&g->reslist, &res->base, next);
+ 
+-    /*
+-     * The guest addresses virtio_gpu_create_mapping_iov() recorded for a
+-     * guest-memory blob: virgl_renderer_resource_detach_iov() hands back
+-     * only the iovecs, so nothing else frees them (a 4K buffer in 4 KiB
+-     * pages is a 64 KiB array, and a guest resizing windows makes and
+-     * drops such buffers all the time: ~45 MB of heap a minute).
+-     */
+-    g_free(res->base.addrs);
++    virtio_gpu_cleanup_mapping(g, &res->base);
+     g_free(res);
+ 
+     return 0;
+-- 
+2.56.0
+

@@ -1,0 +1,42 @@
+From c5a43764a60be32acc508913b1758d2491538169 Mon Sep 17 00:00:00 2001
+From: tomtomnet <tompere8000@proton.me>
+Date: Wed, 14 Oct 2026 19:00:43 +0200
+Subject: [PATCH 19/24] physmem: align memfd-backed RAM so that shmem gives it
+ huge pages
+
+shmem (memfd, tmpfs) maps transparent huge pages only where the virtual address and the file
+offset agree modulo the huge page size: the mapping is aligned to it. A guest's first
+application start after boot went from 1.38 to 0.79 s with shmem huge pages (2026-10-06).
+
+Split out of the 2026-10-12 snapshot of the fork's uncommitted work.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ system/physmem.c | 11 +++++++++++
+ 1 file changed, 11 insertions(+)
+
+diff --git a/system/physmem.c b/system/physmem.c
+index bd5f41cb02..5295d672cd 100644
+--- a/system/physmem.c
++++ b/system/physmem.c
+@@ -1734,6 +1734,17 @@ static void *file_ram_alloc(RAMBlock *block,
+     if (kvm_enabled()) {
+         block->mr->align = MAX(block->mr->align, QEMU_VMALLOC_ALIGN);
+     }
++#elif defined(__linux__)
++    /*
++     * shmem (memfd, tmpfs) maps transparent huge pages only where the virtual
++     * address and the file offset agree modulo the huge page size: align the
++     * mapping as anonymous RAM is, so that guest RAM in a memfd can use them
++     * (/sys/kernel/mm/transparent_hugepage/shmem_enabled; QEMU already
++     * madvises guest RAM MADV_HUGEPAGE). With 4 KiB pages every first touch
++     * of guest RAM is a host fault: ~270k of them for a guest's first
++     * Firefox start after boot.
++     */
++    block->mr->align = MAX(block->mr->align, QEMU_VMALLOC_ALIGN);
+ #endif
+ 
+     if (memory < block->page_size) {
+-- 
+2.56.0
+

@@ -1,0 +1,264 @@
+From 12e9377e9e9e3bff5a958a2507797f4790db7acd Mon Sep 17 00:00:00 2001
+From: tomtomnet <tompere8000@proton.me>
+Date: Wed, 14 Oct 2026 19:00:43 +0200
+Subject: [PATCH 18/24] kvm: per-VM halt-poll-ns, the x86 slot-zap-all quirk, a
+ KVM_PRE_FAULT_MEMORY helper
+
+- accel property halt-poll-ns: how long this VM's halted vCPUs spin before they sleep (the kvm
+  module's halt_poll_ns for this VM only, without root) - a desktop guest at 240 Hz halts
+  thousands of times a second;
+- x86 accel property slot-zap-all (KVM_X86_QUIRK_SLOT_ZAP_ALL): off = removing or moving a
+  memslot drops only that slot's mappings, not every vCPU's whole guest page tables (a device
+  that maps and unmaps blobs often otherwise makes all vCPUs fault the guest memory back in);
+- kvm_cpu_pre_fault_memory(): map guest memory into KVM's page tables ahead of the guest's
+  first touch (KVM_PRE_FAULT_MEMORY), for the rutabaga device's prefaulted blobs.
+
+Split out of the 2026-10-12 snapshot of the fork's uncommitted work.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ accel/kvm/kvm-all.c      | 71 ++++++++++++++++++++++++++++++++++++++++
+ accel/stubs/kvm-stub.c   |  5 +++
+ include/system/kvm.h     |  7 ++++
+ include/system/kvm_int.h |  7 ++++
+ target/i386/kvm/kvm.c    | 51 +++++++++++++++++++++++++++++
+ 5 files changed, 141 insertions(+)
+
+diff --git a/accel/kvm/kvm-all.c b/accel/kvm/kvm-all.c
+index 83cbd120a8..86c698b4bc 100644
+--- a/accel/kvm/kvm-all.c
++++ b/accel/kvm/kvm-all.c
+@@ -3055,6 +3055,25 @@ static int kvm_init(AccelState *as, MachineState *ms)
+         goto err;
+     }
+ 
++    /*
++     * How long a halted vCPU of this VM spins before it sleeps: overrides the
++     * kvm module's halt_poll_ns (200 us) for this VM only, without root. A
++     * desktop guest at 240 Hz halts thousands of times a second, and the
++     * polling kept host cores busy at full boost (2026-10-06, 9950X: a window
++     * dragged in the guest 77 W package with 200 us, 41 W with 0).
++     */
++    if (s->halt_poll_ns >= 0) {
++        if (!kvm_vm_check_extension(s, KVM_CAP_HALT_POLL)) {
++            warn_report("kvm: halt-poll-ns ignored: no KVM_CAP_HALT_POLL (Linux >= 5.14)");
++        } else {
++            ret = kvm_vm_enable_cap(s, KVM_CAP_HALT_POLL, 0, s->halt_poll_ns);
++            if (ret < 0) {
++                error_report("kvm: halt-poll-ns %" PRId64 ": %s", s->halt_poll_ns, strerror(-ret));
++                goto err;
++            }
++        }
++    }
++
+     kvm_supported_memory_attributes = kvm_vm_check_extension(s, KVM_CAP_MEMORY_ATTRIBUTES);
+     kvm_guest_memfd_supported =
+         kvm_vm_check_extension(s, KVM_CAP_GUEST_MEMFD) &&
+@@ -3654,6 +3673,21 @@ int kvm_vm_ioctl(KVMState *s, unsigned long type, ...)
+     return ret;
+ }
+ 
++int kvm_cpu_pre_fault_memory(CPUState *cpu, uint64_t gpa, uint64_t size)
++{
++#ifdef KVM_PRE_FAULT_MEMORY
++    struct kvm_pre_fault_memory range = { .gpa = gpa, .size = size };
++    int ret;
++
++    do {
++        ret = kvm_vcpu_ioctl(cpu, KVM_PRE_FAULT_MEMORY, &range);
++    } while ((ret == -EINTR || ret == -EAGAIN) && range.size);
++    return ret;
++#else
++    return -ENOSYS;
++#endif
++}
++
+ int kvm_vcpu_ioctl(CPUState *cpu, unsigned long type, ...)
+ {
+     int ret;
+@@ -4107,6 +4141,35 @@ static void kvm_get_kvm_shadow_mem(Object *obj, Visitor *v,
+     visit_type_int(v, name, &value, errp);
+ }
+ 
++static void kvm_get_halt_poll_ns(Object *obj, Visitor *v, const char *name,
++                                 void *opaque, Error **errp)
++{
++    KVMState *s = KVM_STATE(obj);
++    int64_t value = s->halt_poll_ns;
++
++    visit_type_int(v, name, &value, errp);
++}
++
++static void kvm_set_halt_poll_ns(Object *obj, Visitor *v, const char *name,
++                                 void *opaque, Error **errp)
++{
++    KVMState *s = KVM_STATE(obj);
++    int64_t value;
++
++    if (s->fd != -1) {
++        error_setg(errp, "Cannot set properties after the accelerator has been initialized");
++        return;
++    }
++    if (!visit_type_int(v, name, &value, errp)) {
++        return;
++    }
++    if (value < -1 || value > UINT32_MAX) {
++        error_setg(errp, "halt-poll-ns must be -1 (the kvm module's) or 0 to %u ns", UINT32_MAX);
++        return;
++    }
++    s->halt_poll_ns = value;
++}
++
+ static void kvm_set_kvm_shadow_mem(Object *obj, Visitor *v,
+                                    const char *name, void *opaque,
+                                    Error **errp)
+@@ -4267,6 +4330,8 @@ static void kvm_accel_instance_init(Object *obj)
+     s->device = NULL;
+     s->msr_energy.enable = false;
+     s->honor_guest_pat = ON_OFF_AUTO_OFF;
++    s->slot_zap_all = ON_OFF_AUTO_AUTO;
++    s->halt_poll_ns = -1;
+ }
+ 
+ static void kvm_accel_class_init(ObjectClass *oc, const void *data)
+@@ -4290,6 +4355,12 @@ static void kvm_accel_class_init(ObjectClass *oc, const void *data)
+     object_class_property_set_description(oc, "kvm-shadow-mem",
+         "KVM shadow MMU size");
+ 
++    object_class_property_add(oc, "halt-poll-ns", "int",
++        kvm_get_halt_poll_ns, kvm_set_halt_poll_ns,
++        NULL, NULL);
++    object_class_property_set_description(oc, "halt-poll-ns",
++        "How long a halted vCPU spins before sleeping, in ns (KVM_CAP_HALT_POLL; default -1: the kvm module's halt_poll_ns)");
++
+     object_class_property_add(oc, "dirty-ring-size", "uint32",
+         kvm_get_dirty_ring_size, kvm_set_dirty_ring_size,
+         NULL, NULL);
+diff --git a/accel/stubs/kvm-stub.c b/accel/stubs/kvm-stub.c
+index 32b4b07403..8b3afaaf90 100644
+--- a/accel/stubs/kvm-stub.c
++++ b/accel/stubs/kvm-stub.c
+@@ -143,3 +143,8 @@ int kvm_create_guest_memfd(uint64_t size, uint64_t flags, Error **errp)
+ {
+     return -ENOSYS;
+ }
++
++int kvm_cpu_pre_fault_memory(CPUState *cpu, uint64_t gpa, uint64_t size)
++{
++    return -ENOSYS;
++}
+diff --git a/include/system/kvm.h b/include/system/kvm.h
+index 714b8c7b01..c1cac60c2c 100644
+--- a/include/system/kvm.h
++++ b/include/system/kvm.h
+@@ -210,6 +210,13 @@ bool kvm_arm_supports_user_irq(void);
+ int kvm_on_sigbus_vcpu(CPUState *cpu, int code, void *addr);
+ int kvm_on_sigbus(int code, void *addr);
+ 
++/**
++ * kvm_cpu_pre_fault_memory - map guest memory into KVM's stage-2 page tables ahead of the
++ * guest's first touch (KVM_PRE_FAULT_MEMORY; call it on @cpu's thread, e.g. with run_on_cpu())
++ * Returns 0, or -errno (-ENOSYS where the host's headers or KVM lack it).
++ */
++int kvm_cpu_pre_fault_memory(CPUState *cpu, uint64_t gpa, uint64_t size);
++
+ int kvm_check_extension(KVMState *s, unsigned int extension);
+ 
+ int kvm_vm_ioctl(KVMState *s, unsigned long type, ...);
+diff --git a/include/system/kvm_int.h b/include/system/kvm_int.h
+index 0876aac938..6b22d3b017 100644
+--- a/include/system/kvm_int.h
++++ b/include/system/kvm_int.h
+@@ -168,6 +168,13 @@ struct KVMState
+     uint16_t xen_evtchn_max_pirq;
+     char *device;
+     OnOffAuto honor_guest_pat;
++    /*
++     * KVM_X86_QUIRK_SLOT_ZAP_ALL: off = removing a memslot drops only that
++     * slot's mappings instead of every vCPU's whole guest page tables
++     */
++    OnOffAuto slot_zap_all;
++    /* the VM's halt polling cap in ns (KVM_CAP_HALT_POLL), -1: the kvm module's halt_poll_ns */
++    int64_t halt_poll_ns;
+ };
+ 
+ void kvm_memory_listener_register(KVMState *s, KVMMemoryListener *kml,
+diff --git a/target/i386/kvm/kvm.c b/target/i386/kvm/kvm.c
+index 1eeadb99ad..0fb7262cdd 100644
+--- a/target/i386/kvm/kvm.c
++++ b/target/i386/kvm/kvm.c
+@@ -3610,6 +3610,30 @@ int kvm_arch_init(MachineState *ms, KVMState *s)
+         }
+     }
+ 
++    /*
++     * By default KVM zaps the mappings of every memslot, in every vCPU, when
++     * one memslot is removed or moved: all vCPUs then fault the whole guest
++     * memory back in. A device that maps and unmaps memory often pays that
++     * each time - virtio-gpu maps every guest blob mapping as a memory region
++     * of its own (2026-10-07, a nested desktop over virtio-gpu-rutabaga: 134
++     * removals in 200 s, 45 % of all guest page faults within 50 ms of one).
++     * Off: KVM drops only the removed slot's mappings. The quirk was kept as
++     * KVM's default for a VFIO device-assignment case it could not explain.
++     */
++    if (s->slot_zap_all == ON_OFF_AUTO_OFF) {
++        ret = kvm_check_extension(s, KVM_CAP_DISABLE_QUIRKS2);
++        if (!(ret & KVM_X86_QUIRK_SLOT_ZAP_ALL)) {
++            error_report("KVM does not support disabling the slot-zap-all quirk");
++            return -EINVAL;
++        }
++        ret = kvm_vm_enable_cap(s, KVM_CAP_DISABLE_QUIRKS2, 0,
++                                KVM_X86_QUIRK_SLOT_ZAP_ALL);
++        if (ret < 0) {
++            error_report("failed to disable KVM_X86_QUIRK_SLOT_ZAP_ALL");
++            return ret;
++        }
++    }
++
+     first = false;
+     return 0;
+ }
+@@ -7087,6 +7111,24 @@ static void kvm_arch_set_honor_guest_pat(Object *obj, int value, Error **errp)
+     s->honor_guest_pat = value;
+ }
+ 
++static int kvm_arch_get_slot_zap_all(Object *obj, Error **errp)
++{
++    KVMState *s = KVM_STATE(obj);
++    return s->slot_zap_all;
++}
++
++static void kvm_arch_set_slot_zap_all(Object *obj, int value, Error **errp)
++{
++    KVMState *s = KVM_STATE(obj);
++
++    if (s->fd != -1) {
++        error_setg(errp, "Cannot set properties after the accelerator has been initialized");
++        return;
++    }
++
++    s->slot_zap_all = value;
++}
++
+ void kvm_arch_accel_class_init(ObjectClass *oc)
+ {
+     object_class_property_add_enum(oc, "notify-vmexit", "NotifyVMexitOption",
+@@ -7134,6 +7176,15 @@ void kvm_arch_accel_class_init(ObjectClass *oc)
+     object_class_property_set_description(oc, "honor-guest-pat",
+                                           "Disable KVM quirk that ignores guest PAT "
+                                           "memory type settings (default: auto)");
++
++    object_class_property_add_enum(oc, "slot-zap-all", "OnOffAuto",
++                                   &OnOffAuto_lookup,
++                                   kvm_arch_get_slot_zap_all,
++                                   kvm_arch_set_slot_zap_all);
++    object_class_property_set_description(oc, "slot-zap-all",
++                                          "off: removing a memslot zaps only its own "
++                                          "mappings, not every vCPU's (KVM quirk "
++                                          "SLOT_ZAP_ALL; default: auto = KVM's)");
+ }
+ 
+ void kvm_set_max_apic_id(uint32_t max_apic_id)
+-- 
+2.56.0
+

@@ -1,0 +1,392 @@
+From 62c0555079f0fa35c1e28fa94d88dc95f5ddb18e Mon Sep 17 00:00:00 2001
+From: tomtomnet <tompere8000@proton.me>
+Date: Wed, 14 Oct 2026 19:00:43 +0200
+Subject: [PATCH 21/24] ui: dmabuf-layout - a guest dma-buf's layout from its
+ amdgpu metadata
+
+For zero copy (the SDL window's own swapchain, the D-Bus display): the format modifier and
+planes of a guest buffer, read from the amdgpu BO metadata of its dma-buf, so that it can be
+handed to the host compositor with the right layout instead of being assumed linear.
+
+Split out of the 2026-10-12 snapshot of the fork's uncommitted work.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ include/ui/dmabuf-layout.h |  63 +++++++++
+ ui/dmabuf-layout.c         | 280 +++++++++++++++++++++++++++++++++++++
+ ui/meson.build             |   2 +
+ 3 files changed, 345 insertions(+)
+ create mode 100644 include/ui/dmabuf-layout.h
+ create mode 100644 ui/dmabuf-layout.c
+
+diff --git a/include/ui/dmabuf-layout.h b/include/ui/dmabuf-layout.h
+new file mode 100644
+index 0000000000..aed0e99939
+--- /dev/null
++++ b/include/ui/dmabuf-layout.h
+@@ -0,0 +1,63 @@
++/*
++ * The layout of a guest's scanout dma-buf, for showing it as it is
++ *
++ * virtio-gpu tells nothing of a scanout's layout (QEMU's dma-bufs carry
++ * DRM_FORMAT_MOD_INVALID), but amdgpu keeps it in the buffer's metadata.
++ *
++ * SPDX-License-Identifier: GPL-2.0-or-later
++ */
++
++#ifndef UI_DMABUF_LAYOUT_H
++#define UI_DMABUF_LAYOUT_H
++
++typedef struct QemuDmabufLayout {
++    uint64_t modifier;
++    int planes;
++    uint32_t offsets[3], strides[3];
++} QemuDmabufLayout;
++
++/*
++ * The amdgpu metadata of @dmabuf_fd, through @drm_fd (an amdgpu device with
++ * a handle space of its own): the tiling word and up to @umd_words of the
++ * user-mode driver's opaque words.  False when the driver cannot tell.
++ */
++bool qemu_dmabuf_amdgpu_metadata(int drm_fd, int dmabuf_fd, uint64_t *tiling,
++                                 uint32_t *umd, int umd_words, int *umd_bytes);
++
++/* 1: linear, 0: tiled or compressed, -1: the driver cannot tell */
++int qemu_dmabuf_amdgpu_linear(int drm_fd, int dmabuf_fd);
++
++/*
++ * The explicit layout of a tiled buffer: the modifier (and DCC planes, with
++ * @dcc) the kernel's amdgpu driver derives from the same metadata for a
++ * framebuffer made without one.  The GPU's pipe and packer bits are those
++ * of the entry of @accepted (the consumer's modifiers, @n_accepted of them)
++ * that agrees on the rest, or with @accepted NULL those of QEMU's EGL
++ * display (the same GPU).  GFX11, and GFX10.3 without DCC; false for anything else.
++ */
++bool qemu_dmabuf_amdgpu_layout(int drm_fd, int dmabuf_fd, uint32_t width,
++                               uint32_t offset0, uint32_t stride0,
++                               const uint64_t *accepted, int n_accepted,
++                               bool dcc, QemuDmabufLayout *l);
++
++/*
++ * The layout to show @dmabuf_fd with: linear, else the explicit tiled one
++ * (as above, @accepted may be NULL).  False when none can be given.
++ */
++bool qemu_dmabuf_layout_get(int drm_fd, int dmabuf_fd, uint32_t width,
++                            uint32_t offset0, uint32_t stride0,
++                            const uint64_t *accepted, int n_accepted,
++                            bool dcc, QemuDmabufLayout *l);
++
++/*
++ * Whether @l fits @dmabuf_fd for a buffer @height rows high - the checks a
++ * Wayland compositor makes on linux-dmabuf params (out of bounds there is a
++ * protocol error, which ends the client's connection)
++ */
++bool qemu_dmabuf_layout_fits(int dmabuf_fd, const QemuDmabufLayout *l,
++                             uint32_t height);
++
++/* A render-node fd of the device of QEMU's EGL display, or -1 */
++int qemu_dmabuf_layout_open_device(void);
++
++#endif
+diff --git a/ui/dmabuf-layout.c b/ui/dmabuf-layout.c
+new file mode 100644
+index 0000000000..c454012162
+--- /dev/null
++++ b/ui/dmabuf-layout.c
+@@ -0,0 +1,280 @@
++/*
++ * The layout of a guest's scanout dma-buf, for showing it as it is
++ *
++ * A display that hands the guest's buffer to the host compositor (zero
++ * copy) has to say how it is laid out.  virtio-gpu tells nothing of it, but
++ * amdgpu keeps the tiling in the buffer's metadata, and the kernel derives
++ * a modifier from it for a framebuffer created without one
++ * (amdgpu_display.c, convert_tiling_flags_to_modifier_gfx9 and
++ * extract_render_dcc_offset): the same is done here.  Used by the SDL
++ * window (sdl2-swapchain.c) and the D-Bus display (dbus-listener.c).
++ *
++ * SPDX-License-Identifier: GPL-2.0-or-later
++ */
++
++#include "qemu/osdep.h"
++#include "ui/dmabuf-layout.h"
++#include "ui/egl-helpers.h"
++
++#include <sys/ioctl.h>
++#include <drm.h>
++#include <drm_fourcc.h>
++#include <amdgpu_drm.h>
++#include <epoxy/egl.h>
++
++#ifndef EGL_DRM_RENDER_NODE_FILE_EXT
++#define EGL_DRM_RENDER_NODE_FILE_EXT 0x3377
++#endif
++
++static bool is_amdgpu(int drm_fd)
++{
++    char name[16] = "";
++    struct drm_version ver = { .name_len = sizeof(name) - 1, .name = name };
++
++    return drm_fd >= 0 && !ioctl(drm_fd, DRM_IOCTL_VERSION, &ver) &&
++           !strcmp(name, "amdgpu");
++}
++
++bool qemu_dmabuf_amdgpu_metadata(int drm_fd, int dmabuf_fd, uint64_t *tiling,
++                                 uint32_t *umd, int umd_words, int *umd_bytes)
++{
++    struct drm_prime_handle prime = { .fd = dmabuf_fd };
++    struct drm_amdgpu_gem_metadata md = { 0 };
++    struct drm_gem_close gem_close = { 0 };
++    int ret;
++
++    if (!is_amdgpu(drm_fd) || ioctl(drm_fd, DRM_IOCTL_PRIME_FD_TO_HANDLE, &prime)) {
++        return false;
++    }
++    md.handle = prime.handle;
++    md.op = AMDGPU_GEM_METADATA_OP_GET_METADATA;
++    ret = ioctl(drm_fd, DRM_IOCTL_AMDGPU_GEM_METADATA, &md);
++    /* on a handle space of its own: closing it closes nobody else's */
++    gem_close.handle = prime.handle;
++    ioctl(drm_fd, DRM_IOCTL_GEM_CLOSE, &gem_close);
++    if (ret) {
++        return false;
++    }
++    *tiling = md.data.tiling_info;
++    if (umd) {
++        int n = MIN(umd_words, (int)ARRAY_SIZE(md.data.data));
++
++        memcpy(umd, md.data.data, n * sizeof(uint32_t));
++        *umd_bytes = MIN((int)md.data.data_size_bytes, n * (int)sizeof(uint32_t));
++    }
++    return true;
++}
++
++int qemu_dmabuf_amdgpu_linear(int drm_fd, int dmabuf_fd)
++{
++    uint64_t tiling;
++
++    if (!qemu_dmabuf_amdgpu_metadata(drm_fd, dmabuf_fd, &tiling, NULL, 0, NULL)) {
++        return -1;
++    }
++    return AMDGPU_TILING_GET(tiling, SWIZZLE_MODE) == 0 &&
++           AMDGPU_TILING_GET(tiling, DCC_OFFSET_256B) == 0;
++}
++
++#define AMD_MOD_GET(m, field) \
++    (((m) >> AMD_FMT_MOD_##field##_SHIFT) & AMD_FMT_MOD_##field##_MASK)
++
++/*
++ * The modifiers QEMU's EGL display (the GPU's driver) takes for XRGB8888:
++ * they carry this GPU's pipe and packer bits.  Queried once.
++ */
++#define EGL_MODIFIERS 128
++
++static int egl_modifiers(const uint64_t **mods)
++{
++    static uint64_t list[EGL_MODIFIERS];
++    static int n = -1;
++    EGLuint64KHR got[EGL_MODIFIERS];
++    EGLBoolean external[EGL_MODIFIERS];
++    EGLint count = 0, i;
++
++    if (n < 0) {
++        n = 0;
++        if (qemu_egl_display != EGL_NO_DISPLAY &&
++            epoxy_has_egl_extension(qemu_egl_display,
++                                    "EGL_EXT_image_dma_buf_import_modifiers") &&
++            eglQueryDmaBufModifiersEXT(qemu_egl_display, DRM_FORMAT_XRGB8888,
++                                       EGL_MODIFIERS, got, external, &count)) {
++            for (i = 0; i < count; i++) {
++                if (!external[i]) {
++                    list[n++] = got[i];
++                }
++            }
++        }
++    }
++    *mods = list;
++    return n;
++}
++
++bool qemu_dmabuf_amdgpu_layout(int drm_fd, int dmabuf_fd, uint32_t width,
++                               uint32_t offset0, uint32_t stride0,
++                               const uint64_t *accepted, int n_accepted,
++                               bool dcc_ok, QemuDmabufLayout *l)
++{
++    uint64_t tiling, dcc, render_dcc = 0, m = 0;
++    uint32_t umd[10];
++    int umd_bytes = 0, swizzle, block_bits, i;
++    bool i64b, retile = false;
++
++    if (!qemu_dmabuf_amdgpu_metadata(drm_fd, dmabuf_fd, &tiling, umd, 10, &umd_bytes)) {
++        return false;
++    }
++    swizzle = AMDGPU_TILING_GET(tiling, SWIZZLE_MODE);
++    dcc = (uint64_t)AMDGPU_TILING_GET(tiling, DCC_OFFSET_256B) * 256;
++    i64b = AMDGPU_TILING_GET(tiling, DCC_INDEPENDENT_64B);
++    if (!swizzle || (swizzle & 3) == 0) {
++        return false;       /* linear, or Z microtiling: no modifier */
++    }
++    switch (swizzle >> 2) {
++    case 1: case 5:
++        block_bits = 12;    /* 4 KiB */
++        break;
++    case 2: case 4: case 6:
++        block_bits = 16;    /* 64 KiB */
++        break;
++    case 7:
++        block_bits = 18;    /* 256 KiB */
++        break;
++    default:
++        return false;
++    }
++    if (dcc && !dcc_ok) {
++        return false;       /* DCC planes not checked on a guest yet */
++    }
++    if (dcc && umd_bytes >= 40 && umd[0] == 1) {
++        /* the image descriptor's META_DATA_ADDRESS (resource words 6/7), Navi on */
++        render_dcc = ((uint64_t)umd[9] << 16) | ((umd[8] & 0xff000000u) >> 16);
++        retile = render_dcc && render_dcc != offset0 + dcc && render_dcc < UINT_MAX;
++    }
++    if (!accepted) {
++        n_accepted = egl_modifiers(&accepted);
++    }
++    {
++        /* the consumer's modifier that agrees, with this GPU's pipes and packers */
++        for (i = 0; i < n_accepted; i++) {
++            uint64_t t = accepted[i];
++
++            /*
++             * GFX11, and GFX10.3 (RB+: the same R_X swizzles, pipe and packer
++             * bits in the modifier); its DCC is laid out otherwise: GFX11 only
++             */
++            int version = AMD_MOD_GET(t, TILE_VERSION);
++
++            if ((t >> 56) != DRM_FORMAT_MOD_VENDOR_AMD ||
++                (version != AMD_FMT_MOD_TILE_VER_GFX11 &&
++                 (version != AMD_FMT_MOD_TILE_VER_GFX10_RBPLUS || dcc)) ||
++                AMD_MOD_GET(t, TILE) != swizzle ||
++                AMD_MOD_GET(t, DCC) != !!dcc) {
++                continue;
++            }
++            if (dcc && (AMD_MOD_GET(t, DCC_RETILE) != retile ||
++                        AMD_MOD_GET(t, DCC_INDEPENDENT_64B) != i64b ||
++                        AMD_MOD_GET(t, DCC_INDEPENDENT_128B) != 1 ||
++                        AMD_MOD_GET(t, DCC_MAX_COMPRESSED_BLOCK) !=
++                            (i64b ? AMD_FMT_MOD_DCC_BLOCK_64B : AMD_FMT_MOD_DCC_BLOCK_128B) ||
++                        AMD_MOD_GET(t, DCC_CONSTANT_ENCODE) ||
++                        AMD_MOD_GET(t, DCC_PIPE_ALIGN))) {
++                continue;
++            }
++            m = t;
++            break;
++        }
++        if (!m) {
++            return false;
++        }
++    }
++    l->modifier = m;
++    l->planes = 1;
++    l->offsets[0] = offset0;
++    l->strides[0] = stride0;
++    if (dcc) {
++        l->offsets[1] = offset0 + dcc;
++        l->strides[1] = AMDGPU_TILING_GET(tiling, DCC_PITCH_MAX) + 1;
++        l->planes = 2;
++    }
++    if (retile) {
++        /* 64 KiB blocks: the pipe XOR bits are the GPU's pipes */
++        int pipes = AMD_MOD_GET(m, PIPE_XOR_BITS);
++        int packers = AMD_MOD_GET(m, PACKERS);
++        int bits = MAX(20, 16 + pipes + (pipes == packers && pipes > 1)) - 2;
++
++        if (block_bits != 16) {
++            return false;
++        }
++        l->offsets[2] = render_dcc;
++        l->strides[2] = ROUND_UP(width, 1u << ((bits + 1) / 2));
++        l->planes = 3;
++    }
++    return true;
++}
++
++bool qemu_dmabuf_layout_get(int drm_fd, int dmabuf_fd, uint32_t width,
++                            uint32_t offset0, uint32_t stride0,
++                            const uint64_t *accepted, int n_accepted,
++                            bool dcc, QemuDmabufLayout *l)
++{
++    int linear = qemu_dmabuf_amdgpu_linear(drm_fd, dmabuf_fd);
++
++    if (linear == 1) {
++        *l = (QemuDmabufLayout) {
++            .modifier = DRM_FORMAT_MOD_LINEAR, .planes = 1,
++            .offsets = { offset0 }, .strides = { stride0 },
++        };
++        return true;
++    }
++    return linear == 0 &&
++           qemu_dmabuf_amdgpu_layout(drm_fd, dmabuf_fd, width, offset0, stride0,
++                                     accepted, n_accepted, dcc, l);
++}
++
++bool qemu_dmabuf_layout_fits(int dmabuf_fd, const QemuDmabufLayout *l,
++                             uint32_t height)
++{
++    off_t size = lseek(dmabuf_fd, 0, SEEK_END);
++    int i;
++
++    if (!height || l->planes < 1 || l->planes > 3) {
++        return false;
++    }
++    for (i = 0; i < l->planes; i++) {
++        uint64_t row_end = (uint64_t)l->offsets[i] + l->strides[i];
++        uint64_t end = i ? row_end :
++                       (uint64_t)l->offsets[0] + (uint64_t)l->strides[0] * height;
++
++        if (row_end > UINT32_MAX || end > UINT32_MAX) {
++            return false;
++        }
++        if (size < 0) {
++            continue;       /* no seeking on this buffer: the compositor cannot tell either */
++        }
++        if (l->offsets[i] >= (uint64_t)size || row_end > (uint64_t)size ||
++            end > (uint64_t)size) {
++            return false;
++        }
++    }
++    return true;
++}
++
++int qemu_dmabuf_layout_open_device(void)
++{
++    EGLDeviceEXT device = EGL_NO_DEVICE_EXT;
++    const char *node;
++
++    if (qemu_egl_display == EGL_NO_DISPLAY ||
++        !epoxy_has_egl_extension(qemu_egl_display, "EGL_EXT_device_query") ||
++        !eglQueryDisplayAttribEXT(qemu_egl_display, EGL_DEVICE_EXT,
++                                  (EGLAttrib *)&device) ||
++        device == EGL_NO_DEVICE_EXT) {
++        return -1;
++    }
++    node = eglQueryDeviceStringEXT(device, EGL_DRM_RENDER_NODE_FILE_EXT);
++    if (!node) {
++        node = eglQueryDeviceStringEXT(device, EGL_DRM_DEVICE_FILE_EXT);
++    }
++    return node ? open(node, O_RDWR | O_CLOEXEC) : -1;
++}
+diff --git a/ui/meson.build b/ui/meson.build
+index c331e7d704..39844acd36 100644
+--- a/ui/meson.build
++++ b/ui/meson.build
+@@ -106,6 +106,8 @@ if opengl.found()
+   opengl_ss.add(gbm, pixman)
+   opengl_ss.add(when: [opengl],
+                if_true: files('shader.c', 'console-gl.c', 'egl-helpers.c', 'egl-context.c'))
++  # the layout of a guest's dma-buf, for zero copy (SDL window, D-Bus display)
++  opengl_ss.add(when: [opengl, gbm], if_true: files('dmabuf-layout.c'))
+   ui_modules += {'opengl' : opengl_ss}
+ endif
+ 
+-- 
+2.56.0
+
