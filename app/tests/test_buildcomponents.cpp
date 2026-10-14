@@ -165,7 +165,7 @@ private slots:
             ids << c.id;
         }
         QCOMPARE(ids, QStringList({"virglrenderer", "rutabaga_gfx", "qemu", "tools", "mesa", "kwin",
-                                   "kpipewire", "medium"}));
+                                   "proxy", "kpipewire", "medium"}));
         QCOMPARE(find(all, "qemu").kind, Kind::Host);
         QCOMPARE(find(all, "qemu").title, "QEMU");
         QCOMPARE(find(all, "qemu").deps, QStringList({"virglrenderer", "rutabaga_gfx"}));
@@ -176,7 +176,8 @@ private slots:
         QVERIFY(!find(all, "tools").heavy);
         QCOMPARE(find(all, "medium").kind, Kind::Medium);
         QCOMPARE(find(all, "medium").deps,
-                 QStringList({"tools", "mesa", "kwin", "kpipewire"}));
+                 QStringList({"tools", "mesa", "kwin", "proxy", "kpipewire"}));
+        QVERIFY(!find(all, "proxy").heavy);
         QVERIFY(!find(all, "kpipewire").heavy);
         QVERIFY(find(all, "qemu").minutes > 0);
         QVERIFY(!find(all, "nothing").isValid());
@@ -215,7 +216,7 @@ private slots:
 
         const QString inputs = run({places.guestDir + "/build-rpms.sh", "--print-inputs"}, &status);
         QCOMPARE(status, 0);
-        for (const char *id : {"tools", "mesa", "kwin", "kpipewire"}) {
+        for (const char *id : {"tools", "mesa", "kwin", "proxy", "kpipewire"}) {
             QVERIFY2(inputs.contains(QString("%1 %2\n").arg(id, key(find(all, id), all))),
                      qPrintable(inputs));
             QCOMPARE(key(find(all, id), all), GuestToolsBuilder::inputsHash(places.guestDir, id));
@@ -337,7 +338,10 @@ private slots:
         QCOMPARE(toolsPatches.size(), 12);
         QCOMPARE(toolsPatches.first().name(), "linux-drm-virtio-attach-imported-dmabufs.patch");
         QCOMPARE(toolsPatches.last().name(), "linux-drm-virtio-tiled-scanout.patch");
-        /* KPipeWire's: Fedora's and the research's k2 */
+        /* the nested desktop's: the research's work on the proxy, KPipeWire's k2 */
+        const QList<Patch> proxyPatches = patches(find(all, "proxy"));
+        QCOMPARE(proxyPatches.size(), 1);
+        QCOMPARE(proxyPatches[0].path, "proxy/wl-cross-domain-proxy-research.patch");
         const QList<Patch> kpipewirePatches = patches(find(all, "kpipewire"));
         QCOMPARE(kpipewirePatches.size(), 2);
         QCOMPARE(kpipewirePatches.last().path, "kpipewire/kpipewire-dmabuf-frame-fds-and-size.patch");
@@ -363,6 +367,10 @@ private slots:
         const Source kwin = source(find(all, "kwin"));
         QVERIFY(kwin.archive.startsWith("kwin-") && kwin.archive.endsWith(".tar.xz"));
         QCOMPARE(kwin.archiveHost, "download.kde.org");
+        const Source proxy = source(find(all, "proxy"));
+        QCOMPARE(proxy.archive, "wl-cross-domain-proxy-c6ce1ca.tar.gz");
+        QCOMPARE(proxy.archiveHost, "codeberg.org");
+        QVERIFY(proxy.revision.startsWith("0.1.0^git"));
         const Source kpipewire = source(find(all, "kpipewire"));
         QVERIFY(kpipewire.archive.startsWith("kpipewire-") && kpipewire.archive.endsWith(".tar.xz"));
         QCOMPARE(kpipewire.archiveHost, "download.kde.org");
