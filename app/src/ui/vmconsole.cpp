@@ -27,8 +27,6 @@
    a few tries cover a slow start */
 static constexpr int kAttachTries = 20;
 static constexpr int kAttachRetryMs = 250;
-/* The size of QEMU's placeholder on a console whose guest set no mode yet */
-static constexpr QSize kPlaceholderSize(640, 480);
 
 static QString memoryText(qint64 mib)
 {
@@ -240,10 +238,15 @@ VmConsole::VmConsole(Vm *vm, QWidget *parent)
         connect(vm->runner(), &VmRunner::stateChanged, this, &VmConsole::update);
         connect(vm->runner(), &VmRunner::suspendedChanged, this, &VmConsole::update);
         connect(vm->runner(), &VmRunner::waitsForDisplayChanged, this, &VmConsole::update);
-        /* a reboot shows the boot again */
+        /* a reboot shows the boot again, the guest's system up its own screen */
         connect(vm->runner(), &VmRunner::guestReset, this, [this]() {
             if (m_nested) {
                 m_views->reset();
+            }
+        });
+        connect(vm->runner(), &VmRunner::guestAgentOpened, this, [this]() {
+            if (m_nested) {
+                m_views->systemUp();
             }
         });
     }
@@ -450,14 +453,7 @@ void VmConsole::applyView()
     }
 }
 
-void VmConsole::checkScreenUp()
-{
-    const QSize size = m_view ? m_view->consoleSize(1) : QSize();
 
-    if (m_nested && !size.isEmpty() && size != kPlaceholderSize) {
-        m_views->screenUp();
-    }
-}
 
 void VmConsole::setError(const QString &error)
 {
@@ -505,10 +501,16 @@ void VmConsole::update()
         break;
     }
 
-    /* the nested desktop of a QEMU found running: served again, for its next session */
+    /*
+     * The nested desktop of a QEMU found running: served again, for its
+     * next session, as the last one ended with the vitrine that served it.
+     * Its login screen is on the guest's own screen.
+     */
     if (const QString socket = runner->nestedSocket(); !socket.isEmpty() && !m_nested) {
         QString error;
-        if (!serveNested(socket, &error)) {
+        if (serveNested(socket, &error)) {
+            m_views->systemUp();
+        } else {
             qWarning("vitrine: %s", qPrintable(error));
         }
     }
@@ -616,8 +618,6 @@ void VmConsole::attach()
     view->setInputEnabled(runnerTakesInput(m_vm->runner()));
     connect(view, &VmView::grabChanged, this, &VmConsole::changed);
     connect(view, &VmView::fullScreenChanged, this, &VmConsole::changed);
-    /* the nested desktop's Screen, once the virtio-gpu card shows the guest's */
-    connect(view, &VmView::consoleSizeChanged, this, &VmConsole::checkScreenUp);
     /* a guest paused for its screen runs once QEMU has the screen's size and refresh rate */
     connect(view, &VmView::screenInfoApplied, this, [this]() {
         if (m_vm) {
@@ -630,7 +630,6 @@ void VmConsole::attach()
     if (m_view && m_view->inputEnabled()) {
         emit screenReady();
     }
-    checkScreenUp();
 }
 
 void VmConsole::detach()

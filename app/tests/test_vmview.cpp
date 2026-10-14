@@ -11,7 +11,6 @@
 #include <QApplication>
 #include <QDir>
 #include <QHBoxLayout>
-#include <QHash>
 #include <QKeyEvent>
 #include <QMouseEvent>
 #include <QSignalSpy>
@@ -62,8 +61,6 @@ const char kConsoleXml[] = R"XML(
   <interface name="org.qemu.Display1.Console">
     <method name="RegisterListener"><arg type="h" name="listener" direction="in"/></method>
     <property name="Type" type="s" access="read"/>
-    <property name="Width" type="u" access="read"/>
-    <property name="Height" type="u" access="read"/>
   </interface>
   <interface name="org.qemu.Display1.Keyboard">
     <method name="Press"><arg type="u" name="keycode" direction="in"/></method>
@@ -193,37 +190,6 @@ public:
     {
         std::lock_guard g(m_lock);
         return m_listenersOn;
-    }
-    /* The size of console @index's screen, as QEMU's properties say it: changed as the guest's
-       mode, with PropertiesChanged */
-    void setConsoleSize(int index, uint32_t width, uint32_t height)
-    {
-        struct Change {
-            FakeDisplay *self;
-            QByteArray path;
-            uint32_t width, height;
-        };
-        const QByteArray path = QByteArray(kRoot) + "/Console_" + QByteArray::number(index);
-        {
-            std::lock_guard g(m_lock);
-            m_sizes[path] = {width, height};
-        }
-        g_main_context_invoke(m_ctx, [](gpointer data) {
-            auto *c = static_cast<Change *>(data);
-            if (c->self->m_conn) {
-                GVariantBuilder changed;
-                g_variant_builder_init(&changed, G_VARIANT_TYPE("a{sv}"));
-                g_variant_builder_add(&changed, "{sv}", "Width", g_variant_new_uint32(c->width));
-                g_variant_builder_add(&changed, "{sv}", "Height", g_variant_new_uint32(c->height));
-                g_dbus_connection_emit_signal(
-                    c->self->m_conn, nullptr, c->path.constData(), "org.freedesktop.DBus.Properties",
-                    "PropertiesChanged",
-                    g_variant_new("(sa{sv}as)", "org.qemu.Display1.Console", &changed, nullptr),
-                    nullptr);
-            }
-            delete c;
-            return G_SOURCE_REMOVE;
-        }, new Change{this, path, width, height});
     }
     /* The view's listener is registered and connected */
     bool listening() const { return m_listener.load() != nullptr; }
@@ -422,7 +388,7 @@ private:
         }, this);
     }
 
-    static GVariant *getProperty(GDBusConnection *, const char *, const char *path,
+    static GVariant *getProperty(GDBusConnection *, const char *, const char *,
                                  const char *, const char *property, GError **, void *user)
     {
         auto *d = static_cast<FakeDisplay *>(user);
@@ -436,11 +402,6 @@ private:
             }
             return g_variant_new_fixed_array(G_VARIANT_TYPE_UINT32, ids.data(), ids.size(),
                                              sizeof(guint32));
-        }
-        if (!strcmp(property, "Width") || !strcmp(property, "Height")) {
-            std::lock_guard g(d->m_lock);
-            const auto size = d->m_sizes.value(path, {640, 480});
-            return g_variant_new_uint32(!strcmp(property, "Width") ? size.first : size.second);
         }
         if (!strcmp(property, "Type")) {
             return g_variant_new_string("Graphic");
@@ -507,7 +468,6 @@ private:
     QStringList m_calls;
     int m_consoles = 1;
     QStringList m_listenersOn;
-    QHash<QByteArray, std::pair<uint32_t, uint32_t>> m_sizes;
 };
 
 /*
@@ -676,40 +636,25 @@ private Q_SLOTS:
 
     /*
      * The nested desktop's views: QEMU's console by its index (0, the VGA
-     * card's screen; 1, the virtio-gpu card's), and the sizes of all the
-     * consoles, which tell when the guest set a mode on the one not shown
+     * card's screen; 1, the virtio-gpu card's)
      */
     void consoles()
     {
         FakeDisplay qemu(socketPath(), 2);
-        qemu.setConsoleSize(0, 1280, 800);
         auto view = std::make_unique<VmView>();
-        QSignalSpy sizes(view.get(), &VmView::consoleSizeChanged);
         QString error;
 
         QVERIFY2(view->attach(socketPath(), &error, false, 1), qPrintable(error));
         QCOMPARE(view->console(), 1);
         QTRY_VERIFY(qemu.listening());
         QCOMPARE(qemu.listenersOn(), QStringList{"/org/qemu/Display1/Console_1"});
-        QCOMPARE(view->consoleSize(0), QSize(1280, 800));
-        /* QEMU's placeholder until the guest's driver sets a mode */
-        QCOMPARE(view->consoleSize(1), QSize(640, 480));
-        QCOMPARE(sizes.size(), 2);
-        qemu.setConsoleSize(1, 1920, 1080);
-        QTRY_COMPARE(view->consoleSize(1), QSize(1920, 1080));
-        QCOMPARE(sizes.size(), 3);
-        QCOMPARE(sizes.last().at(0).toInt(), 1);
-        QCOMPARE(sizes.last().at(1).toSize(), QSize(1920, 1080));
-        /* the same again: nothing */
-        qemu.setConsoleSize(1, 1920, 1080);
-        QTest::qWait(100);
-        QCOMPARE(sizes.size(), 3);
 
         /* without an index, the first graphic one; one the VM lacks, refused */
         view = std::make_unique<VmView>();
         QVERIFY2(view->attach(socketPath(), &error), qPrintable(error));
         QCOMPARE(view->console(), 0);
-        QCOMPARE(view->consoleSize(1), QSize(1920, 1080));
+        QTRY_COMPARE(qemu.listenersOn().size(), 2);
+        QCOMPARE(qemu.listenersOn().last(), "/org/qemu/Display1/Console_0");
         view = std::make_unique<VmView>();
         QVERIFY(!view->attach(socketPath(), &error, false, 2));
         QCOMPARE(error, "console 2 is not a graphic console");

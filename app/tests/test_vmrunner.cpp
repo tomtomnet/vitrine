@@ -861,9 +861,13 @@ private slots:
             QProcess qemu;
             QVERIFY(standIn(qemu));
             VmRunner runner(id, tmp.path());
+            QSignalSpy agent(&runner, &VmRunner::guestAgentOpened);
             runner.setShutdownStallTimeout(200);
             runner.attach(ArgsFile::parse(kHeadless));
             QTRY_COMPARE(runner.state(), VmRunner::State::Running);
+            /* the guest's system runs: the nested desktop's console shows its own screen */
+            monitor.event("VSERPORT_CHANGE", {{"id", "vitrine-agent-port"}, {"open", true}});
+            QTRY_COMPARE(agent.size(), 1);
 
             /* not asked: said in the log, QEMU's own action */
             monitor.event("GUEST_PANICKED", {{"action", "pause"}});

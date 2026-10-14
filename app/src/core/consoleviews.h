@@ -17,12 +17,14 @@ class QKeyEvent;
  *    the login screen, a recovery shell;
  *  - Desktop: the guest's KDE session (its nested KWin's window).
  *
- * It goes by itself: Boot from power-on; Screen once the card's screen
- * shows the guest's (its driver set a mode); Desktop once the guest's
- * window comes (the nested KWin connected); back to Screen when it goes
- * (the session ended: the login screen is there), and Boot on a reboot.
- * The user's choice - the console's switcher, the View menu, Ctrl+Alt+1/2/3
- * - holds until the next of those.
+ * It goes by itself: Boot from power-on; Screen once the guest's system
+ * runs (an agent of the guest's came up: its login screen is next);
+ * Desktop once the guest's window comes (the nested KWin connected); back
+ * to Screen when it goes (the session ended: the login screen is there),
+ * and Boot on a reboot.  Not by the card's screen: the firmware drives it
+ * too (OVMF sets a mode there, shown black under rutabaga), and a reboot
+ * changes nothing QEMU says of it.  The user's choice - the console's
+ * switcher, the View menu, Ctrl+Alt+1/2/3 - holds until the next of those.
  */
 class ConsoleViews : public QObject
 {
@@ -51,8 +53,8 @@ public:
     void powerOn();
     /* The guest reboots: Boot */
     void reset();
-    /* The card's screen shows the guest's, once per run: Screen, from Boot */
-    void screenUp();
+    /* The guest's system runs, once per boot: Screen, from Boot */
+    void systemUp();
     /* The guest's window came (Desktop), or went (Screen) */
     void setDesktop(bool shown);
     bool hasDesktop() const;
@@ -64,6 +66,6 @@ private:
     void show(View view);
 
     View m_view = View::Boot;
-    bool m_screenUp = false;
+    bool m_systemUp = false;
     bool m_desktop = false;
 };

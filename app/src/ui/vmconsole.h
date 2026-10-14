@@ -113,8 +113,6 @@ private:
     void dropNested();
     /* The view of m_views: its page, the D-Bus display's console, the keys */
     void applyView();
-    /* The virtio-gpu card's screen shows the guest's: its size is the guest's */
-    void checkScreenUp();
     void showMessage(const QString &title, const QString &text, const QString &button = {});
     void setPage(Page page);
 

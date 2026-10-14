@@ -358,6 +358,8 @@ DisplayPage::DisplayPage(QWidget *parent)
     m_nested->setObjectName("nested");
     m_nestedHint->setObjectName("nestedHint");
     m_card->setObjectName("card");
+    /* as wide as the entry shown: the nested desktop's comes and goes */
+    m_card->setSizeAdjustPolicy(QComboBox::AdjustToContents);
     m_cardHint->setObjectName("cardHint");
     m_nativeContext->setObjectName("nativeContext");
     m_venus->setObjectName("venus");

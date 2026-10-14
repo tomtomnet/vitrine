@@ -32,12 +32,12 @@ private slots:
         views.powerOn();
         QCOMPARE(views.view(), View::Boot);
         QCOMPARE(changed.size(), 0);
-        /* the virtio-gpu card's screen shows the guest's: its console, its login screen */
-        views.screenUp();
+        /* the guest's system runs (an agent came up): its login screen is on its own screen */
+        views.systemUp();
         QCOMPARE(views.view(), View::Screen);
         QCOMPARE(changed.size(), 1);
         /* once a run */
-        views.screenUp();
+        views.systemUp();
         QCOMPARE(changed.size(), 1);
         /* the nested KWin connected: its window */
         views.setDesktop(true);
@@ -52,7 +52,7 @@ private slots:
         /* a reboot: the boot again, then its screen when it comes back */
         views.reset();
         QCOMPARE(views.view(), View::Boot);
-        views.screenUp();
+        views.systemUp();
         QCOMPARE(views.view(), View::Screen);
         QCOMPARE(changed.size(), 5);
         QCOMPARE(changed.last().first().value<View>(), View::Screen);
@@ -71,8 +71,8 @@ private slots:
         views.powerOn();
         views.choose(View::Desktop);
         QCOMPARE(views.view(), View::Desktop);
-        /* the screen comes up: only a view still on the boot moves */
-        views.screenUp();
+        /* the system comes up: only a view still on the boot moves */
+        views.systemUp();
         QCOMPARE(views.view(), View::Desktop);
         views.choose(View::Boot);
         views.setDesktop(true);

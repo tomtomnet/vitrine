@@ -1,7 +1,6 @@
 // SPDX-License-Identifier: GPL-2.0-or-later
 #pragma once
 
-#include <QHash>
 #include <QImage>
 #include <QObject>
 #include <QPointer>
@@ -66,13 +65,6 @@ public:
     bool isAttached() const;
     /* The console shown, by its index; -1 before attach() */
     int console() const;
-    /*
-     * The size of the screen of the VM's console @index as QEMU has it: the
-     * guest's mode, or QEMU's placeholder (640x480 until the guest set a
-     * mode); empty when not known.  For every console of the VM, whichever
-     * the view shows.
-     */
-    QSize consoleSize(int index) const;
 
     /* Where the screen shows, but in full screen; owned by the view */
     QWidget *widget() const;
@@ -113,8 +105,6 @@ Q_SIGNALS:
      * attach().  A guest paused until then may run (VmRunner::displayReady).
      */
     void screenInfoApplied();
-    /* consoleSize() of console @index changed, or became known */
-    void consoleSizeChanged(int index, QSize size);
 
 protected:
     bool eventFilter(QObject *watched, QEvent *event) override;
@@ -136,9 +126,6 @@ private:
     void watchScreen();
     /* The container's pointer @event, to the embedded window: true if it took it */
     bool forwardPointer(QEvent *event);
-    /* The sizes of the VM's consoles, now and as they change */
-    void watchConsoles();
-    void setConsoleSize(int index, QSize size);
 
     Options m_opts;
     /* on the heap: it outlives the view while D-Bus calls complete (detach) */
@@ -174,6 +161,4 @@ private:
     int m_cursorHotY = 0;
     bool m_cursorVisible = true;
     int m_console = -1;
-    QHash<int, QSize> m_consoleSizes;
-    unsigned m_consoleWatch = 0;    // the subscription to their PropertiesChanged
 };

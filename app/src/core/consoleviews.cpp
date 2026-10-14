@@ -49,21 +49,21 @@ void ConsoleViews::choose(View view)
 
 void ConsoleViews::powerOn()
 {
-    m_screenUp = false;
+    m_systemUp = false;
     m_desktop = false;
     show(View::Boot);
 }
 
 void ConsoleViews::reset()
 {
-    m_screenUp = false;
+    m_systemUp = false;
     show(View::Boot);
 }
 
-void ConsoleViews::screenUp()
+void ConsoleViews::systemUp()
 {
-    if (!m_screenUp) {
-        m_screenUp = true;
+    if (!m_systemUp) {
+        m_systemUp = true;
         if (m_view == View::Boot) {
             show(View::Screen);
         }
