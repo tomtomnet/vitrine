@@ -1321,7 +1321,11 @@ QString BuildsWindow::kwinSource(const Component &c)
     } else if (kwin.offer == Offer::NoSet) {
         QStringList sets;
         for (const HostKwin::Set &set : HostKwin::sets(c.dir)) {
-            sets << tr("%1 for KWin %2").arg(set.series, set.versions.join(", "));
+            QStringList versions;
+            for (const QString &pattern : set.versions) {
+                versions << HostKwin::versionText(pattern);
+            }
+            sets << tr("%1 for KWin %2").arg(set.series, versions.join(", "));
         }
         html += para(tr("The research has no host set for KWin %1, this computer's Plasma. Its "
                         "sets: %2.")
@@ -1331,7 +1335,8 @@ QString BuildsWindow::kwinSource(const Component &c)
         QStringList moved;
         for (const QString &line : kwin.outdated) {
             const QStringList f = line.split(' ');
-            moved << tr("%1 %2, built for %3").arg(f.value(0), f.value(2), f.value(1));
+            moved << tr("%1 %2, built for %3")
+                         .arg(HostKwin::packageTitle(f.value(0)), f.value(2), f.value(1));
         }
         html += para(tr("Vitrine's KWin no longer matches this computer (%1). At the next login "
                         "the desktop would run it with the new libraries, and might not start: "

@@ -365,7 +365,7 @@ private slots:
         const QList<Builds::Patch> patches = Builds::patches(c);
         QCOMPARE(patches.size(), 14 * 3);
         QCOMPARE(patches.first().origin, "hl39, for KWin 6.7.91");
-        QCOMPARE(patches.last().origin, "hl39-681, for KWin 6.8.*");
+        QCOMPARE(patches.last().origin, "hl39-681, for KWin 6.8.x");
         QCOMPARE(patches.last().name(), "0039-EXP-input-pointer-constraints-on-subsurfaces.68.patch");
         QCOMPARE(Builds::subject(c, patches.first()), "Patch100 kwin-vm-frame-timing (ported to 6.8)");
         QVERIFY(Builds::text(c, patches.last()).contains("pointer"));
@@ -526,7 +526,7 @@ private slots:
         QString why;
         QVERIFY(!s.canInstall(&why));
         QVERIFY(why.contains("6.11.3"));
-        QCOMPARE(s.summary(), "Built against qt6-qtbase 6.11.3 (this computer has 6.11.2)");
+        QCOMPARE(s.summary(), "Built against Qt 6.11.3 (this computer has 6.11.2)");
 
         /* without versionlock or pkexec: a plain word, before any password */
         System bare = system;

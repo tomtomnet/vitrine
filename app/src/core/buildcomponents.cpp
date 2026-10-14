@@ -364,7 +364,11 @@ QList<Patch> patches(const Component &c)
                 if (!name.isEmpty()) {
                     Patch p;
                     p.path = where + '/' + name;
-                    p.origin = tr("%1, for KWin %2").arg(set.series, set.versions.join(", "));
+                    QStringList versions;
+                    for (const QString &pattern : set.versions) {
+                        versions << HostKwin::versionText(pattern);
+                    }
+                    p.origin = tr("%1, for KWin %2").arg(set.series, versions.join(", "));
                     list << p;
                 }
             }

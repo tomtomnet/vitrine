@@ -12,12 +12,7 @@
 static QString now(const QString &line)
 {
     const QStringList f = line.split(' ');
-    const QString name = f.value(0);
-    const QString title = name == "plasma-workspace"    ? QStringLiteral("Plasma")
-                          : name == "qt6-qtbase"        ? QStringLiteral("Qt")
-                          : name == "qt6-qtdeclarative" ? QStringLiteral("Qt Declarative")
-                                                        : name;
-    return title + ' ' + f.value(2);
+    return HostKwin::packageTitle(f.value(0)) + ' ' + f.value(2);
 }
 
 HostKwinBanner::HostKwinBanner(QWidget *parent)

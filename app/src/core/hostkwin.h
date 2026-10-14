@@ -42,6 +42,10 @@ QStringList kwinPackages();
 QStringList abiPackages();
 /* "6.7.91" of "6.7.91.1": the Plasma release a version belongs to */
 QString plasmaRelease(const QString &version);
+/* What a user calls a package of plasmaRelease()'s and abiPackages(): Plasma, Qt... */
+QString packageTitle(const QString &name);
+/* A shell pattern of versions.sh as a user reads it: 6.8.x for 6.8.* */
+QString versionText(const QString &pattern);
 
 /* A host set of the recipe, as research/setup/versions.sh's kde_set_for maps
    KWin's versions to them: for the window (build.sh decides with bash) */

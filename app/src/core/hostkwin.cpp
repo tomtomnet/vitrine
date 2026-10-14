@@ -142,6 +142,20 @@ QString plasmaRelease(const QString &version)
     return version.section('.', 0, 2);
 }
 
+QString packageTitle(const QString &name)
+{
+    return name == "plasma-workspace"    ? QStringLiteral("Plasma")
+           : name == "qt6-qtbase"        ? QStringLiteral("Qt")
+           : name == "qt6-qtdeclarative" ? QStringLiteral("Qt Declarative")
+           : name == "kdecoration"       ? QStringLiteral("KDecoration")
+                                         : name;
+}
+
+QString versionText(const QString &pattern)
+{
+    return QString(pattern).replace('*', 'x');
+}
+
 QList<Set> sets(const QString &sourceDir)
 {
     /* host/kwin/6.7.91) echo "hl39 hl39" ;;   # a comment */
@@ -648,12 +662,7 @@ Status status(const System &system, const Recipe &recipe, const QList<Build> &bu
 static QString nameNow(const QString &line)
 {
     const QStringList f = line.split(' ');
-    const QString name = f.value(0);
-    const QString title = name == "qt6-qtbase"          ? QStringLiteral("Qt")
-                          : name == "qt6-qtdeclarative" ? QStringLiteral("Qt Declarative")
-                          : name == "plasma-workspace"  ? QStringLiteral("Plasma")
-                                                        : name;
-    return title + ' ' + f.value(2);
+    return packageTitle(f.value(0)) + ' ' + f.value(2);
 }
 
 QString Status::summary() const
@@ -695,9 +704,9 @@ QString Status::summary() const
     }
     if (build.isValid()) {
         return differs.isEmpty() ? tr("Built, not installed")
-                                 : tr("Built against %1 (this computer has %2)")
-                                       .arg(differs.first().split(' ').value(0) + ' ' +
-                                                differs.first().split(' ').value(1),
+                                 : tr("Built against %1 %2 (this computer has %3)")
+                                       .arg(packageTitle(differs.first().split(' ').value(0)),
+                                            differs.first().split(' ').value(1),
                                             differs.first().split(' ').value(2));
     }
     if (other.isValid()) {
@@ -745,7 +754,7 @@ bool Status::canInstall(QString *why) const
         const QStringList f = differs.first().split(' ');
         reason = tr("It was built against %1 %2, and this computer has %3: bring the system up "
                     "to date (dnf upgrade), then build it again if they still differ.")
-                     .arg(f.value(0), f.value(1), f.value(2));
+                     .arg(packageTitle(f.value(0)), f.value(1), f.value(2));
     } else if (owner == Owner::Vitrine && build.rpm("kwin").digest == kwin.digest && locked) {
         reason = tr("This build is installed and locked.");
     } else if (!kwin.isValid()) {

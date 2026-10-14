@@ -65,8 +65,7 @@ QString installText(const Status &status, const QStringList &packages)
            "</li></ul><p>" +
            tr("If the desktop does not start after an update, log in on a text console "
               "(Ctrl+Alt+F3) and put the distribution's KWin back:") +
-           "<br><code>" + consoleCommands(packages).toHtmlEscaped().replace('\n', "<br>") +
-           "</code></p>";
+           "</p><pre>" + consoleCommands(packages).toHtmlEscaped() + "</pre>";
 }
 
 QString foreignText(const Status &status)
