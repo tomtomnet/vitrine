@@ -249,7 +249,7 @@ def nested():
     running = False
     for comm in glob.glob("/proc/[0-9]*/comm"):
         # the kernel keeps 15 characters of a command's name
-        if read(comm) == "wl-cross-domai":
+        if read(comm) == "wl-cross-domain":
             running = True
             break
     return {"boot": os.path.exists("/run/vitrine-nested/nested"),
