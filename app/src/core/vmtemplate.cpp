@@ -284,7 +284,7 @@ ArgsFile build(const Options &o, const std::function<void(ArgsFile &)> &addFirmw
     args.lines << ArgsFile::Line();
     VmConfig::setName(args, o.name);
     VmConfig::setGuest(args, {o.os == Os::Linux ? "linux" : windows ? "windows" : "other",
-                              o.os == Os::Linux ? o.desktop : QString(), o.system});
+                              o.os == Os::Linux ? o.desktop : QString()});
 
     if (o.os == Os::Linux && !arm) {
         linuxPc(w, o, addFirmware);

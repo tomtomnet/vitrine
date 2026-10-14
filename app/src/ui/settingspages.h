@@ -14,7 +14,6 @@
 
 class ArgsEditorPane;
 class Banner;
-class OsChooser;
 class QemuDocs;
 class QRadioButton;
 class QCheckBox;
@@ -91,7 +90,7 @@ private:
     void updateDesktop();
 
     QLineEdit *m_name;
-    OsChooser *m_os;
+    QComboBox *m_os;
     QComboBox *m_desktop;
     QString m_loaded;
     VmConfig::Guest m_loadedGuest;
@@ -123,8 +122,8 @@ private:
 };
 
 /*
- * Where the screen shows (vitrine's window, QEMU's SDL or GTK window, or
- * nowhere), what QEMU's window does, and the graphics card, with vitrine's
+ * Where the screen shows (vitrine's window, QEMU's GTK or SDL window, or
+ * none), what QEMU's window does, and the graphics card, with vitrine's
  * settings for its 3D: DRM native context, Venus, the frame timing
  */
 class DisplayPage : public SettingsPage
@@ -143,7 +142,7 @@ public:
 private:
     /* What the page shows; save() writes what differs from what load() showed */
     struct Shown {
-        /* -display of the screen chosen: dbus, sdl, gtk, none; empty when none is */
+        /* -display of the screen chosen: dbus, gtk, sdl, none; empty when none is */
         QString screen;
         /* the options of QEMU's window that it has, e.g. show-cursor */
         QMap<QString, bool> options;
@@ -162,11 +161,11 @@ private:
     QString chosen3dCard() const;
 
     Banner *m_custom;
-    QRadioButton *m_embedded;
-    QRadioButton *m_sdl;
-    QRadioButton *m_gtk;
-    QRadioButton *m_nowhere;
-    QLabel *m_gtkHint;
+    /* The screen's place, by -display; none current for another (m_custom says it) */
+    QComboBox *m_display;
+    QLabel *m_displayHint;
+    /* What of the list the VM's QEMU lacks */
+    QLabel *m_displayLacks;
     QLabel *m_windowLabel;
     QMap<QString, QCheckBox *> m_options;
     QComboBox *m_card;
@@ -220,10 +219,6 @@ private:
     void addDisk();
     void addCdrom();
     void chooseDisc();
-    /* The system the disc chosen tells while the VM's is not set, if the
-       disc is still in its drive; else empty */
-    QString toldSystem() const;
-    void updateSystem();
     void resize();
     QString newDiskName() const;
     /* The boot order: an entry added to it, the list made again, a device moved */
@@ -242,14 +237,6 @@ private:
     QPushButton *m_bootUp;
     QPushButton *m_bootDown;
     QLabel *m_bootHint;
-    QLabel *m_system;
-    /* The VM's #guest when loaded: no system yet, its family */
-    bool m_systemSet = true;
-    QString m_family;
-    /* The system a disc chosen tells (GuestOs::detect), and its desktop */
-    QString m_toldDisc;
-    QString m_toldSystem;
-    QString m_toldDesktop;
     QList<Entry> m_entries;
     int m_nextId = 0;
     QList<BootItem> m_bootItems;

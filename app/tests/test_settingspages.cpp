@@ -8,8 +8,8 @@
 #include <QPlainTextEdit>
 #include <QPushButton>
 #include <QScopeGuard>
-#include <QRadioButton>
 #include <QSpinBox>
+#include <QStandardItemModel>
 #include <QStandardPaths>
 #include <QTableWidget>
 #include <QTabBar>
@@ -17,13 +17,11 @@
 #include <QTest>
 #include <QTimer>
 
-#include <QFileDialog>
-
 #include "core/argsfile.h"
-#include "core/guestos.h"
 #include "core/paths.h"
 #include "core/vmstore.h"
 #include "ui/argseditor.h"
+#include "ui/banner.h"
 #include "ui/settingspages.h"
 #include "ui/vmpane.h"
 
@@ -39,6 +37,23 @@ class TestSettingsPages : public QObject
 
     static QString text(const ArgsFile &args) { return args.toText(); }
 
+    /* The Display page's choice, as the user makes it: -display's value of an entry */
+    static void choose(QComboBox *display, const QString &value)
+    {
+        QVERIFY(display->findData(value) >= 0);
+        display->setCurrentIndex(display->findData(value));
+    }
+    static QString chosen(const QComboBox *display)
+    {
+        return display->currentIndex() < 0 ? QString() : display->currentData().toString();
+    }
+    /* Whether the user can choose the entry of @value, which the QEMU may lack */
+    static bool choosable(const QComboBox *display, const QString &value)
+    {
+        const auto *model = qobject_cast<const QStandardItemModel *>(display->model());
+        return model && model->item(display->findData(value))->isEnabled();
+    }
+
 private slots:
     void initTestCase()
     {
@@ -52,41 +67,77 @@ private slots:
         Paths::setQemuBinary({});
     }
 
-    /* A VM that shows nowhere has neither radio checked, whatever was before */
+    /* The list: vitrine's window first, then QEMU's GTK and SDL windows, and none */
+    void displayPageList()
+    {
+        DisplayPage page;
+        auto *display = page.findChild<QComboBox *>("display");
+        auto *hint = page.findChild<QLabel *>("displayHint");
+        QVERIFY(display && hint);
+        QStringList values, texts;
+        for (int i = 0; i < display->count(); i++) {
+            values << display->itemData(i).toString();
+            texts << display->itemText(i);
+        }
+        QCOMPARE(values, QStringList({"dbus", "gtk", "sdl", "none"}));
+        QCOMPARE(texts, QStringList({"Vitrine's window (D-Bus)", "QEMU's GTK window",
+                                     "QEMU's SDL window", "None"}));
+
+        /* what each is, under the list */
+        ArgsFile args = ArgsFile::parse("-display dbus,p2p=yes,gl=on\n");
+        page.load(args);
+        QVERIFY(hint->isVisibleTo(&page));
+        QVERIFY(hint->text().contains("Vitrine's window"));
+        choose(display, "gtk");
+        QVERIFY(hint->text().contains("menus"));
+        choose(display, "sdl");
+        QVERIFY(hint->text().contains("stays open"));
+        choose(display, "none");
+        QCOMPARE(hint->text(), "The VM runs without a screen.");
+
+        /* -nographic: nothing to choose, the Arguments page's */
+        args = ArgsFile::parse("-nographic\n");
+        page.load(args);
+        QVERIFY(!display->isEnabled());
+        QCOMPARE(display->currentIndex(), -1);
+        QCOMPARE(display->placeholderText(), "No screen (-nographic)");
+        QVERIFY(!hint->isVisibleTo(&page));
+        QVERIFY(!page.isModified());
+        page.save(args);
+        QCOMPARE(text(args), "-nographic\n");
+    }
+
+    /* A VM whose screen is none of the list's has no choice, whatever was before */
     void displayPageClearsItsChoice()
     {
         DisplayPage page;
-        auto *embedded = page.findChild<QRadioButton *>("embedded");
-        auto *ownWindow = page.findChild<QRadioButton *>("ownWindow");
-        QVERIFY(embedded && ownWindow);
+        auto *display = page.findChild<QComboBox *>("display");
+        auto *custom = page.findChild<Banner *>("customDisplay");
+        QVERIFY(display && custom);
 
         /* shown once for vitrine's window, then -display changed by hand */
         ArgsFile args = ArgsFile::parse("-display dbus,p2p=yes,gl=on\n");
         page.load(args);
-        QVERIFY(embedded->isChecked());
+        QCOMPARE(chosen(display), "dbus");
+        QVERIFY(custom->isHidden());
         QVERIFY(!page.isModified());
 
         args = ArgsFile::parse("-display egl-headless\n");
         page.load(args);
-        QVERIFY(!embedded->isChecked());
-        QVERIFY(!ownWindow->isChecked());
+        QCOMPARE(chosen(display), "none");
         QVERIFY(!page.isModified());
         page.save(args);
         QCOMPARE(text(args), "-display egl-headless\n");
 
-        /* a click, then Discard: the page loads the arguments again */
-        ownWindow->click();
-        QVERIFY(ownWindow->isChecked());
+        /* a choice, then Discard: the page loads the arguments again */
+        choose(display, "sdl");
         QVERIFY(page.isModified());
         page.load(args);
-        QVERIFY(!ownWindow->isChecked());
+        QCOMPARE(chosen(display), "none");
         QVERIFY(!page.isModified());
 
-        /* and the buttons stay exclusive for the user */
-        ownWindow->click();
-        embedded->click();
-        QVERIFY(embedded->isChecked());
-        QVERIFY(!ownWindow->isChecked());
+        choose(display, "sdl");
+        choose(display, "dbus");
         page.save(args);
         QCOMPARE(text(args), "-display dbus,p2p=yes\n");
         QVERIFY(!page.isModified());
@@ -94,11 +145,29 @@ private slots:
         /* VNC alone: QEMU opens no window, which SDL adds */
         args = ArgsFile::parse("-vnc :0\n");
         page.load(args);
-        QVERIFY(!embedded->isChecked());
-        QVERIFY(!ownWindow->isChecked());
-        ownWindow->click();
+        QCOMPARE(chosen(display), "");
+        QCOMPARE(display->placeholderText(), "VNC or SPICE only");
+        QVERIFY(!custom->isHidden());
+        QVERIFY(!page.isModified());
+        page.save(args);
+        QCOMPARE(text(args), "-vnc :0\n");
+        choose(display, "sdl");
+        QVERIFY(page.isModified());
         page.save(args);
         QCOMPARE(text(args), "-vnc :0\n-display sdl\n");
+        QCOMPARE(chosen(display), "sdl");
+
+        /* QEMU's default window, and a display of QEMU's that vitrine does not show */
+        for (const auto &[line, own] : {std::pair("-m 1G\n", "QEMU's default window"),
+                                        std::pair("-display curses\n",
+                                                  "Elsewhere (-display curses)")}) {
+            args = ArgsFile::parse(line);
+            page.load(args);
+            QCOMPARE(chosen(display), "");
+            QCOMPARE(display->placeholderText(), own);
+            QVERIFY(!custom->isHidden());
+            QVERIFY(!page.isModified());
+        }
     }
 
     /* The Display page: the window and its options, the card and vitrine's settings of its 3D */
@@ -110,10 +179,7 @@ private slots:
         /* vitrine's QEMU, not built: all it offers */
         Paths::setQemuBinary({});
         DisplayPage page;
-        auto *embedded = page.findChild<QRadioButton *>("embedded");
-        auto *sdl = page.findChild<QRadioButton *>("ownWindow");
-        auto *gtk = page.findChild<QRadioButton *>("gtkWindow");
-        auto *nowhere = page.findChild<QRadioButton *>("nowhere");
+        auto *screen = page.findChild<QComboBox *>("display");
         auto *card = page.findChild<QComboBox *>("card");
         auto *native = page.findChild<QCheckBox *>("nativeContext");
         auto *venus = page.findChild<QCheckBox *>("venus");
@@ -122,8 +188,7 @@ private slots:
         auto *zoom = page.findChild<QCheckBox *>("zoom-to-fit");
         auto *menubar = page.findChild<QCheckBox *>("show-menubar");
         auto *hover = page.findChild<QCheckBox *>("grab-on-hover");
-        QVERIFY(embedded && sdl && gtk && nowhere && card && native && venus && timing &&
-                cursor && zoom && menubar && hover);
+        QVERIFY(screen && card && native && venus && timing && cursor && zoom && menubar && hover);
         const auto display = [](const ArgsFile &a) {
             return a.lines[a.indexesOf("display").last()].value;
         };
@@ -143,7 +208,7 @@ private slots:
                                         "-display dbus,p2p=yes,gl=on\n");
         const QString before = text(args);
         page.load(args);
-        QVERIFY(embedded->isChecked());
+        QCOMPARE(chosen(screen), "dbus");
         QCOMPARE(card->currentData().toString(), "virtio-vga-gl");
         QVERIFY(native->isChecked() && native->isEnabled());
         QVERIFY(timing->isChecked() && timing->isEnabled());
@@ -155,7 +220,7 @@ private slots:
         QCOMPARE(text(args), before);
 
         /* QEMU's GTK window, and its options */
-        gtk->click();
+        choose(screen, "gtk");
         QVERIFY(page.isModified());
         for (QCheckBox *box : {cursor, zoom, menubar, hover}) {
             QVERIFY(box->isVisibleTo(&page));
@@ -167,11 +232,11 @@ private slots:
         menubar->setChecked(false);
         page.save(args);
         QCOMPARE(display(args), "gtk,gl=on,show-cursor=on,zoom-to-fit=on,show-menubar=off");
-        QVERIFY(gtk->isChecked());
+        QCOMPARE(chosen(screen), "gtk");
         QVERIFY(!page.isModified());
 
         /* SDL's: the mouse pointer, the others go */
-        sdl->click();
+        choose(screen, "sdl");
         QVERIFY(cursor->isVisibleTo(&page) && !zoom->isVisibleTo(&page));
         QVERIFY(cursor->isChecked());
         page.save(args);
@@ -207,11 +272,11 @@ private slots:
         QCOMPARE(device(args), full);
         QVERIFY(!page.isModified());
 
-        /* nowhere: a display with OpenGL for the 3D card, no window */
-        nowhere->click();
+        /* none: a display with OpenGL for the 3D card, no window */
+        choose(screen, "none");
         page.save(args);
         QCOMPARE(display(args), "egl-headless");
-        QVERIFY(nowhere->isChecked());
+        QCOMPARE(chosen(screen), "none");
         /* a 2D card has none of the 3D settings, and QEMU's none display */
         card->setCurrentIndex(card->findData("virtio-vga"));
         QVERIFY(!native->isEnabled() && !venus->isEnabled() && !timing->isEnabled());
@@ -219,8 +284,8 @@ private slots:
         QVERIFY(device(args).startsWith("virtio-vga,"));
         QVERIFY(!device(args).contains("drm_native_context"));
         QCOMPARE(display(args), "none");
-        QVERIFY(nowhere->isChecked());
-        embedded->click();
+        QCOMPARE(chosen(screen), "none");
+        choose(screen, "dbus");
         page.save(args);
         QCOMPARE(display(args), "dbus,p2p=yes");
     }
@@ -245,23 +310,51 @@ private slots:
         f.close();
         QVERIFY(f.setPermissions(QFileDevice::ReadOwner | QFileDevice::ExeOwner));
         DisplayPage page;
-        auto *gtk = page.findChild<QRadioButton *>("gtkWindow");
+        auto *display = page.findChild<QComboBox *>("display");
+        auto *lacks = page.findChild<QLabel *>("displayLacks");
         auto *card = page.findChild<QComboBox *>("card");
         auto *native = page.findChild<QCheckBox *>("nativeContext");
         auto *venus = page.findChild<QCheckBox *>("venus");
         auto *timing = page.findChild<QCheckBox *>("frameTiming");
-        QVERIFY(gtk && card && native && venus && timing);
+        QVERIFY(display && lacks && card && native && venus && timing);
 
         ArgsFile args = ArgsFile::parse("#qemu " + qemu + "\n-device virtio-vga-gl\n"
                                         "-display sdl,gl=on\n");
         page.load(args);
-        QVERIFY(!gtk->isEnabled());
+        /* GTK not to be chosen, and why */
+        QVERIFY(!choosable(display, "gtk"));
+        QVERIFY(choosable(display, "dbus") && choosable(display, "sdl") &&
+                choosable(display, "none"));
+        QVERIFY(lacks->isVisibleTo(&page));
+        QCOMPARE(lacks->text(), "This VM's QEMU has no GTK display.");
+        /* the keys go past it */
+        choose(display, "dbus");
+        QTest::keyClick(display, Qt::Key_Down);
+        QCOMPARE(chosen(display), "sdl");
+        QTest::keyClick(display, Qt::Key_Up);
+        QCOMPARE(chosen(display), "dbus");
+        choose(display, "sdl");
+        QVERIFY(!page.isModified());
         QVERIFY(!native->isEnabled() && !timing->isEnabled());
         QVERIFY(venus->isEnabled());
         venus->setChecked(true);
         page.save(args);
         QCOMPARE(text(args), "#qemu " + qemu + "\n-device virtio-vga-gl,hostmem=4G,blob=on,"
                              "venus=on\n-display sdl,gl=on\n");
+
+        /* a VM in the GTK window its QEMU lacks: shown as it is, until another is chosen */
+        args = ArgsFile::parse("#qemu " + qemu + "\n-device virtio-vga-gl\n-display gtk,gl=on\n");
+        page.load(args);
+        QCOMPARE(chosen(display), "gtk");
+        QVERIFY(choosable(display, "gtk"));
+        QVERIFY(!page.isModified());
+        choose(display, "sdl");
+        QVERIFY(!choosable(display, "gtk"));
+
+        /* a QEMU that does not say what it has: all of them */
+        args = ArgsFile::parse("-device virtio-vga-gl\n-display gtk,gl=on\n");
+        page.load(args);
+        QVERIFY(lacks->isHidden());
 
         /* several cards: the Arguments page's */
         args = ArgsFile::parse("-device qxl-vga\n-device virtio-gpu-pci\n-display gtk\n");
@@ -608,79 +701,6 @@ private slots:
         page.save(args);
         QVERIFY2(text(args).contains("-drive media=cdrom,readonly=on\n"), qPrintable(text(args)));
         QCOMPARE(text(args).count("bootindex"), 1);
-    }
-
-    /* A disc chosen for a VM whose system is not set tells the system */
-    void storagePageTellsTheSystem()
-    {
-        QTemporaryDir dir;
-        const QString iso = dir.filePath("Fedora-KDE-Desktop-Live-44-1.6.x86_64.iso");
-        StoragePage page(dir.path());
-        auto *table = page.findChild<QTableWidget *>("disks");
-        auto *told = page.findChild<QLabel *>("discSystem");
-        QPushButton *choose = nullptr;
-        for (QPushButton *b : page.findChildren<QPushButton *>()) {
-            if (b->text() == "Choose &Disc…") {
-                choose = b;
-            }
-        }
-        auto chooseDisc = [&]() {
-            QTimer::singleShot(0, [iso]() {
-                if (auto *d = qobject_cast<QFileDialog *>(QApplication::activeModalWidget())) {
-                    d->selectFile(iso);
-                    /* QFileDialog's accept() is protected, QDialog's is not */
-                    static_cast<QDialog *>(d)->accept();
-                }
-            });
-            table->setCurrentCell(0, 0);
-            choose->click();
-        };
-        QFile file(iso);
-
-        /* vitrine's list of systems, the same on every computer; the file's
-           name tells, as it has no label */
-        GuestOs::Catalogue::reload({});
-        QVERIFY(table && told && choose);
-        QVERIFY(file.open(QIODevice::WriteOnly) && file.write("not a disc") > 0);
-        file.close();
-
-        ArgsFile args = ArgsFile::parse("#guest linux\n-machine q35\n"
-                                        "-drive media=cdrom,readonly=on\n");
-        page.load(args);
-        QVERIFY(told->isHidden());
-        chooseDisc();
-        QVERIFY(!told->isHidden());
-        QVERIFY2(told->text().contains("Fedora Linux 44"), qPrintable(told->text()));
-        page.save(args);
-        QVERIFY2(text(args).startsWith("#guest linux,id=fedora44,desktop=kde\n"),
-                 qPrintable(text(args)));
-        QVERIFY(text(args).contains("file=" + iso));
-        QVERIFY(told->isHidden());
-
-        /* ejected before the page is applied: nothing */
-        args = ArgsFile::parse("-machine q35\n-drive media=cdrom,readonly=on\n");
-        page.load(args);
-        chooseDisc();
-        QVERIFY(!told->isHidden());
-        for (QPushButton *b : page.findChildren<QPushButton *>()) {
-            if (b->text() == "&Eject") {
-                b->click();
-            }
-        }
-        QVERIFY(told->isHidden());
-        page.save(args);
-        QVERIFY(!text(args).contains("#guest"));
-
-        /* the system set, or of another family: left as it is */
-        for (const char *guest : {"#guest linux,id=ubuntu24.04\n", "#guest windows\n"}) {
-            args = ArgsFile::parse(QString(guest) + "-machine q35\n-drive media=cdrom,readonly=on\n");
-            page.load(args);
-            chooseDisc();
-            QVERIFY(told->isHidden());
-            page.save(args);
-            QVERIFY2(text(args).startsWith(guest), qPrintable(text(args)));
-        }
-        GuestOs::Catalogue::reload();
     }
 };
 
