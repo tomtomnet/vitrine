@@ -18,6 +18,7 @@
 
 #include <QtMath>
 
+#include <csignal>
 #include <memory>
 
 #include <sys/stat.h>
@@ -485,6 +486,8 @@ private slots:
             QVERIFY(f.open(QIODevice::WriteOnly));
             f.write("disk");
         };
+        /* a copy that gives up closes the pipe under the writer */
+        const auto pipe = std::signal(SIGPIPE, SIG_IGN);
         QWidget window;
         window.resize(600, 400);
         settle(&window);
@@ -567,6 +570,7 @@ private slots:
         QVERIFY(!QFileInfo::exists(tmp.filePath("vms/Slow-clone-2")));
         QVERIFY(source->runner()->busy().isEmpty());
         QCOMPARE(store.vms().size(), 2);
+        std::signal(SIGPIPE, pipe);
     }
 
     /* Collapsed, the VMs' icons and the task's are their pixmaps, on whole device pixels */
