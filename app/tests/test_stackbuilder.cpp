@@ -228,7 +228,7 @@ private slots:
         QVERIFY2(!host.isEmpty(), "host/ of the source tree");
         const StackBuilder::Versions real = StackBuilder::versions(host);
         QVERIFY(real.isValid());
-        /* upstream QEMU: the fork's commits are patches */
+        /* upstream QEMU: the research's series is patches on top */
         QCOMPARE(real.qemuUrl, "https://gitlab.com/qemu-project/qemu.git");
         QCOMPARE(real.qemuCommit.size(), 40);
         QCOMPARE(real.virglCommit.size(), 40);
