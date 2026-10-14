@@ -1,21 +1,16 @@
 // SPDX-License-Identifier: GPL-2.0-or-later
 #include "mainbar.h"
 
-#include <QAbstractItemView>
 #include <QAction>
-#include <QApplication>
 #include <QHBoxLayout>
+#include <QHelpEvent>
 #include <QKeyEvent>
 #include <QLayout>
 #include <QMenu>
-#include <QScreen>
-#include <QScrollBar>
-#include <QStyleOptionComboBox>
-#include <QStylePainter>
+#include <QMenuBar>
+#include <QStyle>
 #include <QToolButton>
-#include <QWheelEvent>
-
-#include "ui/icons.h"
+#include <QToolTip>
 
 namespace {
 
@@ -176,95 +171,25 @@ void TabSwitcher::fitMenuButton()
     m_menuButton->setMinimumWidth(width);
 }
 
-VmChooser::VmChooser(QWidget *parent) : QComboBox(parent)
+MainBar::MainBar(const QString &title, QWidget *parent) : QToolBar(title, parent)
 {
-    setObjectName("vmChooser");
-    setSizeAdjustPolicy(QComboBox::AdjustToContents);
-    /* reached with Tab, not taken by a click: as the bar's buttons */
-    setFocusPolicy(Qt::TabFocus);
+    /* where the window has it, without a handle, which neededWidth() would miss */
+    setMovable(false);
+    setFloatable(false);
 }
 
-/* As wide as the longest name, up to a long one */
-QSize VmChooser::sizeHint() const
+QMenuBar *MainBar::addMenuBar()
 {
-    QSize size = QComboBox::sizeHint();
+    auto *menuBar = new QMenuBar;
 
-    size.setWidth(qMin(size.width(),
-                       minimumSizeHint().width() + 14 * fontMetrics().averageCharWidth()));
-    return size;
-}
-
-/* The icon and a few letters */
-QSize VmChooser::minimumSizeHint() const
-{
-    QStyleOptionComboBox option;
-    initStyleOption(&option);
-    const QSize content(iconSize().width() + 4 + 6 * fontMetrics().averageCharWidth(),
-                        qMax(iconSize().height(), fontMetrics().height()));
-    return style()->sizeFromContents(QStyle::CT_ComboBox, &option, content, this);
-}
-
-/* As QComboBox paints itself, the name elided to the room it has */
-void VmChooser::paintEvent(QPaintEvent *)
-{
-    QStylePainter painter(this);
-    QStyleOptionComboBox option;
-
-    painter.setPen(palette().color(QPalette::Text));
-    initStyleOption(&option);
-    painter.drawComplexControl(QStyle::CC_ComboBox, option);
-    const QRect field =
-        style()->subControlRect(QStyle::CC_ComboBox, &option, QStyle::SC_ComboBoxEditField, this);
-    /* where the style puts the text: after the icon and its gap, inside a pixel each side */
-    const int room = field.width() - 2 -
-                     (option.currentIcon.isNull() ? 0 : option.iconSize.width() + 4);
-    option.currentText = fontMetrics().elidedText(option.currentText, Qt::ElideRight, room);
-    painter.drawControl(QStyle::CE_ComboBoxLabel, option);
-}
-
-void VmChooser::wheelEvent(QWheelEvent *event)
-{
-    event->ignore();
-}
-
-void VmChooser::showPopup()
-{
-    QFont bold = view()->font();
-    const QFontMetrics normal(bold);
-    int width = 0;
-
-    bold.setBold(true);
-    const QFontMetrics metrics(bold);
-    for (int i = 0; i < count(); i++) {
-        const QString name = itemText(i);
-        const QModelIndex index = model()->index(i, modelColumn(), rootModelIndex());
-        /* its two lines: the name in bold, the state under it */
-        const int text = qMax(metrics.horizontalAdvance(name),
-                              m_stateRole >= 0
-                                  ? normal.horizontalAdvance(index.data(m_stateRole).toString())
-                                  : 0);
-        /* the item as the delegate has it, with that text, inside 4 pixels each side */
-        width = qMax(width, view()->sizeHintForIndex(index).width() + text -
-                                normal.horizontalAdvance(name) + 8);
-    }
-    width += 2 * view()->frameWidth();
-    if (count() > maxVisibleItems()) {
-        width += view()->verticalScrollBar()->sizeHint().width();
-    }
-    if (const QScreen *screen = this->screen()) {
-        width = qMin(width, screen->availableGeometry().width() / 2);
-    }
-    view()->setMinimumWidth(width);
-    QComboBox::showPopup();
-}
-
-MainBar::MainBar(const QString &title, QWidget *parent)
-    : QToolBar(title, parent), m_probe(new QToolButton(this)), m_probeMenu(new QMenu(this))
-{
-    /* as the buttons the bar makes for its actions, but out of its layout */
-    m_probe->hide();
-    m_probe->setAutoRaise(true);
-    m_probe->setFocusPolicy(Qt::NoFocus);
+    menuBar->setObjectName("menus");
+    /* the menus in the window, as VMware's: a desktop's global menu would
+       take them out of it, and the bar would lose them */
+    menuBar->setNativeMenuBar(false);
+    /* as wide as its menus, all of them: never one in its own overflow menu */
+    menuBar->setSizePolicy(QSizePolicy::Fixed, QSizePolicy::Fixed);
+    addWidget(menuBar);
+    return menuBar;
 }
 
 void MainBar::addStretch()
@@ -281,57 +206,48 @@ TabSwitcher *MainBar::addTabs(const QList<QAction *> &tabs)
     return m_tabs;
 }
 
-QAction *MainBar::addMenuButton(QMenu *menu, const QString &text)
+void MainBar::addIconButtons(const QList<QAction *> &actions)
 {
-    QAction *action = menu->menuAction();
-
-    /* KDE's, GNOME's; else the style's sign for more of a toolbar */
-    action->setIcon(Icons::themed({"application-menu", "open-menu-symbolic", "open-menu"},
-                                  QStyle::SP_ToolBarHorizontalExtensionButton));
-    action->setText(text);
-    addAction(action);
-    if (auto *button = qobject_cast<QToolButton *>(widgetForAction(action))) {
-        button->setObjectName("menuButton");
-        /* the whole button opens it, as KDE's hamburger menu does */
-        button->setPopupMode(QToolButton::InstantPopup);
-    }
-    setIconOnly(action);
-    return action;
-}
-
-void MainBar::setIconOnly(QAction *action)
-{
-    if (auto *button = qobject_cast<QToolButton *>(widgetForAction(action))) {
-        button->setToolButtonStyle(Qt::ToolButtonIconOnly);
+    for (QAction *action : actions) {
+        addAction(action);
+        if (auto *button = qobject_cast<QToolButton *>(widgetForAction(action))) {
+            button->setToolButtonStyle(Qt::ToolButtonIconOnly);
+            button->setProperty("namedInToolTip", true);
+            button->installEventFilter(this);
+        }
     }
 }
 
-void MainBar::setTextOrder(const QList<QAction *> &actions)
+QString MainBar::toolTipOf(const QAction *action)
 {
-    m_textOrder = actions;
-    fit();
+    /* the name as a button's text has it, without the mnemonic */
+    QString tip = action->iconText();
+    const QString more = action->toolTip();
+
+    if (!action->shortcut().isEmpty()) {
+        tip += QString(" (%1)").arg(action->shortcut().toString(QKeySequence::NativeText));
+    }
+    /* the action's own tooltip, if it has one: by default, its name */
+    if (more != action->iconText()) {
+        tip += '\n' + more;
+    }
+    return tip;
 }
 
-int MainBar::stepCount() const
+bool MainBar::eventFilter(QObject *watched, QEvent *event)
 {
-    return int(m_textOrder.size()) + (m_tabs ? 1 : 0);
+    if (event->type() == QEvent::ToolTip && watched->property("namedInToolTip").toBool()) {
+        auto *button = static_cast<QToolButton *>(watched);
+        if (const QAction *action = button->defaultAction()) {
+            QToolTip::showText(static_cast<QHelpEvent *>(event)->globalPos(), toolTipOf(action),
+                               button);
+            return true;
+        }
+    }
+    return QToolBar::eventFilter(watched, event);
 }
 
-int MainBar::buttonWidth(QAction *action, bool text) const
-{
-    m_probe->setIconSize(iconSize());
-    m_probe->setToolButtonStyle(text ? toolButtonStyle() : Qt::ToolButtonIconOnly);
-    /* as QToolButton shows an action, without the mnemonic */
-    m_probe->setText(action->iconText().replace('&', "&&"));
-    m_probe->setIcon(action->icon());
-    /* one that opens a menu has room for its arrow (Breeze), as its button pops it up */
-    const auto *button = qobject_cast<QToolButton *>(widgetForAction(action));
-    m_probe->setMenu(action->menu() ? m_probeMenu : nullptr);
-    m_probe->setPopupMode(button ? button->popupMode() : QToolButton::DelayedPopup);
-    return hintWidth(m_probe);
-}
-
-int MainBar::neededWidth(int steps, bool least) const
+int MainBar::neededWidth(bool compact, bool least) const
 {
     const QMargins margins = layout()->contentsMargins();
     int width = margins.left() + margins.right();
@@ -339,16 +255,13 @@ int MainBar::neededWidth(int steps, bool least) const
 
     for (QAction *action : actions()) {
         QWidget *widget = widgetForAction(action);
-        const qsizetype order = m_textOrder.indexOf(action);
         int item;
 
         if (!action->isVisible() || !widget) {
             continue;
         }
-        if (order >= 0) {
-            item = buttonWidth(action, order >= steps);
-        } else if (widget == m_tabs) {
-            item = m_tabs->widthFor(steps > m_textOrder.size());
+        if (widget == m_tabs) {
+            item = m_tabs->widthFor(compact);
         } else {
             item = least ? leastWidth(widget) : hintWidth(widget);
         }
@@ -357,53 +270,22 @@ int MainBar::neededWidth(int steps, bool least) const
     return width;
 }
 
-void MainBar::apply(int steps)
-{
-    bool changed = false;
-
-    for (int i = 0; i < m_textOrder.size(); i++) {
-        auto *button = qobject_cast<QToolButton *>(widgetForAction(m_textOrder[i]));
-        const Qt::ToolButtonStyle style = i < steps ? Qt::ToolButtonIconOnly : toolButtonStyle();
-        if (button && button->toolButtonStyle() != style) {
-            button->setToolButtonStyle(style);
-            changed = true;
-        }
-    }
-    if (m_tabs && m_tabs->isCompact() != (steps > m_textOrder.size())) {
-        m_tabs->setCompact(steps > m_textOrder.size());
-        changed = true;
-    }
-    m_steps = steps;
-    /* hidden buttons do not tell the layout themselves */
-    if (changed) {
-        layout()->invalidate();
-    }
-}
-
 void MainBar::fit()
 {
     if (m_fitting) {
         return;
     }
     m_fitting = true;
-
-    const int last = stepCount();
-    /* what each step saves, each button measured once */
-    QList<int> saved;
-    for (QAction *action : std::as_const(m_textOrder)) {
-        saved << (action->isVisible() ? buttonWidth(action, true) - buttonWidth(action, false) : 0);
-    }
     if (m_tabs) {
-        saved << m_tabs->widthFor(false) - m_tabs->widthFor(true);
+        const bool compact = neededWidth(false) > width();
+        if (m_tabs->isCompact() != compact) {
+            m_tabs->setCompact(compact);
+            /* hidden buttons do not tell the layout themselves */
+            layout()->invalidate();
+        }
     }
-    int needed = neededWidth(0);
-    int steps = 0;
-    while (steps < last && needed > width()) {
-        needed -= saved[steps++];
-    }
-    apply(steps);
-    /* never narrower than with every step taken, the VMs' names elided */
-    const int least = neededWidth(last, true);
+    /* never narrower than with the tabs compact: the rest has no less to show */
+    const int least = neededWidth(true, true);
     if (minimumWidth() != least) {
         setMinimumWidth(least);
     }
@@ -419,7 +301,7 @@ bool MainBar::event(QEvent *event)
     case QEvent::Show:
     case QEvent::StyleChange:
     case QEvent::FontChange:
-        /* something changed size: the text of an action, the VMs' drop-down */
+        /* something changed size: the text of an action, a tab's name */
         fit();
         break;
     default:

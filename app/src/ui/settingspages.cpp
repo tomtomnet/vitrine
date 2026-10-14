@@ -314,7 +314,8 @@ static VmConfig::Graphics cardGraphics(const QString &driver)
 
 DisplayPage::DisplayPage(QWidget *parent)
     : SettingsPage(parent), m_custom(new Banner(Banner::Information)),
-      m_embedded(new QRadioButton(tr("In &Vitrine's window"))),
+      /* the letters of the window's menus (File, View, Machine, Help) left to them */
+      m_embedded(new QRadioButton(tr("In Vitrine's &window"))),
       m_sdl(new QRadioButton(tr("In QEMU's &SDL window"))),
       m_gtk(new QRadioButton(tr("In QEMU's &GTK window"))),
       m_nowhere(new QRadioButton(tr("&Nowhere"))), m_gtkHint(Widgets::hint()),
@@ -1819,7 +1820,8 @@ bool UsbPage::isModified() const
 NetworkPage::NetworkPage(Vm *vm, QWidget *parent)
     : SettingsPage(parent), m_vm(vm), m_custom(new Banner(Banner::Information)),
       m_nat(new QCheckBox(tr("&Connect the VM to the network"))),
-      m_ssh(new QCheckBox(tr("&Forward a port of this computer to the guest's SSH server:"))),
+      /* not &Forward: the File menu has Alt+F */
+      m_ssh(new QCheckBox(tr("Forward a &port of this computer to the guest's SSH server:"))),
       m_port(new QSpinBox), m_sshInfo(Widgets::hint())
 {
     auto *layout = new QVBoxLayout(this);

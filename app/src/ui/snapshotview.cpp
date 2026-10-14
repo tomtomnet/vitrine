@@ -72,7 +72,8 @@ SnapshotView::SnapshotView(QWidget *parent)
                                               QStyle::SP_BrowserReload),
                                 tr("&Restore"))),
       m_start(new QPushButton(Icons::themed({"media-playback-start"}, QStyle::SP_MediaPlay),
-                              tr("Start &From It"))),
+                              /* not &From: the File menu has Alt+F */
+                              tr("&Start From It"))),
       m_delete(new QPushButton(Icons::themed({"edit-delete", "list-remove"},
                                              QStyle::SP_TrashIcon),
                                tr("De&lete…")))

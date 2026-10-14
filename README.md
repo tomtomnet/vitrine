@@ -87,11 +87,11 @@ ctest --test-dir build --output-on-failure   # optional
 ./build/app/vitrine
 ```
 
-The window has one bar above the VMs: the actions on the selected VM, its
-tabs (Console, Details, Settings, Snapshots, Logs), and at the end a button
-with the menus (File, View, Machine, Help) that the steps below name; Ctrl+M
-shows the menu bar instead. The button at the start of the bar, or F9, hides
-the list of VMs; the bar then has a drop-down of them.
+The window has one bar above the VMs: the menus (File, View, Machine, Help)
+that the steps below name, the buttons that start, pause, shut down, reset
+and force off the selected VM, and its tabs (Console, Details, Settings,
+Snapshots, Logs) at the end. The button at the start of the bar, or F9,
+hides the list of VMs.
 
 1. **Build vitrine's QEMU.** The banner's Build… button (or File > Build
    QEMU…, Ctrl+B) opens a window whose Build button fetches QEMU and
@@ -129,10 +129,11 @@ the list of VMs; the bar then has a drop-down of them.
    older tools then offer Update….
 
 Keys: Ctrl+Alt+G gives the keyboard and mouse to the VM or takes them back,
-Ctrl+Alt+F toggles full screen, F9 shows or hides the VM list, F10 opens the
-menus, Ctrl+M shows or hides the menu bar, Ctrl+H asks the guest to shut
-down, Ctrl+L shows QEMU's log. Closing vitrine can leave its VMs running; it
-finds them again at its next start.
+Ctrl+Alt+F toggles full screen, F9 shows or hides the VM list, F10 or Alt with
+a menu's first letter opens the menus (not while the VM's screen has the keys:
+they go to the VM), Ctrl+H asks the guest to shut down, Ctrl+L shows QEMU's
+log. Closing vitrine can leave its VMs running; it finds them again at its
+next start.
 
 Shut Down goes through the guest's agent when it runs one: the guest tools',
 else QEMU's guest agent (Fedora installs qemu-guest-agent in VMs). Otherwise
@@ -149,15 +150,15 @@ a click or the mouse entering it since the last host copy; copying in the
 guest with its keys or mouse does that. QEMU's SDL window shares the
 clipboard too, and on Wayland waits for a key or click in it.
 
-USB: Machine > USB Devices (also a button of the bar, and in the VM list's
-context menu) gives the host's USB devices to a running VM, whatever shows its
-screen, and takes them back; Keep for the Next Starts gives the VM the same
-devices at each start, as its USB Devices settings do. A keyboard, mouse or
-Bluetooth adapter given to a VM is no longer usable on the host: vitrine asks
-first. QEMU must open the device's node (`/dev/bus/usb/BBB/DDD`); when your
-user cannot, vitrine asks for access (pkexec: polkit's password dialog) and
-gives it with setfacl until the device is unplugged. A udev rule gives it for
-good, e.g. in `/etc/udev/rules.d/70-qemu-usb.rules`:
+USB: Machine > USB Devices (also in the VM list's context menu) gives the
+host's USB devices to a running VM, whatever shows its screen, and takes them
+back; Keep for the Next Starts gives the VM the same devices at each start, as
+its USB Devices settings do. A keyboard, mouse or Bluetooth adapter given to a
+VM is no longer usable on the host: vitrine asks first. QEMU must open the
+device's node (`/dev/bus/usb/BBB/DDD`); when your user cannot, vitrine asks
+for access (pkexec: polkit's password dialog) and gives it with setfacl until
+the device is unplugged. A udev rule gives it for good, e.g. in
+`/etc/udev/rules.d/70-qemu-usb.rules`:
 `SUBSYSTEM=="usb", ATTR{idVendor}=="0781", ATTR{idProduct}=="5567", TAG+="uaccess"`.
 
 Files: VMs in `~/.local/share/vitrine/vms/<id>/` (`vm.args`, a new VM's

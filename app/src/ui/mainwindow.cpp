@@ -28,7 +28,6 @@
 #include <QVBoxLayout>
 
 #include <algorithm>
-#include <functional>
 #include <memory>
 
 #include "core/hostsettings.h"
@@ -195,7 +194,6 @@ MainWindow::MainWindow(VmStore *store, QWidget *parent)
     /* a large icon beside the two lines of each VM */
     const int large = style()->pixelMetric(QStyle::PM_LargeIconSize, nullptr, m_list);
     m_list->setIconSize(QSize(large, large));
-    m_chooser->view()->setIconSize(m_list->iconSize());
     m_list->setItemDelegate(new VmItemDelegate(m_list));
     m_list->setContextMenuPolicy(Qt::CustomContextMenu);
     m_list->setMinimumWidth(200);
@@ -315,8 +313,6 @@ MainWindow::MainWindow(VmStore *store, QWidget *parent)
     m_splitter->restoreState(settings.value("mainwindow/splitter").toByteArray());
     m_library->setChecked(settings.value("mainwindow/library", true).toBool());
     showLibrary(m_library->isChecked());
-    m_menuBar->setChecked(settings.value("mainwindow/menubar", false).toBool());
-    showMenuBar(m_menuBar->isChecked());
     select(settings.value("mainwindow/current").toString());
     if (!m_list->currentItem() && m_list->count() > 0) {
         m_list->setCurrentRow(0);
@@ -354,21 +350,27 @@ void MainWindow::createActions()
                              tr("&Settings"), this);
     m_settings->setShortcut(QKeySequence(Qt::CTRL | Qt::Key_S));
     connect(m_settings, &QAction::triggered, this, [this]() { openSettings(current()); });
-    m_start = action(tr("S&tart"), {"media-playback-start"}, QStyle::SP_MediaPlay,
-                     QKeySequence(Qt::CTRL | Qt::Key_Return), &MainWindow::start);
+    /* the VM's power buttons, in colour as VMware's */
+    auto power = [this](const QString &text, Icons::Control kind, const QKeySequence &shortcut,
+                        void (MainWindow::*slot)()) {
+        auto *a = new QAction(Icons::control(kind), text, this);
+        a->setShortcut(shortcut);
+        connect(a, &QAction::triggered, this, slot);
+        return a;
+    };
+    m_start = power(tr("S&tart"), Icons::Control::Start, QKeySequence(Qt::CTRL | Qt::Key_Return),
+                    &MainWindow::start);
     m_showWindow = action(tr("Show &Window"), {"window", "window-restore", "view-restore"},
                           QStyle::SP_TitleBarNormalButton, {}, &MainWindow::showWindow);
     m_showWindow->setToolTip(tr("Bring the window of the VM to the front"));
-    m_pause = action(tr("&Pause"), {"media-playback-pause"}, QStyle::SP_MediaPause,
-                     QKeySequence(Qt::CTRL | Qt::Key_P), &MainWindow::togglePause);
-    m_shutDown = action(tr("Shut &Down"), {"system-shutdown"}, QStyle::SP_MediaStop,
-                        QKeySequence(Qt::CTRL | Qt::Key_H), &MainWindow::shutDown);
+    m_pause = power(tr("&Pause"), Icons::Control::Pause, QKeySequence(Qt::CTRL | Qt::Key_P),
+                    &MainWindow::togglePause);
+    m_shutDown = power(tr("Shut &Down"), Icons::Control::ShutDown,
+                       QKeySequence(Qt::CTRL | Qt::Key_H), &MainWindow::shutDown);
     m_shutDown->setToolTip(tr("Ask the guest to shut down: through its guest tools or guest "
                               "agent, else with the power button"));
-    m_reset = action(tr("&Reset"), {"system-reboot", "view-refresh"}, QStyle::SP_BrowserReload,
-                     {}, &MainWindow::reset);
-    m_forceOff = action(tr("&Force Off"), {"process-stop"}, QStyle::SP_BrowserStop, {},
-                        &MainWindow::forceOff);
+    m_reset = power(tr("&Reset"), Icons::Control::Reset, {}, &MainWindow::reset);
+    m_forceOff = power(tr("&Force Off"), Icons::Control::ForceOff, {}, &MainWindow::forceOff);
     m_forceOff->setToolTip(tr("Stop the VM at once, as when pulling the plug"));
     m_clone = action(tr("&Clone…"), {"edit-copy"}, QStyle::SP_FileDialogNewFolder, {},
                      &MainWindow::cloneVm);
@@ -379,13 +381,13 @@ void MainWindow::createActions()
                    QStyle::SP_FileDialogContentsView, QKeySequence(Qt::CTRL | Qt::Key_L),
                    &MainWindow::showLog);
     m_folder = new QAction(Icons::themed({"folder-open"}, QStyle::SP_DirOpenIcon),
-                           tr("Open &Folder"), this);
+                           tr("&Open Folder"), this);
     connect(m_folder, &QAction::triggered, this, [this]() {
         if (Vm *vm = current()) {
             QDesktopServices::openUrl(QUrl::fromLocalFile(vm->dir()));
         }
     });
-    m_command = action(tr("Show &Command Line"), {"utilities-terminal"},
+    m_command = action(tr("Show Comma&nd Line"), {"utilities-terminal"},
                        QStyle::SP_ComputerIcon, {}, &MainWindow::showCommandLine);
     m_preferences = new QAction(Icons::themed({"preferences-other", "configure"},
                                               QStyle::SP_FileDialogDetailedView),
@@ -422,20 +424,13 @@ void MainWindow::createActions()
     m_listButton = new QAction(this);
     m_listButton->setObjectName("listButton");
     connect(m_listButton, &QAction::triggered, m_library, &QAction::toggle);
-    /* KDE's: the menus behind the bar's button by default, for the room */
-    m_menuBar = new QAction(Icons::themed({"show-menu"}, QStyle::SP_TitleBarMenuButton),
-                            tr("Show Menu &Bar"), this);
-    m_menuBar->setCheckable(true);
-    m_menuBar->setShortcut(QKeySequence(Qt::CTRL | Qt::Key_M));
-    connect(m_menuBar, &QAction::toggled, this, &MainWindow::showMenuBar);
     m_openMenu = new QAction(tr("Open &Menu"), this);
     m_openMenu->setShortcut(QKeySequence(Qt::Key_F10));
     connect(m_openMenu, &QAction::triggered, this, &MainWindow::openMenu);
     /* the desktop takes the keys themselves */
-    m_ctrlAltDel = action(tr("Send Ctrl+Alt+&Del"),
+    m_ctrlAltDel = action(tr("Send Ctrl+&Alt+Del"),
                           {"input-keyboard", "preferences-desktop-keyboard"},
                           QStyle::SP_ComputerIcon, {}, &MainWindow::sendCtrlAltDel);
-    m_ctrlAltDel->setIconText(tr("Ctrl+Alt+Del"));
     m_ctrlAltDel->setToolTip(tr("Press Ctrl+Alt+Del in the VM"));
     m_releaseInput = action(tr("Release &Input"), {"input-mouse", "transform-move"},
                             QStyle::SP_ArrowBack, {}, &MainWindow::releaseInput);
@@ -446,7 +441,19 @@ void MainWindow::createActions()
     m_quit->setShortcut(QKeySequence::Quit);
     connect(m_quit, &QAction::triggered, this, &QWidget::close);
 
-    QMenu *file = menuBar()->addMenu(tr("&File"));
+    /*
+     * One bar for what were three rows (menu bar, toolbar, the VM's tabs),
+     * as VMware's: the list's button, the menus, the VM's power buttons,
+     * the VM's tabs at the end
+     */
+    m_bar = new MainBar(tr("Main Toolbar"), this);
+    m_bar->setObjectName("toolbar");
+    m_bar->setToolButtonStyle(Qt::ToolButtonIconOnly);
+    addToolBar(m_bar);
+    m_bar->addAction(m_listButton);
+    m_menus = m_bar->addMenuBar();
+
+    QMenu *file = m_menus->addMenu(tr("&File"));
     file->addAction(m_new);
     file->addAction(m_import);
     file->addSeparator();
@@ -461,15 +468,14 @@ void MainWindow::createActions()
     file->addSeparator();
     file->addAction(m_quit);
 
-    QMenu *view = menuBar()->addMenu(tr("&View"));
+    QMenu *view = m_menus->addMenu(tr("&View"));
     view->addAction(m_fullScreen);
     view->addSeparator();
     view->addAction(m_library);
-    view->addAction(m_menuBar);
     view->addSeparator();
     view->addActions(m_pane->tabActions());
 
-    QMenu *machine = menuBar()->addMenu(tr("&Machine"));
+    QMenu *machine = m_menus->addMenu(tr("&Machine"));
     machine->addAction(m_settings);
     machine->addSeparator();
     machine->addActions({m_start, m_showWindow, m_pause, m_shutDown, m_reset, m_forceOff});
@@ -498,7 +504,7 @@ void MainWindow::createActions()
     machine->addSeparator();
     machine->addActions({m_clone, m_remove});
 
-    QMenu *help = menuBar()->addMenu(tr("&Help"));
+    QMenu *help = m_menus->addMenu(tr("&Help"));
     help->addAction(m_reference);
     help->addAction(tr("Check for &Updates…"), this, [this]() { m_updates->checkNow(); });
     help->addSeparator();
@@ -514,60 +520,14 @@ void MainWindow::createActions()
     });
     help->addAction(tr("About &Qt"), qApp, &QApplication::aboutQt);
 
-    /* the menus, for the bar's button while the menu bar is hidden */
-    m_mainMenu = new QMenu(this);
-    m_mainMenu->addActions(menuBar()->actions());
-    m_mainMenu->addSeparator();
-    m_mainMenu->addAction(m_menuBar);
-    /* the shortcuts of the menus' actions work with the menu bar hidden */
-    std::function<void(const QMenu *)> addShortcuts = [&](const QMenu *menu) {
-        for (QAction *a : menu->actions()) {
-            if (a->menu()) {
-                addShortcuts(a->menu());
-            } else if (!a->isSeparator()) {
-                addAction(a);
-            }
-        }
-    };
-    addShortcuts(m_mainMenu);
+    /* F10, which no menu has */
     addAction(m_openMenu);
 
-    /*
-     * One bar for what were three rows (menu bar, toolbar, the VM's tabs):
-     * the list's button and, while the list is hidden, the VMs; the actions
-     * on the VM; the VM's tabs at the end, then the menus' button
-     */
-    m_bar = new MainBar(tr("Main Toolbar"), this);
-    m_bar->setObjectName("toolbar");
-    m_bar->setMovable(false);
-    m_bar->setFloatable(false);
-    m_bar->setToolButtonStyle(Qt::ToolButtonFollowStyle);
-    addToolBar(m_bar);
-    m_bar->addAction(m_listButton);
-    m_bar->setIconOnly(m_listButton);
-    auto *chooser = new VmChooser;
-    m_chooser = chooser;
-    m_chooser->setModel(m_list->model());
-    /* each VM as the list has it: the name, its state under it */
-    m_chooser->setItemDelegate(new VmItemDelegate(m_chooser));
-    chooser->setStateRole(StateRole);
-    m_chooser->setToolTip(tr("The virtual machine shown"));
-    m_chooserAction = m_bar->addWidget(m_chooser);
-    connect(m_list, &QListWidget::currentRowChanged, m_chooser, &QComboBox::setCurrentIndex);
-    connect(m_chooser, &QComboBox::activated, m_list, qOverload<int>(&QListWidget::setCurrentRow));
-    m_bar->addAction(m_new);
+    /* icons alone, VMware's: their names in their tooltips */
     m_bar->addSeparator();
-    m_bar->addActions({m_start, m_pause, m_shutDown, m_forceOff});
-    m_bar->addSeparator();
-    m_bar->addActions({m_fullScreen, m_ctrlAltDel});
-    m_usb->addTo(m_bar);
+    m_bar->addIconButtons({m_start, m_pause, m_shutDown, m_reset, m_forceOff});
     m_bar->addStretch();
     m_bar->addTabs(m_pane->tabActions());
-    m_menuButton = m_bar->addMenuButton(m_mainMenu, tr("Menu"));
-    m_menuButton->setToolTip(tr("Menu (F10)"));
-    /* short of room, the least used lose their text first */
-    m_bar->setTextOrder({m_ctrlAltDel, m_usb->menuAction(), m_fullScreen, m_forceOff,
-                         m_shutDown, m_pause, m_new, m_start});
     /* the tabs replace the pane's own */
     m_pane->setTabBarShown(false);
 }
@@ -575,7 +535,6 @@ void MainWindow::createActions()
 void MainWindow::showLibrary(bool shown)
 {
     m_list->setVisible(shown);
-    m_chooserAction->setVisible(!shown);
     m_listButton->setIcon(
         shown ? Icons::themed({"sidebar-collapse", "view-left-close"}, QStyle::SP_ArrowLeft)
               : Icons::themed({"sidebar-expand", "view-left-new"}, QStyle::SP_ArrowRight));
@@ -584,33 +543,28 @@ void MainWindow::showLibrary(bool shown)
                                    : tr("Show the list of VMs (F9)"));
 }
 
-void MainWindow::showMenuBar(bool shown)
-{
-    menuBar()->setVisible(shown);
-    /* a desktop's global menu has the menus, outside the window: the
-       button stays, the window has no menu bar to show */
-    m_menuButton->setVisible(!shown || menuBar()->isNativeMenuBar());
-}
-
 void MainWindow::openMenu()
 {
-    if (menuBar()->isVisible()) {
-        menuBar()->setActiveAction(menuBar()->actions().value(0));
+    QAction *first = m_menus->actions().value(0);
+    QMenu *menu = first ? first->menu() : nullptr;
+
+    if (!menu) {
         return;
     }
-    if (QWidget *button = m_bar->widgetForAction(m_menuButton); button && button->isVisible()) {
-        /* under the button, as a click on it shows it */
-        m_mainMenu->popup(button->mapToGlobal(
-            QPoint(isRightToLeft() ? button->width() - m_mainMenu->sizeHint().width() : 0,
-                   button->height())));
+    m_menus->setActiveAction(first);
+    /* its first entry chosen, as Alt and the menu's letter have it */
+    for (QAction *a : menu->actions()) {
+        if (!a->isSeparator() && a->isVisible() && a->isEnabled()) {
+            menu->setActiveAction(a);
+            break;
+        }
     }
 }
 
 QMenu *MainWindow::createPopupMenu()
 {
-    /* not the toolbar's toggle: the bar holds the menus while the menu bar is hidden */
+    /* not the toolbar's toggle: the bar has the menus */
     auto *menu = new QMenu(this);
-    menu->addAction(m_menuBar);
     menu->addAction(m_library);
     return menu;
 }
@@ -995,8 +949,8 @@ bool MainWindow::eventFilter(QObject *watched, QEvent *event)
         static_cast<QWidget *>(watched)->window() == this) {
         m_lastPress.start();
     }
-    /* the arrows, Home, End... going through the list of VMs, or the bar's drop-down of them */
-    if (event->type() == QEvent::KeyPress && (watched == m_list || watched == m_chooser)) {
+    /* the arrows, Home, End... going through the list of VMs */
+    if (event->type() == QEvent::KeyPress && watched == m_list) {
         m_lastListKey.start();
     }
     /* once Qt gave the focus back to the widget that had it */
@@ -1031,7 +985,7 @@ void MainWindow::focusScreen(FocusCause cause)
     if (cause == FocusCause::Activated && m_lastPress.isValid() && m_lastPress.elapsed() < 500) {
         return;
     }
-    if (cause == FocusCause::Switched && (m_list->hasFocus() || m_chooser->hasFocus()) &&
+    if (cause == FocusCause::Switched && m_list->hasFocus() &&
         m_lastListKey.isValid() && m_lastListKey.elapsed() < 500) {
         return;
     }
@@ -1090,9 +1044,9 @@ void MainWindow::updateActions()
     m_showWindow->setEnabled(vm && (state == VmRunner::State::Running || paused) &&
                              hasWindow(vm));
     m_pause->setEnabled(vm && (state == VmRunner::State::Running || paused));
-    m_pause->setText(paused ? tr("&Resume") : tr("&Pause"));
-    m_pause->setIcon(paused ? Icons::themed({"media-playback-start"}, QStyle::SP_MediaPlay)
-                            : Icons::themed({"media-playback-pause"}, QStyle::SP_MediaPause));
+    /* not &Resume: &Reset has R */
+    m_pause->setText(paused ? tr("R&esume") : tr("&Pause"));
+    m_pause->setIcon(Icons::control(paused ? Icons::Control::Start : Icons::Control::Pause));
     m_shutDown->setEnabled(vm && state == VmRunner::State::Running);
     m_reset->setEnabled(vm && (state == VmRunner::State::Running || paused));
     m_forceOff->setEnabled(vm && state != VmRunner::State::Stopped);
@@ -1105,8 +1059,6 @@ void MainWindow::updateActions()
     for (QAction *tab : m_pane->tabActions()) {
         tab->setEnabled(m_list->count() > 0);
     }
-    /* the action's: the bar enables its widget as the action is */
-    m_chooserAction->setEnabled(m_list->count() > 0);
 
     const VmConsole *console = currentConsole();
     VmView *view = console ? console->view() : nullptr;
@@ -1492,7 +1444,6 @@ void MainWindow::closeEvent(QCloseEvent *event)
     settings.setValue("mainwindow/state", saveState());
     settings.setValue("mainwindow/splitter", m_splitter->saveState());
     settings.setValue("mainwindow/library", m_library->isChecked());
-    settings.setValue("mainwindow/menubar", m_menuBar->isChecked());
     settings.setValue("mainwindow/current", vm ? vm->id() : QString());
     settings.setValue("mainwindow/tab", int(m_pane->tab()));
     settings.setValue("settings/page", int(m_pane->page()));

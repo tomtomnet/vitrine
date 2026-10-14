@@ -10,8 +10,6 @@
 #include "core/hostdevices.h"
 
 class QTimer;
-class QToolBar;
-class QToolButton;
 class Vm;
 class VmStore;
 
@@ -24,8 +22,8 @@ class VmStore;
  * has is disabled, saying which, as are all when the VM cannot have any
  * (no USB controller).  Devices unplugged meanwhile leave the menu.  Keep
  * for the Next Starts writes the choice to the VM's arguments, as its USB
- * Devices settings do.  One menu for the Machine menu, a toolbar button
- * (addTo()) and the list's context menu.
+ * Devices settings do.  One menu for the Machine menu and the list's
+ * context menu.
  */
 class UsbMenu : public QMenu
 {
@@ -37,8 +35,6 @@ public:
     /* The VM it is for, the selected one: enabled while it runs or is paused */
     void setVm(Vm *vm);
     Vm *vm() const;
-    /* A button on @toolbar that opens this menu */
-    QToolButton *addTo(QToolBar *toolbar);
     /*
      * Asked before the arguments of @vm are written, false to give up: the
      * settings shown may have changes to apply first
