@@ -54,6 +54,10 @@ qt_add_library(vitrine_core STATIC
     src/core/hostdevices.h
     src/core/hostkvm.cpp
     src/core/hostkvm.h
+    src/core/hostkwin.cpp
+    src/core/hostkwin.h
+    src/core/hostkwinbuilder.cpp
+    src/core/hostkwinbuilder.h
     src/core/hostmemory.cpp
     src/core/hostmemory.h
     src/core/hostsettings.cpp
@@ -253,6 +257,10 @@ qt_add_library(vitrine_ui STATIC
     src/ui/guesttoolsbuildbanner.h
     src/ui/guesttoolsdialog.cpp
     src/ui/guesttoolsdialog.h
+    src/ui/hostkwinbanner.cpp
+    src/ui/hostkwinbanner.h
+    src/ui/hostkwindialog.cpp
+    src/ui/hostkwindialog.h
     src/ui/hosttuningnotifier.cpp
     src/ui/hosttuningnotifier.h
     src/ui/hosttuningprefs.cpp

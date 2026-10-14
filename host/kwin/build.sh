@@ -12,20 +12,26 @@
 # builds the RPMs in a Fedora container (rootless podman).  This only
 # builds: install.sh installs them, as root.
 #
-#   host/kwin/build.sh [--plasma beta|fedora] [--out DIR] [--work DIR] [-j N]
-#   host/kwin/build.sh --print-set VERSION | --print-plasma | --print-inputs |
-#                      --print-key | --print-deps
+#   host/kwin/build.sh [--plasma beta|testing|fedora] [--out DIR] [--work DIR] [-j N]
+#   host/kwin/build.sh --print-set VERSION | --print-recipe VERSION FEDORA |
+#                      --print-plasma | --print-inputs | --print-key | --print-deps
 #
-#   --plasma DIR   where the host's Plasma comes from: beta (the COPR that
-#                  versions.sh's GUEST_PLASMA_COPR names) or fedora [the
-#                  repository plasma-workspace was installed from]
+#   --plasma WHERE where the host's Plasma comes from: beta (the COPR that
+#                  versions.sh's GUEST_PLASMA_COPR names), testing (Fedora's
+#                  updates-testing) or fedora [from the repository
+#                  plasma-workspace was installed from]
 #   --out DIR      the builds [${XDG_DATA_HOME:-~/.local/share}/vitrine/host-kwin]
 #   --work DIR     kde-rpms.sh's work folder (its VGD_BUILD) and dnf's cache,
 #                  kept for the next build [${XDG_CACHE_HOME:-~/.cache}/vitrine/host-kwin-build]
 #   -j N           parallel jobs [nproc, at most 8]
 #   --print-set VERSION  the research's set for KWin VERSION: "SERIES TAG";
 #                  status 1 if there is none
-#   --print-plasma beta or fedora for this host's Plasma; status 1 if neither
+#   --print-recipe VERSION FEDORA  what the recipe makes of a host with
+#                  Plasma VERSION on Fedora FEDORA, for the app: fedora= the
+#                  container's Fedora, copr= the COPR's repository for beta,
+#                  set= the set ("SERIES TAG", empty if none), key=
+#   --print-plasma beta, testing or fedora for this host's Plasma; status 1
+#                  if none of them
 #   --print-inputs the lines the key sums up: research/ and this script
 #   --print-key    their sha256
 #   --print-deps   tell what the build needs that is missing, then stop
@@ -72,17 +78,24 @@ set_for() {
 	bash -c 'set -eu; . "$1"; kde_set_for host kwin "$2"' _ "$versions" "$1"
 }
 
-# beta or fedora: where plasma-workspace came from (dnf5 knows), against the
-# COPR the recipe enables for beta, as the research's host-kde.sh names it
+# The COPR the recipe enables for PLASMA=beta, by dnf's name for it, as the
+# research's host-kde.sh names it
+copr_id() {
+	bash -c 'set -eu; . "$1"; c=copr:copr.fedorainfracloud.org:group_${GUEST_PLASMA_COPR#@}; echo "${c/\//:}"' \
+		_ "$versions"
+}
+
+# beta, testing or fedora: where plasma-workspace came from (dnf5 knows).
+# Fedora's own repositories have their names, and the installation's medium
+# a hash of its own: anything but a COPR or a local file is Fedora's
 plasma_of_host() {
-	local repo copr
+	local repo
 	repo=$(dnf -q -C repoquery --installed --qf '%{from_repo}\n' plasma-workspace 2> /dev/null | head -n 1)
-	copr=$(bash -c 'set -eu; . "$1"; c=copr:copr.fedorainfracloud.org:group_${GUEST_PLASMA_COPR#@}; echo "${c/\//:}"' \
-		_ "$versions")
 	case "$repo" in
-	"$copr") echo beta ;;
-	fedora | updates) echo fedora ;;
-	*) return 1 ;;
+	"$(copr_id)") echo beta ;;
+	updates-testing) echo testing ;;
+	'' | copr:* | @commandline | '<unknown>') return 1 ;;
+	*) echo fedora ;;
 	esac
 }
 
@@ -94,9 +107,10 @@ work=${XDG_CACHE_HOME:-$HOME/.cache}/vitrine/host-kwin-build
 jobs=$(nproc)
 [ "$jobs" -le 8 ] || jobs=8
 version=
+release=
 while [ $# -gt 0 ]; do
 	case "$1" in
-	--plasma) plasma=${2:?--plasma needs beta or fedora}; shift ;;
+	--plasma) plasma=${2:?--plasma needs beta, testing or fedora}; shift ;;
 	--plasma=*) plasma=${1#*=} ;;
 	--out) out=${2:?--out needs a folder}; shift ;;
 	--out=*) out=${1#*=} ;;
@@ -105,6 +119,12 @@ while [ $# -gt 0 ]; do
 	-j) jobs=${2:?-j needs a number}; shift ;;
 	-j*) jobs=${1#-j} ;;
 	--print-set) action=print-set; version=${2:?--print-set needs a version}; shift ;;
+	--print-recipe)
+		action=print-recipe
+		version=${2:?--print-recipe needs a version and a Fedora release}
+		release=${3:?--print-recipe needs a version and a Fedora release}
+		shift 2
+		;;
 	--print-plasma) action=print-plasma ;;
 	--print-inputs) action=print-inputs ;;
 	--print-key) action=print-key ;;
@@ -115,10 +135,17 @@ while [ $# -gt 0 ]; do
 	shift
 done
 [[ $jobs =~ ^[1-9][0-9]*$ ]] || die "-j takes a number of jobs, not $jobs"
-case "$plasma" in '' | beta | fedora) ;; *) die "--plasma takes beta or fedora, not $plasma" ;; esac
+case "$plasma" in '' | beta | testing | fedora) ;; *) die "--plasma takes beta, testing or fedora, not $plasma" ;; esac
 
 case "$action" in
 print-set) set_for "$version"; exit ;;
+print-recipe)
+	echo "fedora=$(VGD_FEDORA=$release bash -c 'set -eu; . "$1"; echo "$FEDORA"' _ "$versions")"
+	echo "copr=$(copr_id)"
+	echo "set=$(set_for "$version" || true)"
+	echo "key=$(key)"
+	exit 0
+	;;
 print-plasma) plasma_of_host; exit ;;
 print-inputs) inputs_lines; exit 0 ;;
 print-key) key; exit 0 ;;

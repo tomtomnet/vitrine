@@ -12,6 +12,7 @@
 #include "core/tasks.h"
 
 class GuestToolsBuilder;
+class HostKwinBuilder;
 class QTimer;
 class StackBuilder;
 
@@ -22,8 +23,9 @@ class StackBuilder;
  * built from their sources now, in build order, and after a package of the
  * guest tools their medium, which the VMs install from.  StackBuilder runs
  * host/build.sh for the host's, GuestToolsBuilder the guest's scripts
- * (which waits for memory before a heavy package); this follows their
- * lines, per component.
+ * (which waits for memory before a heavy package), HostKwinBuilder
+ * host/kwin/build.sh for the host's KWin (which waits too); this follows
+ * their lines, per component.
  *
  * Each component has its log, kept beside the cache, and the durations of
  * its last builds on this machine, kept with the data: the estimate of a
@@ -67,10 +69,11 @@ public:
     explicit BuildManager(QObject *parent = nullptr);
     ~BuildManager() override;
 
-    /* Defaults: Builds::Places::defaults(), StackBuilder's and
-       GuestToolsBuilder's instance(), the files in Paths' folders */
+    /* Defaults: Builds::Places::defaults(), StackBuilder's,
+       GuestToolsBuilder's and HostKwinBuilder's instance(), the files in
+       Paths' folders */
     void setPlaces(const Builds::Places &places);
-    void setBuilders(StackBuilder *stack, GuestToolsBuilder *tools);
+    void setBuilders(StackBuilder *stack, GuestToolsBuilder *tools, HostKwinBuilder *kwin = nullptr);
     void setHistoryFile(const QString &path);
     void setLogDir(const QString &path);
     /* How often the estimate is worked out again while a run goes on */
@@ -84,6 +87,8 @@ public:
     }
 
     QList<Builds::Component> components() const;
+    /* What HostKwin makes of the host's KWin now (Builds::Places::kwin) */
+    HostKwin::Status kwinStatus() const { return places().kwin; }
     Builds::Component component(const QString &id) const;
     Builds::Status status(const QString &id) const;
     /* The components and their state again: the sources may have changed */
@@ -92,7 +97,8 @@ public:
     /* What building @ids takes: them and what they need that is not built
        from their sources now, then the medium after a package; in order */
     QStringList plan(const QStringList &ids) const;
-    /* What is not built from its sources now: what "Update All" builds */
+    /* What is not built from its sources now: what "Update All" builds;
+       the host's KWin only while Vitrine's is installed */
     QStringList outdated() const;
 
     bool isRunning() const { return m_running; }
@@ -104,6 +110,10 @@ public:
     /* A heavy package waiting for memory: goes on now */
     void proceed();
     bool isWaiting() const;
+    /* Then: what is free, and what the build needs (its cap, and what must
+       stay free for the host) */
+    qint64 availableMiB() const;
+    qint64 neededMiB() const;
 
     /* Of the run going on, or of the last one */
     QStringList queue() const { return m_queue; }
@@ -149,6 +159,11 @@ private:
     void nextPart();
     void startHost(const QStringList &ids);
     void startGuest(const QStringList &ids);
+    void startSystem(const QStringList &ids);
+    /* The builder a component's part runs in: 0 host, 1 guest, 2 system */
+    int partOf(const QString &id) const;
+    bool runsPart(int part) const;
+    Builds::Places places() const;
     void partFinished(const QString &error, bool stopped);
     void finishRun(const QString &error, bool stopped);
 
@@ -168,6 +183,7 @@ private:
     bool m_placesSet = false;
     QPointer<StackBuilder> m_stack;
     QPointer<GuestToolsBuilder> m_tools;
+    QPointer<HostKwinBuilder> m_kwin;
     QString m_historyFile;
     QString m_logDir;
     QStringList m_cacheDirs;
