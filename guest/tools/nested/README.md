@@ -12,7 +12,7 @@ at commit 5799347). `UPSTREAM.sha256` has their hashes there:
 | file | installed as |
 |---|---|
 | `session` | `/usr/libexec/vitrine-guest-tools/nested/session` |
-| `kwin_wayland_wrapper` | `/usr/libexec/vitrine-guest-tools/nested/kwin_wayland_wrapper` |
+| `kwin_wayland_wrapper` | `/usr/libexec/vitrine-guest-tools/nested/bin/kwin_wayland_wrapper` |
 | `stats-overlay.qml` | `/usr/libexec/vitrine-guest-tools/nested/stats-overlay.qml` |
 | `nested.conf` (their `session.conf`) | `/etc/vitrine-guest-tools/nested.conf` |
 | `plasma.desktop` (vitrine's, from their `plasma-crosvm-window.desktop`) | `/usr/share/vitrine-guest-tools/wayland-sessions/plasma.desktop` |

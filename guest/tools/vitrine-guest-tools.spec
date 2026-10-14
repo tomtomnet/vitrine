@@ -69,8 +69,9 @@ install -Dm 0644 systemd/80-vitrine-guest-tools.preset %{buildroot}%{_presetdir}
 # session, its settings, its entry for the login screen (found only in a
 # nested-desktop boot, vitrine-nested-boot.service), plasmalogin's and SDDM's
 # side of it, and no spice-vdagent clipboard beside the proxy's
-install -d %{buildroot}%{libexec}/nested
-install -m 0755 nested/session nested/kwin_wayland_wrapper %{buildroot}%{libexec}/nested/
+install -d %{buildroot}%{libexec}/nested/bin
+install -m 0755 nested/session %{buildroot}%{libexec}/nested/
+install -m 0755 nested/kwin_wayland_wrapper %{buildroot}%{libexec}/nested/bin/
 install -m 0644 nested/stats-overlay.qml %{buildroot}%{libexec}/nested/
 install -Dm 0644 nested/plasma.desktop %{buildroot}%{_datadir}/%{name}/wayland-sessions/plasma.desktop
 install -Dm 0644 nested/nested.conf %{buildroot}%{_sysconfdir}/%{name}/nested.conf
