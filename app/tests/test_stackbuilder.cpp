@@ -15,7 +15,6 @@
 
 #include "core/paths.h"
 #include "core/stackbuilder.h"
-#include "core/tasks.h"
 
 /* A manifest as host/build.sh writes it */
 static const char kManifest[] = R"(# What host/build.sh built here
@@ -35,7 +34,9 @@ VIRGL_PATCHES=0001-x.patch 0002-y.patch 0003-z.patch
  * Stand-ins for the components, which the real build.sh builds: a
  * virglrenderer meson project taking build.sh's options, and a QEMU whose
  * configure writes a Makefile linking a "qemu-system-x86_64" against it
- * with configure's --extra-ldflags, as QEMU's does
+ * with configure's --extra-ldflags, as QEMU's does, linked again when
+ * configure ran again; its install takes DESTDIR, and writes a firmware
+ * descriptor naming the configured prefix, as QEMU's do
  */
 static const char kVirglMeson[] = R"(project('virglrenderer', 'c', version : '1.3.0')
 lib = shared_library('virglrenderer', 'virgl.c', version : '1.9.0', install : true)
@@ -60,13 +61,14 @@ echo "#define HAVE_VIRGL_RESOURCE_SET_GUEST_DMABUF 1" > config-host.h
 t=$(printf '\t')
 cat > Makefile <<EOF
 all: qemu-system-x86_64 qemu-img
-qemu-system-x86_64: $src/qemu.c
+qemu-system-x86_64: $src/qemu.c Makefile
 ${t}cc -o \$@ $src/qemu.c $(pkg-config --cflags --libs virglrenderer) $ldflags
-qemu-img: $src/qemu.c
+qemu-img: $src/qemu.c Makefile
 ${t}cc -o \$@ $src/qemu.c $(pkg-config --cflags --libs virglrenderer) $ldflags
 install: all
-${t}mkdir -p $prefix/bin $prefix/share/qemu
-${t}cp qemu-system-x86_64 qemu-img $prefix/bin/
+${t}mkdir -p \$(DESTDIR)$prefix/bin \$(DESTDIR)$prefix/share/qemu/firmware
+${t}cp qemu-system-x86_64 qemu-img \$(DESTDIR)$prefix/bin/
+${t}echo '{"filename": "$prefix/share/qemu/edk2-x86_64-code.fd"}' > \$(DESTDIR)$prefix/share/qemu/firmware/60-edk2-x86_64.json
 EOF
 )sh";
 static const char kQemuMain[] = R"c(#include <stdio.h>
@@ -223,6 +225,19 @@ private slots:
             QCOMPARE(l.kind, kind);
             QCOMPARE(l.text, text.section(": ", 1));
         }
+        l = Line::parse("vitrine-build: component: virglrenderer");
+        QCOMPARE(l.kind, Line::Component);
+        QCOMPARE(l.component, "virglrenderer");
+        l = Line::parse("vitrine-build: done: virglrenderer up to date /s/virglrenderer/0123");
+        QCOMPARE(l.kind, Line::Done);
+        QCOMPARE(l.component, "virglrenderer");
+        QVERIFY(!l.built);
+        QCOMPARE(l.folder, "/s/virglrenderer/0123");
+        l = Line::parse("vitrine-build: done: qemu built /s/my stack/0123");
+        QCOMPARE(l.kind, Line::Done);
+        QCOMPARE(l.component, "qemu");
+        QVERIFY(l.built);
+        QCOMPARE(l.folder, "/s/my stack/0123");
         QCOMPARE(Line::parse("Compiling C object foo.o").kind, Line::Other);
         /* tagged lines only: another tool's "step" is not one */
         QCOMPARE(Line::parse("step 1/2: something").kind, Line::Other);
@@ -363,8 +378,9 @@ private slots:
         const QString host = m_tmp.filePath("state-host");
         const QString stack = m_tmp.filePath("state-stack");
 
+        const QByteArray pins = "QEMU_URL=q\nQEMU_COMMIT=%1\nVIRGL_URL=v\nVIRGL_COMMIT=w\n";
         QVERIFY(write(host + "/build.sh", "#!/bin/bash\n"));
-        QVERIFY(write(host + "/versions.conf", "QEMU_COMMIT=1\n"));
+        QVERIFY(write(host + "/versions.conf", QString(pins).arg(1).toUtf8()));
         QVERIFY(write(host + "/patches/qemu/0001-a.patch", "a\n"));
         QVERIFY(QDir().mkpath(stack));
 
@@ -391,8 +407,14 @@ private slots:
         QCOMPARE(StackBuilder::state(host, stack), State::Outdated);
         QVERIFY(write(host + "/patches/qemu/0001-a.patch", "a\n"));
         QCOMPARE(StackBuilder::state(host, stack), State::UpToDate);
-        QVERIFY(write(host + "/versions.conf", "QEMU_COMMIT=2\n"));
+        QVERIFY(write(host + "/versions.conf", QString(pins).arg(2).toUtf8()));
         QCOMPARE(StackBuilder::state(host, stack), State::Outdated);
+        /* a comment changes nothing: its values do */
+        QVERIFY(write(host + "/versions.conf", "# pinned\n" + QString(pins).arg(1).toUtf8()));
+        QCOMPARE(StackBuilder::state(host, stack), State::UpToDate);
+        /* without them: nothing to build */
+        QVERIFY(write(host + "/versions.conf", "QEMU_COMMIT=1\n"));
+        QCOMPARE(StackBuilder::state(host, stack), State::NoSources);
 
         /* VITRINE_HOST_DIR chooses, even none */
         qputenv("VITRINE_HOST_DIR", host.toUtf8());
@@ -523,83 +545,6 @@ exit 2
         QVERIFY(built.isEmpty());
     }
 
-    /*
-     * Each build is a task of the app's: its steps and ninja's progress,
-     * then how it ended; the next build's replaces it, a start refused
-     * makes none
-     */
-    void reportsTasks()
-    {
-        TaskList *tasks = TaskList::instance();
-        const QString stack = m_tmp.filePath("task-stack");
-        StackBuilder b;
-        b.setHostDir(hostDir("task-host", R"sh(#!/bin/bash
-stack=$2
-echo "vitrine-build: step 1/2: checking the build dependencies"
-echo "vitrine-build: step 2/2: compiling QEMU"
-printf '[1/4] Compiling a\n[3/4] Compiling b\n'
-mkdir -p "$stack/0123456789abcdef/bin" "$stack/0123456789abcdef/share/vitrine"
-printf 'STAMP=abc\nQEMU_VERSION=11.1.50\nQEMU_PATCHES=a.patch b.patch\n' \
-    > "$stack/0123456789abcdef/share/vitrine/stack.conf"
-ln -sfn 0123456789abcdef "$stack/current"
-echo "vitrine-build: built: $stack/0123456789abcdef"
-)sh"));
-        b.setStackDir(stack);
-        b.setWorkDir(m_tmp.filePath("task-work"));
-        QStringList seen;
-        connect(tasks, &TaskList::taskChanged, this, [&seen](Task *task) {
-            seen << QString("%1 %2/%3").arg(task->text()).arg(task->done()).arg(task->total());
-        });
-
-        QCOMPARE(build(b), "");
-        Task *task = b.task();
-        QVERIFY(task);
-        QVERIFY(tasks->tasks().contains(task));
-        QCOMPARE(task->kind(), Task::Kind::QemuBuild);
-        QCOMPARE(task->title(), "QEMU build");
-        QVERIFY2(seen.contains("Step 2 of 2: compiling QEMU 0/0"), qPrintable(seen.join('\n')));
-        QVERIFY2(seen.contains("Step 2 of 2: compiling QEMU 3/4"), qPrintable(seen.join('\n')));
-        QCOMPARE(task->state(), Task::State::Done);
-        QCOMPARE(task->text(), "QEMU 11.1.50 + 2 patches");
-        disconnect(tasks, &TaskList::taskChanged, this, nullptr);
-
-        /* failed: the next build's task replaces it, as the user saw it in the window */
-        b.setHostDir(hostDir("task-fail-host", R"sh(#!/bin/bash
-echo "vitrine-build: error: compiling QEMU failed (status 2)"
-exit 2
-)sh"));
-        const QPointer<Task> first(task);
-        QCOMPARE(build(b), "Compiling QEMU failed (status 2)");
-        QTRY_VERIFY(!first);
-        task = b.task();
-        QVERIFY(task);
-        QCOMPARE(task->state(), Task::State::Failed);
-        QCOMPARE(task->text(), "Compiling QEMU failed (status 2)");
-
-        /* refused before it ran: no task, the last one as it was */
-        b.setHostDir(m_tmp.filePath("nowhere"));
-        QVERIFY(build(b).contains("no host/build.sh"));
-        QCOMPARE(b.task(), task);
-        QCOMPARE(task->state(), Task::State::Failed);
-        QCOMPARE(task->text(), "Compiling QEMU failed (status 2)");
-
-        /* stopped */
-        b.setHostDir(hostDir("task-stop-host", R"sh(#!/bin/bash
-echo "vitrine-build: step 1/8: fetching QEMU"
-exec sleep 300
-)sh"));
-        QSignalSpy finished(&b, &StackBuilder::finished);
-        b.start();
-        QVERIFY(b.task() && b.task() != task);
-        QVERIFY(b.task()->isRunning());
-        /* once it runs: its process group made */
-        QTRY_COMPARE_WITH_TIMEOUT(b.task()->text(), "Step 1 of 8: fetching QEMU", 10000);
-        b.cancel();
-        QVERIFY(finished.wait(10000));
-        QCOMPARE(b.task()->state(), Task::State::Stopped);
-        b.task()->dismiss();
-    }
-
     /* Stop ends the compilers too, not bash alone (which waits for them) */
     void stopsTheProcessGroup()
     {
@@ -632,25 +577,46 @@ echo "vitrine-build: built: /nowhere"
         QTRY_VERIFY_WITH_TIMEOUT(::kill(sleeper, 0) != 0 && errno == ESRCH, 10000);
     }
 
-    /* The builds nothing runs or names any more go */
+    /* The builds nothing runs or names any more go, but the one before `current` */
     void prunesOldBuilds()
     {
         const QString stack = m_tmp.filePath("prune-stack");
-        const auto prefix = [&stack](const char *name, bool complete = true) {
+        const QString virgl = stack + "/virglrenderer/";
+        /* @day: of October; @library: the virglrenderer folder it is built against */
+        const auto prefix = [&stack](const char *name, int day, const QString &library = {},
+                                     bool complete = true) {
             const QString dir = stack + '/' + name;
             const QString binary = dir + "/bin/qemu-system-x86_64";
+            const QString conf = QString("STAMP=x\nBUILT=2026-10-%1T10:00:00Z\nVIRGL_PREFIX=%2\n")
+                                     .arg(day, 2, 10, QChar('0'))
+                                     .arg(library);
             if (!write(binary, "x\n", true) ||
-                (complete && !write(dir + "/share/vitrine/stack.conf", "STAMP=x\n"))) {
+                (complete && !write(dir + "/share/vitrine/stack.conf", conf.toUtf8()))) {
                 return QString();
             }
             return binary;
         };
-        QVERIFY(!prefix("aaaaaaaaaaaaaaaa").isEmpty());
-        QVERIFY(!prefix("bbbbbbbbbbbbbbbb").isEmpty());
-        const QString named = prefix("cccccccccccccccc");
-        const QString running = prefix("dddddddddddddddd");
-        QVERIFY(!prefix("eeeeeeeeeeeeeeee", false).isEmpty());
+        const auto library = [&virgl](const char *name, int day, bool complete = true) {
+            return write(virgl + name + "/lib64/libvirglrenderer.so.1", "x\n") &&
+                   (!complete || write(virgl + name + "/share/vitrine/virglrenderer.conf",
+                                       QString("KEY=k\nBUILT=2026-10-%1T10:00:00Z\n")
+                                           .arg(day, 2, 10, QChar('0'))
+                                           .toUtf8()));
+        };
+        QVERIFY(library("1111111111111111", 1));
+        QVERIFY(library("2222222222222222", 2));
+        QVERIFY(library("3333333333333333", 3));
+        QVERIFY(library("4444444444444444", 9));
+        QVERIFY(library("5555555555555555", 10, false));
+        QVERIFY(!prefix("aaaaaaaaaaaaaaaa", 8, virgl + "1111111111111111").isEmpty());
+        QVERIFY(!prefix("bbbbbbbbbbbbbbbb", 4, virgl + "2222222222222222").isEmpty());
+        const QString named = prefix("cccccccccccccccc", 5);
+        const QString running = prefix("dddddddddddddddd", 6);
+        QVERIFY(!prefix("eeeeeeeeeeeeeeee", 9, {}, false).isEmpty());
+        /* the one before `current`: kept, with its virglrenderer */
+        QVERIFY(!prefix("ffffffffffffffff", 7, virgl + "3333333333333333").isEmpty());
         QVERIFY(QDir().mkpath(stack + "/other"));
+        QVERIFY(QDir().mkpath(stack + "/.stage-0123456789abcdef/x"));
         QVERIFY(QFile::link("aaaaaaaaaaaaaaaa", stack + "/current"));
         /* a QEMU of an older build, still running */
         QVERIFY(QFile::remove(running));
@@ -673,9 +639,15 @@ echo "vitrine-build: built: /nowhere"
         vm.waitForFinished();
         const QString canonical = QFileInfo(stack).canonicalFilePath();
         QCOMPARE(removed, QStringList({canonical + "/bbbbbbbbbbbbbbbb",
-                                       canonical + "/eeeeeeeeeeeeeeee"}));
+                                       canonical + "/eeeeeeeeeeeeeeee",
+                                       canonical + "/virglrenderer/5555555555555555",
+                                       canonical + "/virglrenderer/2222222222222222",
+                                       canonical + "/.stage-0123456789abcdef"}));
         for (const char *kept : {"aaaaaaaaaaaaaaaa", "cccccccccccccccc", "dddddddddddddddd",
-                                 "other"}) {
+                                 "ffffffffffffffff", "other", "virglrenderer/1111111111111111",
+                                 "virglrenderer/3333333333333333",
+                                 /* the newest: a build of virglrenderer alone */
+                                 "virglrenderer/4444444444444444"}) {
             QVERIFY2(QFileInfo::exists(stack + '/' + kept), kept);
         }
         QVERIFY(StackBuilder::current(stack).isValid());
@@ -727,9 +699,12 @@ sh -c 'echo $$ > %1; exec sleep 300'
 
     /*
      * The real build.sh with stand-ins for the components: fetch at the
-     * pinned commits, patches, prefix per stamp, RUNPATH and ldd checks,
-     * `current` flipped only after a complete build, nothing redone when
-     * nothing changed, and nothing left of a failed build
+     * pinned commits, patches, a folder per key (QEMU's stamp, and
+     * virglrenderer's own), RUNPATH and ldd checks, `current` flipped only
+     * after a complete build, nothing redone when nothing changed, nothing
+     * left of a failed build; and updates that compile only what changed:
+     * the files a patch does not change keep their time, the build trees
+     * stay, virglrenderer is not built again for a change of QEMU's
      */
     void buildShEndToEnd()
     {
@@ -846,6 +821,26 @@ sh -c 'echo $$ > %1; exec sleep 300'
         QCOMPARE(built.size(), 1);
         QCOMPARE(built[0][0].toString(), first.qemuBinary());
         QVERIFY(QFileInfo::exists(first.prefix + "/share/qemu/qemu-options.hx"));
+        /* virglrenderer in its folder, named after its key */
+        const QString vkey = run("bash", {host + "/build.sh", "--print-keys"})
+                                 .section("virglrenderer ", 1).section('\n', 0, 0);
+        QCOMPARE(vkey.size(), 64);
+        QCOMPARE(first.virglKey, vkey);
+        QCOMPARE(first.virglPrefix, QFileInfo(stack).canonicalFilePath() + "/virglrenderer/" +
+                                        vkey.left(16));
+        QVERIFY(QFileInfo::exists(first.virglPrefix + "/lib64/libvirglrenderer.so.1"));
+        QVERIFY(!QFileInfo::exists(first.prefix + "/lib64/libvirglrenderer.so.1"));
+        /* the inputs, recorded for the app to tell what changed */
+        QCOMPARE(read(first.prefix + "/share/vitrine/qemu.inputs"),
+                 run("bash", {host + "/build.sh", "--print-inputs", "qemu"}));
+        QCOMPARE(read(first.virglPrefix + "/share/vitrine/virglrenderer.inputs"),
+                 run("bash", {host + "/build.sh", "--print-inputs", "virglrenderer"}));
+        /* configured for the stack's `current`, installed into its own folder:
+           the descriptors name it */
+        QCOMPARE(read(first.prefix + "/share/qemu/firmware/60-edk2-x86_64.json").trimmed(),
+                 "{\"filename\": \"" + first.prefix + "/share/qemu/edk2-x86_64-code.fd\"}");
+        QVERIFY(read(work + "/qemu-build/.vitrine-configure")
+                    .contains("--prefix=" + QFileInfo(stack).canonicalFilePath() + "/current "));
         QVERIFY(QFileInfo::exists(work + "/src/qemu/MARK"));
         QCOMPARE(read(work + "/src/qemu/BASE"), "base, then research\n");
         QVERIFY(QFileInfo::exists(work + "/src/virglrenderer/MARK"));
@@ -856,9 +851,10 @@ sh -c 'echo $$ > %1; exec sleep 300'
         QVERIFY(write(sub + "/KEPT", "\n"));
         /* the run path build.sh checked */
         const QString dynamic = run("readelf", {"-d", first.qemuBinary()});
-        QVERIFY2(dynamic.contains("RUNPATH") && dynamic.contains("[" + first.prefix + "/lib64]"),
+        QVERIFY2(dynamic.contains("RUNPATH") &&
+                     dynamic.contains("[" + first.virglPrefix + "/lib64]"),
                  qPrintable(dynamic));
-        QVERIFY(b.log().contains("loads " + first.prefix + "/lib64/libvirglrenderer.so.1"));
+        QVERIFY(b.log().contains("loads " + first.virglPrefix + "/lib64/libvirglrenderer.so.1"));
 
         /* 2. nothing changed: nothing done */
         output.clear();
@@ -868,7 +864,18 @@ sh -c 'echo $$ > %1; exec sleep 300'
         QVERIFY(!log(output).contains("step 2/8"));
         QCOMPARE(built.size(), 2);
 
-        /* 3. a QEMU patch changed: a new prefix, virglrenderer's sources as they were */
+        /* 3. a QEMU patch changed: a new prefix, virglrenderer as it was, and
+           only the file the patch changes written: what depends on the others
+           does not compile again */
+        const auto mtime = [](const QString &path) {
+            return QFileInfo(path).lastModified(QTimeZone::UTC).toMSecsSinceEpoch();
+        };
+        const qint64 baseTime = mtime(work + "/src/qemu/BASE");
+        const qint64 markTime = mtime(work + "/src/qemu/MARK");
+        const qint64 binaryTime = mtime(work + "/qemu-build/qemu-system-x86_64");
+        QVERIFY(baseTime > 0 && markTime > 0 && binaryTime > 0);
+        QVERIFY(write(work + "/qemu-build/KEPT", "\n"));
+        QTest::qWait(1100);
         QVERIFY(write(host + "/patches/qemu/fork/0001-mark.patch",
                       QString(newFile).arg("MARK", "two").toUtf8()));
         QCOMPARE(StackBuilder::state(host, stack), StackBuilder::State::Outdated);
@@ -878,8 +885,10 @@ sh -c 'echo $$ > %1; exec sleep 300'
         const StackBuilder::Build second = StackBuilder::current(stack);
         QVERIFY(second.isValid());
         QVERIFY(second.prefix != first.prefix);
-        QVERIFY2(log(output).contains("virglrenderer at ") &&
-                     log(output).contains("with 1 patches already"),
+        QCOMPARE(second.virglPrefix, first.virglPrefix);
+        QVERIFY2(log(output).contains("vitrine-build: done: virglrenderer up to date " +
+                                      first.virglPrefix) &&
+                     !log(output).contains("fetching virglrenderer"),
                  qPrintable(log(output)));
         QVERIFY(log(output).contains("applying patches/qemu/fork/0001-mark.patch\n"
                                      "applying patches/qemu/fork/0002-base.patch\n"
@@ -887,22 +896,51 @@ sh -c 'echo $$ > %1; exec sleep 300'
         QFile mark(work + "/src/qemu/MARK");
         QVERIFY(mark.open(QIODevice::ReadOnly));
         QCOMPARE(mark.readAll(), "two\n");
+        mark.close();
+        QVERIFY(mtime(work + "/src/qemu/MARK") > markTime);
+        QCOMPARE(mtime(work + "/src/qemu/BASE"), baseTime);
+        /* the build tree as it was: configured already, nothing linked again */
+        QVERIFY2(log(output).contains("configured already"), qPrintable(log(output)));
+        QVERIFY(QFileInfo::exists(work + "/qemu-build/KEPT"));
+        QCOMPARE(mtime(work + "/qemu-build/qemu-system-x86_64"), binaryTime);
+        /* what changed, as the app tells it */
+        QCOMPARE(read(second.prefix + "/share/vitrine/qemu.inputs"),
+                 run("bash", {host + "/build.sh", "--print-inputs", "qemu"}));
+        QVERIFY(read(first.prefix + "/share/vitrine/qemu.inputs") !=
+                read(second.prefix + "/share/vitrine/qemu.inputs"));
+
+        /* inputs back to the build before: it is there, `current` goes back */
+        QVERIFY(write(host + "/patches/qemu/fork/0001-mark.patch",
+                      QString(newFile).arg("MARK", "one").toUtf8()));
+        output.clear();
+        QCOMPARE(build(b), "");
+        QVERIFY2(log(output).contains("vitrine-build: up to date: " + first.prefix),
+                 qPrintable(log(output)));
+        QCOMPARE(StackBuilder::current(stack).prefix, first.prefix);
+        QVERIFY(write(host + "/patches/qemu/fork/0001-mark.patch",
+                      QString(newFile).arg("MARK", "two").toUtf8()));
+        QCOMPARE(build(b), "");
+        QCOMPARE(StackBuilder::current(stack).prefix, second.prefix);
         /* what the subproject comes from did not change: kept, not downloaded again */
         QVERIFY(QFileInfo::exists(sub + "/KEPT"));
         /* the VMs running keep theirs */
         QVERIFY(StackBuilder::Build::read(first.prefix).isValid());
         QVERIFY(QFileInfo(first.qemuBinary()).isExecutable());
 
-        /* 4. a patch that does not apply: an error, `current` as it was, no half prefix */
+        /* 4. a patch that does not apply: an error, `current` as it was, no half
+           prefix, the sources as they were */
         QVERIFY(write(host + "/patches/qemu/0002-broken.patch",
                       "--- a/nothing\n+++ b/nothing\n@@ -1 +1 @@\n-a\n+b\n"));
+        const qint64 markTwo = mtime(work + "/src/qemu/MARK");
         output.clear();
         error = build(b, 300000);
         QVERIFY2(error.contains("0002-broken.patch does not apply"), qPrintable(error));
         QCOMPARE(StackBuilder::current(stack).prefix, second.prefix);
         QVERIFY(!QFileInfo::exists(stack + '/' + StackBuilder::inputStamp(host).left(16)));
         QCOMPARE(StackBuilder::state(host, stack), StackBuilder::State::Outdated);
-        QCOMPARE(built.size(), 3);
+        QCOMPARE(built.size(), 5);
+        QCOMPARE(read(work + "/src/qemu/MARK"), "two\n");
+        QCOMPARE(mtime(work + "/src/qemu/MARK"), markTwo);
 
         /* 5. into a prefix of the caller's, which is installed over */
         QVERIFY(QFile::remove(host + "/patches/qemu/0002-broken.patch"));
@@ -929,7 +967,7 @@ sh -c 'echo $$ > %1; exec sleep 300'
         QVERIFY(!QFileInfo::exists(manifest));
         QVERIFY(QFile::remove(host + "/patches/qemu/0002-broken.patch"));
         out = buildInto();
-        QVERIFY2(status == 0 && !out.contains("up to date"), qPrintable(out));
+        QVERIFY2(status == 0 && !out.contains("vitrine-build: up to date:"), qPrintable(out));
         QCOMPARE(StackBuilder::Build::read(prefix).stamp, built2);
 
         /* 6. the subproject follows what it comes from */
@@ -976,6 +1014,60 @@ sh -c 'echo $$ > %1; exec sleep 300'
         QVERIFY2(failure.isEmpty(), qPrintable(failure));
         QVERIFY(!QFileInfo::exists(work + "/src/qemu/subprojects/stale"));
         QCOMPARE(read(sub + "/README"), "v2\n");
+        /* a file changed by hand goes back */
+        QVERIFY(write(work + "/src/qemu/BASE", "by hand\n"));
+        QVERIFY(write(host + "/patches/qemu/fork/0001-mark.patch",
+                      QString(newFile).arg("MARK", "four").toUtf8()));
+        failure = buildOk();
+        QVERIFY2(failure.isEmpty(), qPrintable(failure));
+        QCOMPARE(read(work + "/src/qemu/BASE"), "base, then research\n");
+
+        /* 7. virglrenderer alone: its folder, `current` as it was; then QEMU,
+           against it, without building it again */
+        const StackBuilder::Build before = StackBuilder::current(stack);
+        QVERIFY(write(host + "/patches/virglrenderer/0001-mark.patch",
+                      QString(newFile).arg("MARK", "virgl four").toUtf8()));
+        QSignalSpy components(&b, &StackBuilder::componentDone);
+        output.clear();
+        {
+            QSignalSpy finished(&b, &StackBuilder::finished);
+            b.start("virglrenderer");
+            QVERIFY(finished.wait(300000));
+            QVERIFY2(finished[0][0].toString().isEmpty(),
+                     qPrintable(finished[0][0].toString() + "\n" + log(output)));
+        }
+        QCOMPARE(StackBuilder::current(stack).prefix, before.prefix);
+        QVERIFY(!log(output).contains("component: qemu"));
+        QCOMPARE(components.size(), 1);
+        QCOMPARE(components[0][0].toString(), "virglrenderer");
+        QCOMPARE(components[0][1].toBool(), true);
+        const QString virglAlone = components[0][2].toString();
+        QVERIFY(virglAlone != before.virglPrefix);
+        QVERIFY(QFileInfo::exists(virglAlone + "/share/vitrine/virglrenderer.conf"));
+        components.clear();
+        failure = buildOk();
+        QVERIFY2(failure.isEmpty(), qPrintable(failure));
+        QCOMPARE(StackBuilder::current(stack).virglPrefix, virglAlone);
+        QVERIFY(log(output).contains("vitrine-build: done: virglrenderer up to date " + virglAlone));
+        /* QEMU configured again, against it */
+        QVERIFY(!log(output).contains("configured already"));
+        QCOMPARE(components.size(), 2);
+
+        /* 8. --clean: the build trees from nothing */
+        QVERIFY(write(work + "/qemu-build/KEPT", "\n"));
+        QVERIFY(write(host + "/patches/qemu/fork/0001-mark.patch",
+                      QString(newFile).arg("MARK", "five").toUtf8()));
+        output.clear();
+        {
+            QSignalSpy finished(&b, &StackBuilder::finished);
+            b.start({}, true);
+            QVERIFY(finished.wait(300000));
+            QVERIFY2(finished[0][0].toString().isEmpty(),
+                     qPrintable(finished[0][0].toString() + "\n" + log(output)));
+        }
+        QVERIFY(log(output).contains("build trees from nothing (--clean)"));
+        QVERIFY(!QFileInfo::exists(work + "/qemu-build/KEPT"));
+        QVERIFY(StackBuilder::current(stack).isValid());
     }
 };
 

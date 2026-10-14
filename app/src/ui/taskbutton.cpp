@@ -51,11 +51,8 @@ QColor negative(const QPalette &palette)
 QIcon kindIcon(Task::Kind kind)
 {
     switch (kind) {
-    case Task::Kind::QemuBuild:
+    case Task::Kind::Build:
         return Icons::themed({"run-build", "run-build-install"}, QStyle::SP_BrowserReload);
-    case Task::Kind::GuestToolsBuild:
-        return Icons::themed({"run-build-install", "system-software-install"},
-                             QStyle::SP_DialogApplyButton);
     case Task::Kind::Clone:
         return Icons::themed({"edit-copy"}, QStyle::SP_FileDialogNewFolder);
     case Task::Kind::Other:

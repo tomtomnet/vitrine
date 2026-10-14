@@ -14,6 +14,7 @@
 #include "core/guesttoolsbuilder.h"
 #include "core/paths.h"
 #include "ui/icons.h"
+#include "core/buildmanager.h"
 #include "ui/taskbutton.h"
 #include "ui/widgets.h"
 
@@ -140,7 +141,7 @@ QemuBuildDialog::QemuBuildDialog(QWidget *parent)
             &QemuBuildDialog::updateState);
 
     /* the build's task, in the main window's list: seen here once it is over */
-    TaskButton::followSeen(this, [this]() { return m_builder->task(); });
+    TaskButton::followSeen(this, []() { return BuildManager::instance()->task(); });
 
     /* a build running already, started from another window: where it is */
     m_log->setPlainText(m_builder->log());

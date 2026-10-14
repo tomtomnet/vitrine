@@ -343,8 +343,8 @@ private slots:
         TaskButton *button = w.button();
         int shown = 0;
 
-        tasks.setDetails(Task::Kind::QemuBuild, [&shown](Task *) { shown++; });
-        tasks.add(Task::Kind::QemuBuild, "QEMU build");
+        tasks.setDetails(Task::Kind::Build, [&shown](Task *) { shown++; });
+        tasks.add(Task::Kind::Build, "QEMU build");
         layOut();
         QCOMPARE(button->focusPolicy() & Qt::TabFocus, Qt::TabFocus);
         button->setFocus(Qt::TabFocusReason);
@@ -370,9 +370,9 @@ private slots:
         QList<Task *> shown;
 
         button->setLinger(60000);
-        tasks.setDetails(Task::Kind::QemuBuild, [&shown](Task *task) { shown << task; });
+        tasks.setDetails(Task::Kind::Build, [&shown](Task *task) { shown << task; });
         tasks.setDetails(Task::Kind::Clone, [&shown](Task *task) { shown << task; });
-        Task *build = tasks.add(Task::Kind::QemuBuild, "QEMU build");
+        Task *build = tasks.add(Task::Kind::Build, "QEMU build");
         Task *clone = tasks.add(Task::Kind::Clone, "Clone of R&D");
         build->setProgress(20, 100);
         clone->setProgress(60, 100);
@@ -422,7 +422,7 @@ private slots:
         TaskButton *button = w.button();
 
         button->setLinger(100);
-        Task *done = tasks.add(Task::Kind::QemuBuild, "QEMU build");
+        Task *done = tasks.add(Task::Kind::Build, "QEMU build");
         done->finish(Task::State::Done);
         QCOMPARE(button->status(), QString("Done"));
         QTRY_VERIFY(tasks.tasks().isEmpty());
@@ -452,7 +452,7 @@ private slots:
         other.resize(200, 100);
 
         button->setLinger(400);
-        Task *done = tasks.add(Task::Kind::QemuBuild, "QEMU build");
+        Task *done = tasks.add(Task::Kind::Build, "QEMU build");
         done->finish(Task::State::Done);
         QTest::qWait(200);
         settle(&other);
@@ -473,7 +473,7 @@ private slots:
         QListWidget list;
         tasks.add(Task::Kind::Clone, "Clone of Alpha");
         TaskButton button(&tasks, &list);
-        tasks.add(Task::Kind::QemuBuild, "QEMU build");
+        tasks.add(Task::Kind::Build, "QEMU build");
         QVERIFY(!button.isVisible());
         QVERIFY(!button.isWindow() || !button.windowHandle() || !button.windowHandle()->isVisible());
     }
@@ -484,7 +484,7 @@ private slots:
         TaskList *tasks = TaskList::instance();
         QDialog dialog;
         QWidget other;
-        QPointer<Task> task = tasks->add(Task::Kind::QemuBuild, "QEMU build");
+        QPointer<Task> task = tasks->add(Task::Kind::Build, "QEMU build");
         TaskButton::followSeen(&dialog, [&task]() { return task.data(); });
 
         dialog.resize(300, 200);
@@ -493,7 +493,7 @@ private slots:
         task->finish(Task::State::Failed, "Stopped");
         QTRY_VERIFY(!task);
 
-        task = tasks->add(Task::Kind::QemuBuild, "QEMU build");
+        task = tasks->add(Task::Kind::Build, "QEMU build");
         settle(&other);
         task->finish(Task::State::Failed, "Build dependencies are missing");
         QTest::qWait(100);
@@ -635,7 +635,7 @@ private slots:
     void focus()
     {
         TaskList tasks;
-        tasks.add(Task::Kind::QemuBuild, "QEMU build");
+        tasks.add(Task::Kind::Build, "QEMU build");
         Window w(&tasks);
         settle(w.top.get());
         QTRY_VERIFY(w.list()->hasFocus());

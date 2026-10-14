@@ -16,7 +16,6 @@
 #include "core/guesttools.h"
 #include "core/guesttoolsbuilder.h"
 #include "core/stackbuilder.h"
-#include "core/tasks.h"
 
 using State = GuestToolsBuilder::State;
 
@@ -581,71 +580,104 @@ private slots:
         QCOMPARE(read(guest + "/rpms-args").count('\n'), 3);
     }
 
-    /*
-     * Each build is a task of the app's: its step and phase, the phase's
-     * progress, then how it ended; the next build's replaces it
-     */
-    void reportsTasks()
+    /* The steps asked for, in their order; each package told once there */
+    void buildsTheStepsAsked()
     {
-        const QString guest = guestDir("task-guest");
-        const QString gate = m_tmp.filePath("task-gate");
-        TaskList *tasks = TaskList::instance();
+        const QString guest = guestDir("steps-guest");
         GuestToolsBuilder b;
-        setUp(b, guest, "task");
+        setUp(b, guest, "steps");
+        QSignalSpy steps(&b, &GuestToolsBuilder::stepStarted);
+        QSignalSpy done(&b, &GuestToolsBuilder::packageDone);
+        QSignalSpy built(&b, &GuestToolsBuilder::built);
         QSignalSpy finished(&b, &GuestToolsBuilder::finished);
-        QStringList seen;
-        connect(tasks, &TaskList::taskChanged, this, [&seen](Task *task) {
-            seen << QString("%1 %2/%3").arg(task->text()).arg(task->done()).arg(task->total());
-        });
 
-        qputenv("GATE", "mesa:" + gate.toUtf8());
-        b.start();
-        Task *task = b.task();
-        QVERIFY(task);
-        QVERIFY(tasks->tasks().contains(task));
-        QCOMPARE(task->kind(), Task::Kind::GuestToolsBuild);
-        QCOMPARE(task->title(), "Guest tools build");
-        /* held at the end of Mesa's build */
-        QTRY_COMPARE_WITH_TIMEOUT(task->text(), "Step 2 of 4: building Mesa 26.2.3 (making the packages)",
-                                  10000);
-        QVERIFY(task->isRunning());
-        QCOMPARE(task->total(), 0);
-        QVERIFY2(seen.contains("Step 2 of 4: building Mesa 26.2.3 (compiling) 5808/5808"),
-                 qPrintable(seen.join('\n')));
-        QVERIFY2(seen.contains("Step 1 of 4: building vitrine-guest-tools 0.1.0 "
-                               "(installing rpmbuild) 82/82"),
-                 qPrintable(seen.join('\n')));
-        disconnect(tasks, &TaskList::taskChanged, this, nullptr);
-
-        QVERIFY(write(gate, "go\n"));
-        QTRY_VERIFY_WITH_TIMEOUT(!finished.isEmpty(), 10000);
+        b.start(QStringList{"kwin", "tools"});
+        QTRY_VERIFY_WITH_TIMEOUT(!finished.isEmpty(), 20000);
         QCOMPARE(finished[0][0].toString(), "");
-        QCOMPARE(task->state(), Task::State::Done);
-        qunsetenv("GATE");
+        QCOMPARE(steps.size(), 2);
+        /* its spec's version is a macro: none shown */
+        QCOMPARE(steps[0][2].toString(), "building KWin");
+        QCOMPARE(steps[1][2].toString(), "building vitrine-guest-tools 0.1.0");
+        QCOMPARE(read(guest + "/rpms-args"), "--verbose kwin\n--verbose tools\n");
+        QCOMPARE(done.size(), 2);
+        QCOMPARE(done[0][0].toString(), "kwin");
+        QCOMPARE(done[0][1].toBool(), false);
+        QCOMPARE(done[1][0].toString(), "tools");
+        /* no medium among them: none made */
+        QVERIFY(built.isEmpty());
+        QVERIFY(!QFileInfo::exists(guest + "/medium-args"));
+    }
 
-        /* the medium's failure: the new build's task, the last one's gone */
-        const QPointer<Task> first(task);
-        qputenv("FAKE_MEDIUM_FAIL", "1");
-        QCOMPARE(build(b), "No room left");
-        QTRY_VERIFY(!first);
-        task = b.task();
-        QVERIFY(task);
-        QCOMPARE(task->state(), Task::State::Failed);
-        QCOMPARE(task->text(), "No room left");
-        qunsetenv("FAKE_MEDIUM_FAIL");
+    /*
+     * The real build-rpms.sh: the lines of a build's inputs kept with it,
+     * the build it replaces kept beside it and brought back when the inputs
+     * go back to it; the compiler cache in the cache folder
+     */
+    void keepsThePreviousBuild()
+    {
+        const QString guest = guestDir("previous-guest", true);
+        const QString rpms = m_tmp.filePath("previous/rpms");
+        const QString cache = m_tmp.filePath("previous/cache");
+        QProcessEnvironment env = QProcessEnvironment::systemEnvironment();
+        int status = -1;
+        env.insert("RPMS_DIR", rpms);
+        env.insert("CACHE_DIR", cache);
+        const auto buildTools = [&]() {
+            return run("bash", {guest + "/build-rpms.sh", "tools"}, &status, env);
+        };
 
-        /* stopped */
-        QVERIFY(write(m_tmp.filePath("task/rpms/mesa/.inputs"), "older\n"));
-        QFile::remove(gate);
-        qputenv("GATE", "mesa:" + gate.toUtf8());
-        finished.clear();
-        b.start();
-        QTRY_VERIFY_WITH_TIMEOUT(b.task() && b.task()->text().contains("making the packages"),
-                                 10000);
-        b.cancel();
-        QTRY_VERIFY_WITH_TIMEOUT(!finished.isEmpty(), 25000);
-        QCOMPARE(b.task()->state(), Task::State::Stopped);
-        b.task()->dismiss();
+        QFile::remove(m_podman + "/calls");
+        QString out = buildTools();
+        QVERIFY2(status == 0 && out.contains("vitrine-build: built: " + rpms + "/tools"),
+                 qPrintable(out));
+        const QByteArray first = read(rpms + "/tools/.inputs").trimmed();
+        QCOMPARE(first, GuestToolsBuilder::inputsHash(guest, "tools").toUtf8());
+        QCOMPARE(read(rpms + "/tools/.inputs.list"), GuestToolsBuilder::inputLines(guest, "tools"));
+        QVERIFY(!QFileInfo::exists(rpms + "/tools.previous"));
+        QVERIFY2(read(m_podman + "/calls").contains((cache + "/ccache:/ccache").toUtf8()),
+                 read(m_podman + "/calls").constData());
+        QVERIFY(read(m_podman + "/calls").contains("CCACHE_MAXSIZE=8G"));
+        QVERIFY(QFileInfo(cache + "/ccache").isDir());
+
+        /* other inputs: built, the one before kept */
+        QVERIFY(write(guest + "/tools/install", "#!/bin/bash\necho 2\n", true));
+        out = buildTools();
+        QVERIFY2(status == 0 && out.contains("vitrine-build: built: " + rpms + "/tools"),
+                 qPrintable(out));
+        const QByteArray second = read(rpms + "/tools/.inputs").trimmed();
+        QVERIFY(second != first);
+        QCOMPARE(read(rpms + "/tools.previous/.inputs").trimmed(), first);
+
+        /* back to the first inputs: brought back, no container */
+        QVERIFY(write(guest + "/tools/install", "#!/bin/bash\n", true));
+        QFile::remove(m_podman + "/calls");
+        out = buildTools();
+        QVERIFY2(status == 0 && out.contains("vitrine-build: restored: " + rpms + "/tools"),
+                 qPrintable(out));
+        QVERIFY(!QFileInfo::exists(m_podman + "/calls"));
+        QCOMPARE(read(rpms + "/tools/.inputs").trimmed(), first);
+        QCOMPARE(read(rpms + "/tools.previous/.inputs").trimmed(), second);
+
+        /* the app hears of it */
+        GuestToolsBuilder b;
+        setUp(b, guest, "previous");
+        QSignalSpy done(&b, &GuestToolsBuilder::packageDone);
+        QSignalSpy finished(&b, &GuestToolsBuilder::finished);
+        QVERIFY(write(guest + "/tools/install", "#!/bin/bash\necho 2\n", true));
+        b.start(QStringList{"tools"});
+        QTRY_VERIFY_WITH_TIMEOUT(!finished.isEmpty(), 20000);
+        QCOMPARE(finished[0][0].toString(), "");
+        QCOMPARE(done.size(), 1);
+        QCOMPARE(done[0][1].toBool(), true);
+        QCOMPARE(read(rpms + "/tools/.inputs").trimmed(), second);
+
+        /* without the compiler cache */
+        env.insert("CCACHE", "0");
+        QVERIFY(write(guest + "/tools/install", "#!/bin/bash\necho 3\n", true));
+        QFile::remove(m_podman + "/calls");
+        out = buildTools();
+        QVERIFY2(status == 0, qPrintable(out));
+        QVERIFY(!read(m_podman + "/calls").contains("/ccache"));
     }
 
     /* A package that fails: its error, the last good packages and medium kept */

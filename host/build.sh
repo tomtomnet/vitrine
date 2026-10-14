@@ -3,44 +3,56 @@
 #
 # Builds Vitrine's QEMU: virglrenderer and upstream QEMU, each fetched at
 # the commit versions.conf pins and patched with the *.patch files of
-# patches/<component> and of its folders (see patches_of), installed into a
-# prefix of their own:
+# patches/<component> and of its folders, or those its series file lists
+# (see patches_of), each installed into a folder of its own:
 #
+#   <stack>/virglrenderer/<key>/lib64/libvirglrenderer.so.1
 #   <stack>/<stamp>/bin/qemu-system-x86_64, qemu-img and QEMU's other tools
-#   <stack>/<stamp>/lib64/libvirglrenderer.so.1
 #   <stack>/<stamp>/share/qemu/               firmware, keymaps, qemu-options.hx
 #   <stack>/<stamp>/share/vitrine/stack.conf  what was built, written last
 #   <stack>/current -> <stamp>                flipped once a build is complete
 #
-# <stamp> sums up the inputs (versions.conf, the patches, this script): other
-# inputs build into another prefix, and the VMs running keep theirs.  Inputs
-# built already leave nothing to do.  The sources and build trees stay in
-# the work folder, and are patched and configured again only when their
-# inputs change, so that an update compiles only what it has to.
+# A component's key sums up its inputs (its source, its patches, this
+# script, the keys of the components it is built against: key_lines) and
+# names its folder; QEMU's is the stamp.  Inputs built already leave
+# nothing to do; other inputs build into another folder, and the VMs
+# running keep theirs.  The sources and build trees stay in the work
+# folder: a patch changed rewrites only the files whose content changes,
+# and a build tree is configured again in place, never made anew, so that
+# an update compiles only what it has to (--clean starts them over).
 #
-#   build.sh [--deps|--print-deps|--print-stamp] [--stack DIR|--prefix DIR] [--work DIR] [-j N]
+#   build.sh [--deps|--print-deps|--print-stamp|--print-keys|--print-inputs COMPONENT]
+#            [--stack DIR|--prefix DIR] [--work DIR] [-j N] [--clean] [COMPONENT]
 #
+#   COMPONENT      virglrenderer or qemu: builds it and what it needs [qemu]
 #   --deps         install the build dependencies first (Fedora, sudo dnf)
 #   --print-deps   tell the missing build dependencies, then stop (status 1
 #                  if something is missing)
-#   --print-stamp  print the stamp of the inputs, then stop
-#   --stack DIR    where the prefixes and `current` go
+#   --print-stamp  print the stamp of the inputs (QEMU's key), then stop
+#   --print-keys   print "COMPONENT KEY" for each component, then stop
+#   --print-inputs COMPONENT  print the lines its key sums up, then stop
+#   --stack DIR    where the builds and `current` go
 #                  [${XDG_DATA_HOME:-~/.local/share}/vitrine/stack]
-#   --prefix DIR   install into DIR itself instead: no stamp folder, no `current`
+#   --prefix DIR   install into DIR itself instead: no key folders, no `current`
 #   --work DIR     sources and build trees [${XDG_CACHE_HOME:-~/.cache}/vitrine/stack-build]
 #   -j N           parallel jobs [nproc]
+#   --clean        build trees from nothing: the incremental state in doubt
 #
-# QEMU gets an absolute RUNPATH to <prefix>/lib64, never $ORIGIN: once QEMU
-# has file capabilities (cap_sys_nice), the loader ignores LD_LIBRARY_PATH
-# and $ORIGIN, and would load the system's virglrenderer.
+# QEMU gets an absolute RUNPATH to virglrenderer's lib64, never $ORIGIN:
+# once QEMU has file capabilities (cap_sys_nice), the loader ignores
+# LD_LIBRARY_PATH and $ORIGIN, and would load the system's virglrenderer.
+# virglrenderer's folder is named after its own key, so that a change of
+# QEMU alone keeps that path, and QEMU links as it did.
 #
 # Lines starting with "vitrine-build: " are for the app:
 #   vitrine-build: step N/M: <what>
+#   vitrine-build: component: <component>     what follows is that component's
+#   vitrine-build: done: <component> built|up to date <folder>
 #   vitrine-build: missing: <dependency>
 #   vitrine-build: install: <the command installing what is missing>
 #   vitrine-build: warning: <message>
-#   vitrine-build: up to date: <prefix>
-#   vitrine-build: built: <prefix>
+#   vitrine-build: up to date: <folder>       the end: nothing was built
+#   vitrine-build: built: <folder>            the end: built
 #   vitrine-build: error: <message>
 set -euo pipefail
 shopt -s nullglob
@@ -49,10 +61,18 @@ here=$(cd -- "$(dirname -- "$(readlink -f "${BASH_SOURCE[0]}")")" && pwd)
 data_home=${XDG_DATA_HOME:-$HOME/.local/share}
 cache_home=${XDG_CACHE_HOME:-$HOME/.cache}
 
-usage() { sed -n '/^#   build.sh/,/^#   -j N/p' "$here/build.sh" | sed 's/^# \{0,3\}//'; }
+usage() { sed -n '/^#   build.sh/,/^#   --clean/p' "$here/build.sh" | sed 's/^# \{0,3\}//'; }
 say() { echo "vitrine-build: $*"; }
 died=0
 die() { say "error: $*"; died=1; exit 1; }
+
+# The components, in build order, and those each is built against
+components=(virglrenderer qemu)
+deps_of() {
+	case "$1" in
+	qemu) echo virglrenderer ;;
+	esac
+}
 
 # --- arguments ----------------------------------------------------------------
 action=build
@@ -60,11 +80,17 @@ stack=$data_home/vitrine/stack
 prefix=
 work=$cache_home/vitrine/stack-build
 jobs=$(nproc)
+target=qemu
+inputs_of=
+clean=0
 while [ $# -gt 0 ]; do
 	case "$1" in
 	--deps) action=deps ;;
 	--print-deps) action=print-deps ;;
 	--print-stamp) action=print-stamp ;;
+	--print-keys) action=print-keys ;;
+	--print-inputs) action=print-inputs; inputs_of=${2:?--print-inputs needs a component}; shift ;;
+	--print-inputs=*) action=print-inputs; inputs_of=${1#*=} ;;
 	--stack) stack=${2:?--stack needs a folder}; shift ;;
 	--stack=*) stack=${1#*=} ;;
 	--prefix) prefix=${2:?--prefix needs a folder}; shift ;;
@@ -73,12 +99,25 @@ while [ $# -gt 0 ]; do
 	--work=*) work=${1#*=} ;;
 	-j) jobs=${2:?-j needs a number}; shift ;;
 	-j*) jobs=${1#-j} ;;
+	--clean) clean=1 ;;
 	-h|--help) usage; exit 0 ;;
-	*) echo "unknown argument $1" >&2; usage >&2; exit 2 ;;
+	-*) echo "unknown argument $1" >&2; usage >&2; exit 2 ;;
+	*)
+		case " ${components[*]} " in
+		*" $1 "*) target=$1 ;;
+		*) echo "unknown component $1 (${components[*]})" >&2; exit 2 ;;
+		esac
+		;;
 	esac
 	shift
 done
 [[ $jobs =~ ^[1-9][0-9]*$ ]] || die "-j takes a number of jobs, not $jobs"
+if [ -n "$inputs_of" ]; then
+	case " ${components[*]} " in
+	*" $inputs_of "*) ;;
+	*) echo "unknown component $inputs_of (${components[*]})" >&2; exit 2 ;;
+	esac
+fi
 
 # --- inputs -------------------------------------------------------------------
 # versions.conf: NAME=value lines, read rather than sourced
@@ -90,26 +129,70 @@ VIRGL_COMMIT=$(conf VIRGL_COMMIT)
 for v in QEMU_URL QEMU_COMMIT VIRGL_URL VIRGL_COMMIT; do
 	[ -n "${!v}" ] || die "versions.conf has no $v"
 done
-
-# the patches of a component: its *.patch files and those of its folders
-# (QEMU's fork/, research/ and vitrine/), in the C order of their paths
-# whatever the locale: a folder's patches one after the other in name order,
-# the folders in name order
-patches_of() {
-	(cd "$here" && printf '%s\n' patches/"$1"/*.patch patches/"$1"/*/*.patch | sed '/^$/d' |
-		LC_ALL=C sort)
+source_of() {
+	case "$1" in
+	virglrenderer) echo "$VIRGL_URL $VIRGL_COMMIT" ;;
+	qemu) echo "$QEMU_URL $QEMU_COMMIT" ;;
+	esac
 }
+
+# The patches of a component, as paths in this folder, in the order they
+# apply: those its series file names (patches/<component>/series: one
+# name per line, # comments), else its *.patch files and those of its
+# folders, in the C order of their paths whatever the locale: a folder's
+# patches one after the other in name order, the folders in name order
+patches_of() {
+	local dir=patches/$1 line
+	if [ -f "$here/$dir/series" ]; then
+		while IFS= read -r line || [ -n "$line" ]; do
+			line=${line%%#*}
+			line=$(printf '%s' "$line" | sed 's/^[[:space:]]*//; s/[[:space:]]*$//')
+			[ -z "$line" ] || printf '%s\n' "$dir/$line"
+		done < "$here/$dir/series"
+		return
+	fi
+	(cd "$here" && printf '%s\n' "$dir"/*.patch "$dir"/*/*.patch | sed '/^$/d' | LC_ALL=C sort)
+}
+
+# A component's key: the sha256 of these lines, which its build records
+# beside what it installs, for the app to tell what changed since.  This
+# script, as it holds the configure options; versions.conf's values, not
+# the file (its comments change nothing)
+key_lines() {
+	local c=$1 d
+	local -a patches
+	mapfile -t patches < <(patches_of "$c")
+	echo "source $(source_of "$c")"
+	(cd "$here" && sha256sum build.sh ${patches[@]+"${patches[@]}"})
+	for d in $(deps_of "$c"); do
+		echo "dep $d $(key_of "$d")"
+	done
+}
+key_of() { key_lines "$1" | sha256sum | cut -c1-64; }
+
+case "$action" in
+print-stamp)
+	key_of qemu
+	exit 0
+	;;
+print-keys)
+	for c in "${components[@]}"; do
+		echo "$c $(key_of "$c")"
+	done
+	exit 0
+	;;
+print-inputs)
+	key_lines "$inputs_of"
+	exit 0
+	;;
+esac
 mapfile -t qemu_patches < <(patches_of qemu)
 mapfile -t virgl_patches < <(patches_of virglrenderer)
-
-# The stamp: the sha256 of sha256sum's lines for the inputs, in this order.
-# The app computes the same to tell when the build is out of date.
-stamp=$(cd "$here" && sha256sum versions.conf build.sh "${qemu_patches[@]}" "${virgl_patches[@]}" |
-	sha256sum | cut -c1-64)
-if [ "$action" = print-stamp ]; then
-	echo "$stamp"
-	exit 0
-fi
+for p in ${qemu_patches[@]+"${qemu_patches[@]}"} ${virgl_patches[@]+"${virgl_patches[@]}"}; do
+	[ -f "$here/$p" ] || die "$p, which a series file names, is not there"
+done
+vkey=$(key_of virglrenderer)
+stamp=$(key_of qemu)
 
 # --- dependencies -------------------------------------------------------------
 # Fedora's package names; what the build checks for is below (commands and
@@ -166,20 +249,31 @@ deps)
 esac
 
 # --- where --------------------------------------------------------------------
-# a stamp folder of the stack, or the prefix given
+# The folders of the stack, named after the keys, or the prefix given for
+# all.  QEMU is configured with a prefix that stays the same from build to
+# build ($qconf: the stack's `current`), since it compiles its prefix into
+# every file; a build installs it with DESTDIR into its stamp folder, where
+# QEMU finds its data and modules beside its binary (its install is
+# relocatable, meson's default).  virglrenderer is configured with its own
+# folder, which changes no command line of its compiles.
 if [ -n "$prefix" ]; then
 	mkdir -p "$prefix"
 	prefix=$(cd "$prefix" && pwd)
 	name=
+	vprefix=$prefix
+	qconf=$prefix
 else
 	mkdir -p "$stack"
 	stack=$(cd "$stack" && pwd)
 	name=${stamp:0:16}
 	prefix=$stack/$name
+	vprefix=$stack/virglrenderer/${vkey:0:16}
+	qconf=$stack/current
 fi
 mkdir -p "$work"
 work=$(cd "$work" && pwd)
 manifest=$prefix/share/vitrine/stack.conf
+vmanifest=$vprefix/share/vitrine/virglrenderer.conf
 # QEMU's configure installs Python packages with pip, whose cache would go
 # to the home folder; and so does a configure that make runs again
 export PIP_CACHE_DIR=$work/pip-cache
@@ -199,31 +293,45 @@ flip_current() {
 	mv -Tf "$stack/.current.new" "$stack/current"
 }
 
-if [ -f "$manifest" ] && grep -qx "STAMP=$stamp" "$manifest"; then
+# what is built already: the manifests, written last, with these keys.
+# QEMU's key has virglrenderer's: a QEMU built already names this
+# virglrenderer folder, built again if it went
+virgl_built() { [ -f "$vmanifest" ] && grep -qx "KEY=$vkey" "$vmanifest"; }
+qemu_built() { [ -f "$manifest" ] && grep -qx "STAMP=$stamp" "$manifest"; }
+build_virgl=1
+! virgl_built || build_virgl=0
+build_qemu=0
+[ "$target" != qemu ] || qemu_built || build_qemu=1
+
+if [ "$build_virgl" = 0 ] && [ "$build_qemu" = 0 ]; then
 	# no Stop between switching `current` and saying so (see the end)
 	trap '' TERM INT HUP
-	flip_current
-	say "up to date: $prefix"
+	say "done: virglrenderer up to date $vprefix"
+	if [ "$target" = qemu ]; then
+		flip_current
+		say "done: qemu up to date $prefix"
+		say "up to date: $prefix"
+	else
+		say "up to date: $vprefix"
+	fi
 	exit 0
 fi
 
-# A stamp folder without its manifest is what a build that failed or was
-# stopped left: it starts again from nothing.  A prefix given is the
-# caller's: installed over, never removed, but without its manifest from
+# A folder of the stack without its manifest is what a build that failed
+# or was stopped left: it starts again from nothing.  A prefix given is the
+# caller's: installed over, never removed, but without its manifests from
 # the first file installed until the build is complete, so that one that
 # failed or was stopped half-way is never taken for complete.
 partial=
-if [ -n "$name" ]; then
-	rm -rf "${prefix:?}"
-	mkdir -p "$prefix"
-	partial=$prefix
-fi
-rm -f "$manifest"
-step=
+vpartial=
+stage=
 on_exit() {
 	local rc=$?
 	if [ "$rc" -ne 0 ]; then
-		[ -z "$partial" ] || rm -rf "$partial"
+		local d
+		for d in "$partial" "$vpartial" "$stage"; do
+			[ -z "$d" ] || rm -rf "$d"
+		done
 		[ "$died" = 1 ] || say "error: ${step:-the build} failed (status $rc)"
 	fi
 }
@@ -232,8 +340,9 @@ trap on_exit EXIT
 trap 'exit 143' TERM
 trap 'exit 130' INT
 trap 'exit 129' HUP
-steps=8
+steps=$((1 + 2 * build_virgl + 5 * build_qemu))
 n=0
+step=
 begin() { n=$((n + 1)); step=$1; say "step $n/$steps: $1"; }
 
 # --- 1. dependencies ----------------------------------------------------------
@@ -244,6 +353,16 @@ if [ ${#missing[@]} -gt 0 ]; then
 fi
 command -v passt > /dev/null 2>&1 ||
 	say "warning: no passt on this host: VMs fall back to QEMU's user-mode network (Fedora: dnf install passt)"
+
+src=$work/src
+vbuild=$work/virglrenderer-build
+qbuild=$work/qemu-build
+mkdir -p "$src"
+if [ "$clean" = 1 ]; then
+	echo "build trees from nothing (--clean)"
+	rm -rf "$vbuild" "$qbuild"
+	rm -f "$src"/*.stamp
+fi
 
 # --- sources ------------------------------------------------------------------
 # no credential prompts (a desktop's askpass dialog) for public repositories
@@ -283,10 +402,15 @@ subprojects() {
 # checkout DIR URL COMMIT SUBPROJECTS PATCH...: DIR at COMMIT with the
 # patches applied, and its meson SUBPROJECTS (a list, of those it has a wrap
 # for) downloaded; left alone when it is already (DIR.stamp: the commit and
-# the patches' sha256): rewriting the files would make the build compile
-# them again
+# the patches' sha256).
+#
+# The patched tree is made in an index of its own, the working tree left
+# alone: a patch that does not apply changes nothing.  Then git takes the
+# working tree there from what the last build left, writing only the files
+# whose content differs: the others keep their time, and nothing that
+# depends on them only compiles again.
 checkout() {
-	local d=$1 url=$2 commit=$3 p sums s
+	local d=$1 url=$2 commit=$3 p sums s tree index
 	local -a subs keep=()
 	read -ra subs <<< "$4"
 	shift 4
@@ -309,18 +433,29 @@ checkout() {
 	git -C "$d" cat-file -e "$commit^{commit}" 2> /dev/null ||
 		git -C "$d" fetch --depth 1 origin "$commit" ||
 		die "cannot fetch $commit from $url (no network, or the commit is gone from the repository)"
-	git -C "$d" checkout -q -f --detach "$commit"
+	index=$d/.git/vitrine-patched-index
+	rm -f "$index"
+	GIT_INDEX_FILE=$index git -C "$d" read-tree "$commit"
+	for p in "$@"; do
+		echo "applying $p"
+		GIT_INDEX_FILE=$index git -C "$d" apply --cached --whitespace=nowarn "$here/$p" ||
+			die "$p does not apply to ${commit:0:12}"
+	done
+	tree=$(GIT_INDEX_FILE=$index git -C "$d" write-tree)
+	rm -f "$index"
 	# all the last build left goes, nested repositories too (-ff): meson's
 	# downloads are, and meson would build a stale one.  The downloads of
 	# SUBPROJECTS stay, for subprojects() to tell whether they still hold
 	for s in "${subs[@]}"; do
 		keep+=(-e "/subprojects/$s/")
 	done
-	git -C "$d" clean -q -ffdx "${keep[@]}"
-	for p in "$@"; do
-		echo "applying $p"
-		git -C "$d" apply --whitespace=nowarn "$here/$p" || die "$p does not apply to ${commit:0:12}"
-	done
+	git -C "$d" clean -q -ffdx ${keep[@]+"${keep[@]}"}
+	# the files as they are, changed by hand too, which go back
+	git -C "$d" add -u
+	git -C "$d" read-tree -m -u "$tree"
+	# a commit of it, for `git diff COMMIT` to show the patches
+	git -C "$d" update-ref --no-deref HEAD "$(git -C "$d" -c user.name=vitrine -c user.email=vitrine@localhost \
+		commit-tree "$tree" -p "$commit" -m "${commit:0:12} with $# patches")"
 	subprojects_of "$d" "${subs[@]}"
 	echo "$commit $sums" > "$d.stamp"
 }
@@ -339,63 +474,117 @@ subprojects_of() {
 # configured DIR LINE: whether build tree DIR was configured with LINE
 configured() { [ -f "$1/.vitrine-configure" ] && [ "$(cat "$1/.vitrine-configure")" = "$2" ]; }
 
-src=$work/src
-mkdir -p "$src"
+# their paths in patches/<component>: research/0001-x.patch
+patch_names() { local p; for p in "$@"; do printf '%s ' "${p#patches/*/}"; done; }
 
-# --- 2-3. virglrenderer -------------------------------------------------------
-begin "fetching virglrenderer"
-checkout "$src/virglrenderer" "$VIRGL_URL" "$VIRGL_COMMIT" "" "${virgl_patches[@]}"
+# --- virglrenderer ------------------------------------------------------------
+say "component: virglrenderer"
+if [ "$build_virgl" = 0 ]; then
+	echo "virglrenderer built already: $vprefix"
+	say "done: virglrenderer up to date $vprefix"
+else
+	[ -z "$name" ] || vpartial=$vprefix
+	if [ -n "$name" ]; then
+		rm -rf "$vprefix"
+	fi
+	rm -f "$vmanifest"
+	begin "fetching virglrenderer"
+	checkout "$src/virglrenderer" "$VIRGL_URL" "$VIRGL_COMMIT" "" ${virgl_patches[@]+"${virgl_patches[@]}"}
 
-begin "building virglrenderer"
-vbuild=$work/virglrenderer-build
-# native context for AMD GPUs, and Intel ones on the i915 or the Xe driver;
-# the msm and asahi renderers serve ARM hosts, which this x86_64 QEMU is not for
-vargs=(--prefix="$prefix" --libdir=lib64 --buildtype=debugoptimized
-	-Ddrm-renderers=amdgpu-experimental,i915-experimental,xe-experimental -Dvideo=true -Dvenus=false)
-vline="$src/virglrenderer ${vargs[*]}"
-# configured afresh when the options change, as the prefix does with each new
-# stamp; otherwise meson configures again what its own files change
-if [ ! -f "$vbuild/build.ninja" ] || ! configured "$vbuild" "$vline"; then
-	rm -rf "$vbuild"
-	meson setup "$vbuild" "$src/virglrenderer" "${vargs[@]}"
+	begin "building virglrenderer"
+	# native context for AMD GPUs, and Intel ones on the i915 or the Xe driver;
+	# the msm and asahi renderers serve ARM hosts, which this x86_64 QEMU is not for
+	vargs=(--prefix="$vprefix" --libdir=lib64 --buildtype=debugoptimized
+		-Ddrm-renderers=amdgpu-experimental,i915-experimental,xe-experimental -Dvideo=true -Dvenus=false)
+	vline="$src/virglrenderer ${vargs[*]}"
+	# configured again in place when the options change (a new folder with
+	# each new key): meson keeps what its compiles' command lines do not change
+	if [ ! -f "$vbuild/build.ninja" ]; then
+		rm -rf "$vbuild"
+		meson setup "$vbuild" "$src/virglrenderer" "${vargs[@]}"
+	elif ! configured "$vbuild" "$vline"; then
+		rm -f "$vbuild/.vitrine-configure"
+		meson setup --reconfigure "$vbuild" "$src/virglrenderer" "${vargs[@]}" || {
+			echo "configuring again in place failed: from nothing"
+			rm -rf "$vbuild"
+			meson setup "$vbuild" "$src/virglrenderer" "${vargs[@]}"
+		}
+	fi
 	echo "$vline" > "$vbuild/.vitrine-configure"
+	ninja -C "$vbuild" -j "$jobs"
+	meson install -C "$vbuild" --no-rebuild --quiet
+	[ -f "$vprefix/lib64/pkgconfig/virglrenderer.pc" ] || die "virglrenderer installed no virglrenderer.pc"
+	mkdir -p "$(dirname "$vmanifest")"
+	key_lines virglrenderer > "$vprefix/share/vitrine/virglrenderer.inputs"
+	# what was built, written last: a folder with it is complete
+	cat > "$vmanifest.new" << EOF
+# What host/build.sh built here
+KEY=$vkey
+BUILT=$(date -u +%Y-%m-%dT%H:%M:%SZ)
+URL=$VIRGL_URL
+COMMIT=$VIRGL_COMMIT
+VERSION=$(PKG_CONFIG_PATH=$vprefix/lib64/pkgconfig pkg-config --modversion virglrenderer)
+PATCHES=$(patch_names ${virgl_patches[@]+"${virgl_patches[@]}"})
+EOF
+	mv -f "$vmanifest.new" "$vmanifest"
+	vpartial=
+	say "done: virglrenderer built $vprefix"
 fi
-ninja -C "$vbuild" -j "$jobs"
-meson install -C "$vbuild" --no-rebuild --quiet
-[ -f "$prefix/lib64/pkgconfig/virglrenderer.pc" ] || die "virglrenderer installed no virglrenderer.pc"
+if [ "$target" = virglrenderer ]; then
+	trap '' TERM INT HUP
+	say "built: $vprefix"
+	exit 0
+fi
 
-# --- 4-7. QEMU ----------------------------------------------------------------
+# --- QEMU ---------------------------------------------------------------------
+say "component: qemu"
+if [ "$build_qemu" = 0 ]; then
+	# built already, with the virglrenderer made again above
+	trap '' TERM INT HUP
+	flip_current
+	say "done: qemu up to date $prefix"
+	say "built: $prefix"
+	exit 0
+fi
+if [ -n "$name" ]; then
+	rm -rf "$prefix"
+	partial=$prefix
+fi
+rm -f "$manifest"
+
 begin "fetching QEMU"
 # the subprojects this configuration builds: keycodemapdb, which configure
 # checks for; dtc for --enable-fdt=internal; imgui for --enable-sdl-gui
-checkout "$src/qemu" "$QEMU_URL" "$QEMU_COMMIT" "dtc imgui keycodemapdb" "${qemu_patches[@]}"
+checkout "$src/qemu" "$QEMU_URL" "$QEMU_COMMIT" "dtc imgui keycodemapdb" ${qemu_patches[@]+"${qemu_patches[@]}"}
 
 begin "configuring QEMU"
-qbuild=$work/qemu-build
-qargs=(--prefix="$prefix" --target-list=x86_64-softmmu --without-default-features --disable-werror
+qargs=(--prefix="$qconf" --target-list=x86_64-softmmu --without-default-features --disable-werror
 	--enable-kvm --enable-tcg --enable-pixman --enable-attr --enable-virtfs --enable-hmp
 	--enable-malloc-trim --enable-sdl --enable-sdl-gui --enable-gtk --enable-opengl --enable-virglrenderer
 	--enable-libusb --enable-pa --enable-pipewire --enable-spice-protocol --enable-passt --enable-gio
 	--enable-dbus-display --enable-slirp --enable-tpm --enable-vhost-kernel --enable-vhost-net
 	--enable-vhost-user --enable-zstd --enable-png --enable-tools --enable-fdt=internal --disable-docs
 	--disable-plugins --disable-containers --container-command=no --disable-download
-	"--extra-ldflags=-Wl,-rpath,$prefix/lib64")
+	"--extra-ldflags=-Wl,-rpath,$vprefix/lib64")
 # (no containers: configure would otherwise run podman to see if it works, which
 # sets up podman's storage in the user's home, for cross-builds we never do;
 # no download: the subprojects come with the sources, and Python's tooling
 # from the system and the wheels QEMU carries, rather than from PyPI)
 #
-# The build tree is configured afresh when this line changes.  It names the
-# virglrenderer QEMU is built against too: configure probes what that offers
-# (virgl_renderer_resource_set_guest_dmabuf, its version), and meson keeps
-# what it found, which with --prefix nothing else would make it look again at
-qline="$src/qemu ${qargs[*]} PKG_CONFIG_PATH=$prefix/lib64/pkgconfig virglrenderer=$(cat "$src/virglrenderer.stamp")"
+# Configured again in place when this line changes: QEMU's configure
+# clears meson's state (its probes start over) and keeps what was
+# compiled, which compiles again only where a command line changed.  The
+# line names the virglrenderer QEMU is built against: configure probes
+# what that offers (virgl_renderer_resource_set_guest_dmabuf, its version),
+# and meson keeps what it found, which nothing else would make it look
+# again at
+qline="$src/qemu ${qargs[*]} PKG_CONFIG_PATH=$vprefix/lib64/pkgconfig virglrenderer=$vkey"
 if [ -f "$qbuild/build.ninja" ] && configured "$qbuild" "$qline"; then
 	echo "configured already"
 else
-	rm -rf "$qbuild"
+	rm -f "$qbuild/.vitrine-configure"
 	mkdir -p "$qbuild"
-	(cd "$qbuild" && PKG_CONFIG_PATH="$prefix/lib64/pkgconfig${PKG_CONFIG_PATH:+:$PKG_CONFIG_PATH}" \
+	(cd "$qbuild" && PKG_CONFIG_PATH="$vprefix/lib64/pkgconfig${PKG_CONFIG_PATH:+:$PKG_CONFIG_PATH}" \
 		"$src/qemu/configure" "${qargs[@]}")
 	echo "$qline" > "$qbuild/.vitrine-configure"
 fi
@@ -406,7 +595,23 @@ begin "compiling QEMU"
 make -C "$qbuild" -j "$jobs"
 
 begin "installing QEMU"
-make -C "$qbuild" install
+if [ -n "$name" ]; then
+	# beside the stack, on its file system: moved into its folder in one step
+	stage=$stack/.stage-$name
+	rm -rf "$stage"
+	make -C "$qbuild" install DESTDIR="$stage"
+	[ -d "$stage$qconf" ] || die "QEMU installed nothing under $stage$qconf"
+	mv -T "$stage$qconf" "$prefix"
+	rm -rf "$stage"
+	stage=
+	# the firmware descriptors name the firmware by its configured path
+	for f in "$prefix"/share/qemu/firmware/*.json; do
+		json=$(< "$f")
+		printf '%s\n' "${json//"$qconf/"/"$prefix/"}" > "$f"
+	done
+else
+	make -C "$qbuild" install
+fi
 # QEMU installs the UEFI firmware of every architecture it knows, some 200 MB:
 # the VMs are x86_64 ones
 rm -f "$prefix"/share/qemu/edk2-{aarch64,arm,riscv64,loongarch64}-* \
@@ -414,7 +619,6 @@ rm -f "$prefix"/share/qemu/edk2-{aarch64,arm,riscv64,loongarch64}-* \
 # the full option descriptions, for the app's QEMU reference
 install -m 0644 "$src/qemu/qemu-options.hx" "$prefix/share/qemu/qemu-options.hx"
 
-# --- 8. check -----------------------------------------------------------------
 begin "checking the installation"
 qemu=$prefix/bin/qemu-system-x86_64
 [ -x "$qemu" ] && [ -x "$prefix/bin/qemu-img" ] || die "qemu-system-x86_64 or qemu-img was not installed"
@@ -422,15 +626,15 @@ qemu=$prefix/bin/qemu-system-x86_64
 runpath=$(readelf -d "$qemu" | sed -n 's/.*(RUNPATH).*\[\(.*\)\]$/\1/p')
 case ":$runpath:" in
 *'$ORIGIN'*) die "the RUNPATH of qemu-system-x86_64 uses \$ORIGIN: $runpath" ;;
-*":$prefix/lib64:"*) echo "RUNPATH $runpath" ;;
-*) die "qemu-system-x86_64 has no RUNPATH to $prefix/lib64 (it has: ${runpath:-none})" ;;
+*":$vprefix/lib64:"*) echo "RUNPATH $runpath" ;;
+*) die "qemu-system-x86_64 has no RUNPATH to $vprefix/lib64 (it has: ${runpath:-none})" ;;
 esac
 # what the loader finds, without what the environment adds; and with
 # modules, the virtio-gpu-gl one is what loads virglrenderer
 for f in "$qemu" "$prefix"/lib*/qemu/hw-display-virtio-gpu-gl.so; do
 	lib=$(env -u LD_LIBRARY_PATH -u LD_PRELOAD ldd "$f" | sed -n 's/^[[:space:]]*libvirglrenderer\.so[.0-9]* => \([^ ]*\).*/\1/p')
-	[ "$lib" = "$prefix/lib64/libvirglrenderer.so.1" ] ||
-		die "$(basename "$f") loads ${lib:-no virglrenderer} instead of $prefix/lib64/libvirglrenderer.so.1"
+	[ "$lib" = "$vprefix/lib64/libvirglrenderer.so.1" ] ||
+		die "$(basename "$f") loads ${lib:-no virglrenderer} instead of $vprefix/lib64/libvirglrenderer.so.1"
 	echo "$(basename "$f") loads $lib"
 done
 version=$("$qemu" -version | sed -n 's/^QEMU emulator version \([^ ]*\).*/\1/p')
@@ -448,8 +652,7 @@ echo "QEMU $version, virtio-gpu-gl-pci with drm_native_context and x-host-vblank
 # they start ignore the signals too
 trap '' TERM INT HUP
 mkdir -p "$(dirname "$manifest")"
-# their paths in patches/<component>: research/0001-x.patch
-patch_names() { local p; for p in "$@"; do printf '%s ' "${p#patches/*/}"; done; }
+key_lines qemu > "$prefix/share/vitrine/qemu.inputs"
 cat > "$manifest.new" << EOF
 # What host/build.sh built here
 STAMP=$stamp
@@ -457,13 +660,16 @@ BUILT=$(date -u +%Y-%m-%dT%H:%M:%SZ)
 QEMU_URL=$QEMU_URL
 QEMU_COMMIT=$QEMU_COMMIT
 QEMU_VERSION=$version
-QEMU_PATCHES=$(patch_names "${qemu_patches[@]}")
+QEMU_PATCHES=$(patch_names ${qemu_patches[@]+"${qemu_patches[@]}"})
 VIRGL_URL=$VIRGL_URL
 VIRGL_COMMIT=$VIRGL_COMMIT
-VIRGL_VERSION=$(PKG_CONFIG_PATH=$prefix/lib64/pkgconfig pkg-config --modversion virglrenderer)
-VIRGL_PATCHES=$(patch_names "${virgl_patches[@]}")
+VIRGL_VERSION=$(PKG_CONFIG_PATH=$vprefix/lib64/pkgconfig pkg-config --modversion virglrenderer)
+VIRGL_PATCHES=$(patch_names ${virgl_patches[@]+"${virgl_patches[@]}"})
+VIRGL_KEY=$vkey
+VIRGL_PREFIX=$vprefix
 EOF
 mv -f "$manifest.new" "$manifest"
 partial=
 flip_current
+say "done: qemu built $prefix"
 say "built: $prefix"

@@ -20,13 +20,13 @@ private slots:
     {
         TaskList list;
         QSignalSpy added(&list, &TaskList::added);
-        Task *build = list.add(Task::Kind::QemuBuild, "QEMU build");
+        Task *build = list.add(Task::Kind::Build, "QEMU build");
         Task *clone = list.add(Task::Kind::Clone, "Clone of Alpha");
 
         QCOMPARE(list.tasks(), QList<Task *>({build, clone}));
         QCOMPARE(added.size(), 2);
         QCOMPARE(added[1][0].value<Task *>(), clone);
-        QCOMPARE(build->kind(), Task::Kind::QemuBuild);
+        QCOMPARE(build->kind(), Task::Kind::Build);
         QCOMPARE(clone->title(), QString("Clone of Alpha"));
         QVERIFY(build->isRunning());
         QCOMPARE(build->state(), Task::State::Running);
@@ -69,8 +69,8 @@ private slots:
     void finish()
     {
         TaskList list;
-        Task *done = list.add(Task::Kind::QemuBuild, "QEMU build");
-        Task *failed = list.add(Task::Kind::GuestToolsBuild, "Guest tools build");
+        Task *done = list.add(Task::Kind::Build, "QEMU build");
+        Task *failed = list.add(Task::Kind::Build, "Guest tools build");
         Task *stopped = list.add(Task::Kind::Clone, "Clone of Alpha");
         QSignalSpy finished(&list, &TaskList::taskFinished);
         QSignalSpy doneFinished(done, &Task::finished);
@@ -103,7 +103,7 @@ private slots:
     void details()
     {
         TaskList list;
-        Task *build = list.add(Task::Kind::QemuBuild, "QEMU build");
+        Task *build = list.add(Task::Kind::Build, "QEMU build");
         Task *clone = list.add(Task::Kind::Clone, "Clone of Alpha");
         Task *other = list.add(Task::Kind::Other, "Other");
         QList<Task *> shown;
@@ -111,7 +111,7 @@ private slots:
 
         QVERIFY(!build->hasDetails());
         build->showDetails();
-        list.setDetails(Task::Kind::QemuBuild, [&shown](Task *task) { shown << task; });
+        list.setDetails(Task::Kind::Build, [&shown](Task *task) { shown << task; });
         list.setDetails(Task::Kind::Clone, [&shown](Task *task) { shown << task; });
         clone->setDetails([&cloneShown]() { cloneShown++; });
         QVERIFY(build->hasDetails());
@@ -146,7 +146,7 @@ private slots:
     void detailsDismissing()
     {
         TaskList list;
-        Task *task = list.add(Task::Kind::QemuBuild, "QEMU build");
+        Task *task = list.add(Task::Kind::Build, "QEMU build");
         QSignalSpy removed(&list, &TaskList::removed);
 
         task->finish(Task::State::Failed, "Stopped");
@@ -159,7 +159,7 @@ private slots:
     void seen()
     {
         TaskList list;
-        Task *running = list.add(Task::Kind::QemuBuild, "QEMU build");
+        Task *running = list.add(Task::Kind::Build, "QEMU build");
         Task *done = list.add(Task::Kind::Clone, "Clone of Alpha");
 
         done->finish(Task::State::Done);
@@ -171,7 +171,7 @@ private slots:
     void dismiss()
     {
         TaskList list;
-        Task *running = list.add(Task::Kind::QemuBuild, "QEMU build");
+        Task *running = list.add(Task::Kind::Build, "QEMU build");
         Task *failed = list.add(Task::Kind::Clone, "Clone of Alpha");
         QSignalSpy removed(&list, &TaskList::removed);
         const QPointer<Task> gone(failed);
@@ -190,10 +190,10 @@ private slots:
     void clearFinished()
     {
         TaskList list;
-        Task *running = list.add(Task::Kind::QemuBuild, "QEMU build");
+        Task *running = list.add(Task::Kind::Build, "QEMU build");
         Task *done = list.add(Task::Kind::Clone, "Clone of Alpha");
         Task *failed = list.add(Task::Kind::Clone, "Clone of Bravo");
-        Task *stopped = list.add(Task::Kind::GuestToolsBuild, "Guest tools build");
+        Task *stopped = list.add(Task::Kind::Build, "Guest tools build");
         QSignalSpy removed(&list, &TaskList::removed);
 
         done->finish(Task::State::Done);

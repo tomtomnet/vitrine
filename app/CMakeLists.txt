@@ -6,6 +6,10 @@ find_package(Qt6 6.4 REQUIRED COMPONENTS Core Concurrent DBus Gui Network Widget
 qt_add_library(vitrine_core STATIC
     src/core/argsfile.cpp
     src/core/argsfile.h
+    src/core/buildcomponents.cpp
+    src/core/buildcomponents.h
+    src/core/buildmanager.cpp
+    src/core/buildmanager.h
     src/core/cardsettings.cpp
     src/core/cardsettings.h
     src/core/diskinfo.cpp

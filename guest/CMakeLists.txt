@@ -17,6 +17,7 @@ endif()
 install(CODE "file(REMOVE_RECURSE \"\$ENV{DESTDIR}${vitrine_guest}\")")
 install(PROGRAMS build-rpms.sh build-medium.sh rpm-build-inside.sh
     DESTINATION ${VITRINE_GUEST_DESTINATION})
+install(FILES components.conf DESTINATION ${VITRINE_GUEST_DESTINATION})
 # the installer and the agent keep their modes
 install(DIRECTORY tools mesa kwin DESTINATION ${VITRINE_GUEST_DESTINATION}
     USE_SOURCE_PERMISSIONS)

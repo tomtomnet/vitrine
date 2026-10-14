@@ -132,14 +132,9 @@ MainWindow::MainWindow(VmStore *store, QWidget *parent)
     m_list->setContextMenuPolicy(Qt::CustomContextMenu);
     /* the tasks' button shows the builds' windows: once this window is gone, none */
     const QPointer<MainWindow> self(this);
-    TaskList::instance()->setDetails(Task::Kind::QemuBuild, [self](Task *) {
+    TaskList::instance()->setDetails(Task::Kind::Build, [self](Task *) {
         if (self) {
             self->buildQemu();
-        }
-    });
-    TaskList::instance()->setDetails(Task::Kind::GuestToolsBuild, [self](Task *) {
-        if (self) {
-            GuestToolsBuildDialog::present(self);
         }
     });
 

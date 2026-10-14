@@ -12,7 +12,7 @@ class TaskList;
 
 /*
  * A long job of the app, as the main window shows it under the list of
- * VMs: a build of Vitrine's QEMU or of the guest tools, the clone of a VM.
+ * VMs: a run of builds (Vitrine's QEMU, the guest tools), the clone of a VM.
  * The job tells what it does and how far it is, then how it ended; the
  * window shows its details when asked: the build's window, the clone's
  * dialog.
@@ -27,12 +27,12 @@ class Task : public QObject
 
 public:
     /* What the job is, for its icon and the window that details it */
-    enum class Kind { QemuBuild, GuestToolsBuild, Clone, Other };
+    enum class Kind { Build, Clone, Other };
     enum class State { Running, Done, Failed, Stopped };
     Q_ENUM(State)
 
     Kind kind() const { return m_kind; }
-    /* What it is, in a few words: "QEMU build", "Clone of Fedora" */
+    /* What it is, in a few words: "Building QEMU", "Clone of Fedora" */
     QString title() const { return m_title; }
     /* What it does now ("Step 3 of 5: building QEMU"), or how it ended */
     QString text() const { return m_text; }
@@ -43,10 +43,13 @@ public:
     qint64 total() const { return m_total; }
     /* From 0 to 1, or -1 while it cannot tell (busy) */
     double fraction() const;
+    /* What is left of it, in seconds; -1 while it cannot tell */
+    qint64 remaining() const { return m_remaining; }
 
     void setTitle(const QString &title);
     void setText(const QString &text);
     void setProgress(qint64 done, qint64 total);
+    void setRemaining(qint64 seconds);
     /* It ended, once: Done, Failed or Stopped; @text, what it made or why
        it failed, replaces what it was doing */
     void finish(State state, const QString &text = {});
@@ -78,6 +81,7 @@ private:
     State m_state = State::Running;
     qint64 m_done = 0;
     qint64 m_total = 0;
+    qint64 m_remaining = -1;
     std::function<void()> m_details;
     bool m_dismissed = false;
 };
