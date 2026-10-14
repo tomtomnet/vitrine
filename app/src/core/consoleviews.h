@@ -6,6 +6,7 @@
 #include <optional>
 
 class QKeyEvent;
+class QTimer;
 
 /*
  * Which view of a VM the console shows, for a VM whose nested desktop
@@ -28,6 +29,15 @@ class QKeyEvent;
  * if its agent went (the guest shuts down or restarts), else nothing moves
  * until the guest tells (a logout's login screen comes, or the agent goes).
  *
+ * An agent that goes while no desktop shows brings Boot only after a wait
+ * (kAgentWaitMs): the agent also restarts on its own, to take over a new
+ * version of itself after a tools update it ran, or after a crash, and
+ * comes back within moments to say the same screen again.  Back within the
+ * wait, nothing moves but for something new on the guest's screen; gone
+ * for good (a shutdown, a reboot), Boot - at the latest at the reboot's
+ * reset (powerOn()), or when the run ends.  The desktop coming or the
+ * user's choice meanwhile takes that Boot back.
+ *
  * Not as an agent answers: agents start early in a boot, seconds or minutes
  * (the guest tools' install at boot) before the login screen.  Nor by what
  * QEMU says of the card's screen: the firmware drives it too (OVMF sets a
@@ -44,7 +54,13 @@ public:
     enum class View { Boot, Screen, Desktop };
     Q_ENUM(View)
 
+    /* How long an agent that went may take to come back before Boot shows:
+       a restart of its own takes about a second */
+    static constexpr int kAgentWaitMs = 2000;
+
     explicit ConsoleViews(QObject *parent = nullptr);
+    /* Tests: a shorter wait for the views made after; 0 or less for kAgentWaitMs */
+    static void setAgentWait(int ms);
 
     View view() const;
     /* The QEMU console of @view, for the D-Bus display: 0 for Boot, else 1 */
@@ -68,9 +84,10 @@ public:
     /*
      * What the guest says through the guest tools' agent: @up, the agent
      * answers (its system runs; the agent goes as the guest shuts down or
-     * restarts, and at the end of the tools' install at boot); @screen, the
-     * guest's own screen shows its login screen or its console.  Screen as
-     * that comes, Boot as the agent goes; nothing while the desktop shows.
+     * restarts, at the end of the tools' install at boot, and for a moment
+     * as it restarts itself); @screen, the guest's own screen shows its
+     * login screen or its console.  Screen as that comes, Boot once the
+     * agent has been gone for the wait; nothing while the desktop shows.
      */
     void setGuest(bool up, bool screen);
     /* The guest's window came (Desktop), or went (see above) */
@@ -82,9 +99,16 @@ signals:
 
 private:
     void show(View view);
+    /* The wait for the agent ran out: it went for good */
+    void agentGone();
 
     View m_view = View::Boot;
     bool m_up = false;
     bool m_screen = false;
     bool m_desktop = false;
+    /* runs while the agent that went may come back; m_screenBefore, what the
+       guest's screen showed until it went; m_bootAfter, Boot when it runs out */
+    QTimer *m_agentWait;
+    bool m_screenBefore = false;
+    bool m_bootAfter = false;
 };
