@@ -119,12 +119,13 @@ changes, and the guest packages compile through ccache.
    (Ctrl+S) edits. A Linux VM whose 3D card lacks what new VMs get (native
    context, the host vblank timing) offers Update… on its Details tab.
 3. **Guest tools** for Fedora 44 x86-64 guests (virtio-gpu driver, Mesa, KWin
-   for Plasma 6.7.5, an agent). The Builds window (also Build… in
-   Machine > Install Guest Tools… and in Preferences) builds them in a Fedora
-   container with rootless podman, then makes the medium VMs install them
-   from: 20 to 40 minutes the first time (Mesa ~15-25 min, KWin ~10, tools
-   ~1), up to 10 GiB of memory. Mesa and KWin wait until that much is free,
-   unless told to build anyway. `guest/build-rpms.sh` then
+   and KPipeWire for Plasma 6.7.5, the nested desktop's session and proxy, an
+   agent). The Builds window (also Build… in Machine > Install Guest Tools…
+   and in Preferences) builds them in a Fedora container with rootless
+   podman, then makes the medium VMs install them from: 20 to 40 minutes the
+   first time (Mesa ~15-25 min, KWin ~10, the proxy and KPipeWire ~2 each,
+   tools ~1), up to 10 GiB of memory. Mesa and KWin wait until that much is
+   free, unless told to build anyway. `guest/build-rpms.sh` then
    `guest/build-medium.sh` do the same by hand.
 
    Then Machine > Install Guest Tools… > Install starts the VM with the tools
@@ -182,7 +183,9 @@ guest's Wayland and X11 clipboards. On a Wayland host, text copied in the
 guest replaces the host clipboard only if vitrine's window had a key press,
 a click or the mouse entering it since the last host copy; copying in the
 guest with its keys or mouse does that. QEMU's SDL window shares the
-clipboard too, and on Wayland waits for a key or click in it.
+clipboard too, and on Wayland waits for a key or click in it. A nested
+desktop shares it through its own proxy instead, following the focus of its
+window; spice-vdagent does not start there.
 
 USB: Machine > USB Devices (also in the VM list's context menu) gives the
 host's USB devices to a running VM, whatever shows its screen, and takes them
