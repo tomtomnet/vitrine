@@ -463,10 +463,14 @@ private slots:
         QCOMPARE(args.lines[args.indexOf("vga")].value, "none");
         QCOMPARE(args.lines[args.indexOf("display")].value, "dbus,p2p=yes,gl=on");
 
-        /* on, then off before Apply: nothing to save */
+        /* on, then off before Apply: nothing to save; native context shown as the card has it */
         page.load(args);
+        native->setChecked(false);
         nested->setChecked(true);
+        QVERIFY(native->isChecked() && !native->isEnabled());
         nested->setChecked(false);
+        QVERIFY(!native->isChecked());
+        native->setChecked(true);
         QVERIFY(!page.isModified());
         QCOMPARE(card->currentData().toString(), "virtio-vga-gl");
 
@@ -481,6 +485,7 @@ private slots:
                                "-display sdl\n");
         page.load(args);
         QVERIFY(nested->isEnabled() && nested->isChecked());
+        QVERIFY(native->isChecked());
         QVERIFY(!page.isModified());
         /* a rutabaga card set up by hand is the Arguments page's */
         args = ArgsFile::parse("#qemu " + research + "\n-vga none\n"

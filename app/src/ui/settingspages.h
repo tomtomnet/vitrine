@@ -175,8 +175,9 @@ private:
     QLabel *m_nestedHint;
     /* what the VM's QEMU has of it, asked once per load() */
     NestedDesktop::Offer m_nestedOffer;
-    /* the card of the list before the nested desktop's took its place */
+    /* the card of the list before the nested desktop's took its place, and its native context */
     QString m_cardBeforeNested;
+    bool m_nativeBeforeNested = false;
     QLabel *m_windowLabel;
     QMap<QString, QCheckBox *> m_options;
     QComboBox *m_card;

@@ -906,6 +906,48 @@ private slots:
     }
 
     /*
+     * A QEMU found running with the nested desktop in vitrine's window: its
+     * socket, by its command line, for the console to serve again (a
+     * session of the guest started from then on comes back to it); none
+     * for one in a window of its own, nor once it ended
+     */
+    void nestedFoundRunning_data()
+    {
+        QTest::addColumn<QString>("socket");
+        QTest::addColumn<bool>("served");
+        QTest::newRow("vitrine's window") << "nested.sock" << true;
+        QTest::newRow("its own window") << "wayland.sock" << false;
+    }
+    void nestedFoundRunning()
+    {
+        QFETCH(QString, socket);
+        QFETCH(bool, served);
+        const QStringList command = VmRunner(id, tmp.path()).commandLine({});
+        FakeMonitor monitor(runDir + "/qmp.sock");
+        QProcess qemu;
+        QVERIFY(startStandIn(qemu, FAKE_QEMU,
+                             {"-device", "virtio-gpu-rutabaga-pci,cross-domain=on,"
+                                         "wayland-socket-path=" + runDir + '/' + socket,
+                              "-qmp", command[command.size() - 3]}));
+        QFile pid(runDir + "/qemu.pid");
+        QVERIFY(pid.open(QIODevice::WriteOnly));
+        pid.write(QByteArray::number(qemu.processId()) + '\n');
+        pid.close();
+
+        VmRunner runner(id, tmp.path());
+        runner.attach(ArgsFile::parse(kHeadless));
+        QTRY_COMPARE(runner.state(), VmRunner::State::Running);
+        QCOMPARE(runner.nestedSocket(), served ? runDir + "/nested.sock" : QString());
+
+        monitor.close();
+        qemu.kill();
+        qemu.waitForFinished();
+        QTRY_COMPARE_WITH_TIMEOUT(runner.state(), VmRunner::State::Stopped, 10000);
+        QCOMPARE(runner.nestedSocket(), QString());
+        QDir().mkpath(runDir);
+    }
+
+    /*
      * A guest's own suspend to RAM is no pause from here: QEMU takes input
      * there.  A QEMU stand-in found running, its monitor sending the events.
      */

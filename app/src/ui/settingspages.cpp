@@ -584,7 +584,10 @@ void DisplayPage::nestedToggled(bool on)
         if (on) {
             if (m_card->currentData().toString() != kNestedCard) {
                 m_cardBeforeNested = m_card->currentData().toString();
+                m_nativeBeforeNested = m_nativeContext->isChecked();
             }
+            /* the nested desktop's card has it, through rutabaga */
+            m_nativeContext->setChecked(true);
             if (nested < 0) {
                 m_card->addItem(nestedCardText(), kNestedCard);
             }
@@ -597,6 +600,8 @@ void DisplayPage::nestedToggled(bool on)
                 back = cardChoices(m_args).first().first;
                 m_nativeContext->setChecked(true);
                 m_frameTiming->setChecked(true);
+            } else {
+                m_nativeContext->setChecked(m_nativeBeforeNested);
             }
             m_card->setCurrentIndex(m_card->findData(back));
             if (nested >= 0) {
@@ -695,7 +700,9 @@ void DisplayPage::load(const ArgsFile &args)
         m_nested->setChecked(g.kind == VmConfig::Graphics::Nested);
         m_cardBeforeNested.clear();
     }
-    m_nativeContext->setChecked(CardSettings::isOn(args, CardSettings::Feature::NativeContext));
+    /* the nested desktop's card has it, through rutabaga */
+    m_nativeContext->setChecked(g.kind == VmConfig::Graphics::Nested ||
+                                CardSettings::isOn(args, CardSettings::Feature::NativeContext));
     m_venus->setChecked(CardSettings::isOn(args, CardSettings::Feature::Venus));
     m_frameTiming->setChecked(CardSettings::isOn(args, CardSettings::Feature::FrameTiming));
 

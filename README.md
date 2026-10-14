@@ -150,6 +150,21 @@ the keys: they go to the VM), Ctrl+H asks the guest to shut down, Ctrl+L shows
 QEMU's log. Closing vitrine can leave its VMs running; it finds them again at
 its next start.
 
+Nested desktop: the Display settings' Nested desktop checkbox runs the
+guest's KDE session in a KWin of its own, drawn as a window of this
+computer's desktop (virtio-gpu-rutabaga with cross-domain, beside the
+standard VGA). It needs vitrine's QEMU built with rutabaga and a guest with
+the nested session, "Plasma (crosvm window)", which the guest tools do not
+install yet. With vitrine's window as the display, the session shows in the
+console, which then has three views: Boot (the VGA card's screen: the
+firmware, the boot loader, the first boot messages), Screen (the guest's
+own screen: its console and its login screen) and Desktop (the session).
+They change as the guest boots and its session starts or ends; the
+switcher above them, View > Boot, Screen and Desktop, or Ctrl+Alt+1, 2 and
+3 choose one. Closing vitrine ends the session: the guest goes back to its
+login screen, where you log in again from the Screen view. With QEMU's SDL
+or GTK window, or none, the session opens as a window of its own.
+
 Shut Down goes through the guest's agent when it runs one: the guest tools',
 else QEMU's guest agent (Fedora installs qemu-guest-agent in VMs). Otherwise
 it presses the VM's power button, which some guests answer with a question
