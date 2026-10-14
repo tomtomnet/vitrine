@@ -19,14 +19,13 @@ its `Subject:`, else the first line of its description.
 patches that go on top, in this order:
 
 1. `qemu/research/`: the research's QEMU series, its `patches/qemu/series`
-   at commit `5f7e6af` (2026-10-14), each patch without its
+   at commit `8557524` (2026-10-14), each patch without its
    `Claude-Session:` line and otherwise unchanged. Since 2026-10-14 this
    series is the source of the research's QEMU; the qemu-gui fork
    (`https://github.com/tomtomnet/qemu-gui`) it started from is no longer
-   used. 0001-0017 are the fork's commits, 0018 the work the fork had not
-   committed on 2026-10-12 (one patch for now, the research splits it
-   later), and the last three are for `virtio-gpu-rutabaga`, the nested
-   desktop's device.
+   used. 0001-0017 are the fork's commits, 0018-0024 the work the fork had
+   not committed on 2026-10-12, split by topic, and the last four are for
+   `virtio-gpu-rutabaga`, the nested desktop's device.
 2. `qemu/vitrine/`: Vitrine's own changes, as new files here rather than
    edits of the others.
 
@@ -35,7 +34,7 @@ patches that go on top, in this order:
 | sha256 | patch |
 |---|---|
 | `521d7c619f6836b90f3b2113d6b82e3db3ec5ea9e2397c333fc9db86da3b2d5b` | `0001-ui-sdl2-follow-the-host-refresh-rate-tolerate-grab-b.patch` |
-| `4c52aae7e7f078e5dd4af793cc9f30926ba4a73ae5db3809da981683220b3a05` | `0002-ui-sdl2-add-an-in-window-control-menu-Dear-ImGui.patch`: the menu 0018 removes again |
+| `4c52aae7e7f078e5dd4af793cc9f30926ba4a73ae5db3809da981683220b3a05` | `0002-ui-sdl2-add-an-in-window-control-menu-Dear-ImGui.patch`: the menu 0022 removes again |
 | `b1b927381170bf2056e012903a31804cf07c90956db41c1d5a5836ab20578e9a` | `0003-Add-a-README-for-this-fork.patch` |
 | `183f9f34b0f27d783d27787df5d32d96889429e6fbc7792c214e939d978c8109` | `0004-ui-sdl2-draw-the-menu-bar-without-a-border.patch` |
 | `1cd67882a955602fa9145bf59746ea0659a258d20a2e99289b194c4a386e496f` | `0005-ui-sdl2-share-the-clipboard-with-the-guest.patch` |
@@ -51,16 +50,23 @@ patches that go on top, in this order:
 | `54db2036e019926c2a8e7fdb679f70241bef9da14204562d9675785b1cda5ec1` | `0015-machine-x-vcpu-priority-QMP-command.patch` |
 | `edd1d14cb1c7a6ac931706559183a120b5b0c282a45edc7760d5a26491acca63` | `0016-ui-sdl2-own-Wayland-swapchain-for-the-guest-s-frames.patch` |
 | `a61e1259f19b9f137246bcb17b9484274d0c54adcea1e2548c7e3762dd4b8326` | `0017-ui-dbus-presentation-feedback-from-the-D-Bus-display.patch` |
-| `81ceed5214069bb20523461c1ba957b719d12c1c1d7fba4bb47879fef39abb59` | `0018-The-fork-s-uncommitted-work-as-of-2026-10-12-to-be-s.patch`: zero copy that holds the guest's flushes, by default in full screen, tiled buffers (`ui/dmabuf-layout.c`), the D-Bus display's zero copy, the fixes of the research's static review of 2026-10-04, the host's latching deadline (`x-vblank-deadline`), virtio-gpu-rutabaga's additions (drm and virgl2 capsets, a 512-entry control queue, `x-fixed-blob-mapping`, `x-guest-dmabuf`, `x-prefault-blobs`, the fence ring index as a byte), KVM's slot zap knob, the virtio-gpu unref leak fix (v2); and the SDL window's ImGui menu removed |
+| `8d008e183b11f664934c7a555225a3a2220b2e2d889956d7c7124f80c9ebdac8` | `0018-kvm-per-VM-halt-poll-ns-the-x86-slot-zap-all-quirk-a.patch`: KVM's per-VM `halt-poll-ns`, the x86 slot zap knob (`slot-zap-all`), a `KVM_PRE_FAULT_MEMORY` helper |
+| `38981beefd0be259725583447abf779c7eb57d0ea360ab59e629c7d43562ddd9` | `0019-physmem-align-memfd-backed-RAM-so-that-shmem-gives-i.patch`: memfd guest RAM aligned for shmem's huge pages |
+| `d7729e8e7a27d3400daa3a613100bd2306812bc3adb61486fff806f6d6a3a271` | `0020-virtio-gpu-free-a-resource-s-guest-mapping-when-it-i.patch`: the virtio-gpu unref leak fix (v2), virgl and rutabaga |
+| `de4390b20499720bf05fc1c372cfe19b998192c41054b46c1fa2b46eb77598c5` | `0021-ui-dmabuf-layout-a-guest-dma-buf-s-layout-from-its-a.patch`: tiled buffers, a guest dma-buf's layout from its amdgpu metadata (`ui/dmabuf-layout.c`) |
+| `f57d7526717381b79a859aa603a61070ba6e21e44e954217cd09215092848045` | `0022-ui-virtio-gpu-zero-copy-with-held-flush-fences-and-h.patch`: zero copy that holds the guest's flushes, the D-Bus display's zero copy, the host's latching deadline (`x-vblank-deadline`), virtio-gpu-rutabaga's 512-entry control queue; and the SDL window's ImGui menu removed |
+| `46ec887f1e34c29ada899931e78726d55e5a224476fdb23f9ed276e05fa84d34` | `0023-virtio-gpu-rutabaga-native-context-capsets-fixed-blo.patch`: virtio-gpu-rutabaga's additions: drm and virgl2 capsets, `x-fixed-blob-mapping`, `x-guest-dmabuf`, `x-prefault-blobs`, rutabaga's poll descriptor, the fence ring index as a byte |
+| `85e119375bc2692e2359f0d2c17d683a99a8d1ab482756f38d31caf387adb8ab` | `0024-README-the-fork-as-of-2026-10-12.patch` |
 | `f2ca5e6090a29bfadb29e940368227811cc618aa1b34a5c5c30007c6efb0be8d` | `fix-rutabaga-scanout-image-leak.patch` |
 | `6572397833517b8e19675ac556935458bed10be5208f36150ec28e5573cf01d3` | `virtio-gpu-rutabaga-scanout-blob.patch`: `SET_SCANOUT_BLOB` on displays with GL: the guest's GPU-rendered login screen on its own console |
 | `7241c150b19b49f6c598f3b3a527b48f5bcb8ad66e43123e29bb7f0fa8c1bce6` | `virtio-gpu-rutabaga-gl-context-scope.patch`: virglrenderer's GL context kept apart from the display's, so that the VGA and virtio-gpu consoles show with `-display dbus,gl=on` |
+| `b31e726f02fd8ec2955092744453b7b802bfd51bd9720a60844eccaddf36a429` | `virtio-gpu-rutabaga-reset-contexts.patch`: a reset the guest did not see coming (QMP `system_reset`, Machine > Reset) destroys the guest's rutabaga contexts, so that the next boot's contexts do not meet stale ones of the same ids; the errors a guest can cause logged at most 20 a second |
 
 When the research's series moves (`r` its repository, `c` the commit,
 `v` this folder):
 
 ```sh
-r=~/Documents/virtio-gpu-desktop c=5f7e6af v=~/Documents/vitrine/host/patches/qemu
+r=~/Documents/virtio-gpu-desktop c=8557524 v=~/Documents/vitrine/host/patches/qemu
 rm -f "$v"/research/*.patch
 for p in $(git -C "$r" show "$c:patches/qemu/series" | sed 's/#.*//'); do
     git -C "$r" show "$c:patches/qemu/$p" | grep -v '^Claude-Session:' > "$v/research/$p"
@@ -80,13 +86,19 @@ Until then Vitrine applied the fork's 13 commits (`qemu/fork/`, exported
 from its master at `49fd5067`) and the research export's 0001-0008
 (2026-10-04): the same 0001-0017 (the same tree), then 0005-0007, the
 fork's uncommitted zero copy of that day, and 0008, the fixes of the
-research's static review. 0018 holds all of them in their later form but
-two things, both on purpose: the SDL window's ImGui menu, with the zero
+research's static review. 0018-0024 hold all of them in their later form
+but two things, both on purpose: the SDL window's ImGui menu, with the zero
 copy below its docked bar on a subsurface (`viewporter`,
 `fractional-scale-v1`), which the fork removed (and with it QEMU's
 `sdl-gui` option, which build.sh no longer passes); and 0014's blob page
 array leak fix, which the unref leak fix v2 (`virtio_gpu_cleanup_mapping()`)
 covers.
+
+Until the research split it (its commit `a381e87`), 0018-0024 were one
+patch, `0018-The-fork-s-uncommitted-work-as-of-2026-10-12-to-be-s.patch`
+(sha256 `81ceed52...`). The split series gives the same tree: checked when
+the reset patch came, the new series giving the tree of the old one plus
+`virtio-gpu-rutabaga-reset-contexts.patch` alone.
 
 ### `qemu/vitrine/`
 
@@ -95,7 +107,7 @@ Vitrine's own, on top, for the research side to take over:
 | sha256 | patch |
 |---|---|
 | `c477e012d64d05e0652e366bebc597e919af6ec64a02e794d471cd5188b0aafd` | `0001-ui-sdl2-QEMU_SDL_POLL_FOCUSED-0-is-off.patch`: `QEMU_SDL_POLL_FOCUSED=0` is off, as `QEMU_SDL_ZERO_COPY=0` is |
-| `aaa485f67e3477d0b2fe29eb4ce8cc2ca52802ab659c4cc2d2b2d304398ebd5b` | `0002-virtio-vga-forward-the-display-s-frame-feedback.patch`: virtio-vga and virtio-vga-gl pass the display's frame feedback (the research series' `gl_presented`, `gl_flush_pending`, `gl_flush_done`, `gl_flush_fenced`, `gl_zero_copy`) to the virtio-gpu inside, as they pass the other hooks: without it the guest's vblank is not locked to the host's and its frames are never shown as they are (zero copy) with virtio-vga-gl, the card of new Linux VMs |
+| `491a23d8114ae5a517d39c2070c1302c902ff887a734d450306fe518507d6be6` | `0002-virtio-vga-forward-the-display-s-frame-feedback.patch`: virtio-vga and virtio-vga-gl pass the display's frame feedback (the research series' `gl_presented`, `gl_flush_pending`, `gl_flush_done`, `gl_flush_fenced`, `gl_zero_copy`) to the virtio-gpu inside, as they pass the other hooks: without it the guest's vblank is not locked to the host's and its frames are never shown as they are (zero copy) with virtio-vga-gl, the card of new Linux VMs |
 
 ## virglrenderer (upstream at `aafa9bd2`)
 

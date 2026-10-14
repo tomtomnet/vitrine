@@ -1,35 +1,32 @@
-From 0763e3c810bf74a32eda97eb6ba9d7dbf1cf0ecb Mon Sep 17 00:00:00 2001
+From e8bd8bcc6aa5d8436e059f8b6a8d4fe4bb333423 Mon Sep 17 00:00:00 2001
 From: tomtomnet <tompere8000@proton.me>
-Date: Mon, 12 Oct 2026 15:54:00 +0200
-Subject: [PATCH 18/19] The fork's uncommitted work as of 2026-10-12 (to be
- split)
+Date: Wed, 14 Oct 2026 19:00:43 +0200
+Subject: [PATCH 22/24] ui, virtio-gpu: zero copy with held flush fences and
+ host deadlines; the ImGui menu dropped
 
-What the fork's working tree held on top of its 17 commits when it was snapshotted
-(2026-10-12 15:54): the D-Bus display's zero copy and presentation feedback, the SDL
-window's own swapchain and stats, the guest vblank lock, the rutabaga device's additions
-(drm and virgl2 capsets, a 512-entry control queue, x-fixed-blob-mapping, x-guest-dmabuf,
-x-prefault-blobs, the fence ring index compared as a byte), the KVM slot-zap-all knob,
-the ImGui menu's removal, the user's virtio-gpu unref leak fix (v2), and the new files
-ui/dmabuf-layout.[ch] (a guest dma-buf's layout from its amdgpu metadata).
+- virtio-gpu: a flush fence of context 0 can be held until the compositor releases the
+  previous buffer (zero copy: the guest must not render into a buffer still on the screen);
+  the host compositor's latching deadline as a vblank target (x-vblank-deadline,
+  x-vblank-deadline-margin, x-vblank-swap-target-zc); traces;
+- console: the swap and deadline times through graphic_hw_gl_flushed();
+- D-Bus display: zero copy of the guest's scanout buffers and the client's presentation
+  feedback (dbus-display1.xml, listener, console);
+- SDL window: its own swapchain's zero copy path and stats (x-query-display-stats fields
+  zero-copy, host-scanout);
+- the in-window ImGui control menu removed (removed from the fork 2026-10-08) with its
+  subproject, build option and the NIC byte counter it showed.
 
-Until 2026-10-14 this lived uncommitted in ~/Documents/qemu-gui/qemu (branch experimental)
-and in patches/qemu/fork-state-2026-10-12 (uncommitted.diff, untracked/); the repository's
-series is now the source. One patch for now: splitting it by topic is a follow-up.
+Split out of the 2026-10-12 snapshot of the fork's uncommitted work.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
 ---
- .github/README.md                             |   51 +-
- accel/kvm/kvm-all.c                           |   71 +
- accel/stubs/kvm-stub.c                        |    5 +
  hw/display/trace-events                       |    3 +
  hw/display/virtio-gpu-base.c                  |  316 ++-
- hw/display/virtio-gpu-rutabaga.c              |  322 ++-
- hw/display/virtio-gpu-virgl.c                 |   50 +-
+ hw/display/virtio-gpu-virgl.c                 |   36 +-
  hw/display/virtio-gpu.c                       |    3 +
- include/hw/virtio/virtio-gpu.h                |   56 +-
+ include/hw/virtio/virtio-gpu.h                |   40 +-
  include/net/net.h                             |    2 -
- include/system/kvm.h                          |    7 +
- include/system/kvm_int.h                      |    7 +
  include/ui/console.h                          |   32 +-
- include/ui/dmabuf-layout.h                    |   63 +
  include/ui/sdl2.h                             |   44 +-
  meson.build                                   |   27 +-
  meson_options.txt                             |    2 -
@@ -41,15 +38,12 @@ series is now the source. One patch for now: splitting it by topic is a follow-u
  .../imgui/imgui_impl_opengl3_epoxy.cpp        |    8 -
  subprojects/packagefiles/imgui/meson.build    |   38 -
  .../packagefiles/imgui/meson_options.txt      |    2 -
- system/physmem.c                              |   11 +
- target/i386/kvm/kvm.c                         |   51 +
  ui/console.c                                  |   26 +-
  ui/dbus-console.c                             |   94 +-
  ui/dbus-display1.xml                          |   44 +
  ui/dbus-listener.c                            |   84 +
  ui/dbus.h                                     |    7 +
- ui/dmabuf-layout.c                            |  280 +++
- ui/meson.build                                |    3 +-
+ ui/meson.build                                |    1 -
  ui/sdl2-2d.c                                  |    1 -
  ui/sdl2-gl.c                                  |   19 +-
  ui/sdl2-gui-vm.c                              | 1482 ------------
@@ -60,237 +54,15 @@ series is now the source. One patch for now: splitting it by topic is a follow-u
  ui/sdl2.c                                     |  293 +--
  ui/trace-events                               |   14 +-
  ui/wayland/presentation-time.xml              |   20 +-
- 44 files changed, 2257 insertions(+), 4387 deletions(-)
- create mode 100644 include/ui/dmabuf-layout.h
+ 34 files changed, 1427 insertions(+), 4317 deletions(-)
  delete mode 100644 subprojects/imgui.wrap
  delete mode 100644 subprojects/packagefiles/imgui/imgui_impl_opengl3_epoxy.cpp
  delete mode 100644 subprojects/packagefiles/imgui/meson.build
  delete mode 100644 subprojects/packagefiles/imgui/meson_options.txt
- create mode 100644 ui/dmabuf-layout.c
  delete mode 100644 ui/sdl2-gui-vm.c
  delete mode 100644 ui/sdl2-gui.cpp
  delete mode 100644 ui/sdl2-gui.h
 
-diff --git a/.github/README.md b/.github/README.md
-index ef2186c251..491bc08863 100644
---- a/.github/README.md
-+++ b/.github/README.md
-@@ -1,13 +1,14 @@
--# QEMU with a control menu in the SDL window
-+# QEMU with a faster SDL display for desktop VMs
- 
--QEMU master with a menu bar inside the SDL display window, in the spirit of
--[xemu](https://github.com/xemu-project/xemu): power, pause, snapshots, USB
--passthrough, usage statistics and VM information, without giving up the fast
--SDL + OpenGL display. It also makes the SDL display follow the host monitor's
--refresh rate.
-+QEMU master with work on the SDL + OpenGL display and virtio-gpu for desktop
-+guests: the display follows the host monitor's refresh rate, measures its
-+frames, shares the clipboard, and passes the guest's buffers to the host
-+without copies where it can.
- 
- This is a fork of [QEMU](https://www.qemu.org): upstream master plus a few
--commits. The menu needs a Linux host.
-+commits. An earlier version had a control menu (Dear ImGui) in the SDL
-+window; it was removed in October 2026, since the VM manager app now does
-+power, snapshots and USB passthrough.
- 
- ## What's added
- 
-@@ -16,15 +17,6 @@ commits. The menu needs a Linux host.
-     (e.g. 240 Hz), and input is polled at that rate.
-   - In absolute pointer mode, the pointer leaves the window reliably at its
-     border.
--- **ui/sdl2: add an in-window control menu**
--  - **Machine:** pause/resume, send Ctrl+Alt+Del and other key combinations,
--    information about the VM, shut down, reset, force off.
--  - **Snapshots:** take, revert to and delete snapshots of qcow2 disks.
--  - **USB:** pass host USB devices through to the guest and back. If your
--    user can't access a device yet, the menu asks polkit for access.
--  - **View:** fullscreen, menu bar, statistics, menu size.
--  - **Statistics:** CPU, GPU, disk and network use and the frame rate, on the
--    right of the menu bar.
- - **ui/sdl2: share the clipboard with the guest**: copy and paste text
-   between the host and the guest, see [Clipboard sharing](#clipboard-sharing).
- - **hw/display/virtio-gpu-gl: tell whether the guest uses native context**:
-@@ -92,9 +84,6 @@ yourself and point `PKG_CONFIG_PATH` at it before running configure.
-     ../configure --target-list=x86_64-softmmu
-     make -j"$(nproc)"
- 
--The first configure downloads [Dear ImGui](https://github.com/ocornut/imgui),
--which draws the menu, so it needs an internet connection.
--
- QEMU runs straight from the build directory, no install needed:
- 
-     ./qemu-system-x86_64 -display sdl,gl=on ...
-@@ -118,7 +107,7 @@ For x86-64 VMs you can skip most of it:
-       ../configure --target-list=x86_64-softmmu --without-default-features \
-           --enable-kvm --enable-tcg --enable-pixman --enable-attr --enable-virtfs \
-           --enable-hmp --enable-malloc-trim \
--          --enable-sdl --enable-sdl-gui --enable-gtk --enable-opengl \
-+          --enable-sdl --enable-gtk --enable-opengl \
-           --enable-virglrenderer \
-           --enable-libusb --enable-pa --enable-pipewire --enable-spice-protocol \
-           --enable-passt --enable-gio --enable-slirp \
-@@ -137,21 +126,6 @@ For x86-64 VMs you can skip most of it:
-   on its own.
- - **`make qemu-system-x86_64`** builds only the emulator, without the tools.
- 
--## Using the menu
--
--- Use `-display sdl,gl=on` (or `gl=off`).
--- **Ctrl+Alt+M** (the SDL hotkey modifier plus M) shows or hides the menu
--  bar. While shown, the guest display sits below it. Each VM remembers whether
--  its bar was shown, identified by `-name`, else `-uuid`, else its first disk.
--- **Snapshots** need qcow2 disks. With `virtio-gpu-gl` (virgl), QEMU can't save
--  the VM's memory, so snapshots hold the disks only, and reverting to one
--  restarts the VM from them.
--- **USB passthrough** needs a USB controller in the VM, e.g.
--  `-device qemu-xhci`. It uses `pkexec` (polkit) and `setfacl` to get access
--  to a device, until it's unplugged.
--- The menu settings are in `~/.config/qemu/sdl-gui.ini`.
--- To build without the menu, configure with `--disable-sdl-gui`.
--
- ## Clipboard sharing
- 
- Text copied on the host can be pasted in the guest, and the other way
-@@ -209,10 +183,9 @@ Good to know:
- 
- ## Notes
- 
--- The menu, the clipboard sharing and the clipboard bridge were written with
--  an AI assistant (Claude). QEMU doesn't accept AI-generated contributions
-+- The clipboard sharing and the clipboard bridge were written with an AI
-+  assistant (Claude). QEMU doesn't accept AI-generated contributions
-   ([docs/devel/code-provenance.rst](../docs/devel/code-provenance.rst)), so
-   these changes are not meant for upstream QEMU.
--- License: GPL-2.0-or-later, like QEMU (see [COPYING](../COPYING)). Dear ImGui
--  is MIT-licensed and downloaded when you configure.
-+- License: GPL-2.0-or-later, like QEMU (see [COPYING](../COPYING)).
- - QEMU's own README is [README.rst](../README.rst).
-diff --git a/accel/kvm/kvm-all.c b/accel/kvm/kvm-all.c
-index 83cbd120a8..86c698b4bc 100644
---- a/accel/kvm/kvm-all.c
-+++ b/accel/kvm/kvm-all.c
-@@ -3055,6 +3055,25 @@ static int kvm_init(AccelState *as, MachineState *ms)
-         goto err;
-     }
- 
-+    /*
-+     * How long a halted vCPU of this VM spins before it sleeps: overrides the
-+     * kvm module's halt_poll_ns (200 us) for this VM only, without root. A
-+     * desktop guest at 240 Hz halts thousands of times a second, and the
-+     * polling kept host cores busy at full boost (2026-10-06, 9950X: a window
-+     * dragged in the guest 77 W package with 200 us, 41 W with 0).
-+     */
-+    if (s->halt_poll_ns >= 0) {
-+        if (!kvm_vm_check_extension(s, KVM_CAP_HALT_POLL)) {
-+            warn_report("kvm: halt-poll-ns ignored: no KVM_CAP_HALT_POLL (Linux >= 5.14)");
-+        } else {
-+            ret = kvm_vm_enable_cap(s, KVM_CAP_HALT_POLL, 0, s->halt_poll_ns);
-+            if (ret < 0) {
-+                error_report("kvm: halt-poll-ns %" PRId64 ": %s", s->halt_poll_ns, strerror(-ret));
-+                goto err;
-+            }
-+        }
-+    }
-+
-     kvm_supported_memory_attributes = kvm_vm_check_extension(s, KVM_CAP_MEMORY_ATTRIBUTES);
-     kvm_guest_memfd_supported =
-         kvm_vm_check_extension(s, KVM_CAP_GUEST_MEMFD) &&
-@@ -3654,6 +3673,21 @@ int kvm_vm_ioctl(KVMState *s, unsigned long type, ...)
-     return ret;
- }
- 
-+int kvm_cpu_pre_fault_memory(CPUState *cpu, uint64_t gpa, uint64_t size)
-+{
-+#ifdef KVM_PRE_FAULT_MEMORY
-+    struct kvm_pre_fault_memory range = { .gpa = gpa, .size = size };
-+    int ret;
-+
-+    do {
-+        ret = kvm_vcpu_ioctl(cpu, KVM_PRE_FAULT_MEMORY, &range);
-+    } while ((ret == -EINTR || ret == -EAGAIN) && range.size);
-+    return ret;
-+#else
-+    return -ENOSYS;
-+#endif
-+}
-+
- int kvm_vcpu_ioctl(CPUState *cpu, unsigned long type, ...)
- {
-     int ret;
-@@ -4107,6 +4141,35 @@ static void kvm_get_kvm_shadow_mem(Object *obj, Visitor *v,
-     visit_type_int(v, name, &value, errp);
- }
- 
-+static void kvm_get_halt_poll_ns(Object *obj, Visitor *v, const char *name,
-+                                 void *opaque, Error **errp)
-+{
-+    KVMState *s = KVM_STATE(obj);
-+    int64_t value = s->halt_poll_ns;
-+
-+    visit_type_int(v, name, &value, errp);
-+}
-+
-+static void kvm_set_halt_poll_ns(Object *obj, Visitor *v, const char *name,
-+                                 void *opaque, Error **errp)
-+{
-+    KVMState *s = KVM_STATE(obj);
-+    int64_t value;
-+
-+    if (s->fd != -1) {
-+        error_setg(errp, "Cannot set properties after the accelerator has been initialized");
-+        return;
-+    }
-+    if (!visit_type_int(v, name, &value, errp)) {
-+        return;
-+    }
-+    if (value < -1 || value > UINT32_MAX) {
-+        error_setg(errp, "halt-poll-ns must be -1 (the kvm module's) or 0 to %u ns", UINT32_MAX);
-+        return;
-+    }
-+    s->halt_poll_ns = value;
-+}
-+
- static void kvm_set_kvm_shadow_mem(Object *obj, Visitor *v,
-                                    const char *name, void *opaque,
-                                    Error **errp)
-@@ -4267,6 +4330,8 @@ static void kvm_accel_instance_init(Object *obj)
-     s->device = NULL;
-     s->msr_energy.enable = false;
-     s->honor_guest_pat = ON_OFF_AUTO_OFF;
-+    s->slot_zap_all = ON_OFF_AUTO_AUTO;
-+    s->halt_poll_ns = -1;
- }
- 
- static void kvm_accel_class_init(ObjectClass *oc, const void *data)
-@@ -4290,6 +4355,12 @@ static void kvm_accel_class_init(ObjectClass *oc, const void *data)
-     object_class_property_set_description(oc, "kvm-shadow-mem",
-         "KVM shadow MMU size");
- 
-+    object_class_property_add(oc, "halt-poll-ns", "int",
-+        kvm_get_halt_poll_ns, kvm_set_halt_poll_ns,
-+        NULL, NULL);
-+    object_class_property_set_description(oc, "halt-poll-ns",
-+        "How long a halted vCPU spins before sleeping, in ns (KVM_CAP_HALT_POLL; default -1: the kvm module's halt_poll_ns)");
-+
-     object_class_property_add(oc, "dirty-ring-size", "uint32",
-         kvm_get_dirty_ring_size, kvm_set_dirty_ring_size,
-         NULL, NULL);
-diff --git a/accel/stubs/kvm-stub.c b/accel/stubs/kvm-stub.c
-index 32b4b07403..8b3afaaf90 100644
---- a/accel/stubs/kvm-stub.c
-+++ b/accel/stubs/kvm-stub.c
-@@ -143,3 +143,8 @@ int kvm_create_guest_memfd(uint64_t size, uint64_t flags, Error **errp)
- {
-     return -ENOSYS;
- }
-+
-+int kvm_cpu_pre_fault_memory(CPUState *cpu, uint64_t gpa, uint64_t size)
-+{
-+    return -ENOSYS;
-+}
 diff --git a/hw/display/trace-events b/hw/display/trace-events
 index 34f0a819be..333bf3bfb5 100644
 --- a/hw/display/trace-events
@@ -744,502 +516,11 @@ index 8295e611c8..d557a4e056 100644
          /* use larger control queue in 3d mode */
          virtio_add_queue(vdev, 256, ctrl_cb);
          virtio_add_queue(vdev, 16, cursor_cb);
-diff --git a/hw/display/virtio-gpu-rutabaga.c b/hw/display/virtio-gpu-rutabaga.c
-index 3c66596cef..f49260a37a 100644
---- a/hw/display/virtio-gpu-rutabaga.c
-+++ b/hw/display/virtio-gpu-rutabaga.c
-@@ -10,6 +10,9 @@
- #include "hw/virtio/virtio-gpu-pixman.h"
- #include "hw/virtio/virtio-iommu.h"
- #include "migration/blocker.h"
-+#include "qemu/mmap-alloc.h"
-+#include "system/kvm.h"
-+#include "hw/core/cpu.h"
- 
- #include <glib/gmem.h>
- #include <rutabaga_gfx/rutabaga_gfx_ffi.h>
-@@ -140,6 +143,52 @@ rutabaga_cmd_create_resource_3d(VirtIOGPU *g,
-     QTAILQ_INSERT_HEAD(&g->reslist, res, next);
- }
- 
-+/*
-+ * Undo the mapping of a slot. A fixed one goes back to the anonymous
-+ * background (KVM's MMU notifier drops just that range from the guest's page
-+ * tables); a subregion leaves the hostmem container (a memory transaction and
-+ * a KVM memslot update) and rutabaga's own mapping is released.
-+ */
-+static int32_t
-+virtio_gpu_rutabaga_unmap_slot(VirtIOGPURutabaga *vr, uint32_t slot)
-+{
-+    VirtIOGPUBase *vb = VIRTIO_GPU_BASE(vr);
-+    struct MemoryRegionInfo *mri = &vr->memory_regions[slot];
-+    int32_t result = 0;
-+
-+    if (mri->fixed) {
-+        if (mmap(mri->fixed, mri->fixed_size, PROT_READ | PROT_WRITE,
-+                 MAP_PRIVATE | MAP_ANONYMOUS | MAP_FIXED | MAP_NORESERVE,
-+                 -1, 0) == MAP_FAILED) {
-+            error_report("%s: failed to unmap(fixed) resource %" PRIu32 ": %s",
-+                         __func__, mri->resource_id, strerror(errno));
-+            result = -errno;
-+        }
-+        mri->fixed = NULL;
-+        mri->fixed_size = 0;
-+    } else {
-+        memory_region_del_subregion(&vb->hostmem, &mri->mr);
-+        result = rutabaga_resource_unmap(vr->rutabaga, mri->resource_id);
-+    }
-+    mri->resource_id = 0;
-+    mri->used = 0;
-+    return result;
-+}
-+
-+static int
-+virtio_gpu_rutabaga_find_slot(VirtIOGPURutabaga *vr, uint32_t resource_id)
-+{
-+    uint32_t slot;
-+
-+    for (slot = 0; slot < MAX_SLOTS; slot++) {
-+        if (vr->memory_regions[slot].used &&
-+            vr->memory_regions[slot].resource_id == resource_id) {
-+            return slot;
-+        }
-+    }
-+    return -1;
-+}
-+
- static void
- virtio_gpu_rutabaga_resource_unref(VirtIOGPU *g,
-                                    struct virtio_gpu_simple_resource *res,
-@@ -147,9 +196,16 @@ virtio_gpu_rutabaga_resource_unref(VirtIOGPU *g,
- {
-     int32_t result;
-     VirtIOGPURutabaga *vr = VIRTIO_GPU_RUTABAGA(g);
-+    int slot;
- 
-     virtio_gpu_disable_scanout_for_resource(g, res->resource_id);
- 
-+    /* still mapped (a guest that did not unmap it, a reset): unmapped first */
-+    slot = virtio_gpu_rutabaga_find_slot(vr, res->resource_id);
-+    if (slot >= 0) {
-+        virtio_gpu_rutabaga_unmap_slot(vr, slot);
-+    }
-+
-     result = rutabaga_resource_unref(vr->rutabaga, res->resource_id);
-     if (result) {
-         error_setg_errno(errp,
-@@ -164,6 +220,8 @@ virtio_gpu_rutabaga_resource_unref(VirtIOGPU *g,
-     }
- 
-     QTAILQ_REMOVE(&g->reslist, res, next);
-+
-+    virtio_gpu_cleanup_mapping(g, res);
-     g_free(res);
- }
- 
-@@ -616,6 +674,26 @@ rutabaga_cmd_get_capset(VirtIOGPU *g, struct virtio_gpu_ctrl_command *cmd)
-     g_free(resp);
- }
- 
-+/*
-+ * x-guest-dmabuf: a DRM native context only imports resources by dma-buf, so
-+ * the shareable guest-memory blobs the guest's driver makes for dma-bufs of
-+ * other guest devices it imports (a compositor's udmabuf around a wl_shm
-+ * client buffer, for instance) get a udmabuf of their pages, which rutabaga
-+ * hands to virglrenderer (virgl_renderer_resource_set_guest_dmabuf, our
-+ * virglrenderer), as virtio-gpu-gl does.  Without it the guest's import
-+ * fails and its compositor uploads each such buffer through fresh staging
-+ * blobs (2026-10-08: 123 blobs, 2.1 GB per Konsole resize test).  Context 0
-+ * only: a cross-domain context's blobs keep their own handling.
-+ */
-+static bool rutabaga_wants_guest_dmabuf(VirtIOGPURutabaga *vr,
-+                                        const struct virtio_gpu_resource_create_blob *cblob)
-+{
-+    return vr->guest_dmabuf && cblob->hdr.ctx_id == 0 &&
-+           cblob->blob_mem == VIRTIO_GPU_BLOB_MEM_GUEST &&
-+           (cblob->blob_flags & VIRTIO_GPU_BLOB_FLAG_USE_SHAREABLE) &&
-+           (vr->capset_mask & (1ULL << RUTABAGA_CAPSET_DRM));
-+}
-+
- static void
- rutabaga_cmd_resource_create_blob(VirtIOGPU *g,
-                                   struct virtio_gpu_ctrl_command *cmd)
-@@ -625,6 +703,7 @@ rutabaga_cmd_resource_create_blob(VirtIOGPU *g,
-     g_autofree struct virtio_gpu_simple_resource *res = NULL;
-     struct virtio_gpu_resource_create_blob cblob;
-     struct rutabaga_create_blob rc_blob = { 0 };
-+    struct rutabaga_handle handle = { .os_handle = -1 };
- 
-     VirtIOGPURutabaga *vr = VIRTIO_GPU_RUTABAGA(g);
- 
-@@ -642,6 +721,27 @@ rutabaga_cmd_resource_create_blob(VirtIOGPU *g,
-         CHECK(!result, cmd);
-     }
- 
-+    if (rutabaga_wants_guest_dmabuf(vr, &cblob)) {
-+        int fd = virtio_gpu_create_udmabuf_fd(res);
-+
-+        if (fd < 0) {
-+            /*
-+             * Without one every later use of the resource by the native
-+             * context would fail: refuse it now, the guest falls back to
-+             * a copy (as virtio-gpu-gl does)
-+             */
-+            qemu_log_mask(LOG_GUEST_ERROR,
-+                          "%s: no dma-buf for guest blob %d, refusing it\n",
-+                          __func__, cblob.resource_id);
-+            virtio_gpu_cleanup_mapping(g, res);
-+            cmd->error = VIRTIO_GPU_RESP_ERR_OUT_OF_MEMORY;
-+            return;
-+        }
-+        /* rutabaga owns the fd from here, also on failure */
-+        handle.os_handle = fd;
-+        handle.handle_type = RUTABAGA_HANDLE_TYPE_MEM_DMABUF;
-+    }
-+
-     rc_blob.blob_id = cblob.blob_id;
-     rc_blob.blob_mem = cblob.blob_mem;
-     rc_blob.blob_flags = cblob.blob_flags;
-@@ -652,7 +752,7 @@ rutabaga_cmd_resource_create_blob(VirtIOGPU *g,
- 
-     result = rutabaga_resource_create_blob(vr->rutabaga, cblob.hdr.ctx_id,
-                                            cblob.resource_id, &rc_blob, &vecs,
--                                           NULL);
-+                                           handle.os_handle >= 0 ? &handle : NULL);
- 
-     if (result && cblob.blob_mem != VIRTIO_GPU_BLOB_MEM_HOST3D) {
-         virtio_gpu_cleanup_mapping(g, res);
-@@ -664,6 +764,113 @@ rutabaga_cmd_resource_create_blob(VirtIOGPU *g,
-     res = NULL;
- }
- 
-+/*
-+ * Fixed blob mapping, as crosvm's fixed-blob-mapping: the blob's fd is
-+ * mmap()ed in place into the hostmem background, which is one RAM region and
-+ * so one KVM memslot for the whole window. A blob mapped as a memory region of
-+ * its own costs a memory transaction on the main loop and a KVM memslot update
-+ * at each map and unmap (2026-10-07, a nested desktop over cross-domain and drm
-+ * native contexts: 366 updates in 200 s, up to 7 ms each; the guest's renderer
-+ * waits for its map, the frames it was drawing missed their refresh).
-+ * False when the blob cannot be mapped that way: the caller falls back to a
-+ * subregion.
-+ */
-+/*
-+ * x-prefault-blobs: a blob mmap()ed into the fixed mapping is mapped into KVM's stage-2 page
-+ * tables at once (KVM_PRE_FAULT_MEMORY, on a vCPU thread, before the guest gets its answer)
-+ * instead of one KVM page fault per 4 KiB page at the guest's first touch. A nested compositor
-+ * uploads each new-size frame of a wl_shm client through fresh 8-32 MiB blobs that the guest
-+ * then writes: one Konsole resize test (2026-10-08) took 211k such faults, 2-4 us each in KVM
-+ * plus the exits, about a second of vCPU time on the compositor's vCPU.
-+ */
-+typedef struct RutabagaPrefault {
-+    uint64_t gpa;
-+    uint64_t size;
-+    int ret;
-+} RutabagaPrefault;
-+
-+static void rutabaga_prefault_on_cpu(CPUState *cpu, run_on_cpu_data data)
-+{
-+    RutabagaPrefault *p = data.host_ptr;
-+
-+    p->ret = kvm_cpu_pre_fault_memory(cpu, p->gpa, p->size);
-+}
-+
-+static void virtio_gpu_rutabaga_prefault(VirtIOGPURutabaga *vr, uint64_t offset,
-+                                         uint64_t size)
-+{
-+    VirtIOGPUBase *vb = VIRTIO_GPU_BASE(vr);
-+    MemoryRegionSection sec;
-+    RutabagaPrefault p = { .size = size };
-+
-+    if (!vr->prefault_blobs || !kvm_enabled() || !first_cpu) {
-+        return;
-+    }
-+    sec = memory_region_find(&vb->hostmem, offset, size);
-+    if (!sec.mr) {
-+        return;
-+    }
-+    p.gpa = sec.offset_within_address_space;
-+    memory_region_unref(sec.mr);
-+    run_on_cpu(first_cpu, rutabaga_prefault_on_cpu, RUN_ON_CPU_HOST_PTR(&p));
-+    if (p.ret < 0) {
-+        warn_report("virtio-gpu-rutabaga: KVM_PRE_FAULT_MEMORY failed (%s): "
-+                    "x-prefault-blobs off", strerror(-p.ret));
-+        vr->prefault_blobs = false;
-+    }
-+}
-+
-+static bool
-+virtio_gpu_rutabaga_map_fixed(VirtIOGPURutabaga *vr,
-+                              struct virtio_gpu_simple_resource *res,
-+                              uint64_t offset, uint32_t map_info, uint32_t slot)
-+{
-+    VirtIOGPUBase *vb = VIRTIO_GPU_BASE(vr);
-+    uint64_t page = qemu_real_host_page_size();
-+    uint64_t size = QEMU_ALIGN_UP(res->blob_size, page);
-+    struct rutabaga_handle handle = { 0 };
-+    int prot = PROT_READ | PROT_WRITE;
-+    void *at, *ptr;
-+    int err;
-+
-+    if (!size || size < res->blob_size || offset % page ||
-+        offset > vb->conf.hostmem || size > vb->conf.hostmem - offset) {
-+        return false;
-+    }
-+    if (rutabaga_resource_export_blob(vr->rutabaga, res->resource_id,
-+                                      &handle)) {
-+        return false;
-+    }
-+    /* an opaque fd (Vulkan memory) cannot be mmap()ed */
-+    if (handle.handle_type != RUTABAGA_HANDLE_TYPE_MEM_DMABUF &&
-+        handle.handle_type != RUTABAGA_HANDLE_TYPE_MEM_SHM) {
-+        close(handle.os_handle);
-+        return false;
-+    }
-+    if ((map_info & RUTABAGA_MAP_ACCESS_MASK) == RUTABAGA_MAP_ACCESS_READ) {
-+        prot = PROT_READ;
-+    }
-+    at = (uint8_t *)vr->hostmem_mmap + offset;
-+    ptr = mmap(at, size, prot, MAP_SHARED | MAP_FIXED, handle.os_handle, 0);
-+    err = errno;
-+    close(handle.os_handle);
-+    if (ptr == MAP_FAILED) {
-+        /* a failed MAP_FIXED may have taken the background with it */
-+        mmap(at, size, PROT_READ | PROT_WRITE,
-+             MAP_PRIVATE | MAP_ANONYMOUS | MAP_FIXED | MAP_NORESERVE, -1, 0);
-+        qemu_log_mask(LOG_GUEST_ERROR, "%s: resource %" PRIu32 ": mmap of "
-+                      "its fd failed (%s), mapped as a subregion\n", __func__,
-+                      res->resource_id, strerror(err));
-+        return false;
-+    }
-+    vr->memory_regions[slot].fixed = ptr;
-+    vr->memory_regions[slot].fixed_size = size;
-+    vr->memory_regions[slot].resource_id = res->resource_id;
-+    vr->memory_regions[slot].used = 1;
-+    virtio_gpu_rutabaga_prefault(vr, offset, size);
-+    return true;
-+}
-+
- static void
- rutabaga_cmd_resource_map_blob(VirtIOGPU *g,
-                                struct virtio_gpu_ctrl_command *cmd)
-@@ -697,6 +904,25 @@ rutabaga_cmd_resource_map_blob(VirtIOGPU *g,
-      */
-     resp.map_info = map_info & RUTABAGA_MAP_CACHE_MASK;
- 
-+    /* mapped twice: the second would hide the first's slot */
-+    CHECK(virtio_gpu_rutabaga_find_slot(vr, mblob.resource_id) < 0, cmd);
-+
-+    if (vr->hostmem_mmap) {
-+        for (slot = 0; slot < MAX_SLOTS; slot++) {
-+            if (!vr->memory_regions[slot].used) {
-+                break;
-+            }
-+        }
-+        CHECK(slot < MAX_SLOTS, cmd);
-+        if (virtio_gpu_rutabaga_map_fixed(vr, res, mblob.offset, map_info,
-+                                          slot)) {
-+            resp.hdr.type = VIRTIO_GPU_RESP_OK_MAP_INFO;
-+            virtio_gpu_ctrl_response(g, cmd, &resp.hdr, sizeof(resp));
-+            return;
-+        }
-+        /* not exportable as an fd that can be mmap()ed: a subregion */
-+    }
-+
-     result = rutabaga_resource_map(vr->rutabaga, mblob.resource_id, &mapping);
-     CHECK(!result, cmd);
- 
-@@ -717,7 +943,8 @@ rutabaga_cmd_resource_map_blob(VirtIOGPU *g,
-         MemoryRegion *mr = &(vr->memory_regions[slot].mr);
-         memory_region_init_ram_ptr(mr, OBJECT(vr), "blob", mapping.size,
-                                    mapping.ptr);
--        memory_region_add_subregion(&vb->hostmem, mblob.offset, mr);
-+        /* over the fixed mapping's background, when there is one */
-+        memory_region_add_subregion_overlap(&vb->hostmem, mblob.offset, mr, 1);
-         vr->memory_regions[slot].resource_id = mblob.resource_id;
-         vr->memory_regions[slot].used = 1;
-         break;
-@@ -739,11 +966,10 @@ rutabaga_cmd_resource_unmap_blob(VirtIOGPU *g,
-                                  struct virtio_gpu_ctrl_command *cmd)
- {
-     int32_t result;
--    uint32_t slot = 0;
-+    int slot;
-     struct virtio_gpu_simple_resource *res;
-     struct virtio_gpu_resource_unmap_blob ublob;
- 
--    VirtIOGPUBase *vb = VIRTIO_GPU_BASE(g);
-     VirtIOGPURutabaga *vr = VIRTIO_GPU_RUTABAGA(g);
- 
-     VIRTIO_GPU_FILL_CMD(ublob);
-@@ -753,21 +979,9 @@ rutabaga_cmd_resource_unmap_blob(VirtIOGPU *g,
-     res = virtio_gpu_find_resource(g, ublob.resource_id);
-     CHECK(res, cmd);
- 
--    for (slot = 0; slot < MAX_SLOTS; slot++) {
--        if (vr->memory_regions[slot].resource_id != ublob.resource_id) {
--            continue;
--        }
--
--        MemoryRegion *mr = &(vr->memory_regions[slot].mr);
--        memory_region_del_subregion(&vb->hostmem, mr);
--
--        vr->memory_regions[slot].resource_id = 0;
--        vr->memory_regions[slot].used = 0;
--        break;
--    }
--
--    CHECK(slot < MAX_SLOTS, cmd);
--    result = rutabaga_resource_unmap(vr->rutabaga, res->resource_id);
-+    slot = virtio_gpu_rutabaga_find_slot(vr, ublob.resource_id);
-+    CHECK(slot >= 0, cmd);
-+    result = virtio_gpu_rutabaga_unmap_slot(vr, slot);
-     CHECK(!result, cmd);
- }
- 
-@@ -901,8 +1115,21 @@ virtio_gpu_rutabaga_aio_cb(void *opaque)
-             continue;
-         }
- 
-+        /*
-+         * A context-specific timeline is the context's own: ring indices of
-+         * different contexts are unrelated, and fence ids come from one
-+         * counter for all of them. Without the context check a fence of one
-+         * context completed earlier commands of other contexts on the same
-+         * ring index (virtio-gpu-virgl compares the context too).
-+         * The ring index is a byte: rutabaga_gfx's Rust RutabagaFence has a u8
-+         * there, and its C header declares a uint32_t, so the three bytes
-+         * above it are uninitialized padding - a ring's fences stopped
-+         * matching their commands, which piled up until the control queue
-+         * was full (the guest's desktop froze).
-+         */
-         if (signaled_ctx_specific &&
--           (cmd->cmd_hdr.ring_idx != fence_data.ring_idx)) {
-+           (cmd->cmd_hdr.ctx_id != fence_data.ctx_id ||
-+            cmd->cmd_hdr.ring_idx != (uint8_t)fence_data.ring_idx)) {
-             continue;
-         }
- 
-@@ -971,6 +1198,19 @@ virtio_gpu_rutabaga_debug_cb(uint64_t user_data,
-     }
- }
- 
-+/*
-+ * rutabaga's poll descriptor, when its renderer has one: readable when fences may be retired
-+ * by polling it (crosvm registers it the same way). rutabaga runs virglrenderer with
-+ * asynchronous fence callbacks, which retire fences from virglrenderer's own threads, so with
-+ * it this is for completeness.
-+ */
-+static void virtio_gpu_rutabaga_poll_cb(void *opaque)
-+{
-+    VirtIOGPURutabaga *vr = opaque;
-+
-+    rutabaga_poll(vr->rutabaga);
-+}
-+
- static bool virtio_gpu_rutabaga_init(VirtIOGPU *g, Error **errp)
- {
-     int result;
-@@ -1052,6 +1292,11 @@ static bool virtio_gpu_rutabaga_init(VirtIOGPU *g, Error **errp)
-         return false;
-     }
- 
-+    vr->poll_fd = -1;
-+    if (!rutabaga_poll_descriptor(vr->rutabaga, &vr->poll_fd) && vr->poll_fd >= 0) {
-+        qemu_set_fd_handler(vr->poll_fd, virtio_gpu_rutabaga_poll_cb, NULL, vr);
-+    }
-+
-     return true;
- }
- 
-@@ -1098,6 +1343,7 @@ static void virtio_gpu_rutabaga_realize(DeviceState *qdev, Error **errp)
-     uint32_t num_capsets;
-     VirtIOGPUBase *bdev = VIRTIO_GPU_BASE(qdev);
-     VirtIOGPU *gpudev = VIRTIO_GPU(qdev);
-+    VirtIOGPURutabaga *vr = VIRTIO_GPU_RUTABAGA(qdev);
- 
- #if HOST_BIG_ENDIAN
-     error_setg(errp, "rutabaga is not supported on bigendian platforms");
-@@ -1113,6 +1359,25 @@ static void virtio_gpu_rutabaga_realize(DeviceState *qdev, Error **errp)
-         goto fail;
-     }
- 
-+#if !defined(CONFIG_WIN32)
-+    if (vr->fixed_blob_mapping && virtio_gpu_hostmem_enabled(bdev->conf)) {
-+        void *map = qemu_ram_mmap(-1, bdev->conf.hostmem,
-+                                  qemu_real_host_page_size(), 0, 0);
-+
-+        if (map == MAP_FAILED) {
-+            error_setg_errno(errp, errno,
-+                             "rutabaga hostmem region could not be initialized");
-+            goto fail;
-+        }
-+        vr->hostmem_mmap = map;
-+        memory_region_init_ram_ptr(&vr->hostmem_background, NULL,
-+                                   "hostmem-background", bdev->conf.hostmem,
-+                                   vr->hostmem_mmap);
-+        memory_region_add_subregion(&bdev->hostmem, 0,
-+                                    &vr->hostmem_background);
-+    }
-+#endif
-+
-     if (!virtio_gpu_rutabaga_get_num_capsets(gpudev, &num_capsets, errp)) {
-         goto fail;
-     }
-@@ -1140,6 +1405,23 @@ static const Property virtio_gpu_rutabaga_properties[] = {
-                       RUTABAGA_CAPSET_GFXSTREAM_GLES, false),
-     DEFINE_PROP_BIT64("x-gfxstream-composer", VirtIOGPURutabaga, capset_mask,
-                       RUTABAGA_CAPSET_GFXSTREAM_COMPOSER, false),
-+    /*
-+     * virglrenderer's context types, for a rutabaga_gfx built with its
-+     * virgl_renderer feature: drm (native context) next to cross-domain on
-+     * one device, as crosvm's context-types=virgl2:drm:cross-domain - the
-+     * cross-domain context passes resources the drm context allocated.
-+     */
-+    DEFINE_PROP_BIT64("x-virgl2", VirtIOGPURutabaga, capset_mask,
-+                      RUTABAGA_CAPSET_VIRGL2, false),
-+    DEFINE_PROP_BIT64("x-drm", VirtIOGPURutabaga, capset_mask,
-+                      RUTABAGA_CAPSET_DRM, false),
-+    /* blobs mmap()ed in place into one memslot instead of a region each */
-+    DEFINE_PROP_BOOL("x-prefault-blobs", VirtIOGPURutabaga, prefault_blobs,
-+                     false),
-+    DEFINE_PROP_BOOL("x-fixed-blob-mapping", VirtIOGPURutabaga,
-+                     fixed_blob_mapping, true),
-+    /* shareable guest-memory blobs as udmabufs for the native context */
-+    DEFINE_PROP_BOOL("x-guest-dmabuf", VirtIOGPURutabaga, guest_dmabuf, true),
-     DEFINE_PROP_STRING("wayland-socket-path", VirtIOGPURutabaga,
-                        wayland_socket_path),
-     DEFINE_PROP_STRING("wsi", VirtIOGPURutabaga, wsi),
 diff --git a/hw/display/virtio-gpu-virgl.c b/hw/display/virtio-gpu-virgl.c
-index 9e0dd332d0..6c94a275ae 100644
+index 927bd06b43..6c94a275ae 100644
 --- a/hw/display/virtio-gpu-virgl.c
 +++ b/hw/display/virtio-gpu-virgl.c
-@@ -451,21 +451,13 @@ virtio_gpu_virgl_resource_unref(VirtIOGPU *g,
-     virgl_renderer_resource_detach_iov(res->base.resource_id,
-                                        &res_iovs,
-                                        &num_iovs);
--    if (res_iovs != NULL && num_iovs != 0) {
--        virtio_gpu_cleanup_mapping_iov(g, res_iovs, num_iovs);
--    }
-+    res->base.iov = res_iovs;
-+    res->base.iov_cnt = num_iovs;
-     virgl_renderer_resource_unref(res->base.resource_id);
- 
-     QTAILQ_REMOVE(&g->reslist, &res->base, next);
- 
--    /*
--     * The guest addresses virtio_gpu_create_mapping_iov() recorded for a
--     * guest-memory blob: virgl_renderer_resource_detach_iov() hands back
--     * only the iovecs, so nothing else frees them (a 4K buffer in 4 KiB
--     * pages is a 64 KiB array, and a guest resizing windows makes and
--     * drops such buffers all the time: ~45 MB of heap a minute).
--     */
--    g_free(res->base.addrs);
-+    virtio_gpu_cleanup_mapping(g, &res->base);
-     g_free(res);
- 
-     return 0;
-@@ -586,6 +578,10 @@ static void virgl_cmd_resource_flush(VirtIOGPU *g,
+@@ -578,6 +578,10 @@ static void virgl_cmd_resource_flush(VirtIOGPU *g,
          if (g->parent_obj.scanout[i].resource_id != rf.resource_id) {
              continue;
          }
@@ -1250,7 +531,7 @@ index 9e0dd332d0..6c94a275ae 100644
          virtio_gpu_rect_update(g, i, rf.r.x, rf.r.y, rf.r.width, rf.r.height);
          /*
           * Zero copy: the display attached the buffer as it is and holds
-@@ -600,14 +596,21 @@ static void virgl_cmd_resource_flush(VirtIOGPU *g,
+@@ -592,14 +596,21 @@ static void virgl_cmd_resource_flush(VirtIOGPU *g,
      }
  }
  
@@ -1276,7 +557,7 @@ index 9e0dd332d0..6c94a275ae 100644
      if (ret) {
          qemu_log_mask(LOG_GUEST_ERROR,
                        "%s: virgl_renderer_create_fence error: %s",
-@@ -1315,6 +1318,15 @@ static void virgl_write_fence(void *opaque, uint32_t fence)
+@@ -1307,6 +1318,15 @@ static void virgl_write_fence(void *opaque, uint32_t fence)
          if (cmd->cmd_hdr.fence_id > fence) {
              continue;
          }
@@ -1292,7 +573,7 @@ index 9e0dd332d0..6c94a275ae 100644
          trace_virtio_gpu_fence_resp(cmd->cmd_hdr.fence_id);
          virtio_gpu_ctrl_response_nodata(g, cmd, VIRTIO_GPU_RESP_OK_NODATA);
          QTAILQ_REMOVE(&g->fenceq, cmd, next);
-@@ -1398,7 +1410,15 @@ static void virtio_gpu_virgl_async_fence_bh(void *opaque)
+@@ -1390,7 +1410,15 @@ static void virtio_gpu_virgl_async_fence_bh(void *opaque)
                  if (cmd->cmd_hdr.ctx_id != f->ctx_id) {
                      continue;
                  }
@@ -1323,7 +604,7 @@ index df7a2a93c2..78598a5393 100644
  
  static void virtio_gpu_class_init(ObjectClass *klass, const void *data)
 diff --git a/include/hw/virtio/virtio-gpu.h b/include/hw/virtio/virtio-gpu.h
-index f333fe4950..a38e208bc5 100644
+index f333fe4950..67b64ab79f 100644
 --- a/include/hw/virtio/virtio-gpu.h
 +++ b/include/hw/virtio/virtio-gpu.h
 @@ -81,6 +81,8 @@ struct virtio_gpu_framebuffer {
@@ -1398,37 +679,7 @@ index f333fe4950..a38e208bc5 100644
  };
  
  #define VIRTIO_GPU_BASE_PROPERTIES(_state, _conf)                       \
-@@ -335,6 +365,9 @@ struct MemoryRegionInfo {
-     int used;
-     MemoryRegion mr;
-     uint32_t resource_id;
-+    /* mapped in place into the hostmem background (fixed blob mapping), or NULL */
-+    void *fixed;
-+    uint64_t fixed_size;
- };
- 
- struct rutabaga;
-@@ -348,6 +381,19 @@ struct VirtIOGPURutabaga {
-     bool headless;
-     uint32_t num_capsets;
-     struct rutabaga *rutabaga;
-+    /* readable when rutabaga_poll() must run (virglrenderer's fence retirement), or -1 */
-+    int poll_fd;
-+    /*
-+     * Fixed blob mapping: hostmem is one RAM region (one KVM memslot) over an
-+     * anonymous mapping, and blobs are mmap()ed into it in place
-+     */
-+    bool fixed_blob_mapping;
-+    MemoryRegion hostmem_background;
-+    void *hostmem_mmap;
-+    /* x-prefault-blobs: map a blob's pages into KVM's stage-2 tables when it is mapped */
-+    bool prefault_blobs;
-+    /* x-guest-dmabuf: shareable guest-memory blobs get a udmabuf of their pages */
-+    bool guest_dmabuf;
- };
- 
- /*
-@@ -463,7 +509,7 @@ void virtio_gpu_disable_scanout_for_resource(VirtIOGPU *g,
+@@ -463,7 +493,7 @@ void virtio_gpu_disable_scanout_for_resource(VirtIOGPU *g,
                                               uint32_t resource_id);
  
  /* virtio-gpu-3d.c */
@@ -1450,42 +701,6 @@ index a7667456d2..fdf6a2ddd4 100644
  int qemu_can_receive_packet(NetClientState *nc);
  int qemu_can_send_packet(NetClientState *nc);
  ssize_t qemu_sendv_packet(NetClientState *nc, const struct iovec *iov,
-diff --git a/include/system/kvm.h b/include/system/kvm.h
-index 714b8c7b01..c1cac60c2c 100644
---- a/include/system/kvm.h
-+++ b/include/system/kvm.h
-@@ -210,6 +210,13 @@ bool kvm_arm_supports_user_irq(void);
- int kvm_on_sigbus_vcpu(CPUState *cpu, int code, void *addr);
- int kvm_on_sigbus(int code, void *addr);
- 
-+/**
-+ * kvm_cpu_pre_fault_memory - map guest memory into KVM's stage-2 page tables ahead of the
-+ * guest's first touch (KVM_PRE_FAULT_MEMORY; call it on @cpu's thread, e.g. with run_on_cpu())
-+ * Returns 0, or -errno (-ENOSYS where the host's headers or KVM lack it).
-+ */
-+int kvm_cpu_pre_fault_memory(CPUState *cpu, uint64_t gpa, uint64_t size);
-+
- int kvm_check_extension(KVMState *s, unsigned int extension);
- 
- int kvm_vm_ioctl(KVMState *s, unsigned long type, ...);
-diff --git a/include/system/kvm_int.h b/include/system/kvm_int.h
-index 0876aac938..6b22d3b017 100644
---- a/include/system/kvm_int.h
-+++ b/include/system/kvm_int.h
-@@ -168,6 +168,13 @@ struct KVMState
-     uint16_t xen_evtchn_max_pirq;
-     char *device;
-     OnOffAuto honor_guest_pat;
-+    /*
-+     * KVM_X86_QUIRK_SLOT_ZAP_ALL: off = removing a memslot drops only that
-+     * slot's mappings instead of every vCPU's whole guest page tables
-+     */
-+    OnOffAuto slot_zap_all;
-+    /* the VM's halt polling cap in ns (KVM_CAP_HALT_POLL), -1: the kvm module's halt_poll_ns */
-+    int64_t halt_poll_ns;
- };
- 
- void kvm_memory_listener_register(KVMState *s, KVMMemoryListener *kml,
 diff --git a/include/ui/console.h b/include/ui/console.h
 index 2dcdf9f1ff..7852684663 100644
 --- a/include/ui/console.h
@@ -1539,75 +754,6 @@ index 2dcdf9f1ff..7852684663 100644
  
  void qemu_console_early_init(void);
  
-diff --git a/include/ui/dmabuf-layout.h b/include/ui/dmabuf-layout.h
-new file mode 100644
-index 0000000000..aed0e99939
---- /dev/null
-+++ b/include/ui/dmabuf-layout.h
-@@ -0,0 +1,63 @@
-+/*
-+ * The layout of a guest's scanout dma-buf, for showing it as it is
-+ *
-+ * virtio-gpu tells nothing of a scanout's layout (QEMU's dma-bufs carry
-+ * DRM_FORMAT_MOD_INVALID), but amdgpu keeps it in the buffer's metadata.
-+ *
-+ * SPDX-License-Identifier: GPL-2.0-or-later
-+ */
-+
-+#ifndef UI_DMABUF_LAYOUT_H
-+#define UI_DMABUF_LAYOUT_H
-+
-+typedef struct QemuDmabufLayout {
-+    uint64_t modifier;
-+    int planes;
-+    uint32_t offsets[3], strides[3];
-+} QemuDmabufLayout;
-+
-+/*
-+ * The amdgpu metadata of @dmabuf_fd, through @drm_fd (an amdgpu device with
-+ * a handle space of its own): the tiling word and up to @umd_words of the
-+ * user-mode driver's opaque words.  False when the driver cannot tell.
-+ */
-+bool qemu_dmabuf_amdgpu_metadata(int drm_fd, int dmabuf_fd, uint64_t *tiling,
-+                                 uint32_t *umd, int umd_words, int *umd_bytes);
-+
-+/* 1: linear, 0: tiled or compressed, -1: the driver cannot tell */
-+int qemu_dmabuf_amdgpu_linear(int drm_fd, int dmabuf_fd);
-+
-+/*
-+ * The explicit layout of a tiled buffer: the modifier (and DCC planes, with
-+ * @dcc) the kernel's amdgpu driver derives from the same metadata for a
-+ * framebuffer made without one.  The GPU's pipe and packer bits are those
-+ * of the entry of @accepted (the consumer's modifiers, @n_accepted of them)
-+ * that agrees on the rest, or with @accepted NULL those of QEMU's EGL
-+ * display (the same GPU).  GFX11, and GFX10.3 without DCC; false for anything else.
-+ */
-+bool qemu_dmabuf_amdgpu_layout(int drm_fd, int dmabuf_fd, uint32_t width,
-+                               uint32_t offset0, uint32_t stride0,
-+                               const uint64_t *accepted, int n_accepted,
-+                               bool dcc, QemuDmabufLayout *l);
-+
-+/*
-+ * The layout to show @dmabuf_fd with: linear, else the explicit tiled one
-+ * (as above, @accepted may be NULL).  False when none can be given.
-+ */
-+bool qemu_dmabuf_layout_get(int drm_fd, int dmabuf_fd, uint32_t width,
-+                            uint32_t offset0, uint32_t stride0,
-+                            const uint64_t *accepted, int n_accepted,
-+                            bool dcc, QemuDmabufLayout *l);
-+
-+/*
-+ * Whether @l fits @dmabuf_fd for a buffer @height rows high - the checks a
-+ * Wayland compositor makes on linux-dmabuf params (out of bounds there is a
-+ * protocol error, which ends the client's connection)
-+ */
-+bool qemu_dmabuf_layout_fits(int dmabuf_fd, const QemuDmabufLayout *l,
-+                             uint32_t height);
-+
-+/* A render-node fd of the device of QEMU's EGL display, or -1 */
-+int qemu_dmabuf_layout_open_device(void);
-+
-+#endif
 diff --git a/include/ui/sdl2.h b/include/ui/sdl2.h
 index dde78d2687..07f71a1840 100644
 --- a/include/ui/sdl2.h
@@ -1972,104 +1118,6 @@ index 26d2c4fea8..0000000000
 @@ -1,2 +0,0 @@
 -option('opengl', type : 'feature', value : 'auto',
 -       description: 'OpenGL 3 renderer backend (uses libepoxy)')
-diff --git a/system/physmem.c b/system/physmem.c
-index bd5f41cb02..5295d672cd 100644
---- a/system/physmem.c
-+++ b/system/physmem.c
-@@ -1734,6 +1734,17 @@ static void *file_ram_alloc(RAMBlock *block,
-     if (kvm_enabled()) {
-         block->mr->align = MAX(block->mr->align, QEMU_VMALLOC_ALIGN);
-     }
-+#elif defined(__linux__)
-+    /*
-+     * shmem (memfd, tmpfs) maps transparent huge pages only where the virtual
-+     * address and the file offset agree modulo the huge page size: align the
-+     * mapping as anonymous RAM is, so that guest RAM in a memfd can use them
-+     * (/sys/kernel/mm/transparent_hugepage/shmem_enabled; QEMU already
-+     * madvises guest RAM MADV_HUGEPAGE). With 4 KiB pages every first touch
-+     * of guest RAM is a host fault: ~270k of them for a guest's first
-+     * Firefox start after boot.
-+     */
-+    block->mr->align = MAX(block->mr->align, QEMU_VMALLOC_ALIGN);
- #endif
- 
-     if (memory < block->page_size) {
-diff --git a/target/i386/kvm/kvm.c b/target/i386/kvm/kvm.c
-index 1eeadb99ad..0fb7262cdd 100644
---- a/target/i386/kvm/kvm.c
-+++ b/target/i386/kvm/kvm.c
-@@ -3610,6 +3610,30 @@ int kvm_arch_init(MachineState *ms, KVMState *s)
-         }
-     }
- 
-+    /*
-+     * By default KVM zaps the mappings of every memslot, in every vCPU, when
-+     * one memslot is removed or moved: all vCPUs then fault the whole guest
-+     * memory back in. A device that maps and unmaps memory often pays that
-+     * each time - virtio-gpu maps every guest blob mapping as a memory region
-+     * of its own (2026-10-07, a nested desktop over virtio-gpu-rutabaga: 134
-+     * removals in 200 s, 45 % of all guest page faults within 50 ms of one).
-+     * Off: KVM drops only the removed slot's mappings. The quirk was kept as
-+     * KVM's default for a VFIO device-assignment case it could not explain.
-+     */
-+    if (s->slot_zap_all == ON_OFF_AUTO_OFF) {
-+        ret = kvm_check_extension(s, KVM_CAP_DISABLE_QUIRKS2);
-+        if (!(ret & KVM_X86_QUIRK_SLOT_ZAP_ALL)) {
-+            error_report("KVM does not support disabling the slot-zap-all quirk");
-+            return -EINVAL;
-+        }
-+        ret = kvm_vm_enable_cap(s, KVM_CAP_DISABLE_QUIRKS2, 0,
-+                                KVM_X86_QUIRK_SLOT_ZAP_ALL);
-+        if (ret < 0) {
-+            error_report("failed to disable KVM_X86_QUIRK_SLOT_ZAP_ALL");
-+            return ret;
-+        }
-+    }
-+
-     first = false;
-     return 0;
- }
-@@ -7087,6 +7111,24 @@ static void kvm_arch_set_honor_guest_pat(Object *obj, int value, Error **errp)
-     s->honor_guest_pat = value;
- }
- 
-+static int kvm_arch_get_slot_zap_all(Object *obj, Error **errp)
-+{
-+    KVMState *s = KVM_STATE(obj);
-+    return s->slot_zap_all;
-+}
-+
-+static void kvm_arch_set_slot_zap_all(Object *obj, int value, Error **errp)
-+{
-+    KVMState *s = KVM_STATE(obj);
-+
-+    if (s->fd != -1) {
-+        error_setg(errp, "Cannot set properties after the accelerator has been initialized");
-+        return;
-+    }
-+
-+    s->slot_zap_all = value;
-+}
-+
- void kvm_arch_accel_class_init(ObjectClass *oc)
- {
-     object_class_property_add_enum(oc, "notify-vmexit", "NotifyVMexitOption",
-@@ -7134,6 +7176,15 @@ void kvm_arch_accel_class_init(ObjectClass *oc)
-     object_class_property_set_description(oc, "honor-guest-pat",
-                                           "Disable KVM quirk that ignores guest PAT "
-                                           "memory type settings (default: auto)");
-+
-+    object_class_property_add_enum(oc, "slot-zap-all", "OnOffAuto",
-+                                   &OnOffAuto_lookup,
-+                                   kvm_arch_get_slot_zap_all,
-+                                   kvm_arch_set_slot_zap_all);
-+    object_class_property_set_description(oc, "slot-zap-all",
-+                                          "off: removing a memslot zaps only its own "
-+                                          "mappings, not every vCPU's (KVM quirk "
-+                                          "SLOT_ZAP_ALL; default: auto = KVM's)");
- }
- 
- void kvm_set_max_apic_id(uint32_t max_apic_id)
 diff --git a/ui/console.c b/ui/console.c
 index f6eb2c4a23..f56dffbe00 100644
 --- a/ui/console.c
@@ -2480,306 +1528,11 @@ index b77b5b9a45..56b2d44c4d 100644
  extern const DisplayChangeListenerOps dbus_console_dcl_ops;
  
  #define DBUS_DISPLAY_TYPE_LISTENER dbus_display_listener_get_type()
-diff --git a/ui/dmabuf-layout.c b/ui/dmabuf-layout.c
-new file mode 100644
-index 0000000000..c454012162
---- /dev/null
-+++ b/ui/dmabuf-layout.c
-@@ -0,0 +1,280 @@
-+/*
-+ * The layout of a guest's scanout dma-buf, for showing it as it is
-+ *
-+ * A display that hands the guest's buffer to the host compositor (zero
-+ * copy) has to say how it is laid out.  virtio-gpu tells nothing of it, but
-+ * amdgpu keeps the tiling in the buffer's metadata, and the kernel derives
-+ * a modifier from it for a framebuffer created without one
-+ * (amdgpu_display.c, convert_tiling_flags_to_modifier_gfx9 and
-+ * extract_render_dcc_offset): the same is done here.  Used by the SDL
-+ * window (sdl2-swapchain.c) and the D-Bus display (dbus-listener.c).
-+ *
-+ * SPDX-License-Identifier: GPL-2.0-or-later
-+ */
-+
-+#include "qemu/osdep.h"
-+#include "ui/dmabuf-layout.h"
-+#include "ui/egl-helpers.h"
-+
-+#include <sys/ioctl.h>
-+#include <drm.h>
-+#include <drm_fourcc.h>
-+#include <amdgpu_drm.h>
-+#include <epoxy/egl.h>
-+
-+#ifndef EGL_DRM_RENDER_NODE_FILE_EXT
-+#define EGL_DRM_RENDER_NODE_FILE_EXT 0x3377
-+#endif
-+
-+static bool is_amdgpu(int drm_fd)
-+{
-+    char name[16] = "";
-+    struct drm_version ver = { .name_len = sizeof(name) - 1, .name = name };
-+
-+    return drm_fd >= 0 && !ioctl(drm_fd, DRM_IOCTL_VERSION, &ver) &&
-+           !strcmp(name, "amdgpu");
-+}
-+
-+bool qemu_dmabuf_amdgpu_metadata(int drm_fd, int dmabuf_fd, uint64_t *tiling,
-+                                 uint32_t *umd, int umd_words, int *umd_bytes)
-+{
-+    struct drm_prime_handle prime = { .fd = dmabuf_fd };
-+    struct drm_amdgpu_gem_metadata md = { 0 };
-+    struct drm_gem_close gem_close = { 0 };
-+    int ret;
-+
-+    if (!is_amdgpu(drm_fd) || ioctl(drm_fd, DRM_IOCTL_PRIME_FD_TO_HANDLE, &prime)) {
-+        return false;
-+    }
-+    md.handle = prime.handle;
-+    md.op = AMDGPU_GEM_METADATA_OP_GET_METADATA;
-+    ret = ioctl(drm_fd, DRM_IOCTL_AMDGPU_GEM_METADATA, &md);
-+    /* on a handle space of its own: closing it closes nobody else's */
-+    gem_close.handle = prime.handle;
-+    ioctl(drm_fd, DRM_IOCTL_GEM_CLOSE, &gem_close);
-+    if (ret) {
-+        return false;
-+    }
-+    *tiling = md.data.tiling_info;
-+    if (umd) {
-+        int n = MIN(umd_words, (int)ARRAY_SIZE(md.data.data));
-+
-+        memcpy(umd, md.data.data, n * sizeof(uint32_t));
-+        *umd_bytes = MIN((int)md.data.data_size_bytes, n * (int)sizeof(uint32_t));
-+    }
-+    return true;
-+}
-+
-+int qemu_dmabuf_amdgpu_linear(int drm_fd, int dmabuf_fd)
-+{
-+    uint64_t tiling;
-+
-+    if (!qemu_dmabuf_amdgpu_metadata(drm_fd, dmabuf_fd, &tiling, NULL, 0, NULL)) {
-+        return -1;
-+    }
-+    return AMDGPU_TILING_GET(tiling, SWIZZLE_MODE) == 0 &&
-+           AMDGPU_TILING_GET(tiling, DCC_OFFSET_256B) == 0;
-+}
-+
-+#define AMD_MOD_GET(m, field) \
-+    (((m) >> AMD_FMT_MOD_##field##_SHIFT) & AMD_FMT_MOD_##field##_MASK)
-+
-+/*
-+ * The modifiers QEMU's EGL display (the GPU's driver) takes for XRGB8888:
-+ * they carry this GPU's pipe and packer bits.  Queried once.
-+ */
-+#define EGL_MODIFIERS 128
-+
-+static int egl_modifiers(const uint64_t **mods)
-+{
-+    static uint64_t list[EGL_MODIFIERS];
-+    static int n = -1;
-+    EGLuint64KHR got[EGL_MODIFIERS];
-+    EGLBoolean external[EGL_MODIFIERS];
-+    EGLint count = 0, i;
-+
-+    if (n < 0) {
-+        n = 0;
-+        if (qemu_egl_display != EGL_NO_DISPLAY &&
-+            epoxy_has_egl_extension(qemu_egl_display,
-+                                    "EGL_EXT_image_dma_buf_import_modifiers") &&
-+            eglQueryDmaBufModifiersEXT(qemu_egl_display, DRM_FORMAT_XRGB8888,
-+                                       EGL_MODIFIERS, got, external, &count)) {
-+            for (i = 0; i < count; i++) {
-+                if (!external[i]) {
-+                    list[n++] = got[i];
-+                }
-+            }
-+        }
-+    }
-+    *mods = list;
-+    return n;
-+}
-+
-+bool qemu_dmabuf_amdgpu_layout(int drm_fd, int dmabuf_fd, uint32_t width,
-+                               uint32_t offset0, uint32_t stride0,
-+                               const uint64_t *accepted, int n_accepted,
-+                               bool dcc_ok, QemuDmabufLayout *l)
-+{
-+    uint64_t tiling, dcc, render_dcc = 0, m = 0;
-+    uint32_t umd[10];
-+    int umd_bytes = 0, swizzle, block_bits, i;
-+    bool i64b, retile = false;
-+
-+    if (!qemu_dmabuf_amdgpu_metadata(drm_fd, dmabuf_fd, &tiling, umd, 10, &umd_bytes)) {
-+        return false;
-+    }
-+    swizzle = AMDGPU_TILING_GET(tiling, SWIZZLE_MODE);
-+    dcc = (uint64_t)AMDGPU_TILING_GET(tiling, DCC_OFFSET_256B) * 256;
-+    i64b = AMDGPU_TILING_GET(tiling, DCC_INDEPENDENT_64B);
-+    if (!swizzle || (swizzle & 3) == 0) {
-+        return false;       /* linear, or Z microtiling: no modifier */
-+    }
-+    switch (swizzle >> 2) {
-+    case 1: case 5:
-+        block_bits = 12;    /* 4 KiB */
-+        break;
-+    case 2: case 4: case 6:
-+        block_bits = 16;    /* 64 KiB */
-+        break;
-+    case 7:
-+        block_bits = 18;    /* 256 KiB */
-+        break;
-+    default:
-+        return false;
-+    }
-+    if (dcc && !dcc_ok) {
-+        return false;       /* DCC planes not checked on a guest yet */
-+    }
-+    if (dcc && umd_bytes >= 40 && umd[0] == 1) {
-+        /* the image descriptor's META_DATA_ADDRESS (resource words 6/7), Navi on */
-+        render_dcc = ((uint64_t)umd[9] << 16) | ((umd[8] & 0xff000000u) >> 16);
-+        retile = render_dcc && render_dcc != offset0 + dcc && render_dcc < UINT_MAX;
-+    }
-+    if (!accepted) {
-+        n_accepted = egl_modifiers(&accepted);
-+    }
-+    {
-+        /* the consumer's modifier that agrees, with this GPU's pipes and packers */
-+        for (i = 0; i < n_accepted; i++) {
-+            uint64_t t = accepted[i];
-+
-+            /*
-+             * GFX11, and GFX10.3 (RB+: the same R_X swizzles, pipe and packer
-+             * bits in the modifier); its DCC is laid out otherwise: GFX11 only
-+             */
-+            int version = AMD_MOD_GET(t, TILE_VERSION);
-+
-+            if ((t >> 56) != DRM_FORMAT_MOD_VENDOR_AMD ||
-+                (version != AMD_FMT_MOD_TILE_VER_GFX11 &&
-+                 (version != AMD_FMT_MOD_TILE_VER_GFX10_RBPLUS || dcc)) ||
-+                AMD_MOD_GET(t, TILE) != swizzle ||
-+                AMD_MOD_GET(t, DCC) != !!dcc) {
-+                continue;
-+            }
-+            if (dcc && (AMD_MOD_GET(t, DCC_RETILE) != retile ||
-+                        AMD_MOD_GET(t, DCC_INDEPENDENT_64B) != i64b ||
-+                        AMD_MOD_GET(t, DCC_INDEPENDENT_128B) != 1 ||
-+                        AMD_MOD_GET(t, DCC_MAX_COMPRESSED_BLOCK) !=
-+                            (i64b ? AMD_FMT_MOD_DCC_BLOCK_64B : AMD_FMT_MOD_DCC_BLOCK_128B) ||
-+                        AMD_MOD_GET(t, DCC_CONSTANT_ENCODE) ||
-+                        AMD_MOD_GET(t, DCC_PIPE_ALIGN))) {
-+                continue;
-+            }
-+            m = t;
-+            break;
-+        }
-+        if (!m) {
-+            return false;
-+        }
-+    }
-+    l->modifier = m;
-+    l->planes = 1;
-+    l->offsets[0] = offset0;
-+    l->strides[0] = stride0;
-+    if (dcc) {
-+        l->offsets[1] = offset0 + dcc;
-+        l->strides[1] = AMDGPU_TILING_GET(tiling, DCC_PITCH_MAX) + 1;
-+        l->planes = 2;
-+    }
-+    if (retile) {
-+        /* 64 KiB blocks: the pipe XOR bits are the GPU's pipes */
-+        int pipes = AMD_MOD_GET(m, PIPE_XOR_BITS);
-+        int packers = AMD_MOD_GET(m, PACKERS);
-+        int bits = MAX(20, 16 + pipes + (pipes == packers && pipes > 1)) - 2;
-+
-+        if (block_bits != 16) {
-+            return false;
-+        }
-+        l->offsets[2] = render_dcc;
-+        l->strides[2] = ROUND_UP(width, 1u << ((bits + 1) / 2));
-+        l->planes = 3;
-+    }
-+    return true;
-+}
-+
-+bool qemu_dmabuf_layout_get(int drm_fd, int dmabuf_fd, uint32_t width,
-+                            uint32_t offset0, uint32_t stride0,
-+                            const uint64_t *accepted, int n_accepted,
-+                            bool dcc, QemuDmabufLayout *l)
-+{
-+    int linear = qemu_dmabuf_amdgpu_linear(drm_fd, dmabuf_fd);
-+
-+    if (linear == 1) {
-+        *l = (QemuDmabufLayout) {
-+            .modifier = DRM_FORMAT_MOD_LINEAR, .planes = 1,
-+            .offsets = { offset0 }, .strides = { stride0 },
-+        };
-+        return true;
-+    }
-+    return linear == 0 &&
-+           qemu_dmabuf_amdgpu_layout(drm_fd, dmabuf_fd, width, offset0, stride0,
-+                                     accepted, n_accepted, dcc, l);
-+}
-+
-+bool qemu_dmabuf_layout_fits(int dmabuf_fd, const QemuDmabufLayout *l,
-+                             uint32_t height)
-+{
-+    off_t size = lseek(dmabuf_fd, 0, SEEK_END);
-+    int i;
-+
-+    if (!height || l->planes < 1 || l->planes > 3) {
-+        return false;
-+    }
-+    for (i = 0; i < l->planes; i++) {
-+        uint64_t row_end = (uint64_t)l->offsets[i] + l->strides[i];
-+        uint64_t end = i ? row_end :
-+                       (uint64_t)l->offsets[0] + (uint64_t)l->strides[0] * height;
-+
-+        if (row_end > UINT32_MAX || end > UINT32_MAX) {
-+            return false;
-+        }
-+        if (size < 0) {
-+            continue;       /* no seeking on this buffer: the compositor cannot tell either */
-+        }
-+        if (l->offsets[i] >= (uint64_t)size || row_end > (uint64_t)size ||
-+            end > (uint64_t)size) {
-+            return false;
-+        }
-+    }
-+    return true;
-+}
-+
-+int qemu_dmabuf_layout_open_device(void)
-+{
-+    EGLDeviceEXT device = EGL_NO_DEVICE_EXT;
-+    const char *node;
-+
-+    if (qemu_egl_display == EGL_NO_DISPLAY ||
-+        !epoxy_has_egl_extension(qemu_egl_display, "EGL_EXT_device_query") ||
-+        !eglQueryDisplayAttribEXT(qemu_egl_display, EGL_DEVICE_EXT,
-+                                  (EGLAttrib *)&device) ||
-+        device == EGL_NO_DEVICE_EXT) {
-+        return -1;
-+    }
-+    node = eglQueryDeviceStringEXT(device, EGL_DRM_RENDER_NODE_FILE_EXT);
-+    if (!node) {
-+        node = eglQueryDeviceStringEXT(device, EGL_DRM_DEVICE_FILE_EXT);
-+    }
-+    return node ? open(node, O_RDWR | O_CLOEXEC) : -1;
-+}
 diff --git a/ui/meson.build b/ui/meson.build
-index c331e7d704..80d054866e 100644
+index 39844acd36..80d054866e 100644
 --- a/ui/meson.build
 +++ b/ui/meson.build
-@@ -106,6 +106,8 @@ if opengl.found()
-   opengl_ss.add(gbm, pixman)
-   opengl_ss.add(when: [opengl],
-                if_true: files('shader.c', 'console-gl.c', 'egl-helpers.c', 'egl-context.c'))
-+  # the layout of a guest's dma-buf, for zero copy (SDL window, D-Bus display)
-+  opengl_ss.add(when: [opengl, gbm], if_true: files('dmabuf-layout.c'))
-   ui_modules += {'opengl' : opengl_ss}
- endif
- 
-@@ -201,7 +203,6 @@ if sdl.found()
+@@ -203,7 +203,6 @@ if sdl.found()
    endif
    sdl_ss.add(when: opengl, if_true: files('sdl2-gl.c'))
    sdl_ss.add(when: x11, if_true: files('x_keymap.c'))
@@ -8425,3 +7178,6 @@ index c2431c5003..1199856940 100644
    </interface>
  
  </protocol>
+-- 
+2.56.0
+

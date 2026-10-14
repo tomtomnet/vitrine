@@ -1,0 +1,519 @@
+From 74e343f9fd83c2d6b375d2377ee4fdfa0d0cb2eb Mon Sep 17 00:00:00 2001
+From: tomtomnet <tompere8000@proton.me>
+Date: Wed, 14 Oct 2026 19:00:43 +0200
+Subject: [PATCH 23/24] virtio-gpu-rutabaga: native-context capsets, fixed blob
+ mapping, guest dma-bufs, prefaulted blobs
+
+- drm (native context) and virgl2 capsets next to cross-domain on one device;
+- x-fixed-blob-mapping: blobs mmap()ed in place into a hostmem background that is one RAM
+  region, so one KVM memslot (as crosvm's fixed-blob-mapping); a blob still mapped at unref
+  or reset is unmapped first;
+- x-guest-dmabuf: shareable guest-memory blobs get a udmabuf, so a native context can import
+  them;
+- x-prefault-blobs: a new blob's pages mapped into KVM ahead of the guest's first touch;
+- rutabaga's poll descriptor on QEMU's main loop (fence retirement);
+- a context-specific fence timeline is the context's own (ring index compared as a byte,
+  the context checked).
+
+Split out of the 2026-10-12 snapshot of the fork's uncommitted work.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ hw/display/virtio-gpu-rutabaga.c | 320 +++++++++++++++++++++++++++++--
+ include/hw/virtio/virtio-gpu.h   |  16 ++
+ 2 files changed, 316 insertions(+), 20 deletions(-)
+
+diff --git a/hw/display/virtio-gpu-rutabaga.c b/hw/display/virtio-gpu-rutabaga.c
+index 1be15a4816..f49260a37a 100644
+--- a/hw/display/virtio-gpu-rutabaga.c
++++ b/hw/display/virtio-gpu-rutabaga.c
+@@ -10,6 +10,9 @@
+ #include "hw/virtio/virtio-gpu-pixman.h"
+ #include "hw/virtio/virtio-iommu.h"
+ #include "migration/blocker.h"
++#include "qemu/mmap-alloc.h"
++#include "system/kvm.h"
++#include "hw/core/cpu.h"
+ 
+ #include <glib/gmem.h>
+ #include <rutabaga_gfx/rutabaga_gfx_ffi.h>
+@@ -140,6 +143,52 @@ rutabaga_cmd_create_resource_3d(VirtIOGPU *g,
+     QTAILQ_INSERT_HEAD(&g->reslist, res, next);
+ }
+ 
++/*
++ * Undo the mapping of a slot. A fixed one goes back to the anonymous
++ * background (KVM's MMU notifier drops just that range from the guest's page
++ * tables); a subregion leaves the hostmem container (a memory transaction and
++ * a KVM memslot update) and rutabaga's own mapping is released.
++ */
++static int32_t
++virtio_gpu_rutabaga_unmap_slot(VirtIOGPURutabaga *vr, uint32_t slot)
++{
++    VirtIOGPUBase *vb = VIRTIO_GPU_BASE(vr);
++    struct MemoryRegionInfo *mri = &vr->memory_regions[slot];
++    int32_t result = 0;
++
++    if (mri->fixed) {
++        if (mmap(mri->fixed, mri->fixed_size, PROT_READ | PROT_WRITE,
++                 MAP_PRIVATE | MAP_ANONYMOUS | MAP_FIXED | MAP_NORESERVE,
++                 -1, 0) == MAP_FAILED) {
++            error_report("%s: failed to unmap(fixed) resource %" PRIu32 ": %s",
++                         __func__, mri->resource_id, strerror(errno));
++            result = -errno;
++        }
++        mri->fixed = NULL;
++        mri->fixed_size = 0;
++    } else {
++        memory_region_del_subregion(&vb->hostmem, &mri->mr);
++        result = rutabaga_resource_unmap(vr->rutabaga, mri->resource_id);
++    }
++    mri->resource_id = 0;
++    mri->used = 0;
++    return result;
++}
++
++static int
++virtio_gpu_rutabaga_find_slot(VirtIOGPURutabaga *vr, uint32_t resource_id)
++{
++    uint32_t slot;
++
++    for (slot = 0; slot < MAX_SLOTS; slot++) {
++        if (vr->memory_regions[slot].used &&
++            vr->memory_regions[slot].resource_id == resource_id) {
++            return slot;
++        }
++    }
++    return -1;
++}
++
+ static void
+ virtio_gpu_rutabaga_resource_unref(VirtIOGPU *g,
+                                    struct virtio_gpu_simple_resource *res,
+@@ -147,9 +196,16 @@ virtio_gpu_rutabaga_resource_unref(VirtIOGPU *g,
+ {
+     int32_t result;
+     VirtIOGPURutabaga *vr = VIRTIO_GPU_RUTABAGA(g);
++    int slot;
+ 
+     virtio_gpu_disable_scanout_for_resource(g, res->resource_id);
+ 
++    /* still mapped (a guest that did not unmap it, a reset): unmapped first */
++    slot = virtio_gpu_rutabaga_find_slot(vr, res->resource_id);
++    if (slot >= 0) {
++        virtio_gpu_rutabaga_unmap_slot(vr, slot);
++    }
++
+     result = rutabaga_resource_unref(vr->rutabaga, res->resource_id);
+     if (result) {
+         error_setg_errno(errp,
+@@ -618,6 +674,26 @@ rutabaga_cmd_get_capset(VirtIOGPU *g, struct virtio_gpu_ctrl_command *cmd)
+     g_free(resp);
+ }
+ 
++/*
++ * x-guest-dmabuf: a DRM native context only imports resources by dma-buf, so
++ * the shareable guest-memory blobs the guest's driver makes for dma-bufs of
++ * other guest devices it imports (a compositor's udmabuf around a wl_shm
++ * client buffer, for instance) get a udmabuf of their pages, which rutabaga
++ * hands to virglrenderer (virgl_renderer_resource_set_guest_dmabuf, our
++ * virglrenderer), as virtio-gpu-gl does.  Without it the guest's import
++ * fails and its compositor uploads each such buffer through fresh staging
++ * blobs (2026-10-08: 123 blobs, 2.1 GB per Konsole resize test).  Context 0
++ * only: a cross-domain context's blobs keep their own handling.
++ */
++static bool rutabaga_wants_guest_dmabuf(VirtIOGPURutabaga *vr,
++                                        const struct virtio_gpu_resource_create_blob *cblob)
++{
++    return vr->guest_dmabuf && cblob->hdr.ctx_id == 0 &&
++           cblob->blob_mem == VIRTIO_GPU_BLOB_MEM_GUEST &&
++           (cblob->blob_flags & VIRTIO_GPU_BLOB_FLAG_USE_SHAREABLE) &&
++           (vr->capset_mask & (1ULL << RUTABAGA_CAPSET_DRM));
++}
++
+ static void
+ rutabaga_cmd_resource_create_blob(VirtIOGPU *g,
+                                   struct virtio_gpu_ctrl_command *cmd)
+@@ -627,6 +703,7 @@ rutabaga_cmd_resource_create_blob(VirtIOGPU *g,
+     g_autofree struct virtio_gpu_simple_resource *res = NULL;
+     struct virtio_gpu_resource_create_blob cblob;
+     struct rutabaga_create_blob rc_blob = { 0 };
++    struct rutabaga_handle handle = { .os_handle = -1 };
+ 
+     VirtIOGPURutabaga *vr = VIRTIO_GPU_RUTABAGA(g);
+ 
+@@ -644,6 +721,27 @@ rutabaga_cmd_resource_create_blob(VirtIOGPU *g,
+         CHECK(!result, cmd);
+     }
+ 
++    if (rutabaga_wants_guest_dmabuf(vr, &cblob)) {
++        int fd = virtio_gpu_create_udmabuf_fd(res);
++
++        if (fd < 0) {
++            /*
++             * Without one every later use of the resource by the native
++             * context would fail: refuse it now, the guest falls back to
++             * a copy (as virtio-gpu-gl does)
++             */
++            qemu_log_mask(LOG_GUEST_ERROR,
++                          "%s: no dma-buf for guest blob %d, refusing it\n",
++                          __func__, cblob.resource_id);
++            virtio_gpu_cleanup_mapping(g, res);
++            cmd->error = VIRTIO_GPU_RESP_ERR_OUT_OF_MEMORY;
++            return;
++        }
++        /* rutabaga owns the fd from here, also on failure */
++        handle.os_handle = fd;
++        handle.handle_type = RUTABAGA_HANDLE_TYPE_MEM_DMABUF;
++    }
++
+     rc_blob.blob_id = cblob.blob_id;
+     rc_blob.blob_mem = cblob.blob_mem;
+     rc_blob.blob_flags = cblob.blob_flags;
+@@ -654,7 +752,7 @@ rutabaga_cmd_resource_create_blob(VirtIOGPU *g,
+ 
+     result = rutabaga_resource_create_blob(vr->rutabaga, cblob.hdr.ctx_id,
+                                            cblob.resource_id, &rc_blob, &vecs,
+-                                           NULL);
++                                           handle.os_handle >= 0 ? &handle : NULL);
+ 
+     if (result && cblob.blob_mem != VIRTIO_GPU_BLOB_MEM_HOST3D) {
+         virtio_gpu_cleanup_mapping(g, res);
+@@ -666,6 +764,113 @@ rutabaga_cmd_resource_create_blob(VirtIOGPU *g,
+     res = NULL;
+ }
+ 
++/*
++ * Fixed blob mapping, as crosvm's fixed-blob-mapping: the blob's fd is
++ * mmap()ed in place into the hostmem background, which is one RAM region and
++ * so one KVM memslot for the whole window. A blob mapped as a memory region of
++ * its own costs a memory transaction on the main loop and a KVM memslot update
++ * at each map and unmap (2026-10-07, a nested desktop over cross-domain and drm
++ * native contexts: 366 updates in 200 s, up to 7 ms each; the guest's renderer
++ * waits for its map, the frames it was drawing missed their refresh).
++ * False when the blob cannot be mapped that way: the caller falls back to a
++ * subregion.
++ */
++/*
++ * x-prefault-blobs: a blob mmap()ed into the fixed mapping is mapped into KVM's stage-2 page
++ * tables at once (KVM_PRE_FAULT_MEMORY, on a vCPU thread, before the guest gets its answer)
++ * instead of one KVM page fault per 4 KiB page at the guest's first touch. A nested compositor
++ * uploads each new-size frame of a wl_shm client through fresh 8-32 MiB blobs that the guest
++ * then writes: one Konsole resize test (2026-10-08) took 211k such faults, 2-4 us each in KVM
++ * plus the exits, about a second of vCPU time on the compositor's vCPU.
++ */
++typedef struct RutabagaPrefault {
++    uint64_t gpa;
++    uint64_t size;
++    int ret;
++} RutabagaPrefault;
++
++static void rutabaga_prefault_on_cpu(CPUState *cpu, run_on_cpu_data data)
++{
++    RutabagaPrefault *p = data.host_ptr;
++
++    p->ret = kvm_cpu_pre_fault_memory(cpu, p->gpa, p->size);
++}
++
++static void virtio_gpu_rutabaga_prefault(VirtIOGPURutabaga *vr, uint64_t offset,
++                                         uint64_t size)
++{
++    VirtIOGPUBase *vb = VIRTIO_GPU_BASE(vr);
++    MemoryRegionSection sec;
++    RutabagaPrefault p = { .size = size };
++
++    if (!vr->prefault_blobs || !kvm_enabled() || !first_cpu) {
++        return;
++    }
++    sec = memory_region_find(&vb->hostmem, offset, size);
++    if (!sec.mr) {
++        return;
++    }
++    p.gpa = sec.offset_within_address_space;
++    memory_region_unref(sec.mr);
++    run_on_cpu(first_cpu, rutabaga_prefault_on_cpu, RUN_ON_CPU_HOST_PTR(&p));
++    if (p.ret < 0) {
++        warn_report("virtio-gpu-rutabaga: KVM_PRE_FAULT_MEMORY failed (%s): "
++                    "x-prefault-blobs off", strerror(-p.ret));
++        vr->prefault_blobs = false;
++    }
++}
++
++static bool
++virtio_gpu_rutabaga_map_fixed(VirtIOGPURutabaga *vr,
++                              struct virtio_gpu_simple_resource *res,
++                              uint64_t offset, uint32_t map_info, uint32_t slot)
++{
++    VirtIOGPUBase *vb = VIRTIO_GPU_BASE(vr);
++    uint64_t page = qemu_real_host_page_size();
++    uint64_t size = QEMU_ALIGN_UP(res->blob_size, page);
++    struct rutabaga_handle handle = { 0 };
++    int prot = PROT_READ | PROT_WRITE;
++    void *at, *ptr;
++    int err;
++
++    if (!size || size < res->blob_size || offset % page ||
++        offset > vb->conf.hostmem || size > vb->conf.hostmem - offset) {
++        return false;
++    }
++    if (rutabaga_resource_export_blob(vr->rutabaga, res->resource_id,
++                                      &handle)) {
++        return false;
++    }
++    /* an opaque fd (Vulkan memory) cannot be mmap()ed */
++    if (handle.handle_type != RUTABAGA_HANDLE_TYPE_MEM_DMABUF &&
++        handle.handle_type != RUTABAGA_HANDLE_TYPE_MEM_SHM) {
++        close(handle.os_handle);
++        return false;
++    }
++    if ((map_info & RUTABAGA_MAP_ACCESS_MASK) == RUTABAGA_MAP_ACCESS_READ) {
++        prot = PROT_READ;
++    }
++    at = (uint8_t *)vr->hostmem_mmap + offset;
++    ptr = mmap(at, size, prot, MAP_SHARED | MAP_FIXED, handle.os_handle, 0);
++    err = errno;
++    close(handle.os_handle);
++    if (ptr == MAP_FAILED) {
++        /* a failed MAP_FIXED may have taken the background with it */
++        mmap(at, size, PROT_READ | PROT_WRITE,
++             MAP_PRIVATE | MAP_ANONYMOUS | MAP_FIXED | MAP_NORESERVE, -1, 0);
++        qemu_log_mask(LOG_GUEST_ERROR, "%s: resource %" PRIu32 ": mmap of "
++                      "its fd failed (%s), mapped as a subregion\n", __func__,
++                      res->resource_id, strerror(err));
++        return false;
++    }
++    vr->memory_regions[slot].fixed = ptr;
++    vr->memory_regions[slot].fixed_size = size;
++    vr->memory_regions[slot].resource_id = res->resource_id;
++    vr->memory_regions[slot].used = 1;
++    virtio_gpu_rutabaga_prefault(vr, offset, size);
++    return true;
++}
++
+ static void
+ rutabaga_cmd_resource_map_blob(VirtIOGPU *g,
+                                struct virtio_gpu_ctrl_command *cmd)
+@@ -699,6 +904,25 @@ rutabaga_cmd_resource_map_blob(VirtIOGPU *g,
+      */
+     resp.map_info = map_info & RUTABAGA_MAP_CACHE_MASK;
+ 
++    /* mapped twice: the second would hide the first's slot */
++    CHECK(virtio_gpu_rutabaga_find_slot(vr, mblob.resource_id) < 0, cmd);
++
++    if (vr->hostmem_mmap) {
++        for (slot = 0; slot < MAX_SLOTS; slot++) {
++            if (!vr->memory_regions[slot].used) {
++                break;
++            }
++        }
++        CHECK(slot < MAX_SLOTS, cmd);
++        if (virtio_gpu_rutabaga_map_fixed(vr, res, mblob.offset, map_info,
++                                          slot)) {
++            resp.hdr.type = VIRTIO_GPU_RESP_OK_MAP_INFO;
++            virtio_gpu_ctrl_response(g, cmd, &resp.hdr, sizeof(resp));
++            return;
++        }
++        /* not exportable as an fd that can be mmap()ed: a subregion */
++    }
++
+     result = rutabaga_resource_map(vr->rutabaga, mblob.resource_id, &mapping);
+     CHECK(!result, cmd);
+ 
+@@ -719,7 +943,8 @@ rutabaga_cmd_resource_map_blob(VirtIOGPU *g,
+         MemoryRegion *mr = &(vr->memory_regions[slot].mr);
+         memory_region_init_ram_ptr(mr, OBJECT(vr), "blob", mapping.size,
+                                    mapping.ptr);
+-        memory_region_add_subregion(&vb->hostmem, mblob.offset, mr);
++        /* over the fixed mapping's background, when there is one */
++        memory_region_add_subregion_overlap(&vb->hostmem, mblob.offset, mr, 1);
+         vr->memory_regions[slot].resource_id = mblob.resource_id;
+         vr->memory_regions[slot].used = 1;
+         break;
+@@ -741,11 +966,10 @@ rutabaga_cmd_resource_unmap_blob(VirtIOGPU *g,
+                                  struct virtio_gpu_ctrl_command *cmd)
+ {
+     int32_t result;
+-    uint32_t slot = 0;
++    int slot;
+     struct virtio_gpu_simple_resource *res;
+     struct virtio_gpu_resource_unmap_blob ublob;
+ 
+-    VirtIOGPUBase *vb = VIRTIO_GPU_BASE(g);
+     VirtIOGPURutabaga *vr = VIRTIO_GPU_RUTABAGA(g);
+ 
+     VIRTIO_GPU_FILL_CMD(ublob);
+@@ -755,21 +979,9 @@ rutabaga_cmd_resource_unmap_blob(VirtIOGPU *g,
+     res = virtio_gpu_find_resource(g, ublob.resource_id);
+     CHECK(res, cmd);
+ 
+-    for (slot = 0; slot < MAX_SLOTS; slot++) {
+-        if (vr->memory_regions[slot].resource_id != ublob.resource_id) {
+-            continue;
+-        }
+-
+-        MemoryRegion *mr = &(vr->memory_regions[slot].mr);
+-        memory_region_del_subregion(&vb->hostmem, mr);
+-
+-        vr->memory_regions[slot].resource_id = 0;
+-        vr->memory_regions[slot].used = 0;
+-        break;
+-    }
+-
+-    CHECK(slot < MAX_SLOTS, cmd);
+-    result = rutabaga_resource_unmap(vr->rutabaga, res->resource_id);
++    slot = virtio_gpu_rutabaga_find_slot(vr, ublob.resource_id);
++    CHECK(slot >= 0, cmd);
++    result = virtio_gpu_rutabaga_unmap_slot(vr, slot);
+     CHECK(!result, cmd);
+ }
+ 
+@@ -903,8 +1115,21 @@ virtio_gpu_rutabaga_aio_cb(void *opaque)
+             continue;
+         }
+ 
++        /*
++         * A context-specific timeline is the context's own: ring indices of
++         * different contexts are unrelated, and fence ids come from one
++         * counter for all of them. Without the context check a fence of one
++         * context completed earlier commands of other contexts on the same
++         * ring index (virtio-gpu-virgl compares the context too).
++         * The ring index is a byte: rutabaga_gfx's Rust RutabagaFence has a u8
++         * there, and its C header declares a uint32_t, so the three bytes
++         * above it are uninitialized padding - a ring's fences stopped
++         * matching their commands, which piled up until the control queue
++         * was full (the guest's desktop froze).
++         */
+         if (signaled_ctx_specific &&
+-           (cmd->cmd_hdr.ring_idx != fence_data.ring_idx)) {
++           (cmd->cmd_hdr.ctx_id != fence_data.ctx_id ||
++            cmd->cmd_hdr.ring_idx != (uint8_t)fence_data.ring_idx)) {
+             continue;
+         }
+ 
+@@ -973,6 +1198,19 @@ virtio_gpu_rutabaga_debug_cb(uint64_t user_data,
+     }
+ }
+ 
++/*
++ * rutabaga's poll descriptor, when its renderer has one: readable when fences may be retired
++ * by polling it (crosvm registers it the same way). rutabaga runs virglrenderer with
++ * asynchronous fence callbacks, which retire fences from virglrenderer's own threads, so with
++ * it this is for completeness.
++ */
++static void virtio_gpu_rutabaga_poll_cb(void *opaque)
++{
++    VirtIOGPURutabaga *vr = opaque;
++
++    rutabaga_poll(vr->rutabaga);
++}
++
+ static bool virtio_gpu_rutabaga_init(VirtIOGPU *g, Error **errp)
+ {
+     int result;
+@@ -1054,6 +1292,11 @@ static bool virtio_gpu_rutabaga_init(VirtIOGPU *g, Error **errp)
+         return false;
+     }
+ 
++    vr->poll_fd = -1;
++    if (!rutabaga_poll_descriptor(vr->rutabaga, &vr->poll_fd) && vr->poll_fd >= 0) {
++        qemu_set_fd_handler(vr->poll_fd, virtio_gpu_rutabaga_poll_cb, NULL, vr);
++    }
++
+     return true;
+ }
+ 
+@@ -1100,6 +1343,7 @@ static void virtio_gpu_rutabaga_realize(DeviceState *qdev, Error **errp)
+     uint32_t num_capsets;
+     VirtIOGPUBase *bdev = VIRTIO_GPU_BASE(qdev);
+     VirtIOGPU *gpudev = VIRTIO_GPU(qdev);
++    VirtIOGPURutabaga *vr = VIRTIO_GPU_RUTABAGA(qdev);
+ 
+ #if HOST_BIG_ENDIAN
+     error_setg(errp, "rutabaga is not supported on bigendian platforms");
+@@ -1115,6 +1359,25 @@ static void virtio_gpu_rutabaga_realize(DeviceState *qdev, Error **errp)
+         goto fail;
+     }
+ 
++#if !defined(CONFIG_WIN32)
++    if (vr->fixed_blob_mapping && virtio_gpu_hostmem_enabled(bdev->conf)) {
++        void *map = qemu_ram_mmap(-1, bdev->conf.hostmem,
++                                  qemu_real_host_page_size(), 0, 0);
++
++        if (map == MAP_FAILED) {
++            error_setg_errno(errp, errno,
++                             "rutabaga hostmem region could not be initialized");
++            goto fail;
++        }
++        vr->hostmem_mmap = map;
++        memory_region_init_ram_ptr(&vr->hostmem_background, NULL,
++                                   "hostmem-background", bdev->conf.hostmem,
++                                   vr->hostmem_mmap);
++        memory_region_add_subregion(&bdev->hostmem, 0,
++                                    &vr->hostmem_background);
++    }
++#endif
++
+     if (!virtio_gpu_rutabaga_get_num_capsets(gpudev, &num_capsets, errp)) {
+         goto fail;
+     }
+@@ -1142,6 +1405,23 @@ static const Property virtio_gpu_rutabaga_properties[] = {
+                       RUTABAGA_CAPSET_GFXSTREAM_GLES, false),
+     DEFINE_PROP_BIT64("x-gfxstream-composer", VirtIOGPURutabaga, capset_mask,
+                       RUTABAGA_CAPSET_GFXSTREAM_COMPOSER, false),
++    /*
++     * virglrenderer's context types, for a rutabaga_gfx built with its
++     * virgl_renderer feature: drm (native context) next to cross-domain on
++     * one device, as crosvm's context-types=virgl2:drm:cross-domain - the
++     * cross-domain context passes resources the drm context allocated.
++     */
++    DEFINE_PROP_BIT64("x-virgl2", VirtIOGPURutabaga, capset_mask,
++                      RUTABAGA_CAPSET_VIRGL2, false),
++    DEFINE_PROP_BIT64("x-drm", VirtIOGPURutabaga, capset_mask,
++                      RUTABAGA_CAPSET_DRM, false),
++    /* blobs mmap()ed in place into one memslot instead of a region each */
++    DEFINE_PROP_BOOL("x-prefault-blobs", VirtIOGPURutabaga, prefault_blobs,
++                     false),
++    DEFINE_PROP_BOOL("x-fixed-blob-mapping", VirtIOGPURutabaga,
++                     fixed_blob_mapping, true),
++    /* shareable guest-memory blobs as udmabufs for the native context */
++    DEFINE_PROP_BOOL("x-guest-dmabuf", VirtIOGPURutabaga, guest_dmabuf, true),
+     DEFINE_PROP_STRING("wayland-socket-path", VirtIOGPURutabaga,
+                        wayland_socket_path),
+     DEFINE_PROP_STRING("wsi", VirtIOGPURutabaga, wsi),
+diff --git a/include/hw/virtio/virtio-gpu.h b/include/hw/virtio/virtio-gpu.h
+index 67b64ab79f..a38e208bc5 100644
+--- a/include/hw/virtio/virtio-gpu.h
++++ b/include/hw/virtio/virtio-gpu.h
+@@ -365,6 +365,9 @@ struct MemoryRegionInfo {
+     int used;
+     MemoryRegion mr;
+     uint32_t resource_id;
++    /* mapped in place into the hostmem background (fixed blob mapping), or NULL */
++    void *fixed;
++    uint64_t fixed_size;
+ };
+ 
+ struct rutabaga;
+@@ -378,6 +381,19 @@ struct VirtIOGPURutabaga {
+     bool headless;
+     uint32_t num_capsets;
+     struct rutabaga *rutabaga;
++    /* readable when rutabaga_poll() must run (virglrenderer's fence retirement), or -1 */
++    int poll_fd;
++    /*
++     * Fixed blob mapping: hostmem is one RAM region (one KVM memslot) over an
++     * anonymous mapping, and blobs are mmap()ed into it in place
++     */
++    bool fixed_blob_mapping;
++    MemoryRegion hostmem_background;
++    void *hostmem_mmap;
++    /* x-prefault-blobs: map a blob's pages into KVM's stage-2 tables when it is mapped */
++    bool prefault_blobs;
++    /* x-guest-dmabuf: shareable guest-memory blobs get a udmabuf of their pages */
++    bool guest_dmabuf;
+ };
+ 
+ /*
+-- 
+2.56.0
+

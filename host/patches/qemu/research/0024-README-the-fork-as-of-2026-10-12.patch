@@ -1,0 +1,112 @@
+From 5da7ebb44f893b869ed964039cb62fa2b3bee0ea Mon Sep 17 00:00:00 2001
+From: tomtomnet <tompere8000@proton.me>
+Date: Wed, 14 Oct 2026 19:00:44 +0200
+Subject: [PATCH 24/24] README: the fork as of 2026-10-12
+
+Split out of the 2026-10-12 snapshot of the fork's uncommitted work.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ .github/README.md | 51 +++++++++++------------------------------------
+ 1 file changed, 12 insertions(+), 39 deletions(-)
+
+diff --git a/.github/README.md b/.github/README.md
+index ef2186c251..491bc08863 100644
+--- a/.github/README.md
++++ b/.github/README.md
+@@ -1,13 +1,14 @@
+-# QEMU with a control menu in the SDL window
++# QEMU with a faster SDL display for desktop VMs
+ 
+-QEMU master with a menu bar inside the SDL display window, in the spirit of
+-[xemu](https://github.com/xemu-project/xemu): power, pause, snapshots, USB
+-passthrough, usage statistics and VM information, without giving up the fast
+-SDL + OpenGL display. It also makes the SDL display follow the host monitor's
+-refresh rate.
++QEMU master with work on the SDL + OpenGL display and virtio-gpu for desktop
++guests: the display follows the host monitor's refresh rate, measures its
++frames, shares the clipboard, and passes the guest's buffers to the host
++without copies where it can.
+ 
+ This is a fork of [QEMU](https://www.qemu.org): upstream master plus a few
+-commits. The menu needs a Linux host.
++commits. An earlier version had a control menu (Dear ImGui) in the SDL
++window; it was removed in October 2026, since the VM manager app now does
++power, snapshots and USB passthrough.
+ 
+ ## What's added
+ 
+@@ -16,15 +17,6 @@ commits. The menu needs a Linux host.
+     (e.g. 240 Hz), and input is polled at that rate.
+   - In absolute pointer mode, the pointer leaves the window reliably at its
+     border.
+-- **ui/sdl2: add an in-window control menu**
+-  - **Machine:** pause/resume, send Ctrl+Alt+Del and other key combinations,
+-    information about the VM, shut down, reset, force off.
+-  - **Snapshots:** take, revert to and delete snapshots of qcow2 disks.
+-  - **USB:** pass host USB devices through to the guest and back. If your
+-    user can't access a device yet, the menu asks polkit for access.
+-  - **View:** fullscreen, menu bar, statistics, menu size.
+-  - **Statistics:** CPU, GPU, disk and network use and the frame rate, on the
+-    right of the menu bar.
+ - **ui/sdl2: share the clipboard with the guest**: copy and paste text
+   between the host and the guest, see [Clipboard sharing](#clipboard-sharing).
+ - **hw/display/virtio-gpu-gl: tell whether the guest uses native context**:
+@@ -92,9 +84,6 @@ yourself and point `PKG_CONFIG_PATH` at it before running configure.
+     ../configure --target-list=x86_64-softmmu
+     make -j"$(nproc)"
+ 
+-The first configure downloads [Dear ImGui](https://github.com/ocornut/imgui),
+-which draws the menu, so it needs an internet connection.
+-
+ QEMU runs straight from the build directory, no install needed:
+ 
+     ./qemu-system-x86_64 -display sdl,gl=on ...
+@@ -118,7 +107,7 @@ For x86-64 VMs you can skip most of it:
+       ../configure --target-list=x86_64-softmmu --without-default-features \
+           --enable-kvm --enable-tcg --enable-pixman --enable-attr --enable-virtfs \
+           --enable-hmp --enable-malloc-trim \
+-          --enable-sdl --enable-sdl-gui --enable-gtk --enable-opengl \
++          --enable-sdl --enable-gtk --enable-opengl \
+           --enable-virglrenderer \
+           --enable-libusb --enable-pa --enable-pipewire --enable-spice-protocol \
+           --enable-passt --enable-gio --enable-slirp \
+@@ -137,21 +126,6 @@ For x86-64 VMs you can skip most of it:
+   on its own.
+ - **`make qemu-system-x86_64`** builds only the emulator, without the tools.
+ 
+-## Using the menu
+-
+-- Use `-display sdl,gl=on` (or `gl=off`).
+-- **Ctrl+Alt+M** (the SDL hotkey modifier plus M) shows or hides the menu
+-  bar. While shown, the guest display sits below it. Each VM remembers whether
+-  its bar was shown, identified by `-name`, else `-uuid`, else its first disk.
+-- **Snapshots** need qcow2 disks. With `virtio-gpu-gl` (virgl), QEMU can't save
+-  the VM's memory, so snapshots hold the disks only, and reverting to one
+-  restarts the VM from them.
+-- **USB passthrough** needs a USB controller in the VM, e.g.
+-  `-device qemu-xhci`. It uses `pkexec` (polkit) and `setfacl` to get access
+-  to a device, until it's unplugged.
+-- The menu settings are in `~/.config/qemu/sdl-gui.ini`.
+-- To build without the menu, configure with `--disable-sdl-gui`.
+-
+ ## Clipboard sharing
+ 
+ Text copied on the host can be pasted in the guest, and the other way
+@@ -209,10 +183,9 @@ Good to know:
+ 
+ ## Notes
+ 
+-- The menu, the clipboard sharing and the clipboard bridge were written with
+-  an AI assistant (Claude). QEMU doesn't accept AI-generated contributions
++- The clipboard sharing and the clipboard bridge were written with an AI
++  assistant (Claude). QEMU doesn't accept AI-generated contributions
+   ([docs/devel/code-provenance.rst](../docs/devel/code-provenance.rst)), so
+   these changes are not meant for upstream QEMU.
+-- License: GPL-2.0-or-later, like QEMU (see [COPYING](../COPYING)). Dear ImGui
+-  is MIT-licensed and downloaded when you configure.
++- License: GPL-2.0-or-later, like QEMU (see [COPYING](../COPYING)).
+ - QEMU's own README is [README.rst](../README.rst).
+-- 
+2.56.0
+

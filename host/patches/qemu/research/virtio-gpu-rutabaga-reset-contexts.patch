@@ -1,0 +1,229 @@
+From 66273513eeba2b0668a28d8721adcf576b015f87 Mon Sep 17 00:00:00 2001
+From: virtio-gpu-desktop <local@localhost>
+Date: Wed, 14 Oct 2026 22:16:01 +0200
+Subject: [PATCH] virtio-gpu-rutabaga: destroy the guest's contexts at a reset;
+ rate-limit guest-caused errors
+
+A reset the guest did not see coming - QMP system_reset, a crash, a driver
+unbound with its contexts open - left rutabaga's contexts alive: the base
+reset frees the resources and drops the queued commands, nothing more. The
+next boot's contexts reuse the same ids against the stale ones: the drm
+(native) context failed to connect, the cross-domain one kept its old
+connection to the host compositor ("invalid cross domain state"), and
+every SUBMIT_3D failed - 1.7 million of them in a few seconds, three log
+lines each (vitrine's Machine > Reset, 2026-10-14). A guest reboot never
+hit it: the guest's userspace destroys its contexts on the way down.
+
+The device now keeps the guest's live context ids and destroys what is
+left of them first thing in the reset's bottom half (main thread, inside
+virglrenderer's GL scope), through a new VirtIOGPUClass reset_bh hook. The
+errors a guest can cause at will (CHECK failures, failed commands,
+rutabaga's own messages) are reported at most 20 a second, then counted.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ hw/display/virtio-gpu-rutabaga.c | 85 +++++++++++++++++++++++++++++---
+ hw/display/virtio-gpu.c          |  4 ++
+ include/hw/virtio/virtio-gpu.h   |  7 +++
+ 3 files changed, 90 insertions(+), 6 deletions(-)
+
+diff --git a/hw/display/virtio-gpu-rutabaga.c b/hw/display/virtio-gpu-rutabaga.c
+index ec02215427..6c91fb278f 100644
+--- a/hw/display/virtio-gpu-rutabaga.c
++++ b/hw/display/virtio-gpu-rutabaga.c
+@@ -3,6 +3,7 @@
+ #include "qemu/osdep.h"
+ #include "qapi/error.h"
+ #include "qemu/error-report.h"
++#include "qemu/timer.h"
+ #include "qemu/iov.h"
+ #include "trace.h"
+ #include "hw/virtio/virtio.h"
+@@ -22,11 +23,44 @@
+ #endif
+ #include <dlfcn.h>
+ 
++/*
++ * Errors a guest can cause at will - a failed command, rutabaga's message about
++ * it - are reported at most RUTABAGA_ERRORS_PER_S a second, then how many were
++ * left out: a guest that keeps sending bad commands (contexts left over from
++ * before a reset: 1.7 million failed SUBMIT_3D in a few seconds, 2026-10-14)
++ * must not fill the host's log.
++ */
++#define RUTABAGA_ERRORS_PER_S 20
++
++static bool rutabaga_error_ratelimit(void)
++{
++    static int64_t window;
++    static unsigned shown, dropped;
++    int64_t now = qemu_clock_get_ms(QEMU_CLOCK_REALTIME);
++
++    if (now - window >= 1000) {
++        if (dropped) {
++            warn_report("virtio-gpu-rutabaga: %u more errors in the last "
++                        "second not shown", dropped);
++        }
++        window = now;
++        shown = dropped = 0;
++    }
++    if (shown < RUTABAGA_ERRORS_PER_S) {
++        shown++;
++        return true;
++    }
++    dropped++;
++    return false;
++}
++
+ #define CHECK(condition, cmd)                                                 \
+     do {                                                                      \
+         if (!(condition)) {                                                   \
+-            error_report("CHECK failed in %s() %s:" "%d", __func__,           \
+-                         __FILE__, __LINE__);                                 \
++            if (rutabaga_error_ratelimit()) {                                 \
++                error_report("CHECK failed in %s() %s:" "%d", __func__,       \
++                             __FILE__, __LINE__);                             \
++            }                                                                 \
+             (cmd)->error = VIRTIO_GPU_RESP_ERR_UNSPEC;                        \
+             return;                                                           \
+        }                                                                      \
+@@ -348,6 +382,7 @@ rutabaga_cmd_context_create(VirtIOGPU *g,
+     result = RGL(rutabaga_context_create(vr->rutabaga, cc.hdr.ctx_id,
+                                      cc.context_init, cc.debug_name, cc.nlen));
+     CHECK(!result, cmd);
++    g_hash_table_add(vr->contexts, GUINT_TO_POINTER(cc.hdr.ctx_id));
+ }
+ 
+ static void
+@@ -362,6 +397,7 @@ rutabaga_cmd_context_destroy(VirtIOGPU *g,
+     VIRTIO_GPU_FILL_CMD(cd);
+     trace_virtio_gpu_cmd_ctx_destroy(cd.hdr.ctx_id);
+ 
++    g_hash_table_remove(vr->contexts, GUINT_TO_POINTER(cd.hdr.ctx_id));
+     result = RGL(rutabaga_context_destroy(vr->rutabaga, cd.hdr.ctx_id));
+     CHECK(!result, cmd);
+ }
+@@ -1265,8 +1301,10 @@ virtio_gpu_rutabaga_process_cmd(VirtIOGPU *g,
+         return;
+     }
+     if (cmd->error) {
+-        error_report("%s: ctrl 0x%x, error 0x%x", __func__,
+-                     cmd->cmd_hdr.type, cmd->error);
++        if (rutabaga_error_ratelimit()) {
++            error_report("%s: ctrl 0x%x, error 0x%x", __func__,
++                         cmd->cmd_hdr.type, cmd->error);
++        }
+         virtio_gpu_ctrl_response_nodata(g, cmd, cmd->error);
+         return;
+     }
+@@ -1378,10 +1416,14 @@ virtio_gpu_rutabaga_debug_cb(uint64_t user_data,
+ {
+     switch (debug->debug_type) {
+     case RUTABAGA_DEBUG_ERROR:
+-        error_report("%s", debug->message);
++        if (rutabaga_error_ratelimit()) {
++            error_report("%s", debug->message);
++        }
+         break;
+     case RUTABAGA_DEBUG_WARN:
+-        warn_report("%s", debug->message);
++        if (rutabaga_error_ratelimit()) {
++            warn_report("%s", debug->message);
++        }
+         break;
+     case RUTABAGA_DEBUG_INFO:
+         info_report("%s", debug->message);
+@@ -1501,6 +1543,7 @@ static bool virtio_gpu_rutabaga_init(VirtIOGPU *g, Error **errp)
+         rutabaga_virgl_force_ctx_0 = dlsym(RTLD_DEFAULT, "virgl_renderer_force_ctx_0");
+     }
+ 
++    vr->contexts = g_hash_table_new(NULL, NULL);
+     vr->poll_fd = -1;
+     if (!rutabaga_poll_descriptor(vr->rutabaga, &vr->poll_fd) && vr->poll_fd >= 0) {
+         qemu_set_fd_handler(vr->poll_fd, virtio_gpu_rutabaga_poll_cb, NULL, vr);
+@@ -1636,6 +1679,35 @@ static const Property virtio_gpu_rutabaga_properties[] = {
+     DEFINE_PROP_STRING("wsi", VirtIOGPURutabaga, wsi),
+ };
+ 
++/*
++ * A reset the guest did not see coming (QMP system_reset, a crash, a driver
++ * unbound with its contexts open): the guest's userspace never destroyed its
++ * contexts, so rutabaga still has them - and the next boot's contexts of the
++ * same ids failed (the drm context could not connect, the cross-domain one kept
++ * its old connection to the host compositor: "invalid cross domain state").
++ * A guest reboot destroys them on the way down and never needed this.
++ */
++static void virtio_gpu_rutabaga_reset_bh(VirtIOGPU *g)
++{
++    VirtIOGPURutabaga *vr = VIRTIO_GPU_RUTABAGA(g);
++    GHashTableIter it;
++    gpointer key;
++
++    if (!vr->rutabaga || !vr->contexts) {
++        return;
++    }
++    g_hash_table_iter_init(&it, vr->contexts);
++    while (g_hash_table_iter_next(&it, &key, NULL)) {
++        int32_t result = RGL(rutabaga_context_destroy(vr->rutabaga,
++                                                      GPOINTER_TO_UINT(key)));
++        if (result) {
++            warn_report("virtio-gpu-rutabaga: reset: context %u: destroy "
++                        "failed (%d)", GPOINTER_TO_UINT(key), result);
++        }
++    }
++    g_hash_table_remove_all(vr->contexts);
++}
++
+ static void virtio_gpu_rutabaga_class_init(ObjectClass *klass, const void *data)
+ {
+     DeviceClass *dc = DEVICE_CLASS(klass);
+@@ -1648,6 +1720,7 @@ static void virtio_gpu_rutabaga_class_init(ObjectClass *klass, const void *data)
+     vgc->process_cmd = virtio_gpu_rutabaga_process_cmd;
+     vgc->update_cursor_data = virtio_gpu_rutabaga_update_cursor;
+     vgc->resource_destroy = virtio_gpu_rutabaga_resource_unref;
++    vgc->reset_bh = virtio_gpu_rutabaga_reset_bh;
+     vdc->realize = virtio_gpu_rutabaga_realize;
+     device_class_set_props(dc, virtio_gpu_rutabaga_properties);
+ }
+diff --git a/hw/display/virtio-gpu.c b/hw/display/virtio-gpu.c
+index 78598a5393..8be1a273fd 100644
+--- a/hw/display/virtio-gpu.c
++++ b/hw/display/virtio-gpu.c
+@@ -1810,6 +1810,10 @@ static void virtio_gpu_reset_bh(void *opaque)
+     Error *local_err = NULL;
+     int i = 0;
+ 
++    if (vgc->reset_bh) {
++        vgc->reset_bh(g);
++    }
++
+     QTAILQ_FOREACH_SAFE(res, &g->reslist, next, tmp) {
+         resource_id = res->resource_id;
+         vgc->resource_destroy(g, res, &local_err);
+diff --git a/include/hw/virtio/virtio-gpu.h b/include/hw/virtio/virtio-gpu.h
+index a38e208bc5..6407b1cb39 100644
+--- a/include/hw/virtio/virtio-gpu.h
++++ b/include/hw/virtio/virtio-gpu.h
+@@ -306,6 +306,11 @@ struct VirtIOGPUClass {
+     void (*resource_destroy)(VirtIOGPU *g,
+                              struct virtio_gpu_simple_resource *res,
+                              Error **errp);
++    /*
++     * First thing of a device reset, in the main thread, before the resources
++     * are destroyed: what a renderer holds for the guest beyond its resources
++     */
++    void (*reset_bh)(VirtIOGPU *g);
+ };
+ 
+ struct virtio_gpu_virgl_context_fence {
+@@ -381,6 +386,8 @@ struct VirtIOGPURutabaga {
+     bool headless;
+     uint32_t num_capsets;
+     struct rutabaga *rutabaga;
++    /* the guest's live context ids, destroyed at a reset that the guest did not see coming */
++    GHashTable *contexts;
+     /* readable when rutabaga_poll() must run (virglrenderer's fence retirement), or -1 */
+     int poll_fd;
+     /*
+-- 
+2.56.0
+

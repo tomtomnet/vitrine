@@ -14,7 +14,7 @@ guest's buffers never going to the screen as they are (zero copy).
 virtio-gpu-gl-pci, whose console has virtio-gpu's ops, had all of it.
 
 Forward them as the other hooks are, gl_presented with the host's
-latching deadline that the series' 0018 added.  The device takes them
+latching deadline that the series' 0022 added.  The device takes them
 while the VGA part shows the firmware too, as virtio-gpu-gl-pci's does
 while OVMF drives it: it raises no interrupt before the guest's driver
 is ready.
