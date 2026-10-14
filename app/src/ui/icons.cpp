@@ -2,6 +2,7 @@
 #include "icons.h"
 
 #include <QApplication>
+#include <QFileInfo>
 #include <QIconEngine>
 #include <QPainter>
 #include <QPainterPath>
@@ -20,10 +21,27 @@ QIcon themed(const QStringList &names, QStyle::StandardPixmap fallback)
     return qApp->style()->standardIcon(fallback);
 }
 
-/* Its own, not the theme's: a copy installed by an older build would win */
+/*
+ * Its own, not the theme's: a copy installed by an older build would win.
+ * A file beside the program, not compiled into it: the logo is CC BY 3.0
+ * (app/data/README.md), as QEMU's own emu is a file beside QEMU.  The one
+ * installed with this binary, else the source tree's for a build tree.
+ */
 QIcon app()
 {
-    return QIcon(":/icons/vitrine.svg");
+    const QStringList candidates = {
+        QCoreApplication::applicationDirPath() +
+            "/../share/icons/hicolor/scalable/apps/vitrine.svg",
+#ifdef VITRINE_DATA_SOURCE_DIR
+        QStringLiteral(VITRINE_DATA_SOURCE_DIR "/vitrine.svg"),
+#endif
+    };
+    for (const QString &path : candidates) {
+        if (QFileInfo::exists(path)) {
+            return QIcon(path);
+        }
+    }
+    return QIcon::fromTheme("vitrine");
 }
 
 namespace {

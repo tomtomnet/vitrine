@@ -272,12 +272,14 @@ qt_add_resources(vitrine_ui oslogos PREFIX /os BASE data/os FILES
     data/os/windows.svg
     data/os/zorin.svg)
 target_compile_options(vitrine_ui PRIVATE -Wall -Wextra)
+# the logo of a build tree's app (Icons::app): it is CC BY 3.0, a file
+# beside the program rather than a resource compiled into it
+target_compile_definitions(vitrine_ui PRIVATE
+    VITRINE_DATA_SOURCE_DIR="${CMAKE_CURRENT_SOURCE_DIR}/data")
 
 qt_add_executable(vitrine
     src/main.cpp
 )
-qt_add_resources(vitrine icons PREFIX /icons BASE data
-    FILES data/vitrine.svg)
 target_link_libraries(vitrine PRIVATE vitrine_ui)
 target_compile_definitions(vitrine PRIVATE VITRINE_VERSION="${PROJECT_VERSION}")
 
