@@ -33,7 +33,7 @@ static QString testQemu()
 
 /* A guest the tools are for, but none in it: QEMU's firmware alone answers */
 static const char kVm[] = "-name Tools Test\n"
-                          "#guest linux,id=fedora44,desktop=kde\n"
+                          "#guest linux,desktop=kde\n"
                           "-machine q35\n"
                           "-m 128\n"
                           "-nodefaults\n"

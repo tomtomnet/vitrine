@@ -1,7 +1,6 @@
 // SPDX-License-Identifier: GPL-2.0-or-later
 #include "guesttoolsdialog.h"
 
-#include <QAction>
 #include <QApplication>
 #include <QCheckBox>
 #include <QDateTime>
@@ -11,7 +10,6 @@
 #include <QTimer>
 #include <QVBoxLayout>
 
-#include "core/guestos.h"
 #include "core/guesttools.h"
 #include "core/snapshots.h"
 #include "core/vmconfig.h"
@@ -48,21 +46,6 @@ static std::function<void(Vm *)> &starter()
 void GuestToolsDialog::setStarter(const std::function<void(Vm *)> &start)
 {
     starter() = start;
-}
-
-void GuestToolsDialog::updateAction(QAction *action, Vm *vm)
-{
-    QString why;
-    const bool offered =
-        vm && GuestTools::offered(VmConfig::guest(vm->args()),
-                                  GuestToolsMonitor::of(vm)->reportedOs(), &why);
-
-    action->setEnabled(offered);
-    /* why not, at a glance, and in full in its tip */
-    action->setText(offered || !vm ? tr("Install &Guest Tools…")
-                                   : tr("Install Guest Tools (for Fedora)"));
-    action->setToolTip(why);
-    action->setStatusTip(why);
 }
 
 GuestToolsDialog *GuestToolsDialog::of(Vm *vm)
@@ -108,14 +91,13 @@ static QString obstacle(Vm *vm, const GuestTools::Medium &medium)
     const ArgsFile &args = vm->args();
     const GuestToolsMonitor *monitor = GuestToolsMonitor::of(vm);
     const QString qemu = VmConfig::qemuBinary(args);
-    QString why;
 
-    if (!GuestTools::offered(VmConfig::guest(args), monitor->reportedOs(), &why)) {
-        return why;
-    }
     /* GuestToolsBuildBanner says so, with Build… */
     if (!medium.isValid()) {
         return GuestToolsDialog::tr("The guest tools are not built yet: build them first.");
+    }
+    if (const QString os = VmConfig::guest(args).os; !os.isEmpty() && os != "linux") {
+        return GuestToolsDialog::tr("The guest tools are for Fedora Linux guests.");
     }
     if (!GuestTools::canBootstrap(args, qemu.isEmpty() ? "qemu-system-x86_64" : qemu)) {
         return GuestToolsDialog::tr("The guest tools are for x86-64 Fedora guests, on a "
@@ -180,7 +162,6 @@ GuestToolsDialog::GuestToolsDialog(Vm *vm, QWidget *parent)
       m_buttons(new QDialogButtonBox(QDialogButtonBox::Cancel)), m_wait(new QTimer(this))
 {
     const GuestToolsMonitor *monitor = GuestToolsMonitor::of(vm);
-    const GuestTools::Medium medium = GuestTools::medium();
     const bool update = !monitor->report().tools.isEmpty();
     auto *layout = new QVBoxLayout(this);
     auto *build = new GuestToolsBuildBanner;
@@ -191,23 +172,6 @@ GuestToolsDialog::GuestToolsDialog(Vm *vm, QWidget *parent)
     layout->addWidget(build);
     /* what else keeps the tools from the VM (refresh()) */
     layout->addWidget(m_warning);
-
-    if (const GuestOs::Os os =
-            GuestOs::Catalogue::instance().find(VmConfig::guest(vm->args()).id);
-        GuestOs::isFedora(os.id) && !os.isGeneric() && os.version != "Rawhide") {
-        /* the guest's installer refuses another release: said before, if the
-           VM's system is right (the guest may have been upgraded since) */
-        const QString release = medium.isValid() && !medium.fedora.isEmpty()
-                                    ? medium.fedora
-                                    : QString(GuestTools::kFedoraRelease);
-        if (os.version != release) {
-            auto *note = new Banner(Banner::Information);
-            note->setText(tr("This VM's system is %1, and the guest tools are for Fedora %2: "
-                             "they install in a Fedora %2 guest only.")
-                              .arg(os.name.toHtmlEscaped(), release));
-            layout->addWidget(note);
-        }
-    }
 
     /* the disks of a VM that writes to qcow2 files can go back to before */
     bool canSnapshot = false;
@@ -279,14 +243,11 @@ void GuestToolsDialog::refresh()
     const bool running = m_vm->runner()->isActive();
     const GuestTools::Medium medium = GuestTools::medium();
     const QString problem = obstacle(m_vm, medium);
-    const bool offered = GuestTools::offered(VmConfig::guest(m_vm->args()),
-                                             GuestToolsMonitor::of(m_vm)->reportedOs());
 
     m_what->setText(what(m_vm, medium));
-    /* without a medium the build banner tells it, with Build…, unless the
-       tools are not for this guest at all */
+    /* without a medium, the build banner tells it */
     m_warning->setText(problem.toHtmlEscaped());
-    m_warning->setVisible(!problem.isEmpty() && (medium.isValid() || !offered));
+    m_warning->setVisible(!problem.isEmpty() && medium.isValid());
     m_install->setText(running ? tr("&Restart and Install") : tr("&Install"));
     m_install->setEnabled(problem.isEmpty());
     m_mediumButton->setEnabled(problem.isEmpty());
@@ -482,20 +443,25 @@ void GuestToolsBanner::setVm(Vm *vm)
     if (vm) {
         connect(GuestToolsMonitor::of(vm), &GuestToolsMonitor::changed, this,
                 &GuestToolsBanner::update);
-        /* its system, which the tools are offered for or not, set in its settings */
+        /* its settings, which say whether the tools are for it (toolsGuest()) */
         connect(vm, &Vm::changed, this, &GuestToolsBanner::update);
     }
     update();
 }
 
-/* A guest the tools are offered for (Fedora, GuestTools::offered), with
-   the accelerated virtio GPU their driver is for */
-static bool toolsGuest(Vm *vm)
+/* A guest the tools are for, as far as its settings tell: Linux (the
+   #guest directive) with an accelerated virtio GPU; without the directive,
+   not Windows (Hyper-V enlightenments) */
+static bool toolsGuest(const ArgsFile &args)
 {
-    const ArgsFile &args = vm->args();
+    const QString os = VmConfig::guest(args).os;
+    const QString text = args.toText();
 
-    return VmConfig::graphics(args).kind == VmConfig::Graphics::Accelerated &&
-           GuestTools::offered(VmConfig::guest(args), GuestToolsMonitor::of(vm)->reportedOs());
+    if (VmConfig::graphics(args).kind != VmConfig::Graphics::Accelerated) {
+        return false;
+    }
+    return os.isEmpty() ? !text.contains("hv-relaxed") && !text.contains("hv_relaxed")
+                        : os == "linux";
 }
 
 void GuestToolsBanner::update()
@@ -538,7 +504,7 @@ void GuestToolsBanner::update()
     default:
         break;
     }
-    if (text.isEmpty() || (state == State::NotInstalled && !toolsGuest(m_vm))) {
+    if (text.isEmpty() || (state == State::NotInstalled && !toolsGuest(m_vm->args()))) {
         hide();
         return;
     }

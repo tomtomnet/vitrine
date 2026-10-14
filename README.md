@@ -63,12 +63,10 @@ sudo dnf install podman dosfstools mtools createrepo_c
 
 Running VMs: UEFI firmware (else new VMs use BIOS), passt for the NAT network
 (else QEMU's user-mode one), virtiofsd for shared folders, Qt's Wayland and SVG
-plugins (Plasma has them), and optionally libosinfo's database for the list of
-systems and their detection from installation discs (else vitrine's shorter
-list):
+plugins (Plasma has them):
 
 ```
-sudo dnf install edk2-ovmf passt virtiofsd qt6-qtwayland qt6-qtsvg osinfo-db
+sudo dnf install edk2-ovmf passt virtiofsd qt6-qtwayland qt6-qtsvg
 ```
 
 ## Build
@@ -101,9 +99,8 @@ the list of VMs; the bar then has a drop-down of them.
    system's QEMU, if there is one, except those that use what it lacks,
    such as the native context of new Linux VMs: these wait for the build.
    `host/build.sh` does the same build by hand.
-2. **Create a VM.** File > New… (Ctrl+N): name, optionally an ISO to install
-   from, the system (detected from the ISO's label or file name, or chosen
-   from a list), memory, processors, disk. Machine > Start (Ctrl+Return)
+2. **Create a VM.** File > New… (Ctrl+N): name, system, memory, processors,
+   disk, and optionally an ISO to install from. Machine > Start (Ctrl+Return)
    starts it. Each VM is its QEMU command line, which Machine > Settings
    (Ctrl+S) edits. A Linux VM whose 3D card lacks what new VMs get (native
    context, the host vblank timing) offers Update… on its Details tab.
@@ -116,8 +113,7 @@ the list of VMs; the bar then has a drop-down of them.
    unless told to build anyway. `guest/build-rpms.sh` then
    `guest/build-medium.sh` do the same by hand.
 
-   They are offered for VMs whose system is Fedora (Settings > General).
-   Machine > Install Guest Tools… > Install starts the VM with the tools
+   Then Machine > Install Guest Tools… > Install starts the VM with the tools
    medium (Restart and Install restarts a running one); the guest installs
    them before its desktop starts, then restarts once more. It needs the
    network and Secure Boot off (the driver is not signed). Attach Medium Only
@@ -203,6 +199,4 @@ AI-generated contributions.
 
 GPL-2.0-or-later, see [LICENSE](LICENSE). Patches to other projects are under
 the licenses of the files they change, and files with their own license header
-keep that license. The system logos in `app/data/os/` are CC0 or vitrine's own,
-each listed with its source in [its README](app/data/os/README.md); the logos
-are their owners' trademarks.
+keep that license.

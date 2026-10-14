@@ -36,7 +36,6 @@
 #include "core/cardsettings.h"
 #include "core/firmware.h"
 #include "core/firmwarefiles.h"
-#include "core/guestos.h"
 #include "core/hostdevices.h"
 #include "core/paths.h"
 #include "core/qemuinfo.h"
@@ -48,16 +47,19 @@
 #include "ui/banner.h"
 #include "ui/firmwarerepair.h"
 #include "ui/icons.h"
-#include "ui/oschooser.h"
 #include "ui/qemudocs.h"
 #include "ui/referencepanel.h"
-#include "ui/systems.h"
 #include "ui/uiconfig.h"
 #include "ui/widgets.h"
 
 /* General */
 
-/* The desktops of #guest, by the names the page gives them */
+/* The systems and desktops of #guest, by the names the page gives them */
+static const char *const kSystems[][2] = {
+    {"linux", QT_TRANSLATE_NOOP("GeneralPage", "Linux")},
+    {"windows", QT_TRANSLATE_NOOP("GeneralPage", "Windows")},
+    {"other", QT_TRANSLATE_NOOP("GeneralPage", "Another system")},
+};
 static const char *const kDesktops[][2] = {
     {"kde", QT_TRANSLATE_NOOP("GeneralPage", "KDE Plasma")},
     {"gnome", QT_TRANSLATE_NOOP("GeneralPage", "GNOME")},
@@ -82,7 +84,7 @@ static void fillChoices(QComboBox *combo, const char *const (&choices)[N][2], co
 }
 
 GeneralPage::GeneralPage(Vm *vm, QWidget *parent)
-    : SettingsPage(parent), m_name(new QLineEdit), m_os(new OsChooser), m_desktop(new QComboBox)
+    : SettingsPage(parent), m_name(new QLineEdit), m_os(new QComboBox), m_desktop(new QComboBox)
 {
     auto *layout = new QVBoxLayout(this);
     auto *form = Widgets::form();
@@ -96,8 +98,6 @@ GeneralPage::GeneralPage(Vm *vm, QWidget *parent)
     m_desktop->setObjectName("desktop");
     form->addRow(tr("&Name:"), m_name);
     form->addRow(tr("&System:"), m_os);
-    form->addRow(QString(), Widgets::hint(tr("The list of VMs shows its logo; the guest tools "
-                                             "are for Fedora.")));
     form->addRow(tr("&Desktop:"), m_desktop);
     form->addRow(QString(), Widgets::hint(tr("The timing of the VM's frames depends on its "
                                              "desktop.")));
@@ -106,7 +106,7 @@ GeneralPage::GeneralPage(Vm *vm, QWidget *parent)
                                     "VM creates and its log.")));
     layout->addLayout(form);
     layout->addStretch();
-    connect(m_os, &OsChooser::systemChosen, this, &GeneralPage::updateDesktop);
+    connect(m_os, &QComboBox::currentIndexChanged, this, &GeneralPage::updateDesktop);
 }
 
 QIcon GeneralPage::icon() const
@@ -116,16 +116,15 @@ QIcon GeneralPage::icon() const
 
 void GeneralPage::updateDesktop()
 {
-    const QString os = m_os->family();
+    const QString os = m_os->currentData().toString();
     m_desktop->setEnabled(os == "linux" || os.isEmpty());
 }
 
 VmConfig::Guest GeneralPage::shown() const
 {
+    const QString os = m_os->currentData().toString();
     /* a desktop for Linux, or a system not known */
-    return {m_os->family(),
-            m_desktop->isEnabled() ? m_desktop->currentData().toString() : QString(),
-            m_os->id()};
+    return {os, m_desktop->isEnabled() ? m_desktop->currentData().toString() : QString()};
 }
 
 void GeneralPage::load(const ArgsFile &args)
@@ -134,7 +133,7 @@ void GeneralPage::load(const ArgsFile &args)
 
     m_loaded = VmConfig::name(args);
     m_name->setText(m_loaded);
-    m_os->setSystem(guest.id, guest.os);
+    fillChoices(m_os, kSystems, guest.os);
     fillChoices(m_desktop, kDesktops, guest.desktop);
     updateDesktop();
     /* as the page shows it, so that an untouched page writes nothing */
@@ -150,8 +149,7 @@ void GeneralPage::save(ArgsFile &args)
         VmConfig::setName(args, name);
         m_loaded = name;
     }
-    if (guest.os != m_loadedGuest.os || guest.desktop != m_loadedGuest.desktop ||
-        guest.id != m_loadedGuest.id) {
+    if (guest.os != m_loadedGuest.os || guest.desktop != m_loadedGuest.desktop) {
         VmConfig::setGuest(args, guest);
         m_loadedGuest = guest;
     }
@@ -163,7 +161,7 @@ bool GeneralPage::isModified() const
     const VmConfig::Guest guest = shown();
 
     return (!name.isEmpty() && name != m_loaded) || guest.os != m_loadedGuest.os ||
-           guest.desktop != m_loadedGuest.desktop || guest.id != m_loadedGuest.id;
+           guest.desktop != m_loadedGuest.desktop;
 }
 
 /* Hardware */
@@ -649,8 +647,7 @@ StoragePage::StoragePage(const QString &vmDir, QWidget *parent)
       m_disc(new QPushButton(tr("Choose &Disc…"))), m_eject(new QPushButton(tr("&Eject"))),
       m_resize(new QPushButton(tr("Si&ze…"))), m_remove(new QPushButton(tr("&Remove"))),
       m_boot(new QListWidget), m_bootUp(new QPushButton(tr("Move &Up"))),
-      m_bootDown(new QPushButton(tr("Move Dow&n"))), m_bootHint(Widgets::hint()),
-      m_system(Widgets::hint())
+      m_bootDown(new QPushButton(tr("Move Dow&n"))), m_bootHint(Widgets::hint())
 {
     /* the boot order's buttons in the column of the disks' */
     auto *layout = new QGridLayout(this);
@@ -705,12 +702,7 @@ StoragePage::StoragePage(const QString &vmDir, QWidget *parent)
                                        "created in the VM folder when you apply; removing a "
                                        "disk takes it out of the VM, but its file stays.")),
                       0, 0, 1, 2);
-    auto *disks = new QVBoxLayout;
-    disks->addWidget(m_table, 1);
-    disks->addWidget(m_system);
-    m_system->setObjectName("discSystem");
-    m_system->hide();
-    layout->addLayout(disks, 1, 0);
+    layout->addWidget(m_table, 1, 0);
     layout->addLayout(buttons, 1, 1);
     layout->setRowStretch(1, 1);
     layout->addWidget(Widgets::heading(tr("Boot order")), 2, 0, 1, 2);
@@ -765,13 +757,8 @@ QIcon StoragePage::icon() const
 void StoragePage::load(const ArgsFile &args)
 {
     QStringList cards;
-    const VmConfig::Guest guest = VmConfig::guest(args);
 
     m_virt = VmConfig::machineType(args).startsWith("virt");
-    m_systemSet = !guest.id.isEmpty();
-    m_family = guest.os;
-    m_toldDisc.clear();
-    m_toldSystem.clear();
     m_entries.clear();
     for (const VmConfig::Disk &d : VmConfig::disks(args)) {
         m_entries << Entry{d, d.file, m_pending.value(d.file), false, m_nextId++};
@@ -804,24 +791,6 @@ void StoragePage::load(const ArgsFile &args)
 void StoragePage::save(ArgsFile &args)
 {
     QList<VmConfig::Disk> removed;
-
-    /* the system the disc chosen told, for a VM without one */
-    if (const QString system = toldSystem(); !system.isEmpty()) {
-        VmConfig::Guest guest = VmConfig::guest(args);
-        if (guest.id.isEmpty()) {
-            guest.id = system;
-            guest.os = GuestOs::guestFamily(GuestOs::Catalogue::instance().find(system));
-            if (guest.os != "linux") {
-                guest.desktop.clear();
-            } else if (guest.desktop.isEmpty()) {
-                guest.desktop = m_toldDesktop;
-            }
-            VmConfig::setGuest(args, guest);
-        }
-        m_systemSet = true;
-        m_toldSystem.clear();
-        updateSystem();
-    }
 
     /* discs, which move no line */
     for (const Entry &e : std::as_const(m_entries)) {
@@ -929,7 +898,6 @@ void StoragePage::fill()
     const int row = m_table->currentRow();
     int n = 0;
 
-    updateSystem();
     m_table->setRowCount(0);
     for (const Entry &e : std::as_const(m_entries)) {
         if (e.removed) {
@@ -1231,41 +1199,8 @@ void StoragePage::chooseDisc()
                                                      tr("Disc images (*.iso);;All files (*)"));
     if (!iso.isEmpty()) {
         m_entries[i].file = iso;
-        /* a VM whose system is not set: the disc tells it, as in the New VM dialog */
-        if (!m_systemSet) {
-            const GuestOs::Detection d = GuestOs::detect(iso);
-            const QString family =
-                GuestOs::guestFamily(GuestOs::Catalogue::instance().find(d.id));
-            const bool fits = !d.id.isEmpty() && (m_family.isEmpty() || m_family == family);
-            m_toldDisc = fits ? iso : QString();
-            m_toldSystem = fits ? d.id : QString();
-            m_toldDesktop = fits ? d.desktop : QString();
-        }
         fill();
     }
-}
-
-QString StoragePage::toldSystem() const
-{
-    if (m_systemSet || m_toldSystem.isEmpty()) {
-        return {};
-    }
-    for (const Entry &e : m_entries) {
-        if (!e.removed && e.disk.cdrom && e.file == m_toldDisc) {
-            return m_toldSystem;
-        }
-    }
-    return {};
-}
-
-void StoragePage::updateSystem()
-{
-    const QString system = toldSystem();
-
-    m_system->setText(tr("The disc is %1: the VM's system, not set yet, is set to it when you "
-                         "apply.")
-                          .arg(Systems::name({{}, {}, system}).toHtmlEscaped()));
-    m_system->setVisible(!system.isEmpty());
 }
 
 void StoragePage::resize()

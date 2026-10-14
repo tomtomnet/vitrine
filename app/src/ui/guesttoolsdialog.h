@@ -7,7 +7,6 @@
 #include <functional>
 
 class Banner;
-class QAction;
 class QCheckBox;
 class QDialogButtonBox;
 class QLabel;
@@ -37,9 +36,6 @@ public:
     /* How the main window starts a VM (its checks, USB access...); the
        runner's start() without */
     static void setStarter(const std::function<void(Vm *)> &start);
-    /* The menu entry that opens it, for @vm: off, and why in its tip, when
-       the tools are not offered for its system (GuestTools::offered) */
-    static void updateAction(QAction *action, Vm *vm);
 
     /* Its open one for @vm, if any */
     static GuestToolsDialog *of(Vm *vm);
