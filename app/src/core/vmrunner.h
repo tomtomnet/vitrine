@@ -94,6 +94,19 @@ public:
      * main one.  Empty unless the running QEMU shows in vitrine's window.
      */
     QString displaySocket() const;
+    /*
+     * The socket of the nested desktop shown in vitrine's window
+     * (NestedDesktop::Mode::Integrated), which QEMU's cross-domain connects
+     * to, while the VM is active: the console serves it (its Desktop view).
+     * Empty for other runs.
+     */
+    QString nestedSocket() const;
+    /*
+     * How that socket is served, as it must be before QEMU starts: @serve
+     * listens on @socket, or says why it cannot.  Without it, or when it
+     * fails, such a VM does not start.
+     */
+    void setNestedHost(const std::function<bool(const QString &socket, QString *error)> &serve);
     /* The socket of the vitrine agent's port (guest tools), while active */
     QString agentSocket() const;
     /* The socket of the port of QEMU's guest agent (qemu-ga) that Shut Down
@@ -170,6 +183,17 @@ public:
     /* Tests: how long QEMU has to quit before SIGTERM, and to end after it
        (twice that once its monitor closed) */
     void setQuitTimeout(int ms);
+    /*
+     * A guest asked to shut down (powerdown()) that panics on its way, as a
+     * nested desktop's guest can at the very end of its poweroff (fbcon,
+     * with a DRM session on two cards): QMP's GUEST_PANICKED, from the
+     * nested desktop's ISA pvpanic, quits QEMU.  And the last resort, for a
+     * nested desktop's guest that stalls without panicking: once its agent
+     * went away (the guest is shutting down) it has this long to end,
+     * else QEMU quits.  Long, as a slow shutdown must not be cut: 5 min.
+     * Tests: shorter.
+     */
+    void setShutdownStallTimeout(int ms);
     /* Null while stopped */
     QmpClient *qmp() const;
     /* QEMU's process, 0 while stopped */
@@ -205,6 +229,8 @@ signals:
     /* powerdown() tries @way; None: the request is over (the guest shuts
        down, or the run ended) */
     void shutdownWayChanged(GuestShutdown::Way way);
+    /* The guest reboots, by itself or by Reset: QMP's RESET */
+    void guestReset();
 
 private:
     struct Private;

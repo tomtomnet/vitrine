@@ -81,7 +81,7 @@ bool DBusDisplay::connectPeer(int fd, QString *err)
     return true;
 }
 
-bool DBusDisplay::selectConsole(QString *err)
+bool DBusDisplay::selectConsole(QString *err, int index)
 {
     GError *gerr = nullptr;
     QByteArray vm = QByteArray(kRoot) + "/VM";
@@ -105,6 +105,9 @@ bool DBusDisplay::selectConsole(QString *err)
                                    g_variant_get_fixed_array(ids, &n, sizeof(guint32)))
                              : nullptr;
     for (gsize i = 0; i < n && m_path.isEmpty(); i++) {
+        if (index >= 0 && idv[i] != guint32(index)) {
+            continue;
+        }
         QByteArray path = QByteArray(kRoot) + "/Console_" + QByteArray::number(idv[i]);
         GVariant *t = g_dbus_connection_call_sync(
             m_conn, nullptr, path.constData(), "org.freedesktop.DBus.Properties", "Get",
@@ -126,7 +129,8 @@ bool DBusDisplay::selectConsole(QString *err)
     g_variant_unref(dict);
     g_variant_unref(ret);
     if (m_path.isEmpty()) {
-        *err = QStringLiteral("no graphic console");
+        *err = index >= 0 ? QStringLiteral("console %1 is not a graphic console").arg(index)
+                          : QStringLiteral("no graphic console");
         return false;
     }
 

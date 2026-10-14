@@ -1,14 +1,17 @@
 // SPDX-License-Identifier: GPL-2.0-or-later
 #include <QAbstractItemView>
+#include <QApplication>
 #include <QDir>
 #include <QFile>
 #include <QFileInfo>
+#include <QKeyEvent>
 #include <QLineEdit>
 #include <QListWidget>
 #include <QMenu>
 #include <QMenuBar>
 #include <QMessageBox>
 #include <QPushButton>
+#include <QScopeGuard>
 #include <QSettings>
 #include <QSignalSpy>
 #include <QSplitter>
@@ -28,8 +31,10 @@
 #include "core/tasks.h"
 #include "core/vmrunner.h"
 #include "core/vmstore.h"
+#include "nested/desktopview.h"
 #include "scales.h"
 #include "ui/mainwindow.h"
+#include "ui/vmconsole.h"
 #include "ui/vmpane.h"
 
 /*
@@ -279,6 +284,57 @@ QStringList barProblems(QMainWindow *window, const QString &where)
 }
 
 }
+
+/* The guest's desktop in the console, as NestedView shows it, without a guest or Wayland */
+class StandInDesktop : public DesktopView
+{
+    Q_OBJECT
+
+public:
+    StandInDesktop(const QString &socket, QObject *parent)
+        : DesktopView(parent), m_socket(socket), m_widget(new QWidget)
+    {
+        m_widget->setFocusPolicy(Qt::StrongFocus);
+    }
+    ~StandInDesktop() override { delete m_widget; }
+
+    QString socket() const override { return m_socket; }
+    QWidget *widget() const override { return m_widget; }
+    bool isFullScreen() const override { return m_fullScreen; }
+    void setFullScreen(bool on) override
+    {
+        if (on != m_fullScreen) {
+            m_fullScreen = on;
+            Q_EMIT fullScreenChanged(on);
+        }
+    }
+    void setInputEnabled(bool on) override { m_input = on; }
+    bool inputEnabled() const { return m_input; }
+    bool hasKeyboard() const override { return m_input && m_widget->hasFocus(); }
+    void focus() override { m_widget->setFocus(); }
+    int connections() const override { return m_connections; }
+    bool isMapped() const override { return m_mapped; }
+
+    /* The guest's proxy connects, its nested KWin's window comes */
+    void guestConnects(int count)
+    {
+        m_connections = count;
+        Q_EMIT connectionsChanged(count);
+    }
+    void guestMaps(bool on)
+    {
+        m_mapped = on;
+        Q_EMIT mappedChanged(on);
+    }
+
+private:
+    QString m_socket;
+    QWidget *m_widget;
+    bool m_fullScreen = false;
+    bool m_input = true;
+    int m_connections = 0;
+    bool m_mapped = false;
+};
 
 class TestMainWindow : public QObject
 {
@@ -690,6 +746,111 @@ private slots:
         /* the line under its name as it was: no error of its own */
         QCOMPARE(vms->currentItem()->data(Qt::UserRole + 1).toString(), before);
         bravo->runner()->setBusy({});
+    }
+
+    /*
+     * A VM with its nested desktop in the window: the console's views,
+     * from the guest (its window comes and goes), the View menu and
+     * Ctrl+Alt+1/2/3 by their keys' places on an AZERTY keyboard; and
+     * closing the window, which logs the guest's session out, asks
+     */
+    void nestedDesktopViews()
+    {
+        VmConsole::setDesktopViewFactory([](const QString &socket, QString *, QObject *parent) {
+            return new StandInDesktop(socket, parent);
+        });
+        const auto noStandIn = qScopeGuard([]() { VmConsole::setDesktopViewFactory({}); });
+        auto w = window();
+        settle(w.get());
+        w->select("alpha");
+        w->findChild<VmPane *>()->setTab(VmPane::Console);
+        VmConsole *console = nullptr;
+        for (VmConsole *each : w->findChildren<VmConsole *>()) {
+            if (each->vm() == m_store->find("alpha")) {
+                console = each;
+            }
+        }
+        QVERIFY(console);
+        QVERIFY(!console->hasViews());
+        QString error;
+        QVERIFY(console->serveNested(m_tmp.filePath("nested.sock"), &error));
+        auto *desktop = qobject_cast<StandInDesktop *>(console->nestedView());
+        QVERIFY(desktop);
+        QVERIFY(console->hasViews());
+        QCOMPARE(console->currentView(), ConsoleViews::View::Boot);
+        /* served once a run */
+        QVERIFY(console->serveNested(m_tmp.filePath("nested.sock"), &error));
+        QCOMPARE(console->nestedView(), desktop);
+        const auto viewAction = [&w](int n) -> QAction * {
+            for (QAction *a : w->findChildren<QAction *>()) {
+                if (a->text().endsWith(QString("\tCtrl+Alt+%1").arg(n))) {
+                    return a;
+                }
+            }
+            return nullptr;
+        };
+        QVERIFY(viewAction(1) && viewAction(2) && viewAction(3));
+        QTRY_VERIFY(viewAction(1)->isEnabled() && viewAction(1)->isChecked());
+        /* over the views, on the console's screen page (the VM does not run here) */
+        QVERIFY(!console->findChild<QWidget *>("viewSwitcher")->isHidden());
+
+        /* the nested KWin connected: its desktop, with the keys */
+        desktop->guestConnects(1);
+        desktop->guestMaps(true);
+        QCOMPARE(console->currentView(), ConsoleViews::View::Desktop);
+        QVERIFY(console->desktopShown());
+        QCOMPARE(console->screenWidget(), desktop->widget());
+        /* the VM does not run here: QEMU would drop the keys, the guest gets none */
+        QVERIFY(!desktop->inputEnabled());
+        QVERIFY(viewAction(3)->isChecked());
+        QVERIFY(console->findChild<QToolButton *>("viewDesktop")->isChecked());
+
+        /* AZERTY: &, é and " on the keys of 1, 2 and 3 (XKB's keycodes 10, 11, 12) */
+        const auto press = [&w](Qt::Key key, quint32 keycode, const QString &text) {
+            QWidget *to = QApplication::focusWidget() ? QApplication::focusWidget() : w.get();
+            QKeyEvent event(QEvent::KeyPress, key, Qt::ControlModifier | Qt::AltModifier, keycode,
+                            0, 0, text);
+            QApplication::sendEvent(to, &event);
+        };
+        press(Qt::Key_Ampersand, 10, "&");
+        QCOMPARE(console->currentView(), ConsoleViews::View::Boot);
+        QVERIFY(!desktop->inputEnabled());
+        press(Qt::Key_Eacute, 11, QString::fromUtf8("é"));
+        QCOMPARE(console->currentView(), ConsoleViews::View::Screen);
+        press(Qt::Key_QuoteDbl, 12, "\"");
+        QCOMPARE(console->currentView(), ConsoleViews::View::Desktop);
+        /* the menu's */
+        viewAction(1)->trigger();
+        QCOMPARE(console->currentView(), ConsoleViews::View::Boot);
+        viewAction(3)->trigger();
+        QCOMPARE(console->currentView(), ConsoleViews::View::Desktop);
+        /* full screen goes with the view shown */
+        action(w.get(), "Full Screen")->trigger();
+        QVERIFY(desktop->isFullScreen());
+        QVERIFY(console->isFullScreen());
+        action(w.get(), "Full Screen")->trigger();
+        QVERIFY(!desktop->isFullScreen());
+        /* the session ended: the guest's login screen */
+        desktop->guestMaps(false);
+        QCOMPARE(console->currentView(), ConsoleViews::View::Screen);
+
+        /* closing asks, and says the guest's session ends with it */
+        desktop->guestMaps(true);
+        QString asked;
+        QTimer::singleShot(100, w.get(), [&asked]() {
+            if (auto *box = qobject_cast<QMessageBox *>(QApplication::activeModalWidget())) {
+                asked = box->text() + ' ' + box->informativeText();
+                box->reject();
+            }
+        });
+        w->close();
+        QVERIFY2(asked.contains("Closing Vitrine logs out the desktop session of Alpha"),
+                 qPrintable(asked));
+        QVERIFY(w->isVisible());
+        /* its session over: nothing to say of it */
+        desktop->guestMaps(false);
+        desktop->guestConnects(0);
+        QVERIFY(!console->hasNestedSession());
     }
 
     /* Closing with a task under way: asked, and not closed on Cancel */

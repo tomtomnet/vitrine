@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: GPL-2.0-or-later
 #include <QCheckBox>
 #include <QComboBox>
+#include <QDir>
 #include <QFile>
 #include <QFocusEvent>
 #include <QLabel>
@@ -365,6 +366,133 @@ private slots:
         QVERIFY(!page.isModified());
         page.save(args);
         QCOMPARE(text(args), "-device qxl-vga\n-device virtio-gpu-pci\n-display gtk\n");
+    }
+
+    /*
+     * The nested desktop's checkbox, beside the display list: its card in
+     * place of the VM's, with what the VM's QEMU has, and back
+     */
+    void displayPageNested()
+    {
+        QTemporaryDir tmp;
+        const auto qemuScript = [&tmp](const QString &name, bool rutabaga) {
+            const QString dir = tmp.filePath(name);
+            QDir().mkpath(dir);
+            QFile f(dir + '/' + Paths::qemuSystemName());
+            if (!f.open(QIODevice::WriteOnly)) {
+                return QString();
+            }
+            f.write("#!/bin/sh\n"
+                    "case \"$1 $2\" in\n"
+                    "'-display help') printf 'Available display backend types:\\nnone\\ngtk\\n"
+                    "sdl\\negl-headless\\ndbus\\n\\nSuboptions\\n' ;;\n"
+                    "'-device virtio-vga-gl,help') printf 'virtio-vga-gl options:\\n"
+                    "  blob=<bool>\\n  hostmem=<size>\\n  drm_native_context=<bool>\\n' ;;\n"
+                    "'-object kvm-accel,help') printf 'kvm-accel options:\\n"
+                    "  honor-guest-pat=<OnOffAuto>\\n' ;;\n");
+            if (rutabaga) {
+                f.write("'-device virtio-gpu-rutabaga-pci,help') printf 'virtio-gpu-rutabaga-pci "
+                        "options:\\n  cross-domain=<bool>\\n  hostmem=<size>\\n  x-drm=<bool>\\n"
+                        "  x-virgl2=<bool>\\n  wayland-socket-path=<str>\\n' ;;\n");
+            }
+            f.write("esac\n");
+            f.close();
+            f.setPermissions(QFileDevice::ReadOwner | QFileDevice::ExeOwner);
+            return f.fileName();
+        };
+        const QString research = qemuScript("research", true);
+        const QString older = qemuScript("older", false);
+        DisplayPage page;
+        auto *display = page.findChild<QComboBox *>("display");
+        auto *nested = page.findChild<QCheckBox *>("nested");
+        auto *hint = page.findChild<QLabel *>("nestedHint");
+        auto *displayHint = page.findChild<QLabel *>("displayHint");
+        auto *card = page.findChild<QComboBox *>("card");
+        auto *native = page.findChild<QCheckBox *>("nativeContext");
+        QVERIFY(display && nested && hint && displayHint && card && native);
+
+        const QString vm = "-machine q35,memory-backend=mem\n"
+                           "-object memory-backend-memfd,id=mem,size=4G,share=on\n"
+                           "-device virtio-vga-gl,hostmem=4G,blob=on,drm_native_context=on\n"
+                           "-display dbus,p2p=yes,gl=on\n";
+        ArgsFile args = ArgsFile::parse("#qemu " + research + '\n' + vm);
+        page.load(args);
+        QVERIFY(nested->isEnabled());
+        QVERIFY(!nested->isChecked());
+        QVERIFY(hint->text().startsWith("The guest's KDE session through a KWin of its own"));
+        QVERIFY(card->isEnabled());
+
+        /* on: the card is the nested desktop's, its 3D its own */
+        nested->setChecked(true);
+        QVERIFY(page.isModified());
+        QVERIFY(!card->isEnabled());
+        QCOMPARE(card->currentData().toString(), "virtio-gpu-rutabaga-pci");
+        QVERIFY(!native->isEnabled());
+        QVERIFY(displayHint->text().startsWith("Vitrine's window shows the guest's desktop"));
+        page.save(args);
+        QCOMPARE(text(args), "#qemu " + research + "\n"
+                             "-machine q35,memory-backend=mem\n"
+                             "-global kvm-pit.lost_tick_policy=discard\n"
+                             "-object memory-backend-memfd,id=mem,size=4G,share=on\n"
+                             "-vga std\n"
+                             "-device virtio-gpu-rutabaga-pci,x-drm=on,x-virgl2=on,"
+                             "cross-domain=on,hostmem=4G\n"
+                             "-device pvpanic\n"
+                             "-display dbus,p2p=yes,gl=on\n");
+        QVERIFY(!page.isModified());
+        QVERIFY(nested->isChecked());
+
+        /* QEMU's SDL window: no OpenGL there with the nested desktop */
+        choose(display, "sdl");
+        QVERIFY(displayHint->text().startsWith("The guest's desktop opens as a window of its own"));
+        page.save(args);
+        QCOMPARE(args.lines[args.indexOf("display")].value, "sdl");
+        choose(display, "dbus");
+        page.save(args);
+        QCOMPARE(args.lines[args.indexOf("display")].value, "dbus,p2p=yes,gl=on");
+
+        /* off: the 3D card of new VMs back, with its native context */
+        nested->setChecked(false);
+        QVERIFY(card->isEnabled());
+        QCOMPARE(card->currentData().toString(), "virtio-vga-gl");
+        QCOMPARE(card->findData("virtio-gpu-rutabaga-pci"), -1);
+        QVERIFY(native->isEnabled() && native->isChecked());
+        page.save(args);
+        QVERIFY(VmConfig::graphics(args).kind == VmConfig::Graphics::Accelerated);
+        QVERIFY(VmConfig::graphics(args).nativeContext);
+        QCOMPARE(args.lines[args.indexOf("vga")].value, "none");
+        QCOMPARE(args.lines[args.indexOf("display")].value, "dbus,p2p=yes,gl=on");
+
+        /* on, then off before Apply: nothing to save; native context shown as the card has it */
+        page.load(args);
+        native->setChecked(false);
+        nested->setChecked(true);
+        QVERIFY(native->isChecked() && !native->isEnabled());
+        nested->setChecked(false);
+        QVERIFY(!native->isChecked());
+        native->setChecked(true);
+        QVERIFY(!page.isModified());
+        QCOMPARE(card->currentData().toString(), "virtio-vga-gl");
+
+        /* a QEMU without it: not to be checked, and why */
+        args = ArgsFile::parse("#qemu " + older + '\n' + vm);
+        page.load(args);
+        QVERIFY(!nested->isEnabled());
+        QCOMPARE(hint->text(), "This VM's QEMU has no virtio-gpu-rutabaga with cross-domain.");
+        /* but a VM that has it can turn it off */
+        args = ArgsFile::parse("#qemu " + older + "\n-vga std\n"
+                               "-device virtio-gpu-rutabaga-pci,cross-domain=on\n"
+                               "-display sdl\n");
+        page.load(args);
+        QVERIFY(nested->isEnabled() && nested->isChecked());
+        QVERIFY(native->isChecked());
+        QVERIFY(!page.isModified());
+        /* a rutabaga card set up by hand is the Arguments page's */
+        args = ArgsFile::parse("#qemu " + research + "\n-vga none\n"
+                               "-device virtio-gpu-rutabaga-pci,cross-domain=on\n");
+        page.load(args);
+        QVERIFY(!nested->isEnabled());
+        QVERIFY(hint->isHidden());
     }
 
     /* The count is the Hardware page's: edits elsewhere on the page keep -smp */

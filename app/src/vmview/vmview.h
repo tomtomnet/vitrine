@@ -56,9 +56,15 @@ public:
      * waitsForDisplay): QEMU gets a size and the refresh rate at once, the
      * size of the window around the view until it has its own.  Else only
      * once the view has a size: a running guest keeps its mode until then.
+     * @console: the QEMU console shown, by its index (the nested desktop's
+     * views: 0, the VGA card's screen; 1, the virtio-gpu card's), -1 for
+     * the first graphic one.
      */
-    bool attach(const QString &monitorSocket, QString *error, bool guestWaits = false);
+    bool attach(const QString &monitorSocket, QString *error, bool guestWaits = false,
+                int console = -1);
     bool isAttached() const;
+    /* The console shown, by its index; -1 before attach() */
+    int console() const;
 
     /* Where the screen shows, but in full screen; owned by the view */
     QWidget *widget() const;
@@ -154,4 +160,5 @@ private:
     int m_cursorHotX = 0;
     int m_cursorHotY = 0;
     bool m_cursorVisible = true;
+    int m_console = -1;
 };

@@ -37,6 +37,11 @@ struct Graphics {
         Accelerated,    // virtio-gpu with OpenGL (virgl, native context, Venus)
         Virtio,         // virtio-gpu, 2D
         Standard,       // VGA, QEMU's default
+        /*
+         * virtio-gpu-rutabaga-pci with cross-domain, beside q35's VGA: the
+         * nested desktop (core/nesteddesktop.h)
+         */
+        Nested,
         None,
         Custom,         // e.g. qxl-vga, several cards, -nographic
     };
@@ -59,9 +64,21 @@ Graphics graphics(const ArgsFile &args);
 /*
  * For Accelerated, OpenGL goes on in the window; native context and Venus
  * add blob=on, hostmem= (4G when not given) and, with KVM, honor-guest-pat.
- * A Custom card is left as it is; only the window changes.
+ * A Custom card is left as it is; only the window changes.  The nested
+ * desktop's card is written by setNestedCard(), not here: from it, another
+ * kind takes its place, and QEMU's VGA goes as for that kind.
  */
 void setGraphics(ArgsFile &args, const Graphics &graphics);
+/*
+ * The nested desktop's card, -device @device (virtio-gpu-rutabaga-pci,
+ * cross-domain=on and the card's other properties), in place of the VM's
+ * card, and q35's VGA kept beside it (-vga std): it shows the firmware and
+ * the boot, QEMU's console 0, the card's own screen being console 1.  The
+ * window follows: OpenGL in the D-Bus display, which the card's screen
+ * needs; none in QEMU's own, as SDL's clashes with rutabaga's; none rather
+ * than egl-headless for no window.
+ */
+void setNestedCard(ArgsFile &args, const QString &device);
 /*
  * Where the VM's screen shows: in vitrine's window, through QEMU's D-Bus
  * display (-display dbus,p2p=yes); in a window of QEMU's own (sdl, gtk, or

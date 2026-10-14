@@ -108,7 +108,9 @@ const char kRoot[] = "/org/qemu/Display1";
 class FakeDisplay
 {
 public:
-    explicit FakeDisplay(const QString &path) : m_path(path)
+    /* @consoles: graphic consoles 0, 1... (the nested desktop's VMs have two) */
+    explicit FakeDisplay(const QString &path, int consoles = 1)
+        : m_path(path), m_consoles(consoles)
     {
         sockaddr_un addr{};
         const QByteArray name = path.toLocal8Bit();
@@ -183,6 +185,12 @@ public:
     }
     /* Calls answered so far */
     int answered() const { return m_answered; }
+    /* The consoles the view's listeners registered on, by object path */
+    QStringList listenersOn() const
+    {
+        std::lock_guard g(m_lock);
+        return m_listenersOn;
+    }
     /* The view's listener is registered and connected */
     bool listening() const { return m_listener.load() != nullptr; }
     /* How many listeners connected so far */
@@ -338,9 +346,12 @@ private:
     void registerObjects()
     {
         static const GDBusInterfaceVTable vtable = {methodCall, getProperty, nullptr, {}};
-        for (const auto &[path, xml] : {std::pair{QByteArray(kRoot) + "/VM", kVmXml},
-                                        std::pair{QByteArray(kRoot) + "/Console_0", kConsoleXml},
-                                        std::pair{QByteArray(kRoot) + "/Clipboard", kClipboardXml}}) {
+        std::vector<std::pair<QByteArray, const char *>> objects = {
+            {QByteArray(kRoot) + "/VM", kVmXml}, {QByteArray(kRoot) + "/Clipboard", kClipboardXml}};
+        for (int i = 0; i < m_consoles; i++) {
+            objects.emplace_back(QByteArray(kRoot) + "/Console_" + QByteArray::number(i), kConsoleXml);
+        }
+        for (const auto &[path, xml] : objects) {
             GDBusNodeInfo *node = g_dbus_node_info_new_for_xml(xml, nullptr);
             for (int i = 0; node->interfaces[i]; i++) {
                 g_dbus_connection_register_object(m_conn, path.constData(), node->interfaces[i],
@@ -378,14 +389,19 @@ private:
     }
 
     static GVariant *getProperty(GDBusConnection *, const char *, const char *,
-                                 const char *, const char *property, GError **, void *)
+                                 const char *, const char *property, GError **, void *user)
     {
+        auto *d = static_cast<FakeDisplay *>(user);
         if (!strcmp(property, "Name")) {
             return g_variant_new_string("fake");
         }
         if (!strcmp(property, "ConsoleIDs")) {
-            const guint32 ids[] = {0};
-            return g_variant_new_fixed_array(G_VARIANT_TYPE_UINT32, ids, 1, sizeof(guint32));
+            std::vector<guint32> ids;
+            for (int i = 0; i < d->m_consoles; i++) {
+                ids.push_back(guint32(i));
+            }
+            return g_variant_new_fixed_array(G_VARIANT_TYPE_UINT32, ids.data(), ids.size(),
+                                             sizeof(guint32));
         }
         if (!strcmp(property, "Type")) {
             return g_variant_new_string("Graphic");
@@ -396,7 +412,7 @@ private:
         return nullptr;
     }
 
-    static void methodCall(GDBusConnection *, const char *, const char *, const char *iface,
+    static void methodCall(GDBusConnection *, const char *, const char *path, const char *iface,
                            const char *method, GVariant *params, GDBusMethodInvocation *inv,
                            void *user)
     {
@@ -409,6 +425,10 @@ private:
         }
         g_free(args);
         if (!strcmp(method, "RegisterListener")) {
+            {
+                std::lock_guard g(d->m_lock);
+                d->m_listenersOn << QString::fromLatin1(path);
+            }
             GUnixFDList *list =
                 g_dbus_message_get_unix_fd_list(g_dbus_method_invocation_get_message(inv));
             const int fd = list ? g_unix_fd_list_get(list, 0, nullptr) : -1;
@@ -446,6 +466,8 @@ private:
     std::vector<GDBusMethodInvocation *> m_held;    // bus thread
     mutable std::mutex m_lock;
     QStringList m_calls;
+    int m_consoles = 1;
+    QStringList m_listenersOn;
 };
 
 /*
@@ -610,6 +632,33 @@ private Q_SLOTS:
         QTRY_VERIFY(qemu.listening());
         QCOMPARE(qemu.callsTo("Console.RegisterListener").size(), 1);
         delete view;
+    }
+
+    /*
+     * The nested desktop's views: QEMU's console by its index (0, the VGA
+     * card's screen; 1, the virtio-gpu card's)
+     */
+    void consoles()
+    {
+        FakeDisplay qemu(socketPath(), 2);
+        auto view = std::make_unique<VmView>();
+        QString error;
+
+        QVERIFY2(view->attach(socketPath(), &error, false, 1), qPrintable(error));
+        QCOMPARE(view->console(), 1);
+        QTRY_VERIFY(qemu.listening());
+        QCOMPARE(qemu.listenersOn(), QStringList{"/org/qemu/Display1/Console_1"});
+
+        /* without an index, the first graphic one; one the VM lacks, refused */
+        view = std::make_unique<VmView>();
+        QVERIFY2(view->attach(socketPath(), &error), qPrintable(error));
+        QCOMPARE(view->console(), 0);
+        QTRY_COMPARE(qemu.listenersOn().size(), 2);
+        QCOMPARE(qemu.listenersOn().last(), "/org/qemu/Display1/Console_0");
+        view = std::make_unique<VmView>();
+        QVERIFY(!view->attach(socketPath(), &error, false, 2));
+        QCOMPARE(error, "console 2 is not a graphic console");
+        QCOMPARE(view->console(), -1);
     }
 
     /*

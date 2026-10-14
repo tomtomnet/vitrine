@@ -144,7 +144,7 @@ VmView::~VmView()
     delete m_host;
 }
 
-bool VmView::attach(const QString &monitorSocket, QString *error, bool guestWaits)
+bool VmView::attach(const QString &monitorSocket, QString *error, bool guestWaits, int console)
 {
     if (m_dbus) {
         return true;
@@ -191,10 +191,11 @@ bool VmView::attach(const QString &monitorSocket, QString *error, bool guestWait
     }
     /* no parent: it may outlive the view (retire()) */
     m_dbus = new DBusDisplay(m_stats.get());
-    if (!m_dbus->connectPeer(sv[0], error) || !m_dbus->selectConsole(error)) {
+    if (!m_dbus->connectPeer(sv[0], error) || !m_dbus->selectConsole(error, console)) {
         detach();
         return false;
     }
+    m_console = m_dbus->consolePath().section('_', -1).toInt();
 
     /* from the listener thread to the window, on the GUI thread */
     Listener::Callbacks cb;
@@ -305,6 +306,11 @@ void VmView::detach()
 bool VmView::isAttached() const
 {
     return m_dbus;
+}
+
+int VmView::console() const
+{
+    return m_dbus ? m_console : -1;
 }
 
 QWidget *VmView::widget() const

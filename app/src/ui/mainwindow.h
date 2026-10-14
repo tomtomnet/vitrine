@@ -11,6 +11,7 @@
 
 class MainBar;
 class QAction;
+class QKeyEvent;
 class QMenu;
 class QMenuBar;
 class QLabel;
@@ -109,6 +110,13 @@ private:
     void toggleFullScreen();
     void sendCtrlAltDel();
     void releaseInput();
+    /*
+     * Ctrl+Alt+1/2/3 from anywhere in the app, the VM's screens included:
+     * the view of the console shown (a VM with the nested desktop in this
+     * window), whatever character the layout gives the key.  True when the
+     * key was one of them and went there.
+     */
+    bool switchViewByKey(const QKeyEvent *event);
 
     VmStore *m_store;
     /* The list of VMs and the tasks' button under it */
@@ -178,6 +186,8 @@ private:
     QAction *m_library;
     QAction *m_ctrlAltDel;
     QAction *m_releaseInput;
+    /* The nested desktop's views of the console: Boot, Screen, Desktop */
+    QList<QAction *> m_views;
     QAction *m_preferences;
     QAction *m_reference;
     QAction *m_quit;

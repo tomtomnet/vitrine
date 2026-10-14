@@ -326,9 +326,18 @@ static VmConfig::Graphics cardGraphics(const QString &driver)
     return g;
 }
 
+/* The nested desktop's card, which takes the card's place in the list while it is on */
+static const char kNestedCard[] = "virtio-gpu-rutabaga-pci";
+
+static QString nestedCardText()
+{
+    return DisplayPage::tr("Nested desktop's (virtio-gpu-rutabaga-pci), with VGA");
+}
+
 DisplayPage::DisplayPage(QWidget *parent)
     : SettingsPage(parent), m_custom(new Banner(Banner::Information)), m_display(new QComboBox),
       m_displayHint(Widgets::hint()), m_displayLacks(Widgets::hint()),
+      m_nested(new QCheckBox(tr("&Nested desktop"))), m_nestedHint(Widgets::hint()),
       m_windowLabel(new QLabel(tr("QEMU's window:"))), m_card(new QComboBox),
       m_cardHint(Widgets::hint()),
       m_nativeContext(new QCheckBox(tr("&DRM native context"))),
@@ -346,7 +355,11 @@ DisplayPage::DisplayPage(QWidget *parent)
     m_display->setObjectName("display");
     m_displayHint->setObjectName("displayHint");
     m_displayLacks->setObjectName("displayLacks");
+    m_nested->setObjectName("nested");
+    m_nestedHint->setObjectName("nestedHint");
     m_card->setObjectName("card");
+    /* as wide as the entry shown: the nested desktop's comes and goes */
+    m_card->setSizeAdjustPolicy(QComboBox::AdjustToContents);
     m_cardHint->setObjectName("cardHint");
     m_nativeContext->setObjectName("nativeContext");
     m_venus->setObjectName("venus");
@@ -357,6 +370,9 @@ DisplayPage::DisplayPage(QWidget *parent)
     form->addRow(tr("Disp&lay:"), m_display);
     form->addRow(QString(), m_displayHint);
     form->addRow(QString(), m_displayLacks);
+    /* beside the list: it goes with any of its entries */
+    form->addRow(QString(), m_nested);
+    form->addRow(QString(), m_nestedHint);
 
     for (const auto &[key, text] : kWindowOptions) {
         auto *box = new QCheckBox(tr(text));
@@ -382,6 +398,7 @@ DisplayPage::DisplayPage(QWidget *parent)
 
     connect(m_display, &QComboBox::currentIndexChanged, this, &DisplayPage::update);
     connect(m_card, &QComboBox::currentIndexChanged, this, &DisplayPage::update);
+    connect(m_nested, &QCheckBox::toggled, this, &DisplayPage::nestedToggled);
 }
 
 QIcon DisplayPage::icon() const
@@ -405,6 +422,7 @@ DisplayPage::Shown DisplayPage::shown() const
         s.options.insert(key, m_options.value(key)->isChecked());
     }
     s.card = m_card->currentData().toString();
+    s.nested = m_nested->isChecked();
     /* vitrine's settings of a 3D card, of those its QEMU has */
     if (!chosen3dCard().isEmpty()) {
         s.nativeContext = m_nativeContext->isEnabled() && m_nativeContext->isChecked();
@@ -460,16 +478,50 @@ void DisplayPage::update()
         }
     }
     m_display->setEnabled(!nographic);
-    m_displayHint->setText(
-        s.screen == "dbus"   ? tr("The screen is part of Vitrine's window, and can go full screen.")
-        : s.screen == "gtk"  ? tr("QEMU shows the screen in a window of its own with its menus, "
-                                  "which stays open when Vitrine closes; the frames there do not "
-                                  "keep step with this computer's screen.")
-        : s.screen == "sdl"  ? tr("QEMU shows the screen in a window of its own, which stays open "
-                                  "when Vitrine closes.")
-        : s.screen == "none" ? tr("The VM runs without a screen.")
-                             : QString());
+    if (s.nested) {
+        m_displayHint->setText(
+            s.screen == "dbus"
+                ? tr("Vitrine's window shows the guest's desktop beside the VM's screens, which "
+                     "show the boot and the login screen. Quitting Vitrine ends the guest's "
+                     "session: the guest goes back to its login screen.")
+            : s.screen == "gtk" || s.screen == "sdl"
+                ? tr("The guest's desktop opens as a window of its own; QEMU's %1 window shows "
+                     "the boot and the login screen.")
+                      .arg(displayName(s.screen))
+            : s.screen == "none" ? tr("The guest's desktop opens as a window of its own, with "
+                                      "nothing for the boot and the login screen.")
+                                 : QString());
+    } else {
+        m_displayHint->setText(
+            s.screen == "dbus"   ? tr("The screen is part of Vitrine's window, and can go full "
+                                      "screen.")
+            : s.screen == "gtk"  ? tr("QEMU shows the screen in a window of its own with its "
+                                      "menus, which stays open when Vitrine closes; the frames "
+                                      "there do not keep step with this computer's screen.")
+            : s.screen == "sdl"  ? tr("QEMU shows the screen in a window of its own, which stays "
+                                      "open when Vitrine closes.")
+            : s.screen == "none" ? tr("The VM runs without a screen.")
+                                 : QString());
+    }
     m_displayHint->setVisible(!m_displayHint->text().isEmpty());
+
+    /* the nested desktop: with a QEMU that has its card, for a card not set up by hand */
+    const VmConfig::Graphics loaded = VmConfig::graphics(m_args);
+    const bool hadNested = loaded.kind == VmConfig::Graphics::Nested;
+    const bool byHand = loaded.kind == VmConfig::Graphics::Custom;
+    m_nested->setEnabled(!nographic && !byHand && (m_nestedOffer.offered || hadNested));
+    m_nestedHint->setText(
+        byHand || nographic ? QString()
+        : s.nested          ? tr("For guests with the nested KDE session: Plasma (crosvm "
+                                 "window).")
+        : m_nestedOffer.offered
+            ? tr("The guest's KDE session through a KWin of its own, as a window of this "
+                 "computer's desktop or in Vitrine's (virtio-gpu-rutabaga).")
+        : m_nestedOffer.answered ? tr("This VM's QEMU has no virtio-gpu-rutabaga with "
+                                      "cross-domain.")
+                                 : tr("This VM's QEMU did not say whether it has "
+                                      "virtio-gpu-rutabaga."));
+    m_nestedHint->setVisible(!m_nestedHint->text().isEmpty());
     m_displayLacks->setText(lacking.isEmpty()      ? QString()
                             : lacking.size() == 1 ? tr("This VM's QEMU has no %1 display.")
                                                         .arg(lacking.first())
@@ -487,7 +539,11 @@ void DisplayPage::update()
 
     /* the card */
     const QString driver = m_card->currentData().toString();
-    if (!m_card->isEnabled()) {
+    if (s.nested) {
+        m_cardHint->setText(tr("The nested desktop's card, virtio-gpu-rutabaga with "
+                               "cross-domain, beside the standard VGA, which shows the firmware "
+                               "and the boot."));
+    } else if (!m_card->isEnabled()) {
         m_cardHint->setText(tr("The graphics of this VM are set up by hand: change them on "
                                "the Arguments page."));
     } else if (VmConfig::machineType(m_args).startsWith("virt")) {
@@ -507,12 +563,54 @@ void DisplayPage::update()
     for (const Feature &f : features) {
         const bool offered = offers && CardSettings::isOffered(*offers, f.feature);
         f.box->setEnabled(!card.isEmpty() && offered);
-        f.hint->setText(card.isEmpty() ? f.text
+        f.hint->setText(s.nested ? (f.feature == CardSettings::Feature::NativeContext
+                                        ? tr("The nested desktop's card has it, through "
+                                             "rutabaga.")
+                                        : tr("Not with the nested desktop's card."))
+                        : card.isEmpty() ? f.text
                         : !offers      ? tr("This VM's QEMU did not say what it has.")
                         : offered      ? f.text
                         : !offers->card ? tr("Vitrine's QEMU is built without it.")
                                         : tr("This VM's QEMU lacks it."));
     }
+}
+
+void DisplayPage::nestedToggled(bool on)
+{
+    {
+        const QSignalBlocker block(m_card);
+        const int nested = m_card->findData(kNestedCard);
+
+        if (on) {
+            if (m_card->currentData().toString() != kNestedCard) {
+                m_cardBeforeNested = m_card->currentData().toString();
+                m_nativeBeforeNested = m_nativeContext->isChecked();
+            }
+            /* the nested desktop's card has it, through rutabaga */
+            m_nativeContext->setChecked(true);
+            if (nested < 0) {
+                m_card->addItem(nestedCardText(), kNestedCard);
+            }
+            m_card->setCurrentIndex(m_card->findData(kNestedCard));
+            m_card->setEnabled(false);
+        } else {
+            /* the card it replaced, else the 3D card of new VMs, with their 3D */
+            QString back = m_cardBeforeNested;
+            if (back.isEmpty() || back == kNestedCard || m_card->findData(back) < 0) {
+                back = cardChoices(m_args).first().first;
+                m_nativeContext->setChecked(true);
+                m_frameTiming->setChecked(true);
+            } else {
+                m_nativeContext->setChecked(m_nativeBeforeNested);
+            }
+            m_card->setCurrentIndex(m_card->findData(back));
+            if (nested >= 0) {
+                m_card->removeItem(m_card->findData(kNestedCard));
+            }
+            m_card->setEnabled(true);
+        }
+    }
+    update();
 }
 
 void DisplayPage::load(const ArgsFile &args)
@@ -526,6 +624,7 @@ void DisplayPage::load(const ArgsFile &args)
     QString placeholder;
 
     m_args = args;
+    m_nestedOffer = NestedDesktop::offer(args);
     /* the screen: no choice for one shown elsewhere, or in another window */
     if (screen == VmConfig::Screen::Embedded) {
         choice = "dbus";
@@ -591,12 +690,19 @@ void DisplayPage::load(const ArgsFile &args)
                                                          : QString("VGA");
         }
         if (m_card->findData(own) < 0) {
-            m_card->addItem(own, own);
+            m_card->addItem(g.kind == VmConfig::Graphics::Nested ? nestedCardText() : own, own);
         }
         m_card->setCurrentIndex(m_card->findData(own));
-        m_card->setEnabled(!custom);
+        m_card->setEnabled(!custom && g.kind != VmConfig::Graphics::Nested);
     }
-    m_nativeContext->setChecked(CardSettings::isOn(args, CardSettings::Feature::NativeContext));
+    {
+        const QSignalBlocker block(m_nested);
+        m_nested->setChecked(g.kind == VmConfig::Graphics::Nested);
+        m_cardBeforeNested.clear();
+    }
+    /* the nested desktop's card has it, through rutabaga */
+    m_nativeContext->setChecked(g.kind == VmConfig::Graphics::Nested ||
+                                CardSettings::isOn(args, CardSettings::Feature::NativeContext));
     m_venus->setChecked(CardSettings::isOn(args, CardSettings::Feature::Venus));
     m_frameTiming->setChecked(CardSettings::isOn(args, CardSettings::Feature::FrameTiming));
 
@@ -613,7 +719,11 @@ void DisplayPage::save(ArgsFile &args)
     if (s == m_loaded) {
         return;
     }
-    const bool cardChanged = s.card != m_loaded.card;
+    /* the nested desktop's card in the card's place, or the card back in its place */
+    if (s.nested != m_loaded.nested) {
+        NestedDesktop::set(args, s.nested, m_nestedOffer.properties);
+    }
+    const bool cardChanged = !s.nested && s.card != m_loaded.card;
     /* the card, its 3D as it was: its settings follow */
     if (cardChanged) {
         VmConfig::Graphics g = cardGraphics(s.card);

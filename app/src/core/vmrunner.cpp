@@ -17,16 +17,21 @@
 #include <csignal>
 #include <utility>
 
+#include <fcntl.h>
+#include <unistd.h>
+
 #include "core/firmwarefiles.h"
 #include "core/guestagent.h"
 #include "core/guestshutdown.h"
 #include "core/guesttools.h"
 #include "core/hostkvm.h"
+#include "core/nesteddesktop.h"
 #include "core/paths.h"
 #include "core/qemuinfo.h"
 #include "core/qmpclient.h"
 #include "core/vmconfig.h"
 #include "core/vmhardware.h"
+#include "core/waylandsandbox.h"
 
 static const int kPollMs = 50;
 /* virtiofsd opening its socket */
@@ -39,6 +44,8 @@ static const int kHelperTimeoutMs = 10000;
 static const int kQuitTimeoutMs = 5000;
 /* The guest waiting for its screen at most (VmRunner::waitsForDisplay) */
 static int displayWaitMs = 5000;
+/* A nested desktop's guest that stalls in its shutdown: QEMU quits after this */
+static const int kShutdownStallMs = 5 * 60 * 1000;
 
 /* A live process, not a zombie */
 static bool alive(qint64 pid)
@@ -263,6 +270,12 @@ struct VmRunner::Private
     QString qemu;
     QStringList command;
     bool embedded = false;      // its screen in vitrine's window: displaySocket()
+    /* the nested desktop: where it shows, the socket QEMU's cross-domain
+       connects to, and the sandbox socket's pipe end QEMU inherits at launch */
+    NestedDesktop::Mode nested = NestedDesktop::Mode::Off;
+    QString nestedSocket;
+    int sandboxFd = -1;
+    std::function<bool(const QString &, QString *)> nestedHost;
     qint64 pid = 0;             // QEMU
     QList<Helper> helpers;      // virtiofsd started for this run
     GuestAgent *agent = nullptr;    // asking what the guest runs, mounting the shares
@@ -278,6 +291,9 @@ struct VmRunner::Private
     bool suspended = false;     // Paused by the guest's own suspend (S3)
     bool stopRequested = false; // the end of the run is no failure
     bool forceRequested = false; // forceOff() was used in this run
+    bool shutdownAsked = false; // powerdown() was used in this run
+    QTimer *stallTimer;         // the guest's shutdown stalls: the last resort
+    int stallTimeoutMs = kShutdownStallMs;
     /* forceOff()'s steps: 0 none, 1 SIGTERM sent, 2 notResponding() said */
     int killStep = 0;
     int quitTimeoutMs = kQuitTimeoutMs;
@@ -289,6 +305,12 @@ struct VmRunner::Private
     QString agentPath() const { return runDir() + "/qga.sock"; }
     QString toolsAgentPath() const { return runDir() + "/agent.sock"; }
     QString displayPath() const { return runDir() + "/display.sock"; }
+    /* the nested desktop's socket: vitrine's (vmview), or the compositor's sandbox one */
+    QString nestedPath() const { return runDir() + "/nested.sock"; }
+    QString sandboxPath() const { return runDir() + "/wayland.sock"; }
+    /* this run's socket for the nested desktop, else what start() makes for @mode */
+    QString nestedSocketFor(NestedDesktop::Mode mode) const;
+    void closeSandbox();
     /* the run's arguments, kept for the next manager's attach() */
     QString argsPath() const { return runDir() + "/run.args"; }
     QString qmpArg() const;
@@ -325,6 +347,8 @@ struct VmRunner::Private
     void waitForDisplay();
     void endDisplayWait(bool timedOut);
     void event(const QString &name, const QJsonObject &data);
+    /* QEMU quits: the guest it was asked to shut down panicked or stalls */
+    void endStuckShutdown(const QString &why);
     /*
      * qemu-ga came up: what the guest runs (guestOsInfo()), then, with
      * @mount, the shares the guest did not mount, on the same connection:
@@ -370,6 +394,21 @@ QStringList VmRunner::Private::guestAgentPortArgs(const QString &controller) con
             "-device", QString("virtio-serial-pci,id=%1").arg(controller),
             "-device", QString("virtserialport,bus=%1.0,chardev=vitrine-ga,"
                                "name=org.qemu.guest_agent.0,id=%2").arg(controller, kAgentPort)};
+}
+
+QString VmRunner::Private::nestedSocketFor(NestedDesktop::Mode mode) const
+{
+    if (!nestedSocket.isEmpty()) {
+        return nestedSocket;
+    }
+    return mode == NestedDesktop::Mode::Integrated ? nestedPath() : sandboxPath();
+}
+
+void VmRunner::Private::closeSandbox()
+{
+    if (sandboxFd >= 0) {
+        close(std::exchange(sandboxFd, -1));
+    }
 }
 
 void VmRunner::Private::useGuestAgent()
@@ -463,7 +502,8 @@ void VmRunner::Private::removeRuntimeFiles() const
     QDir rt(runDir());
 
     for (const QString &name : rt.entryList({"qmp.sock", "qemu.pid", "fs*.sock*", "qga.sock",
-                                             "display.sock", "agent.sock", "run.args"},
+                                             "display.sock", "agent.sock", "run.args",
+                                             "nested.sock", "wayland.sock"},
                                             QDir::AllEntries | QDir::System |
                                                 QDir::Hidden)) {
         rt.remove(name);
@@ -528,6 +568,8 @@ void VmRunner::Private::cleanup()
     poll->stop();
     killTimer->stop();
     displayTimer->stop();
+    stallTimer->stop();
+    shutdownAsked = false;
     phase = Phase::Idle;
     connecting = false;
     heldForDisplay = false;
@@ -548,6 +590,9 @@ void VmRunner::Private::cleanup()
     }
     helpers.clear();
     dropAgent();
+    closeSandbox();
+    nested = NestedDesktop::Mode::Off;
+    nestedSocket.clear();
     pid = 0;
     removeRuntimeFiles();
 }
@@ -556,8 +601,23 @@ void VmRunner::Private::launchQemu()
 {
     QString launchError;
 
-    if (!launch(command.first(), command.mid(1), &pid, &launchError,
-                VmRunner::environment(args))) {
+    /* in vitrine's window: the console listens before QEMU connects */
+    if (nested == NestedDesktop::Mode::Integrated &&
+        (!nestedHost || !nestedHost(nestedSocket, &launchError))) {
+        fail(launchError.isEmpty()
+                 ? VmRunner::tr("The nested desktop shows in Vitrine's window, which cannot "
+                                "serve its socket now")
+                 : launchError);
+        return;
+    }
+    /* QEMU keeps the compositor's sandbox socket listening for as long as it runs */
+    if (sandboxFd >= 0) {
+        fcntl(sandboxFd, F_SETFD, 0);
+    }
+    const bool launched = launch(command.first(), command.mid(1), &pid, &launchError,
+                                 VmRunner::environment(args));
+    closeSandbox();
+    if (!launched) {
         fail(launchError);
         return;
     }
@@ -777,10 +837,36 @@ void VmRunner::Private::event(const QString &name, const QJsonObject &data)
 {
     /* qemu-ga opened its port: the guest has booted */
     if (name == "VSERPORT_CHANGE") {
-        if (!guestAgentPortId.isEmpty() && data["id"].toString() == guestAgentPortId &&
-            data["open"].toBool()) {
+        const QString port = data["id"].toString();
+        const bool agent = (!guestAgentPortId.isEmpty() && port == guestAgentPortId) ||
+                           port == GuestTools::kPortId;
+        if (!guestAgentPortId.isEmpty() && port == guestAgentPortId && data["open"].toBool()) {
             guestAgentUp(true);
         }
+        /*
+         * An agent's port closed while the guest was asked to shut down: it
+         * is on its way.  A nested desktop's guest can stall there (its
+         * display rejecting the greeter's frames): the last resort's time
+         * runs from here, not from the request, which a guest may answer
+         * with a question on its screen first
+         */
+        if (agent && !data["open"].toBool() && shutdownAsked &&
+            nested != NestedDesktop::Mode::Off && !stallTimer->isActive()) {
+            stallTimer->start(stallTimeoutMs);
+        }
+        return;
+    }
+    if (name == "GUEST_PANICKED") {
+        q->appendNote(VmRunner::tr("the guest panicked (QEMU's action: %1)")
+                          .arg(data["action"].toString()));
+        if (shutdownAsked && state != State::Stopped) {
+            endStuckShutdown(VmRunner::tr("the guest panicked while shutting down, as asked: "
+                                          "QEMU quits"));
+        }
+        return;
+    }
+    if (name == "RESET") {
+        emit q->guestReset();
         return;
     }
     if (name == "SHUTDOWN") {
@@ -798,6 +884,13 @@ void VmRunner::Private::event(const QString &name, const QJsonObject &data)
         setSuspended(false);
         setState(State::Running);
     }
+}
+
+void VmRunner::Private::endStuckShutdown(const QString &why)
+{
+    stallTimer->stop();
+    q->appendNote(why);
+    q->forceOff();
 }
 
 void VmRunner::Private::guestAgentUp(bool mount)
@@ -928,6 +1021,15 @@ VmRunner::VmRunner(const QString &id, const QString &dir, QObject *parent)
     d->killTimer->setSingleShot(true);
     d->displayTimer = new QTimer(this);
     d->displayTimer->setSingleShot(true);
+    d->stallTimer = new QTimer(this);
+    d->stallTimer->setSingleShot(true);
+    connect(d->stallTimer, &QTimer::timeout, this, [this]() {
+        if (isActive()) {
+            d->endStuckShutdown(tr("the guest did not end its shutdown within %n minute(s) of "
+                                   "its agent's end: QEMU quits",
+                                   nullptr, qMax(1, d->stallTimeoutMs / 60000)));
+        }
+    });
     d->shutdown = new GuestShutdown(this);
     d->shutdown->setPowerButton([this]() { pressPowerButton(); });
     d->shutdown->setRunning([this]() {
@@ -1031,6 +1133,9 @@ static QStringList lacking(const ArgsFile &args, const QString &qemu)
     static const QStringList cards = {
         "virtio-vga-gl", "virtio-gpu-gl-pci", "virtio-gpu-gl", "virtio-gpu-gl-device",
         "virtio-vga",    "virtio-gpu-pci",    "virtio-gpu",    "virtio-gpu-device",
+        /* the nested desktop's: x-drm, x-virgl2 and the others are the research's */
+        "virtio-gpu-rutabaga-pci", "virtio-gpu-rutabaga", "virtio-gpu-rutabaga-device",
+        "virtio-vga-rutabaga",
     };
     QStringList out;
     const auto add = [&out](const QString &name) {
@@ -1160,9 +1265,16 @@ QStringList VmRunner::Private::commandLine(const ArgsFile &args, const QString &
 
     /* honor-guest-pat=on, which QEMU refuses where KVM cannot do it, as auto there */
     QString patNote;
-    const ArgsFile hostArgs = HostKvm::withHostPat(args, HostKvm::canHonorGuestPat, &patNote);
+    ArgsFile hostArgs = HostKvm::withHostPat(args, HostKvm::canHonorGuestPat, &patNote);
     if (!patNote.isEmpty() && problems) {
         *problems << patNote;
+    }
+    /* the nested desktop's socket and the words its guest session reads at boot */
+    if (const NestedDesktop::Mode mode = NestedDesktop::mode(args);
+        mode != NestedDesktop::Mode::Off) {
+        const QString name = VmConfig::name(args);
+        hostArgs = NestedDesktop::withRunArgs(hostArgs, nestedSocketFor(mode),
+                                              name.isEmpty() ? id : name);
     }
     command += withComputedProperties(hostArgs, [&qemu, problems](const QString &driver) {
                    QString error;
@@ -1334,11 +1446,23 @@ QStringList VmRunner::environment(const ArgsFile &args)
         VmConfig::graphics(args).display != "gtk") {
         env += kSdlEnvironment;
     }
+    env += NestedDesktop::environment(args);
     for (const VmConfig::EnvVar &var : VmConfig::environment(args)) {
         env.removeIf([&var](const QString &s) { return s.startsWith(var.name + '='); });
         env << var.name + '=' + var.value;
     }
     return env;
+}
+
+QString VmRunner::nestedSocket() const
+{
+    return isActive() && d->nested == NestedDesktop::Mode::Integrated ? d->nestedSocket
+                                                                     : QString();
+}
+
+void VmRunner::setNestedHost(const std::function<bool(const QString &, QString *)> &serve)
+{
+    d->nestedHost = serve;
 }
 
 QString VmRunner::agentSocket() const
@@ -1405,11 +1529,15 @@ void VmRunner::start(const ArgsFile &args)
     d->error.clear();
     d->stopRequested = false;
     d->forceRequested = false;
+    d->shutdownAsked = false;
     d->killStep = 0;
     d->args = args;
     d->qemu = qemu;
     d->command.clear();
     d->embedded = VmConfig::screen(args) == VmConfig::Screen::Embedded;
+    d->nested = NestedDesktop::mode(args);
+    d->nestedSocket.clear();
+    d->closeSandbox();
     d->heldForDisplay = pausedForDisplay(args);
     if (!d->busy.isEmpty()) {
         d->fail(d->busy);
@@ -1477,8 +1605,34 @@ void VmRunner::start(const ArgsFile &args)
         return;
     }
     const QStringList environment = VmRunner::environment(args);
-    /* what launchQemu() runs, after virtiofsd if any */
     QStringList problems;
+    /*
+     * The nested desktop's socket: vitrine's own in its window, which the
+     * console serves at launch; else the compositor's, one it treats as a
+     * sandbox's if it can, which then listens from now on
+     */
+    if (d->nested == NestedDesktop::Mode::Integrated) {
+        d->nestedSocket = d->nestedPath();
+    } else if (d->nested == NestedDesktop::Mode::OwnWindow) {
+        const QString compositor = NestedDesktop::compositorSocket();
+        QString why;
+
+        if (compositor.isEmpty()) {
+            d->fail(tr("The nested desktop needs a Wayland desktop: this session has no "
+                       "WAYLAND_DISPLAY"));
+            return;
+        }
+        d->sandboxFd = WaylandSandbox::listen(compositor, d->sandboxPath(), "org.vitrine.vm",
+                                              d->id, &why);
+        if (d->sandboxFd >= 0) {
+            d->nestedSocket = d->sandboxPath();
+        } else {
+            d->nestedSocket = compositor;
+            problems << tr("the nested desktop connects to the compositor's own socket, not "
+                           "a sandboxed one: %1").arg(why);
+        }
+    }
+    /* what launchQemu() runs, after virtiofsd if any */
     d->command = d->commandLine(args, qemu, &problems);
     log.write(QString("vitrine: %1 %2%3\n")
                   .arg(QDateTime::currentDateTime().toString(Qt::ISODate),
@@ -1546,6 +1700,19 @@ void VmRunner::attach(const ArgsFile &args)
         d->args = args;
     }
     d->embedded = running.contains(d->displayArg());
+    /* in vitrine's window: the console serves the socket again (a session
+       of the guest started from now on comes back to it) */
+    d->nested = NestedDesktop::Mode::Off;
+    d->nestedSocket.clear();
+    for (const QString &arg : running) {
+        if (arg.contains("wayland-socket-path=" + OptionValue::escape(d->nestedPath()))) {
+            d->nested = NestedDesktop::Mode::Integrated;
+            d->nestedSocket = d->nestedPath();
+        } else if (arg.contains("wayland-socket-path=") &&
+                   d->nested == NestedDesktop::Mode::Off) {
+            d->nested = NestedDesktop::Mode::OwnWindow;
+        }
+    }
     d->guestAgentPort = running.contains(d->guestAgentArg());
     d->useGuestAgent();
     /* still paused for its screen when the vitrine that started it ended */
@@ -1557,6 +1724,7 @@ void VmRunner::attach(const ArgsFile &args)
     d->error.clear();
     d->stopRequested = false;
     d->forceRequested = false;
+    d->shutdownAsked = false;
     d->killStep = 0;
     d->phase = Private::Phase::Attach;
     d->connecting = true;
@@ -1580,6 +1748,7 @@ void VmRunner::resume()
 void VmRunner::powerdown()
 {
     if (isActive()) {
+        d->shutdownAsked = true;
         d->shutdown->start();
     }
 }
@@ -1663,6 +1832,11 @@ void VmRunner::killQemu()
 void VmRunner::setQuitTimeout(int ms)
 {
     d->quitTimeoutMs = ms;
+}
+
+void VmRunner::setShutdownStallTimeout(int ms)
+{
+    d->stallTimeoutMs = ms;
 }
 
 qint64 VmRunner::pid() const

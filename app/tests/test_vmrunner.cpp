@@ -828,6 +828,126 @@ private slots:
     }
 
     /*
+     * A nested desktop's guest asked to shut down can panic at the very end
+     * of its poweroff, or stall on its way: QEMU quits on GUEST_PANICKED
+     * (its pvpanic), and once the last resort's time ran from its agent's
+     * end.  A panic it was not asked to shut down for stays QEMU's to act
+     * on, as its -action says.  QEMU stand-ins found running.
+     */
+    void stuckShutdown()
+    {
+        const QStringList command = VmRunner(id, tmp.path()).commandLine({});
+        /* a stand-in that runs as a nested desktop's QEMU does, with its card's socket */
+        const auto standIn = [&](QProcess &qemu) {
+            if (!startStandIn(qemu, FAKE_QEMU,
+                              {"-device", "virtio-gpu-rutabaga-pci,cross-domain=on,"
+                                          "wayland-socket-path=" + runDir + "/wayland.sock",
+                               "-qmp", command[command.size() - 3]})) {
+                return false;
+            }
+            QFile pid(runDir + "/qemu.pid");
+            return pid.open(QIODevice::WriteOnly) &&
+                   pid.write(QByteArray::number(qemu.processId()) + '\n') > 0;
+        };
+        const auto end = [](FakeMonitor &monitor, QProcess &qemu, VmRunner &runner) {
+            monitor.close();
+            qemu.kill();
+            qemu.waitForFinished();
+            QTRY_COMPARE_WITH_TIMEOUT(runner.state(), VmRunner::State::Stopped, 10000);
+        };
+
+        {
+            FakeMonitor monitor(runDir + "/qmp.sock");
+            QProcess qemu;
+            QVERIFY(standIn(qemu));
+            VmRunner runner(id, tmp.path());
+            runner.setShutdownStallTimeout(200);
+            runner.attach(ArgsFile::parse(kHeadless));
+            QTRY_COMPARE(runner.state(), VmRunner::State::Running);
+
+            /* not asked: said in the log, QEMU's own action */
+            monitor.event("GUEST_PANICKED", {{"action", "pause"}});
+            QTRY_VERIFY(read(runner.logPath()).contains("the guest panicked (QEMU's action: pause)"));
+            /* nor an agent's end */
+            monitor.event("VSERPORT_CHANGE", {{"id", "vitrine-agent-port"}, {"open", false}});
+            QTest::qWait(400);
+            QVERIFY(!monitor.commands.contains("quit"));
+            QCOMPARE(runner.state(), VmRunner::State::Running);
+
+            /* asked (the power button, without agents), then the panic */
+            runner.powerdown();
+            QTRY_VERIFY(monitor.commands.contains("system_powerdown"));
+            monitor.event("GUEST_PANICKED", {{"action", "pause"}});
+            QTRY_VERIFY(monitor.commands.contains("quit"));
+            QVERIFY(read(runner.logPath()).contains("panicked while shutting down, as asked"));
+            QCOMPARE(runner.state(), VmRunner::State::Stopping);
+            end(monitor, qemu, runner);
+        }
+        /* its runtime folder went with the run */
+        QVERIFY(QDir().mkpath(runDir));
+        {
+            FakeMonitor monitor(runDir + "/qmp.sock");
+            QProcess qemu;
+            QVERIFY(standIn(qemu));
+            VmRunner runner(id, tmp.path());
+            runner.setShutdownStallTimeout(300);
+            runner.attach(ArgsFile::parse(kHeadless));
+            QTRY_COMPARE(runner.state(), VmRunner::State::Running);
+            runner.powerdown();
+            QTRY_VERIFY(monitor.commands.contains("system_powerdown"));
+            /* its agent ends: the guest shuts down, and stalls there */
+            monitor.event("VSERPORT_CHANGE", {{"id", "vitrine-agent-port"}, {"open", false}});
+            QTest::qWait(100);
+            QVERIFY(!monitor.commands.contains("quit"));
+            QTRY_VERIFY(monitor.commands.contains("quit"));
+            QVERIFY(read(runner.logPath()).contains("did not end its shutdown"));
+            end(monitor, qemu, runner);
+        }
+    }
+
+    /*
+     * A QEMU found running with the nested desktop in vitrine's window: its
+     * socket, by its command line, for the console to serve again (a
+     * session of the guest started from then on comes back to it); none
+     * for one in a window of its own, nor once it ended
+     */
+    void nestedFoundRunning_data()
+    {
+        QTest::addColumn<QString>("socket");
+        QTest::addColumn<bool>("served");
+        QTest::newRow("vitrine's window") << "nested.sock" << true;
+        QTest::newRow("its own window") << "wayland.sock" << false;
+    }
+    void nestedFoundRunning()
+    {
+        QFETCH(QString, socket);
+        QFETCH(bool, served);
+        const QStringList command = VmRunner(id, tmp.path()).commandLine({});
+        FakeMonitor monitor(runDir + "/qmp.sock");
+        QProcess qemu;
+        QVERIFY(startStandIn(qemu, FAKE_QEMU,
+                             {"-device", "virtio-gpu-rutabaga-pci,cross-domain=on,"
+                                         "wayland-socket-path=" + runDir + '/' + socket,
+                              "-qmp", command[command.size() - 3]}));
+        QFile pid(runDir + "/qemu.pid");
+        QVERIFY(pid.open(QIODevice::WriteOnly));
+        pid.write(QByteArray::number(qemu.processId()) + '\n');
+        pid.close();
+
+        VmRunner runner(id, tmp.path());
+        runner.attach(ArgsFile::parse(kHeadless));
+        QTRY_COMPARE(runner.state(), VmRunner::State::Running);
+        QCOMPARE(runner.nestedSocket(), served ? runDir + "/nested.sock" : QString());
+
+        monitor.close();
+        qemu.kill();
+        qemu.waitForFinished();
+        QTRY_COMPARE_WITH_TIMEOUT(runner.state(), VmRunner::State::Stopped, 10000);
+        QCOMPARE(runner.nestedSocket(), QString());
+        QDir().mkpath(runDir);
+    }
+
+    /*
      * A guest's own suspend to RAM is no pause from here: QEMU takes input
      * there.  A QEMU stand-in found running, its monitor sending the events.
      */

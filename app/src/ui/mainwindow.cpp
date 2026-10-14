@@ -3,6 +3,7 @@
 
 #include <QAbstractItemView>
 #include <QAction>
+#include <QActionGroup>
 #include <QApplication>
 #include <QCloseEvent>
 #include <QDesktopServices>
@@ -10,6 +11,7 @@
 #include <QDir>
 #include <QFileInfo>
 #include <QFocusEvent>
+#include <QKeyEvent>
 #include <QLabel>
 #include <QListWidget>
 #include <QMenu>
@@ -32,6 +34,7 @@
 #include <memory>
 
 #include "core/buildmanager.h"
+#include "core/consoleviews.h"
 #include "core/hostsettings.h"
 #include "core/paths.h"
 #include "core/qemuinfo.h"
@@ -70,6 +73,7 @@
 #include "ui/vmpane.h"
 #include "ui/vmwindow.h"
 #include "ui/widgets.h"
+#include "nested/desktopview.h"
 #include "vmview/vmview.h"
 
 /*
@@ -216,7 +220,7 @@ MainWindow::MainWindow(VmStore *store, QWidget *parent)
 
         if (m_start->isEnabled()) {
             start();
-        } else if (console && console->view()) {
+        } else if (console && console->screenWidget()) {
             m_pane->setTab(VmPane::Console);
             console->focusScreen();
         } else if (m_showWindow->isEnabled()) {
@@ -396,6 +400,34 @@ void MainWindow::createActions()
                             QStyle::SP_ArrowBack, {}, &MainWindow::releaseInput);
     m_releaseInput->setToolTip(tr("Give the keyboard and mouse back to the desktop "
                                   "(Ctrl+Alt+G releases the grab from the VM)"));
+    /*
+     * The nested desktop's views of the console.  Ctrl+Alt+1/2/3 go by the
+     * key's place, not its character (switchViewByKey()): the menu says
+     * them in its shortcut column, where a QKeySequence would match the
+     * characters - AZERTY gives &, é and " there.
+     */
+    {
+        static const char *const texts[] = {QT_TR_NOOP("&Boot"), QT_TR_NOOP("Sc&reen"),
+                                            QT_TR_NOOP("D&esktop")};
+        static const char *const tips[] = {
+            QT_TR_NOOP("The VGA card's screen: the firmware, the boot loader and the first "
+                       "boot messages"),
+            QT_TR_NOOP("The guest's own screen: its console and its login screen"),
+            QT_TR_NOOP("The guest's desktop session")};
+        auto *group = new QActionGroup(this);
+        for (int i = 0; i < 3; i++) {
+            auto *view = new QAction(tr(texts[i]) + QString("\tCtrl+Alt+%1").arg(i + 1), group);
+            view->setCheckable(true);
+            view->setToolTip(tr(tips[i]));
+            connect(view, &QAction::triggered, this, [this, i]() {
+                if (VmConsole *console = currentConsole()) {
+                    m_pane->setTab(VmPane::Console);
+                    console->showView(ConsoleViews::View(i));
+                }
+            });
+            m_views << view;
+        }
+    }
     m_quit = new QAction(Icons::themed({"application-exit"}, QStyle::SP_DialogCloseButton),
                          tr("&Quit"), this);
     m_quit->setShortcut(QKeySequence::Quit);
@@ -429,6 +461,8 @@ void MainWindow::createActions()
 
     QMenu *view = m_menus->addMenu(tr("&View"));
     view->addAction(m_fullScreen);
+    view->addSeparator();
+    view->addActions(m_views);
     view->addSeparator();
     view->addAction(m_library);
     view->addSeparator();
@@ -589,6 +623,11 @@ void MainWindow::addVm(Vm *vm)
     /* QEMU that does not end after Force Off: killed only if the user says so */
     connect(vm->runner(), &VmRunner::notResponding, this,
             [this, vm]() { KillPrompt::ask(this, vm); });
+    /* its nested desktop in this window: the console listens before QEMU starts */
+    vm->runner()->setNestedHost([this, id = vm->id()](const QString &socket, QString *error) {
+        Vm *vm = m_store->find(id);
+        return vm && consoleOf(vm)->serveNested(socket, error);
+    });
     /* how Shut Down reaches the guest, and when the guest may ask on its screen */
     ShutdownNotice::follow(vm, statusBar());
     m_states[vm->id()] = vm->runner()->state();
@@ -851,9 +890,8 @@ void MainWindow::consoleChanged(VmConsole *console)
      * a host window changes nothing (HostSettings::setFront).  VMs in
      * QEMU's own window are not followed.
      */
-    const VmView *view = console->view();
     HostSettings *host = HostSettings::instance();
-    if (view && view->hasKeyboard() && console->vm() && host) {
+    if (console->hasKeyboard() && console->vm() && host) {
         host->setFront(console->vm()->id());
     }
     if (console == currentConsole()) {
@@ -867,6 +905,16 @@ void MainWindow::updateInput()
     const VmConsole *console = currentConsole();
     VmView *view = console ? console->view() : nullptr;
 
+    /* the guest's desktop has the keys while its view has the focus */
+    if (console && console->desktopShown()) {
+        m_input->setText(!console->takesInput()   ? tr("Paused")
+                         : console->hasKeyboard() ? tr("Keys go to the guest's desktop")
+                                                  : tr("Click the desktop to type in the VM"));
+        m_input->setToolTip(tr("Ctrl+Alt+1, 2 and 3 show the VM's boot, its screen and its "
+                               "desktop"));
+        m_input->show();
+        return;
+    }
     if (!view) {
         m_input->hide();
         return;
@@ -893,11 +941,18 @@ void MainWindow::leaveScreens()
             view->setFullScreen(false);
             view->setGrab(false);
         }
+        if (DesktopView *nested = console->nestedView()) {
+            nested->setFullScreen(false);
+        }
     }
 }
 
 bool MainWindow::eventFilter(QObject *watched, QEvent *event)
 {
+    /* before the screens, which would give them to the guest */
+    if (event->type() == QEvent::KeyPress && switchViewByKey(static_cast<QKeyEvent *>(event))) {
+        return true;
+    }
     /* a dialog behind a full-screen VM, or under a grab, would wait unseen */
     if (event->type() == QEvent::Show && watched->isWidgetType()) {
         const auto *widget = static_cast<QWidget *>(watched);
@@ -924,7 +979,7 @@ bool MainWindow::eventFilter(QObject *watched, QEvent *event)
     if (event->type() == QEvent::FocusOut && watched->isWidgetType() &&
         static_cast<QFocusEvent *>(event)->reason() == Qt::MenuBarFocusReason) {
         const VmConsole *console = currentConsole();
-        const QWidget *screen = console && console->view() ? console->view()->widget() : nullptr;
+        const QWidget *screen = console ? console->screenWidget() : nullptr;
         const auto *widget = static_cast<QWidget *>(watched);
         if (screen && (widget == screen || screen->isAncestorOf(widget))) {
             QTimer::singleShot(0, this, [this]() {
@@ -957,11 +1012,10 @@ bool MainWindow::eventFilter(QObject *watched, QEvent *event)
 void MainWindow::focusScreen(FocusCause cause)
 {
     VmConsole *console = currentConsole();
-    const VmView *view = console ? console->view() : nullptr;
 
-    if (!view || !isActiveWindow() || QApplication::activePopupWidget() ||
-        !console->isVisible() || !view->inputEnabled() || view->isFullScreen() ||
-        view->hasKeyboard()) {
+    if (!console || !console->screenWidget() || !isActiveWindow() ||
+        QApplication::activePopupWidget() || !console->isVisible() || !console->takesInput() ||
+        console->isFullScreen() || console->hasKeyboard()) {
         return;
     }
     if (cause == FocusCause::Activated && m_lastPress.isValid() && m_lastPress.elapsed() < 500) {
@@ -982,12 +1036,30 @@ void MainWindow::toggleFullScreen()
 {
     VmConsole *console = currentConsole();
 
-    if (!console || !console->view()) {
+    if (!console || !console->screenWidget()) {
         return;
     }
     /* back from full screen, the screen is where the console shows */
     m_pane->setTab(VmPane::Console);
     console->setFullScreen(!console->isFullScreen());
+}
+
+bool MainWindow::switchViewByKey(const QKeyEvent *event)
+{
+    const std::optional<ConsoleViews::View> view = ConsoleViews::viewForKey(event);
+    VmConsole *console = currentConsole();
+
+    if (!view || !console || !console->hasViews()) {
+        return false;
+    }
+    /* not for a console out of sight, on another tab: full screen it is in sight */
+    if (!console->isVisible() && !console->isFullScreen()) {
+        return false;
+    }
+    if (!event->isAutoRepeat()) {
+        console->showView(*view);
+    }
+    return true;
 }
 
 void MainWindow::sendCtrlAltDel()
@@ -1003,10 +1075,12 @@ void MainWindow::releaseInput()
 {
     const VmConsole *console = currentConsole();
 
-    if (!console || !console->view()) {
+    if (!console || !console->screenWidget()) {
         return;
     }
-    console->view()->setGrab(false);
+    if (console->view()) {
+        console->view()->setGrab(false);
+    }
     /* the keys to the window again, its shortcuts with them */
     if (m_list->isVisible()) {
         m_list->setFocus(Qt::OtherFocusReason);
@@ -1044,9 +1118,14 @@ void MainWindow::updateActions()
 
     const VmConsole *console = currentConsole();
     VmView *view = console ? console->view() : nullptr;
-    m_fullScreen->setEnabled(view);
+    const bool views = console && console->hasViews();
+    m_fullScreen->setEnabled(console && console->screenWidget());
     m_ctrlAltDel->setEnabled(view && state == VmRunner::State::Running);
-    m_releaseInput->setEnabled(view && (view->grabbed() || view->hasKeyboard()));
+    m_releaseInput->setEnabled(console && (console->hasKeyboard() || (view && view->grabbed())));
+    for (int i = 0; i < m_views.size(); i++) {
+        m_views[i]->setEnabled(views);
+        m_views[i]->setChecked(views && int(console->currentView()) == i);
+    }
     m_usb->setVm(vm);
 }
 
@@ -1343,18 +1422,29 @@ void MainWindow::closeEvent(QCloseEvent *event)
         event->ignore();
         return;
     }
-    /* VMs outlive the window, but those shown in it go on without a screen */
+    /*
+     * VMs outlive the window, but those shown in it go on without a screen,
+     * and the guests' desktop sessions in it end: the guest does not get
+     * its window back, and logs the session out (the user's decision: no
+     * automatic login again, the guest waits at its login screen)
+     */
     QList<QPointer<Vm>> shown;
     QStringList names;
+    QStringList sessions;
     for (Vm *each : m_store->vms()) {
-        if (!each->runner()->displaySocket().isEmpty()) {
+        const VmConsole *console = m_consoleOf.value(each->id());
+        const bool session = console && console->hasNestedSession();
+        if (!each->runner()->displaySocket().isEmpty() || session) {
             shown << each;
             names << each->name();
+        }
+        if (session) {
+            sessions << each->name();
         }
     }
     if (!shown.isEmpty()) {
         std::unique_ptr<QMessageBox> box(Widgets::messageBox(
-            QMessageBox::Question, tr("Close Vitrine"),
+            sessions.isEmpty() ? QMessageBox::Question : QMessageBox::Warning, tr("Close Vitrine"),
             shown.size() == 1
                 ? tr("%1 is running.").arg(names.first())
                 : tr("%n VMs are running: %1.", nullptr, int(shown.size())).arg(names.join(", ")),
@@ -1365,14 +1455,28 @@ void MainWindow::closeEvent(QCloseEvent *event)
 
         box->addButton(QMessageBox::Cancel);
         box->setDefaultButton(keep);
-        box->setInformativeText(
+        QString informative =
             shown.size() == 1
                 ? tr("In the background, it has no screen until vitrine starts again. "
                      "Shut Down asks the guest to shut down, through its agent or the "
                      "power button, and closes the window once it is off.")
                 : tr("In the background, they have no screen until vitrine starts again. "
                      "Shut Down asks the guests to shut down, through their agents or the "
-                     "power button, and closes the window once they are off."));
+                     "power button, and closes the window once they are off.");
+        if (!sessions.isEmpty()) {
+            informative.prepend(
+                (sessions.size() == 1
+                     ? tr("Closing Vitrine logs out the desktop session of %1: the guest goes "
+                          "back to its login screen, where you log in again from its Screen "
+                          "view.")
+                           .arg(sessions.first())
+                     : tr("Closing Vitrine logs out the desktop sessions of %1: the guests go "
+                          "back to their login screens, where you log in again from their "
+                          "Screen views.")
+                           .arg(sessions.join(", "))) +
+                "\n\n");
+        }
+        box->setInformativeText(informative);
         box->exec();
         if (box->clickedButton() == shutDown) {
             /* as they are now: one may have stopped while the question was

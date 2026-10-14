@@ -7,14 +7,17 @@
 #include <QPushButton>
 #include <QStackedWidget>
 #include <QTimer>
+#include <QToolButton>
 #include <QVBoxLayout>
 
 #include <utility>
 
+#include "core/guesttools.h"
 #include "core/vmconfig.h"
 #include "core/vmhardware.h"
 #include "core/vmrunner.h"
 #include "core/vmstore.h"
+#include "nested/nestedview.h"
 #include "ui/banner.h"
 #include "ui/guesttoolsdialog.h"
 #include "ui/icons.h"
@@ -34,7 +37,7 @@ static QString memoryText(qint64 mib)
 
 /* QEMU drops input while the VM is paused, but for a guest that suspended
    itself to RAM, which a key wakes */
-static bool takesInput(const VmRunner *runner)
+static bool runnerTakesInput(const VmRunner *runner)
 {
     return runner->state() == VmRunner::State::Running || runner->isSuspended();
 }
@@ -51,9 +54,11 @@ VmConsole::VmConsole(Vm *vm, QWidget *parent)
     : QWidget(parent), m_vm(vm), m_pages(new QStackedWidget), m_name(new QLabel),
       m_state(new QLabel), m_error(new Banner(Banner::Warning)), m_start(new QPushButton),
       m_summary(new QLabel), m_messageTitle(new QLabel), m_messageText(new QLabel),
-      m_messageButton(new QPushButton), m_screen(new QWidget),
-      m_screenLayout(new QVBoxLayout(m_screen)), m_ownWindowText(new QLabel),
-      m_retry(new QTimer(this)), m_statsTimer(new QTimer(this))
+      m_messageButton(new QPushButton), m_screen(new QWidget), m_switcher(new QWidget),
+      m_viewPages(new QStackedWidget), m_dbusPage(new QWidget),
+      m_screenLayout(new QVBoxLayout(m_dbusPage)), m_desktopPage(new QWidget),
+      m_desktopLayout(new QVBoxLayout(m_desktopPage)), m_ownWindowText(new QLabel),
+      m_views(new ConsoleViews(this)), m_retry(new QTimer(this)), m_statsTimer(new QTimer(this))
 {
     auto *layout = new QVBoxLayout(this);
 
@@ -146,9 +151,52 @@ VmConsole::VmConsole(Vm *vm, QWidget *parent)
         m_pages->addWidget(page);
     }
 
-    /* Screen: the view's widget, alone */
-    m_screenLayout->setContentsMargins(0, 0, 0, 0);
-    m_pages->addWidget(m_screen);
+    /* Screen: the view's widget, alone; with the nested desktop, its views under their switcher */
+    {
+        static const char *const names[] = {
+            QT_TR_NOOP("Boot"), QT_TR_NOOP("Screen"), QT_TR_NOOP("Desktop")};
+        static const char *const tips[] = {
+            QT_TR_NOOP("The VGA card's screen: the firmware, the boot loader and the first boot "
+                       "messages (Ctrl+Alt+1)"),
+            QT_TR_NOOP("The guest's own screen: its console and its login screen (Ctrl+Alt+2)"),
+            QT_TR_NOOP("The guest's desktop session (Ctrl+Alt+3)")};
+        auto *column = new QVBoxLayout(m_screen);
+        auto *row = new QHBoxLayout(m_switcher);
+        auto *keys = new QLabel(tr("Ctrl+Alt+1, 2, 3"));
+
+        column->setContentsMargins(0, 0, 0, 0);
+        column->setSpacing(0);
+        row->setContentsMargins(6, 2, 6, 2);
+        row->setSpacing(2);
+        m_switcher->setObjectName("viewSwitcher");
+        for (int i = 0; i < 3; i++) {
+            auto *button = new QToolButton;
+            button->setObjectName(QString("view%1").arg(QLatin1String(names[i])));
+            button->setText(tr(names[i]));
+            button->setToolTip(tr(tips[i]));
+            button->setCheckable(true);
+            button->setAutoExclusive(true);
+            button->setAutoRaise(true);
+            /* the keys stay with the screen */
+            button->setFocusPolicy(Qt::NoFocus);
+            connect(button, &QToolButton::clicked, this,
+                    [this, i]() { showView(ConsoleViews::View(i)); });
+            row->addWidget(button);
+            m_viewButtons[i] = button;
+        }
+        row->addStretch();
+        keys->setEnabled(false);
+        row->addWidget(keys);
+        m_switcher->hide();
+        m_screenLayout->setContentsMargins(0, 0, 0, 0);
+        m_desktopLayout->setContentsMargins(0, 0, 0, 0);
+        m_viewPages->addWidget(m_dbusPage);
+        m_viewPages->addWidget(m_desktopPage);
+        column->addWidget(m_switcher);
+        column->addWidget(m_viewPages, 1);
+        m_pages->addWidget(m_screen);
+    }
+    connect(m_views, &ConsoleViews::viewChanged, this, &VmConsole::applyView);
 
     /* OwnWindow */
     {
@@ -191,14 +239,37 @@ VmConsole::VmConsole(Vm *vm, QWidget *parent)
         connect(vm->runner(), &VmRunner::stateChanged, this, &VmConsole::update);
         connect(vm->runner(), &VmRunner::suspendedChanged, this, &VmConsole::update);
         connect(vm->runner(), &VmRunner::waitsForDisplayChanged, this, &VmConsole::update);
+        /* a reboot shows the boot again, the guest's system up its own screen */
+        connect(vm->runner(), &VmRunner::guestReset, this, [this]() {
+            if (m_nested) {
+                m_views->reset();
+            }
+        });
+        /*
+         * An agent of the guest's answered, qemu-ga or the guest tools': its
+         * system runs.  Not their ports opening, which the firmware does too
+         * (OVMF's virtio-serial driver opens the tools' port for a second).
+         */
+        connect(vm->runner(), &VmRunner::guestOsInfo, this, [this]() {
+            if (m_nested) {
+                m_views->systemUp();
+            }
+        });
+        GuestToolsMonitor *tools = GuestToolsMonitor::of(vm);
+        connect(tools, &GuestToolsMonitor::changed, this, [this, tools]() {
+            if (m_nested && tools->hasAgent()) {
+                m_views->systemUp();
+            }
+        });
     }
     update();
 }
 
 VmConsole::~VmConsole()
 {
-    /* before the widgets, its window among them */
+    /* before the widgets, their windows among them */
     delete std::exchange(m_view, nullptr);
+    delete std::exchange(m_nested, nullptr);
 }
 
 Vm *VmConsole::vm() const
@@ -218,22 +289,183 @@ VmView *VmConsole::view() const
 
 bool VmConsole::isFullScreen() const
 {
-    return m_view && m_view->isFullScreen();
+    return desktopShown() ? m_nested->isFullScreen() : m_view && m_view->isFullScreen();
 }
 
 void VmConsole::setFullScreen(bool on)
 {
-    if (m_view) {
+    if (desktopShown()) {
+        m_nested->setFullScreen(on);
+    } else if (m_view) {
         m_view->setFullScreen(on);
     }
 }
 
 void VmConsole::focusScreen()
 {
-    if (m_view) {
+    if (desktopShown()) {
+        m_nested->focus();
+    } else if (m_view) {
         m_view->focus();
     }
 }
+
+bool VmConsole::hasKeyboard() const
+{
+    return desktopShown() ? m_nested->hasKeyboard() : m_view && m_view->hasKeyboard();
+}
+
+bool VmConsole::takesInput() const
+{
+    if (desktopShown()) {
+        return m_vm && runnerTakesInput(m_vm->runner());
+    }
+    return m_view && m_view->inputEnabled();
+}
+
+QWidget *VmConsole::screenWidget() const
+{
+    return desktopShown() ? m_nested->widget() : m_view ? m_view->widget() : nullptr;
+}
+
+bool VmConsole::hasViews() const
+{
+    return m_nested;
+}
+
+ConsoleViews::View VmConsole::currentView() const
+{
+    return m_views->view();
+}
+
+void VmConsole::showView(ConsoleViews::View view)
+{
+    if (m_nested) {
+        m_views->choose(view);
+    }
+}
+
+bool VmConsole::desktopShown() const
+{
+    return m_nested && m_views->view() == ConsoleViews::View::Desktop;
+}
+
+DesktopView *VmConsole::nestedView() const
+{
+    return m_nested;
+}
+
+static DesktopView::Factory &desktopViewFactory()
+{
+    static DesktopView::Factory factory;
+    return factory;
+}
+
+void VmConsole::setDesktopViewFactory(const DesktopView::Factory &factory)
+{
+    desktopViewFactory() = factory;
+}
+
+bool VmConsole::hasNestedSession() const
+{
+    return m_nested && (m_nested->connections() > 0 || m_nested->isMapped());
+}
+
+bool VmConsole::serveNested(const QString &socket, QString *error)
+{
+    if (m_nested && m_nested->socket() == socket) {
+        return true;
+    }
+    dropNested();
+    const DesktopView::Factory &factory = desktopViewFactory();
+    DesktopView *nested = factory ? factory(socket, error, this)
+                                  : NestedView::create(socket, error, this);
+    if (!nested) {
+        return false;
+    }
+    m_nested = nested;
+    m_desktopLayout->addWidget(nested->widget());
+    /* the guest's window came or went: Desktop, or Screen with its login screen */
+    connect(nested, &DesktopView::mappedChanged, this, [this](bool mapped) {
+        m_views->setDesktop(mapped);
+        emit changed();
+    });
+    connect(nested, &DesktopView::connectionsChanged, this, &VmConsole::changed);
+    connect(nested, &DesktopView::keyboardChanged, this, &VmConsole::changed);
+    connect(nested, &DesktopView::fullScreenChanged, this, &VmConsole::changed);
+    /* the guest's Ctrl+Alt+F, or vitrine's while it has no window to ask */
+    connect(nested, &DesktopView::fullScreenRequested, this, [this](bool on) {
+        if (desktopShown()) {
+            m_nested->setFullScreen(on);
+        }
+    });
+    connect(nested, &DesktopView::fullScreenToggled, this, [this]() {
+        if (desktopShown()) {
+            m_nested->setFullScreen(!m_nested->isFullScreen());
+        }
+    });
+    m_switcher->show();
+    m_views->powerOn();
+    applyView();
+    return true;
+}
+
+void VmConsole::dropNested()
+{
+    if (!m_nested) {
+        return;
+    }
+    /* nestedView() is null while it goes */
+    delete std::exchange(m_nested, nullptr);
+    m_switcher->hide();
+    m_views->powerOn();
+    applyView();
+}
+
+/*
+ * The view to show: the D-Bus display's page on QEMU's console of the view
+ * (attached again on the other console when it changes), or the guest's
+ * desktop.  The keys go to the one shown, and full screen, if on, follows.
+ */
+void VmConsole::applyView()
+{
+    const ConsoleViews::View view = m_views->view();
+
+    for (int i = 0; i < 3; i++) {
+        m_viewButtons[i]->setChecked(int(view) == i);
+    }
+    if (!m_nested) {
+        m_viewPages->setCurrentWidget(m_dbusPage);
+        return;
+    }
+    const bool full = m_nested->isFullScreen() || (m_view && m_view->isFullScreen());
+    if (view == ConsoleViews::View::Desktop) {
+        if (m_view) {
+            m_view->setFullScreen(false);
+        }
+        m_viewPages->setCurrentWidget(m_desktopPage);
+        m_nested->setInputEnabled(m_vm && runnerTakesInput(m_vm->runner()));
+        m_nested->setFullScreen(full);
+    } else {
+        m_nested->setInputEnabled(false);
+        m_nested->setFullScreen(false);
+        m_viewPages->setCurrentWidget(m_dbusPage);
+        /* the D-Bus display shows one console: the other one, attached again */
+        if (m_view && m_view->console() != ConsoleViews::qemuConsole(view)) {
+            detach();
+            attach();
+        }
+        if (m_view && full) {
+            m_view->setFullScreen(true);
+        }
+    }
+    emit changed();
+    if (takesInput()) {
+        emit screenReady();
+    }
+}
+
+
 
 void VmConsole::setError(const QString &error)
 {
@@ -257,8 +489,9 @@ void VmConsole::update()
     switch (state) {
     case VmRunner::State::Stopped:
     case VmRunner::State::Stopping:
-        /* the guest is gone, or going: its screen with it */
+        /* the guest is gone, or going: its screen with it, and its desktop */
         detach();
+        dropNested();
         setPage(Page::Home);
         return;
     case VmRunner::State::Starting:
@@ -280,10 +513,26 @@ void VmConsole::update()
         break;
     }
 
+    /*
+     * The nested desktop of a QEMU found running: served again, for its
+     * next session, as the last one ended with the vitrine that served it.
+     * Its login screen is on the guest's own screen.
+     */
+    if (const QString socket = runner->nestedSocket(); !socket.isEmpty() && !m_nested) {
+        QString error;
+        if (serveNested(socket, &error)) {
+            m_views->systemUp();
+        } else {
+            qWarning("vitrine: %s", qPrintable(error));
+        }
+    }
+    if (m_nested) {
+        m_nested->setInputEnabled(desktopShown() && runnerTakesInput(runner));
+    }
     if (!runner->displaySocket().isEmpty()) {
         if (m_view) {
             const bool took = m_view->inputEnabled();
-            m_view->setInputEnabled(takesInput(runner));
+            m_view->setInputEnabled(runnerTakesInput(runner));
             setPage(Page::Screen);
             if (!took && m_view->inputEnabled()) {
                 emit screenReady();
@@ -360,7 +609,8 @@ void VmConsole::attach()
     /* a new view each time: a failed attach leaves the view half set up */
     auto *view = new VmView(this);
     m_screenLayout->addWidget(view->widget(), 1);
-    if (!view->attach(socket, &error, m_vm->runner()->waitsForDisplay())) {
+    if (!view->attach(socket, &error, m_vm->runner()->waitsForDisplay(),
+                      m_nested ? ConsoleViews::qemuConsole(m_views->view()) : -1)) {
         delete view;
         if (++m_attempts < kAttachTries) {
             showMessage(tr("Connecting to the screen…"), {});
@@ -377,7 +627,7 @@ void VmConsole::attach()
     m_view = view;
     m_attempts = 0;
     m_stats = {};
-    view->setInputEnabled(takesInput(m_vm->runner()));
+    view->setInputEnabled(runnerTakesInput(m_vm->runner()));
     connect(view, &VmView::grabChanged, this, &VmConsole::changed);
     connect(view, &VmView::fullScreenChanged, this, &VmConsole::changed);
     /* a guest paused for its screen runs once QEMU has the screen's size and refresh rate */
