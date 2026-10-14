@@ -147,6 +147,8 @@ void CloneDialog::accept()
         task->setDetails([this]() { present(); });
     }
     updateButtons();
+    /* the progress and what closing does: room for them */
+    Widgets::resizeToWidth(this, width());
 }
 
 void CloneDialog::reject()
@@ -180,6 +182,7 @@ void CloneDialog::finished(Vm *clone, const QString &error)
     }
     m_error->setText(tr("<b>The VM could not be cloned:</b> %1").arg(error.toHtmlEscaped()));
     m_error->setVisible(true);
+    Widgets::resizeToWidth(this, width());
 }
 
 void CloneDialog::present()

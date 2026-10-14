@@ -73,6 +73,12 @@ protected:
     void changeEvent(QEvent *event) override;
     void showEvent(QShowEvent *event) override;
     void hideEvent(QHideEvent *event) override;
+    /* Hovered, by the pointer's own events: on Wayland the button hears
+       of no leave after its menu took the pointer */
+    void enterEvent(QEnterEvent *event) override;
+    void leaveEvent(QEvent *event) override;
+    void resizeEvent(QResizeEvent *event) override;
+    void mouseMoveEvent(QMouseEvent *event) override;
 
 private:
     /* Shown or not, the tooltip, the spinner: after any change of the tasks */
@@ -98,4 +104,5 @@ private:
     QElapsedTimer m_spinClock;
     /* The successes whose time to go is counted */
     QSet<const Task *> m_lingering;
+    bool m_hovered = false;
 };

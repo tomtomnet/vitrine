@@ -8,6 +8,7 @@
 #include <QListWidget>
 #include <QMenu>
 #include <QMenuBar>
+#include <QMessageBox>
 #include <QPushButton>
 #include <QSignalSpy>
 #include <QSplitter>
@@ -23,6 +24,7 @@
 #include <memory>
 
 #include "core/paths.h"
+#include "core/vmrunner.h"
 #include "core/vmstore.h"
 #include "scales.h"
 #include "ui/mainwindow.h"
@@ -638,6 +640,28 @@ private slots:
         settle(w.get());
         QVERIFY(!collapsed(w.get()));
         QVERIFY(qAbs(sidebar(w.get())->width() - width) <= 1);
+    }
+
+    /* A VM whose disks are being copied for a clone: Start says so, and the VM has no error */
+    void busyStart()
+    {
+        auto w = window();
+        settle(w.get());
+        Vm *bravo = m_store->find("bravo");
+        w->select("bravo");
+        QListWidget *vms = list(w.get());
+        const QString before = vms->currentItem()->data(Qt::UserRole + 1).toString();
+
+        bravo->runner()->setBusy("Bravo is being cloned: it can start once its disks are copied");
+        action(w.get(), "Start")->trigger();
+        QMessageBox *box = nullptr;
+        QTRY_VERIFY((box = qobject_cast<QMessageBox *>(QApplication::activeModalWidget())));
+        QVERIFY(box->text().contains("being cloned"));
+        box->close();
+        QCOMPARE(bravo->runner()->state(), VmRunner::State::Stopped);
+        /* the line under its name as it was: no error of its own */
+        QCOMPARE(vms->currentItem()->data(Qt::UserRole + 1).toString(), before);
+        bravo->runner()->setBusy({});
     }
 
     /* F10: the menus under the bar's button, or the menu bar's first one */

@@ -1173,10 +1173,19 @@ void MainWindow::start()
     if (m_askingUsb.contains(vm->id())) {
         return;
     }
-    /* it waits for Vitrine's QEMU, or for the copy of its disks for a
-       clone: start() refuses it, which failed() reports (with the build at
-       hand), before USB access is asked and the firmware checked */
-    if (VmRunner::needsQemuBuild(vm->args()) || !vm->runner()->busy().isEmpty()) {
+    /* its disks being copied for a clone: said, before USB access is
+       asked and the firmware checked; no error of the VM's */
+    if (const QString busy = vm->runner()->busy(); !busy.isEmpty()) {
+        auto *box = Widgets::messageBox(QMessageBox::Information,
+                                        tr("Cannot Start %1").arg(vm->name()), busy,
+                                        QMessageBox::Close, this);
+        box->setAttribute(Qt::WA_DeleteOnClose);
+        box->open();
+        return;
+    }
+    /* it waits for Vitrine's QEMU: start() refuses it, which failed()
+       reports with the build at hand, before USB access is asked */
+    if (VmRunner::needsQemuBuild(vm->args())) {
         m_starting.insert(vm->id());
         vm->runner()->start(vm->args());
         return;

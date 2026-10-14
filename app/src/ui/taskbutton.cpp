@@ -2,6 +2,8 @@
 #include "taskbutton.h"
 
 #include <QContextMenuEvent>
+#include <QEnterEvent>
+#include <QMouseEvent>
 #include <QGuiApplication>
 #include <QListWidget>
 #include <QMenu>
@@ -282,7 +284,8 @@ TaskButton::TaskButton(TaskList *tasks, QListWidget *list, QWidget *parent)
     : QAbstractButton(parent), m_tasks(tasks), m_list(list), m_spinner(new QTimer(this))
 {
     setFocusPolicy(Qt::TabFocus);
-    setAttribute(Qt::WA_Hover);
+    /* the moves over it: hovered again once its menu closed */
+    setMouseTracking(true);
     setSizePolicy(QSizePolicy::Preferred, QSizePolicy::Fixed);
     m_spinner->setInterval(kFrameMs);
     connect(m_spinner, &QTimer::timeout, this, [this]() { update(ringRect()); });
@@ -509,7 +512,11 @@ void TaskButton::popupMenu(const QPoint &at, bool above)
                                       QStyle::SP_DialogResetButton),
                         tr("Clear Finished"), m_tasks, &TaskList::clearFinished);
     }
-    connect(menu, &QMenu::aboutToHide, this, [this]() { update(); });
+    connect(menu, &QMenu::aboutToHide, this, [this]() {
+        /* the menu had the pointer: hovered again when it moves over the button */
+        m_hovered = false;
+        update();
+    });
     m_menu = menu;
     if (above) {
         /* over the button, as it is at the bottom of the window */
@@ -564,7 +571,7 @@ void TaskButton::paintEvent(QPaintEvent *)
     option.showDecorationSelected = true;
     option.viewItemPosition = QStyleOptionViewItem::OnlyOne;
     option.state &= ~(QStyle::State_MouseOver | QStyle::State_Selected | QStyle::State_HasFocus);
-    if (isEnabled() && underMouse()) {
+    if (isEnabled() && m_hovered) {
         option.state |= QStyle::State_MouseOver;
     }
     if (isDown() || (m_menu && m_menu->isVisible())) {
@@ -648,6 +655,36 @@ void TaskButton::changeEvent(QEvent *event)
     }
 }
 
+void TaskButton::enterEvent(QEnterEvent *event)
+{
+    QAbstractButton::enterEvent(event);
+    m_hovered = true;
+    update();
+}
+
+void TaskButton::resizeEvent(QResizeEvent *event)
+{
+    QAbstractButton::resizeEvent(event);
+    /* the list collapsed under a pointer that does not move: no leave either */
+    m_hovered = false;
+}
+
+void TaskButton::leaveEvent(QEvent *event)
+{
+    QAbstractButton::leaveEvent(event);
+    m_hovered = false;
+    update();
+}
+
+void TaskButton::mouseMoveEvent(QMouseEvent *event)
+{
+    QAbstractButton::mouseMoveEvent(event);
+    if (!m_hovered && rect().contains(event->position().toPoint())) {
+        m_hovered = true;
+        update();
+    }
+}
+
 void TaskButton::showEvent(QShowEvent *event)
 {
     QAbstractButton::showEvent(event);
@@ -658,4 +695,5 @@ void TaskButton::hideEvent(QHideEvent *event)
 {
     QAbstractButton::hideEvent(event);
     m_spinner->stop();
+    m_hovered = false;
 }
