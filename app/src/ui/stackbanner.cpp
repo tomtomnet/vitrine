@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: GPL-2.0-or-later
 #include "stackbanner.h"
 
+#include <QGuiApplication>
 #include <QMainWindow>
 #include <QPushButton>
 #include <QVBoxLayout>
@@ -52,6 +53,18 @@ StackBanner::StackBanner(QWidget *parent)
     /* the preferences chose another QEMU, or the default again, even if
        that is the same binary: reloadPreferred() tells either way */
     connect(QemuDocs::preferred(), &QemuDocs::changed, this, &StackBanner::refresh);
+    /*
+     * Back in front, from a terminal say: what host/build.sh made meanwhile,
+     * run by hand.  The state takes a millisecond or two to tell (it hashes
+     * host/'s inputs, about 1 MB, and reads the build's manifest): looked at
+     * again each time, no file watched.
+     */
+    connect(qGuiApp, &QGuiApplication::applicationStateChanged, this,
+            [this](Qt::ApplicationState state) {
+        if (state == Qt::ApplicationActive) {
+            refresh();
+        }
+    });
     refresh();
 }
 

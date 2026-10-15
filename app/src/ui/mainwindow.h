@@ -119,6 +119,9 @@ private:
     void remove();
     /* Start, with -loadvm @snapshot */
     void startFrom(const QString &snapshot);
+    /* A build of Vitrine's QEMU, here or by hand: the update check knows
+       it; and the VMs' QEMU, if it is another one now, its options */
+    void qemuBuilt();
     void showLog();
     void showWindow();
     void showCommandLine();
@@ -164,7 +167,8 @@ private:
     QSet<QString> m_askingUsb;
     /* The snapshot the next start of a VM starts from, by id */
     QHash<QString, QString> m_loadvm;
-    /* The VMs' QEMU when a build of Vitrine's began, to tell whether it changed */
+    /* The VMs' QEMU as last seen, or when a build of Vitrine's began: to
+       tell whether a build, here or by hand, made another one */
     QString m_qemuBefore;
     UpdateNotifier *m_updates;
     /* The selection left a VM with changes, to ask about */

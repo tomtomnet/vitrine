@@ -154,6 +154,13 @@ public:
     /* Stops the script and what it runs (the whole process group; the
        script removes its container), or the wait */
     void cancel();
+    /*
+     * The medium the VMs install from (GuestTools::medium()) looked at
+     * again: mediumChanged() if it is another than the one seen last.  A
+     * build of its own does it; the app, when it comes back in front, for
+     * a medium made by hand meanwhile (guest/build-medium.sh).
+     */
+    void checkMedium();
 
     /* Waiting for memory before a heavy package */
     bool isWaiting() const;
@@ -203,6 +210,8 @@ signals:
     void finished(const QString &error);
     /* After a build that ended well: a new medium */
     void built();
+    /* The medium is another than the one seen last (checkMedium()), or gone */
+    void mediumChanged();
     /* A package of a step is there: built, or the build before it brought
        back (@restored) */
     void packageDone(const QString &package, bool restored);
@@ -237,6 +246,8 @@ private:
     bool m_cancelled = false;
     bool m_stopped = false;
     QTimer *m_memoryTimer;
+    /* The id of the medium seen last (checkMedium()), empty for none */
+    QString m_medium;
     qint64 m_available = 0;
     qint64 m_needed = 0;
     QString m_partial;          // a line not ended yet

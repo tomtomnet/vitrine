@@ -113,7 +113,9 @@ files it changes, and the guest packages compile through ccache.
    display in vitrine's window and for 3D. Until it is built, they use the
    system's QEMU, if there is one, except those that use what it lacks,
    such as the native context of new Linux VMs: these wait for the build.
-   `host/build.sh` does the same build by hand.
+   `host/build.sh` does the same build by hand; vitrine takes in what it
+   built (its banner, the Builds window, the VMs' QEMU) when its window
+   comes back to the front.
 2. **Create a VM.** File > New… (Ctrl+N): name, system, memory, processors,
    disk, and optionally an ISO to install from. Machine > Start (Ctrl+Return)
    starts it. Each VM is its QEMU command line, which Machine > Settings
@@ -127,7 +129,8 @@ files it changes, and the guest packages compile through ccache.
    first time (Mesa ~15-25 min, KWin ~10, the proxy and KPipeWire ~2 each,
    tools ~1), up to 10 GiB of memory. Mesa and KWin wait until that much is
    free, unless told to build anyway. `guest/build-rpms.sh` then
-   `guest/build-medium.sh` do the same by hand.
+   `guest/build-medium.sh` do the same by hand, which vitrine takes in the
+   same way.
 
    Then Machine > Install Guest Tools… > Install starts the VM with the tools
    medium (Restart and Install restarts a running one); the guest installs

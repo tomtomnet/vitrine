@@ -3,6 +3,7 @@
 #include <QDir>
 #include <QFile>
 #include <QFileInfo>
+#include <QLabel>
 #include <QPointer>
 #include <QProcess>
 #include <QPushButton>
@@ -18,9 +19,11 @@
 #include "core/paths.h"
 #include "core/vmrunner.h"
 #include "core/vmstore.h"
+#include "ui/guesttoolsbuildbanner.h"
 #include "ui/guesttoolsdialog.h"
 #include "ui/shutdownnotice.h"
 
+#include "activation.h"
 #include "guesttoolsstandins.h"
 
 #include <csignal>
@@ -85,6 +88,18 @@ class TestGuestToolsDialog : public QObject
             }
         }
         return shown;
+    }
+
+    /* What @widget says: the texts of its labels in sight */
+    static QString textOf(const QWidget *widget)
+    {
+        QStringList texts;
+        for (const QLabel *label : widget->findChildren<QLabel *>()) {
+            if (label->isVisibleTo(widget->window()) && !label->text().isEmpty()) {
+                texts << label->text();
+            }
+        }
+        return texts.join(' ');
     }
 
     static QPushButton *button(QWidget *dialog, const QString &text)
@@ -482,6 +497,42 @@ private slots:
             const pid_t pid = f.readAll().trimmed().toInt();
             QVERIFY(pid <= 0 || ::kill(pid, 0) != 0);
         }
+    }
+
+    /*
+     * The medium made by hand while the dialog is open (guest/build-medium.sh
+     * in a terminal): once vitrine is back in front, the dialog's banner and
+     * Install follow it, not before
+     */
+    void mediumMadeByHand()
+    {
+        const QString image = dataDir() + "/vitrine-guest-tools-fc44.img";
+        const QString manifest = dataDir() + "/vitrine-guest-tools-fc44.json";
+        QVERIFY(QFile::remove(image) && QFile::remove(manifest));
+        /* the medium as before for the next tests, seen gone meanwhile */
+        const auto restore = qScopeGuard([this]() {
+            writeMedium();
+            GuestToolsBuilder::instance()->checkMedium();
+        });
+        /* as the main window does when vitrine comes back in front */
+        GuestToolsBuilder::instance()->checkMedium();
+        GuestToolsDialog::run(m_window, vm());
+        GuestToolsDialog *dialog = GuestToolsDialog::of(vm());
+        QVERIFY(dialog);
+        auto *banner = dialog->findChild<GuestToolsBuildBanner *>();
+        QPushButton *install = button(dialog, "Install");
+        QVERIFY(banner && install);
+        QVERIFY(!install->isEnabled());
+        QVERIFY2(textOf(banner).contains("not built yet"), qPrintable(textOf(banner)));
+
+        /* what build-medium.sh leaves, of other sources than the first one */
+        QVERIFY(writeFile(image, QByteArray(1 << 20, '\0')));
+        QVERIFY(writeFile(manifest, R"({"label": "VITRINETOOL", "mediumId": "a1b2c3d4e5f60718",
+                                        "fedora": "44", "tools": "0.1.0-2.fc44", "packages": []})"));
+        QVERIFY(!install->isEnabled());
+        comeBack();
+        QVERIFY(install->isEnabled());
+        QVERIFY2(!textOf(banner).contains("not built yet"), qPrintable(textOf(banner)));
     }
 
     /* What the buttons say follows the VM, which may start or stop meanwhile */

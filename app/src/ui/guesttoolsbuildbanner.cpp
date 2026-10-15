@@ -2,6 +2,7 @@
 #include "guesttoolsbuildbanner.h"
 
 #include <QDateTime>
+#include <QGuiApplication>
 #include <QLocale>
 #include <QPushButton>
 #include <QVBoxLayout>
@@ -50,7 +51,20 @@ GuestToolsBuildBanner::GuestToolsBuildBanner(QWidget *parent)
         }
     });
     connect(builder, &GuestToolsBuilder::finished, this, &GuestToolsBuildBanner::refresh);
-    connect(builder, &GuestToolsBuilder::built, this, &GuestToolsBuildBanner::mediumChanged);
+    connect(builder, &GuestToolsBuilder::mediumChanged, this, &GuestToolsBuildBanner::mediumChanged);
+    /*
+     * Back in front, from a terminal say: what guest/build-rpms.sh and
+     * guest/build-medium.sh made meanwhile, run by hand.  The state takes
+     * a millisecond or two to tell (it hashes guest/'s inputs, about 1 MB):
+     * looked at again each time, no file watched.
+     */
+    connect(qGuiApp, &QGuiApplication::applicationStateChanged, this,
+            [this, builder](Qt::ApplicationState state) {
+        if (state == Qt::ApplicationActive) {
+            builder->checkMedium();
+            refresh();
+        }
+    });
     refresh();
 }
 

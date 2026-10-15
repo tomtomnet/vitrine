@@ -35,6 +35,7 @@
 
 #include "core/buildmanager.h"
 #include "core/consoleviews.h"
+#include "core/guesttoolsbuilder.h"
 #include "core/hostsettings.h"
 #include "core/paths.h"
 #include "core/qemuinfo.h"
@@ -179,16 +180,24 @@ MainWindow::MainWindow(VmStore *store, QWidget *parent)
 
     m_qemuStatus->setObjectName("qemuStatus");
     m_updates = new UpdateNotifier(this);
-    /* a build of Vitrine's QEMU: the update check knows it; and the VMs'
-       QEMU, if it is another one now, its options */
+    m_qemuBefore = Paths::qemuBinary();
     connect(StackBuilder::instance(), &StackBuilder::started, this,
             [this]() { m_qemuBefore = Paths::qemuBinary(); });
-    connect(StackBuilder::instance(), &StackBuilder::built, this, [this]() {
-        m_updates->revalidate();
-        if (Paths::qemuBinary() != m_qemuBefore) {
-            m_qemuBefore = Paths::qemuBinary();
-            QemuDocs::reloadPreferred();
-            m_details->refresh();
+    connect(StackBuilder::instance(), &StackBuilder::built, this, &MainWindow::qemuBuilt);
+    /*
+     * Back in front, from a terminal say: what builds run by hand made
+     * meanwhile (the banners and the Builds window see to themselves).  A
+     * medium of guest/build-medium.sh: the VMs with older tools offer it.
+     * A QEMU of host/build.sh, the VMs' QEMU now: as after a build here.
+     */
+    connect(qApp, &QGuiApplication::applicationStateChanged, this,
+            [this](Qt::ApplicationState state) {
+        if (state != Qt::ApplicationActive) {
+            return;
+        }
+        GuestToolsBuilder::instance()->checkMedium();
+        if (!StackBuilder::instance()->isRunning() && Paths::qemuBinary() != m_qemuBefore) {
+            qemuBuilt();
         }
     });
     m_input->setObjectName("input");
@@ -1204,6 +1213,16 @@ void MainWindow::importVm()
 
     if (dialog.exec() == QDialog::Accepted && dialog.vm()) {
         select(dialog.vm()->id());
+    }
+}
+
+void MainWindow::qemuBuilt()
+{
+    m_updates->revalidate();
+    if (Paths::qemuBinary() != m_qemuBefore) {
+        m_qemuBefore = Paths::qemuBinary();
+        QemuDocs::reloadPreferred();
+        m_details->refresh();
     }
 }
 

@@ -30,14 +30,18 @@
 #include <csignal>
 #include <memory>
 
+#include "activation.h"
+#include "core/guesttoolsbuilder.h"
 #include "core/paths.h"
 #include "core/quitsignals.h"
+#include "core/stackbuilder.h"
 #include "core/tasks.h"
 #include "core/vmrunner.h"
 #include "core/vmstore.h"
 #include "nested/desktopview.h"
 #include "scales.h"
 #include "ui/mainwindow.h"
+#include "ui/qemudocs.h"
 #include "ui/vmconsole.h"
 #include "ui/vmpane.h"
 
@@ -1027,6 +1031,69 @@ private slots:
         QVERIFY(task);
         task->finish(Task::State::Stopped);
         task->dismiss();
+    }
+
+    /*
+     * Builds run by hand while vitrine runs (host/build.sh and
+     * guest/build-medium.sh in a terminal), seen once vitrine is back in
+     * front, not before: the banner of Vitrine's QEMU goes, the VMs' QEMU
+     * is the new build (its options read), the VMs hear of the new medium
+     */
+    void builtByHand()
+    {
+        /* before the build, the QEMU found by default: a stand-in, which tells nothing */
+        QTemporaryDir bin;
+        QVERIFY(write(bin.filePath("qemu-system-x86_64"), "#!/bin/sh\nexit 1\n"));
+        QVERIFY(QFile::setPermissions(bin.filePath("qemu-system-x86_64"),
+                                      QFileDevice::ReadOwner | QFileDevice::ExeOwner));
+        const QByteArray path = qgetenv("PATH");
+        qputenv("PATH", bin.path().toUtf8());
+        const auto restorePath = qScopeGuard([path]() { qputenv("PATH", path); });
+        Paths::setQemuBinary({});
+        QemuDocs::reloadPreferred();
+        if (StackBuilder::state() != StackBuilder::State::NotBuilt) {
+            QSKIP("needs host/ without a build of it");
+        }
+        auto w = window();
+        settle(w.get());
+        QWidget *banner = w->findChild<QWidget *>("stackBanner");
+        QVERIFY(banner);
+        QVERIFY(!banner->isHidden());
+        QSignalSpy medium(GuestToolsBuilder::instance(), &GuestToolsBuilder::mediumChanged);
+
+        /* what host/build.sh leaves: the build in a folder of the stack, `current` to it */
+        const QString stamp = StackBuilder::inputStamp(StackBuilder::hostDir());
+        const QString prefix = Paths::stackDir() + '/' + stamp.left(16);
+        QVERIFY(write(prefix + "/share/vitrine/stack.conf", "STAMP=" + stamp.toLatin1() + '\n'));
+        QVERIFY(write(prefix + "/bin/qemu-system-x86_64", "#!/bin/sh\nexit 1\n"));
+        QVERIFY(QFile::setPermissions(prefix + "/bin/qemu-system-x86_64",
+                                      QFileDevice::ReadOwner | QFileDevice::ExeOwner));
+        QVERIFY(QFile::link(stamp.left(16), Paths::stackDir() + "/current"));
+        /* and guest/build-medium.sh, the medium and its manifest */
+        const QString image = GuestToolsBuilder::mediumImage();
+        QVERIFY(write(image, QByteArray(1024, '\0')));
+        QVERIFY(write(GuestToolsBuilder::manifestOf(image),
+                      R"({"mediumId": "feedfacecafe0001", "fedora": "44",
+                          "tools": "0.1.0-9.fc44", "packages": []})"));
+        const auto clean = qScopeGuard([image]() {
+            QDir(Paths::stackDir()).removeRecursively();
+            QFile::remove(image);
+            QFile::remove(GuestToolsBuilder::manifestOf(image));
+            GuestToolsBuilder::instance()->checkMedium();
+        });
+        QCOMPARE(StackBuilder::state(), StackBuilder::State::UpToDate);
+        /* nothing told vitrine yet */
+        QVERIFY(!banner->isHidden());
+        QVERIFY(medium.isEmpty());
+
+        comeBack();
+        QVERIFY(banner->isHidden());
+        QCOMPARE(QemuDocs::preferred()->binary(),
+                 QFileInfo(prefix + "/bin/qemu-system-x86_64").canonicalFilePath());
+        QCOMPARE(medium.size(), 1);
+        /* again: nothing new */
+        comeBack();
+        QCOMPARE(medium.size(), 1);
     }
 
     /*

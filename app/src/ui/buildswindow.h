@@ -69,6 +69,9 @@ private:
     void fitTree();
     /* Shown: the states again, the cache's size */
     void shown();
+    /* Back in front: the states again, with what builds run by hand made
+       meanwhile; not during a run */
+    void lookAgain();
     void refreshItems();
     void refreshItem(const QString &id);
     void refreshGroup(const QString &group);

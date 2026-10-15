@@ -1,9 +1,13 @@
 // SPDX-License-Identifier: GPL-2.0-or-later
+#include <QDir>
 #include <QFile>
+#include <QLabel>
 #include <QStandardPaths>
 #include <QTemporaryDir>
+#include <QScopeGuard>
 #include <QTest>
 
+#include "activation.h"
 #include "core/paths.h"
 #include "core/stackbuilder.h"
 #include "ui/qemudocs.h"
@@ -58,6 +62,63 @@ private slots:
         Paths::setQemuBinary({});
         QemuDocs::reloadPreferred();
         QVERIFY(!banner.isHidden());
+    }
+
+    /*
+     * Vitrine's QEMU built by hand while vitrine runs (host/build.sh): the
+     * banner goes when vitrine comes back in front, and comes back for a
+     * build of other inputs.  The build's result as build.sh leaves it: its
+     * manifest in a folder of the stack, `current` pointing to it.
+     */
+    void builtByHand()
+    {
+        if (StackBuilder::state() != StackBuilder::State::NotBuilt) {
+            QSKIP("needs host/ without a build of it");
+        }
+        StackBanner banner;
+        QVERIFY(!banner.isHidden());
+        QVERIFY(text(banner).contains("not built yet"));
+
+        const QString stamp = StackBuilder::inputStamp(StackBuilder::hostDir());
+        const QString stack = Paths::stackDir();
+        QVERIFY(!stamp.isEmpty());
+        QVERIFY(writeBuild(stack + '/' + stamp.left(16), stamp));
+        QVERIFY(QFile::link(stamp.left(16), stack + "/current"));
+        const auto clean = qScopeGuard([&stack]() { QDir(stack).removeRecursively(); });
+        QCOMPARE(StackBuilder::state(), StackBuilder::State::UpToDate);
+        /* nothing told it yet */
+        QVERIFY(!banner.isHidden());
+        comeBack();
+        QVERIFY(banner.isHidden());
+
+        /* built again from other inputs, as an older vitrine's would be */
+        QVERIFY(writeBuild(stack + '/' + stamp.left(16), QString(64, '0')));
+        QVERIFY(banner.isHidden());
+        comeBack();
+        QVERIFY(!banner.isHidden());
+        QVERIFY2(text(banner).contains("out of date"), qPrintable(text(banner)));
+    }
+
+private:
+    /* What it says, its labels' texts */
+    static QString text(const StackBanner &banner)
+    {
+        QStringList texts;
+        for (const QLabel *label : banner.findChildren<QLabel *>()) {
+            if (!label->isHidden() && !label->text().isEmpty()) {
+                texts << label->text();
+            }
+        }
+        return texts.join(' ');
+    }
+
+    /* A build's manifest, of @stamp's inputs, in @prefix */
+    static bool writeBuild(const QString &prefix, const QString &stamp)
+    {
+        QFile manifest(prefix + "/share/vitrine/stack.conf");
+        return QDir().mkpath(prefix + "/share/vitrine") && manifest.open(QIODevice::WriteOnly) &&
+               manifest.write("# What host/build.sh built here\nSTAMP=" + stamp.toLatin1() +
+                              "\nBUILT=2026-10-15T04:00:00Z\n") > 0;
     }
 };
 

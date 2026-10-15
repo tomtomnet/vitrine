@@ -406,10 +406,19 @@ GuestToolsBuilder *GuestToolsBuilder::instance()
 }
 
 GuestToolsBuilder::GuestToolsBuilder(QObject *parent)
-    : QObject(parent), m_meminfo("/proc/meminfo"), m_memoryTimer(new QTimer(this))
+    : QObject(parent), m_meminfo("/proc/meminfo"), m_memoryTimer(new QTimer(this)),
+      m_medium(GuestTools::medium().mediumId)
 {
     m_memoryTimer->setInterval(2000);
     connect(m_memoryTimer, &QTimer::timeout, this, &GuestToolsBuilder::checkMemory);
+}
+
+void GuestToolsBuilder::checkMedium()
+{
+    if (const QString id = GuestTools::medium().mediumId; id != m_medium) {
+        m_medium = id;
+        emit mediumChanged();
+    }
 }
 
 GuestToolsBuilder::~GuestToolsBuilder()
@@ -832,6 +841,7 @@ void GuestToolsBuilder::finish(const QString &error, bool stopped)
     }
     /* first: when the windows hear of it, the VMs know already */
     if (medium) {
+        checkMedium();
         emit built();
     }
     emit finished(error);
