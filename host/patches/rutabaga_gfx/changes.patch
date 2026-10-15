@@ -2,8 +2,8 @@ rutabaga_gfx: native contexts through the FFI, the fence ring index, polling, a 
 
 The research's patches/rutabaga_gfx/changes.diff (git diff HEAD of its
 checkout of 4fb9f32055d8, release 0.1.85, on 2026-10-12; the cross-domain
-hang-ups added on 2026-10-15, its commit 8ecffaf), unchanged below this
-description:
+hang-ups added on 2026-10-15, its commits 8ecffaf and b4400b1), unchanged
+below this description:
 
 - the FFI's virgl_renderer feature: DRM native contexts and virgl2
   through the C FFI that QEMU uses, beside cross-domain on one device,
@@ -24,10 +24,14 @@ description:
   connection goes away (the app serving QEMU's socket quit or crashed),
   the guest gets one empty receive, which says so, and the channel is no
   longer polled: every guest poll got another one at once, QEMU spun at
-  about 3 CPUs and the guest's session ran on without a window.  A failed
-  connect at the context's start (nothing serves the socket: ENOENT,
-  ECONNREFUSED) gives the guest a channel already at its end instead of
-  none, whose polls were never answered: the session hung.
+  about 3 CPUs and the guest's session ran on without a window.  An app
+  that dies with data it has not read resets the connection instead of
+  ending it: a reset, abort, broken pipe or not-connected error on the
+  receive is that end too, where it halted the worker and the guest never
+  heard of it.  A failed connect at the context's start (nothing serves
+  the socket: ENOENT, ECONNREFUSED) gives the guest a channel already at
+  its end instead of none, whose polls were never answered: the session
+  hung.
 
 diff --git a/ffi/Cargo.toml b/ffi/Cargo.toml
 index daf57a9..4d69f87 100644
@@ -253,7 +257,7 @@ index 66b4eeb..b493eb3 100644
  
      fn get_internal_socket_connection(&mut self, uuid: u128) -> RutabagaResult<Tube> {
 diff --git a/src/cross_domain/worker.rs b/src/cross_domain/worker.rs
-index a1b512c..c953357 100644
+index a1b512c..9d4ae64 100644
 --- a/src/cross_domain/worker.rs
 +++ b/src/cross_domain/worker.rs
 @@ -94,7 +94,14 @@ impl CrossDomainWorker {
@@ -272,7 +276,7 @@ index a1b512c..c953357 100644
                  }
                  CROSS_DOMAIN_RESAMPLE_ID => {
                      // The resample event is triggered when the job queue is in the following state:
-@@ -199,11 +206,13 @@ impl CrossDomainWorker {
+@@ -199,12 +206,32 @@ impl CrossDomainWorker {
          Ok(())
      }
  
@@ -283,11 +287,31 @@ index a1b512c..c953357 100644
          fence: RutabagaFence,
          receive_buf: &mut [u8],
 -    ) -> RutabagaResult<()> {
+-        let (len, files) = self.state.receive_msg(receive_buf)?;
 +    ) -> RutabagaResult<bool> {
-         let (len, files) = self.state.receive_msg(receive_buf)?;
++        let (len, files) = match self.state.receive_msg(receive_buf) {
++            Ok(received) => received,
++            // A host end that died with data it never read resets the connection instead of ending it:
++            // the same end for the guest. As an error it halted this worker, and the guest never learned
++            // that its host was gone (its session lived on without a window).
++            Err(RutabagaError::MagmaGpuError(MagmaGpuError::RustixError(errno)))
++                if matches!(
++                    std::io::Error::from(errno).kind(),
++                    std::io::ErrorKind::ConnectionReset
++                        | std::io::ErrorKind::ConnectionAborted
++                        | std::io::ErrorKind::BrokenPipe
++                        | std::io::ErrorKind::NotConnected
++                ) =>
++            {
++                error!("cross domain: the host's end of the channel failed ({errno}): the guest's channel hangs up");
++                (0, Vec::new())
++            }
++            Err(e) => return Err(e),
++        };
          let mut cmd_receive: CrossDomainSendReceive = Default::default();
  
-@@ -278,7 +287,7 @@ impl CrossDomainWorker {
+         let num_files = files.len();
+@@ -278,7 +305,7 @@ impl CrossDomainWorker {
              self.state.channel_ring_id,
          )?;
          self.fence_handler.call(fence);

@@ -151,9 +151,15 @@ virglrenderer, into a folder of its own that QEMU's RUNPATH names.
 
 | sha256 | patch |
 |---|---|
-| `59fd9f1573273debbacb6b748f22306e8566702bd5045b063acfac72a1d08dd0` | `changes.patch`: the research's `patches/rutabaga_gfx/changes.diff` (commit `8ecffaf`) under a description of Vitrine's: native contexts through the FFI, `struct rutabaga_fence`'s ring index as a byte, polling for virglrenderer's fences, a logger, guest dma-bufs, and cross-domain hang-ups: the host end of the guest's Wayland connection going away (the app serving QEMU's socket quit, crashed or was never there) reaches the guest once, as an empty receive, instead of empty receives in a busy loop or no answer at all |
+| `4b2abee923eba4061fc8c05e369b4fcfacd227b3249721bfbc050108095f954c` | `changes.patch`: the research's `patches/rutabaga_gfx/changes.diff` (commit `b4400b1`) under a description of Vitrine's: native contexts through the FFI, `struct rutabaga_fence`'s ring index as a byte, polling for virglrenderer's fences, a logger, guest dma-bufs, and cross-domain hang-ups: the host end of the guest's Wayland connection going away (the app serving QEMU's socket quit, crashed or was never there) reaches the guest once, as an empty receive, instead of empty receives in a busy loop or no answer at all; a reset of the connection too (an app that died with data it had not read) |
 
 Below its description the file is the research's diff, unchanged:
 `sed -n '/^diff --git/,$p' rutabaga_gfx/changes.patch` gives it back.
+
+Until the research's `b4400b1` (2026-10-15), a reset of the connection
+halted the cross-domain worker instead ("Worker halting due to: ...
+Connection reset by peer"), and the guest never heard of it: an app that
+crashed with data it had not read left the session running without a
+window (sha256 `59fd9f15...`, their `8ecffaf`).
 
 Check: `cd host/patches && sha256sum qemu/*/*.patch virglrenderer/*.patch virglrenderer/*/*.patch rutabaga_gfx/*.patch`.
