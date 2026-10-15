@@ -161,23 +161,23 @@ Close Anyway. The same signal again ends it at once.
 
 Nested desktop: the Display settings' Nested desktop checkbox runs the
 guest's KDE session in a KWin of its own, drawn as a window of this
-computer's desktop (virtio-gpu-rutabaga with cross-domain, beside the
-standard VGA). It needs vitrine's QEMU built with rutabaga and a Fedora KDE
-guest with the guest tools: in the boots of such a VM its login screen
-offers "Plasma (nested desktop)" in place of Plasma, and the guest's own
-automatic login into Plasma, if set, logs into it (vitrine sets none). The
-same disk boots as before with the box unchecked. With vitrine's window as
-the display, the session shows in the console, which then has three views:
-Boot (the VGA card's screen: the firmware, the boot loader, then the guest's
-text console, which moves there early in the boot: the boot and shutdown
-messages), Screen (the guest's own screen: its login screen) and Desktop
-(the session). They follow what the guest shows, as its guest tools' agent
-tells: Boot while it starts, installs the guest tools or shuts down, Screen
-once its login screen is up, Desktop while the session runs. The Console
-button's menu (its name says the view shown: Console 1, 2 or 3), View > Boot,
-Screen and Desktop, or Ctrl+Alt+1, 2 and 3 choose one; the choice holds until
-the guest shows something else. Closing vitrine ends the session: the guest
-goes back to its login screen, where you log in again from the Screen view.
+computer's desktop (virtio-gpu-rutabaga with cross-domain, one card with
+VGA: virtio-vga-rutabaga). It needs vitrine's QEMU built with rutabaga and a
+Fedora KDE guest with the guest tools: in the boots of such a VM, a login at
+its login screen starts the nested desktop ("Plasma (nested desktop)" in
+place of Plasma), and so does the guest's own automatic login into Plasma,
+if set (vitrine sets none). The same disk boots as before with the box
+unchecked. A VM that vitrine gave two cards before (the rutabaga card beside
+the standard VGA, which made the firmware and the boot loader slow) gets the
+one card at its next start. With vitrine's window as the display,
+the session shows in the console, which then has two views: Screen (the
+VM's screen: the firmware, the boot, the guest's login screen and its
+shutdown) and Desktop (the session). They follow the session's window:
+Desktop while it is there, Screen otherwise. The Console button's menu (its
+name says the view shown: Console 1 or 2), View > Screen and Desktop, or
+Ctrl+Alt+1 and 2 choose one; the choice holds until the session's window
+comes or goes. Closing vitrine ends the session: the guest goes back to its
+login screen, where you log in again from the Screen view.
 So does vitrine crashing or being killed, the login screen coming about a
 second later as well, once both vitrine's QEMU and the guest's tools are up
 to date (the Builds window and the VM's page say when they are not): with
