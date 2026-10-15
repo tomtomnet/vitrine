@@ -840,8 +840,11 @@ void VmRunner::Private::event(const QString &name, const QJsonObject &data)
         const QString port = data["id"].toString();
         const bool agent = (!guestAgentPortId.isEmpty() && port == guestAgentPortId) ||
                            port == GuestTools::kPortId;
-        if (!guestAgentPortId.isEmpty() && port == guestAgentPortId && data["open"].toBool()) {
-            guestAgentUp(true);
+        if (!guestAgentPortId.isEmpty() && port == guestAgentPortId) {
+            if (data["open"].toBool()) {
+                guestAgentUp(true);
+            }
+            emit q->guestAgentChanged(data["open"].toBool());
         }
         /*
          * An agent's port closed while the guest was asked to shut down: it

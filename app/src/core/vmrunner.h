@@ -226,6 +226,13 @@ signals:
      * the guest, as the agent comes up, and for a VM found running
      */
     void guestOsInfo(const QJsonObject &info);
+    /*
+     * QEMU's guest agent opened its port, or closed it: it comes up at each
+     * boot of the guest, and goes as the guest shuts down or restarts (or
+     * as qemu-ga itself restarts).  The runner's port, or the VM's own if
+     * that one has an id; none without.
+     */
+    void guestAgentChanged(bool open);
     /* powerdown() tries @way; None: the request is over (the guest shuts
        down, or the run ended) */
     void shutdownWayChanged(GuestShutdown::Way way);

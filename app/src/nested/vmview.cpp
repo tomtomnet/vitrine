@@ -91,7 +91,7 @@ constexpr uint16_t kPointerEnter = 0, kPointerLeave = 1, kPointerFrame = 5;
 constexpr uint16_t kPointerButton = 3;
 constexpr uint16_t kKeyboardEnter = 1, kKeyboardLeave = 2, kKeyboardKey = 3, kKeyboardModifiers = 4;
 constexpr uint16_t kDataDeviceEnter = 1, kDataDeviceLeave = 2, kDataDeviceMotion = 3, kDataDeviceDrop = 4;
-constexpr uint16_t kToplevelConfigure = 0, kSurfaceConfigure = 0, kPopupDone = 1;
+constexpr uint16_t kToplevelConfigure = 0, kToplevelClose = 1, kSurfaceConfigure = 0, kPopupDone = 1;
 constexpr uint32_t kStateFullscreen = 2, kStateActivated = 4;
 constexpr uint32_t kServerIdStart = 0xff000000;
 constexpr int kMaxArgs = 20;
@@ -1395,6 +1395,22 @@ void View::run()
 
 void View::stopAll()
 {
+    // the guest's window closed first, as a compositor closes a window: its nested compositor quits
+    // and its session ends. Closing the connection alone tells it nothing (QEMU's cross-domain passes
+    // no hang-up on: the session ran on without a window). Up to ~50 ms for the message to go out.
+    for (auto &c : conns) {
+        if (c->dead || !c->toplevel)
+            continue;
+        OutMsg m(c->toplevel->id, kToplevelClose);
+        send(*c, m);
+        flushConn(*c);
+        for (int i = 0; i < 5 && !c->dead && !c->out.empty(); i++) {
+            pollfd p{c->fd, POLLOUT, 0};
+            poll(&p, 1, 10);
+            flushConn(*c);
+        }
+        logf("guest window closed");
+    }
     for (auto &c : conns)
         closeConn(*c, "the view is going away");
     conns.clear();

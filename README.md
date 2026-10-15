@@ -172,8 +172,9 @@ button's menu (its name says the view shown: Console 1, 2 or 3), View > Boot,
 Screen and Desktop, or Ctrl+Alt+1, 2 and 3 choose one; the choice holds until
 the guest shows something else. Closing vitrine ends the session: the guest
 goes back to its login screen, where you log in again from the Screen view.
-With QEMU's SDL or GTK window, or none, the session opens as a window of its
-own.
+A login while vitrine is closed (the guest's automatic login, say) ends
+within seconds the same way: its window has nowhere to show. With QEMU's SDL
+or GTK window, or none, the session opens as a window of its own.
 
 Host desktop (optional): the Builds window also offers this computer's own
 KWin with the research's host set: steadier frames and quicker input in

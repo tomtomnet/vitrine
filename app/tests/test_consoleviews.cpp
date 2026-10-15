@@ -120,6 +120,10 @@ class TestConsoleViews : public QObject
     Q_OBJECT
 
     QTemporaryDir m_home;
+    /* the tests' wait for an agent that went; the wiring test's, through
+       sockets and the event loop */
+    static constexpr int kWaitMs = 200;
+    static constexpr int kWiringWaitMs = 1500;
 
 private slots:
     /* the settings the guest tools' monitor keeps of a VM, and the rest, in here */
@@ -129,6 +133,13 @@ private slots:
         qputenv("XDG_DATA_HOME", m_home.filePath("data").toUtf8());
         qputenv("XDG_CONFIG_HOME", m_home.filePath("config").toUtf8());
         qputenv("XDG_CACHE_HOME", m_home.filePath("cache").toUtf8());
+        /* the wait for an agent that went, shortened (a second or two in use) */
+        ConsoleViews::setAgentWait(kWaitMs);
+    }
+
+    void cleanupTestCase()
+    {
+        ConsoleViews::setAgentWait(0);
     }
 
     /* From power-on: the boot, the guest's login screen, its desktop, and back */
@@ -224,11 +235,13 @@ private slots:
         views.setDesktop(true);
         views.setGuest(true, false);
         QCOMPARE(views.view(), View::Desktop);
-        /* the window first, then the agent */
+        /* the window first, then the agent, which might be restarting
+           itself: Boot once it has been gone for the wait */
         views.setDesktop(false);
         QCOMPARE(views.view(), View::Desktop);
         views.setGuest(false, false);
-        QCOMPARE(views.view(), View::Boot);
+        QCOMPARE(views.view(), View::Desktop);
+        QTRY_COMPARE(views.view(), View::Boot);
 
         /* the agent first, while the window shows: then the window */
         views.powerOn();
@@ -250,11 +263,242 @@ private slots:
         views.setGuest(true, true);
         QCOMPARE(views.view(), View::Screen);
         /* the login screen goes first: nothing to look at there, but a session
-           may come next (a login), so the view stays until the agent goes */
+           may come next (a login), so the view stays until the agent goes,
+           and the wait for it after */
         views.setGuest(true, false);
         QCOMPARE(views.view(), View::Screen);
         views.setGuest(false, false);
+        QCOMPARE(views.view(), View::Screen);
+        QTRY_COMPARE(views.view(), View::Boot);
+    }
+
+    /*
+     * The agent restarts itself at the login screen: to take over a new
+     * version of itself after a tools update it ran, by systemd, or after a
+     * crash.  Gone for a moment, back with the same login screen: the view
+     * does not move, nor after the wait (the Boot of 0.3-1 s it flashed)
+     */
+    void agentRestarts()
+    {
+        ConsoleViews views;
+
+        views.powerOn();
+        views.setGuest(true, true);
+        QCOMPARE(views.view(), View::Screen);
+        QSignalSpy changed(&views, &ConsoleViews::viewChanged);
+        views.setGuest(false, false);
+        QCOMPARE(views.view(), View::Screen);
+        views.setGuest(true, true);
+        QCOMPARE(views.view(), View::Screen);
+        QTest::qWait(2 * kWaitMs);
+        QCOMPARE(views.view(), View::Screen);
+        QCOMPARE(changed.size(), 0);
+        /* the hello first, its screen a moment later: the same */
+        views.setGuest(false, false);
+        views.setGuest(true, false);
+        views.setGuest(true, true);
+        QTest::qWait(2 * kWaitMs);
+        QCOMPARE(views.view(), View::Screen);
+        QCOMPARE(changed.size(), 0);
+
+        /* the boot's screen chosen at the login screen: it holds across the
+           restart, as the login screen it comes back with is not new */
+        views.choose(View::Boot);
+        views.setGuest(false, false);
+        views.setGuest(true, true);
+        QTest::qWait(2 * kWaitMs);
         QCOMPARE(views.view(), View::Boot);
+        QCOMPARE(changed.size(), 1);
+
+        /* during the boot, before any login screen: Boot, and Screen as the
+           login screen comes */
+        views.powerOn();
+        views.setGuest(true, false);
+        views.setGuest(false, false);
+        views.setGuest(true, false);
+        QTest::qWait(2 * kWaitMs);
+        QCOMPARE(views.view(), View::Boot);
+        views.setGuest(true, true);
+        QCOMPARE(views.view(), View::Screen);
+
+        /* back within the wait with something its screen did not show
+           before: shown */
+        views.choose(View::Boot);
+        views.setGuest(true, false);
+        views.setGuest(false, false);
+        views.setGuest(true, true);
+        QCOMPARE(views.view(), View::Screen);
+    }
+
+    /*
+     * The agent gone for good while the login screen shows (a shutdown, a
+     * reboot that takes its time): Screen through the wait, then Boot; an
+     * agent that comes back later (a crash's restart, 5 s on) with the
+     * login screen: Screen again
+     */
+    void agentGoneForGood()
+    {
+        ConsoleViews views;
+        QSignalSpy changed(&views, &ConsoleViews::viewChanged);
+
+        views.powerOn();
+        views.setGuest(true, true);
+        QCOMPARE(changed.size(), 1);
+        views.setGuest(false, false);
+        /* what the old agent's monitor says again meanwhile changes nothing */
+        views.setGuest(false, false);
+        QCOMPARE(views.view(), View::Screen);
+        QTRY_COMPARE(views.view(), View::Boot);
+        QCOMPARE(changed.size(), 2);
+        views.setGuest(true, true);
+        QCOMPARE(views.view(), View::Screen);
+        QCOMPARE(changed.size(), 3);
+    }
+
+    /*
+     * The guest's system goes down: QEMU's guest agent closes its port too,
+     * which the guest tools' agent restarting itself does not do.  Boot at
+     * once, its shutdown messages there, in either order
+     */
+    void systemGoesDown()
+    {
+        ConsoleViews views;
+
+        /* a reboot from the login screen: the tools' agent, then qemu-ga */
+        views.powerOn();
+        views.setQemuAgent(true);
+        views.setGuest(true, true);
+        views.setGuest(false, false);
+        QCOMPARE(views.view(), View::Screen);
+        views.setQemuAgent(false);
+        QCOMPARE(views.view(), View::Boot);
+        QSignalSpy changed(&views, &ConsoleViews::viewChanged);
+        QTest::qWait(2 * kWaitMs);
+        QCOMPARE(changed.size(), 0);
+
+        /* qemu-ga first */
+        views.powerOn();
+        views.setQemuAgent(true);
+        views.setGuest(true, true);
+        views.setQemuAgent(false);
+        QCOMPARE(views.view(), View::Screen);
+        views.setGuest(false, false);
+        QCOMPARE(views.view(), View::Boot);
+
+        /* from the session, its window gone first: as soon as both agents are */
+        views.powerOn();
+        views.setQemuAgent(true);
+        views.setGuest(true, true);
+        views.setDesktop(true);
+        views.setGuest(true, false);
+        views.setDesktop(false);
+        views.setGuest(false, false);
+        QCOMPARE(views.view(), View::Desktop);
+        views.setQemuAgent(false);
+        QCOMPARE(views.view(), View::Boot);
+
+        /* qemu-ga restarting alone (an update of it) moves nothing, and an
+           agent's restart after it waits as any */
+        views.powerOn();
+        views.setQemuAgent(true);
+        views.setGuest(true, true);
+        views.setQemuAgent(false);
+        views.setQemuAgent(true);
+        QCOMPARE(views.view(), View::Screen);
+        views.setGuest(false, false);
+        QCOMPARE(views.view(), View::Screen);
+        views.setGuest(true, true);
+        QTest::qWait(2 * kWaitMs);
+        QCOMPARE(views.view(), View::Screen);
+
+        /* the user's choice during the wait holds through qemu-ga's going,
+           until the reset */
+        views.setGuest(false, false);
+        views.choose(View::Screen);
+        views.setQemuAgent(false);
+        QCOMPARE(views.view(), View::Screen);
+        views.powerOn();
+        QCOMPARE(views.view(), View::Boot);
+
+        /* the next boot knows nothing of the last one's qemu-ga: its own
+           agent's restart waits, qemu-ga not up yet */
+        views.setGuest(true, true);
+        views.setGuest(false, false);
+        QCOMPARE(views.view(), View::Screen);
+        views.setGuest(true, true);
+        QTest::qWait(2 * kWaitMs);
+        QCOMPARE(views.view(), View::Screen);
+    }
+
+    /* The reset of a reboot during the wait: Boot at once, and no late change after it */
+    void powerOnDuringTheWait()
+    {
+        ConsoleViews views;
+
+        views.powerOn();
+        views.setGuest(true, true);
+        views.setGuest(false, false);
+        QCOMPARE(views.view(), View::Screen);
+        QSignalSpy changed(&views, &ConsoleViews::viewChanged);
+        views.powerOn();
+        QCOMPARE(views.view(), View::Boot);
+        QCOMPARE(changed.size(), 1);
+        /* the next boot's agent, and the user's look at its screen */
+        views.setGuest(true, false);
+        views.choose(View::Screen);
+        QTest::qWait(2 * kWaitMs);
+        QCOMPARE(views.view(), View::Screen);
+        QCOMPARE(changed.size(), 2);
+        /* the next boot's agent going: its own wait */
+        views.setGuest(false, false);
+        QTRY_COMPARE(views.view(), View::Boot);
+    }
+
+    /* The desktop coming, or the user's choice, during the wait: no Boot after it */
+    void desktopOrChoiceDuringTheWait()
+    {
+        ConsoleViews views;
+
+        views.powerOn();
+        views.setGuest(true, true);
+        views.setGuest(true, false);
+        views.setGuest(false, false);
+        views.setDesktop(true);
+        QCOMPARE(views.view(), View::Desktop);
+        QTest::qWait(2 * kWaitMs);
+        QCOMPARE(views.view(), View::Desktop);
+        /* gone for good: as any window that goes after its agent */
+        views.setDesktop(false);
+        QCOMPARE(views.view(), View::Boot);
+
+        /* a window that came and goes within the wait: Boot after it, unless
+           the agent comes back with the login screen */
+        views.powerOn();
+        views.setGuest(true, true);
+        views.setGuest(false, false);
+        views.setDesktop(true);
+        views.setDesktop(false);
+        QCOMPARE(views.view(), View::Desktop);
+        QTRY_COMPARE(views.view(), View::Boot);
+        views.powerOn();
+        views.setGuest(true, true);
+        views.setGuest(false, false);
+        views.setDesktop(true);
+        views.setDesktop(false);
+        views.setGuest(true, true);
+        QCOMPARE(views.view(), View::Screen);
+
+        /* the user's choice */
+        for (const View chosen : {View::Desktop, View::Screen, View::Boot}) {
+            views.powerOn();
+            views.setGuest(true, true);
+            views.setGuest(false, false);
+            QSignalSpy changed(&views, &ConsoleViews::viewChanged);
+            views.choose(chosen);
+            QTest::qWait(2 * kWaitMs);
+            QCOMPARE(views.view(), chosen);
+            QCOMPARE(changed.size(), chosen == View::Screen ? 0 : 1);
+        }
     }
 
     /*
@@ -490,11 +734,54 @@ private slots:
         say(R"({"type":"screen","screen":"login"})");
         QTRY_COMPARE(console.currentView(), View::Screen);
 
-        /* a shutdown from the login screen */
+        /*
+         * The agent restarts itself at the login screen (it took over a new
+         * version of itself, or crashed): its port closes, and its hello
+         * comes again with the login screen, within the wait - the view stays
+         */
+        ConsoleViews::setAgentWait(kWiringWaitMs);
+        const auto shortWait = qScopeGuard([]() { ConsoleViews::setAgentWait(kWaitMs); });
+        qmp.event("VSERPORT_CHANGE", {{"id", GuestTools::kPortId}, {"open", false}});
+        QTRY_VERIFY(!tools->hasAgent());
+        QCOMPARE(console.currentView(), View::Screen);
+        hello(R"({"tools":"0.1.0-20.fc44","installing":false,"screen":"login"})");
+        QTRY_VERIFY(tools->hasAgent());
+        QTest::qWait(kWiringWaitMs + 200);
+        QCOMPARE(console.currentView(), View::Screen);
+
+        /* a reboot from the login screen: its agent goes, then QEMU's guest
+           agent, as the system goes down: the boot's screen at once, before
+           the wait's end, with the shutdown's messages */
+        qmp.event("VSERPORT_CHANGE", {{"id", "vitrine-ga-port"}, {"open", true}});
+        qmp.event("VSERPORT_CHANGE", {{"id", GuestTools::kPortId}, {"open", false}});
+        QTRY_VERIFY(!tools->hasAgent());
+        QCOMPARE(console.currentView(), View::Screen);
+        qmp.event("VSERPORT_CHANGE", {{"id", "vitrine-ga-port"}, {"open", false}});
+        QTRY_COMPARE_WITH_TIMEOUT(console.currentView(), View::Boot, kWiringWaitMs / 2);
+        qmp.event("RESET");
+        QTest::qWait(50);
+        QCOMPARE(console.currentView(), View::Boot);
+        hello(R"({"tools":"0.1.0-20.fc44","installing":false,"screen":"login"})");
+        QTRY_COMPARE(console.currentView(), View::Screen);
+
+        /* the same without QEMU's guest agent: the reset brings the boot's
+           screen, before the wait's end */
+        qmp.event("VSERPORT_CHANGE", {{"id", GuestTools::kPortId}, {"open", false}});
+        QTRY_VERIFY(!tools->hasAgent());
+        QCOMPARE(console.currentView(), View::Screen);
+        qmp.event("RESET");
+        QTRY_COMPARE_WITH_TIMEOUT(console.currentView(), View::Boot, kWiringWaitMs / 2);
+        hello(R"({"tools":"0.1.0-20.fc44","installing":false,"screen":"login"})");
+        QTRY_COMPARE(console.currentView(), View::Screen);
+
+        /* a shutdown from the login screen: the boot's screen once the agent
+           has been gone for the wait */
         say(R"({"type":"screen","screen":""})");
         QTRY_VERIFY(!tools->screenShown());
         QCOMPARE(console.currentView(), View::Screen);
         qmp.event("VSERPORT_CHANGE", {{"id", GuestTools::kPortId}, {"open", false}});
+        QTRY_VERIFY(!tools->hasAgent());
+        QCOMPARE(console.currentView(), View::Screen);
         QTRY_COMPARE(console.currentView(), View::Boot);
     }
 

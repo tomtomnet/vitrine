@@ -25,6 +25,10 @@ screen, and the library's callbacks brought to the GUI thread).
 
 ## Local changes
 
-None: the research side took both of vitrine's (a `pressed` callback for
-button presses on the guest's window; a NULL object where the protocol allows
-none counts as the app's) into its 182e74d.
+The research side took vitrine's first two (a `pressed` callback for button
+presses on the guest's window; a NULL object where the protocol allows none
+counts as the app's) into its 182e74d. Since:
+
+| file | change | why |
+|---|---|---|
+| `vmview.cpp` | `View::stopAll()` sends the guest's toplevel `xdg_toplevel.close` (flushed, up to ~50 ms) before it closes the connections | the app's end of the socket closing tells the guest nothing: QEMU's cross-domain (rutabaga_gfx 0.1.85) turns its end of file into empty receives, which the proxy ignores, and the guest's session ran on without a window after vitrine quit (2026-10-15). KWin's Wayland backend quits on close: the session ends, and the guest goes back to its login screen |
