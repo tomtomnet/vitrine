@@ -1,7 +1,7 @@
-From 74e343f9fd83c2d6b375d2377ee4fdfa0d0cb2eb Mon Sep 17 00:00:00 2001
+From a26f3c844d9167a9345280972d21c91b84521de4 Mon Sep 17 00:00:00 2001
 From: tomtomnet <tompere8000@proton.me>
 Date: Wed, 14 Oct 2026 19:00:43 +0200
-Subject: [PATCH 23/24] virtio-gpu-rutabaga: native-context capsets, fixed blob
+Subject: [PATCH] virtio-gpu-rutabaga: native-context capsets, fixed blob
  mapping, guest dma-bufs, prefaulted blobs
 
 - drm (native context) and virgl2 capsets next to cross-domain on one device;
@@ -12,19 +12,21 @@ Subject: [PATCH 23/24] virtio-gpu-rutabaga: native-context capsets, fixed blob
   them;
 - x-prefault-blobs: a new blob's pages mapped into KVM ahead of the guest's first touch;
 - rutabaga's poll descriptor on QEMU's main loop (fence retirement);
-- a context-specific fence timeline is the context's own (ring index compared as a byte,
-  the context checked).
+- a context-specific fence timeline is the context's own: the ring index compared as a byte
+  (rutabaga_gfx's RutabagaFence has a u8 there, its C header a uint32_t: the three bytes
+  above are padding). Upstream checks the context too since dbb53a7caa ("virtio-gpu-rutabaga:
+  make sure ctx_ids match", 2026-10-13), not the byte.
 
 Split out of the 2026-10-12 snapshot of the fork's uncommitted work.
 
 Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
 ---
- hw/display/virtio-gpu-rutabaga.c | 320 +++++++++++++++++++++++++++++--
+ hw/display/virtio-gpu-rutabaga.c | 321 +++++++++++++++++++++++++++++--
  include/hw/virtio/virtio-gpu.h   |  16 ++
- 2 files changed, 316 insertions(+), 20 deletions(-)
+ 2 files changed, 316 insertions(+), 21 deletions(-)
 
 diff --git a/hw/display/virtio-gpu-rutabaga.c b/hw/display/virtio-gpu-rutabaga.c
-index 1be15a4816..f49260a37a 100644
+index ff512d4cab..f49260a37a 100644
 --- a/hw/display/virtio-gpu-rutabaga.c
 +++ b/hw/display/virtio-gpu-rutabaga.c
 @@ -10,6 +10,9 @@
@@ -367,7 +369,7 @@ index 1be15a4816..f49260a37a 100644
      CHECK(!result, cmd);
  }
  
-@@ -903,8 +1115,21 @@ virtio_gpu_rutabaga_aio_cb(void *opaque)
+@@ -903,9 +1115,21 @@ virtio_gpu_rutabaga_aio_cb(void *opaque)
              continue;
          }
  
@@ -384,13 +386,14 @@ index 1be15a4816..f49260a37a 100644
 +         * was full (the guest's desktop froze).
 +         */
          if (signaled_ctx_specific &&
--           (cmd->cmd_hdr.ring_idx != fence_data.ring_idx)) {
+-           ((cmd->cmd_hdr.ctx_id != fence_data.ctx_id) ||
+-           (cmd->cmd_hdr.ring_idx != fence_data.ring_idx))) {
 +           (cmd->cmd_hdr.ctx_id != fence_data.ctx_id ||
 +            cmd->cmd_hdr.ring_idx != (uint8_t)fence_data.ring_idx)) {
              continue;
          }
  
-@@ -973,6 +1198,19 @@ virtio_gpu_rutabaga_debug_cb(uint64_t user_data,
+@@ -974,6 +1198,19 @@ virtio_gpu_rutabaga_debug_cb(uint64_t user_data,
      }
  }
  
@@ -410,7 +413,7 @@ index 1be15a4816..f49260a37a 100644
  static bool virtio_gpu_rutabaga_init(VirtIOGPU *g, Error **errp)
  {
      int result;
-@@ -1054,6 +1292,11 @@ static bool virtio_gpu_rutabaga_init(VirtIOGPU *g, Error **errp)
+@@ -1055,6 +1292,11 @@ static bool virtio_gpu_rutabaga_init(VirtIOGPU *g, Error **errp)
          return false;
      }
  
@@ -422,7 +425,7 @@ index 1be15a4816..f49260a37a 100644
      return true;
  }
  
-@@ -1100,6 +1343,7 @@ static void virtio_gpu_rutabaga_realize(DeviceState *qdev, Error **errp)
+@@ -1101,6 +1343,7 @@ static void virtio_gpu_rutabaga_realize(DeviceState *qdev, Error **errp)
      uint32_t num_capsets;
      VirtIOGPUBase *bdev = VIRTIO_GPU_BASE(qdev);
      VirtIOGPU *gpudev = VIRTIO_GPU(qdev);
@@ -430,7 +433,7 @@ index 1be15a4816..f49260a37a 100644
  
  #if HOST_BIG_ENDIAN
      error_setg(errp, "rutabaga is not supported on bigendian platforms");
-@@ -1115,6 +1359,25 @@ static void virtio_gpu_rutabaga_realize(DeviceState *qdev, Error **errp)
+@@ -1116,6 +1359,25 @@ static void virtio_gpu_rutabaga_realize(DeviceState *qdev, Error **errp)
          goto fail;
      }
  
@@ -456,7 +459,7 @@ index 1be15a4816..f49260a37a 100644
      if (!virtio_gpu_rutabaga_get_num_capsets(gpudev, &num_capsets, errp)) {
          goto fail;
      }
-@@ -1142,6 +1405,23 @@ static const Property virtio_gpu_rutabaga_properties[] = {
+@@ -1143,6 +1405,23 @@ static const Property virtio_gpu_rutabaga_properties[] = {
                        RUTABAGA_CAPSET_GFXSTREAM_GLES, false),
      DEFINE_PROP_BIT64("x-gfxstream-composer", VirtIOGPURutabaga, capset_mask,
                        RUTABAGA_CAPSET_GFXSTREAM_COMPOSER, false),

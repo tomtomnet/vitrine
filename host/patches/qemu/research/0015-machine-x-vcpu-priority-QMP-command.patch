@@ -1,7 +1,7 @@
-From 71af81fe63e8993be39811eacd6ae3941a9ec83f Mon Sep 17 00:00:00 2001
+From bd0d980dc53d7165a415df5586de0f958b525c81 Mon Sep 17 00:00:00 2001
 From: tomtomnet <tompere8000@proton.me>
 Date: Fri, 2 Oct 2026 08:45:57 +0200
-Subject: [PATCH 15/19] machine: x-vcpu-priority QMP command
+Subject: [PATCH] machine: x-vcpu-priority QMP command
 
 Switches the vCPU threads between real-time (SCHED_FIFO) and ordinary
 scheduling (with a nice value) at run time, so that only the VM in front keeps
@@ -67,10 +67,10 @@ index 9c08b17510..9197507b09 100644
  {
      MachineState *ms = MACHINE(qdev_get_machine());
 diff --git a/qapi/machine.json b/qapi/machine.json
-index b1be5608b6..a068e11cc4 100644
+index 9b145c635b..b4a043d8b7 100644
 --- a/qapi/machine.json
 +++ b/qapi/machine.json
-@@ -141,6 +141,35 @@
+@@ -136,6 +136,35 @@
  ##
  { 'command': 'query-cpus-fast', 'returns': [ 'CpuInfoFast' ] }
  
@@ -105,4 +105,7 @@ index b1be5608b6..a068e11cc4 100644
 +
  ##
  # @CompatProperty:
- #
+ #     Property default values specific to a machine type, for use by
+-- 
+2.56.0
+
