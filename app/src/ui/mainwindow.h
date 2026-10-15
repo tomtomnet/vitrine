@@ -129,7 +129,7 @@ private:
     void sendCtrlAltDel();
     void releaseInput();
     /*
-     * Ctrl+Alt+1/2/3 from anywhere in the app, the VM's screens included:
+     * Ctrl+Alt+1/2 from anywhere in the app, the VM's screens included:
      * the view of the console shown (a VM with the nested desktop in this
      * window), whatever character the layout gives the key.  True when the
      * key was one of them and went there.
@@ -205,7 +205,7 @@ private:
     QAction *m_library;
     QAction *m_ctrlAltDel;
     QAction *m_releaseInput;
-    /* The nested desktop's views of the console: Boot, Screen, Desktop */
+    /* The nested desktop's views of the console: Screen, Desktop */
     QList<QAction *> m_views;
     /* m_views, under the Console tab's button while the VM has views */
     QMenu *m_viewMenu = nullptr;

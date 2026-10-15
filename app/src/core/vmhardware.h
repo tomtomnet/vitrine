@@ -38,8 +38,9 @@ struct Graphics {
         Virtio,         // virtio-gpu, 2D
         Standard,       // VGA, QEMU's default
         /*
-         * virtio-gpu-rutabaga-pci with cross-domain, beside q35's VGA: the
-         * nested desktop (core/nesteddesktop.h)
+         * virtio-vga-rutabaga with cross-domain, the only card: the nested
+         * desktop (core/nesteddesktop.h); or as vitrine wrote it until
+         * 2026-10-15, virtio-gpu-rutabaga-pci beside q35's VGA
          */
         Nested,
         None,
@@ -66,17 +67,18 @@ Graphics graphics(const ArgsFile &args);
  * add blob=on, hostmem= (4G when not given) and, with KVM, honor-guest-pat.
  * A Custom card is left as it is; only the window changes.  The nested
  * desktop's card is written by setNestedCard(), not here: from it, another
- * kind takes its place, and QEMU's VGA goes as for that kind.
+ * kind takes its place, and QEMU's VGA goes as for that kind (the -vga none
+ * the nested card wrote too, beside a card with VGA).
  */
 void setGraphics(ArgsFile &args, const Graphics &graphics);
 /*
- * The nested desktop's card, -device @device (virtio-gpu-rutabaga-pci,
+ * The nested desktop's card, -device @device (virtio-vga-rutabaga,
  * cross-domain=on and the card's other properties), in place of the VM's
- * card, and q35's VGA kept beside it (-vga std): it shows the firmware and
- * the boot, QEMU's console 0, the card's own screen being console 1.  The
- * window follows: OpenGL in the D-Bus display, which the card's screen
- * needs; none in QEMU's own, as SDL's clashes with rutabaga's; none rather
- * than egl-headless for no window.
+ * cards, and no VGA of QEMU's beside it (-vga none): its own VGA part shows
+ * the firmware and the boot loader, on the VM's one screen.  The window
+ * follows: OpenGL in the D-Bus display, which the card's screen needs; none
+ * in QEMU's own, as SDL's clashes with rutabaga's; none rather than
+ * egl-headless for no window.
  */
 void setNestedCard(ArgsFile &args, const QString &device);
 /*

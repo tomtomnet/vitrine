@@ -391,7 +391,7 @@ private slots:
                     "'-object kvm-accel,help') printf 'kvm-accel options:\\n"
                     "  honor-guest-pat=<OnOffAuto>\\n' ;;\n");
             if (rutabaga) {
-                f.write("'-device virtio-gpu-rutabaga-pci,help') printf 'virtio-gpu-rutabaga-pci "
+                f.write("'-device virtio-vga-rutabaga,help') printf 'virtio-vga-rutabaga "
                         "options:\\n  cross-domain=<bool>\\n  hostmem=<size>\\n  x-drm=<bool>\\n"
                         "  x-virgl2=<bool>\\n  wayland-socket-path=<str>\\n' ;;\n");
             }
@@ -426,16 +426,20 @@ private slots:
         nested->setChecked(true);
         QVERIFY(page.isModified());
         QVERIFY(!card->isEnabled());
-        QCOMPARE(card->currentData().toString(), "virtio-gpu-rutabaga-pci");
+        QCOMPARE(card->currentData().toString(), "virtio-vga-rutabaga");
+        QCOMPARE(card->currentText(), "Nested desktop's, with VGA (virtio-vga-rutabaga)");
         QVERIFY(!native->isEnabled());
-        QVERIFY(displayHint->text().startsWith("Vitrine's window shows the guest's desktop"));
+        QVERIFY(displayHint->text().startsWith("Vitrine's window shows the guest's desktop "
+                                               "beside the VM's screen"));
+        QCOMPARE(hint->text(), "For Fedora KDE guests with the guest tools: a login at their "
+                               "login screen starts the nested desktop.");
         page.save(args);
         QCOMPARE(text(args), "#qemu " + research + "\n"
                              "-machine q35,memory-backend=mem\n"
                              "-global kvm-pit.lost_tick_policy=discard\n"
                              "-object memory-backend-memfd,id=mem,size=4G,share=on\n"
-                             "-vga std\n"
-                             "-device virtio-gpu-rutabaga-pci,x-drm=on,x-virgl2=on,"
+                             "-vga none\n"
+                             "-device virtio-vga-rutabaga,x-drm=on,x-virgl2=on,"
                              "cross-domain=on,hostmem=4G\n"
                              "-device pvpanic\n"
                              "-display dbus,p2p=yes,gl=on\n");
@@ -455,12 +459,13 @@ private slots:
         nested->setChecked(false);
         QVERIFY(card->isEnabled());
         QCOMPARE(card->currentData().toString(), "virtio-vga-gl");
-        QCOMPARE(card->findData("virtio-gpu-rutabaga-pci"), -1);
+        QCOMPARE(card->findData("virtio-vga-rutabaga"), -1);
         QVERIFY(native->isEnabled() && native->isChecked());
         page.save(args);
         QVERIFY(VmConfig::graphics(args).kind == VmConfig::Graphics::Accelerated);
         QVERIFY(VmConfig::graphics(args).nativeContext);
-        QCOMPARE(args.lines[args.indexOf("vga")].value, "none");
+        /* no stray -vga: as the VM was */
+        QCOMPARE(args.indexOf("vga"), -1);
         QCOMPARE(args.lines[args.indexOf("display")].value, "dbus,p2p=yes,gl=on");
 
         /* on, then off before Apply: nothing to save; native context shown as the card has it */
@@ -480,19 +485,51 @@ private slots:
         QVERIFY(!nested->isEnabled());
         QCOMPARE(hint->text(), "This VM's QEMU has no virtio-gpu-rutabaga with cross-domain.");
         /* but a VM that has it can turn it off */
-        args = ArgsFile::parse("#qemu " + older + "\n-vga std\n"
-                               "-device virtio-gpu-rutabaga-pci,cross-domain=on\n"
+        args = ArgsFile::parse("#qemu " + older + "\n-vga none\n"
+                               "-device virtio-vga-rutabaga,cross-domain=on\n"
                                "-display sdl\n");
         page.load(args);
         QVERIFY(nested->isEnabled() && nested->isChecked());
         QVERIFY(native->isChecked());
         QVERIFY(!page.isModified());
-        /* a rutabaga card set up by hand is the Arguments page's */
-        args = ArgsFile::parse("#qemu " + research + "\n-vga none\n"
-                               "-device virtio-gpu-rutabaga-pci,cross-domain=on\n");
+
+        /*
+         * The two cards of before (QEMU's VGA beside the rutabaga card): the
+         * list's entry for the nested desktop, and why the card is another;
+         * untouched, nothing written; off, the 3D card in their place
+         */
+        auto *cardHint = page.findChild<QLabel *>("cardHint");
+        QVERIFY(cardHint);
+        const QString twoCards = "#qemu " + research + "\n-machine q35\n-vga std\n"
+                                 "-device virtio-gpu-rutabaga-pci,cross-domain=on\n"
+                                 "-display dbus,p2p=yes,gl=on\n";
+        args = ArgsFile::parse(twoCards);
         page.load(args);
-        QVERIFY(!nested->isEnabled());
-        QVERIFY(hint->isHidden());
+        QVERIFY(nested->isEnabled() && nested->isChecked());
+        QCOMPARE(card->currentData().toString(), "virtio-vga-rutabaga");
+        QCOMPARE(card->count(), 5);
+        QVERIFY2(cardHint->text().contains("beside the standard VGA"), qPrintable(cardHint->text()));
+        QVERIFY(!page.isModified());
+        page.save(args);
+        QCOMPARE(text(args), twoCards);
+        nested->setChecked(false);
+        QCOMPARE(card->findData("virtio-vga-rutabaga"), -1);
+        QCOMPARE(card->count(), 4);
+        page.save(args);
+        QVERIFY(VmConfig::graphics(args).kind == VmConfig::Graphics::Accelerated);
+        QCOMPARE(VmConfig::graphics(args).device, "virtio-vga-gl");
+        QVERIFY(VmConfig::graphics(args).nativeContext);
+        QCOMPARE(args.indexOf("vga"), -1);
+        QVERIFY(!text(args).contains("rutabaga"));
+
+        /* a rutabaga card set up by hand is the Arguments page's */
+        for (const char *byHand : {"-vga none\n-device virtio-gpu-rutabaga-pci,cross-domain=on\n",
+                                   "-vga std\n-device virtio-vga-rutabaga,cross-domain=on\n"}) {
+            args = ArgsFile::parse("#qemu " + research + '\n' + byHand);
+            page.load(args);
+            QVERIFY2(!nested->isEnabled(), byHand);
+            QVERIFY(hint->isHidden());
+        }
     }
 
     /* The count is the Hardware page's: edits elsewhere on the page keep -smp */

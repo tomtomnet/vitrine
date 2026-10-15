@@ -326,12 +326,16 @@ static VmConfig::Graphics cardGraphics(const QString &driver)
     return g;
 }
 
-/* The nested desktop's card, which takes the card's place in the list while it is on */
-static const char kNestedCard[] = "virtio-gpu-rutabaga-pci";
+/*
+ * The nested desktop's card, which takes the card's place in the list while
+ * it is on; the list's entry for the two cards of before too
+ * (virtio-gpu-rutabaga-pci beside QEMU's VGA)
+ */
+static const char kNestedCard[] = "virtio-vga-rutabaga";
 
 static QString nestedCardText()
 {
-    return DisplayPage::tr("Nested desktop's (virtio-gpu-rutabaga-pci), with VGA");
+    return DisplayPage::tr("Nested desktop's, with VGA (virtio-vga-rutabaga)");
 }
 
 DisplayPage::DisplayPage(QWidget *parent)
@@ -481,8 +485,8 @@ void DisplayPage::update()
     if (s.nested) {
         m_displayHint->setText(
             s.screen == "dbus"
-                ? tr("Vitrine's window shows the guest's desktop beside the VM's screens, which "
-                     "show the boot and the login screen. Quitting Vitrine ends the guest's "
+                ? tr("Vitrine's window shows the guest's desktop beside the VM's screen, which "
+                     "shows the boot and the login screen. Quitting Vitrine ends the guest's "
                      "session: the guest goes back to its login screen.")
             : s.screen == "gtk" || s.screen == "sdl"
                 ? tr("The guest's desktop opens as a window of its own; QEMU's %1 window shows "
@@ -512,8 +516,8 @@ void DisplayPage::update()
     m_nested->setEnabled(!nographic && !byHand && (m_nestedOffer.offered || hadNested));
     m_nestedHint->setText(
         byHand || nographic ? QString()
-        : s.nested          ? tr("For Fedora KDE guests with the guest tools: their login "
-                                 "screen then offers Plasma (nested desktop).")
+        : s.nested          ? tr("For Fedora KDE guests with the guest tools: a login at "
+                                 "their login screen starts the nested desktop.")
         : m_nestedOffer.offered
             ? tr("The guest's KDE session through a KWin of its own, as a window of this "
                  "computer's desktop or in Vitrine's (virtio-gpu-rutabaga).")
@@ -539,10 +543,14 @@ void DisplayPage::update()
 
     /* the card */
     const QString driver = m_card->currentData().toString();
-    if (s.nested) {
+    if (s.nested && hadNested && loaded.device != kNestedCard) {
         m_cardHint->setText(tr("The nested desktop's card, virtio-gpu-rutabaga with "
-                               "cross-domain, beside the standard VGA, which shows the firmware "
-                               "and the boot."));
+                               "cross-domain. This VM has it beside the standard VGA, as "
+                               "Vitrine set it up before."));
+    } else if (s.nested) {
+        m_cardHint->setText(tr("The nested desktop's card, virtio-gpu-rutabaga with "
+                               "cross-domain. It shows the firmware, the boot and the login "
+                               "screen too."));
     } else if (!m_card->isEnabled()) {
         m_cardHint->setText(tr("The graphics of this VM are set up by hand: change them on "
                                "the Arguments page."));
@@ -684,6 +692,9 @@ void DisplayPage::load(const ArgsFile &args)
         }
         if (custom) {
             own = tr("Set up by hand (%1)").arg(g.custom);
+        } else if (g.kind == VmConfig::Graphics::Nested) {
+            /* the two cards of before too: the list's one entry for it */
+            own = kNestedCard;
         } else if (own.isEmpty()) {
             own = g.kind == VmConfig::Graphics::None    ? tr("None")
                   : g.kind == VmConfig::Graphics::Virtio ? QString("virtio-vga")

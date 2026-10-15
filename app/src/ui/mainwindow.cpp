@@ -31,6 +31,7 @@
 #include <QVBoxLayout>
 
 #include <algorithm>
+#include <iterator>
 #include <memory>
 
 #include "core/buildmanager.h"
@@ -417,21 +418,19 @@ void MainWindow::createActions()
     m_releaseInput->setToolTip(tr("Give the keyboard and mouse back to the desktop "
                                   "(Ctrl+Alt+G releases the grab from the VM)"));
     /*
-     * The nested desktop's views of the console.  Ctrl+Alt+1/2/3 go by the
+     * The nested desktop's views of the console.  Ctrl+Alt+1/2 go by the
      * key's place, not its character (switchViewByKey()): the menu says
      * them in its shortcut column, where a QKeySequence would match the
-     * characters - AZERTY gives &, é and " there.
+     * characters - AZERTY gives & and é there.
      */
     {
-        static const char *const texts[] = {QT_TR_NOOP("&Boot"), QT_TR_NOOP("Sc&reen"),
-                                            QT_TR_NOOP("D&esktop")};
+        static const char *const texts[] = {QT_TR_NOOP("Sc&reen"), QT_TR_NOOP("D&esktop")};
         static const char *const tips[] = {
-            QT_TR_NOOP("The VGA card's screen: the firmware, the boot loader and the first "
-                       "boot messages"),
-            QT_TR_NOOP("The guest's own screen: its console and its login screen"),
+            QT_TR_NOOP("The VM's screen: the firmware, the boot, its console and its login "
+                       "screen"),
             QT_TR_NOOP("The guest's desktop session")};
         auto *group = new QActionGroup(this);
-        for (int i = 0; i < 3; i++) {
+        for (int i = 0; i < int(std::size(texts)); i++) {
             auto *view = new QAction(tr(texts[i]) + QString("\tCtrl+Alt+%1").arg(i + 1), group);
             view->setCheckable(true);
             view->setToolTip(tr(tips[i]));
@@ -929,8 +928,7 @@ void MainWindow::updateInput()
         m_input->setText(!console->takesInput()   ? tr("Paused")
                          : console->hasKeyboard() ? tr("Keys go to the guest's desktop")
                                                   : tr("Click the desktop to type in the VM"));
-        m_input->setToolTip(tr("Ctrl+Alt+1, 2 and 3 show the VM's boot, its screen and its "
-                               "desktop"));
+        m_input->setToolTip(tr("Ctrl+Alt+1 and 2 show the VM's screen and its desktop"));
         m_input->show();
         return;
     }

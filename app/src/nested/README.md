@@ -2,7 +2,7 @@
 
 The nested desktop in vitrine's window: the guest's KDE session (its nested
 KWin, over virtio-gpu cross-domain) shown as part of the window, beside the
-VM's own screens.
+VM's own screen.
 
 `vmview.{h,cpp}`, `protocols.{h,txt}`, `gen_protocols.py` and `LICENSE` are
 the research side's vmview library (`src/vmview` of the virtio-gpu-desktop

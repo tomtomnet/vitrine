@@ -337,8 +337,14 @@ static QList<int> cardLines(const ArgsFile &args)
     return lines;
 }
 
-/* The nested desktop's card: the driver, and its key that makes it one */
-static const char kNestedCard[] = "virtio-gpu-rutabaga-pci";
+/*
+ * The nested desktop's card, with cross-domain on: virtio-vga-rutabaga, the
+ * VM's one card, whose VGA part shows the firmware and the boot loader.
+ * Until 2026-10-15 the Display page wrote virtio-gpu-rutabaga-pci beside
+ * QEMU's VGA instead, two cards: those VMs read as the nested desktop still.
+ */
+static const char kNestedCard[] = "virtio-vga-rutabaga";
+static const char kNestedCardBeside[] = "virtio-gpu-rutabaga-pci";
 
 /* KEY=on, or KEY alone, which QEMU takes for on */
 static bool isOn(const OptionValue &v, const QString &key)
@@ -353,7 +359,9 @@ static bool isOn(const OptionValue &v, const QString &key)
 
 /*
  * The line of the nested desktop's card when the VM has it as the Display
- * page writes it: virtio-gpu-rutabaga-pci with cross-domain on, and one VGA
+ * page writes it: virtio-vga-rutabaga with cross-domain on, the only card
+ * (-vga none, or no -vga: QEMU adds no VGA beside a VGA card); or as it
+ * wrote it before, virtio-gpu-rutabaga-pci with cross-domain on and one VGA
  * beside it (-vga std, a -device VGA, or q35's own); else -1
  */
 static int nestedCardLine(const ArgsFile &args, const QList<int> &cards, const QString &vga)
@@ -361,9 +369,16 @@ static int nestedCardLine(const ArgsFile &args, const QList<int> &cards, const Q
     int card = -1;
     int vgaDevices = 0;
 
+    if (cards.size() == 1) {
+        const OptionValue v = args.valueAt(cards.first());
+        if (v.implied() == kNestedCard) {
+            return isOn(v, "cross-domain") && (vga.isEmpty() || vga == "none") ? cards.first()
+                                                                                : -1;
+        }
+    }
     for (int i : cards) {
         const OptionValue v = args.valueAt(i);
-        if (v.implied() == kNestedCard && isOn(v, "cross-domain") && card < 0) {
+        if (v.implied() == kNestedCardBeside && isOn(v, "cross-domain") && card < 0) {
             card = i;
         } else if (v.implied() == "VGA") {
             vgaDevices++;
@@ -685,7 +700,8 @@ void setGraphics(ArgsFile &args, const Graphics &g)
     /* setNestedCard() writes the nested desktop's card */
     if (!custom && !sameCard && g.kind != Graphics::Nested) {
         if (now.kind == Graphics::Nested) {
-            /* a VGA of its own goes, the card takes the rutabaga card's line */
+            /* a VGA of its own (the two cards of before) goes, the card takes
+               the rutabaga card's line */
             for (int i : cardLines(args)) {
                 if (args.valueAt(i).implied() == "VGA") {
                     args.removeAt(i);
@@ -694,6 +710,13 @@ void setGraphics(ArgsFile &args, const Graphics &g)
             }
         }
         setCard(args, now, g);
+        /* nor the -vga none it needed: QEMU adds no VGA beside a VGA card,
+           the VM is as it was before the nested desktop */
+        const int vga = lastIndex(args, "vga");
+        if (now.kind == Graphics::Nested && vga >= 0 && args.lines[vga].value.trimmed() == "none" &&
+            isVgaDevice(graphics(args).device)) {
+            args.removeAt(vga);
+        }
     }
     /* OpenGL follows the card when it changes to or from 3D */
     const bool accelerated = !custom && g.kind == Graphics::Accelerated;
@@ -755,14 +778,14 @@ void setNestedCard(ArgsFile &args, const QString &device)
             }
         }
     }
-    /* QEMU's VGA, whose console comes first whatever the order: -vga std
-       where -vga is, else before the card */
+    /* the card is the VM's VGA, QEMU's own left out: -vga none where -vga is
+       (std with the two cards of before), else before the card */
     if (const int vga = lastIndex(args, "vga"); vga >= 0) {
-        args.lines[vga].value = "std";
-        /* the -vga none that follows the card it replaced: the card after it */
+        args.lines[vga].value = "none";
+        /* the -vga that follows the card it replaced: the card after it */
         args.lines.insert(vga == at ? at + 1 : at, optionLine("device", device));
     } else {
-        args.lines.insert(at, optionLine("vga", "std"));
+        args.lines.insert(at, optionLine("vga", "none"));
         args.lines.insert(at + 1, optionLine("device", device));
     }
     nestedWindow(args);

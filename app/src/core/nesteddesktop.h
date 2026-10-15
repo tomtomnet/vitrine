@@ -12,23 +12,30 @@
  * The nested desktop: the guest's KDE session through a KWin of its own,
  * which draws into a Wayland window of this computer's desktop over
  * virtio-gpu-rutabaga's cross-domain (the research's crosvm-desktop, under
- * QEMU).  The VM has virtio-gpu-rutabaga-pci with cross-domain on and q35's
- * VGA beside it (VmConfig::setNestedCard()); the guest, the nested session
- * of the guest tools, which starts when the boot's words (QEMU's fw_cfg)
- * say crosvm_desktop=1.
+ * QEMU).  The VM has one card, virtio-vga-rutabaga with cross-domain on
+ * (VmConfig::setNestedCard()), whose VGA part shows the firmware and the
+ * boot loader; the guest, the nested session of the guest tools, which
+ * starts when the boot's words (QEMU's fw_cfg) say crosvm_desktop=1.
  *
  * Where the guest's desktop shows follows the VM's display:
  *  - D-Bus, vitrine's window: the integrated mode.  The guest's window is a
  *    part of vitrine's (the console's Desktop view, app/src/nested), beside
- *    the VGA's screen (Boot: QEMU's console 0) and the card's own (Screen:
- *    console 1), which the D-Bus display shows with OpenGL.  QEMU's
- *    cross-domain connects to a socket vitrine serves, which must listen
- *    before QEMU starts.  The guest's session does not outlive vitrine: it
- *    ends when vitrine quits, and the guest waits at its login screen.
+ *    the VM's screen (the Screen view: the card's console, which the D-Bus
+ *    display shows with OpenGL).  QEMU's cross-domain connects to a socket
+ *    vitrine serves, which must listen before QEMU starts.  The guest's
+ *    session does not outlive vitrine: it ends when vitrine quits, and the
+ *    guest waits at its login screen.
  *  - SDL or GTK: a window of its own on this computer's desktop, QEMU's
- *    window showing the two screens; no display: that window alone.  QEMU
+ *    window showing the VM's screen; no display: that window alone.  QEMU
  *    connects to the compositor itself, through a socket the compositor
  *    treats as a sandbox's when it can (WaylandSandbox).
+ *
+ * One card, not two: until 2026-10-15 vitrine gave such VMs
+ * virtio-gpu-rutabaga-pci beside QEMU's VGA.  OVMF shows its console, and
+ * the boot loader's, on every display card, and draws on a card without
+ * VGA through virtio commands, one round trip each: GRUB's menu, drawn at
+ * that pace, held the boot (Fedora 44 KDE: the kernel at 11.6 s, against
+ * 6.9 s with the one card, whose VGA part OVMF draws on directly).
  */
 namespace NestedDesktop {
 
@@ -42,7 +49,7 @@ Mode mode(const ArgsFile &args);
 
 /*
  * What the QEMU @args run with has of it: offered when it has
- * virtio-gpu-rutabaga-pci with cross-domain; @properties, the card's (not
+ * virtio-vga-rutabaga with cross-domain; @properties, the card's (not
  * set: QEMU not asked - vitrine's, not built yet, has them all).  Asked
  * from the VM's #qemu, else the preferences' QEMU, else vitrine's, in a
  * few ms, kept until the binary changes.
@@ -73,6 +80,14 @@ QString cardDevice(const std::optional<QStringList> &properties);
  * stays, harmless without it.
  */
 void set(ArgsFile &args, bool on, const std::optional<QStringList> &properties = {});
+
+/*
+ * QEMU's console of the VM's screen in a run of @args, for the D-Bus
+ * display: 0, the one card's; 1 with the two cards of before, whose QEMU's
+ * VGA comes first - the virtio card's screen, where the login screen is (a
+ * QEMU an older vitrine started, found running)
+ */
+int screenConsole(const ArgsFile &args);
 
 /*
  * The words the guest's nested session reads at boot, as the research's

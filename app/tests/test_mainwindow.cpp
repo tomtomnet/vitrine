@@ -773,7 +773,7 @@ private slots:
     /*
      * A VM with its nested desktop in the window: the console's views,
      * from the guest (its window comes and goes), the View menu and
-     * Ctrl+Alt+1/2/3 by their keys' places on an AZERTY keyboard; and
+     * Ctrl+Alt+1/2 by their keys' places on an AZERTY keyboard; and
      * closing the window, which logs the guest's session out, asks
      */
     void nestedDesktopViews()
@@ -799,7 +799,7 @@ private slots:
         auto *desktop = qobject_cast<StandInDesktop *>(console->nestedView());
         QVERIFY(desktop);
         QVERIFY(console->hasViews());
-        QCOMPARE(console->currentView(), ConsoleViews::View::Boot);
+        QCOMPARE(console->currentView(), ConsoleViews::View::Screen);
         /* served once a run */
         QVERIFY(console->serveNested(m_tmp.filePath("nested.sock"), &error));
         QCOMPARE(console->nestedView(), desktop);
@@ -811,7 +811,9 @@ private slots:
             }
             return nullptr;
         };
-        QVERIFY(viewAction(1) && viewAction(2) && viewAction(3));
+        QVERIFY(viewAction(1) && viewAction(2) && !viewAction(3));
+        QCOMPARE(plain(viewAction(1)->text()), QString("Screen\tCtrl+Alt+1"));
+        QCOMPARE(plain(viewAction(2)->text()), QString("Desktop\tCtrl+Alt+2"));
         QTRY_VERIFY(viewAction(1)->isEnabled() && viewAction(1)->isChecked());
         /* the views in the Console tab's menu, the tab's name with the one shown; no
            row of buttons over the screen (the user's idea) */
@@ -819,7 +821,7 @@ private slots:
         QVERIFY(consoleTab);
         QTRY_VERIFY(consoleTab->menu());
         QCOMPARE(consoleTab->popupMode(), QToolButton::MenuButtonPopup);
-        QCOMPARE(consoleTab->menu()->actions().size(), 3);
+        QCOMPARE(consoleTab->menu()->actions().size(), 2);
         QCOMPARE(consoleTab->text(), QString("Console 1"));
         QVERIFY(!console->findChild<QWidget *>("viewSwitcher"));
 
@@ -831,8 +833,8 @@ private slots:
         QCOMPARE(console->screenWidget(), desktop->widget());
         /* the VM does not run here: QEMU would drop the keys, the guest gets none */
         QVERIFY(!desktop->inputEnabled());
-        QVERIFY(viewAction(3)->isChecked());
-        QTRY_COMPARE(consoleTab->text(), QString("Console 3"));
+        QVERIFY(viewAction(2)->isChecked());
+        QTRY_COMPARE(consoleTab->text(), QString("Console 2"));
 
         /* AZERTY: &, é and " on the keys of 1, 2 and 3 (XKB's keycodes 10, 11, 12) */
         const auto press = [&w](Qt::Key key, quint32 keycode, const QString &text) {
@@ -842,16 +844,19 @@ private slots:
             QApplication::sendEvent(to, &event);
         };
         press(Qt::Key_Ampersand, 10, "&");
-        QCOMPARE(console->currentView(), ConsoleViews::View::Boot);
+        QCOMPARE(console->currentView(), ConsoleViews::View::Screen);
         QVERIFY(!desktop->inputEnabled());
         press(Qt::Key_Eacute, 11, QString::fromUtf8("é"));
-        QCOMPARE(console->currentView(), ConsoleViews::View::Screen);
-        press(Qt::Key_QuoteDbl, 12, "\"");
         QCOMPARE(console->currentView(), ConsoleViews::View::Desktop);
+        /* no third view: nothing moves */
+        press(Qt::Key_Ampersand, 10, "&");
+        press(Qt::Key_QuoteDbl, 12, "\"");
+        QCOMPARE(console->currentView(), ConsoleViews::View::Screen);
+        press(Qt::Key_Eacute, 11, QString::fromUtf8("é"));
         /* the menu's */
         viewAction(1)->trigger();
-        QCOMPARE(console->currentView(), ConsoleViews::View::Boot);
-        viewAction(3)->trigger();
+        QCOMPARE(console->currentView(), ConsoleViews::View::Screen);
+        viewAction(2)->trigger();
         QCOMPARE(console->currentView(), ConsoleViews::View::Desktop);
         /* full screen goes with the view shown */
         action(w.get(), "Full Screen")->trigger();
@@ -859,18 +864,18 @@ private slots:
         QVERIFY(console->isFullScreen());
         action(w.get(), "Full Screen")->trigger();
         QVERIFY(!desktop->isFullScreen());
-        /* the session ended, and no agent of the guest's tells of a login
-           screen: the guest goes, its console on the boot's screen */
+        /* the session ended: the VM's screen, its login screen or its shutdown */
         desktop->guestMaps(false);
-        QCOMPARE(console->currentView(), ConsoleViews::View::Boot);
-        /* the host's Reset under the session: the boot, and the nested
+        QCOMPARE(console->currentView(), ConsoleViews::View::Screen);
+        QTRY_COMPARE(consoleTab->text(), QString("Console 1"));
+        /* the host's Reset under the session: the screen, and the nested
            desktop served anew, its connections with the old view; the next
            session's window shows */
         desktop->guestMaps(true);
         QCOMPARE(console->currentView(), ConsoleViews::View::Desktop);
         const QPointer<StandInDesktop> before = desktop;
         emit m_store->find("alpha")->runner()->guestReset();
-        QCOMPARE(console->currentView(), ConsoleViews::View::Boot);
+        QCOMPARE(console->currentView(), ConsoleViews::View::Screen);
         QTRY_COMPARE(consoleTab->text(), QString("Console 1"));
         QTRY_VERIFY(!before);
         desktop = qobject_cast<StandInDesktop *>(console->nestedView());

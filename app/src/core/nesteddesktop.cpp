@@ -8,7 +8,7 @@
 
 namespace NestedDesktop {
 
-static const char kCard[] = "virtio-gpu-rutabaga-pci";
+static const char kCard[] = "virtio-vga-rutabaga";
 /* Any rutabaga card with cross-domain on connects to a socket */
 static const QStringList kRutabagaCards = {"virtio-gpu-rutabaga-pci", "virtio-gpu-rutabaga",
                                            "virtio-gpu-rutabaga-device", "virtio-vga-rutabaga"};
@@ -164,6 +164,13 @@ void set(ArgsFile &args, bool on, const std::optional<QStringList> &properties)
         line.value = "pvpanic";
         args.lines.insert(card + 1, line);
     }
+}
+
+int screenConsole(const ArgsFile &args)
+{
+    const VmConfig::Graphics g = VmConfig::graphics(args);
+
+    return g.kind == VmConfig::Graphics::Nested && g.device != kCard ? 1 : 0;
 }
 
 QString bootWords(const ArgsFile &args, const QString &label)

@@ -461,9 +461,8 @@ void NestedView::updateGeometry()
             m_fullWindow ? tr("The guest's desktop is in full screen. Ctrl+Alt+F brings it "
                               "back here.")
             : m_mapped   ? QString()
-                         : tr("The guest's desktop is not running.\nLog in to the guest's "
-                              "Plasma (nested desktop) session from the Screen view "
-                              "(Ctrl+Alt+2).");
+                         : tr("The guest's desktop is not running.\nLog in at the guest's "
+                              "login screen, in the Screen view (Ctrl+Alt+1).");
         embedded->update();
     }
     if (!m_view || !window) {

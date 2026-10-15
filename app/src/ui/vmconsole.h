@@ -24,11 +24,10 @@ class VmView;
  * a window of its own (QEMU's SDL or GTK display), the way to that window.
  *
  * A VM whose nested desktop shows in vitrine's window (NestedDesktop::
- * Mode::Integrated) has three views, which the Console tab's menu chooses,
- * as the View menu and Ctrl+Alt+1/2/3 do (ConsoleViews tells which, and
- * when they change by themselves): Boot and Screen, QEMU's consoles 0 and
- * 1 through the D-Bus display (the VGA card's screen, the virtio-gpu
- * card's), and Desktop, the guest's KDE session (NestedView).  The keys
+ * Mode::Integrated) has two views, which the Console tab's menu chooses,
+ * as the View menu and Ctrl+Alt+1/2 do (ConsoleViews tells which, and when
+ * they change by themselves): Screen, the VM's screen through the D-Bus
+ * display, and Desktop, the guest's KDE session (NestedView).  The keys
  * and the pointer follow the view shown, full screen too.  The console
  * serves the nested desktop's socket for the whole run (serveNested()),
  * shown or not: the guest's session lives as long as it does.
@@ -113,9 +112,7 @@ private:
     void dropNested();
     /* The guest restarted: the nested desktop's socket served anew */
     void renewNested();
-    /* What the guest says it shows (GuestToolsMonitor), to the views */
-    void followGuest();
-    /* The view of m_views: its page, the D-Bus display's console, the keys */
+    /* The view of m_views: its page, the keys */
     void applyView();
     void showMessage(const QString &title, const QString &text, const QString &button = {});
     void setPage(Page page);
