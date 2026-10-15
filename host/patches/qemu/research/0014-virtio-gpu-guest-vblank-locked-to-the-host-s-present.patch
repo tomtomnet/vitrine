@@ -1,16 +1,19 @@
-From fa7a1be27aaaea6cca84de8dde0c9fbe24d36338 Mon Sep 17 00:00:00 2001
+From c097d75af8e0ac00f09b67e1c85882bbd618a0a6 Mon Sep 17 00:00:00 2001
 From: tomtomnet <tompere8000@proton.me>
 Date: Fri, 2 Oct 2026 08:45:57 +0200
-Subject: [PATCH 14/19] virtio-gpu: guest vblank locked to the host's
- presentation, flush fences, blob leak fix
+Subject: [PATCH] virtio-gpu: guest vblank locked to the host's presentation,
+ flush fences
 
 - x-host-vblank / x-vblank-lead / x-vblank-lead-auto / x-vblank-swap-target: the
   guest's vblank ticks follow the host compositor's presentation feedback, a lead
   before each host vblank, regulated on the median swap-to-screen time
 - the resource flush of a blob scanout completes with a fence once the host has it
-- virtio_gpu_virgl_resource_unref(): free res->base.addrs (the guest-memory
-  blob's page array leaked on every resource unref: +45 MB/min during window
-  resizes; upstream has the same bug)
+
+The fork's version also freed res->base.addrs in virtio_gpu_virgl_resource_unref()
+(the guest-memory blob's page array leaked on every unref: +45 MB/min during
+window resizes); upstream fixed that leak in ca5d368f11 ("virtio-gpu: fix memory
+leaks in virgl and rutabaga"), so that part was dropped when the series moved onto
+upstream c61ea024f6 (2026-10-15).
 
 Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
 ---
@@ -19,10 +22,10 @@ Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
  hw/display/virtio-gpu-gl.c       |   2 +
  hw/display/virtio-gpu-rutabaga.c |   1 +
  hw/display/virtio-gpu-udmabuf.c  |   5 +-
- hw/display/virtio-gpu-virgl.c    |  63 +++++-
+ hw/display/virtio-gpu-virgl.c    |  55 +++++-
  hw/display/virtio-gpu.c          |  27 ++-
  include/hw/virtio/virtio-gpu.h   |  46 +++++
- 8 files changed, 460 insertions(+), 9 deletions(-)
+ 8 files changed, 452 insertions(+), 9 deletions(-)
 
 diff --git a/hw/display/trace-events b/hw/display/trace-events
 index c5e7e42af2..34f0a819be 100644
@@ -413,10 +416,10 @@ index b68b4e8e1c..33196ef4e9 100644
      vgc->process_cmd = virtio_gpu_virgl_process_cmd;
      vgc->update_cursor_data = virtio_gpu_gl_update_cursor_data;
 diff --git a/hw/display/virtio-gpu-rutabaga.c b/hw/display/virtio-gpu-rutabaga.c
-index 3aafa4dc66..3c66596cef 100644
+index 1312a67d70..ff512d4cab 100644
 --- a/hw/display/virtio-gpu-rutabaga.c
 +++ b/hw/display/virtio-gpu-rutabaga.c
-@@ -1084,6 +1084,7 @@ static void virtio_gpu_rutabaga_handle_ctrl(VirtIODevice *vdev, VirtQueue *vq)
+@@ -1087,6 +1087,7 @@ static void virtio_gpu_rutabaga_handle_ctrl(VirtIODevice *vdev, VirtQueue *vq)
          cmd->vq = vq;
          cmd->error = 0;
          cmd->finished = false;
@@ -441,25 +444,10 @@ index d823332d9a..a240069173 100644
  
      return fd;
 diff --git a/hw/display/virtio-gpu-virgl.c b/hw/display/virtio-gpu-virgl.c
-index cfa7da47e5..9e0dd332d0 100644
+index 8a72aa91e5..927bd06b43 100644
 --- a/hw/display/virtio-gpu-virgl.c
 +++ b/hw/display/virtio-gpu-virgl.c
-@@ -458,6 +458,14 @@ virtio_gpu_virgl_resource_unref(VirtIOGPU *g,
- 
-     QTAILQ_REMOVE(&g->reslist, &res->base, next);
- 
-+    /*
-+     * The guest addresses virtio_gpu_create_mapping_iov() recorded for a
-+     * guest-memory blob: virgl_renderer_resource_detach_iov() hands back
-+     * only the iovecs, so nothing else frees them (a 4K buffer in 4 KiB
-+     * pages is a 64 KiB array, and a guest resizing windows makes and
-+     * drops such buffers all the time: ~45 MB of heap a minute).
-+     */
-+    g_free(res->base.addrs);
-     g_free(res);
- 
-     return 0;
-@@ -579,6 +587,31 @@ static void virgl_cmd_resource_flush(VirtIOGPU *g,
+@@ -579,6 +579,31 @@ static void virgl_cmd_resource_flush(VirtIOGPU *g,
              continue;
          }
          virtio_gpu_rect_update(g, i, rf.r.x, rf.r.y, rf.r.width, rf.r.height);
@@ -491,7 +479,7 @@ index cfa7da47e5..9e0dd332d0 100644
      }
  }
  
-@@ -871,7 +904,7 @@ static void virgl_cmd_get_capset(VirtIOGPU *g,
+@@ -871,7 +896,7 @@ static void virgl_cmd_get_capset(VirtIOGPU *g,
   * virtio-gpu driver, a udmabuf aliasing their pages so that native contexts
   * can use them instead of rejecting them.
   */
@@ -500,7 +488,7 @@ index cfa7da47e5..9e0dd332d0 100644
  virgl_resource_set_guest_dmabuf(VirtIOGPU *g,
                                  struct virtio_gpu_virgl_resource *res)
  {
-@@ -879,17 +912,19 @@ virgl_resource_set_guest_dmabuf(VirtIOGPU *g,
+@@ -879,17 +904,19 @@ virgl_resource_set_guest_dmabuf(VirtIOGPU *g,
      int fd;
  
      if (!gl->have_udmabuf) {
@@ -522,7 +510,7 @@ index cfa7da47e5..9e0dd332d0 100644
  }
  #endif
  
-@@ -957,8 +992,23 @@ static void virgl_cmd_resource_create_blob(VirtIOGPU *g,
+@@ -957,8 +984,23 @@ static void virgl_cmd_resource_create_blob(VirtIOGPU *g,
  
  #ifdef HAVE_VIRGL_RESOURCE_SET_GUEST_DMABUF
      if (cblob.blob_mem == VIRTIO_GPU_BLOB_MEM_GUEST &&
@@ -548,7 +536,7 @@ index cfa7da47e5..9e0dd332d0 100644
      }
  #endif
  
-@@ -1216,6 +1266,9 @@ void virtio_gpu_virgl_process_cmd(VirtIOGPU *g,
+@@ -1216,6 +1258,9 @@ void virtio_gpu_virgl_process_cmd(VirtIOGPU *g,
      }
  
      trace_virtio_gpu_fence_ctrl(cmd->cmd_hdr.fence_id, cmd->cmd_hdr.type);
@@ -559,10 +547,10 @@ index cfa7da47e5..9e0dd332d0 100644
      if (cmd->cmd_hdr.flags & VIRTIO_GPU_FLAG_INFO_RING_IDX) {
          const uint32_t flags = VIRGL_RENDERER_FENCE_FLAG_MERGEABLE;
 diff --git a/hw/display/virtio-gpu.c b/hw/display/virtio-gpu.c
-index bb0f41bb1e..df7a2a93c2 100644
+index 5d43ffb991..0795aa4e26 100644
 --- a/hw/display/virtio-gpu.c
 +++ b/hw/display/virtio-gpu.c
-@@ -135,8 +135,16 @@ static void update_cursor(VirtIOGPU *g, struct virtio_gpu_update_cursor *cursor)
+@@ -139,8 +139,16 @@ static void update_cursor(VirtIOGPU *g, struct virtio_gpu_update_cursor *cursor)
                                     cursor->resource_id);
  
      if (!move) {
@@ -579,7 +567,7 @@ index bb0f41bb1e..df7a2a93c2 100644
          }
  
          s->current_cursor->hot_x = cursor->hot_x;
-@@ -145,7 +153,17 @@ static void update_cursor(VirtIOGPU *g, struct virtio_gpu_update_cursor *cursor)
+@@ -149,7 +157,17 @@ static void update_cursor(VirtIOGPU *g, struct virtio_gpu_update_cursor *cursor)
          if (cursor->resource_id > 0) {
              vgc->update_cursor_data(g, s, cursor->resource_id);
          }
@@ -598,7 +586,7 @@ index bb0f41bb1e..df7a2a93c2 100644
  
          s->cursor = *cursor;
      } else {
-@@ -1302,6 +1320,7 @@ static void virtio_gpu_handle_ctrl(VirtIODevice *vdev, VirtQueue *vq)
+@@ -1334,6 +1352,7 @@ static void virtio_gpu_handle_ctrl(VirtIODevice *vdev, VirtQueue *vq)
          cmd->vq = vq;
          cmd->error = 0;
          cmd->finished = false;
@@ -606,7 +594,7 @@ index bb0f41bb1e..df7a2a93c2 100644
          QTAILQ_INSERT_TAIL(&g->cmdq, cmd, next);
          cmd = virtqueue_pop(vq, sizeof(struct virtio_gpu_ctrl_command));
      }
-@@ -1852,6 +1871,8 @@ virtio_gpu_get_config(VirtIODevice *vdev, uint8_t *config)
+@@ -1884,6 +1903,8 @@ virtio_gpu_get_config(VirtIODevice *vdev, uint8_t *config)
      VirtIOGPUBase *g = VIRTIO_GPU_BASE(vdev);
  
      memcpy(config, &g->virtio_config, sizeof(g->virtio_config));
@@ -615,7 +603,7 @@ index bb0f41bb1e..df7a2a93c2 100644
  }
  
  static void
-@@ -1932,6 +1953,10 @@ static const Property virtio_gpu_properties[] = {
+@@ -1964,6 +1985,10 @@ static const Property virtio_gpu_properties[] = {
                      VIRTIO_GPU_FLAG_BLOB_ENABLED, false),
      DEFINE_PROP_SIZE("hostmem", VirtIOGPU, parent_obj.conf.hostmem, 0),
      DEFINE_PROP_UINT8("x-scanout-vmstate-version", VirtIOGPU, scanout_vmstate_version, 2),
@@ -721,3 +709,6 @@ index 5c9a6021af..f333fe4950 100644
  void virtio_gpu_virgl_process_cmd(VirtIOGPU *g,
                                    struct virtio_gpu_ctrl_command *cmd);
  void virtio_gpu_virgl_fence_poll(VirtIOGPU *g);
+-- 
+2.56.0
+

@@ -1,7 +1,7 @@
-From 12e9377e9e9e3bff5a958a2507797f4790db7acd Mon Sep 17 00:00:00 2001
+From 93e4f574a8054719d3e30d00de60514a493a854c Mon Sep 17 00:00:00 2001
 From: tomtomnet <tompere8000@proton.me>
 Date: Wed, 14 Oct 2026 19:00:43 +0200
-Subject: [PATCH 18/24] kvm: per-VM halt-poll-ns, the x86 slot-zap-all quirk, a
+Subject: [PATCH] kvm: per-VM halt-poll-ns, the x86 slot-zap-all quirk, a
  KVM_PRE_FAULT_MEMORY helper
 
 - accel property halt-poll-ns: how long this VM's halted vCPUs spin before they sleep (the kvm
@@ -25,10 +25,10 @@ Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
  5 files changed, 141 insertions(+)
 
 diff --git a/accel/kvm/kvm-all.c b/accel/kvm/kvm-all.c
-index 83cbd120a8..86c698b4bc 100644
+index db8fba53f3..768e85dca4 100644
 --- a/accel/kvm/kvm-all.c
 +++ b/accel/kvm/kvm-all.c
-@@ -3055,6 +3055,25 @@ static int kvm_init(AccelState *as, MachineState *ms)
+@@ -3073,6 +3073,25 @@ static int kvm_init(AccelState *as, MachineState *ms)
          goto err;
      }
  
@@ -54,7 +54,7 @@ index 83cbd120a8..86c698b4bc 100644
      kvm_supported_memory_attributes = kvm_vm_check_extension(s, KVM_CAP_MEMORY_ATTRIBUTES);
      kvm_guest_memfd_supported =
          kvm_vm_check_extension(s, KVM_CAP_GUEST_MEMFD) &&
-@@ -3654,6 +3673,21 @@ int kvm_vm_ioctl(KVMState *s, unsigned long type, ...)
+@@ -3679,6 +3698,21 @@ int kvm_vm_ioctl(KVMState *s, unsigned long type, ...)
      return ret;
  }
  
@@ -76,7 +76,7 @@ index 83cbd120a8..86c698b4bc 100644
  int kvm_vcpu_ioctl(CPUState *cpu, unsigned long type, ...)
  {
      int ret;
-@@ -4107,6 +4141,35 @@ static void kvm_get_kvm_shadow_mem(Object *obj, Visitor *v,
+@@ -4132,6 +4166,35 @@ static void kvm_get_kvm_shadow_mem(Object *obj, Visitor *v,
      visit_type_int(v, name, &value, errp);
  }
  
@@ -112,7 +112,7 @@ index 83cbd120a8..86c698b4bc 100644
  static void kvm_set_kvm_shadow_mem(Object *obj, Visitor *v,
                                     const char *name, void *opaque,
                                     Error **errp)
-@@ -4267,6 +4330,8 @@ static void kvm_accel_instance_init(Object *obj)
+@@ -4292,6 +4355,8 @@ static void kvm_accel_instance_init(Object *obj)
      s->device = NULL;
      s->msr_energy.enable = false;
      s->honor_guest_pat = ON_OFF_AUTO_OFF;
@@ -121,7 +121,7 @@ index 83cbd120a8..86c698b4bc 100644
  }
  
  static void kvm_accel_class_init(ObjectClass *oc, const void *data)
-@@ -4290,6 +4355,12 @@ static void kvm_accel_class_init(ObjectClass *oc, const void *data)
+@@ -4315,6 +4380,12 @@ static void kvm_accel_class_init(ObjectClass *oc, const void *data)
      object_class_property_set_description(oc, "kvm-shadow-mem",
          "KVM shadow MMU size");
  
@@ -135,12 +135,12 @@ index 83cbd120a8..86c698b4bc 100644
          kvm_get_dirty_ring_size, kvm_set_dirty_ring_size,
          NULL, NULL);
 diff --git a/accel/stubs/kvm-stub.c b/accel/stubs/kvm-stub.c
-index 32b4b07403..8b3afaaf90 100644
+index acbd0785e0..40423f76ee 100644
 --- a/accel/stubs/kvm-stub.c
 +++ b/accel/stubs/kvm-stub.c
-@@ -143,3 +143,8 @@ int kvm_create_guest_memfd(uint64_t size, uint64_t flags, Error **errp)
+@@ -149,3 +149,8 @@ bool kvm_private_memory_attribute_supported(void)
  {
-     return -ENOSYS;
+     return false;
  }
 +
 +int kvm_cpu_pre_fault_memory(CPUState *cpu, uint64_t gpa, uint64_t size)
@@ -148,7 +148,7 @@ index 32b4b07403..8b3afaaf90 100644
 +    return -ENOSYS;
 +}
 diff --git a/include/system/kvm.h b/include/system/kvm.h
-index 714b8c7b01..c1cac60c2c 100644
+index d29624034c..1c596ccfcb 100644
 --- a/include/system/kvm.h
 +++ b/include/system/kvm.h
 @@ -210,6 +210,13 @@ bool kvm_arm_supports_user_irq(void);
@@ -184,7 +184,7 @@ index 0876aac938..6b22d3b017 100644
  
  void kvm_memory_listener_register(KVMState *s, KVMMemoryListener *kml,
 diff --git a/target/i386/kvm/kvm.c b/target/i386/kvm/kvm.c
-index 1eeadb99ad..0fb7262cdd 100644
+index a72b6e6b74..363b7e156e 100644
 --- a/target/i386/kvm/kvm.c
 +++ b/target/i386/kvm/kvm.c
 @@ -3610,6 +3610,30 @@ int kvm_arch_init(MachineState *ms, KVMState *s)
@@ -218,7 +218,7 @@ index 1eeadb99ad..0fb7262cdd 100644
      first = false;
      return 0;
  }
-@@ -7087,6 +7111,24 @@ static void kvm_arch_set_honor_guest_pat(Object *obj, int value, Error **errp)
+@@ -7088,6 +7112,24 @@ static void kvm_arch_set_honor_guest_pat(Object *obj, int value, Error **errp)
      s->honor_guest_pat = value;
  }
  
@@ -243,7 +243,7 @@ index 1eeadb99ad..0fb7262cdd 100644
  void kvm_arch_accel_class_init(ObjectClass *oc)
  {
      object_class_property_add_enum(oc, "notify-vmexit", "NotifyVMexitOption",
-@@ -7134,6 +7176,15 @@ void kvm_arch_accel_class_init(ObjectClass *oc)
+@@ -7135,6 +7177,15 @@ void kvm_arch_accel_class_init(ObjectClass *oc)
      object_class_property_set_description(oc, "honor-guest-pat",
                                            "Disable KVM quirk that ignores guest PAT "
                                            "memory type settings (default: auto)");

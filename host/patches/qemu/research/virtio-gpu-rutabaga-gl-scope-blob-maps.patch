@@ -1,0 +1,105 @@
+From 17c263b513893dab8eb8f8bf185a9869e1fa695e Mon Sep 17 00:00:00 2001
+From: virtio-gpu-desktop <local@localhost>
+Date: Thu, 15 Oct 2026 14:42:37 +0200
+Subject: [PATCH] virtio-gpu-rutabaga: map, unmap and export blobs in
+ virglrenderer's GL context
+
+The GL scope of "keep virglrenderer's GL context apart from a GL
+display's" left out the blob calls. rutabaga_resource_map() and
+rutabaga_resource_unmap() reach virglrenderer's
+vrend_renderer_resource_map()/unmap(), which bind and map a GL buffer in
+whatever context is current, and rutabaga_resource_export_blob() may
+export a GL resource. With a GL display (-display dbus,gl=on) that
+context was the display's: every RESOURCE_MAP_BLOB of a virgl blob failed
+("The mapping failed with library error: -22"). A guest whose Mesa uses
+virgl - the stock Fedora 44 KDE live ISO, whose Mesa has no amdgpu native
+context - then got GL_OUT_OF_MEMORY from glMapBufferRange in KWin and
+showed a black screen. GET_CAPSET had the same problem: virglrenderer
+fills the virgl caps with GL queries in the current context.
+
+These calls now run in the scope too. A GL buffer still fails the fixed
+mapping's export first (it has no dma-buf: "An mesa error was returned
+invalid handle") and is then mapped as a subregion, as designed. Without
+a GL display (the nested desktop's default) no other context is current
+and nothing changes in practice.
+
+Tested 2026-10-15 on a Radeon 780M. vitrine's virtio-vga-rutabaga card
+(x-virgl2=on, D-Bus display gl=on): the Fedora 44 KDE live ISO showed
+nothing before (screendumps 0 % lit at 45/75/105 s, map_blob -22) and
+now shows its desktop through virgl (98.1 % lit, no mapping failure, no
+GL error); a guest with vitrine's tools boots to its greeter as before.
+The nested desktop (no GL display): see patches/qemu/README.md.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ hw/display/virtio-gpu-rutabaga.c | 19 ++++++++++---------
+ 1 file changed, 10 insertions(+), 9 deletions(-)
+
+diff --git a/hw/display/virtio-gpu-rutabaga.c b/hw/display/virtio-gpu-rutabaga.c
+index 905ce4cbdd..dc1c2790e1 100644
+--- a/hw/display/virtio-gpu-rutabaga.c
++++ b/hw/display/virtio-gpu-rutabaga.c
+@@ -279,7 +279,7 @@ virtio_gpu_rutabaga_unmap_slot(VirtIOGPURutabaga *vr, uint32_t slot)
+         mri->fixed_size = 0;
+     } else {
+         memory_region_del_subregion(&vb->hostmem, &mri->mr);
+-        result = rutabaga_resource_unmap(vr->rutabaga, mri->resource_id);
++        result = RGL(rutabaga_resource_unmap(vr->rutabaga, mri->resource_id));
+     }
+     mri->resource_id = 0;
+     mri->used = 0;
+@@ -421,8 +421,8 @@ rutabaga_blob_export(VirtIOGPURutabaga *vr,
+     if (res->dmabuf_fd >= 0) {
+         return true;
+     }
+-    if (rutabaga_resource_export_blob(vr->rutabaga, res->resource_id,
+-                                      &handle)) {
++    if (RGL(rutabaga_resource_export_blob(vr->rutabaga, res->resource_id,
++                                          &handle))) {
+         return false;
+     }
+     if (handle.handle_type != RUTABAGA_HANDLE_TYPE_MEM_DMABUF) {
+@@ -893,8 +893,8 @@ rutabaga_cmd_get_capset(VirtIOGPU *g, struct virtio_gpu_ctrl_command *cmd)
+ 
+     resp = g_malloc0(sizeof(*resp) + capset_size);
+     resp->hdr.type = VIRTIO_GPU_RESP_OK_CAPSET;
+-    rutabaga_get_capset(vr->rutabaga, gc.capset_id, gc.capset_version,
+-                        resp->capset_data, capset_size);
++    RGL(rutabaga_get_capset(vr->rutabaga, gc.capset_id, gc.capset_version,
++                            resp->capset_data, capset_size));
+ 
+     virtio_gpu_ctrl_response(g, cmd, &resp->hdr, sizeof(*resp) + capset_size);
+     g_free(resp);
+@@ -1080,8 +1080,8 @@ virtio_gpu_rutabaga_map_fixed(VirtIOGPURutabaga *vr,
+         offset > vb->conf.hostmem || size > vb->conf.hostmem - offset) {
+         return false;
+     }
+-    if (rutabaga_resource_export_blob(vr->rutabaga, res->resource_id,
+-                                      &handle)) {
++    if (RGL(rutabaga_resource_export_blob(vr->rutabaga, res->resource_id,
++                                          &handle))) {
+         return false;
+     }
+     /* an opaque fd (Vulkan memory) cannot be mmap()ed */
+@@ -1166,7 +1166,8 @@ rutabaga_cmd_resource_map_blob(VirtIOGPU *g,
+         /* not exportable as an fd that can be mmap()ed: a subregion */
+     }
+ 
+-    result = rutabaga_resource_map(vr->rutabaga, mblob.resource_id, &mapping);
++    result = RGL(rutabaga_resource_map(vr->rutabaga, mblob.resource_id,
++                                       &mapping));
+     CHECK(!result, cmd);
+ 
+     /*
+@@ -1194,7 +1195,7 @@ rutabaga_cmd_resource_map_blob(VirtIOGPU *g,
+     }
+ 
+     if (slot >= MAX_SLOTS) {
+-        result = rutabaga_resource_unmap(vr->rutabaga, mblob.resource_id);
++        result = RGL(rutabaga_resource_unmap(vr->rutabaga, mblob.resource_id));
+         CHECK(!result, cmd);
+     }
+ 
+-- 
+2.56.0
+

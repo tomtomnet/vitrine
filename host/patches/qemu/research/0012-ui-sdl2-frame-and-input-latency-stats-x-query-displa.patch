@@ -1,7 +1,7 @@
-From 5d37deb8ec499eef46063ddf589c7d32c928e513 Mon Sep 17 00:00:00 2001
+From 4462040ee488d8b0722e38147e75efcbf086fe94 Mon Sep 17 00:00:00 2001
 From: tomtomnet <tompere8000@proton.me>
 Date: Mon, 28 Sep 2026 17:58:00 +0200
-Subject: [PATCH 12/19] ui/sdl2: frame and input latency stats
+Subject: [PATCH] ui/sdl2: frame and input latency stats
  (x-query-display-stats)
 
 The SDL display now measures the guest frames it shows, and the new QMP
@@ -158,7 +158,7 @@ index 5417ea31a9..af5986cf21 100644
                        SDL_KeyboardEvent *ev);
  void sdl2_release_modifiers(struct sdl2_console *scon);
 diff --git a/meson.build b/meson.build
-index 6b2741d11a..5637a9d4aa 100644
+index 6717b947b8..8878e27a53 100644
 --- a/meson.build
 +++ b/meson.build
 @@ -1648,6 +1648,20 @@ else
@@ -190,7 +190,7 @@ index 6b2741d11a..5637a9d4aa 100644
  config_host_data.set('CONFIG_SECCOMP', seccomp.found())
  if seccomp.found()
    config_host_data.set('CONFIG_SECCOMP_SYSRAWRC', seccomp_has_sysrawrc)
-@@ -4924,6 +4939,7 @@ summary_info += {'D-Bus display':     dbus_display}
+@@ -4955,6 +4970,7 @@ summary_info += {'D-Bus display':     dbus_display}
  summary_info += {'SDL support':       sdl}
  summary_info += {'SDL image support': sdl_image}
  summary_info += {'SDL control menu':  imgui}
@@ -199,10 +199,10 @@ index 6b2741d11a..5637a9d4aa 100644
  summary_info += {'pixman':            pixman}
  summary_info += {'VTE support':       vte}
 diff --git a/qapi/ui.json b/qapi/ui.json
-index b2c42a7f57..7e517f22ad 100644
+index 9e3e80a3d7..45d1e69380 100644
 --- a/qapi/ui.json
 +++ b/qapi/ui.json
-@@ -1581,6 +1581,168 @@
+@@ -1523,6 +1523,168 @@
  { 'command': 'query-display-options',
    'returns': 'DisplayOptions' }
  
@@ -370,7 +370,7 @@ index b2c42a7f57..7e517f22ad 100644
 +
  ##
  # @DisplayReloadType:
- #
+ #     Available DisplayReload types.
 diff --git a/ui/meson.build b/ui/meson.build
 index c5ceef290a..2da9ef0143 100644
 --- a/ui/meson.build
@@ -483,7 +483,7 @@ index e0e734b2af..fb87c221a0 100644
  }
 diff --git a/ui/sdl2-stats.c b/ui/sdl2-stats.c
 new file mode 100644
-index 0000000000..ae8bc73b55
+index 0000000000..9f2227a2d0
 --- /dev/null
 +++ b/ui/sdl2-stats.c
 @@ -0,0 +1,774 @@
@@ -1676,3 +1676,6 @@ index 0000000000..c2431c5003
 +  </interface>
 +
 +</protocol>
+-- 
+2.56.0
+
