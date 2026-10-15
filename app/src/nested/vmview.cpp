@@ -273,6 +273,7 @@ struct View {
     std::unordered_map<wl_proxy *, Object *> byProxy; // our host objects
     uint64_t seq = 0;
     bool mapped = false;
+    bool shortcutsCaptured = false; // a guest's shortcuts inhibitor moved to the app's window exists
     // VMVIEW_STATS
     unsigned presented = 0, zeroCopy = 0, discarded = 0, pointerEvents = 0, keyEvents = 0;
     // the forwarder's own feedback on every guest commit with a new buffer: the guest asks for feedback
@@ -311,6 +312,7 @@ struct View {
     void configureToplevel(Conn &c);
     void placeToplevel(Conn &c);
     void setMapped(bool on);
+    void setShortcutsCaptured(bool on);
     // host events
     int event(wl_proxy *p, uint32_t opcode, const wl_message *m, wl_argument *args);
     void keyboardFocus(Conn &c);
@@ -495,6 +497,12 @@ uint32_t View::allocServerId(Conn &c)
 // version allows, else just our proxy (the host keeps its side until the app's connection closes).
 void View::hostDestroy(Object *o)
 {
+    // the guest's shortcuts capture goes with its inhibitor, however it goes (destroyed, or its
+    // connection closed)
+    if (o->onAppWindow) {
+        o->onAppWindow = false;
+        setShortcutsCaptured(false);
+    }
     if (o->subsurface) {
         byProxy.erase(reinterpret_cast<wl_proxy *>(o->subsurface));
         wl_subsurface_destroy(o->subsurface);
@@ -889,6 +897,8 @@ void View::handle(Conn &c, uint32_t id, uint16_t opcode, const uint8_t *body, si
             Object *no = add(c, newId, newInfo, version, Kind::Forwarded);
             no->proxy = np;
             no->onAppWindow = movedInhibitor;
+            if (movedInhibitor)
+                setShortcutsCaptured(true);
             watch(np, no);
             for (int i = 0; i < n; i++)
                 if (specs[i].type == 'o' && objArgs[i] && objArgs[i]->role == Role::Pointer)
@@ -1033,6 +1043,18 @@ void View::setMapped(bool on)
     mapped = on;
     if (cb.mapped)
         cb.mapped(cb.data, on);
+}
+
+// The guest's shortcuts inhibitor names the app's PARENT surface (the request is moved there),
+// which has the keyboard focus only if it is the app's window's main surface: the app hears of it
+void View::setShortcutsCaptured(bool on)
+{
+    if (on == shortcutsCaptured)
+        return;
+    shortcutsCaptured = on;
+    logf("the guest %s the host's keyboard shortcuts", on ? "captures" : "releases");
+    if (cb.shortcuts)
+        cb.shortcuts(cb.data, on);
 }
 
 // The keyboard: the guest gets it while the host gives it to the app's window and the app lets it.

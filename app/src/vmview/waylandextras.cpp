@@ -5,10 +5,13 @@
 #include "relative-pointer-unstable-v1-client-protocol.h"
 
 #include <QGuiApplication>
+#include <QHash>
+#include <QList>
 #include <QWindow>
 #include <qpa/qplatformnativeinterface.h>
 #include <wayland-client.h>
 #include <cstring>
+#include <utility>
 
 namespace {
 const wl_registry_listener kRegistry = {
@@ -28,13 +31,28 @@ const wl_registry_listener kRegistry = {
     [](void *, wl_registry *, uint32_t) {},
 };
 
+/* A surface's one shortcuts inhibitor and those holding it (setShortcutsInhibited()) */
+struct SharedInhibitor {
+    zwp_keyboard_shortcuts_inhibitor_v1 *inhibitor = nullptr;
+    QList<WaylandExtras *> holders;
+    bool active = false;
+};
+QHash<wl_surface *, SharedInhibitor *> g_inhibitors;
+
+void inhibitActive(void *data, bool active)
+{
+    auto *shared = static_cast<SharedInhibitor *>(data);
+    shared->active = active;
+    /* a holder may let go as it hears it */
+    const QList<WaylandExtras *> holders = shared->holders;
+    for (WaylandExtras *holder : holders) {
+        holder->onInhibit(active);
+    }
+}
+
 const zwp_keyboard_shortcuts_inhibitor_v1_listener kInhibitor = {
-    [](void *data, zwp_keyboard_shortcuts_inhibitor_v1 *) {
-        static_cast<WaylandExtras *>(data)->onInhibit(true);
-    },
-    [](void *data, zwp_keyboard_shortcuts_inhibitor_v1 *) {
-        static_cast<WaylandExtras *>(data)->onInhibit(false);
-    },
+    [](void *data, zwp_keyboard_shortcuts_inhibitor_v1 *) { inhibitActive(data, true); },
+    [](void *data, zwp_keyboard_shortcuts_inhibitor_v1 *) { inhibitActive(data, false); },
 };
 
 const zwp_locked_pointer_v1_listener kLocked = {
@@ -70,9 +88,7 @@ WaylandExtras::~WaylandExtras()
     if (m_confined) {
         zwp_confined_pointer_v1_destroy(m_confined);
     }
-    if (m_inhibitor) {
-        zwp_keyboard_shortcuts_inhibitor_v1_destroy(m_inhibitor);
-    }
+    releaseShortcuts();
 }
 
 bool WaylandExtras::init()
@@ -116,23 +132,54 @@ wl_surface *WaylandExtras::surfaceOf(QWindow *window)
 
 bool WaylandExtras::setShortcutsInhibited(QWindow *topLevel, bool on)
 {
+    wl_surface *surface = on ? surfaceOf(topLevel) : nullptr;
+
     if (!on) {
-        if (m_inhibitor) {
-            zwp_keyboard_shortcuts_inhibitor_v1_destroy(m_inhibitor);
-            m_inhibitor = nullptr;
-            onInhibit(false);
-        }
+        releaseShortcuts();
         return true;
     }
-    wl_surface *surface = surfaceOf(topLevel);
-    if (!m_inhibitManager || !surface || !m_seat || m_inhibitor) {
-        return m_inhibitor;
+    if (m_inhibited && m_inhibited == surface) {
+        return true;
     }
-    m_inhibitor = zwp_keyboard_shortcuts_inhibit_manager_v1_inhibit_shortcuts(m_inhibitManager,
-                                                                              surface, m_seat);
-    zwp_keyboard_shortcuts_inhibitor_v1_add_listener(m_inhibitor, &kInhibitor, this);
-    wl_display_flush(m_display);
+    if (!m_inhibitManager || !surface || !m_seat) {
+        return m_inhibited;
+    }
+    releaseShortcuts();
+    SharedInhibitor *&shared = g_inhibitors[surface];
+    if (!shared) {
+        shared = new SharedInhibitor;
+        shared->inhibitor = zwp_keyboard_shortcuts_inhibit_manager_v1_inhibit_shortcuts(
+            m_inhibitManager, surface, m_seat);
+        zwp_keyboard_shortcuts_inhibitor_v1_add_listener(shared->inhibitor, &kInhibitor, shared);
+        wl_display_flush(m_display);
+    }
+    shared->holders.append(this);
+    m_inhibited = surface;
+    if (shared->active) {
+        onInhibit(true);
+    }
     return true;
+}
+
+/* This one's share of its surface's inhibitor; the last holder destroys it */
+void WaylandExtras::releaseShortcuts()
+{
+    wl_surface *surface = std::exchange(m_inhibited, nullptr);
+    SharedInhibitor *shared = surface ? g_inhibitors.value(surface) : nullptr;
+
+    if (!shared) {
+        return;
+    }
+    shared->holders.removeOne(this);
+    if (shared->holders.isEmpty()) {
+        g_inhibitors.remove(surface);
+        zwp_keyboard_shortcuts_inhibitor_v1_destroy(shared->inhibitor);
+        delete shared;
+        if (m_display) {
+            wl_display_flush(m_display);
+        }
+    }
+    onInhibit(false);
 }
 
 bool WaylandExtras::setPointerLocked(QWindow *window, bool on)

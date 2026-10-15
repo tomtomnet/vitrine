@@ -2,6 +2,11 @@
 #include "nestedview.h"
 
 #include "vmview.h"
+#include "vmview/waylandextras.h"
+
+#include "keyboard-shortcuts-inhibit-unstable-v1-client-protocol.h"
+#include "pointer-constraints-unstable-v1-client-protocol.h"
+#include "relative-pointer-unstable-v1-client-protocol.h"
 
 #include <QFile>
 #include <QGuiApplication>
@@ -203,6 +208,15 @@ bool NestedView::init(const QString &socket, QString *error)
         auto *self = static_cast<NestedView *>(data);
         QMetaObject::invokeMethod(self, [self]() { self->focus(); }, Qt::QueuedConnection);
     };
+    cb.shortcuts = [](void *data, bool captured) {
+        auto *self = static_cast<NestedView *>(data);
+        QMetaObject::invokeMethod(self, [self, captured]() {
+            self->m_guestShortcuts = captured;
+            self->updateShortcuts();
+        }, Qt::QueuedConnection);
+    };
+    m_wayland = new WaylandExtras(this);
+    m_wayland->init();
     m_view = vmview_new(m_display, m_surface, QFile::encodeName(socket).constData(), &cb);
     if (!m_view) {
         *error = tr("Cannot serve the nested desktop's socket %1: %2")
@@ -239,6 +253,24 @@ NestedView::~NestedView()
 {
     /* first: the guest's objects on the surface go, and its callbacks stop */
     vmview_destroy(std::exchange(m_view, nullptr));
+    /* the shortcuts inhibitor, before the window it is on; then the globals the
+       WaylandExtras bound, which it leaves (as VmView's) */
+    if (m_wayland) {
+        m_wayland->setShortcutsInhibited(nullptr, false);
+        auto *inhibit = std::exchange(m_wayland->m_inhibitManager, nullptr);
+        auto *constraints = std::exchange(m_wayland->m_constraints, nullptr);
+        auto *relative = std::exchange(m_wayland->m_relativeManager, nullptr);
+        delete std::exchange(m_wayland, nullptr);
+        if (relative) {
+            zwp_relative_pointer_manager_v1_destroy(relative);
+        }
+        if (constraints) {
+            zwp_pointer_constraints_v1_destroy(constraints);
+        }
+        if (inhibit) {
+            zwp_keyboard_shortcuts_inhibit_manager_v1_destroy(inhibit);
+        }
+    }
     detach();
     delete m_platformWatch;
     if (m_fullWindow) {
@@ -310,6 +342,10 @@ void NestedView::setFullScreen(bool on)
             watchPlatformWindow(m_fullWindow);
         }
     } else {
+        /* the shortcuts off its window before the window goes */
+        if (m_wayland) {
+            m_wayland->setShortcutsInhibited(nullptr, false);
+        }
         QWindow *full = std::exchange(m_fullWindow, nullptr);
         full->removeEventFilter(this);
         delete full;
@@ -464,6 +500,23 @@ void NestedView::updateKeyboard()
     if (want != m_keyboard) {
         m_keyboard = want;
         Q_EMIT keyboardChanged();
+    }
+    updateShortcuts();
+}
+
+/*
+ * The guest's capture on the window that has the keyboard: the full-screen
+ * one, else vitrine's (the embedded window is a subsurface of it)
+ */
+void NestedView::updateShortcuts()
+{
+    QWindow *top = m_fullWindow;
+
+    if (!top && m_container && m_container->window()) {
+        top = m_container->window()->windowHandle();
+    }
+    if (m_wayland) {
+        m_wayland->setShortcutsInhibited(top, m_guestShortcuts && m_keyboard && top);
     }
 }
 

@@ -42,6 +42,11 @@ struct vmview_callbacks {
     /* a pointer button went down on the guest's window, which the app never sees: it may give
        the guest the keyboard (vitrine) */
     void (*pressed)(void *data);
+    /* the guest asks for the host's keyboard shortcuts (captured: its shortcuts inhibitor, which
+       goes to PARENT, was made; off: it is gone). The compositor applies an inhibitor only on the
+       surface with the keyboard focus, a window's main surface: an app whose PARENT is another
+       surface takes the shortcuts of its window itself meanwhile (vitrine, 2026-10-15) */
+    void (*shortcuts)(void *data, bool captured);
 };
 
 /* Serve SOCKET_PATH (created; an old socket there is replaced) and show the guest's window as a

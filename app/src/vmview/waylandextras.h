@@ -34,6 +34,14 @@ public:
     static wl_surface *surfaceOf(QWindow *window);
     wl_display *display() const { return m_display; }
 
+    /*
+     * The compositor's shortcuts (Meta, Alt+Tab...) to the window's client
+     * while it has the keyboard: an inhibitor on @topLevel's surface, shared
+     * by every WaylandExtras that asks for one there (the D-Bus display's
+     * views, the nested desktop's): the compositor ends the connection
+     * (already_inhibited) on a second inhibitor for a surface and seat.
+     * Another @topLevel moves this one's share there
+     */
     bool setShortcutsInhibited(QWindow *topLevel, bool on);
     bool setPointerLocked(QWindow *window, bool on);
     // the pointer stays on @window's surface (a top-level: KWin only honours
@@ -59,10 +67,12 @@ public:
     zwp_relative_pointer_manager_v1 *m_relativeManager = nullptr;
 
 private:
+    void releaseShortcuts();
+
     wl_display *m_display = nullptr;
     wl_seat *m_seat = nullptr;
     wl_pointer *m_pointer = nullptr;
-    zwp_keyboard_shortcuts_inhibitor_v1 *m_inhibitor = nullptr;
+    wl_surface *m_inhibited = nullptr; // the surface whose shared inhibitor this one holds
     zwp_locked_pointer_v1 *m_locked = nullptr;
     zwp_confined_pointer_v1 *m_confined = nullptr;
     zwp_relative_pointer_v1 *m_relative = nullptr;

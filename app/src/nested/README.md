@@ -31,9 +31,18 @@ screen, and the library's callbacks brought to the GUI thread).
 
 ## Local changes
 
-None. The research side took vitrine's: a `pressed` callback for button
-presses on the guest's window and a NULL object where the protocol allows
-none counting as the app's (its 182e74d), and `View::stopAll()` sending the
-guest's toplevel `xdg_toplevel.close` before it closes the connections, so
-that the guest's session ends at once, without KWin restarts, when vitrine
-quits (its a763b59).
+- A `shortcuts` callback (2026-10-15): the guest's shortcuts inhibitor,
+  which the library moves to PARENT, made (captured) and gone. vitrine's
+  PARENT is a surface of its own, a subsurface of a subsurface of its
+  window. The compositor applies an inhibitor only on the surface with the
+  keyboard focus, so Meta reached both the guest's desktop and the host's.
+  `nestedview.cpp` takes the window's shortcuts itself meanwhile, through
+  WaylandExtras, which shares one inhibitor per surface with the D-Bus
+  display's views.
+
+The research side took vitrine's earlier ones: a `pressed` callback for
+button presses on the guest's window and a NULL object where the protocol
+allows none counting as the app's (its 182e74d), and `View::stopAll()`
+sending the guest's toplevel `xdg_toplevel.close` before it closes the
+connections, so that the guest's session ends at once, without KWin
+restarts, when vitrine quits (its a763b59).

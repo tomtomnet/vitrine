@@ -9,6 +9,7 @@
 class QTimer;
 class QWidget;
 class QWindow;
+class WaylandExtras;
 struct vmview;
 struct wl_buffer;
 struct wl_display;
@@ -31,6 +32,12 @@ struct wl_surface;
  * would leave the guest's window unmapped for good.  The surface's buffer
  * is one transparent pixel, which maps it; it takes no input, so that the
  * window under it keeps the pointer where the guest's window is not.
+ *
+ * The guest's shortcuts capture (its proxy's: while the pointer is on its
+ * window, Meta+Shift+Esc releases it) goes to the window with the
+ * keyboard, vitrine's or the full-screen one, while the guest has the keys:
+ * vmview moves it to its parent surface, which never has the keyboard
+ * focus, so the compositor would apply none (Meta reached both desktops).
  *
  * The compositor sends the pointer over the guest's window to the guest,
  * and the keyboard of vitrine's window to it too while setInputEnabled()
@@ -84,6 +91,8 @@ private:
     /* The surface's commit, for the guest's window's place to apply */
     void commitSurface();
     void updateKeyboard();
+    /* The host's shortcuts to the guest while it asks for them and has the keys */
+    void updateShortcuts();
 
     vmview *m_view = nullptr;
     QString m_socket;
@@ -103,6 +112,8 @@ private:
     QTimer *m_commitAgain = nullptr;
     bool m_inputEnabled = true;
     bool m_keyboard = false;
+    WaylandExtras *m_wayland = nullptr; // the shortcuts inhibitor, shared on the window
+    bool m_guestShortcuts = false;      // the guest asks for them (vmview's shortcuts callback)
     int m_connections = 0;
     bool m_mapped = false;
     QString m_title;
