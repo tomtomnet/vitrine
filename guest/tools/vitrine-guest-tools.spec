@@ -2,7 +2,7 @@
 # exact version, and dnf takes an installed one of the same version as done.
 Name:           vitrine-guest-tools
 Version:        0.1.0
-Release:        21%{?dist}
+Release:        22%{?dist}
 Summary:        vitrine guest tools: patched virtio-gpu driver, settings and agent
 
 # the driver's sources (dkms/vendor, dkms/patches) are the kernel's: MIT
@@ -175,6 +175,11 @@ fi
 %dir %{_sharedstatedir}/%{name}
 
 %changelog
+* Thu Oct 15 2026 vitrine <noreply@anthropic.com> - 0.1.0-22
+- the nested session also ends at once when the host's display hangs up
+  without a word (vitrine not running, with vitrine's QEMU of 2026-10-15):
+  no more KWin restarts and crashing clients before the login screen
+
 * Thu Oct 15 2026 vitrine <noreply@anthropic.com> - 0.1.0-21
 - the nested session ends at once when the host's display does not answer
   (vitrine not running): it no longer hangs without a window, the guest goes
