@@ -1,8 +1,9 @@
-rutabaga_gfx: native contexts through the FFI, the fence ring index, polling, a logger, guest dma-bufs
+rutabaga_gfx: native contexts through the FFI, the fence ring index, polling, a logger, guest dma-bufs, cross-domain hang-ups
 
 The research's patches/rutabaga_gfx/changes.diff (git diff HEAD of its
-checkout of 4fb9f32055d8, release 0.1.85, on 2026-10-12), unchanged
-below this description:
+checkout of 4fb9f32055d8, release 0.1.85, on 2026-10-12; the cross-domain
+hang-ups added on 2026-10-15, its commit 8ecffaf), unchanged below this
+description:
 
 - the FFI's virgl_renderer feature: DRM native contexts and virgl2
   through the C FFI that QEMU uses, beside cross-domain on one device,
@@ -18,7 +19,15 @@ below this description:
   debug|trace for others, at most 50 at once then one a second;
 - guest-memory blobs get the udmabuf of their pages QEMU makes
   (x-guest-dmabuf), through virglrenderer's
-  virgl_renderer_resource_set_guest_dmabuf(), looked up at run time.
+  virgl_renderer_resource_set_guest_dmabuf(), looked up at run time;
+- cross-domain hang-ups: when the host end of the guest's Wayland
+  connection goes away (the app serving QEMU's socket quit or crashed),
+  the guest gets one empty receive, which says so, and the channel is no
+  longer polled: every guest poll got another one at once, QEMU spun at
+  about 3 CPUs and the guest's session ran on without a window.  A failed
+  connect at the context's start (nothing serves the socket: ENOENT,
+  ECONNREFUSED) gives the guest a channel already at its end instead of
+  none, whose polls were never answered: the session hung.
 
 diff --git a/ffi/Cargo.toml b/ffi/Cargo.toml
 index daf57a9..4d69f87 100644
@@ -197,6 +206,96 @@ index b68e81f..7908c38 100644
  #[no_mangle]
  pub extern "C" fn rutabaga_get_num_capsets(ptr: &mut rutabaga, num_capsets: &mut u32) -> i32 {
      catch_unwind(AssertUnwindSafe(|| {
+diff --git a/src/cross_domain/context.rs b/src/cross_domain/context.rs
+index 66b4eeb..b493eb3 100644
+--- a/src/cross_domain/context.rs
++++ b/src/cross_domain/context.rs
+@@ -101,6 +101,18 @@ pub struct CrossDomainContext {
+     pub kill_evt: Option<Event>,
+ }
+ 
++// A channel already at its end: the guest's first poll gets the hang-up.
++#[cfg(unix)]
++fn hung_up_tube() -> RutabagaResult<Tube> {
++    let (ours, _peer) = std::os::unix::net::UnixStream::pair().map_err(MagmaGpuError::from)?;
++    Ok(Tube::try_from(OwnedDescriptor::from(std::os::fd::OwnedFd::from(ours)))?)
++}
++
++#[cfg(not(unix))]
++fn hung_up_tube() -> RutabagaResult<Tube> {
++    Err(RutabagaError::InvalidCrossDomainChannel)
++}
++
+ impl CrossDomainContext {
+     fn get_connection(&mut self, cmd_init: &CrossDomainInit) -> RutabagaResult<Tube> {
+         let paths = self
+@@ -113,8 +125,20 @@ impl CrossDomainContext {
+             .ok_or(RutabagaError::InvalidCrossDomainChannel)?
+             .path;
+ 
+-        let tube = Tube::new(path.clone(), TubeType::Stream)?;
+-        Ok(tube)
++        match Tube::new(path.clone(), TubeType::Stream) {
++            Ok(tube) => Ok(tube),
++            // Nothing serves the host socket (an app that shows the VM in a window of its own and is
++            // not there yet, or not any more). Failing here left the context without a channel: the
++            // guest's polls were never answered and its session waited forever. A channel at its end
++            // gives the guest the hang-up of a host that went away instead, at its first poll.
++            Err(e) => {
++                error!(
++                    "cross domain: connecting to {} failed ({e}): the guest's channel hangs up",
++                    path.display()
++                );
++                hung_up_tube()
++            }
++        }
+     }
+ 
+     fn get_internal_socket_connection(&mut self, uuid: u128) -> RutabagaResult<Tube> {
+diff --git a/src/cross_domain/worker.rs b/src/cross_domain/worker.rs
+index a1b512c..c953357 100644
+--- a/src/cross_domain/worker.rs
++++ b/src/cross_domain/worker.rs
+@@ -94,7 +94,14 @@ impl CrossDomainWorker {
+         if let Some(event) = events.first() {
+             match event.connection_id {
+                 CROSS_DOMAIN_CONTEXT_CHANNEL_ID => {
+-                    self.process_receive(fence, receive_buf)?;
++                    if self.process_receive(fence, receive_buf)? {
++                        // The host end hung up: the guest just got an empty receive that says so.
++                        // Polling the channel again would answer every later poll with another one
++                        // at once, a busy loop through the guest for as long as its context lives.
++                        if let Some(ref connection) = self.state.connection {
++                            self.wait_ctx.delete(connection.as_borrowed_descriptor())?;
++                        }
++                    }
+                 }
+                 CROSS_DOMAIN_RESAMPLE_ID => {
+                     // The resample event is triggered when the job queue is in the following state:
+@@ -199,11 +206,13 @@ impl CrossDomainWorker {
+         Ok(())
+     }
+ 
++    // Returns true when the host end hung up: a stream socket gives no data and no descriptors only at its
++    // end, and the guest sees that as an empty CROSS_DOMAIN_CMD_RECEIVE.
+     fn process_receive(
+         &mut self,
+         fence: RutabagaFence,
+         receive_buf: &mut [u8],
+-    ) -> RutabagaResult<()> {
++    ) -> RutabagaResult<bool> {
+         let (len, files) = self.state.receive_msg(receive_buf)?;
+         let mut cmd_receive: CrossDomainSendReceive = Default::default();
+ 
+@@ -278,7 +287,7 @@ impl CrossDomainWorker {
+             self.state.channel_ring_id,
+         )?;
+         self.fence_handler.call(fence);
+-        Ok(())
++        Ok(len == 0 && num_files == 0)
+     }
+ 
+     pub fn run(
 diff --git a/src/virgl_renderer.rs b/src/virgl_renderer.rs
 index 4c195b4..3e910d3 100644
 --- a/src/virgl_renderer.rs

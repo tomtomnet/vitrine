@@ -60,12 +60,12 @@ Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
  ui/meson.build                   |  15 +
  ui/sdl2-2d.c                     |   5 +
  ui/sdl2-gl.c                     |   8 +
- ui/sdl2-stats.c                  | 775 +++++++++++++++++++++++++++++++
+ ui/sdl2-stats.c                  | 774 +++++++++++++++++++++++++++++++
  ui/sdl2.c                        |  16 +
  ui/trace-events                  |   8 +
  ui/ui-qmp-cmds.c                 |  21 +
  ui/wayland/presentation-time.xml | 268 +++++++++++
- 13 files changed, 1342 insertions(+)
+ 13 files changed, 1341 insertions(+)
  create mode 100644 ui/sdl2-stats.c
  create mode 100644 ui/wayland/presentation-time.xml
 
@@ -486,7 +486,7 @@ new file mode 100644
 index 0000000000..ae8bc73b55
 --- /dev/null
 +++ b/ui/sdl2-stats.c
-@@ -0,0 +1,775 @@
+@@ -0,0 +1,774 @@
 +/*
 + * QEMU SDL display: frame statistics
 + *
@@ -1261,7 +1261,6 @@ index 0000000000..ae8bc73b55
 +    }
 +    last_poll_ns = now;
 +}
-+
 diff --git a/ui/sdl2.c b/ui/sdl2.c
 index 746b65a803..58fd92708b 100644
 --- a/ui/sdl2.c

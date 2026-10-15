@@ -1,6 +1,6 @@
 # The patches build.sh applies to QEMU, in this order (see ../README.md):
 # the research's series (research/: patches/qemu/series of
-# ~/Documents/virtio-gpu-desktop at 3907327), then Vitrine's own (vitrine/).
+# ~/Documents/virtio-gpu-desktop at e06b62f), then Vitrine's own (vitrine/).
 research/0001-ui-sdl2-follow-the-host-refresh-rate-tolerate-grab-b.patch
 research/0002-ui-sdl2-add-an-in-window-control-menu-Dear-ImGui.patch
 research/0003-Add-a-README-for-this-fork.patch
