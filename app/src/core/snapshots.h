@@ -42,6 +42,8 @@ public:
     };
 
     explicit VmSnapshots(VmRunner *runner, QObject *parent = nullptr);
+    /* A listing under way ends with it; an action that writes the disks
+       goes on to its end, unwatched (keep this while isBusy()) */
     ~VmSnapshots() override;
 
     /* The arguments and folder of the VM, for qemu-img while it is stopped */
