@@ -38,6 +38,7 @@
 #include "core/consoleviews.h"
 #include "core/guesttoolsbuilder.h"
 #include "core/hostsettings.h"
+#include "core/nesteddesktop.h"
 #include "core/paths.h"
 #include "core/qemuinfo.h"
 #include "core/stackbuilder.h"
@@ -1283,6 +1284,16 @@ void MainWindow::start()
         box->setAttribute(Qt::WA_DeleteOnClose);
         box->open();
         return;
+    }
+    /* the nested desktop's two cards of before (QEMU's VGA beside the
+       rutabaga card, whose boot is slow): its one card from this start on */
+    if (ArgsFile moved = vm->args(); NestedDesktop::moveToOneCard(moved)) {
+        QString error;
+        if (!vm->save(moved, &error)) {
+            statusBar()->showMessage(tr("%1 keeps the nested desktop's two cards: %2")
+                                         .arg(vm->name(), error),
+                                     8000);
+        }
     }
     /* it waits for Vitrine's QEMU: start() refuses it, which failed()
        reports with the build at hand, before USB access is asked */

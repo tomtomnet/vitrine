@@ -82,6 +82,14 @@ QString cardDevice(const std::optional<QStringList> &properties);
 void set(ArgsFile &args, bool on, const std::optional<QStringList> &properties = {});
 
 /*
+ * A VM with the two cards vitrine wrote until 2026-10-15
+ * (virtio-gpu-rutabaga-pci beside QEMU's VGA, as VmConfig::graphics()
+ * reads them as the nested desktop's): the one card in their place,
+ * virtio-vga-rutabaga with the old card's properties, the way set() writes
+ * it.  True when @args changed.  vitrine moves a VM so as it starts.
+ */
+bool moveToOneCard(ArgsFile &args);
+/*
  * QEMU's console of the VM's screen in a run of @args, for the D-Bus
  * display: 0, the one card's; 1 with the two cards of before, whose QEMU's
  * VGA comes first - the virtio card's screen, where the login screen is (a

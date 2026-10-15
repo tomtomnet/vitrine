@@ -494,9 +494,10 @@ private slots:
         QVERIFY(!page.isModified());
 
         /*
-         * The two cards of before (QEMU's VGA beside the rutabaga card): the
-         * list's entry for the nested desktop, and why the card is another;
-         * untouched, nothing written; off, the 3D card in their place
+         * The two cards of before (QEMU's VGA beside the rutabaga card), until
+         * the VM's next start: the list's entry for the nested desktop, and
+         * why the card is another; untouched, nothing written; off, the 3D
+         * card in their place
          */
         auto *cardHint = page.findChild<QLabel *>("cardHint");
         QVERIFY(cardHint);
@@ -508,7 +509,7 @@ private slots:
         QVERIFY(nested->isEnabled() && nested->isChecked());
         QCOMPARE(card->currentData().toString(), "virtio-vga-rutabaga");
         QCOMPARE(card->count(), 5);
-        QVERIFY2(cardHint->text().contains("beside the standard VGA"), qPrintable(cardHint->text()));
+        QVERIFY2(cardHint->text().contains("at its next start"), qPrintable(cardHint->text()));
         QVERIFY(!page.isModified());
         page.save(args);
         QCOMPARE(text(args), twoCards);

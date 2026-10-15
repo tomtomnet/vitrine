@@ -329,7 +329,8 @@ static VmConfig::Graphics cardGraphics(const QString &driver)
 /*
  * The nested desktop's card, which takes the card's place in the list while
  * it is on; the list's entry for the two cards of before too
- * (virtio-gpu-rutabaga-pci beside QEMU's VGA)
+ * (virtio-gpu-rutabaga-pci beside QEMU's VGA), which a VM has until its next
+ * start
  */
 static const char kNestedCard[] = "virtio-vga-rutabaga";
 
@@ -545,8 +546,9 @@ void DisplayPage::update()
     const QString driver = m_card->currentData().toString();
     if (s.nested && hadNested && loaded.device != kNestedCard) {
         m_cardHint->setText(tr("The nested desktop's card, virtio-gpu-rutabaga with "
-                               "cross-domain. This VM has it beside the standard VGA, as "
-                               "Vitrine set it up before."));
+                               "cross-domain. This VM still has it beside the standard VGA, as "
+                               "Vitrine set it up before: one card with VGA takes their place at "
+                               "its next start."));
     } else if (s.nested) {
         m_cardHint->setText(tr("The nested desktop's card, virtio-gpu-rutabaga with "
                                "cross-domain. It shows the firmware, the boot and the login "

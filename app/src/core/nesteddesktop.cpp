@@ -166,6 +166,20 @@ void set(ArgsFile &args, bool on, const std::optional<QStringList> &properties)
     }
 }
 
+bool moveToOneCard(ArgsFile &args)
+{
+    const VmConfig::Graphics g = VmConfig::graphics(args);
+
+    if (g.kind != VmConfig::Graphics::Nested || g.device == kCard) {
+        return false;
+    }
+    /* its properties as they are: the card inside is the same device */
+    OptionValue card = args.valueAt(cardLine(args));
+    card.setImplied(kCard);
+    VmConfig::setNestedCard(args, card.toString());
+    return true;
+}
+
 int screenConsole(const ArgsFile &args)
 {
     const VmConfig::Graphics g = VmConfig::graphics(args);

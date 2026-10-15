@@ -771,6 +771,39 @@ private slots:
     }
 
     /*
+     * A VM with the nested desktop's two cards of before (QEMU's VGA beside
+     * the rutabaga card): Start gives it the one card, in its settings too,
+     * as it starts (here QEMU cannot)
+     */
+    void nestedOneCardAtStart()
+    {
+        auto w = window();
+        settle(w.get());
+        Vm *bravo = m_store->find("bravo");
+        const QString twoCards = QString(kBravo) + "-vga std\n"
+                                                   "-device virtio-gpu-rutabaga-pci,cross-domain=on,"
+                                                   "hostmem=4G\n";
+        const QString oneCard = QString(kBravo) + "-vga none\n"
+                                                  "-device virtio-vga-rutabaga,cross-domain=on,"
+                                                  "hostmem=4G\n";
+        QVERIFY(bravo->save(ArgsFile::parse(twoCards)));
+        const auto restore = qScopeGuard([bravo]() { bravo->save(ArgsFile::parse(kBravo)); });
+        w->select("bravo");
+
+        action(w.get(), "Start")->trigger();
+        QMessageBox *box = nullptr;
+        QTRY_VERIFY((box = qobject_cast<QMessageBox *>(QApplication::activeModalWidget())));
+        QVERIFY2(box->text().contains("could not start"), qPrintable(box->text()));
+        box->close();
+        QCOMPARE(bravo->args().toText(), oneCard);
+        QFile file(bravo->argsPath());
+        QVERIFY(file.open(QIODevice::ReadOnly));
+        QCOMPARE(QString::fromUtf8(file.readAll()), oneCard);
+        /* what QEMU was to run */
+        QVERIFY(bravo->runner()->runArgs().toText().contains("virtio-vga-rutabaga"));
+    }
+
+    /*
      * A VM with its nested desktop in the window: the console's views,
      * from the guest (its window comes and goes), the View menu and
      * Ctrl+Alt+1/2 by their keys' places on an AZERTY keyboard; and

@@ -157,6 +157,41 @@ private slots:
         QCOMPARE(a.toText(), "-vga std\n-device virtio-vga-rutabaga,cross-domain=on\n");
     }
 
+    /*
+     * The two cards vitrine wrote before, as VMs have them still: the one
+     * card in their place, with the old card's properties, as the checkbox
+     * writes it; nothing else moves
+     */
+    void moveToOneCard()
+    {
+        ArgsFile a = ArgsFile::parse(kTwoCards);
+
+        QVERIFY(NestedDesktop::moveToOneCard(a));
+        QCOMPARE(a.toText(), QString(kNested));
+        QVERIFY(!NestedDesktop::moveToOneCard(a));
+        QCOMPARE(a.toText(), QString(kNested));
+
+        /* the user's changes to the card stay; a VGA of its own goes */
+        a = ArgsFile::parse("-machine q35\n-device VGA,id=vga0\n"
+                            "-device virtio-gpu-rutabaga-pci,cross-domain=on,hostmem=8G,id=gpu,"
+                            "x-prefault-blobs=off\n-display sdl\n");
+        QVERIFY(NestedDesktop::moveToOneCard(a));
+        QCOMPARE(a.toText(), "-machine q35\n-vga none\n"
+                             "-device virtio-vga-rutabaga,cross-domain=on,hostmem=8G,id=gpu,"
+                             "x-prefault-blobs=off\n-display sdl\n");
+        QVERIFY(VmConfig::graphics(a).kind == VmConfig::Graphics::Nested);
+        QVERIFY(NestedDesktop::mode(a) == Mode::OwnWindow);
+
+        /* not the nested desktop, or set up by hand: as they are */
+        for (const char *text : {kVm, "-vga none\n-device virtio-gpu-rutabaga-pci,cross-domain=on\n",
+                                 "-vga std\n-device virtio-gpu-rutabaga-pci\n",
+                                 "-vga std\n-device virtio-vga-rutabaga,cross-domain=on\n"}) {
+            a = ArgsFile::parse(text);
+            QVERIFY2(!NestedDesktop::moveToOneCard(a), text);
+            QCOMPARE(a.toText(), QString(text));
+        }
+    }
+
     /* The D-Bus display's console of the VM's screen: the one card's, the virtio card's of two */
     void screenConsole()
     {

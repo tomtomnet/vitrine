@@ -341,7 +341,8 @@ static QList<int> cardLines(const ArgsFile &args)
  * The nested desktop's card, with cross-domain on: virtio-vga-rutabaga, the
  * VM's one card, whose VGA part shows the firmware and the boot loader.
  * Until 2026-10-15 the Display page wrote virtio-gpu-rutabaga-pci beside
- * QEMU's VGA instead, two cards: those VMs read as the nested desktop still.
+ * QEMU's VGA instead, two cards: those VMs read as the nested desktop still,
+ * and get the one card at their next start (NestedDesktop::moveToOneCard()).
  */
 static const char kNestedCard[] = "virtio-vga-rutabaga";
 static const char kNestedCardBeside[] = "virtio-gpu-rutabaga-pci";
