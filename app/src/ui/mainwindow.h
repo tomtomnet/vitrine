@@ -51,6 +51,16 @@ public:
     void openSettings(Vm *vm, int page = -1);
     /* Shows the window over the others, for a second instance */
     void bringToFront();
+    /*
+     * Quits as Close does when its questions are answered Keep Running in
+     * the Background and Close Anyway, asking nothing: for SIGTERM, SIGINT
+     * and SIGHUP (QuitSignals).  The VMs run on, the guests' sessions shown
+     * in the window end as it goes (their views close them), changes to
+     * settings not applied are dropped, the tasks under way end with the
+     * app, the window's state is saved.  The app's event loops end, those
+     * of open dialogs too.
+     */
+    void quitWithoutQuestions();
 
     /* The bar's own menu: what shows and hides the list, not the bar */
     QMenu *createPopupMenu() override;
@@ -95,6 +105,10 @@ private:
     void focusScreen(FocusCause cause);
     /* No screen in full screen, none grabbing: before a dialog */
     void leaveScreens();
+    /* What closing does once there is nothing left to ask, for Close and
+       quitWithoutQuestions(): no screen in full screen, the window's state
+       saved */
+    void finishClosing();
 
     void start();
     void togglePause();

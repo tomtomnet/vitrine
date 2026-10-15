@@ -9,6 +9,7 @@
 #include <cstdio>
 
 #include "core/paths.h"
+#include "core/quitsignals.h"
 #include "core/stackbuilder.h"
 #include "core/vmconfig.h"
 #include "core/vmrunner.h"
@@ -137,6 +138,15 @@ int main(int argc, char **argv)
     MainWindow window(&store);
     QLocalServer server;
     listen(&server, socketPath, &window);
+    /*
+     * SIGTERM (the session ending, kill), SIGINT (Ctrl+C) and SIGHUP (the
+     * terminal closed) end vitrine as Close does, without its questions: a
+     * crash otherwise, which the guests' nested sessions in the window
+     * would see as their host gone, their KWin restarted several times
+     * before they end.  A second one of the same ends vitrine at once.
+     */
+    QuitSignals quit;
+    QObject::connect(&quit, &QuitSignals::received, &window, &MainWindow::quitWithoutQuestions);
     window.show();
     return app.exec();
 }

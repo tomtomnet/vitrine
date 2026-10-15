@@ -1431,9 +1431,6 @@ void MainWindow::showCommandLine()
 
 void MainWindow::closeEvent(QCloseEvent *event)
 {
-    QSettings settings(Paths::settingsPath(), QSettings::IniFormat);
-    const Vm *vm = current();
-
     /* asked again: what the user answers now goes */
     m_closeAfter.clear();
     m_shutDownOnceUp.clear();
@@ -1562,6 +1559,15 @@ void MainWindow::closeEvent(QCloseEvent *event)
         event->ignore();
         return;
     }
+    finishClosing();
+    QMainWindow::closeEvent(event);
+}
+
+void MainWindow::finishClosing()
+{
+    QSettings settings(Paths::settingsPath(), QSettings::IniFormat);
+    const Vm *vm = current();
+
     leaveScreens();
     settings.setValue("mainwindow/geometry", saveGeometry());
     settings.setValue("mainwindow/state", saveState());
@@ -1571,5 +1577,29 @@ void MainWindow::closeEvent(QCloseEvent *event)
     settings.setValue("mainwindow/current", vm ? vm->id() : QString());
     settings.setValue("mainwindow/tab", int(m_pane->tab()));
     settings.setValue("settings/page", VmPane::pageKey(m_pane->page()));
-    QMainWindow::closeEvent(event);
+}
+
+void MainWindow::quitWithoutQuestions()
+{
+    /* as Keep Running in the Background: the VMs run on; those asked to
+       shut down as the window closed go on with it, not waited for */
+    m_closeAfter.clear();
+    m_shutDownOnceUp.clear();
+    finishClosing();
+    /*
+     * Out of sight, as a close leaves it, while the window is whole: the
+     * keys leave the guests' views now.  A window still in sight when it
+     * is deleted closes itself in ~QWidget, after this class's members
+     * went: a view losing the keys then called consoleChanged() on them
+     * (vitrine crashed at a SIGTERM in its first test on a guest).
+     */
+    hide();
+    /*
+     * Every event loop ends, those of the dialogs and questions open too,
+     * as cancelled: the changes not applied go unsaved.  main() then
+     * deletes the window, whose consoles' views close the guests' sessions
+     * shown in it (vmview), and the app, whose tasks end as with Close
+     * Anyway.
+     */
+    QCoreApplication::exit(0);
 }

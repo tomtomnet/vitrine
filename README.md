@@ -151,7 +151,10 @@ Ctrl+Alt+F toggles full screen, F9 collapses or expands the VM list, F10 or
 Alt with a menu's first letter opens the menus (not while the VM's screen has
 the keys: they go to the VM), Ctrl+H asks the guest to shut down, Ctrl+L shows
 QEMU's log. Closing vitrine can leave its VMs running; it finds them again at
-its next start.
+its next start. SIGTERM (`kill`), SIGINT (Ctrl+C in its terminal) and SIGHUP
+(its terminal closed) close it the same way without asking: its VMs run on,
+settings changes not applied are lost, and what is under way stops, as with
+Close Anyway. The same signal again ends it at once.
 
 Nested desktop: the Display settings' Nested desktop checkbox runs the
 guest's KDE session in a KWin of its own, drawn as a window of this
