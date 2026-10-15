@@ -1,15 +1,20 @@
 // SPDX-License-Identifier: GPL-2.0-or-later
 #include <QDir>
+#include <QElapsedTimer>
 #include <QFile>
 #include <QFileInfo>
 #include <QJsonArray>
 #include <QJsonDocument>
 #include <QJsonObject>
 #include <QProcess>
+#include <QScopeGuard>
 #include <QSignalSpy>
 #include <QStandardPaths>
 #include <QTemporaryDir>
 #include <QTest>
+
+#include <cerrno>
+#include <csignal>
 
 #include "core/snapshots.h"
 #include "core/vmrunner.h"
@@ -364,6 +369,89 @@ private slots:
         QCOMPARE(runner.state(), VmRunner::State::Running);
         runner.forceOff();
         QTRY_COMPARE_WITH_TIMEOUT(runner.state(), VmRunner::State::Stopped, 10000);
+    }
+
+    /*
+     * Gone while it lists the snapshots of a stopped VM (the snapshot view
+     * showing another VM, the guest tools' dialog closing): qemu-img info
+     * ends with it, without QProcess's warning of a process destroyed while
+     * it runs; gone while an action writes the disks (the app quitting), the
+     * action is never cut short.  A stand-in for qemu-img whose listing
+     * takes 30 s, and whose snapshot -c leaves a mark once it is done.
+     */
+    void goneWhileListing()
+    {
+        const QString dir = tmp.filePath("gone");
+        const QString bin = dir + "/bin";
+        QVERIFY(QDir().mkpath(bin));
+        QVERIFY(writeScript(bin + "/qemu-img", "#!/bin/sh\n"
+                                                "here=$(dirname \"$0\")\n"
+                                                "case $1 in\n"
+                                                "info) echo $$ > \"$here/info.pid\"; exec sleep 30 ;;\n"
+                                                "snapshot) sleep 1; echo \"$*\" > \"$here/written\" ;;\n"
+                                                "esac\n"));
+        QVERIFY(writeScript(bin + "/qemu-system-x86_64", "#!/bin/sh\nexit 1\n"));
+        QFile disk(dir + "/disk.qcow2");
+        QVERIFY(disk.open(QIODevice::WriteOnly));
+        disk.close();
+        const ArgsFile args = ArgsFile::parse("#qemu " + bin + "/qemu-system-x86_64\n"
+                                              "-drive file=disk.qcow2,format=qcow2,if=virtio\n");
+        VmRunner runner(QString("vitrine-snap-%1-gone").arg(QCoreApplication::applicationPid()), dir);
+
+        static QStringList warnings;
+        static QtMessageHandler previous = nullptr;
+        warnings.clear();
+        previous = qInstallMessageHandler(
+            [](QtMsgType type, const QMessageLogContext &context, const QString &message) {
+            if (type != QtDebugMsg && type != QtInfoMsg) {
+                warnings << message;
+            }
+            previous(type, context, message);
+        });
+        const auto restore = qScopeGuard([]() { qInstallMessageHandler(previous); });
+
+        auto *snapshots = new VmSnapshots(&runner);
+        snapshots->setVm(args, dir);
+        snapshots->refresh();
+        /* the stand-in's listing runs */
+        const auto listing = [&bin]() {
+            QFile f(bin + "/info.pid");
+            return f.open(QIODevice::ReadOnly) ? pid_t(f.readAll().trimmed().toInt()) : pid_t(0);
+        };
+        pid_t pid = 0;
+        QTRY_VERIFY((pid = listing()) > 0);
+        QVERIFY(::kill(pid, 0) == 0);
+        QElapsedTimer timer;
+        timer.start();
+        delete snapshots;
+        QVERIFY2(warnings.isEmpty(), qPrintable(warnings.join('\n')));
+        /* ended, not waited for */
+        QVERIFY(timer.elapsed() < 5000);
+        QVERIFY(::kill(pid, 0) != 0 && errno == ESRCH);
+
+        /* a snapshot being written: it goes on to its end */
+        snapshots = new VmSnapshots(&runner);
+        snapshots->setVm(args, dir);
+        snapshots->take("kept");
+        QVERIFY(snapshots->isBusy());
+        delete snapshots;
+        QVERIFY2(warnings.isEmpty(), qPrintable(warnings.join('\n')));
+        QTRY_VERIFY_WITH_TIMEOUT(QFile::exists(bin + "/written"), 10000);
+        QFile written(bin + "/written");
+        QVERIFY(written.open(QIODevice::ReadOnly));
+        QCOMPARE(written.readAll().trimmed(), QByteArray("snapshot -c kept ") + QFile::encodeName(dir + "/disk.qcow2"));
+        /* and its process goes once done, quietly */
+        QTest::qWait(200);
+        QVERIFY2(warnings.isEmpty(), qPrintable(warnings.join('\n')));
+    }
+
+private:
+    static bool writeScript(const QString &path, const QByteArray &text)
+    {
+        QFile f(path);
+        return f.open(QIODevice::WriteOnly) && f.write(text) == text.size() &&
+               f.setPermissions(QFileDevice::ReadOwner | QFileDevice::WriteOwner |
+                                QFileDevice::ExeOwner);
     }
 };
 

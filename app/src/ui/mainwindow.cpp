@@ -35,6 +35,7 @@
 
 #include "core/buildmanager.h"
 #include "core/consoleviews.h"
+#include "core/guesttoolsbuilder.h"
 #include "core/hostsettings.h"
 #include "core/paths.h"
 #include "core/qemuinfo.h"
@@ -179,16 +180,24 @@ MainWindow::MainWindow(VmStore *store, QWidget *parent)
 
     m_qemuStatus->setObjectName("qemuStatus");
     m_updates = new UpdateNotifier(this);
-    /* a build of Vitrine's QEMU: the update check knows it; and the VMs'
-       QEMU, if it is another one now, its options */
+    m_qemuBefore = Paths::qemuBinary();
     connect(StackBuilder::instance(), &StackBuilder::started, this,
             [this]() { m_qemuBefore = Paths::qemuBinary(); });
-    connect(StackBuilder::instance(), &StackBuilder::built, this, [this]() {
-        m_updates->revalidate();
-        if (Paths::qemuBinary() != m_qemuBefore) {
-            m_qemuBefore = Paths::qemuBinary();
-            QemuDocs::reloadPreferred();
-            m_details->refresh();
+    connect(StackBuilder::instance(), &StackBuilder::built, this, &MainWindow::qemuBuilt);
+    /*
+     * Back in front, from a terminal say: what builds run by hand made
+     * meanwhile (the banners and the Builds window see to themselves).  A
+     * medium of guest/build-medium.sh: the VMs with older tools offer it.
+     * A QEMU of host/build.sh, the VMs' QEMU now: as after a build here.
+     */
+    connect(qApp, &QGuiApplication::applicationStateChanged, this,
+            [this](Qt::ApplicationState state) {
+        if (state != Qt::ApplicationActive) {
+            return;
+        }
+        GuestToolsBuilder::instance()->checkMedium();
+        if (!StackBuilder::instance()->isRunning() && Paths::qemuBinary() != m_qemuBefore) {
+            qemuBuilt();
         }
     });
     m_input->setObjectName("input");
@@ -1207,6 +1216,16 @@ void MainWindow::importVm()
     }
 }
 
+void MainWindow::qemuBuilt()
+{
+    m_updates->revalidate();
+    if (Paths::qemuBinary() != m_qemuBefore) {
+        m_qemuBefore = Paths::qemuBinary();
+        QemuDocs::reloadPreferred();
+        m_details->refresh();
+    }
+}
+
 void MainWindow::showBuilds(const QString &component)
 {
     /* not modal: the VMs stay at hand during a build */
@@ -1431,9 +1450,6 @@ void MainWindow::showCommandLine()
 
 void MainWindow::closeEvent(QCloseEvent *event)
 {
-    QSettings settings(Paths::settingsPath(), QSettings::IniFormat);
-    const Vm *vm = current();
-
     /* asked again: what the user answers now goes */
     m_closeAfter.clear();
     m_shutDownOnceUp.clear();
@@ -1562,6 +1578,15 @@ void MainWindow::closeEvent(QCloseEvent *event)
         event->ignore();
         return;
     }
+    finishClosing();
+    QMainWindow::closeEvent(event);
+}
+
+void MainWindow::finishClosing()
+{
+    QSettings settings(Paths::settingsPath(), QSettings::IniFormat);
+    const Vm *vm = current();
+
     leaveScreens();
     settings.setValue("mainwindow/geometry", saveGeometry());
     settings.setValue("mainwindow/state", saveState());
@@ -1571,5 +1596,29 @@ void MainWindow::closeEvent(QCloseEvent *event)
     settings.setValue("mainwindow/current", vm ? vm->id() : QString());
     settings.setValue("mainwindow/tab", int(m_pane->tab()));
     settings.setValue("settings/page", VmPane::pageKey(m_pane->page()));
-    QMainWindow::closeEvent(event);
+}
+
+void MainWindow::quitWithoutQuestions()
+{
+    /* as Keep Running in the Background: the VMs run on; those asked to
+       shut down as the window closed go on with it, not waited for */
+    m_closeAfter.clear();
+    m_shutDownOnceUp.clear();
+    finishClosing();
+    /*
+     * Out of sight, as a close leaves it, while the window is whole: the
+     * keys leave the guests' views now.  A window still in sight when it
+     * is deleted closes itself in ~QWidget, after this class's members
+     * went: a view losing the keys then called consoleChanged() on them
+     * (vitrine crashed at a SIGTERM in its first test on a guest).
+     */
+    hide();
+    /*
+     * Every event loop ends, those of the dialogs and questions open too,
+     * as cancelled: the changes not applied go unsaved.  main() then
+     * deletes the window, whose consoles' views close the guests' sessions
+     * shown in it (vmview), and the app, whose tasks end as with Close
+     * Anyway.
+     */
+    QCoreApplication::exit(0);
 }

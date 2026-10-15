@@ -3,6 +3,7 @@
 #include <QDir>
 #include <QFile>
 #include <QFileInfo>
+#include <QLabel>
 #include <QPointer>
 #include <QProcess>
 #include <QPushButton>
@@ -18,9 +19,11 @@
 #include "core/paths.h"
 #include "core/vmrunner.h"
 #include "core/vmstore.h"
+#include "ui/guesttoolsbuildbanner.h"
 #include "ui/guesttoolsdialog.h"
 #include "ui/shutdownnotice.h"
 
+#include "activation.h"
 #include "guesttoolsstandins.h"
 
 #include <csignal>
@@ -61,6 +64,8 @@ class TestGuestToolsDialog : public QObject
     Vm *vm() const { return m_store->find("tools"); }
     /* with a qcow2 disk: a snapshot before the install */
     Vm *diskVm() const { return m_store->find("disk"); }
+    /* the same, with a stand-in for qemu-img whose listing takes its time */
+    Vm *slowVm() const { return m_store->find("slow"); }
 
     static QList<GuestToolsDialog *> dialogs()
     {
@@ -83,6 +88,18 @@ class TestGuestToolsDialog : public QObject
             }
         }
         return shown;
+    }
+
+    /* What @widget says: the texts of its labels in sight */
+    static QString textOf(const QWidget *widget)
+    {
+        QStringList texts;
+        for (const QLabel *label : widget->findChildren<QLabel *>()) {
+            if (label->isVisibleTo(widget->window()) && !label->text().isEmpty()) {
+                texts << label->text();
+            }
+        }
+        return texts.join(' ');
     }
 
     static QPushButton *button(QWidget *dialog, const QString &text)
@@ -211,9 +228,25 @@ private slots:
                                          m_tmp.filePath("vms/disk/disk.qcow2"), "16M"});
             QVERIFY(img.waitForFinished() && img.exitCode() == 0);
         }
+        /* and one whose qemu-img is a stand-in, beside its QEMU's: snapshots
+           at once, a listing that takes 30 s */
+        const QString standIn = m_tmp.filePath("standin");
+        QVERIFY(writeFile(standIn + "/qemu-system-x86_64", "#!/bin/sh\nexit 1\n", true));
+        QVERIFY(writeFile(standIn + "/qemu-img",
+                          "#!/bin/sh\n"
+                          "case $1 in\n"
+                          "info) echo $$ > \"$(dirname \"$0\")/info.pid\"; exec sleep 30 ;;\n"
+                          "esac\n",
+                          true));
+        QVERIFY(writeFile(m_tmp.filePath("vms/slow/vm.args"),
+                          "#qemu " + QFile::encodeName(standIn) + "/qemu-system-x86_64\n" +
+                              QByteArray(kVm).replace("Tools Test", "Slow Test") +
+                              "-drive file=disk.qcow2,format=qcow2,if=virtio\n"));
+        QVERIFY(writeFile(m_tmp.filePath("vms/slow/disk.qcow2"), {}));
         m_store = new VmStore(m_tmp.filePath("vms"), this);
         QVERIFY(vm());
         QVERIFY(diskVm());
+        QVERIFY(slowVm());
         GuestToolsDialog::setStarter([this](Vm *v) { m_started << v; });
         m_window = new QWidget;
         m_window->resize(800, 600);
@@ -422,6 +455,84 @@ private slots:
         img.start(Paths::qemuImg(), {"snapshot", "-l", diskVm()->dir() + "/disk.qcow2"});
         QVERIFY(img.waitForFinished());
         QVERIFY(img.readAllStandardOutput().contains("Before guest tools"));
+    }
+
+    /*
+     * Install with the VM off, a snapshot first: once the snapshot is
+     * written the VM starts and the dialog goes, with the listing of the
+     * snapshots that followed the snapshot still under way - here 30 s, the
+     * stand-in for qemu-img's.  It ends with the dialog, without QProcess's
+     * warning of a process destroyed while it runs, which came at the
+     * starts of VMs given their tools this way.
+     */
+    void listingAtTheStart()
+    {
+        static QStringList warnings;
+        static QtMessageHandler previous = nullptr;
+        warnings.clear();
+        previous = qInstallMessageHandler(
+            [](QtMsgType type, const QMessageLogContext &context, const QString &message) {
+            if (message.contains("QProcess")) {
+                warnings << message;
+            }
+            previous(type, context, message);
+        });
+        const auto restore = qScopeGuard([]() { qInstallMessageHandler(previous); });
+        const QString pidFile = m_tmp.filePath("standin/info.pid");
+        QFile::remove(pidFile);
+
+        GuestToolsDialog::run(m_window, slowVm());
+        GuestToolsDialog *dialog = GuestToolsDialog::of(slowVm());
+        QVERIFY(dialog);
+        const QPointer<GuestToolsDialog> guard(dialog);
+        QPushButton *install = button(dialog, "Install");
+        QVERIFY(install && install->isEnabled());
+        install->click();
+        QTRY_VERIFY_WITH_TIMEOUT(!guard, 10000);
+        QCOMPARE(m_started, QList<Vm *>{slowVm()});
+        QVERIFY2(warnings.isEmpty(), qPrintable(warnings.join('\n')));
+        /* the listing is over, if it got as far as the stand-in */
+        QFile f(pidFile);
+        if (f.open(QIODevice::ReadOnly)) {
+            const pid_t pid = f.readAll().trimmed().toInt();
+            QVERIFY(pid <= 0 || ::kill(pid, 0) != 0);
+        }
+    }
+
+    /*
+     * The medium made by hand while the dialog is open (guest/build-medium.sh
+     * in a terminal): once vitrine is back in front, the dialog's banner and
+     * Install follow it, not before
+     */
+    void mediumMadeByHand()
+    {
+        const QString image = dataDir() + "/vitrine-guest-tools-fc44.img";
+        const QString manifest = dataDir() + "/vitrine-guest-tools-fc44.json";
+        QVERIFY(QFile::remove(image) && QFile::remove(manifest));
+        /* the medium as before for the next tests, seen gone meanwhile */
+        const auto restore = qScopeGuard([this]() {
+            writeMedium();
+            GuestToolsBuilder::instance()->checkMedium();
+        });
+        /* as the main window does when vitrine comes back in front */
+        GuestToolsBuilder::instance()->checkMedium();
+        GuestToolsDialog::run(m_window, vm());
+        GuestToolsDialog *dialog = GuestToolsDialog::of(vm());
+        QVERIFY(dialog);
+        auto *banner = dialog->findChild<GuestToolsBuildBanner *>();
+        QPushButton *install = button(dialog, "Install");
+        QVERIFY(banner && install);
+        QVERIFY(!install->isEnabled());
+        QVERIFY2(textOf(banner).contains("not built yet"), qPrintable(textOf(banner)));
+
+        /* what build-medium.sh leaves, of other sources than the first one */
+        QVERIFY(writeFile(image, QByteArray(1 << 20, '\0')));
+        QVERIFY(writeFile(manifest, R"({"label": "VITRINETOOL", "mediumId": "a1b2c3d4e5f60718",
+                                        "fedora": "44", "tools": "0.1.0-2.fc44", "packages": []})"));
+        QVERIFY(!install->isEnabled());
+        comeBack();
+        QVERIFY(install->isEnabled());
+        QVERIFY2(!textOf(banner).contains("not built yet"), qPrintable(textOf(banner)));
     }
 
     /* What the buttons say follows the VM, which may start or stop meanwhile */

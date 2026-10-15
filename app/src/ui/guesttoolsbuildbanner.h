@@ -19,7 +19,7 @@ public:
     explicit GuestToolsBuildBanner(QWidget *parent = nullptr);
 
 signals:
-    /* A build made a new medium */
+    /* Another medium: a build made it, here or by hand */
     void mediumChanged();
 
 private:

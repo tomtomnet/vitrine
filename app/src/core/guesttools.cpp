@@ -574,8 +574,8 @@ GuestToolsMonitor::GuestToolsMonitor(Vm *vm)
         }
     });
     connect(this, &GuestToolsMonitor::changed, this, &GuestToolsMonitor::remember);
-    /* a new medium, built from the app: the VMs with older tools offer it */
-    connect(GuestToolsBuilder::instance(), &GuestToolsBuilder::built, this, [this]() {
+    /* a new medium, built from the app or by hand: the VMs with older tools offer it */
+    connect(GuestToolsBuilder::instance(), &GuestToolsBuilder::mediumChanged, this, [this]() {
         m_in.medium = GuestTools::medium();
         emit changed();
     });

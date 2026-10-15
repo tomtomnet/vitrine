@@ -1,11 +1,13 @@
 # Upstream's commit c6ce1ca89fb4, where the research's work starts, with that
-# work as one patch, taken at the research's commit 8ecffaf (the patch's
+# work as one patch, taken at the research's commit 18cb8b2 (the patch's
 # description has what it adds).  Literal, without macros: vitrine's Builds
 # window reads Version and Source0 as they are written.  The date the patch
 # was taken comes first, so that each version sorts after the one before
-# (rpm compares commit hashes as words: rb973b6b sorts after r8ecffaf).
+# (rpm compares commit hashes as words: rb973b6b sorts after r8ecffaf), and
+# a counter after it for another one on the same day: 20261015.1 sorts after
+# 20261015, .2 after .1, the next day's date after both.
 Name:           wl-cross-domain-proxy
-Version:        0.1.0^20261015gitc6ce1ca.r8ecffaf
+Version:        0.1.0^20261015.1gitc6ce1ca.r18cb8b2
 Release:        1%{?dist}
 Summary:        Wayland proxy over virtio-gpu cross-domain, for vitrine's nested desktop
 
@@ -34,7 +36,7 @@ context, their GPU buffers shared without a copy.  Upstream's proxy with the
 research's work for a whole desktop: the presentation clock in the guest's
 time, fence waits, the pointer grab and shortcut capture, the clipboard,
 settled resizes, statistics, and the session's end when the host's side of
-the connection goes away.
+the connection goes away, its windows closed first.
 
 %prep
 %autosetup -p1 -n %{name}
@@ -58,6 +60,14 @@ install -Dm 0644 %{SOURCE1} %{buildroot}%{_licensedir}/%{name}/GPL-2.0.txt
 %{_bindir}/%{name}
 
 %changelog
+* Thu Oct 15 2026 vitrine <noreply@anthropic.com> - 0.1.0^20261015.1gitc6ce1ca.r18cb8b2-1
+- the research's work at 18cb8b2: when the host end of the connection
+  closes (vitrine crashed or was killed), the guest client's windows get
+  xdg_toplevel.close first, its requests are dropped, and its connection
+  closes once it disconnects or 3 s later; the nested KWin then quits as
+  after vitrine's own close, without its wrapper restarting it
+- a counter after the date, for a second version on the same day
+
 * Thu Oct 15 2026 vitrine <noreply@anthropic.com> - 0.1.0^20261015gitc6ce1ca.r8ecffaf-1
 - the research's work at 8ecffaf: an empty receive (the host end of the
   connection closed: vitrine quit or crashed) closes that guest client

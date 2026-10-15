@@ -1,5 +1,5 @@
 The research's work on wl-cross-domain-proxy (virtio-gpu-desktop,
-src/wl-cross-domain-proxy at its commit 8ecffaf), as one diff against
+src/wl-cross-domain-proxy at its commit 18cb8b2), as one diff against
 upstream c6ce1ca89fb4, the commit it started from
 (patches/wl-cross-domain-proxy/BASE.md there).  What the nested desktop
 needs of the proxy beyond upstream: the presentation clock translated into
@@ -9,8 +9,11 @@ opaque toplevel, resizes settled before they reach the guest, AMD DCC
 modifiers left out of the dma-buf feedback (the host can scan the frames out
 then), statistics and their overlay, and the host's hang-up: an empty
 receive (the host end of the connection closed: the app serving QEMU's
-socket quit or crashed) closes that guest client, whose compositor then
-sees its connection end, instead of polling on.
+socket quit or crashed) ends that guest client instead of polling on, as
+the app's own close would: xdg_toplevel.close to each of its windows first
+(the nested KWin then quits as after a closed window, without its wrapper
+restarting it), its requests dropped, its connection closed once it
+disconnects or 3 s later (a client without a window: at once).
 
 Licence: these changes are GPL-2.0-or-later (the research's, the user's
 choice of 2026-10-14); Victoria Brekenfeld's proxy stays MIT, with her
@@ -3824,7 +3827,7 @@ diff -ruN a/src/session/grab.rs b/src/session/grab.rs
 diff -ruN a/src/session/mod.rs b/src/session/mod.rs
 --- a/src/session/mod.rs
 +++ b/src/session/mod.rs
-@@ -0,0 +1,633 @@
+@@ -0,0 +1,647 @@
 +//! What the proxy adds on top of plain message forwarding, shared by both
 +//! transports (virtio-gpu cross-domain and the local test transport).
 +//!
@@ -3939,6 +3942,14 @@ diff -ruN a/src/session/mod.rs b/src/session/mod.rs
 +        .requests
 +        .iter()
 +        .position(|r| r.name == name)
++        .unwrap_or_else(|| panic!("{}.{} does not exist", interface.name, name)) as u16
++}
++
++pub(crate) fn event_opcode(interface: &Interface, name: &str) -> u16 {
++    interface
++        .events
++        .iter()
++        .position(|e| e.name == name)
 +        .unwrap_or_else(|| panic!("{}.{} does not exist", interface.name, name)) as u16
 +}
 +
@@ -4149,6 +4160,12 @@ diff -ruN a/src/session/mod.rs b/src/session/mod.rs
 +    }
 +
 +    /// Readable when [`Session::dispatch`] has work: register it in the event loop.
++    /// The guest's xdg_toplevels (guest ids): the windows the proxy closes when the host's end of the
++    /// connection closed (ClientChannel).
++    pub fn toplevels(&self) -> Vec<u32> {
++        self.shell.toplevels()
++    }
++
 +    pub fn fd(&self) -> BorrowedFd<'_> {
 +        self.epoll.as_fd()
 +    }
@@ -6215,7 +6232,7 @@ diff -ruN a/src/session/seat.rs b/src/session/seat.rs
 diff -ruN a/src/session/shell.rs b/src/session/shell.rs
 --- a/src/session/shell.rs
 +++ b/src/session/shell.rs
-@@ -0,0 +1,194 @@
+@@ -0,0 +1,216 @@
 +//! The guest's xdg-shell toplevels and their titles, as the host sees them.
 +//!
 +//! The proxy decorates a toplevel's title for the host: a suffix while the
@@ -6266,6 +6283,13 @@ diff -ruN a/src/session/shell.rs b/src/session/shell.rs
 +    /// The wl_surface (guest id) of an xdg_surface.
 +    pub(super) fn surface_of_xdg(&self, xdg_surface: u32) -> Option<u32> {
 +        self.xdg_surfaces.get(&xdg_surface).copied()
++    }
++
++    /// The guest's xdg_toplevels (guest ids), in creation order of their ids.
++    pub(super) fn toplevels(&self) -> Vec<u32> {
++        let mut ids: Vec<u32> = self.toplevels.keys().copied().collect();
++        ids.sort_unstable();
++        ids
 +    }
 +
 +    /// The xdg_toplevel (guest id) of a wl_surface with that role.
@@ -6408,6 +6432,21 @@ diff -ruN a/src/session/shell.rs b/src/session/shell.rs
 +        sh.on_request("wl_surface", "destroy", &mut msg(3, smallvec![]));
 +        sh.set_stats(None, &mut out);
 +        assert!(out.is_empty() && !sh.is_toplevel_surface(3));
++    }
++
++    #[test]
++    fn toplevels_to_close_when_the_host_goes() {
++        let mut sh = Shell::default();
++        assert!(sh.toplevels().is_empty());
++        for (xdg, top, surface) in [(20, 21, 5), (10, 11, 3)] {
++            sh.on_request("xdg_wm_base", "get_xdg_surface", &mut msg(4, smallvec![Argument::NewId(xdg), Argument::Object(surface)]));
++            sh.on_request("xdg_surface", "get_toplevel", &mut msg(xdg, smallvec![Argument::NewId(top)]));
++        }
++        assert_eq!(sh.toplevels(), vec![11, 21]);
++        sh.on_request("xdg_toplevel", "destroy", &mut msg(11, smallvec![]));
++        assert_eq!(sh.toplevels(), vec![21]);
++        // the event the proxy sends them
++        assert_eq!(super::super::event_opcode(&XDG_TOPLEVEL_INTERFACE, "close"), 1);
 +    }
 +}
 diff -ruN a/src/session/shortcuts.rs b/src/session/shortcuts.rs
@@ -8180,7 +8219,24 @@ diff -ruN a/src/session/stats.rs b/src/session/stats.rs
 diff -ruN a/src/source/channel/mod.rs b/src/source/channel/mod.rs
 --- a/src/source/channel/mod.rs
 +++ b/src/source/channel/mod.rs
-@@ -28,6 +28,7 @@
+@@ -11,10 +11,15 @@
+     rc::Rc,
+     slice,
+     sync::OnceLock,
++    time::Duration,
+ };
+ 
+ use anyhow::Context;
+-use calloop::{EventSource, Interest, Mode, PostAction, generic::Generic};
++use calloop::{
++    EventSource, Interest, Mode, PostAction,
++    generic::Generic,
++    timer::{TimeoutAction, Timer},
++};
+ use drm::{
+     buffer::Handle as BufferHandle,
+     control::{Device as ControlDevice, RawResourceHandle},
+@@ -28,6 +33,7 @@
  
  use crate::{
      DrmDevice,
@@ -8188,12 +8244,12 @@ diff -ruN a/src/source/channel/mod.rs b/src/source/channel/mod.rs
      cross_domain::{
          CROSS_DOMAIN_CHANNEL_RING, CROSS_DOMAIN_CHANNEL_TYPE_WAYLAND,
          CROSS_DOMAIN_CMD_GET_IMAGE_REQUIREMENTS, CROSS_DOMAIN_CMD_INIT, CROSS_DOMAIN_CMD_POLL,
-@@ -37,20 +38,168 @@
+@@ -37,20 +43,169 @@
          CrossDomainCapabilities, CrossDomainGetImageRequirements, CrossDomainHeader,
          CrossDomainInitV0, CrossDomainPoll, CrossDomainReadWrite, CrossDomainSendReceive,
      },
 -    source::channel::wayland::ProtocolState,
-+    session::{HostRequest, Session, SessionConfig, request_to_host},
++    session::{HostRequest, Session, SessionConfig, event_opcode, request_to_host},
 +    source::channel::wayland::{Identifier, ProtocolState},
      virtio_gpu::{BlobFlags, BlobMem, Param, VirtioDevice, bindings as ffi},
      wl_proto::{
@@ -8203,6 +8259,7 @@ diff -ruN a/src/source/channel/mod.rs b/src/source/channel/mod.rs
 +        parse_message, write_to_buffers,
      },
  };
++use wayland_protocols::xdg::shell::server::__interfaces::XDG_TOPLEVEL_INTERFACE;
 +use wayland_server::backend::protocol::Interface;
  
  mod wayland;
@@ -8360,7 +8417,23 @@ diff -ruN a/src/source/channel/mod.rs b/src/source/channel/mod.rs
  
      node: DrmNode,
      drm: Generic<DrmDevice, anyhow::Error>,
-@@ -77,7 +226,13 @@
+@@ -63,8 +218,15 @@
+     pipe_id: u32,
+     pipes_write_from_host: HashMap<u32, OwnedFd>,
+     pipes_read_from_guest: HashMap<u32, (Generic<OwnedFd, anyhow::Error>, bool)>,
++    /// the host's end of the connection closed and the guest client's windows got xdg_toplevel.close:
++    /// the client's last moments, until it disconnects or this fires (process_host_gone)
++    host_gone: Option<Timer>,
+ }
+ 
++/// How long a guest client whose host went away has to quit after its windows' close (the nested KWin
++/// quits at once) before the proxy closes its connection.
++const HOST_GONE_GRACE: Duration = Duration::from_secs(3);
++
+ const REQUIRED_PARAMS: [Param; 6] = [
+     Param::_3dFeatures,
+     Param::CapsetQueryFix,
+@@ -77,7 +239,13 @@
  static PAGE_SIZE: OnceLock<usize> = OnceLock::new();
  
  impl ClientChannel {
@@ -8375,7 +8448,7 @@ diff -ruN a/src/source/channel/mod.rs b/src/source/channel/mod.rs
          let drm = DrmDevice(Rc::new(
              OpenOptions::new()
                  .read(true)
-@@ -152,11 +307,25 @@
+@@ -152,11 +320,25 @@
  
          poll(&drm, &channel_ring).context("Poll CMD failed")?;
  
@@ -8402,8 +8475,75 @@ diff -ruN a/src/source/channel/mod.rs b/src/source/channel/mod.rs
  
              node,
              drm,
-@@ -306,90 +475,96 @@
+@@ -169,8 +351,61 @@
+             pipes_read_from_guest: HashMap::new(),
+             pipes_write_from_host: HashMap::new(),
+             pipe_id: 0x80000000,
++            host_gone: None,
+         })
+     }
++
++    /// After the host's end of the connection closed: the guest client got xdg_toplevel.close for its
++    /// windows, and its requests go nowhere. It goes when it disconnects (its compositor quit), or when
++    /// host_gone fires.
++    fn process_host_gone(
++        &mut self,
++        readiness: calloop::Readiness,
++        token: calloop::Token,
++    ) -> anyhow::Result<PostAction> {
++        let local = self
++            .local
++            .process_events(readiness, token, |_, _| Ok(PostAction::Continue))?;
++        // the closes, if the client's socket was full when they were written
++        let _ = self.local.flush();
++        // the fence gate drained, its requests and events dropped
++        self.fence_source
++            .process_events(readiness, token, |_, _| Ok(PostAction::Continue))?;
++        self.session.dispatch(&mut Vec::new(), &mut Vec::new());
++        while self.session.pop_request().is_some() {}
++        let mut expired = false;
++        if let Some(timer) = &mut self.host_gone {
++            timer.process_events(readiness, token, |_, _| {
++                expired = true;
++                TimeoutAction::Drop
++            })?;
++        }
++        if expired {
++            warn!("the guest client was still there {HOST_GONE_GRACE:?} after its windows' close: closing it");
++            return Ok(PostAction::Remove);
++        }
++        Ok(local)
++    }
++}
++
++/// xdg_toplevel.close for each of the guest client's toplevels that still exists.
++fn close_events(session: &Session, local: &ClientConnection) -> Vec<Message<u32, OwnedFd>> {
++    let opcode = event_opcode(&XDG_TOPLEVEL_INTERFACE, "close");
++    session
++        .toplevels()
++        .into_iter()
++        .filter(|id| {
++            local
++                .map
++                .find(*id)
++                .is_some_and(|obj| obj.interface.name == XDG_TOPLEVEL_INTERFACE.name)
++        })
++        .map(|id| Message {
++            sender_id: id,
++            opcode,
++            args: SmallVec::new(),
++        })
++        .collect()
+ }
+ 
+ impl Drop for ClientChannel {
+@@ -304,92 +539,101 @@
+     where
+         F: FnMut(Self::Event, &mut Self::Metadata) -> Self::Ret,
      {
++        if self.host_gone.is_some() {
++            return self.process_host_gone(readiness, token);
++        }
          let mut res = PostAction::Continue;
  
 -        let drm = unsafe { self.drm.get_mut() };
@@ -8575,22 +8715,45 @@ diff -ruN a/src/source/channel/mod.rs b/src/source/channel/mod.rs
          if let Some(msg) = err_msg.take() {
              self.local.write_message(&msg)?;
              self.local.flush()?;
-@@ -455,6 +630,14 @@
+@@ -455,6 +699,37 @@
                          &ring_slice[0..mem::size_of::<CrossDomainSendReceive>()],
                      )
                      .unwrap();
 +                    // Nothing at all: the host end of the connection closed (a stream socket's end; the
 +                    // app serving QEMU's socket quit or crashed). Polling on would get another empty
 +                    // receive at once, forever (QEMU spun at ~3 CPUs, the guest's session lived on
-+                    // without a window): close this client, as its host compositor would have.
++                    // without a window): close this client, as its host compositor would have. Its
++                    // windows close first: their compositor then quits as after a closed window (the
++                    // nested KWin: status 0, no restarts by its wrapper) instead of finding its
++                    // connection broken. No more polling either way.
 +                    if cmd.opaque_data_size == 0 && cmd.num_identifiers == 0 {
-+                        warn!("the host closed the Wayland connection: closing its guest client");
-+                        return Ok(PostAction::Remove);
++                        let closes = close_events(&self.session, &self.local);
++                        if closes.is_empty() {
++                            warn!("the host closed the Wayland connection: closing its guest client");
++                            return Ok(PostAction::Remove);
++                        }
++                        warn!(
++                            "the host closed the Wayland connection: closing the guest client's {} window(s), then the client",
++                            closes.len()
++                        );
++                        for msg in closes {
++                            self.local.write_message(&msg).context("Failed to write message")?;
++                        }
++                        if let Err(e) = self.local.flush() {
++                            if e.kind() != std::io::ErrorKind::WouldBlock {
++                                return Ok(PostAction::Remove);
++                            }
++                        }
++                        // transfers end with the host (and level-triggered pipes left unread would spin)
++                        self.pipes_read_from_guest.clear();
++                        self.pipes_write_from_host.clear();
++                        self.host_gone = Some(Timer::from_duration(HOST_GONE_GRACE));
++                        return Ok(PostAction::Reregister);
 +                    }
                      let data = &ring_slice[mem::size_of::<CrossDomainSendReceive>()
                          ..mem::size_of::<CrossDomainSendReceive>()
                              + (cmd.opaque_data_size as usize)];
-@@ -511,25 +694,49 @@
+@@ -511,25 +786,49 @@
                      self.remote_data.advance(data.len());
                      self.remote_fds.extend(fds.into_iter());
  
@@ -8633,9 +8796,8 @@ diff -ruN a/src/source/channel/mod.rs b/src/source/channel/mod.rs
 +                                    .write_message(&msg)
 +                                    .context("Failed to write message")?;
 +                            }
-                         }
-                     }
--                    self.local.flush().context("Failed to flush messages")?;
++                        }
++                    }
 +                    for own in own_requests {
 +                        let msg = own_request(&mut self.protocol_state, &mut self.pipes_write_from_host, own)?;
 +                        send_to_host(drm, &msg)?;
@@ -8645,13 +8807,14 @@ diff -ruN a/src/source/channel/mod.rs b/src/source/channel/mod.rs
 +                    if let Err(e) = self.local.flush() {
 +                        if e.kind() != std::io::ErrorKind::WouldBlock {
 +                            return Err(e).context("Failed to flush messages");
-+                        }
+                         }
 +                        warn!("guest client not reading: its events stay buffered");
-+                    }
+                     }
+-                    self.local.flush().context("Failed to flush messages")?;
                  }
                  CROSS_DOMAIN_CMD_READ => {
                      let cmd = CrossDomainReadWrite::read_from_bytes(
-@@ -540,14 +747,20 @@
+@@ -540,14 +839,20 @@
                          ..mem::size_of::<CrossDomainReadWrite>() + (cmd.opaque_data_size as usize)];
  
                      if let Some(write_fd) = self.pipes_write_from_host.get(&cmd.identifier) {
@@ -8678,7 +8841,7 @@ diff -ruN a/src/source/channel/mod.rs b/src/source/channel/mod.rs
                              res = PostAction::Reregister;
                          }
                      } else {
-@@ -600,15 +813,15 @@
+@@ -600,15 +905,15 @@
                      &mut buf[mem::size_of::<CrossDomainReadWrite>()..],
                  ) {
                      Ok(read_bytes) => {
@@ -8698,7 +8861,7 @@ diff -ruN a/src/source/channel/mod.rs b/src/source/channel/mod.rs
                          }
                      }
                      Err(_) => {
-@@ -654,6 +867,7 @@
+@@ -654,9 +959,13 @@
      ) -> calloop::Result<()> {
          self.local.register(poll, token_factory)?;
          self.drm.register(poll, token_factory)?;
@@ -8706,7 +8869,13 @@ diff -ruN a/src/source/channel/mod.rs b/src/source/channel/mod.rs
          for (pipe, _) in self.pipes_read_from_guest.values_mut() {
              pipe.register(poll, token_factory)?;
          }
-@@ -667,6 +881,7 @@
++        if let Some(timer) = &mut self.host_gone {
++            timer.register(poll, token_factory)?;
++        }
+         Ok(())
+     }
+ 
+@@ -667,6 +976,7 @@
      ) -> calloop::Result<()> {
          self.local.reregister(poll, token_factory)?;
          self.drm.reregister(poll, token_factory)?;
@@ -8714,7 +8883,16 @@ diff -ruN a/src/source/channel/mod.rs b/src/source/channel/mod.rs
          for (pipe, is_registered) in self.pipes_read_from_guest.values_mut() {
              if *is_registered {
                  pipe.reregister(poll, token_factory)?;
-@@ -681,6 +896,7 @@
+@@ -675,17 +985,24 @@
+                 *is_registered = true;
+             }
+         }
++        if let Some(timer) = &mut self.host_gone {
++            timer.reregister(poll, token_factory)?;
++        }
+         Ok(())
+     }
+ 
      fn unregister(&mut self, poll: &mut calloop::Poll) -> calloop::Result<()> {
          self.local.unregister(poll)?;
          self.drm.unregister(poll)?;
@@ -8722,7 +8900,15 @@ diff -ruN a/src/source/channel/mod.rs b/src/source/channel/mod.rs
          for (pipe, is_registered) in self.pipes_read_from_guest.values_mut() {
              if *is_registered {
                  pipe.unregister(poll)?;
-@@ -693,8 +909,8 @@
+             }
+         }
++        if let Some(timer) = &mut self.host_gone {
++            timer.unregister(poll)?;
++        }
+         Ok(())
+     }
+ }
+@@ -693,8 +1010,8 @@
  fn try_read_message(
      buffer: &mut Buffer<u8>,
      fds: &mut VecDeque<OwnedFd>,
@@ -8733,7 +8919,7 @@ diff -ruN a/src/source/channel/mod.rs b/src/source/channel/mod.rs
      let (msg, read_data) = {
          let data = buffer.get_contents();
          if data.len() < 2 * 4 {
-@@ -705,7 +921,7 @@
+@@ -705,7 +1022,7 @@
          let opcode = (word_2 & 0x0000_FFFF) as u16;
          let len = (word_2 >> 16) as usize;
  
@@ -8742,7 +8928,7 @@ diff -ruN a/src/source/channel/mod.rs b/src/source/channel/mod.rs
              // This *really* should not happen, as e.g. incoming events for destroyed objects
              // (before the destruction was ACKed) are handled in the regular happy path.
              error!(
-@@ -723,14 +939,13 @@
+@@ -723,14 +1040,13 @@
              buffer.offset(len);
              return Err(MessageParseError::Malformed);
          };

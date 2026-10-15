@@ -76,6 +76,8 @@ qt_add_library(vitrine_core STATIC
     src/core/qemuinfo.h
     src/core/qmpclient.cpp
     src/core/qmpclient.h
+    src/core/quitsignals.cpp
+    src/core/quitsignals.h
     src/core/snapshots.cpp
     src/core/snapshots.h
     src/core/stackbuilder.cpp
@@ -412,6 +414,7 @@ if(BUILD_TESTING)
             perfstats
             qemuinfo
             qmpclient
+            quitsignals
             snapshots
             stackbuilder
             tasks
@@ -469,6 +472,9 @@ if(BUILD_TESTING)
             vitrine_test_env(${name}-${scale} QT_QPA_PLATFORM=offscreen QT_SCALE_FACTOR=${scale})
         endforeach()
     endforeach()
+    # vitrine coming back in front, through Qt's window system events (tests/activation.h)
+    target_link_libraries(test_stackbanner PRIVATE Qt6::GuiPrivate)
+    target_link_libraries(test_guesttoolsdialog PRIVATE Qt6::GuiPrivate)
     # the helper's test build on a fake tree, and its QEMU stand-in (helper/)
     target_compile_definitions(test_hostsettings PRIVATE
         HELPER_FAKE="$<TARGET_FILE:vitrine-helper-fake>"

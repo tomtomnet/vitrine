@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: GPL-2.0-or-later
 #include <QAbstractItemView>
 #include <QApplication>
+#include <QDialog>
 #include <QDir>
 #include <QFile>
 #include <QFileInfo>
@@ -10,6 +11,7 @@
 #include <QMenu>
 #include <QMenuBar>
 #include <QMessageBox>
+#include <QPointer>
 #include <QPushButton>
 #include <QScopeGuard>
 #include <QSettings>
@@ -25,15 +27,21 @@
 #include <QWidgetAction>
 
 #include <algorithm>
+#include <csignal>
 #include <memory>
 
+#include "activation.h"
+#include "core/guesttoolsbuilder.h"
 #include "core/paths.h"
+#include "core/quitsignals.h"
+#include "core/stackbuilder.h"
 #include "core/tasks.h"
 #include "core/vmrunner.h"
 #include "core/vmstore.h"
 #include "nested/desktopview.h"
 #include "scales.h"
 #include "ui/mainwindow.h"
+#include "ui/qemudocs.h"
 #include "ui/vmconsole.h"
 #include "ui/vmpane.h"
 
@@ -295,6 +303,8 @@ public:
         : DesktopView(parent), m_socket(socket), m_widget(new QWidget)
     {
         m_widget->setFocusPolicy(Qt::StrongFocus);
+        /* the keys come and go with the focus, as NestedView says */
+        m_widget->installEventFilter(this);
     }
     ~StandInDesktop() override { delete m_widget; }
 
@@ -325,6 +335,16 @@ public:
     {
         m_mapped = on;
         Q_EMIT mappedChanged(on);
+    }
+
+protected:
+    bool eventFilter(QObject *watched, QEvent *event) override
+    {
+        if (watched == m_widget &&
+            (event->type() == QEvent::FocusIn || event->type() == QEvent::FocusOut)) {
+            Q_EMIT keyboardChanged();
+        }
+        return DesktopView::eventFilter(watched, event);
     }
 
 private:
@@ -900,6 +920,180 @@ private slots:
         task->dismiss();
         w->close();
         QVERIFY(!w->isVisible());
+    }
+
+    /*
+     * SIGTERM (the session ending, kill), SIGINT (Ctrl+C) and SIGHUP (the
+     * terminal closed), as main() handles them: vitrine quits as Close
+     * does with Keep Running in the Background and Close Anyway, asking
+     * nothing - though here a guest's session in the window, with the keys,
+     * settings changed and not applied, and a task under way would each
+     * have asked.  The event loop ends with 0, the window out of sight as a
+     * close leaves it, its state saved, the changes not; the signal's
+     * default action is back for the next one; the guest's session goes
+     * with the window, its view closing it.
+     */
+    void quitOnSignal_data()
+    {
+        QTest::addColumn<int>("signal");
+        QTest::newRow("SIGTERM") << SIGTERM;
+        QTest::newRow("SIGINT") << SIGINT;
+        QTest::newRow("SIGHUP") << SIGHUP;
+    }
+
+    void quitOnSignal()
+    {
+        QFETCH(int, signal);
+        VmConsole::setDesktopViewFactory([](const QString &socket, QString *, QObject *parent) {
+            return new StandInDesktop(socket, parent);
+        });
+        const auto noStandIn = qScopeGuard([]() { VmConsole::setDesktopViewFactory({}); });
+        QFile args(m_tmp.filePath("vms/alpha/vm.args"));
+        auto w = window();
+        settle(w.get());
+        w->select("alpha");
+
+        /* the guest's session, shown */
+        VmConsole *console = nullptr;
+        for (VmConsole *each : w->findChildren<VmConsole *>()) {
+            if (each->vm() == m_store->find("alpha")) {
+                console = each;
+            }
+        }
+        QVERIFY(console);
+        QString error;
+        QVERIFY(console->serveNested(m_tmp.filePath("quit.sock"), &error));
+        const QPointer<StandInDesktop> desktop = qobject_cast<StandInDesktop *>(console->nestedView());
+        QVERIFY(desktop);
+        desktop->guestConnects(1);
+        desktop->guestMaps(true);
+        QVERIFY(console->hasNestedSession());
+        /* a change to its settings, not applied */
+        auto *pane = w->findChild<VmPane *>();
+        pane->setTab(VmPane::Settings);
+        pane->setPage(VmPane::General);
+        auto *name = w->findChild<QLineEdit *>("name");
+        QVERIFY(name);
+        QTRY_VERIFY(name->isVisible());
+        name->setText("Alpha Renamed");
+        QVERIFY(pane->isModified());
+        /* back to the session, its view with the focus (no keys for a VM
+           that does not run: the view says so on each change of focus) */
+        pane->setTab(VmPane::Console);
+        desktop->focus();
+        QTRY_VERIFY(desktop->widget()->hasFocus());
+        QVERIFY(pane->isModified());
+        /* a task under way */
+        const QPointer<Task> task = TaskList::instance()->add(Task::Kind::Clone, "Clone of Bravo");
+
+        /* any dialog that shows: said, and closed */
+        struct Dialogs : QObject {
+            QStringList shown;
+            bool eventFilter(QObject *watched, QEvent *event) override
+            {
+                auto *dialog = qobject_cast<QDialog *>(watched);
+                if (event->type() == QEvent::Show && dialog && dialog->isWindow()) {
+                    const auto *box = qobject_cast<QMessageBox *>(dialog);
+                    shown << (box ? box->text() : dialog->windowTitle());
+                    QTimer::singleShot(0, dialog, &QDialog::reject);
+                }
+                return false;
+            }
+        } dialogs;
+        qApp->installEventFilter(&dialogs);
+        const auto noFilter = qScopeGuard([&dialogs]() { qApp->removeEventFilter(&dialogs); });
+
+        QuitSignals quit;
+        connect(&quit, &QuitSignals::received, w.get(), &MainWindow::quitWithoutQuestions);
+        QVERIFY(quit.handles(signal));
+        QTimer watchdog;
+        watchdog.setSingleShot(true);
+        connect(&watchdog, &QTimer::timeout, this, []() { QCoreApplication::exit(1); });
+        watchdog.start(15000);
+        QTimer::singleShot(0, this, [signal]() { ::raise(signal); });
+        QCOMPARE(QCoreApplication::exec(), 0);
+        QVERIFY2(dialogs.shown.isEmpty(), qPrintable(dialogs.shown.join(" | ")));
+        QVERIFY(!w->isVisible());
+        QVERIFY(!desktop->widget()->hasFocus());
+        /* the same signal again: the default action, the process ends */
+        QVERIFY(!quit.handles(signal));
+
+        const QSettings settings(Paths::settingsPath(), QSettings::IniFormat);
+        QCOMPARE(settings.value("mainwindow/current").toString(), QString("alpha"));
+        QCOMPARE(settings.value("mainwindow/tab").toInt(), int(VmPane::Console));
+        QVERIFY(!settings.value("mainwindow/geometry").toByteArray().isEmpty());
+        QVERIFY(args.open(QIODevice::ReadOnly));
+        QCOMPARE(args.readAll(), QByteArray(kAlpha));
+        /* main() deletes the window: the guest's view goes, which closes its session */
+        QVERIFY(desktop);
+        w.reset();
+        QVERIFY(!desktop);
+        QVERIFY(task);
+        task->finish(Task::State::Stopped);
+        task->dismiss();
+    }
+
+    /*
+     * Builds run by hand while vitrine runs (host/build.sh and
+     * guest/build-medium.sh in a terminal), seen once vitrine is back in
+     * front, not before: the banner of Vitrine's QEMU goes, the VMs' QEMU
+     * is the new build (its options read), the VMs hear of the new medium
+     */
+    void builtByHand()
+    {
+        /* before the build, the QEMU found by default: a stand-in, which tells nothing */
+        QTemporaryDir bin;
+        QVERIFY(write(bin.filePath("qemu-system-x86_64"), "#!/bin/sh\nexit 1\n"));
+        QVERIFY(QFile::setPermissions(bin.filePath("qemu-system-x86_64"),
+                                      QFileDevice::ReadOwner | QFileDevice::ExeOwner));
+        const QByteArray path = qgetenv("PATH");
+        qputenv("PATH", bin.path().toUtf8());
+        const auto restorePath = qScopeGuard([path]() { qputenv("PATH", path); });
+        Paths::setQemuBinary({});
+        QemuDocs::reloadPreferred();
+        if (StackBuilder::state() != StackBuilder::State::NotBuilt) {
+            QSKIP("needs host/ without a build of it");
+        }
+        auto w = window();
+        settle(w.get());
+        QWidget *banner = w->findChild<QWidget *>("stackBanner");
+        QVERIFY(banner);
+        QVERIFY(!banner->isHidden());
+        QSignalSpy medium(GuestToolsBuilder::instance(), &GuestToolsBuilder::mediumChanged);
+
+        /* what host/build.sh leaves: the build in a folder of the stack, `current` to it */
+        const QString stamp = StackBuilder::inputStamp(StackBuilder::hostDir());
+        const QString prefix = Paths::stackDir() + '/' + stamp.left(16);
+        QVERIFY(write(prefix + "/share/vitrine/stack.conf", "STAMP=" + stamp.toLatin1() + '\n'));
+        QVERIFY(write(prefix + "/bin/qemu-system-x86_64", "#!/bin/sh\nexit 1\n"));
+        QVERIFY(QFile::setPermissions(prefix + "/bin/qemu-system-x86_64",
+                                      QFileDevice::ReadOwner | QFileDevice::ExeOwner));
+        QVERIFY(QFile::link(stamp.left(16), Paths::stackDir() + "/current"));
+        /* and guest/build-medium.sh, the medium and its manifest */
+        const QString image = GuestToolsBuilder::mediumImage();
+        QVERIFY(write(image, QByteArray(1024, '\0')));
+        QVERIFY(write(GuestToolsBuilder::manifestOf(image),
+                      R"({"mediumId": "feedfacecafe0001", "fedora": "44",
+                          "tools": "0.1.0-9.fc44", "packages": []})"));
+        const auto clean = qScopeGuard([image]() {
+            QDir(Paths::stackDir()).removeRecursively();
+            QFile::remove(image);
+            QFile::remove(GuestToolsBuilder::manifestOf(image));
+            GuestToolsBuilder::instance()->checkMedium();
+        });
+        QCOMPARE(StackBuilder::state(), StackBuilder::State::UpToDate);
+        /* nothing told vitrine yet */
+        QVERIFY(!banner->isHidden());
+        QVERIFY(medium.isEmpty());
+
+        comeBack();
+        QVERIFY(banner->isHidden());
+        QCOMPARE(QemuDocs::preferred()->binary(),
+                 QFileInfo(prefix + "/bin/qemu-system-x86_64").canonicalFilePath());
+        QCOMPARE(medium.size(), 1);
+        /* again: nothing new */
+        comeBack();
+        QCOMPARE(medium.size(), 1);
     }
 
     /*

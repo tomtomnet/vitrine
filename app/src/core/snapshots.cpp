@@ -25,6 +25,9 @@ namespace {
 using Done = std::function<void(bool started, int exitCode, const QByteArray &out,
                                 const QString &err)>;
 
+/* The property of a qemu-img process that changes the files, unlike a listing */
+const char kWrites[] = "vitrineWrites";
+
 }
 
 struct VmSnapshots::Private
@@ -80,11 +83,13 @@ struct VmSnapshots::Private
         return nullptr;
     }
 
-    void run(const QStringList &arguments, const Done &done)
+    /* @arguments of qemu-img; @writes: it changes the files (snapshot -c, -a, -d), unlike info */
+    void run(const QStringList &arguments, const Done &done, bool writes = true)
     {
         auto *p = new QProcess(q);
         auto called = std::make_shared<bool>(false);
 
+        p->setProperty(kWrites, writes);
         p->setWorkingDirectory(dir);
         QObject::connect(p, &QProcess::finished, q, [p, done, called](int code, QProcess::ExitStatus status) {
             if (!std::exchange(*called, true)) {
@@ -152,7 +157,7 @@ struct VmSnapshots::Private
             }
             images.append({drive.file, QJsonDocument::fromJson(out)["snapshots"].toArray()});
             info(drives, images, generation);
-        });
+        }, false);
     }
 
     /* HMP @command, through QMP; @done gets its error */
@@ -254,8 +259,32 @@ VmSnapshots::VmSnapshots(VmRunner *runner, QObject *parent)
 {
 }
 
+/*
+ * Its qemu-img processes would go with it, QProcess killing each one still
+ * running, with a warning, and waiting for it.  A listing (qemu-img info)
+ * only reads: it ends here, quietly - the snapshot view showing another VM
+ * drops one, as does the guest tools' dialog, gone once the VM starts again
+ * after its snapshot, whose end listed the snapshots again.  A process that
+ * writes (a take, restore or delete of the stopped VM's disks) is never cut
+ * short: whoever owns this keeps it while isBusy(), and one still running
+ * here (the app quitting) finishes on its own.
+ */
 VmSnapshots::~VmSnapshots()
 {
+    for (QProcess *p : findChildren<QProcess *>(Qt::FindDirectChildrenOnly)) {
+        /* nothing of this object runs any more, nor while waiting below */
+        disconnect(p, nullptr, this, nullptr);
+        if (p->state() == QProcess::NotRunning) {
+            continue;
+        }
+        if (p->property(kWrites).toBool()) {
+            p->setParent(nullptr);
+            connect(p, &QProcess::finished, p, &QObject::deleteLater);
+            continue;
+        }
+        p->kill();
+        p->waitForFinished();
+    }
     delete d;
 }
 

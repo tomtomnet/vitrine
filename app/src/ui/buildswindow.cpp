@@ -547,6 +547,15 @@ BuildsWindow::BuildsWindow(QWidget *parent)
 
     /* the run's task, in the main window's list: seen here once it is over */
     TaskButton::followSeen(this, []() { return BuildManager::instance()->task(); });
+    /* vitrine back in front through another of its windows, this one in sight:
+       what was built meanwhile, from a terminal too (this one's own
+       activation: changeEvent()) */
+    connect(qApp, &QGuiApplication::applicationStateChanged, this,
+            [this](Qt::ApplicationState state) {
+        if (state == Qt::ApplicationActive && isVisible() && !isActiveWindow()) {
+            lookAgain();
+        }
+    });
 
     fill();
     showMissing();
@@ -582,8 +591,15 @@ void BuildsWindow::changeEvent(QEvent *event)
 {
     QDialog::changeEvent(event);
     /* back in front: what was built meanwhile, from a terminal too */
-    if (event->type() == QEvent::ActivationChange && isActiveWindow() &&
-        !m_manager->isRunning()) {
+    if (event->type() == QEvent::ActivationChange && isActiveWindow()) {
+        lookAgain();
+    }
+}
+
+void BuildsWindow::lookAgain()
+{
+    /* a run says itself what it builds */
+    if (!m_manager->isRunning()) {
         m_manager->refresh();
         HostKwinMonitor::instance()->refresh();
     }

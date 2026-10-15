@@ -9,6 +9,7 @@
 #include <QPointer>
 #include <QProcess>
 #include <QScopeGuard>
+#include <QSettings>
 #include <QSignalSpy>
 #include <QStandardPaths>
 #include <QTemporaryDir>
@@ -16,6 +17,7 @@
 #include <QTimer>
 
 #include "core/guesttools.h"
+#include "core/guesttoolsbuilder.h"
 #include "core/paths.h"
 #include "core/qmpclient.h"
 #include "core/vmrunner.h"
@@ -1029,6 +1031,63 @@ private slots:
         /* an install by hand, through it */
         say(R"({"type":"progress","id":3,"step":"Installing the packages","current":2,"total":6})");
         QTRY_VERIFY(!monitor->screenShown());
+    }
+
+    /*
+     * A medium made by hand (guest/build-medium.sh, the app elsewhere): the
+     * VMs whose last run showed older tools offer it once the builder looks
+     * again (checkMedium(), which the app does when it comes back in front),
+     * not before; a medium seen already, not again
+     */
+    void mediumMadeByHand()
+    {
+        QTemporaryDir tmp;
+        const QString id = QString("vitrine-gt-byhand-%1").arg(QCoreApplication::applicationPid());
+        const QString dir = tmp.filePath(id);
+        QVERIFY(QDir().mkpath(dir));
+        QFile args(dir + "/vm.args");
+        QVERIFY(args.open(QIODevice::WriteOnly));
+        args.write("-machine q35\n");
+        args.close();
+        const QString image = writeMedium();
+        GuestToolsBuilder *builder = GuestToolsBuilder::instance();
+        builder->checkMedium();
+        QSettings(Paths::settingsPath(), QSettings::IniFormat)
+            .setValue("guesttools/last/" + id, "installed 0.1.0-1.fc44");
+        const auto end = qScopeGuard([&id]() {
+            QSettings(Paths::settingsPath(), QSettings::IniFormat).remove("guesttools/last/" + id);
+        });
+        VmStore store(tmp.path());
+        Vm *vm = store.find(id);
+        QVERIFY(vm);
+        GuestToolsMonitor *monitor = GuestToolsMonitor::of(vm);
+        QCOMPARE(monitor->state(), State::Unknown);
+        QSignalSpy changed(monitor, &GuestToolsMonitor::changed);
+        QSignalSpy mediumChanged(builder, &GuestToolsBuilder::mediumChanged);
+
+        /* newer tools, on a medium of other sources */
+        QFile json(QString(image).replace(".img", ".json"));
+        QVERIFY(json.open(QIODevice::WriteOnly));
+        json.write(R"({"label": "VITRINETOOL", "mediumId": "0123456789abcdef", "fedora": "44",
+                      "tools": "0.1.0-2.fc44", "packages": []})");
+        json.close();
+        QCOMPARE(monitor->state(), State::Unknown);
+        builder->checkMedium();
+        QCOMPARE(mediumChanged.size(), 1);
+        QVERIFY(!changed.isEmpty());
+        QCOMPARE(monitor->state(), State::UpdateAvailable);
+        /* looked at again, the same */
+        builder->checkMedium();
+        QCOMPARE(mediumChanged.size(), 1);
+        /* gone, then the first one back */
+        QVERIFY(QFile::remove(image));
+        builder->checkMedium();
+        QCOMPARE(mediumChanged.size(), 2);
+        QCOMPARE(monitor->state(), State::Unknown);
+        writeMedium();
+        builder->checkMedium();
+        QCOMPARE(mediumChanged.size(), 3);
+        QCOMPARE(monitor->state(), State::Unknown);
     }
 
     /*

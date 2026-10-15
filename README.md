@@ -113,7 +113,9 @@ files it changes, and the guest packages compile through ccache.
    display in vitrine's window and for 3D. Until it is built, they use the
    system's QEMU, if there is one, except those that use what it lacks,
    such as the native context of new Linux VMs: these wait for the build.
-   `host/build.sh` does the same build by hand.
+   `host/build.sh` does the same build by hand; vitrine takes in what it
+   built (its banner, the Builds window, the VMs' QEMU) when its window
+   comes back to the front.
 2. **Create a VM.** File > New… (Ctrl+N): name, system, memory, processors,
    disk, and optionally an ISO to install from. Machine > Start (Ctrl+Return)
    starts it. Each VM is its QEMU command line, which Machine > Settings
@@ -127,7 +129,8 @@ files it changes, and the guest packages compile through ccache.
    first time (Mesa ~15-25 min, KWin ~10, the proxy and KPipeWire ~2 each,
    tools ~1), up to 10 GiB of memory. Mesa and KWin wait until that much is
    free, unless told to build anyway. `guest/build-rpms.sh` then
-   `guest/build-medium.sh` do the same by hand.
+   `guest/build-medium.sh` do the same by hand, which vitrine takes in the
+   same way.
 
    Then Machine > Install Guest Tools… > Install starts the VM with the tools
    medium (Restart and Install restarts a running one); the guest installs
@@ -151,7 +154,10 @@ Ctrl+Alt+F toggles full screen, F9 collapses or expands the VM list, F10 or
 Alt with a menu's first letter opens the menus (not while the VM's screen has
 the keys: they go to the VM), Ctrl+H asks the guest to shut down, Ctrl+L shows
 QEMU's log. Closing vitrine can leave its VMs running; it finds them again at
-its next start.
+its next start. SIGTERM (`kill`), SIGINT (Ctrl+C in its terminal) and SIGHUP
+(its terminal closed) close it the same way without asking: its VMs run on,
+settings changes not applied are lost, and what is under way stops, as with
+Close Anyway. The same signal again ends it at once.
 
 Nested desktop: the Display settings' Nested desktop checkbox runs the
 guest's KDE session in a KWin of its own, drawn as a window of this
@@ -172,11 +178,12 @@ button's menu (its name says the view shown: Console 1, 2 or 3), View > Boot,
 Screen and Desktop, or Ctrl+Alt+1, 2 and 3 choose one; the choice holds until
 the guest shows something else. Closing vitrine ends the session: the guest
 goes back to its login screen, where you log in again from the Screen view.
-So does vitrine crashing or being killed, a few seconds later, once both
-vitrine's QEMU and the guest's tools are up to date (the Builds window and
-the VM's page say when they are not): with older ones the session runs on
-without a window. A login while vitrine is closed (the guest's automatic
-login, say) ends at once the same way: its window has nowhere to show. With
+So does vitrine crashing or being killed, the login screen coming about a
+second later as well, once both vitrine's QEMU and the guest's tools are up
+to date (the Builds window and the VM's page say when they are not): with
+older ones it takes a few seconds, or the session runs on without a window.
+A login while vitrine is closed (the guest's automatic login, say) ends at
+once the same way: its window has nowhere to show. With
 QEMU's SDL or GTK window, or none, the session opens as a window of its own.
 
 Host desktop (optional): the Builds window also offers this computer's own
