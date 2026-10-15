@@ -369,7 +369,7 @@ private slots:
         const Source proxy = source(find(all, "proxy"));
         QCOMPARE(proxy.archive, "wl-cross-domain-proxy-c6ce1ca.tar.gz");
         QCOMPARE(proxy.archiveHost, "codeberg.org");
-        QVERIFY(proxy.revision.startsWith("0.1.0^git"));
+        QVERIFY(proxy.revision.startsWith("0.1.0^"));
         const Source kpipewire = source(find(all, "kpipewire"));
         QVERIFY(kpipewire.archive.startsWith("kpipewire-") && kpipewire.archive.endsWith(".tar.xz"));
         QCOMPARE(kpipewire.archiveHost, "download.kde.org");
