@@ -57,8 +57,8 @@ public:
      * size of the window around the view until it has its own.  Else only
      * once the view has a size: a running guest keeps its mode until then.
      * @console: the QEMU console shown, by its index (the nested desktop's
-     * views: 0, the VGA card's screen; 1, the virtio-gpu card's), -1 for
-     * the first graphic one.
+     * Screen view: NestedDesktop::screenConsole()), -1 for the first
+     * graphic one.
      */
     bool attach(const QString &monitorSocket, QString *error, bool guestWaits = false,
                 int console = -1);

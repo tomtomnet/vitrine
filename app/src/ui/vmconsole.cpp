@@ -12,7 +12,7 @@
 
 #include <utility>
 
-#include "core/guesttools.h"
+#include "core/nesteddesktop.h"
 #include "core/vmconfig.h"
 #include "core/vmhardware.h"
 #include "core/vmrunner.h"
@@ -152,7 +152,7 @@ VmConsole::VmConsole(Vm *vm, QWidget *parent)
     }
 
     /* Screen: the view's widget, alone; with the nested desktop, the view chosen (the
-       Console tab's menu, the View menu, Ctrl+Alt+1/2/3) */
+       Console tab's menu, the View menu, Ctrl+Alt+1/2) */
     {
         auto *column = new QVBoxLayout(m_screen);
         column->setContentsMargins(0, 0, 0, 0);
@@ -211,21 +211,6 @@ VmConsole::VmConsole(Vm *vm, QWidget *parent)
         connect(vm->runner(), &VmRunner::guestReset, this, [this]() {
             if (m_nested) {
                 renewNested();
-            }
-        });
-        /*
-         * What the guest shows, as the guest tools' agent says.  Not an
-         * agent answering (qemu-ga's guest-get-osinfo, the agent's hello):
-         * both start early in the boot, before the tools' install at boot
-         * and long before the login screen.
-         */
-        connect(GuestToolsMonitor::of(vm), &GuestToolsMonitor::changed, this,
-                &VmConsole::followGuest);
-        /* QEMU's guest agent: it goes as the guest's system goes down, not as
-           the guest tools' agent restarts itself */
-        connect(vm->runner(), &VmRunner::guestAgentChanged, this, [this](bool open) {
-            if (m_nested) {
-                m_views->setQemuAgent(open);
             }
         });
     }
@@ -373,8 +358,6 @@ bool VmConsole::serveNested(const QString &socket, QString *error)
     });
     m_views->powerOn();
     applyView();
-    /* a QEMU found running: what its guest shows, if its agent said already */
-    followGuest();
     return true;
 }
 
@@ -397,14 +380,6 @@ void VmConsole::renewNested()
     }
 }
 
-void VmConsole::followGuest()
-{
-    if (m_nested && m_vm) {
-        const GuestToolsMonitor *tools = GuestToolsMonitor::of(m_vm);
-        m_views->setGuest(tools->hasAgent(), tools->screenShown());
-    }
-}
-
 void VmConsole::dropNested()
 {
     if (!m_nested) {
@@ -417,9 +392,9 @@ void VmConsole::dropNested()
 }
 
 /*
- * The view to show: the D-Bus display's page on QEMU's console of the view
- * (attached again on the other console when it changes), or the guest's
- * desktop.  The keys go to the one shown, and full screen, if on, follows.
+ * The view to show: the D-Bus display's page, the VM's screen, or the
+ * guest's desktop.  The keys go to the one shown, and full screen, if on,
+ * follows.
  */
 void VmConsole::applyView()
 {
@@ -441,11 +416,6 @@ void VmConsole::applyView()
         m_nested->setInputEnabled(false);
         m_nested->setFullScreen(false);
         m_viewPages->setCurrentWidget(m_dbusPage);
-        /* the D-Bus display shows one console: the other one, attached again */
-        if (m_view && m_view->console() != ConsoleViews::qemuConsole(view)) {
-            detach();
-            attach();
-        }
         if (m_view && full) {
             m_view->setFullScreen(true);
         }
@@ -599,8 +569,9 @@ void VmConsole::attach()
     /* a new view each time: a failed attach leaves the view half set up */
     auto *view = new VmView(this);
     m_screenLayout->addWidget(view->widget(), 1);
+    /* the nested desktop's: its card's console (two cards: the virtio card's) */
     if (!view->attach(socket, &error, m_vm->runner()->waitsForDisplay(),
-                      m_nested ? ConsoleViews::qemuConsole(m_views->view()) : -1)) {
+                      m_nested ? NestedDesktop::screenConsole(m_vm->runner()->runArgs()) : -1)) {
         delete view;
         if (++m_attempts < kAttachTries) {
             showMessage(tr("Connecting to the screen…"), {});
