@@ -1,5 +1,5 @@
 The research's work on wl-cross-domain-proxy (virtio-gpu-desktop,
-src/wl-cross-domain-proxy at its commit b973b6b), as one diff against
+src/wl-cross-domain-proxy at its commit 8ecffaf), as one diff against
 upstream c6ce1ca89fb4, the commit it started from
 (patches/wl-cross-domain-proxy/BASE.md there).  What the nested desktop
 needs of the proxy beyond upstream: the presentation clock translated into
@@ -7,7 +7,10 @@ the guest's, fence waits before a frame reaches the host, the host's pointer
 grab and shortcut capture, the clipboard following the window's focus, an
 opaque toplevel, resizes settled before they reach the guest, AMD DCC
 modifiers left out of the dma-buf feedback (the host can scan the frames out
-then), statistics and their overlay.
+then), statistics and their overlay, and the host's hang-up: an empty
+receive (the host end of the connection closed: the app serving QEMU's
+socket quit or crashed) closes that guest client, whose compositor then
+sees its connection end, instead of polling on.
 
 Licence: these changes are GPL-2.0-or-later (the research's, the user's
 choice of 2026-10-14); Victoria Brekenfeld's proxy stays MIT, with her
@@ -8572,7 +8575,22 @@ diff -ruN a/src/source/channel/mod.rs b/src/source/channel/mod.rs
          if let Some(msg) = err_msg.take() {
              self.local.write_message(&msg)?;
              self.local.flush()?;
-@@ -511,25 +686,49 @@
+@@ -455,6 +630,14 @@
+                         &ring_slice[0..mem::size_of::<CrossDomainSendReceive>()],
+                     )
+                     .unwrap();
++                    // Nothing at all: the host end of the connection closed (a stream socket's end; the
++                    // app serving QEMU's socket quit or crashed). Polling on would get another empty
++                    // receive at once, forever (QEMU spun at ~3 CPUs, the guest's session lived on
++                    // without a window): close this client, as its host compositor would have.
++                    if cmd.opaque_data_size == 0 && cmd.num_identifiers == 0 {
++                        warn!("the host closed the Wayland connection: closing its guest client");
++                        return Ok(PostAction::Remove);
++                    }
+                     let data = &ring_slice[mem::size_of::<CrossDomainSendReceive>()
+                         ..mem::size_of::<CrossDomainSendReceive>()
+                             + (cmd.opaque_data_size as usize)];
+@@ -511,25 +694,49 @@
                      self.remote_data.advance(data.len());
                      self.remote_fds.extend(fds.into_iter());
  
@@ -8633,7 +8651,7 @@ diff -ruN a/src/source/channel/mod.rs b/src/source/channel/mod.rs
                  }
                  CROSS_DOMAIN_CMD_READ => {
                      let cmd = CrossDomainReadWrite::read_from_bytes(
-@@ -540,14 +739,20 @@
+@@ -540,14 +747,20 @@
                          ..mem::size_of::<CrossDomainReadWrite>() + (cmd.opaque_data_size as usize)];
  
                      if let Some(write_fd) = self.pipes_write_from_host.get(&cmd.identifier) {
@@ -8660,7 +8678,7 @@ diff -ruN a/src/source/channel/mod.rs b/src/source/channel/mod.rs
                              res = PostAction::Reregister;
                          }
                      } else {
-@@ -600,15 +805,15 @@
+@@ -600,15 +813,15 @@
                      &mut buf[mem::size_of::<CrossDomainReadWrite>()..],
                  ) {
                      Ok(read_bytes) => {
@@ -8680,7 +8698,7 @@ diff -ruN a/src/source/channel/mod.rs b/src/source/channel/mod.rs
                          }
                      }
                      Err(_) => {
-@@ -654,6 +859,7 @@
+@@ -654,6 +867,7 @@
      ) -> calloop::Result<()> {
          self.local.register(poll, token_factory)?;
          self.drm.register(poll, token_factory)?;
@@ -8688,7 +8706,7 @@ diff -ruN a/src/source/channel/mod.rs b/src/source/channel/mod.rs
          for (pipe, _) in self.pipes_read_from_guest.values_mut() {
              pipe.register(poll, token_factory)?;
          }
-@@ -667,6 +873,7 @@
+@@ -667,6 +881,7 @@
      ) -> calloop::Result<()> {
          self.local.reregister(poll, token_factory)?;
          self.drm.reregister(poll, token_factory)?;
@@ -8696,7 +8714,7 @@ diff -ruN a/src/source/channel/mod.rs b/src/source/channel/mod.rs
          for (pipe, is_registered) in self.pipes_read_from_guest.values_mut() {
              if *is_registered {
                  pipe.reregister(poll, token_factory)?;
-@@ -681,6 +888,7 @@
+@@ -681,6 +896,7 @@
      fn unregister(&mut self, poll: &mut calloop::Poll) -> calloop::Result<()> {
          self.local.unregister(poll)?;
          self.drm.unregister(poll)?;
@@ -8704,7 +8722,7 @@ diff -ruN a/src/source/channel/mod.rs b/src/source/channel/mod.rs
          for (pipe, is_registered) in self.pipes_read_from_guest.values_mut() {
              if *is_registered {
                  pipe.unregister(poll)?;
-@@ -693,8 +901,8 @@
+@@ -693,8 +909,8 @@
  fn try_read_message(
      buffer: &mut Buffer<u8>,
      fds: &mut VecDeque<OwnedFd>,
@@ -8715,7 +8733,7 @@ diff -ruN a/src/source/channel/mod.rs b/src/source/channel/mod.rs
      let (msg, read_data) = {
          let data = buffer.get_contents();
          if data.len() < 2 * 4 {
-@@ -705,7 +913,7 @@
+@@ -705,7 +921,7 @@
          let opcode = (word_2 & 0x0000_FFFF) as u16;
          let len = (word_2 >> 16) as usize;
  
@@ -8724,7 +8742,7 @@ diff -ruN a/src/source/channel/mod.rs b/src/source/channel/mod.rs
              // This *really* should not happen, as e.g. incoming events for destroyed objects
              // (before the destruction was ACKed) are handled in the regular happy path.
              error!(
-@@ -723,14 +931,13 @@
+@@ -723,14 +939,13 @@
              buffer.offset(len);
              return Err(MessageParseError::Malformed);
          };

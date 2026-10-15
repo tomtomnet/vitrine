@@ -172,9 +172,12 @@ button's menu (its name says the view shown: Console 1, 2 or 3), View > Boot,
 Screen and Desktop, or Ctrl+Alt+1, 2 and 3 choose one; the choice holds until
 the guest shows something else. Closing vitrine ends the session: the guest
 goes back to its login screen, where you log in again from the Screen view.
-A login while vitrine is closed (the guest's automatic login, say) ends
-within seconds the same way: its window has nowhere to show. With QEMU's SDL
-or GTK window, or none, the session opens as a window of its own.
+So does vitrine crashing or being killed, a few seconds later, once both
+vitrine's QEMU and the guest's tools are up to date (the Builds window and
+the VM's page say when they are not): with older ones the session runs on
+without a window. A login while vitrine is closed (the guest's automatic
+login, say) ends at once the same way: its window has nowhere to show. With
+QEMU's SDL or GTK window, or none, the session opens as a window of its own.
 
 Host desktop (optional): the Builds window also offers this computer's own
 KWin with the research's host set: steadier frames and quicker input in
@@ -263,9 +266,10 @@ AI-generated contributions.
 
 ## License
 
-GPL-2.0-or-later, see [LICENSE](LICENSE). Patches to other projects are under
-the licenses of the files they change, and files with their own license header
-keep that license: `app/src/nested`'s copy of the research side's vmview
-library is MIT ([its licence](app/src/nested/LICENSE)). vitrine's own logo, `app/data/vitrine.svg`, is derived from
-QEMU's logo, "Kew the Angry Emu" by Benoît Canet, and is under CC BY 3.0
-([its note](app/data/README.md)).
+GPL-2.0-or-later, see [LICENSE](LICENSE); so is `app/src/nested`'s copy of the
+research side's vmview library ([its note](app/src/nested/LICENSE): copies of
+its versions up to the research's 182e74d, which vitrine had until 2026-10-15,
+are MIT). Patches to other projects are under the licenses of the files they
+change, and files with their own license header keep that license. vitrine's
+own logo, `app/data/vitrine.svg`, is derived from QEMU's logo, "Kew the Angry
+Emu" by Benoît Canet, and is under CC BY 3.0 ([its note](app/data/README.md)).

@@ -19,7 +19,7 @@ its `Subject:`, else the first line of its description.
 patches that go on top, in this order:
 
 1. `qemu/research/`: the research's QEMU series, its `patches/qemu/series`
-   at commit `3907327` (2026-10-14), each patch without its
+   at commit `e06b62f` (2026-10-15), each patch without its
    `Claude-Session:` line and otherwise unchanged. Since 2026-10-14 this
    series is the source of the research's QEMU; the qemu-gui fork
    (`https://github.com/tomtomnet/qemu-gui`) it started from is no longer
@@ -44,7 +44,7 @@ patches that go on top, in this order:
 | `bc15cbbdc77dd5f1c962773afc90286dcd8b53cd6d09695393d7f8772052907c` | `0009-virtio-gpu-gl-disable-the-scanouts-on-reset-in-the-m.patch` |
 | `6fd23105ea52f009efc16ff6eb31a3b6fceb1c4473c76736ff52a3c51f362600` | `0010-virtio-gpu-virgl-give-guest-memory-blobs-a-udmabuf-f.patch` |
 | `1625a761dd0bd1a4531ed44b067c5b898e80ea341db7dbfc6ada4779cbdec4bb` | `0011-zero-copy-the-virglrenderer-patch-this-branch-needs-.patch` |
-| `efd7be38ca303d991acf34ddb33422d6d63d4be211978df713bf44541bc12a68` | `0012-ui-sdl2-frame-and-input-latency-stats-x-query-displa.patch` |
+| `1f07828714b44135a87210774aab84c07c3b2b726233b97b704a864d769adc4f` | `0012-ui-sdl2-frame-and-input-latency-stats-x-query-displa.patch` |
 | `1fefe2f2fc934aa83bb735871df79e59ec0b2abb46f0dde204aa339e4a545e06` | `0013-README-zero-copy-and-frame-statistics-are-in-master.patch` |
 | `b28eb6124a4e0e576be61abd095dd6a36c0d677bb5fe18f2f416d1bd4a648c47` | `0014-virtio-gpu-guest-vblank-locked-to-the-host-s-present.patch`: `x-host-vblank` and the vblank lead and swap targets |
 | `54db2036e019926c2a8e7fdb679f70241bef9da14204562d9675785b1cda5ec1` | `0015-machine-x-vcpu-priority-QMP-command.patch` |
@@ -67,7 +67,7 @@ When the research's series moves (`r` its repository, `c` the commit,
 `v` this folder):
 
 ```sh
-r=~/Documents/virtio-gpu-desktop c=3907327 v=~/Documents/vitrine/host/patches/qemu
+r=~/Documents/virtio-gpu-desktop c=e06b62f v=~/Documents/vitrine/host/patches/qemu
 rm -f "$v"/research/*.patch
 for p in $(git -C "$r" show "$c:patches/qemu/series" | sed 's/#.*//'); do
     git -C "$r" show "$c:patches/qemu/$p" | grep -v '^Claude-Session:' > "$v/research/$p"
@@ -100,6 +100,10 @@ patch, `0018-The-fork-s-uncommitted-work-as-of-2026-10-12-to-be-s.patch`
 (sha256 `81ceed52...`). The split series gives the same tree: checked when
 the reset patch came, the new series giving the tree of the old one plus
 `virtio-gpu-rutabaga-reset-contexts.patch` alone.
+
+Until the research's `e06b62f` (2026-10-15), 0012 ended `ui/sdl2-stats.c`
+with a blank line, git am's only whitespace warning (sha256 `efd7be38...`):
+the series' tree differs from the one before by that line alone.
 
 ### `qemu/vitrine/`
 
@@ -147,7 +151,7 @@ virglrenderer, into a folder of its own that QEMU's RUNPATH names.
 
 | sha256 | patch |
 |---|---|
-| `8c47e8dd68891d3c7c00b824027731d0ab9624437a47eb26ba2ef22a2b3da67f` | `changes.patch`: the research's `patches/rutabaga_gfx/changes.diff` (commit `5f7e6af`) under a description of Vitrine's: native contexts through the FFI, `struct rutabaga_fence`'s ring index as a byte, polling for virglrenderer's fences, a logger, guest dma-bufs |
+| `59fd9f1573273debbacb6b748f22306e8566702bd5045b063acfac72a1d08dd0` | `changes.patch`: the research's `patches/rutabaga_gfx/changes.diff` (commit `8ecffaf`) under a description of Vitrine's: native contexts through the FFI, `struct rutabaga_fence`'s ring index as a byte, polling for virglrenderer's fences, a logger, guest dma-bufs, and cross-domain hang-ups: the host end of the guest's Wayland connection going away (the app serving QEMU's socket quit, crashed or was never there) reaches the guest once, as an empty receive, instead of empty receives in a busy loop or no answer at all |
 
 Below its description the file is the research's diff, unchanged:
 `sed -n '/^diff --git/,$p' rutabaga_gfx/changes.patch` gives it back.

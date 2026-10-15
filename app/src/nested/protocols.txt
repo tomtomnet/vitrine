@@ -1,4 +1,4 @@
-# SPDX-License-Identifier: MIT
+# SPDX-License-Identifier: GPL-2.0-or-later
 # SPDX-FileCopyrightText: 2026 tomtomnet
 # Protocols the forwarder knows (wayland-protocols paths, or absolute). Only interfaces from these files
 # can cross; a host global whose interface is not here is never shown to the guest. Core wayland.xml

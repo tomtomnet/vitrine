@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: MIT
+// SPDX-License-Identifier: GPL-2.0-or-later
 // SPDX-FileCopyrightText: 2026 tomtomnet
 // vmview: the guest's Wayland protocol, from QEMU's cross-domain socket, on the app's own Wayland
 // connection; the guest's toplevel as a subsurface of the app's window (vmview.h). 2026-10-12.
@@ -1395,9 +1395,11 @@ void View::run()
 
 void View::stopAll()
 {
-    // the guest's window closed first, as a compositor closes a window: its nested compositor quits
-    // and its session ends. Closing the connection alone tells it nothing (QEMU's cross-domain passes
-    // no hang-up on: the session ran on without a window). Up to ~50 ms for the message to go out.
+    // the guest's window closed first, as a compositor closes a window: its nested compositor quits on
+    // its own and its session ends at the login screen (vitrine's change, 2026-10-15). Closing the
+    // connection alone now ends the session too (rutabaga and the proxy pass the hang-up on since
+    // 8ecffaf), but abruptly: KWin's wrapper restarts KWin a few times first. Up to ~50 ms for the
+    // message to go out.
     for (auto &c : conns) {
         if (c->dead || !c->toplevel)
             continue;

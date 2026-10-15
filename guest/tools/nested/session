@@ -149,24 +149,28 @@ fi
 # laptop at 1.3, 2026-10-13: 3200x1800 frames shown at 2080x1170 until a resize). The window
 # shrinks, its shape kept, to fit 90 % of the host's smallest screen (1600x900 is wider than the
 # laptop's 1477x923). Several screens: the largest scale among them.
+host_info=$(WAYLAND_DISPLAY=$sock timeout 5 wayland-info 2>/dev/null)
+host_rc=$?
 host_screens() {   # one line per host screen: logical_w logical_h physical_w physical_h
-    WAYLAND_DISPLAY=$sock timeout 5 wayland-info 2>/dev/null | awk '
+    printf '%s\n' "$host_info" | awk '
         /^interface: / { sect = $2; gsub(/[^a-z0-9_]/, "", sect); if (sect == "wl_output") out = $NF }
         sect == "zxdg_output_manager_v1" && $1 == "output:" { xo = $2 }
         sect == "zxdg_output_manager_v1" && $1 == "logical_width:" { sub(/,/, "", $2); lw[xo] = $2; lh[xo] = $4 }
         sect == "wl_output" && $1 == "width:" && $3 == "px," { pw[out] = $2; ph[out] = $5 }
         END { for (o in lw) if ((o in pw) && lw[o] > 0 && lh[o] > 0) print lw[o], lh[o], pw[o], ph[o] }'
-    return "${PIPESTATUS[0]}"
 }
 screens=$(host_screens)
-# vitrine: no answer from the host at all (timeout's 124). In vitrine's window (its D-Bus display),
-# vitrine is not running: QEMU's cross-domain found no socket to connect to, and the proxy never
-# connects again - KWin would wait for its host forever, the session stuck without a window. End it
-# instead: the guest waits at its login screen, where the user logs in once vitrine shows it. Status
-# 0: the display manager shows its login screen after a session that ended (after one that failed,
-# it takes it for a failed login and shows nothing).
-if [ $? = 124 ]; then
-    log "no answer from the host's display in 5 s (vitrine not running?): ending the session" err
+# vitrine: no answer from the host at all, wayland-info's 5 s out (timeout's 124) or not one global
+# listed (the host hung up at once). In vitrine's window (its D-Bus display), vitrine is not running:
+# QEMU's cross-domain found no socket to connect to. With rutabaga_gfx before the research's 8ecffaf
+# the proxy never heard of it and KWin waited for its host forever, the session stuck without a
+# window; since, the guest's channel hangs up, and KWin, failing to connect, was restarted ten times
+# before the session ended, its clients crashing. End it at once instead: the guest waits at its
+# login screen, where the user logs in once vitrine shows it. Status 0: the display manager shows
+# its login screen after a session that ended (after one that failed, it takes it for a failed
+# login and shows nothing).
+if [ "$host_rc" = 124 ] || ! printf '%s\n' "$host_info" | grep -q '^interface: '; then
+    log "no answer from the host's display (vitrine not running?): ending the session" err
     kill "$proxy" 2>/dev/null
     exit 0
 fi

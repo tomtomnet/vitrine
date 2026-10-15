@@ -1,4 +1,4 @@
-/* SPDX-License-Identifier: MIT */
+/* SPDX-License-Identifier: GPL-2.0-or-later */
 /* SPDX-FileCopyrightText: 2026 tomtomnet */
 /* vmview: a VM's desktop window shown inside a window of the app (2026-10-12, route B of
  * findings/vitrine-embedding-plan-2026-10-12.md).
