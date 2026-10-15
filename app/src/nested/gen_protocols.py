@@ -1,5 +1,5 @@
 #!/usr/bin/python3
-# SPDX-License-Identifier: MIT
+# SPDX-License-Identifier: GPL-2.0-or-later
 # SPDX-FileCopyrightText: 2026 tomtomnet
 """The forwarder's protocol table (2026-10-12): for each interface of wayland.xml and the protocols in
 protocols.txt, its wl_interface (wayland-scanner's private code; core ones from libwayland-client),

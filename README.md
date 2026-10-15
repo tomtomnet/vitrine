@@ -263,9 +263,10 @@ AI-generated contributions.
 
 ## License
 
-GPL-2.0-or-later, see [LICENSE](LICENSE). Patches to other projects are under
-the licenses of the files they change, and files with their own license header
-keep that license: `app/src/nested`'s copy of the research side's vmview
-library is MIT ([its licence](app/src/nested/LICENSE)). vitrine's own logo, `app/data/vitrine.svg`, is derived from
-QEMU's logo, "Kew the Angry Emu" by Benoît Canet, and is under CC BY 3.0
-([its note](app/data/README.md)).
+GPL-2.0-or-later, see [LICENSE](LICENSE); so is `app/src/nested`'s copy of the
+research side's vmview library ([its note](app/src/nested/LICENSE): copies of
+its versions up to the research's 182e74d, which vitrine had until 2026-10-15,
+are MIT). Patches to other projects are under the licenses of the files they
+change, and files with their own license header keep that license. vitrine's
+own logo, `app/data/vitrine.svg`, is derived from QEMU's logo, "Kew the Angry
+Emu" by Benoît Canet, and is under CC BY 3.0 ([its note](app/data/README.md)).

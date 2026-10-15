@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: MIT
+// SPDX-License-Identifier: GPL-2.0-or-later
 // SPDX-FileCopyrightText: 2026 tomtomnet
 // The protocols the forwarder knows (gen_protocols.py makes the table from protocols.txt).
 #pragma once
