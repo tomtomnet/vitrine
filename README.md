@@ -197,8 +197,10 @@ kwin, kwin-common and kwin-libs and version-locks them (`dnf versionlock`);
 it takes effect at the next login. It must match the installed Plasma and
 Qt: after an update of either, build and install it again, or Revert…,
 which puts the distribution's KWin back. A banner says when the installed
-one no longer matches. A KWin that vitrine did not install (another patched
-build) is named before anything replaces it, and vitrine never reverts it.
+one no longer matches; for an update made while vitrine runs, once its
+window comes back to the front. A KWin that vitrine did not install
+(another patched build) is named before anything replaces it, and vitrine
+never reverts it.
 `host/kwin/README.md` has the details, and the commands that put the
 distribution's KWin back from a text console.
 

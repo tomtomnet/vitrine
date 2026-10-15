@@ -438,6 +438,7 @@ if(BUILD_TESTING)
             consoleviews
             guestoffer
             guesttoolsdialog
+            hostkwinbanner
             mainbar
             newvmdialog
             settingspages
@@ -475,6 +476,7 @@ if(BUILD_TESTING)
     # vitrine coming back in front, through Qt's window system events (tests/activation.h)
     target_link_libraries(test_stackbanner PRIVATE Qt6::GuiPrivate)
     target_link_libraries(test_guesttoolsdialog PRIVATE Qt6::GuiPrivate)
+    target_link_libraries(test_hostkwinbanner PRIVATE Qt6::GuiPrivate)
     # the helper's test build on a fake tree, and its QEMU stand-in (helper/)
     target_compile_definitions(test_hostsettings PRIVATE
         HELPER_FAKE="$<TARGET_FILE:vitrine-helper-fake>"

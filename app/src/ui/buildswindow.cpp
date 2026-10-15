@@ -598,10 +598,11 @@ void BuildsWindow::changeEvent(QEvent *event)
 
 void BuildsWindow::lookAgain()
 {
-    /* a run says itself what it builds */
+    /* a run says itself what it builds; the host's KWin: one reading at a
+       time, the main window's banner asks too */
     if (!m_manager->isRunning()) {
         m_manager->refresh();
-        HostKwinMonitor::instance()->refresh();
+        HostKwinMonitor::instance()->lookAgain();
     }
 }
 
