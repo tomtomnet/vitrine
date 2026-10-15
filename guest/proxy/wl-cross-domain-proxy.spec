@@ -1,9 +1,9 @@
 # Upstream's commit c6ce1ca89fb4, where the research's work starts, with that
-# work as one patch, taken at the research's commit b973b6b (the patch's
+# work as one patch, taken at the research's commit 8ecffaf (the patch's
 # description has what it adds).  Literal, without macros: vitrine's Builds
 # window reads Version and Source0 as they are written.
 Name:           wl-cross-domain-proxy
-Version:        0.1.0^gitc6ce1ca.rb973b6b
+Version:        0.1.0^gitc6ce1ca.r8ecffaf
 Release:        1%{?dist}
 Summary:        Wayland proxy over virtio-gpu cross-domain, for vitrine's nested desktop
 
@@ -31,7 +31,8 @@ session - reach the host's compositor through virtio-gpu's cross-domain
 context, their GPU buffers shared without a copy.  Upstream's proxy with the
 research's work for a whole desktop: the presentation clock in the guest's
 time, fence waits, the pointer grab and shortcut capture, the clipboard,
-settled resizes and statistics.
+settled resizes, statistics, and the session's end when the host's side of
+the connection goes away.
 
 %prep
 %autosetup -p1 -n %{name}
@@ -55,6 +56,12 @@ install -Dm 0644 %{SOURCE1} %{buildroot}%{_licensedir}/%{name}/GPL-2.0.txt
 %{_bindir}/%{name}
 
 %changelog
+* Thu Oct 15 2026 vitrine <noreply@anthropic.com> - 0.1.0^gitc6ce1ca.r8ecffaf-1
+- the research's work at 8ecffaf: an empty receive (the host end of the
+  connection closed: vitrine quit or crashed) closes that guest client
+  instead of polling on, so the nested session ends instead of running on
+  without a window while QEMU spins
+
 * Wed Oct 14 2026 vitrine <noreply@anthropic.com> - 0.1.0^gitc6ce1ca.rb973b6b-1
 - First version: upstream c6ce1ca with the research's work at b973b6b, for
   the nested desktop; the tree GPL-2.0-or-later AND MIT
