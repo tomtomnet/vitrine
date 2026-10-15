@@ -278,6 +278,10 @@ public:
 
     /* The system again, in the background; changed() then */
     void refresh();
+    /* The same, unless a reading is under way, which tells as much, or an
+       install or a revert, whose end reads again: for vitrine back in
+       front, where several windows ask at once */
+    void lookAgain();
     /* Now, before it returns (the tests) */
     void refreshNow();
 

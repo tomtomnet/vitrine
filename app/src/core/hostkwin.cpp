@@ -905,6 +905,13 @@ void HostKwinMonitor::refresh()
                                          m_proc));
 }
 
+void HostKwinMonitor::lookAgain()
+{
+    if (!m_reading && !m_process) {
+        refresh();
+    }
+}
+
 void HostKwinMonitor::refreshNow()
 {
     apply(read(sourceDir(), outDir(), m_osRelease, m_proc));

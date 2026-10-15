@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: GPL-2.0-or-later
 #include "hostkwinbanner.h"
 
+#include <QGuiApplication>
 #include <QMainWindow>
 #include <QPushButton>
 #include <QVBoxLayout>
@@ -32,6 +33,19 @@ HostKwinBanner::HostKwinBanner(QWidget *parent)
     connect(m_banner->button(), &QPushButton::clicked, this, &HostKwinBanner::rebuildRequested);
     connect(revert, &QPushButton::clicked, this, &HostKwinBanner::revertRequested);
     connect(monitor, &HostKwinMonitor::changed, this, &HostKwinBanner::refresh);
+    /*
+     * Back in front, from a terminal say: Plasma or Qt updated meanwhile, or
+     * Vitrine's KWin put back by hand.  rpm and dnf take a few hundred
+     * milliseconds to tell: read in the background, as at the start, and
+     * not again while a reading is under way (the Builds window, in sight,
+     * asks at the same time).
+     */
+    connect(qGuiApp, &QGuiApplication::applicationStateChanged, this,
+            [monitor](Qt::ApplicationState state) {
+        if (state == Qt::ApplicationActive) {
+            monitor->lookAgain();
+        }
+    });
     refresh();
     /* the system as it is now: Plasma may have moved since the last run */
     if (!monitor->isRead()) {
