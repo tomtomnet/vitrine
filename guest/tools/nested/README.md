@@ -27,6 +27,7 @@ login; their journal service (crosvm debug boots), `crosvm-desktop-check` and
 | file | change | why |
 |---|---|---|
 | `session` | header comment; `conf`, `launcher_words`, `LIBEXEC` and `PROXY` paths | vitrine's package layout: no files in /usr/local; the boot's words in /run/vitrine-nested |
+| `session` | the session ends when the host's display gives no answer to wayland-info within its 5 s (`host_screens` returns wayland-info's status, 124 for the timeout) | vitrine not running (a login, automatic or not, while vitrine is closed): QEMU's cross-domain finds no socket and the proxy never connects again, so KWin waited for its host forever and the session hung without a window or a login screen (2026-10-15). The guest goes back to its login screen instead |
 | `nested.conf` | header comment; no `CROSVM_DESKTOP_AUTOLOGIN` (a note instead); `CROSVM_DESKTOP_STATS=off`; a note on the `CROSVM_DESKTOP_KWIN_ENV` settings vitrine's KWin 6.7.5 knows; `vitrine-nested-boot.service` for their detect service | vitrine sets no automatic login (the user's decision, 2026-10-14): the guest's own, if any, logs into the nested desktop; no numbers in the window's title, as the research's own guests |
 
 ## Licences
