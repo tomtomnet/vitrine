@@ -62,7 +62,7 @@ public:
     static constexpr int kAgentWaitMs = 2000;
 
     explicit ConsoleViews(QObject *parent = nullptr);
-    /* Tests: a shorter wait for the views made after; 0 or less for kAgentWaitMs */
+    /* Tests: a shorter wait, from the next one that starts; 0 or less for kAgentWaitMs */
     static void setAgentWait(int ms);
 
     View view() const;
