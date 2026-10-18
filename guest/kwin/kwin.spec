@@ -1,6 +1,6 @@
 Name:    kwin
 Version: 6.7.5
-Release: 1.23%{?dist}
+Release: 1.27.2%{?dist}
 Summary: KDE Window manager
 
 License: BSD-2-Clause AND BSD-3-Clause AND CC0-1.0 AND GPL-2.0-only AND GPL-2.0-or-later AND GPL-3.0-only AND GPL-3.0-or-later AND LGPL-2.0-only AND LGPL-2.0-or-later AND LGPL-2.1-only AND LGPL-2.1-or-later AND LGPL-3.0-only AND (GPL-2.0-only OR GPL-3.0-only) AND (LGPL-2.1-only OR LGPL-3.0-only) AND MIT
@@ -69,6 +69,22 @@ Patch120: kwin-nested-grab-ctrl-alt-g.patch
 Patch121: kwin-nested-preferred-scale.patch
 # the pointer grab committed at once, not at the next frame of an idle desktop
 Patch122: kwin-nested-commit-pointer-lock.patch
+
+## A high-rate mouse (4000 Hz and more): the research's 1.24-1.27 fixes, each with a
+## switch back to the old way
+# a 4000 Hz mouse moved a dragged window 4000 times a second, each move sent to plasmashell's task models
+# (its panel froze for seconds behind them): the move once per frame, the plasma window geometry once per pass
+Patch123: kwin-move-once-per-frame.patch
+Patch124: kwin-plasma-window-geometry-coalesce.patch
+# the same mouse sent every motion to the client under the pointer: at most one per 750 us (the latest)
+Patch125: kwin-pointer-motion-interval.patch
+# and every cursor move started with an atomic test of the whole state: reused while only the position changes
+Patch126: kwin-cursor-async-test-once.patch
+
+## The nested desktop again
+# wl_output follows the refresh rate learned from presentation feedback (the research's 0064, ported to
+# 6.7.5): a guest on a 165 Hz screen of a host with a 240 Hz one told its clients 240 Hz
+Patch127: kwin-nested-wl-output-presented-refresh.patch
 
 
 # Base
@@ -338,6 +354,28 @@ ln -sr %{buildroot}%{_kf6_bindir}/kwin_wayland %{buildroot}%{_bindir}/kwin
 
 
 %changelog
+* Sun Oct 18 2026 vitrine <noreply@anthropic.com> - 6.7.5-1.27.2
+- kwin-nested-wl-output-presented-refresh, from the research (its 0064, ported to this
+  series): when presentation feedback sets the nested output's refresh rate, the logical
+  output, and with it wl_output, follows. Clients kept the rate the output started at
+  (the highest host rate): on a host with a 165 Hz and a 240 Hz monitor, a guest on the
+  165 Hz one told its clients 240 Hz (mpv's display-resample at 48 frames a second)
+
+* Sun Oct 18 2026 vitrine <noreply@anthropic.com> - 6.7.5-1.27.1
+- a high-rate mouse, from the research (its 1.24-1.27, on vitrine's 1.23 with the nested
+  desktop's patches, without its kwin-output-mode-ids-kept):
+  - kwin-move-once-per-frame v2: a dragged window moves at most twice per frame, the
+    first position after a frame started at once (KWIN_MOVE_COALESCE=0: the old way)
+  - kwin-plasma-window-geometry-coalesce: a plasma window's geometry goes to the clients
+    once per pass of the event loop (KWIN_PLASMA_WINDOW_GEOMETRY_COALESCE=0)
+  - kwin-pointer-motion-interval: pointer motion to the client under the pointer at most
+    once per 750 us, a held motion sent before any other pointer event; warps, locked and
+    confined pointers get every motion (KWIN_POINTER_MOTION_INTERVAL_US=0)
+  - kwin-cursor-async-test-once: a cursor move that only moves the plane reuses the last
+    successful atomic test (KWIN_CURSOR_TEST_EVERY_MOVE=1)
+  The guest plasmashell froze after fast drags with a 4000 Hz mouse, and the mouse cost
+  plasmashell and KWin 2-3 times their 1000 Hz CPU
+
 * Wed Oct 14 2026 vitrine <noreply@anthropic.com> - 6.7.5-1.23
 - the nested desktop's Wayland backend fixes, from the research (its group A, ported to
   6.7.5): presentation feedback matched to its frame, no new mode for a same-size

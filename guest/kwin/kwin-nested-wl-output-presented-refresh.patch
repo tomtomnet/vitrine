@@ -1,0 +1,26 @@
+KWin: wl_output follows the refresh rate learned from presentation feedback (6.7.5 port of patches/kwin/0064, 2026-10-18)
+
+For vitrine's 6.7.5 guest series (on its 1.27.1: Patch100-126, after kwin-nested-feedback-pairing and
+kwin-nested-host-refresh). WaylandOutput::framePresented takes the host's refresh rate from presentation feedback
+and sets it as the output's mode, but the logical output that wl_output reports copies its backend output only in
+Workspace::updateOutputs(), on OutputBackend::outputsQueried. The backend's other mode changes emit it; this one did
+not, so clients kept the rate the nested output started at: the highest host rate with kwin-nested-host-refresh.
+On a host with a 165 Hz and a 240 Hz monitor, a guest full screen on the 165 Hz one told its clients 240 Hz all
+session: mpv's display-resample fell to 48 frames a second, and Qt Quick's animation driver took 4.17 ms per
+6.06 ms frame. Tested on 6.7.91 (findings/nested-wl-output-refresh-2026-10-18.md): wl_output 165.058 Hz, ideal
+3/2 cadence. The same function on 6.7.5; this port only applies cleanly, it is not built or run here.
+
+diff --git a/src/backends/wayland/wayland_output.cpp b/src/backends/wayland/wayland_output.cpp
+index 3dade69..e04f934 100644
+--- a/src/backends/wayland/wayland_output.cpp
++++ b/src/backends/wayland/wayland_output.cpp
+@@ -399,6 +399,9 @@ void WaylandOutput::framePresented(struct wp_presentation_feedback *feedback, st
+         next.currentMode = mode;
+         setState(next);
+         m_renderLoop->setRefreshRate(m_refreshRate);
++        // the logical output, and with it wl_output, follows only through the workspace's output
++        // update: without it clients kept the rate the output started at (60 Hz, or the guess)
++        Q_EMIT m_backend->outputsQueried();
+     }
+     const auto &frame = m_frames.front();
+     if (auto t = frame.frameCallbackTime) {
