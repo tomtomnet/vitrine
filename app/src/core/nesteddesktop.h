@@ -73,11 +73,13 @@ QString cardDevice(const std::optional<QStringList> &properties);
  * On: the nested desktop's card in place of the VM's (with the properties
  * cardDevice() writes), guest RAM in a shared memfd (the card's blobs), the
  * in-kernel PIT dropping lost ticks rather than reinjecting them (which
- * keeps AVIC off for the whole VM), and an ISA pvpanic: a guest that panics
+ * keeps AVIC off for the whole VM), an ISA pvpanic: a guest that panics
  * at the end of its shutdown says so, and the runner quits QEMU (Fedora's
- * kernel has no driver for pvpanic-pci).  Off: the template's 3D card takes
- * the card's place (its 3D settings are the Display page's); the rest
- * stays, harmless without it.
+ * kernel has no driver for pvpanic-pci), and on a PC no HPET unless the
+ * VM says otherwise (hpet=off, as the template writes it: the guest does
+ * not use it, and QEMU's costs an idle VM some 3 W).  Off: the template's
+ * 3D card takes the card's place (its 3D settings are the Display page's);
+ * the rest stays, harmless without it.
  */
 void set(ArgsFile &args, bool on, const std::optional<QStringList> &properties = {});
 

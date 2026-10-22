@@ -24,9 +24,11 @@ struct QemuInfo;
  * the host's, shown in vitrine's window; the disk on an iothread; virtio
  * input, sound and random numbers; NAT through passt with the guest's SSH
  * on a port of this computer; UEFI without Secure Boot, as the guest
- * tools' kernel module is not signed.  The card is the launcher's with a
- * VGA part (virtio-vga-gl rather than virtio-gpu-gl-pci), which shows the
- * firmware, the boot loader and the early boot, with BIOS as with UEFI.
+ * tools' kernel module is not signed; no HPET, which the guest does not
+ * use and which costs an idle VM some 3 W.  The card is the launcher's
+ * with a VGA part (virtio-vga-gl rather than virtio-gpu-gl-pci), which
+ * shows the firmware, the boot loader and the early boot, with BIOS as
+ * with UEFI.
  */
 namespace VmTemplate {
 

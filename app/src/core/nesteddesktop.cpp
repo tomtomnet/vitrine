@@ -113,6 +113,29 @@ static bool hasGlobal(const ArgsFile &args, const QString &driver, const QString
     return false;
 }
 
+/*
+ * A PC (QEMU's default machine when the VM names none) whose HPET the VM
+ * leaves as QEMU has it: no hpet= on any -machine, no -no-hpet
+ */
+static bool hasDefaultHpet(const ArgsFile &args)
+{
+    const QString type = VmConfig::machineType(args);
+
+    if (!type.isEmpty() && type != "q35" && type != "pc" && type != "isapc" &&
+        !type.startsWith("pc-")) {
+        return false;
+    }
+    if (args.indexOf("no-hpet") >= 0) {
+        return false;
+    }
+    for (int i : args.indexesOf("machine")) {
+        if (args.valueAt(i).has("hpet")) {
+            return false;
+        }
+    }
+    return true;
+}
+
 /* After the last line of the first of @after the VM has, else at the end */
 static void insertAfter(ArgsFile &args, const QStringList &after, const QString &name,
                         const QString &value)
@@ -155,6 +178,17 @@ void set(ArgsFile &args, bool on, const std::optional<QStringList> &properties)
     if (!hasGlobal(args, "kvm-pit", "lost_tick_policy")) {
         insertAfter(args, {"smp", "cpu", "accel", "machine"}, "global",
                     "kvm-pit.lost_tick_policy=discard");
+    }
+    /* on the last -machine, as QEMU merges them */
+    if (hasDefaultHpet(args)) {
+        const QList<int> machines = args.indexesOf("machine");
+        if (machines.isEmpty()) {
+            insertAfter(args, {"name"}, "machine", "hpet=off");
+        } else {
+            OptionValue machine = args.valueAt(machines.last());
+            machine.set("hpet", "off");
+            args.setValueAt(machines.last(), machine);
+        }
     }
     if (args.indexOfDevice([](const QString &driver) { return driver == "pvpanic"; }) < 0) {
         const int card = cardLine(args);

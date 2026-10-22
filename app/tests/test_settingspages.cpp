@@ -435,7 +435,7 @@ private slots:
                                "login screen starts the nested desktop.");
         page.save(args);
         QCOMPARE(text(args), "#qemu " + research + "\n"
-                             "-machine q35,memory-backend=mem\n"
+                             "-machine q35,memory-backend=mem,hpet=off\n"
                              "-global kvm-pit.lost_tick_policy=discard\n"
                              "-object memory-backend-memfd,id=mem,size=4G,share=on\n"
                              "-vga none\n"

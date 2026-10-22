@@ -196,8 +196,14 @@ static void linuxPc(Writer &w, const Options &o,
     w.args.setValueAt(w.args.indexOf("name"), name);
 
     w.section("System");
-    /* no guest RAM in QEMU's core dumps */
-    w.option("machine", "q35,memory-backend=mem,dump-guest-core=off");
+    /*
+     * No guest RAM in QEMU's core dumps.  No HPET: the guest keeps time
+     * with kvm-clock and masks the HPET's interrupt, but QEMU re-arms its
+     * timer every millisecond all the same, which on a laptop took an idle
+     * VM from 6.6 to 9.5 W and kept the fans on (the research launchers'
+     * since 2026-10-22)
+     */
+    w.option("machine", "q35,memory-backend=mem,dump-guest-core=off,hpet=off");
     /* the guest's caching of its GPU mappings, which Intel GPUs need; auto:
        where the host's KVM can (Linux 6.16 and later), QEMU refuses on */
     w.option("accel", nativeContext ? "kvm,honor-guest-pat=auto" : "kvm");

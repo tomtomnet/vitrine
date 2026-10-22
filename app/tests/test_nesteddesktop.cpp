@@ -15,7 +15,7 @@ using NestedDesktop::Mode;
 
 /* The display lines of a new Linux VM (VmTemplate), in vitrine's window */
 static const char kVm[] = "-name Test VM,debug-threads=on\n"
-                          "-machine q35,memory-backend=mem,dump-guest-core=off\n"
+                          "-machine q35,memory-backend=mem,dump-guest-core=off,hpet=off\n"
                           "-accel kvm,honor-guest-pat=auto\n"
                           "-smp 8,sockets=1,cores=4,threads=2\n"
                           "-object memory-backend-memfd,id=mem,size=8G,share=on\n"
@@ -26,7 +26,7 @@ static const char kVm[] = "-name Test VM,debug-threads=on\n"
 /* With the nested desktop, as the Display page's checkbox writes it */
 static const char kNested[] =
     "-name Test VM,debug-threads=on\n"
-    "-machine q35,memory-backend=mem,dump-guest-core=off\n"
+    "-machine q35,memory-backend=mem,dump-guest-core=off,hpet=off\n"
     "-accel kvm,honor-guest-pat=auto\n"
     "-smp 8,sockets=1,cores=4,threads=2\n"
     "-global kvm-pit.lost_tick_policy=discard\n"
@@ -41,7 +41,7 @@ static const char kNested[] =
 /* As the checkbox wrote it until 2026-10-15: the rutabaga card beside QEMU's VGA */
 static const char kTwoCards[] =
     "-name Test VM,debug-threads=on\n"
-    "-machine q35,memory-backend=mem,dump-guest-core=off\n"
+    "-machine q35,memory-backend=mem,dump-guest-core=off,hpet=off\n"
     "-accel kvm,honor-guest-pat=auto\n"
     "-smp 8,sockets=1,cores=4,threads=2\n"
     "-global kvm-pit.lost_tick_policy=discard\n"
@@ -123,7 +123,7 @@ private slots:
         /* no shared RAM yet, no -vga, no display: all of it comes */
         a = ArgsFile::parse("-machine q35\n-m 4G\n-device virtio-vga-gl\n");
         NestedDesktop::set(a, true);
-        QCOMPARE(a.toText(), "-machine q35,memory-backend=mem\n"
+        QCOMPARE(a.toText(), "-machine q35,memory-backend=mem,hpet=off\n"
                              "-global kvm-pit.lost_tick_policy=discard\n"
                              "-m 4G\n"
                              "-vga none\n"
@@ -155,6 +155,40 @@ private slots:
         a = ArgsFile::parse("-vga std\n-device virtio-vga-rutabaga,cross-domain=on\n");
         NestedDesktop::set(a, false);
         QCOMPARE(a.toText(), "-vga std\n-device virtio-vga-rutabaga,cross-domain=on\n");
+    }
+
+    /* On a PC no HPET, unless the VM says otherwise; and off, it stays */
+    void hpet()
+    {
+        /* a VM of the template before 2026-10-22 */
+        ArgsFile a = ArgsFile::parse(QString(kVm).remove(",hpet=off"));
+        NestedDesktop::set(a, true);
+        QCOMPARE(a.toText(), QString(kNested));
+        NestedDesktop::set(a, false);
+        QVERIFY(a.toText().startsWith("-name Test VM,debug-threads=on\n"
+                                      "-machine q35,memory-backend=mem,dump-guest-core=off,"
+                                      "hpet=off\n"));
+
+        /* QEMU's PCs, its default machine too: on the last -machine, as QEMU merges them */
+        for (const QString &vm : {"-machine pc-q35-10.1\n", "-machine pc\n", "-machine isapc\n",
+                                  "-machine pc-i440fx-10.1\n-machine accel=kvm\n", ""}) {
+            a = ArgsFile::parse(vm + "-device virtio-vga\n");
+            NestedDesktop::set(a, true);
+            const QList<int> machines = a.indexesOf("machine");
+            QVERIFY2(!machines.isEmpty(), qPrintable(vm));
+            QCOMPARE(a.valueAt(machines.last()).get("hpet"), "off");
+            QCOMPARE(a.toText().count("hpet"), 1);
+        }
+        /* the VM's own say, and machines without an HPET: as they are */
+        for (const QString &vm : {"-machine q35,hpet=on\n", "-machine q35,hpet\n",
+                                  "-machine q35,hpet=off\n-machine accel=kvm\n",
+                                  "-machine q35\n-no-hpet\n", "-machine microvm\n",
+                                  "-machine virt\n"}) {
+            a = ArgsFile::parse(vm + "-device virtio-vga\n");
+            NestedDesktop::set(a, true);
+            QCOMPARE(a.toText().count("hpet"), vm.count("hpet"));
+            QCOMPARE(a.toText().count("hpet=off"), vm.count("hpet=off"));
+        }
     }
 
     /*

@@ -86,7 +86,7 @@ private slots:
                  "#guest linux,desktop=kde\n"
                  "\n"
                  "# System\n"
-                 "-machine q35,memory-backend=mem,dump-guest-core=off\n"
+                 "-machine q35,memory-backend=mem,dump-guest-core=off,hpet=off\n"
                  "-accel kvm,honor-guest-pat=auto\n") + cpu +
                  "-smp 4,sockets=1,cores=2,threads=2\n"
                  "-object memory-backend-memfd,id=mem,size=8G,share=on\n"
