@@ -90,7 +90,8 @@ Patch127: kwin-nested-wl-output-presented-refresh.patch
 # Patch128: none.  The research's 0073 (KWIN_WAYLAND_SCANOUT_BUFFERS) allocates the nested output's buffers
 # for scanout, which an Intel xe host needs to put them on a plane: KWin 6.7.91 asks for them without it.
 # 6.7.5 allocates them with gbm_bo_create_with_modifiers, which implies GBM_BO_USE_SCANOUT, or with that
-# flag itself
+# flag itself.
+
 # a lone frame (the first after an idle stretch: a key, a click) aimed at the next vblank when that is at
 # least KWIN_LONE_FRAME_LEAD_US away, and rendered at once (the research's 0039, ported to 6.7.5; unset:
 # off): the nested desktop's session sets 2500, 1500 on an Intel xe host
