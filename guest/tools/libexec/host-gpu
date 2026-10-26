@@ -1,0 +1,121 @@
+#!/usr/bin/python3
+# SPDX-License-Identifier: GPL-2.0-or-later
+"""vitrine guest tools: the host's GPU, as this guest's virtio-gpu native
+context reports it.
+
+The DRM native context's capability set (capset 6) is what the host's
+virglrenderer filled in for the GPU it opened: the context type (amdgpu,
+i915, xe...), the version of that GPU's kernel driver, and for Intel its PCI
+ids.  It is what the guest's Mesa reads when it connects to the native
+context, so it names the GPU the guest really renders on: the host's
+virglrenderer takes the first of its renderers with a render node (amdgpu
+before i915 and xe), which on a host with two GPUs need not be the one the
+host's desktop runs on.
+
+Prints KEY=VALUE lines (stdout), for the shell:
+  NATIVE_CONTEXT=xe|amdgpu|i915|msm|asahi|panfrost|drm-N|none
+  DRIVER_VERSION=1.1.0   the host GPU's kernel driver (with a native context)
+  PCI_DEVICE=0xe212      Intel: the host GPU's PCI device id
+  RENDER_NODE=/dev/dri/renderD128
+and one sentence for the journal (stderr).  none: the host offers no native
+context (a virgl or 2D card, or no virtio GPU).  Exit status 0, none
+included; 1 when the GPU could not be asked.
+"""
+
+import ctypes
+import fcntl
+import glob
+import os
+import struct
+import sys
+
+CONTEXT_TYPES = {1: "msm", 2: "amdgpu", 3: "i915", 4: "asahi", 5: "panfrost", 6: "xe"}
+CAPSET_DRM = 6                          # VIRTGPU_DRM_CAPSET_DRM
+
+
+def iowr(nr, size):
+    """DRM_IOWR(DRM_COMMAND_BASE + nr, a struct of @size bytes)"""
+    return (3 << 30) | (size << 16) | (ord("d") << 8) | (0x40 + nr)
+
+
+GETPARAM = iowr(0x03, 16)               # struct drm_virtgpu_getparam { u64 param; u64 value; }
+GET_CAPS = iowr(0x09, 24)               # struct drm_virtgpu_get_caps { u32 id, ver; u64 addr; u32 size, pad; }
+PARAM_SUPPORTED_CAPSET_IDS = 7
+
+
+def virtio_render_node():
+    """The render node of the virtio GPU: its DRM device's parent is the
+    virtio device, or the PCI device whose virtio child virtio_gpu drives"""
+    for node in sorted(glob.glob("/sys/class/drm/renderD*")):
+        dev = f"{node}/device"
+        drivers = [f"{dev}/driver"] + glob.glob(f"{dev}/virtio*/driver")
+        if any(os.path.basename(os.path.realpath(d)) == "virtio_gpu" for d in drivers):
+            return "/dev/dri/" + os.path.basename(node)
+    return None
+
+
+def getparam(fd, param):
+    value = ctypes.c_uint64(0)
+    arg = bytearray(struct.pack("QQ", param, ctypes.addressof(value)))
+    fcntl.ioctl(fd, GETPARAM, arg, True)
+    return value.value & 0xffffffff
+
+
+def drm_capset(fd):
+    """struct virgl_renderer_capset_drm, its first 256 bytes at most (the
+    kernel copies what the host has of them, the rest stays zero)"""
+    buf = ctypes.create_string_buffer(256)
+    arg = bytearray(struct.pack("IIQII", CAPSET_DRM, 0, ctypes.addressof(buf), len(buf), 0))
+    fcntl.ioctl(fd, GET_CAPS, arg, True)
+    return buf.raw
+
+
+def main():
+    node = virtio_render_node()
+    if not node:
+        print("NATIVE_CONTEXT=none")
+        print("no virtio GPU render node: no native context", file=sys.stderr)
+        return 0
+    try:
+        fd = os.open(node, os.O_RDWR | os.O_CLOEXEC)
+    except OSError as e:
+        print(f"cannot open {node}: {e.strerror}", file=sys.stderr)
+        return 1
+    try:
+        if not getparam(fd, PARAM_SUPPORTED_CAPSET_IDS) & (1 << CAPSET_DRM):
+            print("NATIVE_CONTEXT=none")
+            print(f"RENDER_NODE={node}")
+            print("the host offers no DRM native context (no capset 6)", file=sys.stderr)
+            return 0
+        caps = drm_capset(fd)
+    except OSError as e:
+        print(f"cannot ask {node} for the native context's capset: {e.strerror}", file=sys.stderr)
+        return 1
+    finally:
+        os.close(fd)
+
+    _, major, minor, patch, ctype = struct.unpack_from("<5I", caps, 0)
+    if ctype == 0:
+        # the capset is offered, but the host's virglrenderer found no GPU of its renderers
+        print("NATIVE_CONTEXT=none")
+        print(f"RENDER_NODE={node}")
+        print("the host offers the DRM native context's capset without a GPU behind it", file=sys.stderr)
+        return 0
+    name = CONTEXT_TYPES.get(ctype, f"drm-{ctype}")
+    print(f"NATIVE_CONTEXT={name}")
+    print(f"DRIVER_VERSION={major}.{minor}.{patch}")
+    detail = f"{name} {major}.{minor}.{patch}"
+    if name in ("i915", "xe"):
+        # union u.intel / u.xe: pci_bus, pci_dev, pci_func, pci_revision_id, pci_domain, pci_device_id
+        device = struct.unpack_from("<6I", caps, 24)[5]
+        if device:
+            print(f"PCI_DEVICE=0x{device:04x}")
+            detail += f", Intel PCI device 0x{device:04x}"
+    print(f"RENDER_NODE={node}")
+    print(f"the host's GPU, through the native context: {detail} (context type {ctype})",
+          file=sys.stderr)
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())

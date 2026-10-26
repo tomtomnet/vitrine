@@ -2,7 +2,7 @@
 # exact version, and dnf takes an installed one of the same version as done.
 Name:           vitrine-guest-tools
 Version:        0.1.0
-Release:        22%{?dist}
+Release:        23%{?dist}
 Summary:        vitrine guest tools: patched virtio-gpu driver, settings and agent
 
 # the driver's sources (dkms/vendor, dkms/patches) are the kernel's: MIT
@@ -40,11 +40,12 @@ What a Fedora guest needs to run well in vitrine: the virtio-gpu driver with
 vitrine's patches (host vblank, zero-copy display) as a DKMS module, its
 module options, the KWin settings for vitrine's KWin, a fix-up that makes the
 GPU's shared memory cacheable, full kernel preemption, a boot-time check of
-the driver, the nested desktop's session (a boot with the VM's Nested
-desktop box logs Plasma into a window of the host's desktop), and the
-vitrine agent, which tells vitrine the state of the guest tools and installs
-their updates.  vitrine's Mesa, KWin, KPipeWire and the nested desktop's
-proxy come from the same tools medium.
+the driver and of the host's GPU behind the native context, the nested
+desktop's session (a boot with the VM's Nested desktop box logs Plasma into
+a window of the host's desktop, with KWin's settings for the host's GPU),
+and the vitrine agent, which tells vitrine the state of the guest tools and
+installs their updates.  vitrine's Mesa, KWin, KPipeWire and the nested
+desktop's proxy come from the same tools medium.
 
 %prep
 %autosetup
@@ -175,6 +176,26 @@ fi
 %dir %{_sharedstatedir}/%{name}
 
 %changelog
+* Mon Oct 26 2026 vitrine <noreply@anthropic.com> - 0.1.0-23
+- the driver: a deferred blob map that cannot be queued (no room left in
+  the host-visible window) fails the mmap instead of hanging the app in
+  uninterruptible sleep; vitrine's Mesa 2.xe defers the map of every xe
+  buffer to its first mmap (the research's patch)
+- the driver on Linux 7.3: the research's 7.3 versions of host-vblank,
+  linear-scanout and tiled-scanout.  Of a patch's versions the first that
+  applies without fuzz is taken; when none does, the build stops and says
+  which patch needs a rebase.  host-blob-damage is left out where the
+  kernel has its change (7.4).  tiled-scanout offers GFX10.3's layout too
+  (the research's, for a host with an RX 6000 card)
+- the host's GPU, as the virtio-gpu native context reports it (xe, amdgpu,
+  ...), asked at boot by the driver check, its finding in that unit's
+  journal and in /run/vitrine-guest-tools/host-gpu; the agent reports it
+- the nested desktop on an Intel xe host: its KWin gets
+  KWIN_DISABLE_UDMABUF_IMPORT=1, KWIN_WAYLAND_SCANOUT_BUFFERS=1 and the
+  lone-frame lead at 1500 us instead of 2500 (the research's settings for
+  its Arc Pro B50); CROSVM_DESKTOP_HOST_GPU in nested.conf names the GPU
+  instead.  The session's journal says what it found and set
+
 * Thu Oct 15 2026 vitrine <noreply@anthropic.com> - 0.1.0-22
 - the nested session also ends at once when the host's display hangs up
   without a word (vitrine not running, with vitrine's QEMU of 2026-10-15):

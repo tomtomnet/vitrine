@@ -11,6 +11,13 @@
 # keeps the stock driver.  The patches apply without fuzz for the same
 # reason: one that only fits with fuzz could land in the wrong place.
 #
+# A patch may come in versions rebased for later kernels beside it
+# (patches/NAME-7.3.patch next to patches/NAME.patch): the first that applies
+# without fuzz is used, and when none does the build stops, naming the patch
+# to rebase (the research's prepare.sh of 2026-10-26).  Linux 7.3 takes the
+# 7.3 versions of host-vblank, linear-scanout and tiled-scanout; 7.4 has
+# host-blob-damage's change itself, and its host-vblank needs a rebase.
+#
 # Usage (DKMS calls it): prepare.sh KERNELVERSION
 set -eu
 
@@ -22,6 +29,23 @@ url=https://git.kernel.org/pub/scm/linux/kernel/git/stable/linux.git/plain/drive
 headers="virtgpu_drv.h virtgpu_trace.h"
 
 say() { echo "vitrine-virtio-gpu: $*"; }
+
+# apply NAME: patches/NAME.patch, or the first version of it rebased for a
+# later kernel (patches/NAME-7.3.patch, ...) that applies to these sources
+# without fuzz.  None does: the build stops here (set -e), naming the patch,
+# rather than make a driver with only part of vitrine's changes
+apply() {
+	for f in "patches/$1.patch" patches/"$1"-[0-9]*.patch; do
+		[ -f "$f" ] || continue
+		if patch -p5 --forward -F0 --dry-run -s < "$f" > /dev/null 2>&1; then
+			patch -p5 --forward -F0 --no-backup-if-mismatch < "$f"
+			[ "$f" = "patches/$1.patch" ] || say "($(basename "$f"))"
+			return 0
+		fi
+	done
+	say "ERROR: no version of $1 applies to the sources of $tag: it needs rebasing"
+	return 1
+}
 
 fetch() {  # fetch FILE DEST -> 0 on success, else says why
 	# kernel.org's cgit answers 429 or 503 now and then, and a guest's
@@ -127,7 +151,7 @@ sed -i 's|#define TRACE_INCLUDE_PATH .*|#define TRACE_INCLUDE_PATH .|' virtgpu_t
 if grep -q '\.open = virtio_gpu_gem_object_open' virtgpu_prime.c; then
 	say "the import patch is already in these sources, nothing to apply"
 else
-	patch -p5 --forward -F0 --no-backup-if-mismatch < patches/linux-drm-virtio-attach-imported-dmabufs.patch
+	apply linux-drm-virtio-attach-imported-dmabufs
 	say "import patch applied"
 fi
 
@@ -135,83 +159,96 @@ fi
 # (the revert of df4dc947): the import patch above would apply and do nothing.
 # Allowed again for native contexts (module parameter import_3d).
 if grep -q 'has_resource_blob || vgdev->has_virgl_3d)' virtgpu_prime.c; then
-	patch -p5 --forward -F0 --no-backup-if-mismatch < patches/linux-drm-virtio-import-3d.patch
+	apply linux-drm-virtio-import-3d
 	say "import-3d patch applied (these sources have the 7.2.9 revert)"
 fi
 
 if grep -q 'virtio_gpu_host_vblank' virtgpu_display.c; then
 	say "the host-vblank patch is already in these sources, nothing to apply"
 else
-	patch -p5 --forward -F0 --no-backup-if-mismatch < patches/linux-drm-virtio-host-vblank.patch
+	apply linux-drm-virtio-host-vblank
 	say "host-vblank patch applied"
 fi
 
 if grep -q 'virtio_gpu_flip_in_grace' virtgpu_display.c; then
 	say "the flip-grace patch is already in these sources, nothing to apply"
 else
-	patch -p5 --forward -F0 --no-backup-if-mismatch < patches/linux-drm-virtio-flip-grace.patch
+	apply linux-drm-virtio-flip-grace
 	say "flip-grace patch applied"
 fi
 
 if grep -q 'flush_unchanged' virtgpu_plane.c; then
 	say "the unchanged-flush patch is already in these sources, nothing to apply"
 else
-	patch -p5 --forward -F0 --no-backup-if-mismatch < patches/linux-drm-virtio-skip-unchanged-flush.patch
+	apply linux-drm-virtio-skip-unchanged-flush
 	say "unchanged-flush patch applied"
 fi
 
 if grep -q 'blob_flush_fence' virtgpu_plane.c; then
 	say "the blob-flush-fence patch is already in these sources, nothing to apply"
 else
-	patch -p5 --forward -F0 --no-backup-if-mismatch < patches/linux-drm-virtio-blob-flush-fence.patch
+	apply linux-drm-virtio-blob-flush-fence
 	say "blob-flush-fence patch applied"
 fi
 
 if grep -q 'blob_damage' virtgpu_plane.c; then
 	say "the host-blob-damage patch is already in these sources, nothing to apply"
+elif grep -q 'new_plane_state->fb && bo->dumb' virtgpu_plane.c; then
+	say "these sources keep the damage clips of rendered buffers on a flip themselves (upstream 730f8554f35c, 7.4): host-blob-damage not needed"
 else
-	patch -p5 --forward -F0 --no-backup-if-mismatch < patches/linux-drm-virtio-host-blob-damage.patch
+	apply linux-drm-virtio-host-blob-damage
 	say "host-blob-damage patch applied"
 fi
 
 if grep -q 'virtio_gpu_flip_gate_poll' virtgpu_display.c; then
 	say "the gated-flip-event patch is already in these sources, nothing to apply"
 else
-	patch -p5 --forward -F0 --no-backup-if-mismatch < patches/linux-drm-virtio-gated-flip-event.patch
+	apply linux-drm-virtio-gated-flip-event
 	say "gated-flip-event patch applied"
 fi
 
 if grep -q 'linear_scanout' virtgpu_plane.c; then
 	say "the linear-scanout patch is already in these sources, nothing to apply"
 else
-	patch -p5 --forward -F0 --no-backup-if-mismatch < patches/linux-drm-virtio-linear-scanout.patch
+	apply linux-drm-virtio-linear-scanout
 	say "linear-scanout patch applied"
 fi
 
 if grep -q 'virtio_gpu_fence_own_context' virtgpu_fence.c; then
 	say "the flush-fence-context patch is already in these sources, nothing to apply"
 else
-	patch -p5 --forward -F0 --no-backup-if-mismatch < patches/linux-drm-virtio-flush-fence-context.patch
+	apply linux-drm-virtio-flush-fence-context
 	say "flush-fence-context patch applied"
 fi
 
 if grep -q 'blob_flush_fence == 3' virtgpu_plane.c; then
 	say "the reader-fence patch is already in these sources, nothing to apply"
 else
-	patch -p5 --forward -F0 --no-backup-if-mismatch < patches/linux-drm-virtio-reader-fence.patch
+	apply linux-drm-virtio-reader-fence
 	say "reader-fence patch applied"
 fi
 
 if grep -q 'tiled_scanout' virtgpu_plane.c; then
 	say "the tiled-scanout patch is already in these sources, nothing to apply"
 else
-	patch -p5 --forward -F0 --no-backup-if-mismatch < patches/linux-drm-virtio-tiled-scanout.patch
+	apply linux-drm-virtio-tiled-scanout
 	say "tiled-scanout patch applied"
 fi
 
 if grep -q 'hide_virgl' virtgpu_ioctl.c; then
 	say "the hide-virgl patch is already in these sources, nothing to apply"
 else
-	patch -p5 --forward -F0 --no-backup-if-mismatch < patches/linux-drm-virtio-hide-virgl.patch
+	apply linux-drm-virtio-hide-virgl
 	say "hide-virgl patch applied"
+fi
+
+# A deferred blob map (Mesa's DRM_VIRTGPU_BLOB_FLAG_HINT_DEFER_MAPPING, which
+# xe buffers use since vitrine's Mesa 2.xe) that cannot be queued - no room
+# left in the host-visible window - fails the mmap instead of hanging it in
+# virtio_gpu_vram_mmap (an app in uninterruptible sleep for good)
+if grep -q 'ret = virtio_gpu_vram_map_deferred' virtgpu_vram.c; then
+	say "the deferred-map-error patch is already in these sources, nothing to apply"
+else
+	apply linux-drm-virtio-deferred-map-error
+	say "deferred-map-error patch applied"
 fi

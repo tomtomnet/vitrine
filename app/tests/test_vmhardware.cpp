@@ -613,7 +613,7 @@ private slots:
         setGraphics(a, g);
         QCOMPARE(text(a), "-machine q35,memory-backend=mem\n"
                           "-accel kvm,honor-guest-pat=auto\n"
-                          "-device virtio-vga-gl,drm_native_context=on,blob=on,hostmem=4G\n"
+                          "-device virtio-vga-gl,drm_native_context=on,blob=on,hostmem=16G\n"
                           "-display sdl,gl=on\n");
 
         /* off: blob and hostmem stay, 2D blobs use them too */
@@ -635,7 +635,7 @@ private slots:
         g = graphics(a);
         g.venus = true;
         setGraphics(a, g);
-        QVERIFY(text(a).contains("-device virtio-vga-gl,venus=on,blob=on,hostmem=4G\n"));
+        QVERIFY(text(a).contains("-device virtio-vga-gl,venus=on,blob=on,hostmem=16G\n"));
         QVERIFY(text(a).contains("-accel kvm\n"));      /* only native context needs it */
 
         /* no KVM, no honor-guest-pat */
@@ -644,7 +644,14 @@ private slots:
         g.nativeContext = true;
         setGraphics(a, g);
         QCOMPARE(text(a), "-machine q35\n"
-                          "-device virtio-vga-gl,drm_native_context=on,blob=on,hostmem=4G\n");
+                          "-device virtio-vga-gl,drm_native_context=on,blob=on,hostmem=16G\n");
+        /* a window the line has stays: a VM made before 2026-10-26 keeps its 4 GiB */
+        a = ArgsFile::parse("-machine q35\n-device virtio-vga-gl,hostmem=4G\n");
+        g = graphics(a);
+        g.nativeContext = true;
+        setGraphics(a, g);
+        QCOMPARE(text(a), "-machine q35\n"
+                          "-device virtio-vga-gl,hostmem=4G,drm_native_context=on,blob=on\n");
     }
 
     void changeCard()

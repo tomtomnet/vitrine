@@ -1,0 +1,60 @@
+KWin: lone frames aimed at the next vblank (KWIN_LONE_FRAME_LEAD_US; 6.7.5 port of patches/kwin/0039, 2026-10-26)
+
+For vitrine's 6.7.5 guest series (its 1.27.2: Patch100-127; after kwin-frame-slack-precise-timer, which turns the
+composite timer into compositeTimerActive(), and kwin-early-lone-frames). A lone frame - the first after an idle
+stretch: no frame in flight, none presented for two refreshes or more, the composite timer not armed - is aimed at
+the next vblank when that is at least the lead away, else at the one after, and rendered at once, skipping the render
+estimate + safety margin + slack and the triple-buffering hysteresis. Without it a nested KWin planned every key's frame
+two refreshes ahead (estimate 2 ms composited + host deadline + 1 ms + slack ~ 4.1 ms >= 95 % of 4.17 ms at 240 Hz).
+Measured on 6.7.91 in the nested desktop (2026-10-09): the minimal client's key -> screen 9.4-9.5 ms against 11.0
+(bare metal 9.3-9.4), no more "slow" sessions; ~3 extra repeats in 52 launcher animations with the host GPU 40 % busy.
+Port: 6.7.5 has one pageflipsSince (counted from now: 6.7.91 split it into pageflipsSince and pageflipsSinceNow;
+this uses it for both) and compositeTimerActive() instead of compositeTimer.isActive(). Needs none of the host's
+lone-frame patches (0021-0025 / 0074). Applies with fuzz 0 after Patch127; not built or run here.
+Unset: off. Research's nested session sets KWIN_LONE_FRAME_LEAD_US=2500, 1500 on an Intel xe host.
+
+--- a/src/core/renderloop.cpp
++++ b/src/core/renderloop.cpp
+@@ -54,6 +54,19 @@
+     ? std::nullopt
+     : std::optional<std::chrono::nanoseconds>(std::chrono::microseconds(std::max(0, qEnvironmentVariableIntValue("KWIN_FRAME_SLACK_US"))));
+ static const std::chrono::nanoseconds s_lateFlipStep = std::chrono::microseconds(qEnvironmentVariableIsEmpty("KWIN_LATE_FLIP_STEP_US") ? 500 : std::max(10, qEnvironmentVariableIntValue("KWIN_LATE_FLIP_STEP_US")));
++// KWIN_LONE_FRAME_LEAD_US (EXP): how close to the next vblank a lone frame - the first after an
++// idle stretch (no frame in flight, none presented for two refreshes or more) - may still be
++// aimed at it: at least this far off, the next vblank, else the one after; rendered at once,
++// without the render estimate + safety margin + slack and the triple-buffering hysteresis. A
++// nested compositor's margin covers a busy host (its reported deadline + 1 ms) and the estimate
++// counts a composited frame as 2 ms: ~4.1-6 ms before the vblank at 240 Hz, so every lone frame -
++// a key's - went two refreshes ahead. The host takes a lone commit ~2.2 ms before its vblank
++// (2026-10-09, research/guest-client-overhead-2026-10-09.md); a frame that misses is shown a
++// refresh later through commit timing, where it lands anyway, and with nothing in flight there is
++// no frame cadence for the hysteresis to protect. Unset: off.
++static const std::optional<std::chrono::nanoseconds> s_loneFrameLead = qEnvironmentVariableIsEmpty("KWIN_LONE_FRAME_LEAD_US")
++    ? std::nullopt
++    : std::optional<std::chrono::nanoseconds>(std::chrono::microseconds(std::max(0, qEnvironmentVariableIntValue("KWIN_LONE_FRAME_LEAD_US"))));
+ 
+ RenderLoopPrivate::RenderLoopPrivate(RenderLoop *q, BackendOutput *output)
+     : q(q)
+@@ -149,9 +162,21 @@
+         const uint64_t pageflipsSinceLastToTarget = std::max<int64_t>(std::round((lastTargetTimestamp - lastPresentationTimestamp).count() / double(vblankInterval.count())), 0);
+         uint64_t pageflipsInAdvance = std::min<int64_t>(expectedCompositingTime / vblankInterval + 1, maxPendingFrameCount);
+ 
++        // KWIN_LONE_FRAME_LEAD_US: a lone frame is aimed at the next vblank if that is at least the
++        // lead away, else at the one after, and rendered at once (nothing waits for it to be late)
++        const bool loneFrame = s_loneFrameLead && pageflipsSince >= 2 && pendingFrameCount == 0 && !compositeTimerActive();
++        if (loneFrame) {
++            const std::chrono::nanoseconds lead = std::min(*s_loneFrameLead, vblankInterval - 1us);
++            const std::chrono::nanoseconds nextVblank = lastPresentationTimestamp + (pageflipsSince + 1) * vblankInterval;
++            pageflipsInAdvance = currentTime + lead <= nextVblank ? 1 : 2;
++            expectedCompositingTime = pageflipsInAdvance * vblankInterval - 1us;
++        }
++
+         // switching from double to triple buffering causes a frame drop
+         // -> apply some amount of hysteresis to avoid switching back and forth constantly
+-        if (pageflipsInAdvance > 1) {
++        if (loneFrame) {
++            // nothing in flight: no cadence to keep, and the hysteresis state is left as it was
++        } else if (pageflipsInAdvance > 1) {
+             // immediately switch to triple buffering when needed
+             wasTripleBuffering = true;
+             doubleBufferingCounter = 0;

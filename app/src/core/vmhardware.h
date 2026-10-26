@@ -64,7 +64,7 @@ struct Graphics {
 Graphics graphics(const ArgsFile &args);
 /*
  * For Accelerated, OpenGL goes on in the window; native context and Venus
- * add blob=on, hostmem= (4G when not given) and, with KVM, honor-guest-pat.
+ * add blob=on, hostmem= (16G when not given) and, with KVM, honor-guest-pat.
  * A Custom card is left as it is; only the window changes.  The nested
  * desktop's card is written by setNestedCard(), not here: from it, another
  * kind takes its place, and QEMU's VGA goes as for that kind (the -vga none

@@ -149,14 +149,17 @@ struct Writer {
 
 /*
  * The research launcher's card: DRM native context, blob resources in a
- * 4 GiB window, and the guest's vblank ticked 3 ms before the host's,
+ * 16 GiB window, and the guest's vblank ticked 3 ms before the host's,
  * following what the host's compositor needs.  No Venus, which is off by
- * default.
+ * default.  The window is address space only (a BAR the firmware places),
+ * nothing is allocated for it: with 4 GiB a guest app on a 16 GB card
+ * could map ~3.3 GB of GPU memory (the research's of 2026-10-24).  VMs
+ * made before keep the 4G of their line.
  */
 const QList<std::pair<QString, QString>> &cardProperties()
 {
     static const QList<std::pair<QString, QString>> properties = {
-        {"hostmem", "4G"},
+        {"hostmem", "16G"},
         {"blob", "on"},
         {"drm_native_context", "on"},
         {"x-host-vblank", "on"},

@@ -4,9 +4,9 @@
 # modinfo only says what modprobe would load; the driver in use comes from
 # the initramfs.  The taint field is the honest answer: O (out of tree), with
 # a parameter only vitrine's patches add (another out-of-tree virtio-gpu
-# taints O as well), is ours.  Then it sets the options of this boot
-# (below): blob_flush_fence for the KWin installed, and those of a
-# nested-desktop boot.
+# taints O as well), is ours.  Then it asks what the host's GPU is (below),
+# and sets the options of this boot: blob_flush_fence for the KWin installed,
+# and those of a nested-desktop boot.
 # Runs at boot, before the display manager; the
 # journal has its findings (journalctl -b -u vitrine-virtio-gpu-check).
 set -u
@@ -71,6 +71,20 @@ yes*)
 	rc=1
 	;;
 esac
+
+# The host's GPU, as the virtio-gpu native context reports it (host-gpu: the
+# context type the host's virglrenderer offers, xe or amdgpu...; its finding
+# goes to this unit's journal), in /run/vitrine-guest-tools/host-gpu for this
+# boot: the nested desktop's session reads it, and gives its KWin the settings
+# of an Intel xe host on one.  The capset does not change while the VM runs.
+run=/run/vitrine-guest-tools
+mkdir -p "$run"
+if host_gpu=$(/usr/libexec/vitrine-guest-tools/host-gpu); then
+	printf '%s\n' "$host_gpu" > "$run/host-gpu.new" && mv -f "$run/host-gpu.new" "$run/host-gpu"
+else
+	rm -f "$run/host-gpu"
+	echo "<4>could not ask the virtio GPU what the host's GPU is: the nested desktop's KWin gets no settings for it"
+fi
 
 # blob_flush_fence: 3 with the KWin the installer put in (it waits for the
 # fence the driver puts on the buffers, KWIN_SWAPCHAIN_WAIT_READERS), else 1:

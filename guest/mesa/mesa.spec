@@ -81,7 +81,7 @@
 Name:           mesa
 Summary:        Mesa graphics libraries
 Version:        26.2.3
-Release:        1.xe%{?dist}
+Release:        2.xe%{?dist}
 License:        MIT AND BSD-3-Clause AND SGI-B-2.0
 URL:            https://mesa3d.org
 
@@ -97,7 +97,11 @@ Source0:        https://archive.mesa3d.org/mesa-%{ver}.tar.xz
 Source1:        Mesa-MLAA-License-Clarification-Email.txt
 
 # Xe native context (cmspam/xe-native-context-enablement a7b12b1, context refreshed for 26.2.3): includes
-# the iris upload WC fix and the double VMA free fix.
+# the iris upload WC fix and the double VMA free fix.  2.xe: the research's version of 2026-10-24 (its
+# 44f47f1): xe blobs are created with DRM_VIRTGPU_BLOB_FLAG_HINT_DEFER_MAPPING, mapped into the VMM's
+# host-memory window at their first mmap instead of at creation.  Mapped at creation, every buffer took a
+# mapping and a prefault, even render targets the CPU never touches (a new 4K buffer ~3 ms in the guest
+# instead of 0.63), and the window capped a guest app at ~3.3 GB of GPU memory.
 Patch100:	mesa-01-xe-native-context-plus-iris-upload-fix-26.2.3.patch
 Patch103:	mesa-radv-virtio-skip-non-amdgpu-contexts.patch
 Patch104:	mesa-iris-virtio-longer-bo-cache.patch

@@ -230,8 +230,29 @@ QStringList patchPaths(const QString &dir, const QString &folder)
     return list;
 }
 
-/* The *.patch files of @folder, in the order @order names them, the others
-   after them by name */
+/* Where @text names @word as a whole (not inside a longer name), or -1 */
+static qsizetype indexOfName(const QString &text, const QString &word)
+{
+    const auto partOfName = [](QChar c) {
+        return c.isLetterOrNumber() || c == '_' || c == '-' || c == '.';
+    };
+
+    for (qsizetype i = text.indexOf(word); i >= 0; i = text.indexOf(word, i + 1)) {
+        const qsizetype end = i + word.size();
+        if ((i == 0 || !partOfName(text[i - 1])) && (end == text.size() || !partOfName(text[end]))) {
+            return i;
+        }
+    }
+    return -1;
+}
+
+/*
+ * The *.patch files of @folder, in the order @order names them, the others
+ * after them by name.  @order may name a patch without its .patch (the
+ * driver's prepare.sh: "apply NAME"), and a version of it rebased for a
+ * later kernel, NAME-7.3.patch, which @order does not name, goes right
+ * after it
+ */
 static QStringList orderedPatchPaths(const QString &dir, const QString &folder,
                                      const QString &order)
 {
@@ -239,14 +260,29 @@ static QStringList orderedPatchPaths(const QString &dir, const QString &folder,
     QStringList names = QDir(dir + '/' + folder)
                             .entryList({"*.patch"}, QDir::Files | QDir::CaseSensitive, QDir::Name);
     QStringList list;
-
-    std::stable_sort(names.begin(), names.end(), [&text](const QString &a, const QString &b) {
-        const qsizetype i = text.indexOf(a);
-        const qsizetype j = text.indexOf(b);
-        if ((i < 0) != (j < 0)) {
-            return i >= 0;
+    static const QRegularExpression version("-[0-9][^/]*$");
+    /* where @order names it, and 1 for a version of a patch it names */
+    const auto rank = [&text](const QString &name) -> std::pair<qsizetype, int> {
+        const QString base = name.chopped(int(sizeof(".patch") - 1));
+        qsizetype at = indexOfName(text, name);
+        if (at < 0) {
+            at = indexOfName(text, base);
         }
-        return i >= 0 && i < j;
+        if (at >= 0) {
+            return {at, 0};
+        }
+        const QString versioned = QString(base).remove(version);
+        at = versioned == base ? -1 : indexOfName(text, versioned);
+        return {at, 1};
+    };
+
+    std::stable_sort(names.begin(), names.end(), [&rank](const QString &a, const QString &b) {
+        const auto i = rank(a);
+        const auto j = rank(b);
+        if ((i.first < 0) != (j.first < 0)) {
+            return i.first >= 0;
+        }
+        return i.first >= 0 && i < j;
     });
     for (const QString &name : std::as_const(names)) {
         list << folder + '/' + name;

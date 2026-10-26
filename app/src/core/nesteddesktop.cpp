@@ -18,16 +18,17 @@ static const char kFwCfgName[] = "opt/org.drm-native-context/cmdline";
 /*
  * The research launcher's card (run-qemu-rutabaga.sh): the DRM native
  * context and virgl through rutabaga (x-drm, x-virgl2), cross-domain for
- * the guest's Wayland, blobs in a 4 GiB window, the guest's notifications
- * without a trip through QEMU's main loop (ioeventfd: one per message of
- * the guest's proxy, ~20 a frame), the blobs entered in KVM's page tables at
- * once rather than one fault per 4 KiB at the guest's first touch
- * (x-prefault-blobs), and the guest compositor's own buffers handed to the
- * native context as they are (x-guest-dmabuf)
+ * the guest's Wayland, blobs in a 16 GiB window (address space only, as
+ * the template's card's: VmTemplate::cardProperties()), the guest's
+ * notifications without a trip through QEMU's main loop (ioeventfd: one per
+ * message of the guest's proxy, ~20 a frame), the blobs entered in KVM's
+ * page tables at once rather than one fault per 4 KiB at the guest's first
+ * touch (x-prefault-blobs), and the guest compositor's own buffers handed to
+ * the native context as they are (x-guest-dmabuf)
  */
 static const std::pair<const char *, const char *> kProperties[] = {
     {"x-drm", "on"},        {"x-virgl2", "on"},         {"cross-domain", "on"},
-    {"hostmem", "4G"},      {"ioeventfd", "on"},        {"x-prefault-blobs", "on"},
+    {"hostmem", "16G"},     {"ioeventfd", "on"},        {"x-prefault-blobs", "on"},
     {"x-guest-dmabuf", "on"},
 };
 

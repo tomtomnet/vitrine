@@ -270,6 +270,15 @@ It also explains how the Xe backend differs from the i915 one
 (`DIFFERENCES.md`), and links the prebuilt packages for Arch and a Nix
 flake.
 
+Vitrine's guest tools carry their own copy of the Mesa patch, refreshed for
+26.2.3 (`guest/mesa/mesa-01-xe-native-context-plus-iris-upload-fix-26.2.3.patch`),
+with one change since October 2026: Xe buffers are created with
+`DRM_VIRTGPU_BLOB_FLAG_HINT_DEFER_MAPPING`, as i915's are, so each one is
+mapped into the VM's host-visible window at its first CPU mapping rather
+than when it is created. Without it a new 4K buffer cost about 3 ms in the
+guest instead of 0.6, and a guest app could use only about 3.3 GB of GPU
+memory with a 4 GiB window (new VMs have a 16 GiB one since then).
+
 Get the Mesa patch from its `master` branch:
 
     curl -LO https://raw.githubusercontent.com/cmspam/xe-native-context-enablement/master/mesa-01-xe-native-context-plus-iris-upload-fix.patch

@@ -564,8 +564,9 @@ static void setCard(ArgsFile &args, const Graphics &now, const Graphics &g)
             }
         }
         if (g.nativeContext || g.venus) {
+            /* 16G when not given, as the template's card (VmTemplate::cardProperties()) */
             const qint64 mib = g.hostmemMiB > 0   ? g.hostmemMiB
-                               : now.hostmemMiB > 0 ? now.hostmemMiB : 4096;
+                               : now.hostmemMiB > 0 ? now.hostmemMiB : 16384;
             if (!v.flag("blob")) {
                 v.set("blob", "on");
             }
