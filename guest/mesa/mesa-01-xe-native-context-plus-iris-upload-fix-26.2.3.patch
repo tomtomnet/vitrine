@@ -445,12 +445,12 @@ index 0000000..dc359f8
 +      blob_flags |= VIRTGPU_BLOB_FLAG_USE_CROSS_DEVICE;
 +
 +   req.blob_id = p_atomic_inc_return(&dev->next_blob_id);
-+   /* Mesa 26.2 added a blob_hints argument to vdrm_bo_create().  The uapi
-+    * define lands in the same header at the same time, so it doubles as the
-+    * feature test for the older five argument form.
++   /* blob_hints (Mesa 26.2; its uapi define doubles as the feature test): map a blob only at its first
++    * mmap, as i915 does - mapped at creation, every buffer took a VMM mapping and a prefault even when the
++    * CPU never touches it (a new 4K render target 3.0 ms in the guest instead of 0.6, Arc Pro B50).
 +    */
 +#ifdef DRM_VIRTGPU_BLOB_FLAG_HINT_DEFER_MAPPING
-+   ret = vdrm_bo_create(dev->vdrm, args->size, blob_flags, req.blob_id, 0,
++   ret = vdrm_bo_create(dev->vdrm, args->size, blob_flags, req.blob_id, DRM_VIRTGPU_BLOB_FLAG_HINT_DEFER_MAPPING,
 +                        &req.hdr);
 +#else
 +   ret = vdrm_bo_create(dev->vdrm, args->size, blob_flags, req.blob_id, &req.hdr);
