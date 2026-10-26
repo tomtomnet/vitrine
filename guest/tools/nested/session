@@ -35,7 +35,7 @@ conf=/etc/vitrine-guest-tools/nested.conf
 : "${CROSVM_DESKTOP_FENCE_WAIT:=1}" "${CROSVM_DESKTOP_STATS:=title}" "${CROSVM_DESKTOP_STATS_LOG:=}"
 : "${CROSVM_DESKTOP_DROP_DCC:=1}" "${CROSVM_DESKTOP_OPAQUE:=1}" "${CROSVM_DESKTOP_KWIN_UNSET:=}"
 : "${CROSVM_DESKTOP_NESTED_OVERLAYS:=0}" "${CROSVM_DESKTOP_CLIPBOARD:=focus}" "${CROSVM_DESKTOP_RESIZE_SETTLE_MS:=200}"
-: "${CROSVM_DESKTOP_OVERLAY_CHORD:=ctrl+alt+s}"
+: "${CROSVM_DESKTOP_OVERLAY_CHORD:=ctrl+alt+s}" "${CROSVM_DESKTOP_HOST_GPU:=auto}"
 : "${CROSVM_DESKTOP_KWIN_ENV=KWIN_RENDER_JOURNAL_VARIANCE_TIME_MS=100 KWIN_WAYLAND_DEADLINE=1 KWIN_WAYLAND_COMMIT_TIMING=1 KWIN_STEADY_ANIMATION_CLOCK=1 KWIN_ANIMATION_START_STEP=1 KWIN_LONE_FRAME_LEAD_US=2500 KWIN_ASYNC_CURSOR_MOVES=1}"
 # the launcher's words for this boot: the kernel command line and QEMU's fw_cfg, merged at boot by
 # vitrine-nested-boot.service (a GRUB boot has them only in fw_cfg); /proc/cmdline before that unit
@@ -62,6 +62,60 @@ dropin=$dropin_dir/50-crosvm-desktop.conf
 shell_dropin_dir=$XDG_RUNTIME_DIR/systemd/user/plasma-plasmashell.service.d
 shell_dropin=$shell_dropin_dir/50-crosvm-desktop.conf
 log() { echo "crosvm-desktop: $1" | systemd-cat -t crosvm-desktop -p "${2:-info}"; }
+
+# vitrine: KWin's settings for the host's GPU. The GPU is the one the virtio-gpu native context
+# reports - what the guest's Mesa renders on: vitrine-virtio-gpu-check.service asks at boot
+# (/run/vitrine-guest-tools/host-gpu, its finding in that unit's journal), the helper itself where
+# that file is missing; CROSVM_DESKTOP_HOST_GPU (nested.conf) can name it instead. An Intel xe host
+# gets three settings (the research's on its Arc Pro B50, which it sets when it builds a guest for
+# an Intel host); a value of your own in CROSVM_DESKTOP_KWIN_ENV wins:
+#  - KWIN_DISABLE_UDMABUF_IMPORT=1: the clients' shared-memory buffers are not imported as
+#    udmabufs of guest RAM, which reach the host's xe through x-guest-dmabuf: the VM's window
+#    operations went from 22 to 6.3-7.3 repeated refreshes a second at 4K 120, from 96 to 11.5 at
+#    4K 240 (2026-10-23);
+#  - KWIN_WAYLAND_SCANOUT_BUFFERS=1: the output's buffers allocated for scanout, the only ones xe
+#    puts on a plane (the research's KWin 0073; vitrine's 6.7.5 allocates them so already and
+#    ignores the variable, which is for a KWin 6.8);
+#  - KWIN_LONE_FRAME_LEAD_US=1500 in place of the 2500 tuned on AMD hosts: keys 11.4 -> 10.1-10.6 ms
+#    on the B50, the launcher no worse (2026-10-23).
+kwin_env_value() {   # the value VAR has in CROSVM_DESKTOP_KWIN_ENV; status 1 if it has none
+    local kv
+    for kv in $CROSVM_DESKTOP_KWIN_ENV; do
+        case $kv in "$1="*) printf '%s' "${kv#*=}"; return 0 ;; esac
+    done
+    return 1
+}
+kwin_env_put() {     # VAR=VALUE into CROSVM_DESKTOP_KWIN_ENV, in place of VAR's value if it has one
+    local kv out=
+    for kv in $CROSVM_DESKTOP_KWIN_ENV; do
+        case $kv in "${1%%=*}="*) ;; *) out="${out:+$out }$kv" ;; esac
+    done
+    CROSVM_DESKTOP_KWIN_ENV="${out:+$out }$1"
+}
+host_gpu_file=/run/vitrine-guest-tools/host-gpu
+if [ "$CROSVM_DESKTOP_HOST_GPU" != auto ]; then
+    host_gpu=$CROSVM_DESKTOP_HOST_GPU host_gpu_from="CROSVM_DESKTOP_HOST_GPU"
+elif [ -r "$host_gpu_file" ]; then
+    host_gpu=$(sed -n 's/^NATIVE_CONTEXT=//p' "$host_gpu_file") host_gpu_from="the native context, at boot"
+else
+    host_gpu=$(/usr/libexec/vitrine-guest-tools/host-gpu 2>/dev/null | sed -n 's/^NATIVE_CONTEXT=//p')
+    host_gpu_from="the native context, asked now ($host_gpu_file missing)"
+fi
+if [ "$host_gpu" = xe ]; then
+    xe_own=
+    for kv in KWIN_DISABLE_UDMABUF_IMPORT=1 KWIN_WAYLAND_SCANOUT_BUFFERS=1 KWIN_LONE_FRAME_LEAD_US=1500; do
+        # a value of your own stays; the lead's 2500 is the default, for AMD hosts
+        if have=$(kwin_env_value "${kv%%=*}") &&
+            ! { [ "${kv%%=*}" = KWIN_LONE_FRAME_LEAD_US ] && [ "$have" = 2500 ]; }; then
+            [ "$have" = "${kv#*=}" ] || xe_own="${xe_own:+$xe_own }${kv%%=*}=$have"
+            continue
+        fi
+        kwin_env_put "$kv"
+    done
+    log "host GPU: Intel xe (from $host_gpu_from): this session's KWin gets KWIN_DISABLE_UDMABUF_IMPORT=$(kwin_env_value KWIN_DISABLE_UDMABUF_IMPORT) KWIN_WAYLAND_SCANOUT_BUFFERS=$(kwin_env_value KWIN_WAYLAND_SCANOUT_BUFFERS) KWIN_LONE_FRAME_LEAD_US=$(kwin_env_value KWIN_LONE_FRAME_LEAD_US)${xe_own:+ (your own: $xe_own)}"
+else
+    log "host GPU: ${host_gpu:-unknown} (from $host_gpu_from): none of the Intel xe settings"
+fi
 
 rm -f "$sock" "$sock.lock"
 proxy_args=(--socket-path "$sock" --clock-log-interval 60)
@@ -236,7 +290,7 @@ RestartSec=2
 EOF
 systemctl --user import-environment "${vars[@]}"
 systemctl --user daemon-reload
-log "systemd boot, KWin through $LIBEXEC/bin/kwin_wayland_wrapper, proxy ${proxy_args[*]}"
+log "systemd boot, KWin through $LIBEXEC/bin/kwin_wayland_wrapper, proxy ${proxy_args[*]}, KWin settings $CROSVM_DESKTOP_KWIN_ENV"
 
 /usr/bin/startplasma-wayland
 rc=$?

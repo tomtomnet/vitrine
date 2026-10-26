@@ -206,8 +206,14 @@ def capsets():
         return None
     finally:
         os.close(fd)
+    # the GPU behind the native context, as vitrine-virtio-gpu-check.service
+    # read it at boot (libexec/host-gpu): xe, amdgpu..., none
+    native = None
+    for line in (read(f"{RUN_DIR}/host-gpu", "") or "").splitlines():
+        if line.startswith("NATIVE_CONTEXT="):
+            native = line.split("=", 1)[1]
     return {"capsets": [name for bit, name in CAPSETS.items() if mask & (1 << bit)],
-            "contextInit": bool(context_init)}
+            "contextInit": bool(context_init), "nativeContext": native}
 
 
 def sessions():
