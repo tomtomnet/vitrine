@@ -1,6 +1,6 @@
 Name:    kwin
 Version: 6.7.5
-Release: 1.27.2%{?dist}
+Release: 1.28.1%{?dist}
 Summary: KDE Window manager
 
 License: BSD-2-Clause AND BSD-3-Clause AND CC0-1.0 AND GPL-2.0-only AND GPL-2.0-or-later AND GPL-3.0-only AND GPL-3.0-or-later AND LGPL-2.0-only AND LGPL-2.0-or-later AND LGPL-2.1-only AND LGPL-2.1-or-later AND LGPL-3.0-only AND (GPL-2.0-only OR GPL-3.0-only) AND (LGPL-2.1-only OR LGPL-3.0-only) AND MIT
@@ -85,6 +85,19 @@ Patch126: kwin-cursor-async-test-once.patch
 # wl_output follows the refresh rate learned from presentation feedback (the research's 0064, ported to
 # 6.7.5): a guest on a 165 Hz screen of a host with a 240 Hz one told its clients 240 Hz
 Patch127: kwin-nested-wl-output-presented-refresh.patch
+
+## The nested desktop on an Intel xe host, and lone frames
+# Patch128: none.  The research's 0073 (KWIN_WAYLAND_SCANOUT_BUFFERS) allocates the nested output's buffers
+# for scanout, which an Intel xe host needs to put them on a plane: KWin 6.7.91 asks for them without it.
+# 6.7.5 allocates them with gbm_bo_create_with_modifiers, which implies GBM_BO_USE_SCANOUT, or with that
+# flag itself
+# a lone frame (the first after an idle stretch: a key, a click) aimed at the next vblank when that is at
+# least KWIN_LONE_FRAME_LEAD_US away, and rendered at once (the research's 0039, ported to 6.7.5; unset:
+# off): the nested desktop's session sets 2500, 1500 on an Intel xe host
+Patch129: kwin-lone-frame-lead.patch
+# KWIN_DISABLE_UDMABUF_IMPORT=1 also skips making the udmabufs nothing then reads (the research's 0036):
+# the nested desktop sets it on an Intel xe host, and where the host takes no guest dma-bufs
+Patch130: kwin-skip-udmabufs-when-import-disabled.patch
 
 
 # Base
@@ -354,6 +367,21 @@ ln -sr %{buildroot}%{_kf6_bindir}/kwin_wayland %{buildroot}%{_bindir}/kwin
 
 
 %changelog
+* Mon Oct 26 2026 vitrine <noreply@anthropic.com> - 6.7.5-1.28.1
+- kwin-lone-frame-lead, from the research (its 0039, ported to this series): with
+  KWIN_LONE_FRAME_LEAD_US, a lone frame - the first after an idle stretch, a key or a
+  click - is aimed at the next vblank when that is at least the lead away, else at the
+  one after, and rendered at once.  The nested desktop's session sets 2500 (with the
+  guest tools 0.1.0-23, 1500 on an Intel xe host), which this KWin ignored until now;
+  unset, nothing changes
+- kwin-skip-udmabufs-when-import-disabled, from the research (its 0036):
+  KWIN_DISABLE_UDMABUF_IMPORT=1 also skips making a udmabuf of every shared-memory
+  client buffer, which nothing reads with the import off (a UDMABUF_CREATE and two
+  syncs per use: ~15 ms a second of the compositor thread with three windows
+  resizing, the research's measurement)
+- the research's 0073 (KWIN_WAYLAND_SCANOUT_BUFFERS) is not needed: this KWin allocates
+  the nested output's buffers for scanout already
+
 * Sun Oct 18 2026 vitrine <noreply@anthropic.com> - 6.7.5-1.27.2
 - kwin-nested-wl-output-presented-refresh, from the research (its 0064, ported to this
   series): when presentation feedback sets the nested output's refresh rate, the logical
