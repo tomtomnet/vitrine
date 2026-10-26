@@ -259,6 +259,18 @@ private slots:
             QCOMPARE(p.origin, "R");
         }
         QCOMPARE(names, QStringList({"z.patch", "a.patch", "m.patch"}));
+
+        /* named without .patch (the driver's "apply NAME"), as a whole name only; a
+           version rebased for a later kernel right after its patch */
+        QVERIFY(write(dir + "/dkms/prepare.sh", "apply za\napply z\napply a\n"));
+        for (const char *name : {"za.patch", "z-7.3.patch"}) {
+            QVERIFY(write(dir + "/dkms/patches/" + name, "x\n"));
+        }
+        names.clear();
+        for (const Patch &p : patches(c)) {
+            names << p.name();
+        }
+        QCOMPARE(names, QStringList({"za.patch", "z.patch", "z-7.3.patch", "a.patch", "m.patch"}));
     }
 
     /* The real patches: by origin, in their order, each with its subject */
@@ -332,15 +344,22 @@ private slots:
         QCOMPARE(subject(find(all, "mesa"), mesaPatches[2]),
                  "iris: keep buffers in the reuse cache longer under virtio-gpu");
 
-        /* the driver's patches, in the order prepare.sh applies them */
+        /* the driver's patches, in the order prepare.sh applies them ("apply NAME"), a
+           version rebased for a later kernel right after its patch */
         const QList<Patch> toolsPatches = patches(find(all, "tools"));
-        QCOMPARE(toolsPatches.size(), 13);
+        QCOMPARE(toolsPatches.size(), 17);
         QCOMPARE(toolsPatches.first().name(), "linux-drm-virtio-attach-imported-dmabufs.patch");
-        QCOMPARE(toolsPatches.last().name(), "linux-drm-virtio-hide-virgl.patch");
-        /* the nested desktop's: the research's work on the proxy, KPipeWire's k2 */
+        QCOMPARE(toolsPatches[1].name(), "linux-drm-virtio-import-3d.patch");
+        QCOMPARE(toolsPatches[2].name(), "linux-drm-virtio-host-vblank.patch");
+        QCOMPARE(toolsPatches[3].name(), "linux-drm-virtio-host-vblank-7.3.patch");
+        QCOMPARE(toolsPatches[4].name(), "linux-drm-virtio-flip-grace.patch");
+        QCOMPARE(toolsPatches.last().name(), "linux-drm-virtio-deferred-map-error.patch");
+        /* the nested desktop's: the research's work on the proxy and its Intel CCS change,
+           KPipeWire's k2 */
         const QList<Patch> proxyPatches = patches(find(all, "proxy"));
-        QCOMPARE(proxyPatches.size(), 1);
+        QCOMPARE(proxyPatches.size(), 2);
         QCOMPARE(proxyPatches[0].path, "proxy/wl-cross-domain-proxy-research.patch");
+        QCOMPARE(proxyPatches[1].path, "proxy/wl-cross-domain-proxy-intel-ccs.patch");
         const QList<Patch> kpipewirePatches = patches(find(all, "kpipewire"));
         QCOMPARE(kpipewirePatches.size(), 2);
         QCOMPARE(kpipewirePatches.last().path, "kpipewire/kpipewire-dmabuf-frame-fds-and-size.patch");
