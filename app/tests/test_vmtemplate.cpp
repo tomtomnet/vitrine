@@ -95,7 +95,7 @@ private slots:
                  "-drive if=pflash,format=qcow2,unit=0,readonly=on,file=CODE.qcow2\n"
                  "\n"
                  "# Display\n"
-                 "-device virtio-vga-gl,hostmem=4G,blob=on,drm_native_context=on,"
+                 "-device virtio-vga-gl,hostmem=16G,blob=on,drm_native_context=on,"
                  "x-host-vblank=on,x-vblank-lead=3000,x-vblank-lead-auto=on\n"
                  "-display dbus,p2p=yes,gl=on\n"
                  "\n"
@@ -142,7 +142,7 @@ private slots:
         QCOMPARE(g.kind, VmConfig::Graphics::Accelerated);
         QCOMPARE(g.device, "virtio-vga-gl");
         QVERIFY(g.nativeContext);
-        QCOMPARE(g.hostmemMiB, 4096);
+        QCOMPARE(g.hostmemMiB, 16384);
         QVERIFY(VmConfig::screen(args) == VmConfig::Screen::Embedded);
         QCOMPARE(VmConfig::accelProperty(args, "honor-guest-pat"), "auto");
         const VmConfig::Network net = VmConfig::network(args);
@@ -207,7 +207,7 @@ private slots:
         const ArgsFile args = build(o);
         const QString text = args.toText();
 
-        QVERIFY(text.contains("-device virtio-vga-gl,hostmem=4G,blob=on\n"));
+        QVERIFY(text.contains("-device virtio-vga-gl,hostmem=16G,blob=on\n"));
         QVERIFY(text.contains("-accel kvm\n"));
         QVERIFY(!text.contains("x-"));
         QVERIFY(!text.contains("honor-guest-pat"));
@@ -234,7 +234,7 @@ private slots:
     {
         const bool installed = !QStandardPaths::findExecutable("passt").isEmpty();
         const QString stack = Paths::stackDir();
-        const QString full = "-device virtio-vga-gl,hostmem=4G,blob=on,drm_native_context=on,"
+        const QString full = "-device virtio-vga-gl,hostmem=16G,blob=on,drm_native_context=on,"
                              "x-host-vblank=on,x-vblank-lead=3000,x-vblank-lead-auto=on\n";
         /* the documentation of QEMU 10.2, loaded: no native context, no passt */
         QemuInfo system;
@@ -302,7 +302,7 @@ private slots:
         o.gpuProperties = gpuProperties(nullptr, plain);
         const ArgsFile args = build(o);
         QVERIFY(args.toText().contains("-accel kvm\n"));
-        QVERIFY(args.toText().contains("-device virtio-vga-gl,hostmem=4G,blob=on\n"));
+        QVERIFY(args.toText().contains("-device virtio-vga-gl,hostmem=16G,blob=on\n"));
         QVERIFY(!args.toText().contains("venus"));
         QVERIFY(!VmConfig::graphics(args).nativeContext);
 
@@ -361,7 +361,7 @@ private slots:
         QVERIFY(text.contains("-machine virt,gic-version=max,memory-backend=mem\n"));
         QVERIFY(text.contains("-cpu host\n"));
         QVERIFY(text.contains("-device virtio-gpu-gl-pci,drm_native_context=on,blob=on,"
-                              "hostmem=4G\n"));
+                              "hostmem=16G\n"));
         QVERIFY(text.contains("-accel kvm,honor-guest-pat=auto\n"));
         QVERIFY(!text.contains("-vga"));
         QVERIFY(!text.contains("VGA"));

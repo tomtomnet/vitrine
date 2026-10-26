@@ -19,7 +19,7 @@ static const char kVm[] = "-name Test VM,debug-threads=on\n"
                           "-accel kvm,honor-guest-pat=auto\n"
                           "-smp 8,sockets=1,cores=4,threads=2\n"
                           "-object memory-backend-memfd,id=mem,size=8G,share=on\n"
-                          "-device virtio-vga-gl,hostmem=4G,blob=on,drm_native_context=on\n"
+                          "-device virtio-vga-gl,hostmem=16G,blob=on,drm_native_context=on\n"
                           "-display dbus,p2p=yes,gl=on\n"
                           "-device virtio-keyboard-pci\n";
 
@@ -32,13 +32,13 @@ static const char kNested[] =
     "-global kvm-pit.lost_tick_policy=discard\n"
     "-object memory-backend-memfd,id=mem,size=8G,share=on\n"
     "-vga none\n"
-    "-device virtio-vga-rutabaga,x-drm=on,x-virgl2=on,cross-domain=on,hostmem=4G,"
+    "-device virtio-vga-rutabaga,x-drm=on,x-virgl2=on,cross-domain=on,hostmem=16G,"
     "ioeventfd=on,x-prefault-blobs=on,x-guest-dmabuf=on\n"
     "-device pvpanic\n"
     "-display dbus,p2p=yes,gl=on\n"
     "-device virtio-keyboard-pci\n";
 
-/* As the checkbox wrote it until 2026-10-15: the rutabaga card beside QEMU's VGA */
+/* As the checkbox wrote it until 2026-10-15: the rutabaga card beside QEMU's VGA, a 4 GiB window */
 static const char kTwoCards[] =
     "-name Test VM,debug-threads=on\n"
     "-machine q35,memory-backend=mem,dump-guest-core=off,hpet=off\n"
@@ -99,7 +99,7 @@ private slots:
         NestedDesktop::set(a, true);
         QCOMPARE(a.toText(), QString(kNested));
         QVERIFY(VmConfig::graphics(a).kind == VmConfig::Graphics::Nested);
-        QCOMPARE(VmConfig::graphics(a).hostmemMiB, 4096);
+        QCOMPARE(VmConfig::graphics(a).hostmemMiB, 16384);
         QVERIFY(NestedDesktop::mode(a) == Mode::Integrated);
         /* on again: nothing more */
         NestedDesktop::set(a, true);
@@ -110,7 +110,7 @@ private slots:
         QString off = kNested;
         off.replace("-vga none\n", "");
         off.replace("-device virtio-vga-rutabaga,x-drm=on,x-virgl2=on,cross-domain=on,"
-                    "hostmem=4G,ioeventfd=on,x-prefault-blobs=on,x-guest-dmabuf=on\n",
+                    "hostmem=16G,ioeventfd=on,x-prefault-blobs=on,x-guest-dmabuf=on\n",
                     "-device virtio-vga-gl\n");
         QCOMPARE(a.toText(), off);
         QVERIFY(VmConfig::graphics(a).kind == VmConfig::Graphics::Accelerated);
@@ -128,7 +128,7 @@ private slots:
                              "-m 4G\n"
                              "-vga none\n"
                              "-device virtio-vga-rutabaga,x-drm=on,x-virgl2=on,cross-domain=on,"
-                             "hostmem=4G,ioeventfd=on,x-prefault-blobs=on,x-guest-dmabuf=on\n"
+                             "hostmem=16G,ioeventfd=on,x-prefault-blobs=on,x-guest-dmabuf=on\n"
                              "-device pvpanic\n"
                              "-object memory-backend-memfd,id=mem,size=4G,share=on\n");
         /* the user's PIT policy and pvpanic stay as they are */
@@ -199,11 +199,14 @@ private slots:
     void moveToOneCard()
     {
         ArgsFile a = ArgsFile::parse(kTwoCards);
+        /* the old card's 4 GiB window too: a VM keeps its line */
+        const QString moved = QString(kNested).replace("hostmem=16G", "hostmem=4G");
 
         QVERIFY(NestedDesktop::moveToOneCard(a));
-        QCOMPARE(a.toText(), QString(kNested));
+        QCOMPARE(a.toText(), moved);
+        QCOMPARE(VmConfig::graphics(a).hostmemMiB, 4096);
         QVERIFY(!NestedDesktop::moveToOneCard(a));
-        QCOMPARE(a.toText(), QString(kNested));
+        QCOMPARE(a.toText(), moved);
 
         /* the user's changes to the card stay; a VGA of its own goes */
         a = ArgsFile::parse("-machine q35\n-device VGA,id=vga0\n"
@@ -239,12 +242,12 @@ private slots:
     void cardProperties()
     {
         QCOMPARE(NestedDesktop::cardDevice(std::nullopt),
-                 "virtio-vga-rutabaga,x-drm=on,x-virgl2=on,cross-domain=on,hostmem=4G,"
+                 "virtio-vga-rutabaga,x-drm=on,x-virgl2=on,cross-domain=on,hostmem=16G,"
                  "ioeventfd=on,x-prefault-blobs=on,x-guest-dmabuf=on");
         /* QEMU's own rutabaga (Fedora's): no native context, prefault or guest dma-buf */
         QCOMPARE(NestedDesktop::cardDevice(QStringList{"cross-domain", "hostmem", "ioeventfd",
                                                        "wayland-socket-path"}),
-                 "virtio-vga-rutabaga,cross-domain=on,hostmem=4G,ioeventfd=on");
+                 "virtio-vga-rutabaga,cross-domain=on,hostmem=16G,ioeventfd=on");
         QCOMPARE(NestedDesktop::cardDevice(QStringList()),
                  "virtio-vga-rutabaga,cross-domain=on");
     }
@@ -385,7 +388,7 @@ private slots:
         QVERIFY(o.offered);
         QVERIFY(o.answered);
         QCOMPARE(NestedDesktop::cardDevice(o.properties),
-                 "virtio-vga-rutabaga,x-drm=on,x-virgl2=on,cross-domain=on,hostmem=4G");
+                 "virtio-vga-rutabaga,x-drm=on,x-virgl2=on,cross-domain=on,hostmem=16G");
         o = NestedDesktop::offer(ArgsFile::parse("#qemu " + stock + "\n"));
         QVERIFY(o.offered);
         QVERIFY(!o.properties->contains("x-drm"));

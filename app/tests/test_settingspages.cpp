@@ -201,7 +201,7 @@ private slots:
         };
 
         /* a new Linux VM's: vitrine's window, the 3D card with all of vitrine's settings */
-        const QString full = "virtio-vga-gl,hostmem=4G,blob=on,drm_native_context=on,"
+        const QString full = "virtio-vga-gl,hostmem=16G,blob=on,drm_native_context=on,"
                              "x-host-vblank=on,x-vblank-lead=3000,x-vblank-lead-auto=on";
         ArgsFile args = ArgsFile::parse("-machine q35,memory-backend=mem\n"
                                         "-accel kvm,honor-guest-pat=auto\n"
@@ -259,12 +259,12 @@ private slots:
         /* vitrine's settings, one by one */
         timing->setChecked(false);
         page.save(args);
-        QCOMPARE(device(args), "virtio-gpu-gl-pci,hostmem=4G,blob=on,drm_native_context=on,"
+        QCOMPARE(device(args), "virtio-gpu-gl-pci,hostmem=16G,blob=on,drm_native_context=on,"
                                "x-host-vblank=off");
         QVERIFY(!timing->isChecked());
         native->setChecked(false);
         page.save(args);
-        QCOMPARE(device(args), "virtio-gpu-gl-pci,hostmem=4G,blob=on,x-host-vblank=off");
+        QCOMPARE(device(args), "virtio-gpu-gl-pci,hostmem=16G,blob=on,x-host-vblank=off");
 
         /* and back to the template's */
         card->setCurrentIndex(card->findData("virtio-vga-gl"));
@@ -341,7 +341,7 @@ private slots:
         QVERIFY(venus->isEnabled());
         venus->setChecked(true);
         page.save(args);
-        QCOMPARE(text(args), "#qemu " + qemu + "\n-device virtio-vga-gl,hostmem=4G,blob=on,"
+        QCOMPARE(text(args), "#qemu " + qemu + "\n-device virtio-vga-gl,hostmem=16G,blob=on,"
                              "venus=on\n-display sdl,gl=on\n");
 
         /* a VM in the GTK window its QEMU lacks: shown as it is, until another is chosen */
@@ -440,7 +440,7 @@ private slots:
                              "-object memory-backend-memfd,id=mem,size=4G,share=on\n"
                              "-vga none\n"
                              "-device virtio-vga-rutabaga,x-drm=on,x-virgl2=on,"
-                             "cross-domain=on,hostmem=4G\n"
+                             "cross-domain=on,hostmem=16G\n"
                              "-device pvpanic\n"
                              "-display dbus,p2p=yes,gl=on\n");
         QVERIFY(!page.isModified());

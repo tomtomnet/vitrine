@@ -15,7 +15,7 @@
 using namespace CardSettings;
 
 /* The card of vitrine's QEMU, all of it, as the template writes it */
-static const char kFullCard[] = "virtio-vga-gl,hostmem=4G,blob=on,drm_native_context=on,"
+static const char kFullCard[] = "virtio-vga-gl,hostmem=16G,blob=on,drm_native_context=on,"
                                 "x-host-vblank=on,x-vblank-lead=3000,x-vblank-lead-auto=on";
 
 /* A Linux VM on a PC with @card, KVM and shared memory */
@@ -132,7 +132,7 @@ private slots:
             QVERIFY(!isOn(args, f));
         }
         set(args, Feature::NativeContext, true, kAll);
-        QCOMPARE(cardOf(args), "virtio-vga-gl,hostmem=4G,blob=on,drm_native_context=on");
+        QCOMPARE(cardOf(args), "virtio-vga-gl,hostmem=16G,blob=on,drm_native_context=on");
         /* KVM honors the guest's caching of the GPU's memory */
         QCOMPARE(VmConfig::accelProperty(args, "honor-guest-pat"), "auto");
         set(args, Feature::FrameTiming, true, kAll);
@@ -152,12 +152,12 @@ private slots:
 
         /* off: blob and hostmem stay, Venus and 2D resources use them */
         set(args, Feature::NativeContext, false, kAll);
-        QCOMPARE(cardOf(args), "virtio-vga-gl,hostmem=4G,blob=on,x-host-vblank=on,"
+        QCOMPARE(cardOf(args), "virtio-vga-gl,hostmem=16G,blob=on,x-host-vblank=on,"
                                "x-vblank-lead=3000,x-vblank-lead-auto=on");
         QVERIFY(!isOn(args, Feature::NativeContext));
         /* QEMU's default is on: off says so, the lead goes */
         set(args, Feature::FrameTiming, false, kAll);
-        QCOMPARE(cardOf(args), "virtio-vga-gl,hostmem=4G,blob=on,x-host-vblank=off");
+        QCOMPARE(cardOf(args), "virtio-vga-gl,hostmem=16G,blob=on,x-host-vblank=off");
         QVERIFY(!isOn(args, Feature::FrameTiming));
         /* and on again: where the template has them */
         set(args, Feature::FrameTiming, true, kAll);
@@ -180,7 +180,12 @@ private slots:
         args = vm("virtio-vga-gl,nodrm_native_context,blob");
         QVERIFY(!isOn(args, Feature::NativeContext));
         set(args, Feature::NativeContext, true, kAll);
-        QCOMPARE(cardOf(args), "virtio-vga-gl,drm_native_context=on,hostmem=4G,blob");
+        QCOMPARE(cardOf(args), "virtio-vga-gl,drm_native_context=on,hostmem=16G,blob");
+        /* a VM made before 2026-10-26 keeps the 4 GiB window of its line, off and on again */
+        args = vm("virtio-vga-gl,hostmem=4G,blob=on,drm_native_context=on");
+        set(args, Feature::NativeContext, false, kAll);
+        set(args, Feature::NativeContext, true, kAll);
+        QCOMPARE(cardOf(args), "virtio-vga-gl,hostmem=4G,blob=on,drm_native_context=on");
         args = vm("virtio-vga-gl,venus");
         QVERIFY(isOn(args, Feature::Venus));
         set(args, Feature::Venus, false, withVenus());
@@ -274,7 +279,7 @@ private slots:
         }
         QCOMPARE(args.toText(), vm("virtio-vga-gl").toText());
         set(args, Feature::Venus, true, fedora);
-        QCOMPARE(cardOf(args), "virtio-vga-gl,hostmem=4G,blob=on,venus=on");
+        QCOMPARE(cardOf(args), "virtio-vga-gl,hostmem=16G,blob=on,venus=on");
 
         /* native context in a QEMU without honor-guest-pat, or without the lead's auto mode */
         Offers older;
@@ -284,7 +289,7 @@ private slots:
         args = vm("virtio-vga-gl");
         set(args, Feature::NativeContext, true, older);
         set(args, Feature::FrameTiming, true, older);
-        QCOMPARE(cardOf(args), "virtio-vga-gl,hostmem=4G,blob=on,drm_native_context=on,"
+        QCOMPARE(cardOf(args), "virtio-vga-gl,hostmem=16G,blob=on,drm_native_context=on,"
                                "x-host-vblank=on,x-vblank-lead=3000");
         QVERIFY(args.toText().contains("-accel kvm\n"));
     }
