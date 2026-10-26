@@ -12,3 +12,17 @@
 0038-FIX-window-activate-raise-and-unrestricted-resize-is-unrestricted.patch
 0008-upstream-maximize-size-tolerance.patch
 0039-EXP-input-pointer-constraints-on-subsurfaces.68.patch
+0060-EXP-interactive-move-once-per-frame.68.patch
+0061-EXP-plasma-window-geometry-once-per-pass.patch
+0062-EXP-cursor-async-test-once.patch
+0063-EXP-pointer-motion-to-clients-once-per-ms.patch
+0066-FIX-renderloop-a-render-journal-of-its-own-for-direct-scanout.patch
+0074-EXP-renderloop-lone-frame-lead-hl.patch
+0070-FIX-drm-keep-both-layer-surfaces-when-switching-back.patch
+0075-FIX-opengl-no-udmabuf-import-on-Intel-xe-either.patch
+0077-EXP-effects-first-animation-frame-one-refresh-in-at-run-time.68.patch
+0078-EXP-renderloop-scanout-journal-variance-cap.patch
+0079-EXP-renderloop-scanout-frame-slack-at-run-time.patch
+0080-EXP-scene-the-active-window-a-layer-candidate-at-run-time.patch
+0081-EXP-compositor-an-empty-render-is-not-content-at-run-time.patch
+0082-EXP-compositor-a-layer-with-no-damage-keeps-its-buffer-at-run-time.patch

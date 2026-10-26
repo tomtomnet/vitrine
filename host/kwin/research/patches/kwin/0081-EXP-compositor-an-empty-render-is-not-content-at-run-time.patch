@@ -1,0 +1,77 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: Local build <local@localhost>
+Date: Sat, 24 Oct 2026 22:30:00 +0200
+Subject: [PATCH] EXP compositor: a layer rendered without damage is not content for the render estimate
+ (KWIN_EMPTY_RENDER_NOT_CONTENT, $XDG_RUNTIME_DIR/kwin-empty-render-not-content)
+
+Item::scheduleFrame (frame callbacks, commit-timing targets) sets a layer's m_repaintScheduled: the layer is rendered
+even when nothing in it is damaged, and the frame counts as content rendered - the render journal of composited
+frames, with its 2 ms floor. A windowed VM's nested KWin asks for a frame callback and stamps every commit on its
+toplevel's surface (a one-pixel black buffer in the scene layer) while its output is on an underlay: every VM frame
+re-rendered an unchanged scene layer, the host planned the VM's frames 4.6 ms ahead instead of 2.9, and its keys stayed
+~1.5 ms behind full screen (the Arc Pro B50 at 4K 240; b50vwr4: 391 of 392 scene repaints from scheduleFrame). With
+the switch such a layer is still rendered as before, but only a rendered layer with damage marks the frame as content
+rendered (a frame with an underlay or overlay in direct scanout then counts as a scanout frame). Unset = as before;
+$XDG_RUNTIME_DIR/kwin-empty-render-not-content holding 0 or 1 decides while it exists, read at most once a second.
+---
+diff --git a/src/compositor.cpp b/src/compositor.cpp
+index a3db4d4..96d440a 100644
+--- a/src/compositor.cpp
++++ b/src/compositor.cpp
+@@ -42,6 +42,7 @@
+ #include "workspace.h"
+ 
+ #include <KCrash>
++#include <QFile>
+ #include <QQuickWindow>
+ #include <optional>
+ #include <ranges>
+@@ -524,6 +525,39 @@ static bool prepareRendering(RenderView *view, LogicalOutput *logicalOutput, Bac
+     return layer->preparePresentationTest();
+ }
+ 
++/**
++ * KWIN_EMPTY_RENDER_NOT_CONTENT (EXP, 2026-10-24; unset or 0 = as before): a layer rendered with no damage - a frame
++ * scheduled only to deliver frame callbacks or a commit-timing target (Item::scheduleFrame sets the layer's
++ * m_repaintScheduled) - does not count as content rendered for the render time estimate. A windowed VM's nested KWin
++ * asks for a frame callback and stamps every commit on its toplevel's surface, a one-pixel buffer drawn in the scene
++ * layer, while its output goes to an underlay: every frame re-rendered the scene layer with nothing in it, counted as
++ * composited (the 2 ms render floor, the host planning the VM's frames 4.6 ms ahead instead of 2.9), and the VM's keys
++ * stayed ~1.5 ms behind full screen (the Arc Pro B50, 4K 240). The layer is still rendered as before.
++ * $XDG_RUNTIME_DIR/kwin-empty-render-not-content holding 0 or 1 decides instead while it exists, read at most once a
++ * second (an A/B in a running session)
++ */
++static bool emptyRenderNotContent()
++{
++    static const bool s_environment = qEnvironmentVariableIntValue("KWIN_EMPTY_RENDER_NOT_CONTENT") != 0;
++    static const QString s_path = qEnvironmentVariable("XDG_RUNTIME_DIR") + QStringLiteral("/kwin-empty-render-not-content");
++    static bool s_value = s_environment;
++    static std::chrono::steady_clock::time_point s_lastRead;
++    const auto now = std::chrono::steady_clock::now();
++    if (now - s_lastRead >= std::chrono::seconds(1)) {
++        s_lastRead = now;
++        s_value = s_environment;
++        QFile file(s_path);
++        if (file.open(QIODevice::ReadOnly)) {
++            bool ok = false;
++            const int value = file.readAll().trimmed().toInt(&ok);
++            if (ok) {
++                s_value = value != 0;
++            }
++        }
++    }
++    return s_value;
++}
++
+ static bool renderLayer(RenderView *view, LogicalOutput *logicalOutput, BackendOutput *backendOutput, const std::shared_ptr<OutputFrame> &frame, const Region &surfaceDamage)
+ {
+     auto beginInfo = view->layer()->beginFrame(frame.get());
+@@ -945,7 +979,7 @@ void Compositor::composite(RenderLoop *renderLoop)
+                 // for the render time estimate: what this frame renders
+                 if (layer.cursor) {
+                     frame->setCursorRendered();
+-                } else {
++                } else if (!(layer.surfaceDamage.isEmpty() && emptyRenderNotContent())) {
+                     frame->setContentRendered();
+                 }
+                 if (!renderLayer(layer.view, logicalOutput, output, frame, layer.surfaceDamage)) {

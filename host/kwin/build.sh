@@ -60,6 +60,12 @@ shopt -s nullglob
 here=$(cd -- "$(dirname -- "$(readlink -f "${BASH_SOURCE[0]}")")" && pwd)
 recipe=$here/research
 versions=$recipe/setup/versions.sh
+# The research's overrides of its sets (VGD_HOST_KWIN_SET=hl39 and the
+# like, which versions.sh reads, and lib.sh passes into the container) are
+# its own experiments: Vitrine builds the sets the copy names
+while read -r v; do
+	unset "$v"
+done < <(compgen -e | grep -E '^VGD_[A-Z0-9_]+_SET')
 
 say() { echo "vitrine-build: $*"; }
 die() { say "error: $*" >&2; exit 1; }

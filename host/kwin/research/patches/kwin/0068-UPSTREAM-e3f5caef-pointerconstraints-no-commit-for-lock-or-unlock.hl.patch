@@ -1,0 +1,291 @@
+From e3f5caef (Plasma/6.8; master 20b9cfe4) Mon Sep 17 00:00:00 2001
+From: Xaver Hugl <xaver.hugl@kde.org>
+Date: Wed, 8 Oct 2026 02:12:54 +0200
+Subject: [PATCH] UPSTREAM wayland/pointerconstraints_v1: don't require a commit
+ for locking or unlocking (hl: on top of 0039)
+
+It causes problems with Wine Wayland. Instead, at least until there's consensus
+upstream to make the state properly double-buffered, this applies lock changes
+to the last transaction, or immediately if there's no pending transactions.
+
+Pointer hint and region changes after locking or unlocking are unchanged.
+
+BUG: 526010
+
+(Backport note, 2026-10-20: the upstream commit as is, without its autotest hunk, which does not apply on
+6.7.91. After the v6.8.0 tag, so 6.8.0 lacks it and 6.8.1 carries it. Applies on 6.7.91 + g21imc7; on hl39i
+the src/pointer_input.{h,cpp} hunks meet 0039 (constraints on subsurfaces) and need a port. The nested
+desktop does not need it - its proxy commits the window itself since 4a5659c - but every client that locks
+or confines the pointer and then draws nothing does: Wine, SDL games, a VM viewer.)
+(.hl, 2026-10-20: the same on hl39i: pointer_input.h around 0039's members, and 0039's watcher of the
+subsurface under the pointer also listens to pointerConfinementChangedWithoutCommit - a lock on that subsurface
+(vmview's grab) takes effect without its commit as well.)
+---
+diff --git a/src/pointer_input.cpp b/src/pointer_input.cpp
+--- a/src/pointer_input.cpp
++++ b/src/pointer_input.cpp
+@@ -702,6 +702,8 @@
+ {
+     disconnect(m_surfaceCommittedConnection);
+     m_surfaceCommittedConnection = QMetaObject::Connection();
++    disconnect(m_surfaceConfinementConnection);
++    m_surfaceConfinementConnection = QMetaObject::Connection();
+ }
+ 
+ void PointerInputRedirection::disconnectPointerConstraintsConnection()
+@@ -754,6 +756,8 @@
+     if (!m_surfaceCommittedConnection) {
+         m_surfaceCommittedConnection = connect(s, &SurfaceInterface::committed,
+                                                this, &PointerInputRedirection::updatePointerConstraints);
++        m_surfaceConfinementConnection = connect(s, &SurfaceInterface::pointerConfinementChangedWithoutCommit,
++                                                 this, &PointerInputRedirection::updatePointerConstraints);
+     }
+ 
+     // NOTE the lifetime of the confined pointer interfaces
+@@ -864,6 +868,9 @@
+     for (SurfaceInterface *s = input; s && s != mainSurface;) {
+         m_inputSurfaceCommittedConnections.append(connect(s, &SurfaceInterface::committed,
+                                                           this, &PointerInputRedirection::updatePointerConstraints));
++        // a lock or confinement takes effect without a commit too (e3f5caef)
++        m_inputSurfaceCommittedConnections.append(connect(s, &SurfaceInterface::pointerConfinementChangedWithoutCommit,
++                                                          this, &PointerInputRedirection::updatePointerConstraints));
+         SubSurfaceInterface *subsurface = s->subSurface();
+         s = subsurface ? subsurface->parentSurface() : nullptr;
+     }
+diff --git a/src/pointer_input.h b/src/pointer_input.h
+--- a/src/pointer_input.h
++++ b/src/pointer_input.h
+@@ -195,6 +195,7 @@
+     QMetaObject::Connection m_focusGeometryConnection;
+     QMetaObject::Connection m_constraintsActivatedConnection;
+     QMetaObject::Connection m_surfaceCommittedConnection;
++    QMetaObject::Connection m_surfaceConfinementConnection;
+     QList<QMetaObject::Connection> m_inputSurfaceCommittedConnections;
+     QMetaObject::Connection m_decorationGeometryConnection;
+     QMetaObject::Connection m_decorationDestroyedConnection;
+diff --git a/src/wayland/pointerconstraints_v1.cpp b/src/wayland/pointerconstraints_v1.cpp
+--- a/src/wayland/pointerconstraints_v1.cpp
++++ b/src/wayland/pointerconstraints_v1.cpp
+@@ -11,6 +11,7 @@
+ #include "pointerconstraints_v1_p.h"
+ #include "region_p.h"
+ #include "surface_p.h"
++#include "transaction.h"
+ 
+ namespace KWin
+ {
+@@ -136,24 +137,10 @@
+     , lifeTime(lifeTime)
+     , m_surface(surface)
+ {
+-    auto priv = SurfaceInterfacePrivate::get(surface);
+-    priv->pending->pointerLockHint.reset();
+-    priv->pending->pointerLockRegion = region;
+-    priv->pending->confinementLifetime = lifeTime;
+-    priv->pending->committed |= SurfaceState::Field::PointerLockHint | SurfaceState::Field::PointerLockRegion;
+-    priv->lockedPointer = q;
+ }
+ 
+ LockedPointerV1InterfacePrivate::~LockedPointerV1InterfacePrivate()
+ {
+-    if (m_surface) {
+-        // NOTE the position hint is intentionally not reset,
+-        // since it will be used when the next commit is applied.
+-        auto priv = SurfaceInterfacePrivate::get(m_surface);
+-        priv->pending->pointerLockRegion.reset();
+-        priv->pending->committed |= SurfaceState::Field::PointerLockRegion;
+-        priv->lockedPointer = nullptr;
+-    }
+ }
+ 
+ void LockedPointerV1InterfacePrivate::zwp_locked_pointer_v1_destroy_resource(Resource *resource)
+@@ -192,10 +179,48 @@
+                                                    ::wl_resource *resource)
+     : d(new LockedPointerV1InterfacePrivate(this, surface, lifeTime, region, resource))
+ {
++    auto priv = SurfaceInterfacePrivate::get(surface);
++    priv->lockedPointer = this;
++
++    const auto lock = [&](SurfaceState *state) {
++        state->pointerLockHint.reset();
++        state->pointerLockRegion = region;
++        state->confinementLifetime = lifeTime;
++        state->committed |= SurfaceState::Field::PointerLockHint | SurfaceState::Field::PointerLockRegion;
++    };
++    if (priv->lastTransaction) {
++        priv->lastTransaction->amend(surface, lock);
++    } else {
++        lock(priv->current.get());
++        priv->effectivePointerLock = priv->mapConfinementRegion(region);
++        Q_EMIT surface->pointerConfinementChangedWithoutCommit();
++        Q_EMIT surface->lockedPointerRegionChanged();
++    }
+ }
+ 
+ LockedPointerV1Interface::~LockedPointerV1Interface()
+ {
++    if (d->m_surface) {
++        // NOTE the position hint is intentionally not reset,
++        // since it will be used when the next commit is applied.
++        auto priv = SurfaceInterfacePrivate::get(d->m_surface);
++        priv->lockedPointer = nullptr;
++
++        // if there's pending commits, we need to apply the unlock
++        // with those changes
++        const auto unlock = [](SurfaceState *state) {
++            state->pointerLockRegion.reset();
++            state->committed |= SurfaceState::Field::PointerLockRegion;
++        };
++        if (priv->lastTransaction) {
++            priv->lastTransaction->amend(d->m_surface, unlock);
++        } else {
++            unlock(priv->current.get());
++            priv->effectivePointerLock.reset();
++            Q_EMIT d->m_surface->pointerConfinementChangedWithoutCommit();
++            Q_EMIT d->m_surface->lockedPointerRegionChanged();
++        }
++    }
+ }
+ 
+ PointerConstraintLifetime LockedPointerV1Interface::lifeTime() const
+@@ -243,21 +268,10 @@
+     , lifeTime(lifeTime)
+     , m_surface(surface)
+ {
+-    auto priv = SurfaceInterfacePrivate::get(surface);
+-    priv->pending->pointerConfinementRegion = region;
+-    priv->pending->confinementLifetime = lifeTime;
+-    priv->pending->committed |= SurfaceState::Field::PointerConfinementRegion;
+-    priv->confinedPointer = q;
+ }
+ 
+ ConfinedPointerV1InterfacePrivate::~ConfinedPointerV1InterfacePrivate()
+ {
+-    if (m_surface) {
+-        auto priv = SurfaceInterfacePrivate::get(m_surface);
+-        priv->pending->pointerConfinementRegion.reset();
+-        priv->pending->committed |= SurfaceState::Field::PointerConfinementRegion;
+-        priv->confinedPointer = nullptr;
+-    }
+ }
+ 
+ void ConfinedPointerV1InterfacePrivate::zwp_confined_pointer_v1_destroy_resource(Resource *resource)
+@@ -286,10 +300,45 @@
+                                                        ::wl_resource *resource)
+     : d(new ConfinedPointerV1InterfacePrivate(this, surface, lifeTime, region, resource))
+ {
++    auto priv = SurfaceInterfacePrivate::get(surface);
++    priv->confinedPointer = this;
++
++    const auto lock = [&](SurfaceState *state) {
++        state->pointerConfinementRegion = region;
++        state->confinementLifetime = lifeTime;
++        state->committed |= SurfaceState::Field::PointerConfinementRegion;
++    };
++    if (priv->lastTransaction) {
++        priv->lastTransaction->amend(surface, lock);
++    } else {
++        lock(priv->current.get());
++        priv->effectivePointerConfinement = priv->mapConfinementRegion(region);
++        Q_EMIT surface->pointerConfinementChangedWithoutCommit();
++        Q_EMIT surface->confinedPointerRegionChanged();
++    }
+ }
+ 
+ ConfinedPointerV1Interface::~ConfinedPointerV1Interface()
+ {
++    if (d->m_surface) {
++        auto priv = SurfaceInterfacePrivate::get(d->m_surface);
++        priv->confinedPointer = nullptr;
++
++        // if there's pending commits, we need to apply the unlock
++        // with those changes
++        const auto amend = [](SurfaceState *state) {
++            state->pointerConfinementRegion.reset();
++            state->committed |= SurfaceState::Field::PointerConfinementRegion;
++        };
++        if (priv->lastTransaction) {
++            priv->lastTransaction->amend(d->m_surface, amend);
++        } else {
++            amend(priv->current.get());
++            priv->effectivePointerConfinement.reset();
++            Q_EMIT d->m_surface->pointerConfinementChangedWithoutCommit();
++            Q_EMIT d->m_surface->confinedPointerRegionChanged();
++        }
++    }
+ }
+ 
+ PointerConstraintLifetime ConfinedPointerV1Interface::lifeTime() const
+diff --git a/src/wayland/surface.cpp b/src/wayland/surface.cpp
+--- a/src/wayland/surface.cpp
++++ b/src/wayland/surface.cpp
+@@ -696,22 +696,10 @@
+ 
+     const bool inputRegionChanged = oldInputRegion != inputRegion;
+     if (inputRegionChanged || pointerLockRegionChanged) {
+-        effectivePointerLock = current->pointerLockRegion.transform([this](const RegionF &region) {
+-            if (region.isEmpty()) {
+-                return inputRegion;
+-            } else {
+-                return region & inputRegion;
+-            }
+-        });
++        effectivePointerLock = mapConfinementRegion(current->pointerLockRegion);
+     }
+     if (inputRegionChanged || pointerConfinementRegionChanged) {
+-        effectivePointerConfinement = current->pointerConfinementRegion.transform([this](const RegionF &region) {
+-            if (region.isEmpty()) {
+-                return inputRegion;
+-            } else {
+-                return region & inputRegion;
+-            }
+-        });
++        effectivePointerConfinement = mapConfinementRegion(current->pointerConfinementRegion);
+     }
+ 
+     if (opaqueRegionChanged) {
+@@ -849,6 +837,17 @@
+     return result;
+ }
+ 
++std::optional<RegionF> SurfaceInterfacePrivate::mapConfinementRegion(const std::optional<RegionF> &region) const
++{
++    return region.transform([this](const RegionF &region) {
++        if (region.isEmpty()) {
++            return inputRegion;
++        } else {
++            return region & inputRegion;
++        }
++    });
++}
++
+ Region SurfaceInterface::bufferDamage() const
+ {
+     return d->bufferDamage;
+diff --git a/src/wayland/surface.h b/src/wayland/surface.h
+--- a/src/wayland/surface.h
++++ b/src/wayland/surface.h
+@@ -460,6 +460,12 @@
+     void lockedPointerRegionChanged();
+ 
+     /**
++     * Emitted whenever pointer confinement changed without a commit,
++     * like when a pointer lock or confinement is destroyed
++     */
++    void pointerConfinementChangedWithoutCommit();
++
++    /**
+      * Emitted whenever the SurfaceInterface starts/ends to inhibit idle.
+      * @see inhibitsIdle
+      */
+diff --git a/src/wayland/surface_p.h b/src/wayland/surface_p.h
+--- a/src/wayland/surface_p.h
++++ b/src/wayland/surface_p.h
+@@ -165,6 +165,7 @@
+     bool contains(const QPointF &position) const;
+     bool inputContains(const QPointF &position) const;
+     Region mapToBuffer(const RegionF &region) const;
++    std::optional<RegionF> mapConfinementRegion(const std::optional<RegionF> &region) const;
+ 
+     CompositorInterface *compositor;
+     SurfaceInterface *q;

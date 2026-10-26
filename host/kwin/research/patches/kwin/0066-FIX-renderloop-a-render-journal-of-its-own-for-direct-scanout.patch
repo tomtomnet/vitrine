@@ -1,0 +1,263 @@
+From: Local build <local@localhost>
+Subject: [PATCH] FIX: renderloop: frames shown by direct scanout have a render journal of their own (KWIN_RENDER_JOURNAL_SCANOUT)
+
+The render time estimate is the smoothed render time plus twice the largest recent excess over it, and that excess
+decays over seconds. A frame whose content is a client's buffer on a plane takes 0.1-0.3 ms; a rendered frame
+counts as 2 ms at least. In one journal, the first rendered frame after a stretch of direct scanout - a window
+closing over the desktop, a popup over a fullscreen client - is a 1.8 ms excess: the estimate goes from 0.2 to
+~5.2 ms, the compositor plans its frames two refreshes ahead, and for the next seconds a fullscreen client's frames
+reach the screen a refresh late. Bare keyflip on a 240 Hz output (2026-10-19): the ~30 keys after each such
+moment took 11-14 ms instead of 7-10; p50 / p90 10.4 / 13.6 ms against 9.6 / 10.9 when nothing was rendered between
+runs. Upstream 6.7 has the same split (the 2 ms minimum is in the OpenGL render time query); 6.8's 5338c2e9a7
+avoided it by counting direct scanout frames as 2 ms too, which plans every direct scanout frame ~1.8 ms earlier
+(our FIX-F undoes that part).
+
+Now each kind has a journal: frames with rendered content, and frames whose content was scanned out (the compositor
+marks them, OutputFrame::setContentScannedOut). The next frame is estimated from the kind of the last frame with
+content; frames with neither keep it: one where only the cursor was rendered is skipped (as before), one with nothing
+at all counts in that journal with its own short time, as in the single journal (v3: skipping those raised the
+rendered frames' estimate on the laptop's 780M at 144 Hz into triple buffering, one repeat per launcher opening). The
+first frame of the other kind is planned with the last kind's estimate, as one journal would have planned it before
+the excess. Each frame counts as a skip in the other kind's journal, so that one's excess decays with time as
+it would have in one journal (v4: frozen through direct scanout, the rendered frames' excess kept the laptop's 780M
+triple buffered when the next composited animation began, +1.2 launcher repeats a second).
+When the content is a client's buffer again, the compositor also leaves triple buffering at once: the rendered
+frames' estimate may have switched it there, and its hysteresis kept it for 10 more frames (v2, 2026-10-19: on the
+laptop at 144 Hz the estimate stayed at 0.4 ms, but the first ~10 keys after a composited moment were a vblank late).
+KWIN_RENDER_JOURNAL_SCANOUT=0 restores the single journal; $XDG_RUNTIME_DIR/kwin-render-journal-scanout holding 0 or
+1 overrides the variable while it exists (read at most once a second: an A/B in a running host session).
+KWIN_RENDER_ESTIMATE_UPSTREAM=1 keeps the single journal as well.
+
+---
+
+diff --git a/src/compositor.cpp b/src/compositor.cpp
+index f02e003..a3db4d4 100644
+--- a/src/compositor.cpp
++++ b/src/compositor.cpp
+@@ -930,6 +930,10 @@ void Compositor::composite(RenderLoop *renderLoop)
+ 
+     const auto renderLayers = [&]() -> std::expected<void, OutputError> {
+         for (auto &layer : layers) {
++            if (layer.view->layer()->isEnabled() && layer.directScanout && !layer.cursor) {
++                // for the render time estimate: this frame's content is a client's buffer
++                frame->setContentScannedOut();
++            }
+             if (!layer.view->layer()->needsRepaint()) {
+                 continue;
+             }
+diff --git a/src/core/renderbackend.cpp b/src/core/renderbackend.cpp
+index aca85c6..875671b 100644
+--- a/src/core/renderbackend.cpp
++++ b/src/core/renderbackend.cpp
+@@ -209,6 +209,16 @@ bool OutputFrame::contentRendered() const
+     return m_contentRendered;
+ }
+ 
++void OutputFrame::setContentScannedOut()
++{
++    m_contentScannedOut = true;
++}
++
++bool OutputFrame::contentScannedOut() const
++{
++    return m_contentScannedOut;
++}
++
+ std::optional<double> OutputFrame::brightness() const
+ {
+     return m_brightness;
+diff --git a/src/core/renderbackend.h b/src/core/renderbackend.h
+index b89268b..a67bbb3 100644
+--- a/src/core/renderbackend.h
++++ b/src/core/renderbackend.h
+@@ -120,6 +120,12 @@ public:
+     bool onlyCursorRendered() const;
+     bool cursorRendered() const;
+     bool contentRendered() const;
++    /**
++     * A layer showed a client's buffer for this frame instead of rendering (direct scanout).
++     * The render time estimate keeps such frames apart from the rendered ones
++     */
++    void setContentScannedOut();
++    bool contentScannedOut() const;
+ 
+     std::optional<double> brightness() const;
+     void setBrightness(double brightness);
+@@ -152,6 +158,7 @@ private:
+     bool m_presented = false;
+     bool m_cursorRendered = false;
+     bool m_contentRendered = false;
++    bool m_contentScannedOut = false;
+     std::optional<double> m_brightness;
+     std::optional<double> m_dimmingFactor;
+     std::optional<double> m_artificialHdrHeadroom;
+diff --git a/src/core/renderloop.cpp b/src/core/renderloop.cpp
+index d52b5f3..e5cd1fb 100644
+--- a/src/core/renderloop.cpp
++++ b/src/core/renderloop.cpp
+@@ -13,6 +13,8 @@
+ #include "window.h"
+ #include "workspace.h"
+ 
++#include <QFile>
++
+ using namespace std::chrono_literals;
+ 
+ namespace KWin
+@@ -37,6 +39,35 @@ static const bool s_lateFlipCompensation = qEnvironmentVariableIntValue("KWIN_LA
+ static const std::optional<int> s_scanoutFrameSlackUs = qEnvironmentVariableIsEmpty("KWIN_SCANOUT_FRAME_SLACK_US") ? std::nullopt : std::optional<int>(qEnvironmentVariableIntValue("KWIN_SCANOUT_FRAME_SLACK_US"));
+ // KWIN_RENDER_ESTIMATE_UPSTREAM=1: the frames for which only the cursor was rendered count for the render time estimate
+ static const bool s_upstreamEstimate = qEnvironmentVariableIntValue("KWIN_RENDER_ESTIMATE_UPSTREAM") != 0;
++
++/**
++ * KWIN_RENDER_JOURNAL_SCANOUT [1]: frames whose content was a client's buffer on a plane (direct scanout) have a
++ * render journal of their own, and the next frame is estimated from the journal of the last frame with content;
++ * 0 = one journal for all frames, as before. A host KWin keeps its wrapper's environment from login, so
++ * $XDG_RUNTIME_DIR/kwin-render-journal-scanout holding 0 or 1 decides instead while it exists, read at most once a
++ * second (an A/B in a running session)
++ */
++static bool scanoutJournalEnabled()
++{
++    static const bool s_environment = qEnvironmentVariableIsEmpty("KWIN_RENDER_JOURNAL_SCANOUT") || qEnvironmentVariableIntValue("KWIN_RENDER_JOURNAL_SCANOUT") != 0;
++    static const QString s_path = qEnvironmentVariable("XDG_RUNTIME_DIR") + QStringLiteral("/kwin-render-journal-scanout");
++    static bool s_value = s_environment;
++    static std::chrono::steady_clock::time_point s_lastRead;
++    const auto now = std::chrono::steady_clock::now();
++    if (now - s_lastRead >= std::chrono::seconds(1)) {
++        s_lastRead = now;
++        s_value = s_environment;
++        QFile file(s_path);
++        if (file.open(QIODevice::ReadOnly)) {
++            bool ok = false;
++            const int value = file.readAll().trimmed().toInt(&ok);
++            if (ok) {
++                s_value = value != 0;
++            }
++        }
++    }
++    return s_value && !s_upstreamEstimate;
++}
+ static const std::chrono::nanoseconds s_lateFlipStep = std::chrono::microseconds(qEnvironmentVariableIsEmpty("KWIN_LATE_FLIP_STEP_US") ? 500 : std::max(10, qEnvironmentVariableIntValue("KWIN_LATE_FLIP_STEP_US")));
+ 
+ RenderLoopPrivate::RenderLoopPrivate(RenderLoop *q, BackendOutput *output)
+@@ -77,7 +108,7 @@ void RenderLoopPrivate::scheduleRepaint(std::chrono::nanoseconds lastTargetTimes
+     if (s_scanoutFrameSlackUs && lastFrameScanout) {
+         slack = std::chrono::microseconds(std::max(0, *s_scanoutFrameSlackUs));
+     }
+-    std::chrono::nanoseconds expectedCompositingTime = std::min(renderJournal.result() + safetyMargin + slack + lateFlipCompensation, 2 * vblankInterval);
++    std::chrono::nanoseconds expectedCompositingTime = std::min(estimateJournal().result() + safetyMargin + slack + lateFlipCompensation, 2 * vblankInterval);
+ 
+     if (presentationMode == PresentationMode::VSync) {
+         // normal presentation: pageflips only happen at vblank
+@@ -177,6 +208,11 @@ void RenderLoopPrivate::notifyFrameDropped()
+     }
+ }
+ 
++const RenderJournal &RenderLoopPrivate::estimateJournal() const
++{
++    return (lastContentScanout && scanoutJournalEnabled()) ? scanoutJournal : renderJournal;
++}
++
+ void RenderLoopPrivate::notifyFrameCompleted(std::chrono::nanoseconds timestamp, std::optional<RenderTimeSpan> renderTime, PresentationMode mode, OutputFrame *frame)
+ {
+     if (output && s_printDebugInfo && !m_debugOutput) {
+@@ -199,6 +235,29 @@ void RenderLoopPrivate::notifyFrameCompleted(std::chrono::nanoseconds timestamp,
+     // whether the compositor rendered anything for this frame (see KWIN_SCANOUT_FRAME_SLACK_US)
+     lastFrameScanout = frame && !frame->renderedByCompositor();
+ 
++    // A frame whose content went straight to the screen (direct scanout) takes 0.1-0.3 ms, a rendered one
++    // counts as 2 ms at least (below). In one journal, the first rendered frame after a stretch of direct
++    // scanout is a 1.8 ms excess over the smoothed time, and twice the excess stays in the estimate for
++    // seconds: 0.2 -> 5.2 ms, the compositor works two refreshes ahead, and a fullscreen client's next frames
++    // reach the screen a refresh late (keys to a fullscreen client on a 240 Hz output, bare metal: the ~30
++    // keys after a window closed over the desktop, p90 13.6 instead of 10.9 ms). So each kind has a journal,
++    // and the next frame is estimated from the kind of the last frame with content (KWIN_RENDER_JOURNAL_SCANOUT)
++    const bool separate = scanoutJournalEnabled();
++    if (separate && frame && (frame->contentRendered() || frame->contentScannedOut())) {
++        const bool scanout = !frame->contentRendered();
++        if (scanout && !lastContentScanout) {
++            // a client's buffer on the plane again: the rendered frames' estimate may have switched the compositor
++            // to triple buffering, which it keeps for 10 frames after the estimate fits a refresh again (the
++            // hysteresis in scheduleRepaint); for these frames the scanout journal decides at once (the laptop at
++            // 144 Hz: the first ~10 keys after a composited moment were still a vblank late)
++            wasTripleBuffering = false;
++            doubleBufferingCounter = 0;
++        }
++        lastContentScanout = scanout;
++    }
++    RenderJournal &journal = (separate && lastContentScanout) ? scanoutJournal : renderJournal;
++    RenderJournal &otherJournal = (separate && lastContentScanout) ? renderJournal : scanoutJournal;
++
+     if (renderTime && !s_upstreamEstimate && frame && frame->onlyCursorRendered()) {
+         // The estimate is the smoothed render time plus twice the largest recent
+         // excess over it, remembered for seconds, and the next frames start that
+@@ -211,8 +270,11 @@ void RenderLoopPrivate::notifyFrameCompleted(std::chrono::nanoseconds timestamp,
+         // 14.2 ms, and 18.4 ms when the pointer's shape changes with every key).
+         // The time it takes to render the cursor says nothing about the frames
+         // with content.
+-        renderJournal.skip(timestamp);
++        journal.skip(timestamp);
+     } else if (renderTime) {
++        // (a frame with no content - nothing rendered, no client's buffer shown - counts in the journal of the last
++        // kind, with its own short time, as in the single journal: skipping it raised the rendered frames' estimate
++        // on the laptop's 780M at 144 Hz into triple buffering, one repeat per launcher opening, v2 -> v3)
+         // timings are pretty unpredictable in the sub-millisecond range; this minimum
+         // ensures that when CPU or GPU power states change, we don't drop any frames.
+         // Not for a frame the compositor did not render (direct scanout: it only
+@@ -221,7 +283,14 @@ void RenderLoopPrivate::notifyFrameCompleted(std::chrono::nanoseconds timestamp,
+         // 2 ms, so the compositor wakes up ~1.8 ms earlier for a fullscreen client
+         // (a game, a virtual machine's zero-copy window) and shows its frames later
+         const std::chrono::nanoseconds minimumTime = (frame && !frame->renderedByCompositor()) ? std::chrono::nanoseconds::zero() : std::chrono::milliseconds(2);
+-        renderJournal.add(std::max(minimumTime, renderTime->end - renderTime->start), timestamp);
++        journal.add(std::max(minimumTime, renderTime->end - renderTime->start), timestamp);
++        if (separate) {
++            // time passes for the other kind too: its excess decays as it would have in one journal. Frozen through a
++            // stretch of direct scanout, the rendered frames' excess from before kept the laptop's 780M triple
++            // buffered when the next composited animation began (launcher +1.2 repeats a second after a fullscreen
++            // client closed, v3 -> v4)
++            otherJournal.skip(timestamp);
++        }
+     }
+     if (s_lateFlipCompensation && mode == PresentationMode::VSync && frame) {
+         // A frame that was planned and rendered in time, and still reached the
+@@ -414,7 +483,7 @@ void RenderLoop::setMaxPendingFrameCount(uint32_t maxCount)
+ 
+ std::chrono::nanoseconds RenderLoop::predictedRenderTime() const
+ {
+-    return d->renderJournal.result();
++    return d->estimateJournal().result();
+ }
+ 
+ bool RenderLoop::scheduledLate() const
+diff --git a/src/core/renderloop_p.h b/src/core/renderloop_p.h
+index 87509a1..d762c30 100644
+--- a/src/core/renderloop_p.h
++++ b/src/core/renderloop_p.h
+@@ -34,6 +34,8 @@ public:
+     void scheduleRepaint(std::chrono::nanoseconds lastTargetTimestamp, std::chrono::nanoseconds presentNotBefore);
+ 
+     void notifyFrameDropped();
++    // the journal the next frame's render time is estimated from
++    const RenderJournal &estimateJournal() const;
+     void notifyFrameCompleted(std::chrono::nanoseconds timestamp, std::optional<RenderTimeSpan> renderTime, PresentationMode mode, OutputFrame *frame);
+     void notifyVblank(std::chrono::nanoseconds timestamp);
+ 
+@@ -47,6 +49,9 @@ public:
+     int doubleBufferingCounter = 0;
+     PreciseTimer compositeTimer;
+     RenderJournal renderJournal;
++    // the frames whose content was a client's buffer on a plane (direct scanout) have a journal of their own
++    // (KWIN_RENDER_JOURNAL_SCANOUT): see notifyFrameCompleted
++    RenderJournal scanoutJournal;
+     int refreshRate = 60000;
+     int pendingFrameCount = 0;
+     bool preparingNewFrame = false;
+@@ -57,6 +62,8 @@ public:
+     bool scheduledLate = false;
+     // the last completed frame went straight to the screen (nothing rendered)
+     bool lastFrameScanout = false;
++    // the last completed frame with content showed a client's buffer instead of rendering it
++    bool lastContentScanout = false;
+     // how much earlier frames start because planned frames reached the screen late
+     std::chrono::nanoseconds lateFlipCompensation{0};
+ 

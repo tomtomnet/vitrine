@@ -161,6 +161,8 @@ QList<Set> sets(const QString &sourceDir)
     /* host/kwin/6.7.91) echo "hl39 hl39" ;;   # a comment */
     static const QRegularExpression line(
         "^\\s*(host/kwin/[^)]*)\\)\\s*echo\\s+\"([^\"]*)\"");
+    /* ${VGD_HOST_KWIN_SET:-hl39y}: the research's override, which build.sh leaves unset */
+    static const QRegularExpression fallback("\\$\\{[A-Za-z_][A-Za-z0-9_]*:-([^}]*)\\}");
     QList<Set> list;
 
     for (const QByteArray &raw : readFile(sourceDir + "/research/setup/versions.sh").split('\n')) {
@@ -168,7 +170,8 @@ QList<Set> sets(const QString &sourceDir)
         if (!m.hasMatch()) {
             continue;
         }
-        const QStringList set = m.captured(2).split(' ', Qt::SkipEmptyParts);
+        const QStringList set =
+            m.captured(2).replace(fallback, "\\1").split(' ', Qt::SkipEmptyParts);
         QStringList versions;
         for (const QString &pattern : m.captured(1).split('|')) {
             versions << pattern.trimmed().mid(QStringLiteral("host/kwin/").size());

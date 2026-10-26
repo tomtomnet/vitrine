@@ -143,6 +143,8 @@ private:
     }
 
     QString hostKwinDir() const { return QStringLiteral(HOST_KWIN_SOURCE_DIR); }
+    /* $XDG_RUNTIME_DIR of the user installing, for install.sh */
+    QString runDir() const { return m_state + "/run/" + QString::number(getuid()); }
 
     /* install.sh with the stand-ins, as "root"; its output */
     QString installScript(const QStringList &args, int *status, bool root = true)
@@ -153,6 +155,10 @@ private:
         env.insert("STATE", m_state);
         env.insert("TMPDIR", m_tmp.filePath("tmp"));
         env.insert("FAKE_UID", root ? "0" : "1000");
+        /* the switches: entries and files of the user installing, here */
+        env.insert("VITRINE_TMPFILES_DIR", m_state + "/tmpfiles");
+        env.insert("VITRINE_RUN_USER", m_state + "/run");
+        env.insert("PKEXEC_UID", QString::number(getuid()));
         p.setProcessEnvironment(env);
         p.setProcessChannelMode(QProcess::MergedChannels);
         QDir().mkpath(m_tmp.filePath("tmp"));
@@ -168,6 +174,7 @@ private:
         for (const char *dir : {"installed", "repo", "locks", "files"}) {
             QDir().mkpath(m_state + '/' + dir);
         }
+        QDir().mkpath(runDir());
     }
 
     /* An "RPM file" of the set, and its argument FILE=SHA256 */
@@ -200,7 +207,11 @@ private slots:
         QVERIFY(write(m_bin + "/rpm", kFakeRpm));
         QVERIFY(write(m_bin + "/dnf", kFakeDnf));
         QVERIFY(write(m_bin + "/id", "#!/bin/bash\n[ \"$1\" = -u ] && { echo \"${FAKE_UID:-0}\"; exit 0; }\nexec /usr/bin/id \"$@\"\n"));
-        for (const char *name : {"rpm", "dnf", "id"}) {
+        /* as the user: the command after --, as it is */
+        QVERIFY(write(m_bin + "/runuser", "#!/bin/bash\necho \"$*\" >> \"$STATE/runuser\"\n"
+                                          "while [ $# -gt 0 ] && [ \"$1\" != -- ]; do shift; done\n"
+                                          "shift\nexec \"$@\"\n"));
+        for (const char *name : {"rpm", "dnf", "id", "runuser"}) {
             QFile::setPermissions(m_bin + '/' + name, QFile::ReadOwner | QFile::WriteOwner | QFile::ExeOwner);
         }
         m_path = qgetenv("PATH");
@@ -217,13 +228,15 @@ private slots:
     {
         const QList<Set> sets = HostKwin::sets(hostKwinDir());
         QCOMPARE(sets.size(), 3);
-        QCOMPARE(sets[0].series, "hl39");
-        QCOMPARE(sets[0].tag, "hl39");
+        /* "${VGD_HOST_KWIN_SET:-hl39y}": the research's override left out */
+        QCOMPARE(sets[0].series, "hl39y");
+        QCOMPARE(sets[0].tag, "hl39y");
         QCOMPARE(sets[0].versions, QStringList{"6.7.91"});
         QCOMPARE(sets[1].series, "hl39-68");
         QCOMPARE(sets[1].tag, "h18");
         QCOMPARE(sets[1].versions, QStringList{"6.8.0"});
-        QCOMPARE(sets[2].series, "hl39-681");
+        QCOMPARE(sets[2].series, "h681a");
+        QCOMPARE(sets[2].tag, "h681a");
         QCOMPARE(sets[2].versions, QStringList{"6.8.*"});
         /* their series files are in the copy */
         for (const Set &set : sets) {
@@ -240,11 +253,18 @@ private slots:
         QVERIFY(r.isValid());
         QCOMPARE(r.fedora, "44");
         QCOMPARE(r.copr, "copr:copr.fedorainfracloud.org:group_kdesig:kde-beta");
-        QCOMPARE(r.series, "hl39");
-        QCOMPARE(r.tag, "hl39");
+        QCOMPARE(r.series, "hl39y");
+        QCOMPARE(r.tag, "hl39y");
         QCOMPARE(Recipe::read(hostKwinDir(), "6.8.0", "44").series, "hl39-68");
         QCOMPARE(Recipe::read(hostKwinDir(), "6.8.0", "44").tag, "h18");
-        QCOMPARE(Recipe::read(hostKwinDir(), "6.8.3", "44").series, "hl39-681");
+        QCOMPARE(Recipe::read(hostKwinDir(), "6.8.3", "44").series, "h681a");
+        /* the research's overrides of its sets stay its own */
+        qputenv("VGD_HOST_KWIN_SET", "hl39");
+        qputenv("VGD_HOST_KWIN_SET_68", "hl39-681");
+        QCOMPARE(Recipe::read(hostKwinDir(), "6.7.91", "44").series, "hl39y");
+        QCOMPARE(Recipe::read(hostKwinDir(), "6.8.3", "44").series, "h681a");
+        qunsetenv("VGD_HOST_KWIN_SET");
+        qunsetenv("VGD_HOST_KWIN_SET_68");
         /* Fedora 44's own Plasma, and one after the sets */
         QVERIFY(Recipe::read(hostKwinDir(), "6.7.5", "44").series.isEmpty());
         QVERIFY(Recipe::read(hostKwinDir(), "6.9.0", "44").series.isEmpty());
@@ -274,12 +294,13 @@ private slots:
         places.kwinDir = hostKwinDir();
         const Builds::Component c = Builds::load(places).value(0);
         const QList<Builds::Patch> patches = Builds::patches(c);
-        QCOMPARE(patches.size(), 14 * 3);
-        QCOMPARE(patches.first().origin, "hl39, for KWin 6.7.91");
-        QCOMPARE(patches.last().origin, "hl39-681, for KWin 6.8.x");
-        QCOMPARE(patches.last().name(), "0039-EXP-input-pointer-constraints-on-subsurfaces.68.patch");
+        QCOMPARE(patches.size(), 29 + 14 + 28);
+        QCOMPARE(patches.first().origin, "hl39y, for KWin 6.7.91");
+        QCOMPARE(patches.last().origin, "h681a, for KWin 6.8.x");
+        QCOMPARE(patches.last().name(),
+                 "0082-EXP-compositor-a-layer-with-no-damage-keeps-its-buffer-at-run-time.patch");
         QCOMPARE(Builds::subject(c, patches.first()), "Patch100 kwin-vm-frame-timing (ported to 6.8)");
-        QVERIFY(Builds::text(c, patches.last()).contains("pointer"));
+        QVERIFY(Builds::text(c, patches.last()).contains("kwin-skip-empty-layer-render"));
     }
 
     void parsing()
@@ -692,6 +713,19 @@ private slots:
         QVERIFY(!QFileInfo::exists(m_state + "/installed/kwin-devel"));
         QCOMPARE(read(m_state + "/actions"), "upgrade\n");
         QCOMPARE(read(m_state + "/locks/kwin").trimmed(), "6.7.91-1.hl39.fc44");
+        /* the set's switches: an entry each for every user, and the files made now for the one
+           installing */
+        const QByteArray switches = read(m_state + "/tmpfiles/vitrine-host-kwin.conf");
+        QVERIFY2(switches.startsWith("# Vitrine's host KWin (host/kwin/install.sh)"), switches.constData());
+        QCOMPARE(switches.count("\nf %t/kwin-"), 5);
+        QVERIFY(switches.contains("\nf %t/kwin-scanout-variance-cap 0644 - - - 500\n"));
+        QVERIFY(out.contains("vitrine-kwin: step: turning the set's run-time switches on"));
+        QVERIFY2(read(m_state + "/runuser").contains(" -- env XDG_RUNTIME_DIR=" + runDir().toUtf8() +
+                                                     " systemd-tmpfiles --user --create "),
+                 read(m_state + "/runuser").constData());
+        QCOMPARE(read(runDir() + "/kwin-scanout-variance-cap"), "500");
+        QCOMPARE(read(runDir() + "/kwin-skip-empty-layer-render"), "1");
+        QCOMPARE(QDir(runDir()).entryList(QDir::Files).size(), 5);
         /* its copies went with it */
         QCOMPARE(QDir(m_tmp.filePath("tmp")).entryList(QDir::NoDotAndDotDot | QDir::AllEntries), QStringList());
 
@@ -792,12 +826,14 @@ private slots:
             QVERIFY(write(m_state + "/locks/" + name, "6.7.91-1.hl39.fc44"));
             QVERIFY(write(m_state + "/repo/" + name, pkg(name, "6.7.91-1.fc44", "distro")));
         }
+        QVERIFY(write(m_state + "/tmpfiles/vitrine-host-kwin.conf", "f %t/kwin-animation-start-step 0644 - - - 1\n"));
         /* another's: left alone */
         QString out = installScript({"revert", "hm4"}, &status);
         QCOMPARE(status, 1);
         QVERIFY(out.contains("leaves it alone"));
         QCOMPARE(installed("kwin"), "v-kwin");
         QVERIFY(QFileInfo::exists(m_state + "/locks/kwin"));
+        QVERIFY(QFileInfo::exists(m_state + "/tmpfiles/vitrine-host-kwin.conf"));
 
         /* the repositories out of reach: locked again */
         QVERIFY(write(m_state + "/fail", ""));
@@ -818,6 +854,9 @@ private slots:
         QCOMPARE(installed("kwin-libs"), "distro");
         QVERIFY(!QFileInfo::exists(m_state + "/locks/kwin"));
         QVERIFY(out.contains("vitrine-kwin: installed: kwin-6.7.91-1.fc44.x86_64"));
+        /* the switches with it */
+        QVERIFY(out.contains("vitrine-kwin: step: removing the set's run-time switches"));
+        QVERIFY(!QFileInfo::exists(m_state + "/tmpfiles/vitrine-host-kwin.conf"));
     }
 
     /* The monitor: read with the stand-ins; pkexec's answers */
@@ -862,7 +901,8 @@ private slots:
         QVERIFY(monitor.isRead());
         Status s = monitor.status();
         QCOMPARE(s.offer, Offer::Offered);
-        QCOMPARE(s.series, "hl39");
+        /* the recipe's set; the build is of an older one */
+        QCOMPARE(s.series, "hl39y");
         QVERIFY(s.build.isValid());
         /* the recipe's key differs from "k": still installable */
         QVERIFY(s.recipeChanged);

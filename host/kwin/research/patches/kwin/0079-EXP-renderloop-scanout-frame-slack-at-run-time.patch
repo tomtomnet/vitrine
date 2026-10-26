@@ -1,0 +1,55 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: Local build <local@localhost>
+Date: Sat, 24 Oct 2026 18:30:00 +0200
+Subject: [PATCH] EXP renderloop: Patch111's scanout frame slack at run time ($XDG_RUNTIME_DIR/kwin-scanout-frame-slack)
+
+On top of Patch111 (KWIN_SCANOUT_FRAME_SLACK_US: after a direct-scanout frame the next frame starts that slack plus
+the safety margin and the estimate before its vblank, instead of a whole millisecond on top). A host KWin keeps its
+wrapper's environment from login, so the variable cannot be tried in a running session: a file in $XDG_RUNTIME_DIR
+holding the slack in microseconds ("off" or a negative number: the millisecond) decides while it exists, read at most
+once a second. For the B50 desktop's VM (2026-10-24): the host starts the VM's scanned-out frames ~2.9 ms before their
+vblank (0.3 estimate + 1.6 safety margin + 1 ms slack), and a nested commit that comes later waits a refresh.
+---
+diff --git a/src/core/renderloop.cpp b/src/core/renderloop.cpp
+index 37be6ab..82ebf4e 100644
+--- a/src/core/renderloop.cpp
++++ b/src/core/renderloop.cpp
+@@ -37,6 +37,27 @@ static const bool s_lateFlipCompensation = qEnvironmentVariableIntValue("KWIN_LA
+ // is still shown at that vblank (a virtual machine's frames come ~4 ms before it today).
+ // Unset: nothing changes.
+ static const std::optional<int> s_scanoutFrameSlackUs = qEnvironmentVariableIsEmpty("KWIN_SCANOUT_FRAME_SLACK_US") ? std::nullopt : std::optional<int>(qEnvironmentVariableIntValue("KWIN_SCANOUT_FRAME_SLACK_US"));
++// $XDG_RUNTIME_DIR/kwin-scanout-frame-slack (2026-10-24): the same slack in us while the file exists ("off" or a
++// negative number: the 1 ms as without the variable), read at most once a second - a host KWin keeps its wrapper's
++// environment from login, so an A/B in a running session needs a file
++static std::optional<int> scanoutFrameSlackUs()
++{
++    static const QString s_path = qEnvironmentVariable("XDG_RUNTIME_DIR") + QStringLiteral("/kwin-scanout-frame-slack");
++    static std::optional<int> s_value = s_scanoutFrameSlackUs;
++    static std::chrono::steady_clock::time_point s_lastRead;
++    const auto now = std::chrono::steady_clock::now();
++    if (now - s_lastRead >= std::chrono::seconds(1)) {
++        s_lastRead = now;
++        s_value = s_scanoutFrameSlackUs;
++        QFile file(s_path);
++        if (file.open(QIODevice::ReadOnly)) {
++            bool ok = false;
++            const int value = file.readAll().trimmed().toInt(&ok);
++            s_value = ok && value >= 0 ? std::optional<int>(value) : std::nullopt;
++        }
++    }
++    return s_value;
++}
+ // KWIN_RENDER_ESTIMATE_UPSTREAM=1: the frames for which only the cursor was rendered count for the render time estimate
+ static const bool s_upstreamEstimate = qEnvironmentVariableIntValue("KWIN_RENDER_ESTIMATE_UPSTREAM") != 0;
+ 
+@@ -202,8 +223,8 @@ void RenderLoopPrivate::scheduleRepaint(std::chrono::nanoseconds lastTargetTimes
+     // Estimate when it's a good time to perform the next compositing cycle.
+     // the 1ms on top of the safety margin is required for timer and scheduler inaccuracies
+     std::chrono::nanoseconds slack = 1ms;
+-    if (s_scanoutFrameSlackUs && lastFrameScanout) {
+-        slack = std::chrono::microseconds(std::max(0, *s_scanoutFrameSlackUs));
++    if (const auto scanoutSlack = scanoutFrameSlackUs(); scanoutSlack && lastFrameScanout) {
++        slack = std::chrono::microseconds(std::max(0, *scanoutSlack));
+     }
+     std::chrono::nanoseconds expectedCompositingTime = std::min(estimateJournal().result() + safetyMargin + slack + lateFlipCompensation, 2 * vblankInterval);
+ 

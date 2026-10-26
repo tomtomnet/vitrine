@@ -1,0 +1,25 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: Local build <local@localhost>
+Date: Thu, 22 Oct 2026 19:30:00 +0200
+Subject: [PATCH] FIX opengl: no udmabuf import on Intel xe either
+
+2026-10-22, the desktop with the Arc Pro B50 (xe) at 4K: maximizing a CPU-drawn window (Konsole, wl_shm) lost ~8 of
+~34 animation frames at 120 Hz and 40 % of the compositor's frames came a refresh late at 240 Hz; its frames took
+3.8-14.4 ms of render time against 1.0-1.6 with a GPU-drawn window (bench/ab/b50_dpt_pin_1022.sh). The profile:
+ShmClientBuffer -> GpuManager::createUdmabuf, the import and sampling of the 4K udmabuf. The default that keeps
+udmabuf away from i915 (glitches) missed xe, Intel's other driver.
+
+--- a/src/opengl/egldisplay.cpp	2026-10-22 19:29:28.540096025 +0200
++++ b/src/opengl/egldisplay.cpp	2026-10-22 19:29:28.626266474 +0200
+@@ -439,8 +439,9 @@
+     if (buffer->dmabufAttributes()) {
+         image = importDmaBufAsImage(*buffer->dmabufAttributes(), coefficients, range);
+         // On Nvidia, sampling from udmabuf just results in black,
+-        // and on i915 there are glitches on some systems
+-    } else if (buffer->udmabufAttributes() && (!m_drmDevice || !s_disableUdmabuf.value_or(m_drmDevice->isNvidia() || m_drmDevice->isI915()))) {
++        // and on i915 there are glitches on some systems. On xe (Battlemage)
++        // a CPU-drawn 4K window's frames cost the compositor 4-15 ms instead of 1
++    } else if (buffer->udmabufAttributes() && (!m_drmDevice || !s_disableUdmabuf.value_or(m_drmDevice->isNvidia() || m_drmDevice->isI915() || m_drmDevice->isIntelXE()))) {
+         image = importDmaBufAsImage(*buffer->udmabufAttributes(), coefficients, range);
+     }
+     m_importCache[key] = image;

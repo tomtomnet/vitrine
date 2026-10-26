@@ -1,0 +1,275 @@
+From: Local build <local@localhost>
+Subject: [PATCH] EXP: window: apply an interactive move at most twice per frame (KWIN_MOVE_COALESCE)
+
+During an interactive move KWin moved the window at every pointer event: the next geometry (snap
+zones, the visible-area confinement, quick tile zones), Window::move(), the three geometry signals
+and everything connected to them (scene items and repaints, effects including two JavaScript ones,
+the org_kde_plasma_window geometry and client_geometry events to every window-management client,
+the decoration hover update). A 4000 Hz mouse makes that 4000 times a second, while a 240 Hz output
+shows 240 of the positions. In a VM guest stressed with 8000 events/s, kwin_wayland used ~25 s of
+CPU per 32 s of drag and plasmashell ~16.5 s (2026-10-17).
+
+The move filter now hands the position to Window::queueInteractiveMoveResize(). The first position
+after a frame started is applied at once, as before (v2, 2026-10-17: with every position held for the
+frame, a slow drag in a nested desktop reached the screen 1-1.6 ms later at p50); later ones until the
+next frame starts are held back, only the latest position and modifiers kept, and applied through
+updateInteractiveMoveResize() when that frame starts: the compositor emits the new signal aboutToPrepareFrame() at the start of
+composite(), after prepareNewFrame(), so the move is part of that frame and does not schedule
+another one on that render loop. Queuing a position asks the window's surface item for a frame
+(Item::scheduleFrame()), at the time the moved geometry would have asked for it, so on the outputs
+the window is on, frames are neither later nor fewer than before, and each frame shows the latest
+position, as before (an output the window enters is scheduled when the position is applied). This
+is what Mutter does (META_LATER_BEFORE_REDRAW in meta-window-drag.c).
+
+The latest position is always applied when the move ends (finishInteractiveMoveResize() without
+cancel: button release, touch up, Enter, and the other paths that end a move), and before a key is
+handled during a move. A direct updateInteractiveMoveResize() call drops the queued position, so a
+stale position cannot move the window back. Resizes, a stopped compositor and a window without a
+surface item keep the immediate path. Pointer, touch and tablet motion use the queue.
+
+KWIN_MOVE_COALESCE=0 restores the immediate path. Autotests that check a move synchronously right
+after Test::pointerMotion() need to wait for a frame (QTRY_COMPARE), see
+findings/kwin-move-per-event-2026-10-17.md.
+
+
+A host KWin keeps its wrapper's environment from login: $XDG_RUNTIME_DIR/kwin-move-coalesce holding
+0 or 1 overrides the variable while it exists, read at most once a second (an A/B in a running session).
+---
+
+diff --git a/src/compositor.cpp b/src/compositor.cpp
+index 3727cd5..c2677cb 100644
+--- a/src/compositor.cpp
++++ b/src/compositor.cpp
+@@ -797,6 +797,9 @@ void Compositor::composite(RenderLoop *renderLoop)
+ 
+     // This must come first.
+     renderLoop->prepareNewFrame();
++    // Let the receivers apply what they held back for this frame, such as the latest position of an
++    // interactive move. The repaints that they schedule on this render loop are part of this frame.
++    Q_EMIT aboutToPrepareFrame(renderLoop);
+     primaryView->setNextPresentationTimestamp(renderLoop->nextPresentationTimestamp(), output->refreshRate());
+ 
+     if (m_renderLoopDrivenAnimationDriver->isRunning()) {
+diff --git a/src/compositor.h b/src/compositor.h
+index 5cbbb3c..ac4aa27 100644
+--- a/src/compositor.h
++++ b/src/compositor.h
+@@ -82,6 +82,11 @@ Q_SIGNALS:
+     void aboutToToggleCompositing();
+     void aboutToStop();
+     void primaryGpuChanged();
++    /**
++     * This signal is emitted when @a renderLoop starts a new frame, before the scene is
++     * prepared for painting. Changes that the receivers make to the scene are part of that frame.
++     */
++    void aboutToPrepareFrame(RenderLoop *renderLoop);
+ 
+ protected:
+     explicit Compositor(QObject *parent = nullptr);
+diff --git a/src/input.cpp b/src/input.cpp
+index 74d63fd..01cdd9d 100644
+--- a/src/input.cpp
++++ b/src/input.cpp
+@@ -680,7 +680,7 @@ public:
+         if (!window) {
+             return false;
+         }
+-        window->updateInteractiveMoveResize(event->position, event->modifiers);
++        window->queueInteractiveMoveResize(event->position, event->modifiers);
+         return true;
+     }
+     bool pointerButton(PointerButtonEvent *event) override
+@@ -737,7 +737,7 @@ public:
+             m_set = true;
+         }
+         if (m_id == event->id) {
+-            window->updateInteractiveMoveResize(event->pos, input()->keyboardModifiers());
++            window->queueInteractiveMoveResize(event->pos, input()->keyboardModifiers());
+         }
+         return true;
+     }
+@@ -787,7 +787,7 @@ public:
+             return false;
+         }
+ 
+-        window->updateInteractiveMoveResize(event->position, input()->keyboardModifiers());
++        window->queueInteractiveMoveResize(event->position, input()->keyboardModifiers());
+         return true;
+     }
+ 
+diff --git a/src/window.cpp b/src/window.cpp
+index e01ccbe..73304f9 100644
+--- a/src/window.cpp
++++ b/src/window.cpp
+@@ -25,6 +25,7 @@
+ #include "outline.h"
+ #include "placement.h"
+ #include "pointer_input.h"
++#include "scene/surfaceitem.h"
+ #include "scene/windowitem.h"
+ #include "scene/workspacescene.h"
+ #include "screenedge.h"
+@@ -44,6 +45,9 @@
+ 
+ #include <QDebug>
+ #include <QDir>
++#include <QFile>
++
++#include <chrono>
+ #include <QJSEngine>
+ #include <QMouseEvent>
+ #include <QStyleHints>
+@@ -54,6 +58,30 @@ namespace KWin
+ QHash<QString, std::weak_ptr<Decoration::DecorationPalette>> Window::s_palettes;
+ std::shared_ptr<Decoration::DecorationPalette> Window::s_defaultPalette;
+ 
++// KWIN_MOVE_COALESCE=0 applies every pointer position of an interactive move at once: as before. A host KWin keeps its wrapper's environment from login, so
++// $XDG_RUNTIME_DIR/kwin-move-coalesce holding 0 or 1 decides instead while it exists, read at most once a second
++// (an A/B in a running session)
++static bool coalesceInteractiveMoves()
++{
++    static const bool s_environment = qEnvironmentVariable("KWIN_MOVE_COALESCE") != QStringLiteral("0");
++    static const QString s_path = qEnvironmentVariable("XDG_RUNTIME_DIR") + QStringLiteral("/kwin-move-coalesce");
++    static bool s_value = s_environment;
++    static std::chrono::steady_clock::time_point s_lastRead;
++    const auto now = std::chrono::steady_clock::now();
++    if (now - s_lastRead >= std::chrono::seconds(1)) {
++        s_lastRead = now;
++        s_value = s_environment;
++        QFile file(s_path);
++        if (file.open(QIODevice::ReadOnly)) {
++            const QByteArray value = file.readAll().trimmed();
++            if (value == "0" || value == "1") {
++                s_value = value == "1";
++            }
++        }
++    }
++    return s_value;
++}
++
+ Window::Window()
+     : ready_for_painting(false)
+     , m_internalId(QUuid::createUuid())
+@@ -1060,6 +1088,11 @@ bool Window::startInteractiveMoveResize()
+ 
+ void Window::finishInteractiveMoveResize(bool cancel)
+ {
++    if (!cancel) {
++        // the move ends where the pointer was last, even if that position waits for the next frame
++        applyQueuedInteractiveMoveResize();
++    }
++
+     LogicalOutput *oldOutput = m_output;
+     const bool wasMove = isInteractiveMove();
+     leaveInteractiveMoveResize();
+@@ -1130,8 +1163,53 @@ void Window::stopDelayedInteractiveMoveResize()
+     m_interactiveMoveResize.delayedTimer = nullptr;
+ }
+ 
++void Window::queueInteractiveMoveResize(const QPointF &global, Qt::KeyboardModifiers modifiers)
++{
++    // A move costs the same whether the screen shows it or not: geometry signals, effects, scene
++    // repaints and window management updates to the clients. A mouse can report thousands of
++    // positions a second. The first position after a frame started is applied at once, as
++    // before, so a slow drag reaches the screen as early as it did; later ones until the next
++    // frame starts are held back, and only the latest is applied right before that frame, as
++    // the frame would show the latest position anyway. Resizes are not held back here, their
++    // configure events are already sent once per pass of the event loop.
++    Compositor *compositor = Compositor::self();
++    SurfaceItem *item = surfaceItem();
++    if (!coalesceInteractiveMoves() || !isInteractiveMove() || !compositor || !compositor->isActive() || !item) {
++        updateInteractiveMoveResize(global, modifiers);
++        return;
++    }
++    if (!m_interactiveMoveResize.frameConnection) {
++        m_interactiveMoveResize.frameConnection = connect(compositor, &Compositor::aboutToPrepareFrame, this, &Window::applyQueuedInteractiveMoveResize);
++    }
++    if (!m_interactiveMoveResize.movedSinceFrame) {
++        m_interactiveMoveResize.movedSinceFrame = true;
++        updateInteractiveMoveResize(global, modifiers);
++        return;
++    }
++
++    const bool frameScheduled = m_interactiveMoveResize.queuedAnchor.has_value();
++    m_interactiveMoveResize.queuedAnchor = global;
++    m_interactiveMoveResize.queuedModifiers = modifiers;
++    if (!frameScheduled) {
++        // the frame must come even if nothing else changes on the screen
++        item->scheduleFrame();
++    }
++}
++
++void Window::applyQueuedInteractiveMoveResize()
++{
++    // a frame starts (or the move ends, or a key acts on it): the next position goes on at once again
++    m_interactiveMoveResize.movedSinceFrame = false;
++    if (const std::optional<QPointF> anchor = std::exchange(m_interactiveMoveResize.queuedAnchor, std::nullopt)) {
++        updateInteractiveMoveResize(*anchor, m_interactiveMoveResize.queuedModifiers);
++    }
++}
++
+ void Window::updateInteractiveMoveResize(const QPointF &global, Qt::KeyboardModifiers modifiers)
+ {
++    // this position supersedes the one that waits for the next frame, if any
++    m_interactiveMoveResize.queuedAnchor.reset();
++
+     setInteractiveMoveResizeAnchor(global);
+     setInteractiveMoveResizeModifiers(modifiers);
+ 
+@@ -2457,6 +2535,10 @@ void Window::updateInteractiveMoveResizeCursor()
+ void Window::leaveInteractiveMoveResize()
+ {
+     disconnect(this, &Window::outputChanged, this, &Window::finishInteractiveOutputChange);
++    disconnect(m_interactiveMoveResize.frameConnection);
++    m_interactiveMoveResize.frameConnection = QMetaObject::Connection();
++    m_interactiveMoveResize.queuedAnchor.reset();
++    m_interactiveMoveResize.movedSinceFrame = false;
+     workspace()->setMoveResizeWindow(nullptr);
+     setInteractiveMoveResize(false);
+     if (workspace()->screenEdges()->isDesktopSwitchingMovingClients()) {
+@@ -2570,6 +2652,8 @@ void Window::keyPressEvent(QKeyCombination key_combination)
+     if (!isInteractiveMove() && !isInteractiveResize()) {
+         return;
+     }
++    // the keys act on the latest pointer position
++    applyQueuedInteractiveMoveResize();
+     bool is_control = key_combination.keyboardModifiers() & Qt::CTRL;
+     bool is_alt = key_combination.keyboardModifiers() & Qt::ALT;
+     int delta = is_control ? 1 : is_alt ? 32
+diff --git a/src/window.h b/src/window.h
+index 2924a77..9f0e7df 100644
+--- a/src/window.h
++++ b/src/window.h
+@@ -1372,6 +1372,13 @@ public:
+     uint32_t interactiveMoveResizeCount() const;
+ 
+     void updateInteractiveMoveResize(const QPointF &global, Qt::KeyboardModifiers modifiers);
++    /*!
++     * Same as updateInteractiveMoveResize(), except that an interactive move is applied at most
++     * twice per frame: the first position after a frame started at once, the latest of the others
++     * right before the next frame is prepared, or when the move ends, whichever comes first. Input
++     * devices can report positions much more often than the screen refreshes.
++     */
++    void queueInteractiveMoveResize(const QPointF &global, Qt::KeyboardModifiers modifiers);
+     /*!
+      * Ends move resize when all pointer buttons are up again.
+      */
+@@ -1985,6 +1992,7 @@ protected:
+     void setDescription(const QString &description);
+ 
+     void finishInteractiveOutputChange(LogicalOutput *oldOutput);
++    void applyQueuedInteractiveMoveResize();
+ 
+     LogicalOutput *m_output = nullptr;
+     RectF m_frameGeometry;
+@@ -2084,6 +2092,10 @@ protected:
+         uint32_t counter = 0;
+         MaximizeMode initialMaximizeMode;
+         QuickTileMode initialQuickTileMode;
++        std::optional<QPointF> queuedAnchor;
++        Qt::KeyboardModifiers queuedModifiers;
++        QMetaObject::Connection frameConnection;
++        bool movedSinceFrame = false;
+     } m_interactiveMoveResize;
+ 
+     struct

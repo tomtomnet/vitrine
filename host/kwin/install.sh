@@ -14,10 +14,21 @@
 #       one dnf transaction (an upgrade, a downgrade, or a reinstall for a
 #       rebuild of the same version), checked once installed (rpm's header
 #       digests), then version-locked so that updates leave them alone.
+#       Then the set's run-time switches (below) go on.
 #   install.sh revert DIGEST...
 #       The version locks of the KWin packages go, and dnf distro-sync puts
 #       the repositories' KWin back; only if the installed kwin's header
-#       digest (rpm's SHA256HEADER) is one of these: Vitrine's own.
+#       digest (rpm's SHA256HEADER) is one of these: Vitrine's own.  The
+#       switches go too.
+#
+# The switches: some of the research's patches act only when a file of
+# $XDG_RUNTIME_DIR says so, which KWin reads as it starts (research/src/
+# host-config/kwin-*.conf, user tmpfiles entries: each one's comment says
+# what it does).  They go into /etc/user-tmpfiles.d/vitrine-host-kwin.conf,
+# which makes the files at each user's login, and are made at once for the
+# user who installs (pkexec's PKEXEC_UID): a login soon after a logout may
+# find their session manager still running, and its tmpfiles not read
+# again.  Another KWin ignores the files.
 #
 # A failure puts back the locks there were.  Lines starting with
 # "vitrine-kwin: " are for the app:
@@ -31,6 +42,10 @@
 set -eu
 shopt -s nullglob
 umask 022
+
+here=$(cd -- "$(dirname -- "$(readlink -f "${BASH_SOURCE[0]}")")" && pwd)
+# VITRINE_TMPFILES_DIR and VITRINE_RUN_USER are the tests' (pkexec passes no environment)
+switches=${VITRINE_TMPFILES_DIR:-/etc/user-tmpfiles.d}/vitrine-host-kwin.conf
 
 say() { echo "vitrine-kwin: $*"; }
 die() { say "error: $*" >&2; exit 1; }
@@ -72,6 +87,36 @@ vercmp() {
 installed() {
 	rpm -q --qf '%{ARCH} %{SHA256HEADER} %{EPOCHNUM}:%{VERSION}-%{RELEASE}\n' "$1" 2> /dev/null |
 		awk -v arch="$2" '$1 == arch { print $2, $3; exit }'
+}
+
+# The switches on: the entries of every user, and the files of the user who
+# installs.  A failure to make those is only a warning: the next login makes
+# them.
+switches_on() {
+	local -a entries=("$here"/research/src/host-config/kwin-*.conf)
+	local uid=${PKEXEC_UID:-} run user
+	[ ${#entries[@]} -gt 0 ] || return 0
+	say "step: turning the set's run-time switches on ($switches)"
+	mkdir -p "${switches%/*}"
+	{
+		echo "# Vitrine's host KWin (host/kwin/install.sh): the run-time switches of the research's"
+		echo "# patches, a file each in \$XDG_RUNTIME_DIR that KWin reads as it starts. Reverting"
+		echo "# Vitrine's KWin removes this file; without the patches, KWin ignores them."
+		cat "${entries[@]}"
+	} > "$switches.new"
+	mv -f "$switches.new" "$switches"
+	run=${VITRINE_RUN_USER:-/run/user}/$uid
+	if [[ $uid =~ ^[1-9][0-9]*$ ]] && [ -d "$run" ] && user=$(id -nu "$uid" 2> /dev/null); then
+		runuser -u "$user" -- env XDG_RUNTIME_DIR="$run" systemd-tmpfiles --user --create "$switches" ||
+			say "warning: the switches' files were not made now: they come at the next login"
+	fi
+}
+
+switches_off() {
+	if [ -e "$switches" ]; then
+		say "step: removing the set's run-time switches ($switches)"
+		rm -f "$switches"
+	fi
 }
 
 install_set() {
@@ -152,6 +197,7 @@ install_set() {
 	mapfile -t was < <(locked_of "${names[@]}")
 	[ ${#was[@]} = 0 ] || dnf versionlock delete "${was[@]}" > /dev/null
 	dnf versionlock add "${names[@]}"
+	switches_on
 	for name in "${names[@]}"; do
 		say "installed: $(rpm -q --qf '%{NEVRA}\n' "$name" | head -n 1)"
 	done
@@ -181,6 +227,7 @@ revert() {
 	# the same build still: the repositories have no other KWin
 	[ "$(rpm -q --qf '%{SHA256HEADER}\n' kwin | head -n 1)" != "$digest" ] ||
 		{ relock "${was[@]}"; die "the repositories have no other KWin: this one stays"; }
+	switches_off
 	for name in "${names[@]}"; do
 		say "installed: $(rpm -q --qf '%{NEVRA}\n' "$name" | head -n 1)"
 	done

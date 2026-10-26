@@ -1,0 +1,162 @@
+From: Local build <local@localhost>
+Subject: [PATCH] EXP: plasmawindowmanagement: send window geometry once per pass of the event loop (KWIN_PLASMA_WINDOW_GEOMETRY_COALESCE)
+
+An interactive move changes a window's frame and client geometry at every pointer event, and each
+change was sent at once as org_kde_plasma_window.geometry and client_geometry to every client of
+Plasma window management. In plasmashell, libtaskmanager turns each event into a dataChanged that
+runs through its proxy models into every task and pager delegate: with a 4000 Hz mouse, a guest's
+plasmashell spent its main thread on that backlog and froze for 12 s after a fast drag
+(2026-10-17).
+
+The narrow alternative to moving the window once per frame (0060): only the broadcast is batched.
+Each window keeps its latest geometry and client geometry and sends them on a zero timer, so all
+the changes made in one pass of the event loop reach the clients as one event of each kind, in the
+order they had before (client_geometry, then geometry). A client that binds in between still gets
+the latest values in its initial state; an invalid geometry is still not sent.
+
+This collapses the events that KWin handles in one pass: input that arrives in bursts (a VM's
+virtual tablet, a nested compositor's socket) or a KWin that is busy and falls behind. A KWin that
+handles each pointer event in a pass of its own still sends every geometry, and the move itself
+(snap and confinement, scene items and repaints, effects) still happens at every event.
+
+KWIN_PLASMA_WINDOW_GEOMETRY_COALESCE=0 sends every change at once, as before. See
+findings/kwin-move-per-event-2026-10-17.md.
+
+
+A host KWin keeps its wrapper's environment from login: $XDG_RUNTIME_DIR/kwin-plasma-window-geometry-coalesce holding
+0 or 1 overrides the variable while it exists, read at most once a second (an A/B in a running session).
+---
+
+diff --git a/src/wayland/plasmawindowmanagement.cpp b/src/wayland/plasmawindowmanagement.cpp
+index ac4561c..3cb2523 100644
+--- a/src/wayland/plasmawindowmanagement.cpp
++++ b/src/wayland/plasmawindowmanagement.cpp
+@@ -16,8 +16,11 @@
+ #include <QList>
+ #include <QPointer>
+ #include <QThreadPool>
++#include <QTimer>
+ #include <QUuid>
+ 
++#include <chrono>
++
+ #include <qwayland-server-plasma-window-management.h>
+ 
+ #include <cerrno>
+@@ -30,6 +33,30 @@ namespace KWin
+ static const quint32 s_version = 21;
+ static const quint32 s_activationVersion = 1;
+ 
++// KWIN_PLASMA_WINDOW_GEOMETRY_COALESCE=0 sends every geometry change at once: as before. A host KWin keeps its wrapper's environment from login, so
++// $XDG_RUNTIME_DIR/kwin-plasma-window-geometry-coalesce holding 0 or 1 decides instead while it exists, read at most once a second
++// (an A/B in a running session)
++static bool coalesceGeometries()
++{
++    static const bool s_environment = qEnvironmentVariable("KWIN_PLASMA_WINDOW_GEOMETRY_COALESCE") != QStringLiteral("0");
++    static const QString s_path = qEnvironmentVariable("XDG_RUNTIME_DIR") + QStringLiteral("/kwin-plasma-window-geometry-coalesce");
++    static bool s_value = s_environment;
++    static std::chrono::steady_clock::time_point s_lastRead;
++    const auto now = std::chrono::steady_clock::now();
++    if (now - s_lastRead >= std::chrono::seconds(1)) {
++        s_lastRead = now;
++        s_value = s_environment;
++        QFile file(s_path);
++        if (file.open(QIODevice::ReadOnly)) {
++            const QByteArray value = file.readAll().trimmed();
++            if (value == "0" || value == "1") {
++                s_value = value == "1";
++            }
++        }
++    }
++    return s_value;
++}
++
+ class PlasmaWindowManagementInterfacePrivate : public QtWaylandServer::org_kde_plasma_window_management
+ {
+ public:
+@@ -82,6 +109,8 @@ public:
+     void sendInitialState(Resource *resource);
+     wl_resource *resourceForParent(PlasmaWindowInterface *parent, Resource *child) const;
+     void setClientGeometry(const Rect &geometry);
++    void scheduleGeometries();
++    void sendGeometries();
+ 
+     quint32 windowId = 0;
+     QHash<SurfaceInterface *, Rect> minimizedGeometries;
+@@ -105,6 +134,11 @@ public:
+     QString m_resourceName;
+     Rect clientGeometry;
+     bool mapped = false;
++    // An interactive move changes the geometry at every pointer event, thousands of times a second
++    // with some mice. The clients get the latest geometry once per pass of the event loop.
++    QTimer geometryTimer;
++    bool geometryPending = false;
++    bool clientGeometryPending = false;
+ 
+ protected:
+     Resource *org_kde_plasma_window_allocate() override;
+@@ -359,6 +393,11 @@ PlasmaWindowInterfacePrivate::PlasmaWindowInterfacePrivate(PlasmaWindowManagemen
+     , wm(wm)
+     , q(q)
+ {
++    geometryTimer.setSingleShot(true);
++    geometryTimer.setInterval(0);
++    geometryTimer.callOnTimeout(q, [this]() {
++        sendGeometries();
++    });
+ }
+ 
+ QtWaylandServer::org_kde_plasma_window::Resource *PlasmaWindowInterfacePrivate::org_kde_plasma_window_allocate()
+@@ -630,14 +669,32 @@ void PlasmaWindowInterfacePrivate::setGeometry(const Rect &geo)
+     if (!geometry.isValid()) {
+         return;
+     }
++    geometryPending = true;
++    scheduleGeometries();
++}
++
++void PlasmaWindowInterfacePrivate::scheduleGeometries()
++{
++    if (!coalesceGeometries()) {
++        sendGeometries();
++    } else if (!geometryTimer.isActive()) {
++        geometryTimer.start();
++    }
++}
+ 
++void PlasmaWindowInterfacePrivate::sendGeometries()
++{
+     const auto clientResources = resourceMap();
+     for (auto resource : clientResources) {
+-        if (resource->version() < ORG_KDE_PLASMA_WINDOW_GEOMETRY_SINCE_VERSION) {
+-            continue;
++        if (clientGeometryPending && clientGeometry.isValid() && resource->version() >= ORG_KDE_PLASMA_WINDOW_CLIENT_GEOMETRY_SINCE_VERSION) {
++            send_client_geometry(resource->handle, clientGeometry.x(), clientGeometry.y(), clientGeometry.width(), clientGeometry.height());
++        }
++        if (geometryPending && geometry.isValid() && resource->version() >= ORG_KDE_PLASMA_WINDOW_GEOMETRY_SINCE_VERSION) {
++            send_geometry(resource->handle, geometry.x(), geometry.y(), geometry.width(), geometry.height());
+         }
+-        send_geometry(resource->handle, geometry.x(), geometry.y(), geometry.width(), geometry.height());
+     }
++    geometryPending = false;
++    clientGeometryPending = false;
+ }
+ 
+ void PlasmaWindowInterfacePrivate::setApplicationMenuPaths(const QString &service, const QString &object)
+@@ -1136,14 +1193,8 @@ void PlasmaWindowInterfacePrivate::setClientGeometry(const Rect &geometry)
+     if (!clientGeometry.isValid()) {
+         return;
+     }
+-
+-    const auto clientResources = resourceMap();
+-    for (auto resource : clientResources) {
+-        if (resource->version() < ORG_KDE_PLASMA_WINDOW_CLIENT_GEOMETRY_SINCE_VERSION) {
+-            continue;
+-        }
+-        send_client_geometry(resource->handle, clientGeometry.x(), clientGeometry.y(), clientGeometry.width(), clientGeometry.height());
+-    }
++    clientGeometryPending = true;
++    scheduleGeometries();
+ }
+ 
+ }

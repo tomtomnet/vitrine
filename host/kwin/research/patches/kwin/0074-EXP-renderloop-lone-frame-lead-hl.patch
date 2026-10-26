@@ -1,0 +1,159 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: Local build <local@localhost>
+Date: Thu, 22 Oct 2026 17:00:00 +0200
+Subject: [PATCH] EXP renderloop: the lone-frame lead for the hl sets (0021-0025 of h14, re-diffed on hl39i)
+
+0021 (lone frames aimed at the next vblank, KWIN_LONE_FRAME_LEAD_US), 0022 (its knobs at run time:
+$XDG_RUNTIME_DIR/kwin-lone-frame holds "off", or the lead in us optionally followed by "late"; read at most once a
+second), 0023 (never later than stock), 0024 (no lead right after a direct-scanout frame) and 0025 (no empty vblank
+after a pulled-in lone frame), as the h14 host set had them, re-diffed on hl39i (its 0066 and FIX-F/G moved the
+context: rpmbuild's fuzz 0 refused 0021/0022 as they were). Off without the variable or the file - stock behaviour.
+For the B50 desktop's bare-metal key latency (2026-10-22); h14 measured -1.2..-1.5 ms on AMD bare typing.
+---
+diff --git a/src/core/renderloop.cpp b/src/core/renderloop.cpp
+--- a/src/core/renderloop.cpp
++++ b/src/core/renderloop.cpp
+@@ -69,6 +69,67 @@
+     return s_value && !s_upstreamEstimate;
+ }
+ static const std::chrono::nanoseconds s_lateFlipStep = std::chrono::microseconds(qEnvironmentVariableIsEmpty("KWIN_LATE_FLIP_STEP_US") ? 500 : std::max(10, qEnvironmentVariableIntValue("KWIN_LATE_FLIP_STEP_US")));
++// KWIN_LONE_FRAME_LEAD_US (EXP): how close to the next vblank a lone frame - the first after an
++// idle stretch (no frame in flight, none presented for two refreshes or more) - may still be
++// aimed at it: at least this far off, the next vblank, else the one after; rendered at once,
++// without the render estimate + safety margin + slack and the triple-buffering hysteresis. A
++// nested compositor's margin covers a busy host (its reported deadline + 1 ms) and the estimate
++// counts a composited frame as 2 ms: ~4.1-6 ms before the vblank at 240 Hz, so every lone frame -
++// a key's - went two refreshes ahead. The host takes a lone commit ~2.2 ms before its vblank
++// (2026-10-09, research/guest-client-overhead-2026-10-09.md); a frame that misses is shown a
++// refresh later through commit timing, where it lands anyway, and with nothing in flight there is
++// no frame cadence for the hysteresis to protect. On bare metal at 240 Hz the same sum (the 2 ms
++// render floor plus the estimate's variance, the safety margin, the 1 ms slack) plans every lone
++// composited frame two refreshes ahead too (2026-10-09: 159 of 160 keys typed into a windowed
++// Konsole); there a lone frame that misses flips at the next vblank. Unset: off.
++static const std::optional<std::chrono::nanoseconds> s_loneFrameLead = qEnvironmentVariableIsEmpty("KWIN_LONE_FRAME_LEAD_US")
++    ? std::nullopt
++    : std::optional<std::chrono::nanoseconds>(std::chrono::microseconds(std::max(0, qEnvironmentVariableIntValue("KWIN_LONE_FRAME_LEAD_US"))));
++// KWIN_LONE_FRAME_START=late: the lone frame starts its lead before the vblank it is aimed at, not at
++// once. For a compositor whose lone frame is set off by input it draws itself (the host's cursor
++// during a drag) while a client's frame for the same input follows a moment later (a VM's nested
++// desktop, ~1.5 ms): started at once it would leave that frame for the next refresh (2026-10-09,
++// ROADMAP 25). A nested compositor's lone frame follows its client's commit: at once is right there.
++static const bool s_loneFrameStartLate = qgetenv("KWIN_LONE_FRAME_START") == "late";
++// Both can also be changed while KWin runs, for A/B tests without a compositor restart (a restarted
++// KWin keeps its wrapper's environment from login): $XDG_RUNTIME_DIR/kwin-lone-frame holds "off", or
++// the lead in microseconds, optionally followed by "late"; read at most once a second, the
++// environment's values when the file is absent or unreadable.
++struct LoneFrameConfig
++{
++    std::optional<std::chrono::nanoseconds> lead;
++    bool startLate = false;
++};
++static LoneFrameConfig loneFrameConfig()
++{
++    static LoneFrameConfig value{s_loneFrameLead, s_loneFrameStartLate};
++    static std::chrono::steady_clock::time_point checked;
++    static const QString path = qEnvironmentVariable("XDG_RUNTIME_DIR") + QStringLiteral("/kwin-lone-frame");
++    const auto now = std::chrono::steady_clock::now();
++    if (now - checked < std::chrono::seconds(1)) {
++        return value;
++    }
++    checked = now;
++    value = LoneFrameConfig{s_loneFrameLead, s_loneFrameStartLate};
++    QFile file(path);
++    if (!file.open(QIODevice::ReadOnly)) {
++        return value;
++    }
++    const QStringList words = QString::fromLatin1(file.readAll()).simplified().split(QLatin1Char(' '), Qt::SkipEmptyParts);
++    if (words.isEmpty()) {
++        return value;
++    }
++    if (words[0] == QLatin1String("off")) {
++        value = LoneFrameConfig{std::nullopt, false};
++        return value;
++    }
++    bool ok = false;
++    const int us = words[0].toInt(&ok);
++    if (ok && us >= 0) {
++        value = LoneFrameConfig{std::chrono::microseconds(us), words.contains(QLatin1String("late"))};
++    }
++    return value;
++}
+ 
+ RenderLoopPrivate::RenderLoopPrivate(RenderLoop *q, BackendOutput *output)
+     : q(q)
+@@ -127,9 +188,34 @@
+         const uint64_t pageflipsSinceLastToTarget = std::max<int64_t>(std::round((lastTargetTimestamp - lastPresentationTimestamp).count() / double(vblankInterval.count())), 0);
+         uint64_t pageflipsInAdvance = std::min<int64_t>(expectedCompositingTime / vblankInterval + 1, maxPendingFrameCount);
+ 
++        // KWIN_LONE_FRAME_LEAD_US: a lone frame is aimed at the next vblank if that is at least the
++        // lead away, else at the one after, and rendered at once (nothing waits for it to be late)
++        // Never later than the stock plan: only a lone frame that the estimate (or the triple-buffering
++        // hysteresis) would send past the next vblank is pulled in, and only when that vblank is at least
++        // the lead away; any other frame - a direct-scanout one, whose small estimate already aims at the
++        // next vblank however close it is - keeps the stock plan (2026-10-09: aiming those at the one after
++        // when less than the lead was left showed a VM's frames a refresh later than stock, typing +0.8 ms).
++        const LoneFrameConfig lone = loneFrameConfig();
++        bool loneFrame = lone.lead && pageflipsSince >= 2 && pendingFrameCount == 0 && !compositeTimer.isActive();
++        if (loneFrame) {
++            const std::chrono::nanoseconds lead = std::min(*lone.lead, vblankInterval - 1us);
++            const std::chrono::nanoseconds nextVblank = lastPresentationTimestamp + (pageflipsSinceNow + 1) * vblankInterval;
++            const bool stockAimsNext = pageflipsInAdvance == 1 && (!wasTripleBuffering || doubleBufferingCounter >= 10);
++            // after a direct-scanout frame (a fullscreen client, a VM's surface) the stock plan stays: such
++            // frames need little time, and pulling them in made a VM's typing 0.6-0.9 ms slower (hl3)
++            if (stockAimsNext || lastFrameScanout || currentTime + lead > nextVblank) {
++                loneFrame = false;
++            } else {
++                pageflipsInAdvance = 1;
++                expectedCompositingTime = lone.startLate ? lead : std::chrono::nanoseconds(vblankInterval - 1us);
++            }
++        }
++
+         // switching from double to triple buffering causes a frame drop
+         // -> apply some amount of hysteresis to avoid switching back and forth constantly
+-        if (pageflipsInAdvance > 1) {
++        if (loneFrame) {
++            // nothing in flight: no cadence to keep, and the hysteresis state is left as it was
++        } else if (pageflipsInAdvance > 1) {
+             // immediately switch to triple buffering when needed
+             wasTripleBuffering = true;
+             doubleBufferingCounter = 0;
+@@ -160,6 +246,27 @@
+         } else {
+             // Either no frame is scheduled yet, or presentNotBefore is earlier than the last presentNotBefore hint
+             targetTimestamp = lastPresentationTimestamp + std::max({pageflipsSinceNow + pageflipsInAdvance, pageflipsToNotBefore, pageflipsSinceLastToTarget + 1}) * vblankInterval;
++            // KWIN_LONE_FRAME_LEAD_US: the frame right after a pulled-in lone frame. The stock plan counts its
++            // refreshes from now: requested after the pulled-in frame's vblank - an animation started from idle,
++            // its second frame drawn after the first one's frame callback - it left the vblank right after the
++            // pulled-in frame empty, the first image shown twice (2026-10-09 la1: a launcher close "#.####" in 5-6
++            // of 8 closes, 1-2 without the rule). Aimed at that vblank while it is at least the lead away; such a
++            // frame continues the chain, a frame the stock plan keeps ends it.
++            if (loneFrame) {
++                pulledInTarget = targetTimestamp;
++            } else if (lone.lead && pulledInTarget && lastTargetTimestamp == *pulledInTarget && !lastFrameScanout) {
++                const std::chrono::nanoseconds lead = std::min(*lone.lead, vblankInterval - 1us);
++                const std::chrono::nanoseconds following = lastTargetTimestamp + vblankInterval;
++                if (targetTimestamp > following && following >= presentNotBefore && currentTime + lead <= following) {
++                    targetTimestamp = following;
++                    expectedCompositingTime = vblankInterval - 1us;
++                    pulledInTarget = targetTimestamp;
++                } else {
++                    pulledInTarget.reset();
++                }
++            } else {
++                pulledInTarget.reset();
++            }
+         }
+     } else {
+         wasTripleBuffering = false;
+diff --git a/src/core/renderloop_p.h b/src/core/renderloop_p.h
+--- a/src/core/renderloop_p.h
++++ b/src/core/renderloop_p.h
+@@ -62,6 +62,8 @@
+     bool scheduledLate = false;
+     // the last completed frame went straight to the screen (nothing rendered)
+     bool lastFrameScanout = false;
++    // KWIN_LONE_FRAME_LEAD_US: the target of the last frame the lone-frame rule pulled in (or continued)
++    std::optional<std::chrono::nanoseconds> pulledInTarget;
+     // the last completed frame with content showed a client's buffer instead of rendering it
+     bool lastContentScanout = false;
+     // how much earlier frames start because planned frames reached the screen late

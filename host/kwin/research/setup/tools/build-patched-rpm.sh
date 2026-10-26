@@ -46,6 +46,13 @@ logged() {   # LOG CMD...
 	"$@" > "$log" 2>&1
 }
 logged "$out/builddep-$tag.log" dnf -y -q builddep "$spec" || { tail -20 "$out/builddep-$tag.log"; exit 1; }
+# KDE Frameworks' specs build their API docs (%cmake_build_kf6) with kde-qdoc-common's files under /usr/share/doc,
+# which a container image leaves out (tsflags=nodocs): builddep's copy has none, so it goes in again with them
+if grep -q '%cmake_build_kf6' "$spec"; then
+	qdoc=install
+	rpm -q kde-qdoc-common > /dev/null 2>&1 && qdoc=reinstall
+	logged "$out/qdoc-$tag.log" dnf -y -q "$qdoc" --setopt=tsflags= kde-qdoc-common || { tail -20 "$out/qdoc-$tag.log"; exit 1; }
+fi
 # what the set was built against (KWin uses Qt's and kdecoration's private API: a Qt update that passes a
 # version lock needs a rebuild - compare this list with the host before installing)
 rpm -qa --qf '%{NAME} %{EVR}\n' | LC_ALL=C sort > "$out/buildroot-$tag.txt"

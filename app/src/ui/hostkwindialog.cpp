@@ -59,7 +59,12 @@ QString installText(const Status &status, const QStringList &packages)
               "come in: after one, KWin must be built and installed again, or reverted. Vitrine "
               "tells you when.") +
            "</li><li>" +
-           tr("Revert… puts the distribution's KWin back, from your repositories.") +
+           tr("The set's run-time switches go on for every user of this computer "
+              "(/etc/user-tmpfiles.d/vitrine-host-kwin.conf, whose comments say what each "
+              "does); another KWin ignores them.") +
+           "</li><li>" +
+           tr("Revert… puts the distribution's KWin back, from your repositories, and removes "
+              "the switches.") +
            "</li><li>" +
            tr("It takes effect at your next login: the running desktop is not restarted.") +
            "</li></ul><p>" +

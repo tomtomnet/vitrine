@@ -1,0 +1,89 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: Local build <local@localhost>
+Date: Thu, 22 Oct 2026 11:10:00 +0200
+Subject: [PATCH] FIX drm: keep both layer surfaces when switching back to the old one
+
+EglGbmLayerSurface keeps one old surface so that going back to a previous configuration needs no new
+swapchain, but switching back destroyed the current one (m_surface = std::move(m_oldSurface)): when the
+requirements alternate between two configurations, every other switch allocated a new swapchain. An
+underlay coming and going does that (the scene layer asks for 8 alpha bits while a window is on an
+underlay plane, 0 otherwise). Swap the two instead, and reset the parked surface's damage tracking the
+same way as when a new surface replaces it.
+
+Seen 2026-10-22 on a 6900 XT host compositing a windowed VM at 4K 240 Hz: ~13 new output swapchains a
+second (38 new 32 MiB buffers, each cleared on release; ~450 copy-engine jobs a second).
+---
+ src/backends/drm/drm_egl_layer_surface.cpp | 36 +++++++++++++++++++-----------
+ src/backends/drm/drm_egl_layer_surface.h   |  1 +
+ 2 files changed, 24 insertions(+), 13 deletions(-)
+
+diff --git a/src/backends/drm/drm_egl_layer_surface.h b/src/backends/drm/drm_egl_layer_surface.h
+--- a/src/backends/drm/drm_egl_layer_surface.h
++++ b/src/backends/drm/drm_egl_layer_surface.h
+@@ -112,6 +112,7 @@
+     };
+     bool checkSurface(const QSize &size, const FormatModifierMap &formats, BackendOutput::ColorPowerTradeoff tradeoff, uint32_t requiredAlphaBits);
+     bool doesSurfaceFit(Surface *surface, const QSize &size, const FormatModifierMap &formats, BackendOutput::ColorPowerTradeoff tradeoff, uint32_t requiredAlphaBits) const;
++    static void resetDamageTracking(Surface *surface);
+     std::unique_ptr<Surface> createSurface(const QSize &size, const FormatModifierMap &formats, BackendOutput::ColorPowerTradeoff tradeoff, uint32_t requiredAlphaBits) const;
+     std::unique_ptr<Surface> createSurface(const QSize &size, uint32_t format, const ModifierList &modifiers, MultiGpuImportMode importMode, BufferTarget bufferTarget, BackendOutput::ColorPowerTradeoff tradeoff, uint32_t requiredAlphaBits) const;
+ 
+diff --git a/src/backends/drm/drm_egl_layer_surface.cpp b/src/backends/drm/drm_egl_layer_surface.cpp
+--- a/src/backends/drm/drm_egl_layer_surface.cpp
++++ b/src/backends/drm/drm_egl_layer_surface.cpp
+@@ -326,13 +326,34 @@
+     }
+ }
+ 
++void EglGbmLayerSurface::resetDamageTracking(Surface *surface)
++{
++    if (!surface) {
++        return;
++    }
++    // FIXME: Use absolute frame sequence numbers for indexing the DamageJournal
++    surface->damageJournal.clear();
++    surface->shadowDamageJournal.clear();
++    surface->gbmSwapchain->resetBufferAge();
++    if (surface->shadowSwapchain) {
++        surface->shadowSwapchain->resetBufferAge();
++    }
++    if (surface->importSwapchain) {
++        surface->importSwapchain->resetDamageTracking();
++    }
++}
++
+ bool EglGbmLayerSurface::checkSurface(const QSize &size, const FormatModifierMap &formats, BackendOutput::ColorPowerTradeoff tradeoff, uint32_t requiredAlphaBits)
+ {
+     if (doesSurfaceFit(m_surface.get(), size, formats, tradeoff, requiredAlphaBits)) {
+         return true;
+     }
+     if (doesSurfaceFit(m_oldSurface.get(), size, formats, tradeoff, requiredAlphaBits)) {
+-        m_surface = std::move(m_oldSurface);
++        // keep the surface we leave as the old one: when the requirements alternate between two
++        // configurations (an underlay coming and going changes requiredAlphaBits), both get reused
++        // instead of a new swapchain being allocated at every other switch
++        std::swap(m_surface, m_oldSurface);
++        resetDamageTracking(m_oldSurface.get());
+         return true;
+     }
+     if (m_gpu->renderDevice() && m_gpu->renderDevice() != m_eglBackend->renderDevice() && m_gpu->renderDevice()->isInReset()) {
+@@ -341,18 +362,7 @@
+     }
+     if (auto newSurface = createSurface(size, formats, tradeoff, requiredAlphaBits)) {
+         m_oldSurface = std::move(m_surface);
+-        if (m_oldSurface) {
+-            // FIXME: Use absolute frame sequence numbers for indexing the DamageJournal
+-            m_oldSurface->damageJournal.clear();
+-            m_oldSurface->shadowDamageJournal.clear();
+-            m_oldSurface->gbmSwapchain->resetBufferAge();
+-            if (m_oldSurface->shadowSwapchain) {
+-                m_oldSurface->shadowSwapchain->resetBufferAge();
+-            }
+-            if (m_oldSurface->importSwapchain) {
+-                m_oldSurface->importSwapchain->resetDamageTracking();
+-            }
+-        }
++        resetDamageTracking(m_oldSurface.get());
+         m_surface = std::move(newSurface);
+         return true;
+     }

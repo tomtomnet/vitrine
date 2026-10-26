@@ -16,7 +16,16 @@ need() {
 	local c
 	for c; do command -v "$c" > /dev/null || die "$c not found (setup/setup.sh host-packages installs it)"; done
 }
-jobs_n() { echo "${VGD_JOBS:-$(nproc)}"; }
+# compile jobs: VGD_JOBS, else the CPUs but at most one per 2 GiB of available memory (2026-10-19: 16 KWin compile
+# jobs beside the laptop's 8 GiB macOS guest left 1.4 GiB free and the swap full)
+jobs_n() {
+	if [ -n "${VGD_JOBS:-}" ]; then echo "$VGD_JOBS"; return; fi
+	local cpus mem
+	cpus=$(nproc)
+	mem=$(awk '/^MemAvailable:/ { print int($2 / 2097152) }' /proc/meminfo)
+	[ "${mem:-0}" -ge 1 ] || mem=1
+	echo $(( cpus < mem ? cpus : mem ))
+}
 # long builds at low priority: the machine stays usable while they run
 low() {
 	if command -v ionice > /dev/null; then nice -n 10 ionice -c 2 -n 7 "$@"; else nice -n 10 "$@"; fi
@@ -59,8 +68,11 @@ hash_of() { cat "$@" | sha256sum | cut -c1-16; }
 # container can be removed - its bash is PID 1 and ignores SIGTERM - and --memory=10g: a rootless container
 # has a cgroup of its own, outside any scope around this script). VGD_VERBOSE goes into the container.
 fedora_container() {
-	local name=$1 script=$2 extra=(); shift 2
+	local name=$1 script=$2 extra=() v; shift 2
 	read -r -a extra <<< "${VGD_PODMAN_ARGS:-}"
+	# the patch set overrides kde_set_for reads (VGD_GUEST_KWIN_SET, VGD_GUEST_KSVG_SET, VGD_GUEST_PW_SET...) go in too:
+	# before 2026-10-17 they stayed outside unless passed through VGD_PODMAN_ARGS
+	for v in $(compgen -e | grep -E '^VGD_(GUEST|HOST)_[A-Z0-9]+_SET$'); do extra+=(-e "$v"); done
 	mkdir -p "$VGD_BUILD/dnf-cache/$name"
 	low podman run --rm --security-opt label=disable \
 		-v "$VGD_BUILD/dnf-cache/$name:/var/cache/libdnf5" -e JOBS="$(jobs_n)" -e VGD_VERBOSE="${VGD_VERBOSE:-0}" \

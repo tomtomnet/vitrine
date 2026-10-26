@@ -1,0 +1,296 @@
+From: Local build <local@localhost>
+Subject: [PATCH] EXP: input: send pointer motion to clients at most once per 750 us (KWIN_POINTER_MOTION_INTERVAL_US)
+
+A mouse that reports at 4000-8000 Hz moved the pointer every 125-250 us, and ForwardInputFilter sent
+every motion to the client under the pointer: wl_pointer.motion + frame, each one read, dispatched and
+handled by the client's toolkit (hover, picking) while the screen shows one position per refresh. A
+guest plasmashell spent 185 ms of CPU per second of 4000 Hz motion over its desktop (90 at 1000 Hz),
+and a Qt-side merge could not remove the dispatch half (findings/qt-pointer-motion-2026-10-18.md).
+
+Motions closer than KWIN_POINTER_MOTION_INTERVAL_US (default 750: a 1000 Hz mouse, about 1000 us apart with jitter, passes) to the last one sent are held by
+PointerInterface (setMotionHeld); a precise timer sends the latest when the interval is over, and any
+other event to the client (button, axis, enter, leave, warp) sends it first, so ordering is kept and a
+click always follows the latest position. A 1000 Hz mouse is not affected. A locked or confined
+pointer (games) gets every motion; relative pointer motion is never held. 0 restores the previous
+behaviour; $XDG_RUNTIME_DIR/kwin-pointer-motion-interval-us overrides the variable while it exists
+(read at most once a second: an A/B in a running host session).
+
+---
+
+diff --git a/src/input.cpp b/src/input.cpp
+index 01cdd9d..6eaa750 100644
+--- a/src/input.cpp
++++ b/src/input.cpp
+@@ -45,8 +45,10 @@
+ #include "screenedge.h"
+ #include "screenedgegestures.h"
+ #include "virtualdesktops.h"
++#include "utils/envvar.h"
+ #include "wayland/display.h"
+ #include "wayland/inputmethod_v1.h"
++#include "wayland/pointer.h"
+ #include "wayland/seat.h"
+ #include "wayland/surface.h"
+ #include "wayland/tablet_v2.h"
+@@ -66,8 +68,11 @@
+ #endif
+ // Qt
+ #include <QAction>
++#include <QElapsedTimer>
++#include <QFile>
+ #include <QKeyEvent>
+ #include <QThread>
++#include <QTimer>
+ #include <qpa/qwindowsysteminterface.h>
+ 
+ #include <xkbcommon/xkbcommon.h>
+@@ -2094,6 +2099,35 @@ public:
+     }
+ };
+ 
++/**
++ * KWIN_POINTER_MOTION_INTERVAL_US: the shortest interval between two pointer motions sent to a client [750: a 1000 Hz
++ * mouse's events, about 1000 us apart with some jitter, all pass];
++ * 0 sends every one, as before. A host KWin keeps its wrapper's environment from login, so
++ * $XDG_RUNTIME_DIR/kwin-pointer-motion-interval-us holding a number decides instead while it exists, read at
++ * most once a second (an A/B in a running session)
++ */
++static std::chrono::microseconds pointerMotionInterval()
++{
++    static const int s_environment = environmentVariableIntValue("KWIN_POINTER_MOTION_INTERVAL_US").value_or(750);
++    static const QString s_path = qEnvironmentVariable("XDG_RUNTIME_DIR") + QStringLiteral("/kwin-pointer-motion-interval-us");
++    static int s_value = s_environment;
++    static std::chrono::steady_clock::time_point s_lastRead;
++    const auto now = std::chrono::steady_clock::now();
++    if (now - s_lastRead >= std::chrono::seconds(1)) {
++        s_lastRead = now;
++        s_value = s_environment;
++        QFile file(s_path);
++        if (file.open(QIODevice::ReadOnly)) {
++            bool ok = false;
++            const int value = file.readAll().trimmed().toInt(&ok);
++            if (ok && value >= 0) {
++                s_value = value;
++            }
++        }
++    }
++    return std::chrono::microseconds(s_value);
++}
++
+ /**
+  * The remaining default input filter which forwards events to other windows
+  */
+@@ -2103,6 +2137,14 @@ public:
+     ForwardInputFilter()
+         : InputEventFilter(InputFilterOrder::Forward)
+     {
++        m_motionTimer.setSingleShot(true);
++        m_motionTimer.setTimerType(Qt::PreciseTimer);
++        QObject::connect(&m_motionTimer, &QTimer::timeout, &m_motionTimer, [this]() {
++            if (PointerInterface *pointer = waylandServer()->seat()->pointer()) {
++                pointer->flushHeldMotion();
++            }
++            m_sinceMotion.start();
++        });
+     }
+     bool pointerMotion(PointerMotionEvent *event) override
+     {
+@@ -2112,7 +2154,34 @@ public:
+         if (event->warp) {
+             seat->notifyPointerWarp(event->position);
+         } else {
++            // A mouse that reports at 4000-8000 Hz moved the pointer every 125-250 us, and every
++            // motion went to the client under it: its toolkit handled each one (hover, picking),
++            // while the screen shows one position per refresh. Motions closer than
++            // pointerMotionInterval() to the last one sent are held, and the latest is sent when
++            // the interval is over, or before any other pointer event; a 1000 Hz mouse is not
++            // affected. A locked or confined pointer (games) gets every motion.
++            using namespace std::chrono_literals;
++            PointerInterface *pointer = seat->pointer();
++            const auto interval = pointerMotionInterval();
++            SurfaceInterface *focus = seat->focusedPointerSurface();
++            const bool hold = pointer && interval > 0us && m_sinceMotion.isValid() && m_sinceMotion.durationElapsed() < interval
++                && !(focus && (focus->lockedPointer() || focus->confinedPointer()));
++            if (pointer) {
++                pointer->setMotionHeld(hold);
++            }
+             seat->notifyPointerMotion(event->position);
++            if (pointer) {
++                pointer->setMotionHeld(false);
++            }
++            if (hold) {
++                if (!m_motionTimer.isActive()) {
++                    const auto remaining = interval - std::chrono::duration_cast<std::chrono::microseconds>(m_sinceMotion.durationElapsed());
++                    m_motionTimer.start(std::chrono::ceil<std::chrono::milliseconds>(remaining));
++                }
++            } else {
++                m_motionTimer.stop();
++                m_sinceMotion.start();
++            }
+             if (!event->delta.isNull()) {
+                 seat->relativePointerMotion(event->delta, event->deltaUnaccelerated, event->timestamp);
+             }
+@@ -2549,6 +2618,10 @@ public:
+         dial->sendFrame(std::chrono::duration_cast<std::chrono::milliseconds>(event->time).count());
+         return true;
+     }
++
++private:
++    QTimer m_motionTimer;
++    QElapsedTimer m_sinceMotion;
+ };
+ 
+ static AbstractDropHandler *dropHandler(Window *window)
+diff --git a/src/wayland/pointer.cpp b/src/wayland/pointer.cpp
+index 118c94d..8d2caaf 100644
+--- a/src/wayland/pointer.cpp
++++ b/src/wayland/pointer.cpp
+@@ -17,6 +17,8 @@
+ #include "utils/common.h"
+ #include "utils/resource.h"
+ 
++#include <utility>
++
+ namespace KWin
+ {
+ 
+@@ -171,6 +173,7 @@ void PointerInterface::sendEnter(SurfaceInterface *surface, const QPointF &posit
+     if (d->focusedSurface == surface) {
+         return;
+     }
++    flushHeldMotion();
+ 
+     if (d->focusedSurface) {
+         d->sendLeave(serial);
+@@ -183,6 +186,8 @@ void PointerInterface::sendEnter(SurfaceInterface *surface, const QPointF &posit
+     d->focusedSurface = surface;
+     d->focusedSerial = serial;
+     d->destroyConnection = connect(d->focusedSurface, &SurfaceInterface::aboutToBeDestroyed, this, [this]() {
++        d->heldMotion.reset();
++        d->heldFrame = false;
+         d->sendLeave(d->seat->display()->nextSerial());
+         d->sendFrame();
+         d->focusedSurface = nullptr;
+@@ -201,6 +206,7 @@ void PointerInterface::sendLeave(quint32 serial)
+     if (!d->focusedSurface) {
+         return;
+     }
++    flushHeldMotion();
+ 
+     d->sendLeave(serial);
+     d->sendFrame();
+@@ -228,6 +234,7 @@ void PointerInterface::sendButton(quint32 button, PointerButtonState state, quin
+     if (!d->focusedSurface) {
+         return;
+     }
++    flushHeldMotion();
+ 
+     const auto pointerResources = d->pointersForClient(d->focusedSurface->client());
+     const quint32 waylandState = pointerButtonStateToWaylandState(state);
+@@ -284,6 +291,7 @@ void PointerInterface::sendAxis(Qt::Orientation orientation, qreal delta, qint32
+     if (!d->focusedSurface) {
+         return;
+     }
++    flushHeldMotion();
+ 
+     qint32 valueAxisLowRes = 0;
+     qint32 valueDiscrete = 0;
+@@ -370,6 +378,13 @@ void PointerInterface::sendMotion(const QPointF &position)
+     if (!d->focusedSurface) {
+         return;
+     }
++    if (d->holdMotion) {
++        d->heldMotion = position;
++        return;
++    }
++    // this position supersedes a held one, and the frame that follows covers both
++    d->heldMotion.reset();
++    d->heldFrame = false;
+ 
+     const QPointF localPos = d->focusedSurface->toSurfaceLocal(position);
+ 
+@@ -381,6 +396,7 @@ void PointerInterface::sendMotion(const QPointF &position)
+ 
+ void PointerInterface::sendWarp(const QPointF &position)
+ {
++    flushHeldMotion();
+     d->lastPosition = position;
+ 
+     if (!d->focusedSurface) {
+@@ -412,11 +428,36 @@ void PointerInterface::sendWarp(const QPointF &position)
+ 
+ void PointerInterface::sendFrame()
+ {
++    if (d->heldMotion) {
++        // goes out with the held motion
++        d->heldFrame = true;
++        return;
++    }
+     if (d->focusedSurface) {
+         d->sendFrame();
+     }
+ }
+ 
++void PointerInterface::setMotionHeld(bool hold)
++{
++    d->holdMotion = hold;
++}
++
++void PointerInterface::flushHeldMotion()
++{
++    if (!d->heldMotion) {
++        return;
++    }
++    const QPointF position = *std::exchange(d->heldMotion, std::nullopt);
++    const bool frame = std::exchange(d->heldFrame, false);
++    const bool hold = std::exchange(d->holdMotion, false);
++    sendMotion(position);
++    if (frame) {
++        sendFrame();
++    }
++    d->holdMotion = hold;
++}
++
+ SeatInterface *PointerInterface::seat() const
+ {
+     return d->seat;
+diff --git a/src/wayland/pointer.h b/src/wayland/pointer.h
+index 3e73b36..63f08b2 100644
+--- a/src/wayland/pointer.h
++++ b/src/wayland/pointer.h
+@@ -61,6 +61,12 @@ public:
+     void sendButton(quint32 button, PointerButtonState state, ClientConnection *client);
+     void sendAxis(Qt::Orientation orientation, qreal delta, qint32 deltaV120, PointerAxisSource source, bool inverted);
+     void sendMotion(const QPointF &position);
++    /**
++     * While @a hold is set, sendMotion() keeps the position instead of sending it, and sendFrame()
++     * waits with it. flushHeldMotion(), or any other event to the client, sends them first, in order.
++     */
++    void setMotionHeld(bool hold);
++    void flushHeldMotion();
+     void sendWarp(const QPointF &position);
+     void sendFrame();
+ 
+diff --git a/src/wayland/pointer_p.h b/src/wayland/pointer_p.h
+index 07848ec..c406750 100644
+--- a/src/wayland/pointer_p.h
++++ b/src/wayland/pointer_p.h
+@@ -7,6 +7,7 @@
+ */
+ #pragma once
+ 
++#include <optional>
+ #include "pointer.h"
+ 
+ #include <QList>
+@@ -73,6 +74,10 @@ public:
+     std::unique_ptr<PointerPinchGestureV1Interface> pinchGesturesV1;
+     std::unique_ptr<PointerHoldGestureV1Interface> holdGesturesV1;
+     QPointF lastPosition;
++    // a motion held back by the compositor (KWIN_POINTER_MOTION_INTERVAL_US), sent before any other event
++    bool holdMotion = false;
++    std::optional<QPointF> heldMotion;
++    bool heldFrame = false;
+     AxisAccumulator axisAccumulator;
+ 
+     void sendLeave(quint32 serial);

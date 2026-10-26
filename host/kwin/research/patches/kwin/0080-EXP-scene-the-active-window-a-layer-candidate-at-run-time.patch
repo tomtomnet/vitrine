@@ -1,0 +1,85 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: Local build <local@localhost>
+Date: Sat, 24 Oct 2026 20:45:00 +0200
+Subject: [PATCH] EXP scene: the active window a layer candidate whatever its update rate
+ (KWIN_ACTIVE_WINDOW_LAYER_CANDIDATE, $XDG_RUNTIME_DIR/kwin-active-window-candidate)
+
+WorkspaceScene's isCandidate takes a dmabuf surface for an overlay or an underlay only if it updates faster than 20
+frames a second, or is opaque and full screen. A maximized window that waits for input updates a few times a second,
+so it stays composited and every key pays for the composition: on the Arc Pro B50 at 4K 240 (bare metal), a
+maximized minimal client showed a key in 11.5 ms against 7.6 full screen, a windowed VM in 11.7 against 10.3 - while
+the same window updating quickly got an underlay there (its buffer on the primary plane, the scene with alpha on an
+overlay). With the switch, the active window's surfaces are candidates too; the layout is still tested and falls back
+as before. Unset = as before; $XDG_RUNTIME_DIR/kwin-active-window-candidate holding 0 or 1 decides while it exists,
+read at most once a second. To measure: latency against power (two full-screen planes scanned out instead of one).
+---
+diff --git a/src/scene/workspacescene.cpp b/src/scene/workspacescene.cpp
+index 4077b9c..a6103f1 100644
+--- a/src/scene/workspacescene.cpp
++++ b/src/scene/workspacescene.cpp
+@@ -79,6 +79,7 @@
+ #include "workspace.h"
+ 
+ #include <KGlobalAccel>
++#include <QFile>
+ #include <KLocalizedString>
+ #include <QAction>
+ #include <QtMath>
+@@ -259,6 +260,47 @@ static Region mapToDevice(SceneView *view, Item *item, const RegionF &itemLocal)
+     return ret;
+ }
+ 
++/**
++ * KWIN_ACTIVE_WINDOW_LAYER_CANDIDATE (EXP, 2026-10-24; unset or 0 = as before): the active window's surfaces are
++ * candidates for their own layer (an overlay, or an underlay below the composited scene) whatever their update rate.
++ * A maximized window that waits for input updates a few times a second, so it stays composited and every key costs
++ * the composition (the Arc Pro B50, 4K 240, bare metal: a maximized minimal client 11.5 ms key to screen against 7.6
++ * full screen; a windowed VM 11.7 against 10.3) - while the same window updating quickly gets an underlay there.
++ * $XDG_RUNTIME_DIR/kwin-active-window-candidate holding 0 or 1 decides instead while it exists, read at most once a
++ * second (an A/B in a running session)
++ */
++static bool activeWindowCandidates()
++{
++    static const bool s_environment = qEnvironmentVariableIntValue("KWIN_ACTIVE_WINDOW_LAYER_CANDIDATE") != 0;
++    static const QString s_path = qEnvironmentVariable("XDG_RUNTIME_DIR") + QStringLiteral("/kwin-active-window-candidate");
++    static bool s_value = s_environment;
++    static std::chrono::steady_clock::time_point s_lastRead;
++    const auto now = std::chrono::steady_clock::now();
++    if (now - s_lastRead >= std::chrono::seconds(1)) {
++        s_lastRead = now;
++        s_value = s_environment;
++        QFile file(s_path);
++        if (file.open(QIODevice::ReadOnly)) {
++            bool ok = false;
++            const int value = file.readAll().trimmed().toInt(&ok);
++            if (ok) {
++                s_value = value != 0;
++            }
++        }
++    }
++    return s_value;
++}
++
++static bool belongsToActiveWindow(const Item *item)
++{
++    for (const Item *it = item; it; it = it->parentItem()) {
++        if (auto windowItem = qobject_cast<const WindowItem *>(it)) {
++            return windowItem->window() && windowItem->window()->isActive();
++        }
++    }
++    return false;
++}
++
+ static bool isCandidate(SurfaceItem *item, const Rect &deviceRect, bool isOpaque, SceneView *view)
+ {
+     if (!item || !item->buffer() || !item->buffer()->dmabufAttributes()) {
+@@ -274,6 +316,9 @@ static bool isCandidate(SurfaceItem *item, const Rect &deviceRect, bool isOpaque
+     if (updatesQuickly) {
+         return true;
+     }
++    if (activeWindowCandidates() && belongsToActiveWindow(item)) {
++        return true;
++    }
+     // fullscreen with low enough bandwidth requirements are always good to scanout
+     const auto info = FormatInfo::get(item->buffer()->dmabufAttributes()->format);
+     if (!info) {

@@ -1,0 +1,61 @@
+From: port (2026-10-25)
+Subject: [PATCH] 0077 on KWin 6.8.1: AnimationClock::tick has a zero-delta return inside the last-timestamp
+ branch there (71cbc668); the first-tick step follows that branch
+
+From: Local <local@localhost>
+Subject: [PATCH] EXP: effects: an animation's first frame one refresh in, at run time (host)
+
+Stock AnimationClock::tick() returns 0 on its first call, so every effect animation renders its first frame at
+progress 0 - the state before the animation. On the host (Arc Pro B50, 2026-10-23) the launcher's slide-in showed
+its first change only at the third composited frame after the popup's first buffer. With KWIN_ANIMATION_START_STEP=1
+(as in the guests, patch 0037) or "1" in $XDG_RUNTIME_DIR/kwin-animation-start-step, the first tick returns one
+refresh interval. The host's 0037 without the steady animation clock it builds on.
+---
+diff --git a/src/effect/timeline.cpp b/src/effect/timeline.cpp
+index d650249b82..312dd9de29 100644
+--- a/src/effect/timeline.cpp
++++ b/src/effect/timeline.cpp
+@@ -9,9 +9,34 @@
+ 
+ using namespace std::chrono_literals;
+ 
++#include <QFile>
++#include <QStandardPaths>
++
+ namespace KWin
+ {
+ 
++// An animation's first frame one refresh in: at zero it shows the state before the animation - a sliding popup
++// still hidden, a window still where it was - so the screen repeats an image and every animation starts a refresh
++// late (the launcher's slide-in: two composited frames without a change, 2026-10-23). On with
++// KWIN_ANIMATION_START_STEP=1 (the guests' variable) or "1" in $XDG_RUNTIME_DIR/kwin-animation-start-step, read at
++// an animation's first tick at most once a second (the host's environment is fixed at login).
++static bool startOneRefreshIn()
++{
++    static const bool env = qEnvironmentVariableIntValue("KWIN_ANIMATION_START_STEP") == 1;
++    if (env) {
++        return true;
++    }
++    static std::chrono::steady_clock::time_point checked;
++    static bool file = false;
++    const auto now = std::chrono::steady_clock::now();
++    if (checked == std::chrono::steady_clock::time_point() || now - checked > std::chrono::seconds(1)) {
++        checked = now;
++        QFile f(QStandardPaths::writableLocation(QStandardPaths::RuntimeLocation) + QStringLiteral("/kwin-animation-start-step"));
++        file = f.open(QIODevice::ReadOnly) && f.read(1) == "1";
++    }
++    return file;
++}
++
+ AnimationClock::AnimationClock()
+ {
+ }
+@@ -33,6 +58,8 @@ std::chrono::milliseconds AnimationClock::tick(std::chrono::nanoseconds timestam
+             // don't progress with a difference of 0ms, or it'll round away everything
+             return 0ms;
+         }
++    } else if (refreshRate && startOneRefreshIn()) {
++        delta = std::chrono::milliseconds(1000000) / refreshRate;
+     }
+ 
+     // Prevent the delta time from getting too big to minimize stuttering. If we have missed a frame,

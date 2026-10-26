@@ -1,0 +1,315 @@
+From: Local build <local@localhost>
+Subject: [PATCH] EXP: drm: test an asynchronous cursor move once, not at every pointer event (KWIN_CURSOR_TEST_EVERY_MOVE)
+
+An asynchronous cursor update (the cursor layer's repaintScheduled handler in compositor.cpp,
+then DrmPipeline::presentAsync) builds and tests the whole atomic state of the pipeline (a
+TEST_ONLY commit) before it queues the cursor plane's new state. Item::setPosition() schedules
+the cursor layer's repaint before and after the move, for each item of the cursor (the cursor
+image, and at fractional scales often the zero-size CursorItem itself, through rounding), so
+every pointer event makes two to four such updates, and the first one carries the old position.
+With an 8000 Hz virtual pointer, kwin_wayland's main thread made 25,000-30,000 TEST_ONLY atomic
+commits a second on a Radeon 780M, 8-32 us each in the kernel: about 0.4-0.5 s per second of
+pointer motion (2026-10-17).
+
+presentAsync now drops an update whose plane state equals the one it queued last, and reuses its
+last successful test when only the plane's position changed: same framebuffer, source rectangle,
+size, hotspot, transform and zpos, the same crtc edges crossed, and on each crossed axis at least
+64 px visible before and after (drivers restrict plane positions only at the edges: i915 refuses
+the cursor across the left edge of CHV's pipe C, amdgpu a plane with less than 24x12 px visible).
+Every other test or commit of the pipeline (each composited frame tests and commits), applying or
+reverting pending changes, and a failed commit in the commit thread reset it. The cursor is then
+tested at most once per composited frame, per new cursor image and per edge class entered,
+whatever the input rate. The commit thread is unchanged: it does not test a commit before
+submitting it, and it tests the commits it reorders.
+
+KWIN_CURSOR_TEST_EVERY_MOVE=1 restores the previous behaviour; =2 drops unchanged updates but
+tests every other one. A host KWin keeps its wrapper's environment from login, so
+$XDG_RUNTIME_DIR/kwin-cursor-test-every-move holding 0, 1 or 2 overrides the variable while it
+exists (read at most once a second: A/B in a running session). An upstream version would drop
+both. See findings/kwin-cursor-atomic-tests-2026-10-17.md.
+
+---
+
+diff --git a/src/backends/drm/drm_commit_thread.cpp b/src/backends/drm/drm_commit_thread.cpp
+index 353104b..fbf7d96 100644
+--- a/src/backends/drm/drm_commit_thread.cpp
++++ b/src/backends/drm/drm_commit_thread.cpp
+@@ -180,6 +180,9 @@ void DrmCommitThread::submit()
+         m_additionalSafetyMargin = std::clamp(m_additionalSafetyMargin, 0ns, maximumReasonableMargin);
+         m_safetyMargin = m_baseSafetyMargin + m_additionalSafetyMargin;
+     } else {
++        // DrmPipeline::presentAsync may skip the test of a cursor update that only moves the
++        // plane; let it test again, as what it relied on may not have been applied
++        m_commitFailed = true;
+         if (m_commits.size() > 1) {
+             // the failure may have been because of the reordering of commits
+             // -> collapse all commits into one and try again with an already tested state
+@@ -397,6 +400,11 @@ bool DrmCommitThread::pageflipsPending()
+     return !m_commits.empty() || m_committed;
+ }
+ 
++bool DrmCommitThread::takeCommitFailure()
++{
++    return m_commitFailed.exchange(false);
++}
++
+ TimePoint DrmCommitThread::estimateNextVblank(TimePoint now) const
+ {
+     // the pageflip timestamp may be in the future
+diff --git a/src/backends/drm/drm_commit_thread.h b/src/backends/drm/drm_commit_thread.h
+index 94ecee4..da25e66 100644
+--- a/src/backends/drm/drm_commit_thread.h
++++ b/src/backends/drm/drm_commit_thread.h
+@@ -10,6 +10,7 @@
+ 
+ #include <QObject>
+ #include <QThread>
++#include <atomic>
+ #include <condition_variable>
+ #include <mutex>
+ #include <vector>
+@@ -44,6 +45,10 @@ public:
+      */
+     std::chrono::nanoseconds pageFlipped(std::chrono::nanoseconds timestamp);
+     bool pageflipsPending();
++    /**
++     * @return whether an atomic commit failed since the last call
++     */
++    bool takeCommitFailure();
+ 
+ private:
+     void clearDroppedCommits();
+@@ -71,6 +76,7 @@ private:
+     std::chrono::nanoseconds m_additionalSafetyMargin = std::chrono::milliseconds(1);
+     bool m_ping = false;
+     bool m_pageflipTimeoutDetected = false;
++    std::atomic<bool> m_commitFailed{false};
+ };
+ 
+ }
+diff --git a/src/backends/drm/drm_pipeline.cpp b/src/backends/drm/drm_pipeline.cpp
+index 3a69f8d..8908d72 100644
+--- a/src/backends/drm/drm_pipeline.cpp
++++ b/src/backends/drm/drm_pipeline.cpp
+@@ -29,6 +29,7 @@
+ #include "utils/envvar.h"
+ #include "utils/kernel.h"
+ 
++#include <QFile>
+ #include <drm_fourcc.h>
+ #include <gbm.h>
+ 
+@@ -64,6 +65,7 @@ std::expected<void, OutputError> DrmPipeline::testPresent(const std::shared_ptr<
+ std::expected<void, OutputError> DrmPipeline::present(const QList<OutputLayer *> &layersToUpdate, const std::shared_ptr<OutputFrame> &frame)
+ {
+     Q_ASSERT(m_pending.crtc);
++    m_asyncPlaneState.reset();
+     if (gpu()->atomicModeSetting()) {
+         // NOTE that this assumes testPresentation has been called before and succeeded
+         // only give the actual state update to the commit thread, so that it can potentially reorder the commits
+@@ -119,6 +121,9 @@ std::expected<void, OutputError> DrmPipeline::commitPipelines(const QList<DrmPip
+ 
+ std::expected<void, OutputError> DrmPipeline::commitPipelinesAtomic(const QList<DrmPipeline *> &pipelines, DrmGpu *gpu, CommitMode mode, const std::shared_ptr<OutputFrame> &frame, const QList<DrmObject *> &unusedObjects)
+ {
++    for (DrmPipeline *pipeline : pipelines) {
++        pipeline->m_asyncPlaneState.reset();
++    }
+     const auto commit = std::make_unique<DrmAtomicCommit>(gpu, pipelines);
+     if (mode == CommitMode::Test) {
+         // if there's a modeset pending, the tests on top of that state
+@@ -487,6 +492,80 @@ uint32_t DrmPipeline::calculateUnderscan()
+     return hborder;
+ }
+ 
++/**
++ * KWIN_CURSOR_TEST_EVERY_MOVE=1 tests and queues every asynchronous update (the behaviour before
++ * this change), =2 drops updates that change nothing but tests every other one. A host KWin keeps
++ * its wrapper's environment from login, so $XDG_RUNTIME_DIR/kwin-cursor-test-every-move holding
++ * 0, 1 or 2 decides instead while it exists, read at most once a second (A/B in a running session)
++ */
++static int asyncTestMode()
++{
++    static const int s_environment = environmentVariableIntValue("KWIN_CURSOR_TEST_EVERY_MOVE").value_or(0);
++    static const QString s_path = qEnvironmentVariable("XDG_RUNTIME_DIR") + QStringLiteral("/kwin-cursor-test-every-move");
++    static int s_mode = s_environment;
++    static std::chrono::steady_clock::time_point s_lastRead;
++    const auto now = std::chrono::steady_clock::now();
++    if (now - s_lastRead >= 1s) {
++        s_lastRead = now;
++        s_mode = s_environment;
++        QFile file(s_path);
++        if (file.open(QIODevice::ReadOnly)) {
++            bool ok = false;
++            const int value = file.readAll().trimmed().toInt(&ok);
++            if (ok) {
++                s_mode = value;
++            }
++        }
++    }
++    return s_mode;
++}
++
++static constexpr uint32_t s_littleVisible = (1 << 4) | (1 << 5);
++
++/**
++ * The edges of the crtc that @a rect reaches past, and along which of them less than 64 pixels
++ * of it remain visible (s_littleVisible). Drivers restrict plane positions only at the edges (i915
++ * refuses the cursor across the left edge of pipe C on Cherryview, amdgpu a plane with less than
++ * 24x12 pixels visible), so a test is only reused while this stays the same, and never with
++ * little of the plane visible
++ */
++static uint32_t crtcEdgeFlags(const Rect &rect, const QSize &crtcSize)
++{
++    const Rect visible = rect.intersected(Rect(QPoint(0, 0), crtcSize));
++    uint32_t ret = 0;
++    if (rect.x() < 0) {
++        ret |= 1 << 0;
++    }
++    if (rect.x() + rect.width() > crtcSize.width()) {
++        ret |= 1 << 1;
++    }
++    if (rect.y() < 0) {
++        ret |= 1 << 2;
++    }
++    if (rect.y() + rect.height() > crtcSize.height()) {
++        ret |= 1 << 3;
++    }
++    if ((ret & 0b0011) && visible.width() < 64) {
++        ret |= 1 << 4;
++    }
++    if ((ret & 0b1100) && visible.height() < 64) {
++        ret |= 1 << 5;
++    }
++    return ret;
++}
++
++bool DrmPipeline::AsyncPlaneState::sameExceptPosition(const AsyncPlaneState &other) const
++{
++    return layer == other.layer
++        && !buffer.expired() && buffer.lock() == other.buffer.lock()
++        && source == other.source
++        && size == other.size
++        && hotspot == other.hotspot
++        && transform == other.transform
++        && zpos == other.zpos
++        && crtcEdges == other.crtcEdges;
++}
++
+ std::expected<void, OutputError> DrmPipeline::presentAsync(OutputLayer *layer, std::optional<std::chrono::nanoseconds> allowedVrrDelay)
+ {
+     if (needsModeset() || !m_pending.crtc || !m_pending.active) {
+@@ -506,20 +585,56 @@ std::expected<void, OutputError> DrmPipeline::presentAsync(OutputLayer *layer, s
+     }
+     const auto drmLayer = static_cast<DrmPipelineLayer *>(layer);
+     if (drmLayer->plane()) {
+-        // test the full state, to take pending commits into account
+-        auto err = DrmPipeline::commitPipelinesAtomic({this}, gpu(), CommitMode::Test, nullptr, {});
+-        if (!err.has_value()) {
+-            return err;
++        if (m_commitThread->takeCommitFailure()) {
++            m_asyncPlaneState.reset();
++        }
++        // A cursor update is requested several times per pointer event (Item::setPosition
++        // schedules repaints before and after the move, for every item of the cursor), and
++        // high rate mice send thousands of events per second. Updates that change nothing
++        // are dropped, and when nothing but the position changed since the last successful
++        // test, which every other test or commit of this pipeline resets, that test is reused
++        const auto buffer = drmLayer->currentBuffer();
++        const Rect target = drmLayer->targetRect();
++        AsyncPlaneState state{
++            .layer = drmLayer,
++            .buffer = buffer,
++            .source = drmLayer->sourceRect().toRect(),
++            .size = target.size(),
++            .hotspot = drmLayer->hotspot(),
++            .transform = drmLayer->offloadTransform(),
++            .zpos = drmLayer->zpos(),
++            .crtcEdges = m_pending.mode ? crtcEdgeFlags(target, m_pending.mode->size()) : 0,
++            .position = target.topLeft(),
++        };
++        const int mode = asyncTestMode();
++        const bool reusable = mode != 1 && buffer && drmLayer->isEnabled();
++        const bool tested = reusable && m_asyncPlaneState && m_asyncPlaneState->sameExceptPosition(state);
++        if (tested && m_asyncPlaneState->position == state.position) {
++            // already queued, or applied
++            return {};
++        }
++        if (!tested || (state.crtcEdges & s_littleVisible) || mode == 2) {
++            // test the full state, to take pending commits into account
++            auto err = DrmPipeline::commitPipelinesAtomic({this}, gpu(), CommitMode::Test, nullptr, {});
++            if (!err.has_value()) {
++                return err;
++            }
+         }
+         // only give the actual state update to the commit thread, so that it can potentially reorder the commits
+         auto partialUpdate = std::make_unique<DrmAtomicCommit>(gpu(), QList{this});
+         partialUpdate->requestPageflipEvent(m_pending.crtc->id());
+-        err = prepareAtomicPlane(partialUpdate.get(), drmLayer->plane(), drmLayer, nullptr);
++        auto err = prepareAtomicPlane(partialUpdate.get(), drmLayer->plane(), drmLayer, nullptr);
+         if (!err.has_value()) {
++            m_asyncPlaneState.reset();
+             return err;
+         }
+         partialUpdate->setAllowedVrrDelay(allowedVrrDelay);
+         m_commitThread->addCommit(std::move(partialUpdate));
++        if (reusable) {
++            m_asyncPlaneState = std::move(state);
++        } else {
++            m_asyncPlaneState.reset();
++        }
+         return {};
+     } else {
+         return setCursorLegacy(drmLayer);
+@@ -528,6 +643,7 @@ std::expected<void, OutputError> DrmPipeline::presentAsync(OutputLayer *layer, s
+ 
+ void DrmPipeline::applyPendingChanges()
+ {
++    m_asyncPlaneState.reset();
+     m_next = m_pending;
+     const auto safetyMargin = m_commitThread->setModeInfo(m_pending.mode->refreshRate(), m_pending.mode->vblankTime());
+     m_output->renderLoop()->setPresentationSafetyMargin(safetyMargin);
+@@ -581,6 +697,7 @@ bool DrmPipeline::activePending() const
+ 
+ void DrmPipeline::revertPendingChanges()
+ {
++    m_asyncPlaneState.reset();
+     m_pending = m_next;
+ }
+ 
+diff --git a/src/backends/drm/drm_pipeline.h b/src/backends/drm/drm_pipeline.h
+index 0e61ed7..ff5526d 100644
+--- a/src/backends/drm/drm_pipeline.h
++++ b/src/backends/drm/drm_pipeline.h
+@@ -31,6 +31,7 @@ class DrmGpu;
+ class DrmConnector;
+ class DrmCrtc;
+ class DrmConnectorMode;
++class DrmFramebuffer;
+ class DrmPipelineLayer;
+ class DrmCommitThread;
+ class OutputFrame;
+@@ -157,6 +158,24 @@ private:
+     // the state that will be applied at the next real atomic commit
+     State m_next;
+ 
++    // the plane state that presentAsync() last tested (now or before) and queued; it is
++    // reset by every other test or commit of the pipeline and by failed commits
++    struct AsyncPlaneState
++    {
++        DrmPipelineLayer *layer = nullptr;
++        std::weak_ptr<DrmFramebuffer> buffer;
++        Rect source;
++        QSize size;
++        QPointF hotspot;
++        OutputTransform transform;
++        int zpos = 0;
++        uint32_t crtcEdges = 0;
++        QPoint position;
++
++        bool sameExceptPosition(const AsyncPlaneState &other) const;
++    };
++    std::optional<AsyncPlaneState> m_asyncPlaneState;
++
+     std::unique_ptr<DrmCommitThread> m_commitThread;
+ };
+ 

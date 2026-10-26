@@ -1,0 +1,127 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: Local build <local@localhost>
+Date: Sat, 24 Oct 2026 17:20:00 +0200
+Subject: [PATCH] EXP renderloop: a variance cap for the direct-scanout journal only
+ (KWIN_RENDER_JOURNAL_SCANOUT_VARIANCE_CAP_US, $XDG_RUNTIME_DIR/kwin-scanout-variance-cap)
+
+On top of 0066 (a render journal of its own for direct scanout). A frame whose content is a client's buffer on a
+plane takes 0.05-0.3 ms, but the first one with a new buffer - its import and first test commit - took 2.6 ms on the
+Arc Pro B50 host when a VM's client went full screen. The estimate is the smoothed time plus twice the largest recent
+excess, and the excess decays with a 6 s time constant: ~5 ms for the next seconds, the compositor plans the next
+scanout frames two refreshes ahead, and a VM's frames stamped for the next refresh (commit timing) wait a refresh in
+their transaction (b50tx1, 2026-10-24: the VM's keys 10.8-11.3 ms p50 in the sessions with such a frame, 10.1
+without; the guest's lone frames aimed at the next refresh made it 30 % of the time instead of 60 %).
+
+The cap bounds the excess the scanout journal remembers; a slow scanout path that persists still raises the smoothed
+time, and composited frames keep their journal's full memory (one cap for every journal, 2026-09, made bare-metal
+Konsole resizes' late flips go 32 -> 232). Unset = no cap, as before; $XDG_RUNTIME_DIR/kwin-scanout-variance-cap
+holding the cap in microseconds (0 = none) decides while it exists, read at most once a second.
+---
+diff --git a/src/core/renderjournal.cpp b/src/core/renderjournal.cpp
+index 8907f5a..e276781 100644
+--- a/src/core/renderjournal.cpp
++++ b/src/core/renderjournal.cpp
+@@ -81,7 +81,12 @@ void RenderJournal::skip(std::chrono::nanoseconds presentationTimestamp)
+ 
+ std::chrono::nanoseconds RenderJournal::result() const
+ {
+-    return m_result + m_variance * 2;
++    return m_result + std::min(m_variance, m_varianceCap) * 2;
++}
++
++void RenderJournal::setVarianceCap(std::chrono::nanoseconds cap)
++{
++    m_varianceCap = cap;
+ }
+ 
+ } // namespace KWin
+diff --git a/src/core/renderjournal.h b/src/core/renderjournal.h
+index 0470802..1560626 100644
+--- a/src/core/renderjournal.h
++++ b/src/core/renderjournal.h
+@@ -31,6 +31,12 @@ public:
+ 
+     std::chrono::nanoseconds result() const;
+ 
++    /**
++     * Bounds the excess over the smoothed render time that the estimate remembers (KWIN_RENDER_JOURNAL_VARIANCE_CAP_US
++     * for every journal; a journal of its own may set another): nanoseconds::max() for none
++     */
++    void setVarianceCap(std::chrono::nanoseconds cap);
++
+ private:
+     std::chrono::nanoseconds m_varianceCap;
+     std::chrono::nanoseconds m_result{0};
+diff --git a/src/core/renderloop.cpp b/src/core/renderloop.cpp
+index a07bdaf..37be6ab 100644
+--- a/src/core/renderloop.cpp
++++ b/src/core/renderloop.cpp
+@@ -68,6 +68,42 @@ static bool scanoutJournalEnabled()
+     }
+     return s_value && !s_upstreamEstimate;
+ }
++/**
++ * KWIN_RENDER_JOURNAL_SCANOUT_VARIANCE_CAP_US (EXP, unset = no cap): the largest excess over the smoothed time that
++ * the direct-scanout journal remembers. A frame whose content is a client's buffer on a plane takes 0.05-0.3 ms, but
++ * the first one with a new buffer (its import and first test commit) can take 2.6 ms (the Arc Pro B50 host, a VM's
++ * client going full screen): twice that excess stays in the estimate for seconds (it decays with a 6 s time constant),
++ * ~5 ms, so the compositor plans the next scanout frames two refreshes ahead, and a VM's stamped frames, a key's,
++ * wait a refresh in their transaction (b50tx1, 2026-10-24: the VM's keys 10.8-11.3 ms p50 in sessions with such a
++ * frame, 10.1 without). A one-off import says nothing about the next frames; a slow scanout path that persists still
++ * raises the smoothed time. Composited frames keep their own journal and its full memory (a cap for both in 2026-09
++ * made bare Konsole resizes' late flips 32 -> 232). $XDG_RUNTIME_DIR/kwin-scanout-variance-cap holding the cap in us
++ * (0 = none) decides instead while it exists, read at most once a second (an A/B in a running session)
++ */
++static std::chrono::nanoseconds scanoutVarianceCap()
++{
++    static const int s_environment = qEnvironmentVariableIntValue("KWIN_RENDER_JOURNAL_SCANOUT_VARIANCE_CAP_US");
++    static const QString s_path = qEnvironmentVariable("XDG_RUNTIME_DIR") + QStringLiteral("/kwin-scanout-variance-cap");
++    static int s_value = s_environment;
++    static std::chrono::steady_clock::time_point s_lastRead;
++    const auto now = std::chrono::steady_clock::now();
++    if (now - s_lastRead >= std::chrono::seconds(1)) {
++        s_lastRead = now;
++        s_value = s_environment;
++        QFile file(s_path);
++        if (file.open(QIODevice::ReadOnly)) {
++            bool ok = false;
++            const int value = file.readAll().trimmed().toInt(&ok);
++            if (ok) {
++                s_value = value;
++            }
++        }
++    }
++    // the cap for every journal (KWIN_RENDER_JOURNAL_VARIANCE_CAP_US) still bounds this one
++    static const int s_everyJournal = qEnvironmentVariableIntValue("KWIN_RENDER_JOURNAL_VARIANCE_CAP_US");
++    static const std::chrono::nanoseconds s_everyJournalCap = s_everyJournal > 0 ? std::chrono::nanoseconds(std::chrono::microseconds(s_everyJournal)) : std::chrono::nanoseconds::max();
++    return s_value > 0 ? std::min<std::chrono::nanoseconds>(std::chrono::microseconds(s_value), s_everyJournalCap) : s_everyJournalCap;
++}
+ static const std::chrono::nanoseconds s_lateFlipStep = std::chrono::microseconds(qEnvironmentVariableIsEmpty("KWIN_LATE_FLIP_STEP_US") ? 500 : std::max(10, qEnvironmentVariableIntValue("KWIN_LATE_FLIP_STEP_US")));
+ // KWIN_LONE_FRAME_LEAD_US (EXP): how close to the next vblank a lone frame - the first after an
+ // idle stretch (no frame in flight, none presented for two refreshes or more) - may still be
+@@ -317,7 +353,11 @@ void RenderLoopPrivate::notifyFrameDropped()
+ 
+ const RenderJournal &RenderLoopPrivate::estimateJournal() const
+ {
+-    return (lastContentScanout && scanoutJournalEnabled()) ? scanoutJournal : renderJournal;
++    if (lastContentScanout && scanoutJournalEnabled()) {
++        scanoutJournal.setVarianceCap(scanoutVarianceCap());
++        return scanoutJournal;
++    }
++    return renderJournal;
+ }
+ 
+ void RenderLoopPrivate::notifyFrameCompleted(std::chrono::nanoseconds timestamp, std::optional<RenderTimeSpan> renderTime, PresentationMode mode, OutputFrame *frame)
+diff --git a/src/core/renderloop_p.h b/src/core/renderloop_p.h
+index 1f5f728..4f9e422 100644
+--- a/src/core/renderloop_p.h
++++ b/src/core/renderloop_p.h
+@@ -51,7 +51,7 @@ public:
+     RenderJournal renderJournal;
+     // the frames whose content was a client's buffer on a plane (direct scanout) have a journal of their own
+     // (KWIN_RENDER_JOURNAL_SCANOUT): see notifyFrameCompleted
+-    RenderJournal scanoutJournal;
++    mutable RenderJournal scanoutJournal; // mutable: its variance cap follows a run-time file (estimateJournal)
+     int refreshRate = 60000;
+     int pendingFrameCount = 0;
+     bool preparingNewFrame = false;
