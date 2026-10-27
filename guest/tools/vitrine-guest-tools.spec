@@ -2,7 +2,7 @@
 # exact version, and dnf takes an installed one of the same version as done.
 Name:           vitrine-guest-tools
 Version:        0.1.0
-Release:        23%{?dist}
+Release:        24%{?dist}
 Summary:        vitrine guest tools: patched virtio-gpu driver, settings and agent
 
 # the driver's sources (dkms/vendor, dkms/patches) are the kernel's: MIT
@@ -176,6 +176,11 @@ fi
 %dir %{_sharedstatedir}/%{name}
 
 %changelog
+* Tue Oct 27 2026 vitrine <noreply@anthropic.com> - 0.1.0-24
+- the driver: a DIRTYFB without clips, which means the whole framebuffer,
+  is flushed as one full-size clip instead of being skipped as a commit
+  that changes nothing (the research's skip-unchanged-flush patch)
+
 * Mon Oct 26 2026 vitrine <noreply@anthropic.com> - 0.1.0-23
 - the driver: a deferred blob map that cannot be queued (no room left in
   the host-visible window) fails the mmap instead of hanging the app in

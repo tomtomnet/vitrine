@@ -18,8 +18,11 @@ it.
 Skip the flush when the framebuffer, its source rectangle and the damage
 clips are unchanged, the cursor move when the position is, and the cursor
 upload when the picture is the one the host already has; damage clips and
-dirtyfb still flush.  Module parameter flush_unchanged (default 0)
-restores the old behaviour.
+dirtyfb still flush.  A dirtyfb without clips means the whole framebuffer,
+and drm_atomic_helper_dirtyfb() commits it without damage clips: it is
+given one clip covering the framebuffer, so that it is not taken for an
+unchanged plane.  Module parameter flush_unchanged (default 0) restores the
+old behaviour.
 
 --- a/drivers/gpu/drm/virtio/virtgpu_plane.c	2026-09-29 14:33:54.497252825 +0200
 +++ b/drivers/gpu/drm/virtio/virtgpu_plane.c	2026-09-29 14:33:54.515573132 +0200
@@ -192,3 +195,35 @@ restores the old behaviour.
  		DRM_DEBUG("move +%d+%d\n",
  			  plane->state->crtc_x,
  			  plane->state->crtc_y);
+--- a/drivers/gpu/drm/virtio/virtgpu_display.c
++++ b/drivers/gpu/drm/virtio/virtgpu_display.c
+@@ -64,7 +64,28 @@
++/*
++ * A DIRTYFB without clips means the whole framebuffer: drm_atomic_helper_dirtyfb()
++ * commits it without damage clips, which the plane update would take for a
++ * commit that leaves the plane unchanged (flush_unchanged=0) and skip.  One clip
++ * covering the framebuffer says what it means.
++ */
++static int virtio_gpu_fb_dirty(struct drm_framebuffer *fb,
++			       struct drm_file *file_priv, unsigned int flags,
++			       unsigned int color, struct drm_clip_rect *clips,
++			       unsigned int num_clips)
++{
++	struct drm_clip_rect all = {
++		.x1 = 0, .y1 = 0, .x2 = fb->width, .y2 = fb->height,
++	};
++
++	if (!num_clips)
++		return drm_atomic_helper_dirtyfb(fb, file_priv, 0, color, &all, 1);
++	return drm_atomic_helper_dirtyfb(fb, file_priv, flags, color, clips,
++					 num_clips);
++}
++
+ static const struct drm_framebuffer_funcs virtio_gpu_fb_funcs = {
+ 	.create_handle = drm_gem_fb_create_handle,
+ 	.destroy = drm_gem_fb_destroy,
+-	.dirty = drm_atomic_helper_dirtyfb,
++	.dirty = virtio_gpu_fb_dirty,
+ };
+ 
+ static int
