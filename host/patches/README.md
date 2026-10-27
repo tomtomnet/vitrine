@@ -19,13 +19,13 @@ its `Subject:`, else the first line of its description.
 patches that go on top, in this order:
 
 1. `qemu/research/`: the research's QEMU series, its `patches/qemu/series`
-   at commit `0ebe3c9` (2026-10-27), each patch without its
+   at commit `2710b05` (2026-10-27), each patch without its
    `Claude-Session:` line and otherwise unchanged. Since 2026-10-14 this
    series is the source of the research's QEMU; the qemu-gui fork
    (`https://github.com/tomtomnet/qemu-gui`) it started from is no longer
    used. 0001-0017 are the fork's commits, 0018-0024 the work the fork had
    not committed on 2026-10-12, split by topic (0020 left when upstream
-   took it), and the last nine are for `virtio-gpu-rutabaga`, the nested
+   took it), and the last eleven are for `virtio-gpu-rutabaga`, the nested
    desktop's device.
 2. `qemu/vitrine/`: Vitrine's own changes, as new files here rather than
    edits of the others.
@@ -66,12 +66,14 @@ patches that go on top, in this order:
 | `45d3af19c0978edc7f573496234c2700c4385e94dced2e2c9e679eb2a0f9780e` | `virtio-gpu-rutabaga-render-node.patch`: `x-render-node=PATH`, the host GPU the contexts render on: the render node goes to rutabaga as its GPU channel, and virglrenderer renders on it, vrend and the native context alike (unset: virglrenderer's first, amdgpu before i915 and xe); checked at realize: a path that is not a `/dev/dri/renderD*` QEMU can open read-write stops QEMU with the reason, where virglrenderer would take its first GPU without a word |
 | `028021d21483538f8a570aca800ae9cec0d69408fb9bb8cd3a6b380caac987ce` | `virtio-gpu-rutabaga-2d-partial-updates.patch`: `TRANSFER_TO_HOST_2D` passes the box's offset in the guest's buffer, which virglrenderer copies from: every partial update came from the buffer's start (no '*' at a LUKS prompt, garbled boot text); `RESOURCE_FLUSH` reads back only the flushed rectangle, after virtio-gpu's bounds check, where it read back the whole resource (33 MB at 3840x2160 for a line of text or a firmware blit) |
 | `b454904909a38abc62b766235dcfedfb95d1017a86585cf10ec781241c2210c7` | `virtio-gpu-rutabaga-2d-shadow.patch`: 2D resources (dumb buffers: the guest's console, a boot splash, a cursor) stay in QEMU's own image until a context or a 3D transfer uses them, as virtio-gpu's 2D device keeps them, where every update went into virglrenderer's texture and came back at the flush (a 4K console scrolling 3,000 lines: 11 uploads and read-backs of 33 MB before, none after); the first 3D use hands rutabaga the whole backing |
+| `31c73b86c2f4c4753b4e674b230cc2ea9562f07db5b8bb8403c5918536f38536` | `virtio-gpu-rutabaga-2d-shadow-budget.patch`: the 2D shadow's images count against `max_hostmem` (256 MiB by default), as virtio-gpu's 2D device does, where a guest could have QEMU allocate one per 2D resource: a resource past the budget goes to rutabaga, whose flushes read back as before; without virgl QEMU keeps the 2D resources alone, so that such a device has a console (a guest session on the virtio output still needs `x-virgl2`: blob scanouts and context-0 fences go through vrend) |
+| `9d575192c1885c56faf07cc405392a41d04b43394de92a287359f391ea920516` | `virtio-gpu-rutabaga-2d-resource-id.patch`: `RESOURCE_CREATE_2D` refuses an id of 0 or one in use itself, as virtio-gpu's 2D device does: a 2D resource that QEMU keeps alone (virgl off) never reached rutabaga's own check, and a guest could put two resources with one id in QEMU's list |
 
 When the research's series moves (`r` its repository, `c` the commit,
 `v` this folder):
 
 ```sh
-r=~/Documents/virtio-gpu-desktop c=0ebe3c9 v=~/Documents/vitrine/host/patches/qemu
+r=~/Documents/virtio-gpu-desktop c=2710b05 v=~/Documents/vitrine/host/patches/qemu
 rm -f "$v"/research/*.patch
 for p in $(git -C "$r" show "$c:patches/qemu/series" | sed 's/#.*//'); do
     git -C "$r" show "$c:patches/qemu/$p" | grep -v '^Claude-Session:' > "$v/research/$p"

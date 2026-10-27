@@ -1,0 +1,39 @@
+From 7138cd82a97e6cc6b6095ab20d72c3b946ddf585 Mon Sep 17 00:00:00 2001
+From: virtio-gpu-desktop <local@localhost>
+Date: Tue, 27 Oct 2026 16:54:33 +0100
+Subject: [PATCH] virtio-gpu-rutabaga: check a 2D resource's id in QEMU
+
+Without a renderer for 2D resources (virgl off) QEMU keeps them alone
+and never asks rutabaga, whose own checks refused an id of 0 or one in
+use: a guest could put two resources with one id in QEMU's list. As
+virtio-gpu's 2D device, RESOURCE_CREATE_2D now refuses both
+(VIRTIO_GPU_RESP_ERR_INVALID_RESOURCE_ID) before anything else.
+
+bench/ab/qemu_2d_partial_flush_1027.sh with and without virgl: the
+console pixel-identical, no error.
+---
+ hw/display/virtio-gpu-rutabaga.c | 8 ++++++++
+ 1 file changed, 8 insertions(+)
+
+diff --git a/hw/display/virtio-gpu-rutabaga.c b/hw/display/virtio-gpu-rutabaga.c
+index bf24973cb0..132ef7dd9d 100644
+--- a/hw/display/virtio-gpu-rutabaga.c
++++ b/hw/display/virtio-gpu-rutabaga.c
+@@ -279,6 +279,14 @@ rutabaga_cmd_create_resource_2d(VirtIOGPU *g,
+     trace_virtio_gpu_cmd_res_create_2d(c2d.resource_id, c2d.format,
+                                        c2d.width, c2d.height);
+ 
++    /* as virtio-gpu's 2D device: a resource QEMU may keep alone needs QEMU's own checks */
++    if (c2d.resource_id == 0 || virtio_gpu_find_resource(g, c2d.resource_id)) {
++        qemu_log_mask(LOG_GUEST_ERROR, "%s: resource id %d is 0 or exists already\n",
++                      __func__, c2d.resource_id);
++        cmd->error = VIRTIO_GPU_RESP_ERR_INVALID_RESOURCE_ID;
++        return;
++    }
++
+     rc_3d.target = 2;
+     rc_3d.format = c2d.format;
+     rc_3d.bind = (1 << 1);
+-- 
+2.56.0
+
