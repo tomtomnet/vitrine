@@ -187,13 +187,15 @@ once the same way: its window has nowhere to show. With
 QEMU's SDL or GTK window, or none, the session opens as a window of its own.
 
 On a computer with several GPUs (a graphics card beside the processor's
-own), VMs shown in vitrine's window render on the GPU the desktop runs on:
-QEMU's D-Bus display gets that GPU's render node (`rendernode=`), and the 3D
-of the VM's card follows it, virgl and native context alike. The nested
-desktop's card has its own setting: by default (Automatic) it takes the
-desktop's GPU too, when vitrine's QEMU has a native context for its driver
-(amdgpu, i915 or xe), otherwise the first GPU that has one, AMD before
-Intel. Only that card can be given another GPU, per VM: the Display
+own), VMs shown in vitrine's window render on the GPU the desktop runs on,
+when vitrine's QEMU has a native context for its driver (amdgpu, i915 or
+xe): QEMU's D-Bus display gets that GPU's render node (`rendernode=`), and
+the 3D of the VM's card follows it, virgl and native context alike. With
+another (an NVIDIA card), vitrine leaves the choice to QEMU, as with one
+GPU. The nested desktop's card has its own setting: by default (Automatic)
+it takes the desktop's GPU on the same terms, otherwise the first GPU that
+has a native context, AMD before Intel. Only that card can be given another
+GPU, per VM: the Display
 settings then have a GPU list for the nested desktop, which says what
 Automatic takes. On another GPU the guest's frames go from one GPU to the
 other, which is slower, and the guest may show nothing if the two GPUs

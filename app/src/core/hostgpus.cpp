@@ -227,9 +227,7 @@ QString automaticNode()
 
 QString displayNode()
 {
-    const QList<HostGpu> gpus = list();
-    const std::optional<HostGpu> gpu = gpus.size() < 2 ? std::nullopt : desktop(gpus);
-    return gpu ? gpu->node : QString();
+    return automaticNode();
 }
 
 std::optional<HostGpu> find(const QList<HostGpu> &gpus, const QString &path)

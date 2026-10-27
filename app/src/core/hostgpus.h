@@ -105,10 +105,11 @@ QString automaticNode();
  * imports, which must come from the GPU that window draws on, and the 3D of
  * a card without x-render-node follows it (virtio-vga-gl: vrend and the
  * native context alike), so that VMs render on the desktop's GPU; the
- * nested desktop's card renders where its own x-render-node says.  Any GPU
- * of the desktop's: a main-line card with the native context then needs
- * one for its driver.  Empty otherwise: QEMU's own choice, the first
- * render node.
+ * nested desktop's card renders where its own x-render-node says.  The
+ * same GPU as automatic()'s, so only one with a native context: on another
+ * (NVIDIA's), a main-line card with the native context would follow the
+ * display there and not start.  Empty otherwise: QEMU's own choice, the
+ * first render node, as before.
  */
 QString displayNode();
 /*

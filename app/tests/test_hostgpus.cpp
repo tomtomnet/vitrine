@@ -171,7 +171,8 @@ private slots:
     /*
      * A desktop on a GPU without a native context in vitrine's
      * virglrenderer: Automatic leaves the choice to it, which would not
-     * start on that GPU; the display, which needs none, takes it
+     * start on that GPU, and the display to QEMU, as with one GPU: a
+     * main-line card's native context follows the display
      */
     void desktopWithoutNativeContext()
     {
@@ -186,7 +187,7 @@ private slots:
         QVERIFY(!HostGpus::desktop(gpus)->hasNativeContext());
         QVERIFY(!HostGpus::automatic(gpus));
         QCOMPARE(HostGpus::automaticNode(), "");
-        QCOMPARE(HostGpus::displayNode(), "/dev/dri/renderD128");
+        QCOMPARE(HostGpus::displayNode(), "");
         QCOMPARE(HostGpus::rendererChoice(gpus)->driver, "i915");
     }
 

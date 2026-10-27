@@ -1337,7 +1337,7 @@ QStringList VmRunner::Private::commandLine(const ArgsFile &args, const QString &
     if (hostArgs.indexOfDevice(NestedDesktop::isRutabagaCard) >= 0) {
         hostArgs = withRenderNode(hostArgs, HostGpus::automaticNode(), propertiesOf);
     }
-    /* the GPU of QEMU's EGL, which the main line's 3D follows: the desktop's, with several */
+    /* the GPU of QEMU's EGL, which the main line's 3D follows: Automatic's, as above */
     const QList<int> displays = hostArgs.indexesOf("display");
     if (std::any_of(displays.cbegin(), displays.cend(),
                     [&hostArgs](int i) { return isGlDbusDisplay(hostArgs.valueAt(i)); })) {

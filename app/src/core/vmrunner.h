@@ -90,8 +90,9 @@ public:
      * (-display dbus,gl=on), unless it sets one: the GPU of QEMU's EGL,
      * which draws the VM's screen for vitrine's window and which the 3D of
      * a card without x-render-node (virtio-vga-gl) follows, vrend and the
-     * native context alike: the desktop's on a host with several
-     * (HostGpus::displayNode()), in every VM.  Nothing for an empty @node.
+     * native context alike: Automatic's GPU, the desktop's on a host with
+     * several (HostGpus::displayNode()), in every VM.  Nothing for an empty
+     * @node.
      */
     static ArgsFile withDisplayRenderNode(const ArgsFile &args, const QString &node);
     /*
