@@ -9,12 +9,16 @@
 #include <sys/types.h>
 
 /*
- * The host's GPUs, by their DRM render nodes, for the GPU the nested
- * desktop renders on: virtio-gpu-rutabaga's x-render-node, which hands the
- * node to rutabaga and virglrenderer (vrend's GBM device and the native
- * context alike).  Without it, virglrenderer's native context opens the
- * first render node of its own table (amdgpu, then i915, then xe),
- * whatever GPU this computer's desktop runs on.
+ * The host's GPUs, by their DRM render nodes, for the GPU VMs render on.
+ * The nested desktop's card: virtio-gpu-rutabaga's x-render-node, which
+ * hands the node to rutabaga and virglrenderer (vrend's GBM device and the
+ * native context alike); without it, virglrenderer's native context opens
+ * the first render node of its own table (amdgpu, then i915, then xe),
+ * whatever GPU this computer's desktop runs on.  The other 3D cards
+ * (virtio-vga-gl): virglrenderer, which QEMU gives its EGL display but no
+ * get_drm_fd, renders where QEMU's EGL runs, vrend and the native context
+ * alike (virgl_egl_open_drm_fd()), and so does the VM's screen in vitrine's
+ * window: the D-Bus display's rendernode= (displayNode()).
  *
  * Read from sysfs: the render nodes of the PCI display controllers, named
  * from pci.ids as HostDevices names PCI devices.  Other render nodes are no
@@ -96,12 +100,15 @@ std::optional<HostGpu> automatic(const QList<HostGpu> &gpus);
 QString automaticNode();
 /*
  * The rendernode= the runner gives QEMU's D-Bus display with OpenGL, on
- * this host now: on a host with several GPUs, the desktop's, whatever GPU
- * the VM renders on, as the display's EGL only draws the VM's screen (the
- * firmware, the boot, the login screen) into the textures vitrine's
- * window imports, which must come from the GPU that window draws on; any
- * GPU, no native context needed.  Empty otherwise: QEMU's own choice, the
- * first render node.
+ * this host now: on a host with several GPUs, the desktop's.  QEMU's EGL
+ * runs there: it draws the VM's screen into the textures vitrine's window
+ * imports, which must come from the GPU that window draws on, and the 3D of
+ * a card without x-render-node follows it (virtio-vga-gl: vrend and the
+ * native context alike), so that VMs render on the desktop's GPU; the
+ * nested desktop's card renders where its own x-render-node says.  Any GPU
+ * of the desktop's: a main-line card with the native context then needs
+ * one for its driver.  Empty otherwise: QEMU's own choice, the first
+ * render node.
  */
 QString displayNode();
 /*

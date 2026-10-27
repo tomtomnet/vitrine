@@ -187,21 +187,21 @@ once the same way: its window has nowhere to show. With
 QEMU's SDL or GTK window, or none, the session opens as a window of its own.
 
 On a computer with several GPUs (a graphics card beside the processor's
-own), the nested desktop renders on the GPU the desktop runs on, when
-vitrine's QEMU has a native context for its driver (amdgpu, i915 or xe);
-otherwise on the first GPU that has one, AMD before Intel. The Display
-settings have a GPU list for the nested desktop there, which says what
-Automatic takes and can choose another GPU for the VM: the guest's frames
-then go from one GPU to the other, which is slower, and the guest may show
-nothing if the two GPUs cannot share buffers. A chosen GPU is kept by its
-PCI address (`x-render-node=/dev/dri/by-path/...` on the card's line); a VM
-whose GPU is no longer in the computer does not start until another GPU, or
-Automatic, is chosen. Turning the nested desktop off and on again goes back
-to Automatic. Only the nested desktop has this choice: in other VMs the
-native context renders on the first GPU that has one. The VM's screen in
-vitrine's window is drawn on the desktop's GPU, in every VM (`rendernode=`
-on QEMU's D-Bus display with OpenGL). All this is tried so far on a
-computer with one GPU only.
+own), VMs shown in vitrine's window render on the GPU the desktop runs on:
+QEMU's D-Bus display gets that GPU's render node (`rendernode=`), and the 3D
+of the VM's card follows it, virgl and native context alike. The nested
+desktop's card has its own setting: by default (Automatic) it takes the
+desktop's GPU too, when vitrine's QEMU has a native context for its driver
+(amdgpu, i915 or xe), otherwise the first GPU that has one, AMD before
+Intel. Only that card can be given another GPU, per VM: the Display
+settings then have a GPU list for the nested desktop, which says what
+Automatic takes. On another GPU the guest's frames go from one GPU to the
+other, which is slower, and the guest may show nothing if the two GPUs
+cannot share buffers. A chosen GPU is kept by its PCI address
+(`x-render-node=/dev/dri/by-path/...` on the card's line); a VM whose GPU is
+no longer in the computer does not start until another GPU, or Automatic,
+is chosen. Turning the nested desktop off and on again goes back to
+Automatic. All this is tried so far on a computer with one GPU only.
 
 Host desktop (optional): the Builds window also offers this computer's own
 KWin with the research's host set: steadier frames and quicker input in

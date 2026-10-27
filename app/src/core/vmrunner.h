@@ -87,10 +87,11 @@ public:
         const std::function<QStringList(const QString &driver)> &propertiesOf);
     /*
      * @args with rendernode=@node on its D-Bus display with OpenGL
-     * (-display dbus,gl=on), unless it sets one: the GPU whose EGL draws the
-     * VM's screen for vitrine's window, the desktop's on a host with several
-     * (HostGpus::displayNode()), for the nested desktop and the others
-     * alike.  Nothing for an empty @node.
+     * (-display dbus,gl=on), unless it sets one: the GPU of QEMU's EGL,
+     * which draws the VM's screen for vitrine's window and which the 3D of
+     * a card without x-render-node (virtio-vga-gl) follows, vrend and the
+     * native context alike: the desktop's on a host with several
+     * (HostGpus::displayNode()), in every VM.  Nothing for an empty @node.
      */
     static ArgsFile withDisplayRenderNode(const ArgsFile &args, const QString &node);
     /*
