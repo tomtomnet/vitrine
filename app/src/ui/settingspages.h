@@ -9,6 +9,7 @@
 #include <QWidget>
 
 #include "core/argsfile.h"
+#include "core/hostgpus.h"
 #include "core/nesteddesktop.h"
 #include "core/vmconfig.h"
 #include "core/vmhardware.h"
@@ -123,9 +124,9 @@ private:
 /*
  * Where the screen shows (vitrine's window, QEMU's GTK or SDL window, or
  * none), the nested desktop (the guest's KDE session as a window of its
- * own, or in vitrine's: NestedDesktop), what QEMU's window does, and the
- * graphics card, with vitrine's settings for its 3D: DRM native context,
- * Venus, the frame timing
+ * own, or in vitrine's: NestedDesktop) and the host GPU it renders on,
+ * what QEMU's window does, and the graphics card, with vitrine's settings
+ * for its 3D: DRM native context, Venus, the frame timing
  */
 class DisplayPage : public SettingsPage
 {
@@ -149,6 +150,8 @@ private:
         QMap<QString, bool> options;
         /* the nested desktop, whose card takes the card's place */
         bool nested = false;
+        /* the host GPU it renders on, its card's x-render-node: empty for Automatic */
+        QString gpu;
         /* the card chosen: a driver of the list, or the VM's own as it is */
         QString card;
         bool nativeContext = false;
@@ -164,6 +167,14 @@ private:
     QString chosen3dCard() const;
     /* The nested desktop's card in the list, or the card it replaced back */
     void nestedToggled(bool on);
+    /* The GPUs of the list, and the VM's choice @chosen (a path) current */
+    void loadGpus(const QString &chosen);
+    /* A GPU as the list names it */
+    QString gpuText(const HostGpu &gpu) const;
+    /* What the GPU row's hint says for the choice of now */
+    QString gpuHint() const;
+    /* The VM's QEMU has no x-render-node: Automatic only */
+    bool lacksGpuChoice() const;
 
     Banner *m_custom;
     /* The screen's place, by -display; none current for another (m_custom says it) */
@@ -178,6 +189,13 @@ private:
     /* the card of the list before the nested desktop's took its place, and its native context */
     QString m_cardBeforeNested;
     bool m_nativeBeforeNested = false;
+    /* The host GPU the nested desktop renders on: Automatic, or one of the host's */
+    QLabel *m_gpuLabel;
+    QComboBox *m_gpu;
+    QLabel *m_gpuHint;
+    /* the host's GPUs and the desktop's, read by load() */
+    QList<HostGpu> m_gpus;
+    std::optional<HostGpu> m_desktopGpu;
     QLabel *m_windowLabel;
     QMap<QString, QCheckBox *> m_options;
     QComboBox *m_card;

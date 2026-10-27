@@ -1,6 +1,6 @@
 # The patches build.sh applies to QEMU, in this order (see ../README.md):
 # the research's series (research/: patches/qemu/series of
-# ~/Documents/virtio-gpu-desktop at a4eb00b), then Vitrine's own (vitrine/).
+# ~/Documents/virtio-gpu-desktop at 0ebe3c9), then Vitrine's own (vitrine/).
 research/0001-ui-sdl2-follow-the-host-refresh-rate-tolerate-grab-b.patch
 research/0002-ui-sdl2-add-an-in-window-control-menu-Dear-ImGui.patch
 research/0003-Add-a-README-for-this-fork.patch
@@ -30,5 +30,8 @@ research/virtio-gpu-rutabaga-gl-context-scope.patch
 research/virtio-gpu-rutabaga-reset-contexts.patch
 research/virtio-gpu-rutabaga-prefault-async.patch
 research/virtio-gpu-rutabaga-gl-scope-blob-maps.patch
+research/virtio-gpu-rutabaga-render-node.patch
+research/virtio-gpu-rutabaga-2d-partial-updates.patch
+research/virtio-gpu-rutabaga-2d-shadow.patch
 vitrine/0001-ui-sdl2-QEMU_SDL_POLL_FOCUSED-0-is-off.patch
 vitrine/0002-virtio-vga-forward-the-display-s-frame-feedback.patch

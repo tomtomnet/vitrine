@@ -215,6 +215,11 @@ QList<PciDevice> pciDevices(const QString &sysfs)
     return list;
 }
 
+PciDevice pciDevice(const QString &address, const QString &sysfs)
+{
+    return readPci(sysfs, address);
+}
+
 QList<UsbDevice> usbDevices(const QString &sysfs)
 {
     QList<UsbDevice> list;

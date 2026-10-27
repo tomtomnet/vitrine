@@ -56,6 +56,8 @@ namespace HostDevices {
 
 bool iommuEnabled(const QString &sysfs = "/sys");
 QList<PciDevice> pciDevices(const QString &sysfs = "/sys");
+/* The one at @address, e.g. 0000:03:00.0; its IDs 0 when there is none */
+PciDevice pciDevice(const QString &address, const QString &sysfs = "/sys");
 /* Hubs and root hubs included, flagged isHub */
 QList<UsbDevice> usbDevices(const QString &sysfs = "/sys");
 /*

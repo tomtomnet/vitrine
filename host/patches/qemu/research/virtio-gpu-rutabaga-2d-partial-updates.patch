@@ -1,0 +1,114 @@
+From e80453cc7208d0e662bffd4acc6e9e40e04c6aa4 Mon Sep 17 00:00:00 2001
+From: virtio-gpu-desktop <local@localhost>
+Date: Tue, 27 Oct 2026 15:59:01 +0100
+Subject: [PATCH] virtio-gpu-rutabaga: 2D transfers from the guest's offset,
+ flushes of the flushed rectangle
+
+TRANSFER_TO_HOST_2D went to rutabaga without its offset, the place of the
+box in the guest's backing (y * pitch + x * cpp). virglrenderer, which
+holds the 2D resources when virgl is on, copies the box from that offset:
+every partial update came from the start of the backing instead. The
+console's text written after a clear did not show, a LUKS prompt's "*"
+never appeared, systemd's boot messages came out as copies of the
+screen's first line. crosvm passes the offset; so does this now.
+
+RESOURCE_FLUSH read back and redrew the whole resource for any rectangle:
+33 MB at 3840x2160 for a line of text or a firmware blit. It now reads
+back the flushed rectangle (virglrenderer writes the box at the offset
+with the stride given; rutabaga's 2D component places it by x and y with
+that stride) and updates that part of the console, after the bounds check
+virtio-gpu's own flush does.
+
+Checked with a guest at 3840x2160 (fbcon 480x135, x-drm, x-virgl2,
+virtio-vga-rutabaga as vitrine starts it): a line drawn on its own at row
+40, column 11 of a cleared console against the same line at the top left
+(bench/ab/qemu_2d_partial_flush_1027.sh): before, 0 of its 1,681 lit
+pixels shown; after, all 7,936 pixels equal. QEMU's CPU time over 400
+one-character writes 1.45 -> 1.12 s.
+---
+ hw/display/virtio-gpu-rutabaga.c | 42 +++++++++++++++++++++++++++-----
+ 1 file changed, 36 insertions(+), 6 deletions(-)
+
+diff --git a/hw/display/virtio-gpu-rutabaga.c b/hw/display/virtio-gpu-rutabaga.c
+index fd24603627..f42a90c9a2 100644
+--- a/hw/display/virtio-gpu-rutabaga.c
++++ b/hw/display/virtio-gpu-rutabaga.c
+@@ -507,6 +507,7 @@ rutabaga_cmd_resource_flush(VirtIOGPU *g, struct virtio_gpu_ctrl_command *cmd)
+     struct iovec transfer_iovec;
+     struct virtio_gpu_resource_flush rf;
+     bool found = false;
++    uint32_t stride;
+ 
+     VirtIOGPUBase *vb = VIRTIO_GPU_BASE(g);
+     VirtIOGPURutabaga *vr = VIRTIO_GPU_RUTABAGA(g);
+@@ -548,25 +549,49 @@ rutabaga_cmd_resource_flush(VirtIOGPU *g, struct virtio_gpu_ctrl_command *cmd)
+         return;
+     }
+ 
+-    transfer.x = 0;
+-    transfer.y = 0;
++    if (rf.r.x > res->width || rf.r.y > res->height ||
++        rf.r.width > res->width - rf.r.x || rf.r.height > res->height - rf.r.y) {
++        qemu_log_mask(LOG_GUEST_ERROR, "%s: flush bounds outside resource"
++                      " bounds for resource %d: %d %d %d %d vs %d %d\n",
++                      __func__, rf.resource_id, rf.r.x, rf.r.y,
++                      rf.r.width, rf.r.height, res->width, res->height);
++        cmd->error = VIRTIO_GPU_RESP_ERR_INVALID_PARAMETER;
++        return;
++    }
++    if (!rf.r.width || !rf.r.height) {
++        return;
++    }
++
++    /*
++     * Only the flushed rectangle is read back and shown: a line of console text or a firmware blit used to read
++     * back and redraw the whole resource, 33 MB at 3840x2160. virglrenderer writes the box at the offset with the
++     * stride given; rutabaga's 2D component places it by its x and y with that stride.
++     */
++    stride = pixman_image_get_stride(res->image);
++    transfer.x = rf.r.x;
++    transfer.y = rf.r.y;
+     transfer.z = 0;
+-    transfer.w = res->width;
+-    transfer.h = res->height;
++    transfer.w = rf.r.width;
++    transfer.h = rf.r.height;
+     transfer.d = 1;
++    transfer.stride = stride;
++    transfer.offset = (uint64_t)rf.r.y * stride +
++        (uint64_t)rf.r.x * (PIXMAN_FORMAT_BPP(pixman_image_get_format(res->image)) / 8);
+ 
+     transfer_iovec.iov_base = pixman_image_get_data(res->image);
+-    transfer_iovec.iov_len = res->width * res->height * 4;
++    transfer_iovec.iov_len = (size_t)stride * res->height;
+ 
+     result = RGL(rutabaga_resource_transfer_read(vr->rutabaga, 0,
+                                              rf.resource_id, &transfer,
+                                              &transfer_iovec));
+     CHECK(!result, cmd);
+ 
++    /* the console's surface is the whole resource (rutabaga_cmd_set_scanout) */
+     for (i = 0; i < vb->conf.max_outputs; i++) {
+         scanout = &vb->scanout[i];
+         if (scanout->resource_id == res->resource_id) {
+-            qemu_console_update_full(scanout->con);
++            qemu_console_update(scanout->con, rf.r.x, rf.r.y,
++                                rf.r.width, rf.r.height);
+         }
+     }
+ }
+@@ -691,6 +716,11 @@ rutabaga_cmd_transfer_to_host_2d(VirtIOGPU *g,
+     transfer.w = t2d.r.width;
+     transfer.h = t2d.r.height;
+     transfer.d = 1;
++    /*
++     * Where the box starts in the backing (the guest's y * pitch + x * cpp). virglrenderer, which holds the 2D
++     * resources when virgl is on, copies from there; without it every partial update came from the backing's start
++     */
++    transfer.offset = t2d.offset;
+ 
+     result = RGL(rutabaga_resource_transfer_write(vr->rutabaga, 0, t2d.resource_id,
+                                               &transfer));
+-- 
+2.56.0
+

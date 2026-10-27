@@ -707,6 +707,8 @@ void MainWindow::failed(Vm *vm, const QString &error)
     const VmRunner::State state = vm->runner()->state();
     QList<FirmwareFiles::File> firmware;
     bool build = false;
+    /* start() refused it before QEMU ran */
+    bool refused = false;
     QString title, text;
 
     if (state != VmRunner::State::Stopped) {
@@ -729,8 +731,9 @@ void MainWindow::failed(Vm *vm, const QString &error)
             title = tr("Cannot Start %1").arg(vm->name());
             text = tr("%1 could not start.").arg(vm->name());
             firmware = FirmwareRepair::named(vm, error);
-            /* start() refused it, to wait for Vitrine's QEMU */
+            /* start() refused it, to wait for Vitrine's QEMU, or for its GPU */
             build = VmRunner::needsQemuBuild(vm->runner()->runArgs());
+            refused = build || !VmRunner::renderNodeProblem(vm->runner()->runArgs()).isEmpty();
         } else if (from != VmRunner::State::Stopped) {
             title = tr("%1 Stopped").arg(vm->name());
             text = tr("%1 stopped unexpectedly.").arg(vm->name());
@@ -752,7 +755,7 @@ void MainWindow::failed(Vm *vm, const QString &error)
         box->setDefaultButton(button);
     }
     /* not for a start refused before QEMU ran: that log is of another run */
-    if (!build && QFileInfo::exists(vm->runner()->logPath())) {
+    if (!refused && QFileInfo::exists(vm->runner()->logPath())) {
         QPushButton *log = box->addButton(tr("Show &Log"), QMessageBox::ActionRole);
         connect(log, &QPushButton::clicked, this, [this, id]() {
             select(id);

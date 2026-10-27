@@ -52,6 +52,8 @@ qt_add_library(vitrine_core STATIC
     src/core/guesttoolsbuilder.h
     src/core/hostdevices.cpp
     src/core/hostdevices.h
+    src/core/hostgpus.cpp
+    src/core/hostgpus.h
     src/core/hostkvm.cpp
     src/core/hostkvm.h
     src/core/hostkwin.cpp
@@ -243,6 +245,17 @@ set_target_properties(nestedvmview PROPERTIES POSITION_INDEPENDENT_CODE ON
 target_compile_options(nestedvmview PRIVATE
     -Wall -Wextra -Wno-unused-parameter -Wno-missing-field-initializers)
 
+# The windows' own Wayland: the compositor's main device (ui/desktopgpu.h)
+# from linux-dmabuf's default feedback, the header only: its interfaces are
+# in vitrine_vmview's protocol code, which every user of vitrine_ui links
+set(UI_PROTOCOL_DIR ${CMAKE_CURRENT_BINARY_DIR}/ui-protocols)
+set(UI_DMABUF_XML ${WAYLAND_PROTOCOLS_DIR}/stable/linux-dmabuf/linux-dmabuf-v1.xml)
+add_custom_command(OUTPUT ${UI_PROTOCOL_DIR}/linux-dmabuf-v1-client-protocol.h
+    COMMAND ${CMAKE_COMMAND} -E make_directory ${UI_PROTOCOL_DIR}
+    COMMAND ${WAYLAND_SCANNER} client-header ${UI_DMABUF_XML}
+            ${UI_PROTOCOL_DIR}/linux-dmabuf-v1-client-protocol.h
+    DEPENDS ${UI_DMABUF_XML})
+
 # The windows, a library of their own so that tests can use them
 qt_add_library(vitrine_ui STATIC
     src/ui/argseditor.cpp
@@ -253,6 +266,8 @@ qt_add_library(vitrine_ui STATIC
     src/ui/buildswindow.h
     src/ui/clonedialog.cpp
     src/ui/clonedialog.h
+    src/ui/desktopgpu.cpp
+    src/ui/desktopgpu.h
     src/ui/firmwarerepair.cpp
     src/ui/firmwarerepair.h
     src/ui/guesttoolsbuildbanner.cpp
@@ -325,8 +340,11 @@ qt_add_library(vitrine_ui STATIC
     src/ui/vmwindow.h
     src/ui/widgets.cpp
     src/ui/widgets.h
+    ${UI_PROTOCOL_DIR}/linux-dmabuf-v1-client-protocol.h
 )
-target_link_libraries(vitrine_ui PUBLIC vitrine_core vitrine_vmview Qt6::DBus Qt6::Widgets)
+target_include_directories(vitrine_ui PRIVATE ${UI_PROTOCOL_DIR})
+target_link_libraries(vitrine_ui PUBLIC vitrine_core vitrine_vmview Qt6::DBus Qt6::Widgets
+                                 PRIVATE PkgConfig::WAYLAND)
 target_compile_options(vitrine_ui PRIVATE -Wall -Wextra)
 # the logo of a build tree's app (Icons::app): it is CC BY 3.0, a file
 # beside the program rather than a resource compiled into it
@@ -404,6 +422,7 @@ if(BUILD_TESTING)
             guesttools
             guesttoolsbuilder
             hostdevices
+            hostgpus
             hostkvm
             hostkwin
             hostmemory

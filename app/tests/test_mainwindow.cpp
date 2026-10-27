@@ -33,12 +33,14 @@
 #include "activation.h"
 #include "core/guesttoolsbuilder.h"
 #include "core/paths.h"
+#include "core/hostgpus.h"
 #include "core/quitsignals.h"
 #include "core/stackbuilder.h"
 #include "core/tasks.h"
 #include "core/vmrunner.h"
 #include "core/vmstore.h"
 #include "nested/desktopview.h"
+#include "fakegpus.h"
 #include "scales.h"
 #include "ui/mainwindow.h"
 #include "ui/qemudocs.h"
@@ -394,6 +396,8 @@ private slots:
         qputenv("XDG_CONFIG_HOME", m_tmp.filePath("config").toUtf8());
         qputenv("XDG_CACHE_HOME", m_tmp.filePath("cache").toUtf8());
         Paths::setQemuBinary("/nonexistent/qemu-system-x86_64");
+        /* a host without GPUs, not this computer's */
+        FakeGpus(m_tmp.filePath("no-gpus")).use();
         QVERIFY(write(m_tmp.filePath("vms/alpha/vm.args"), kAlpha));
         QVERIFY(write(m_tmp.filePath("vms/bravo/vm.args"), kBravo));
         QVERIFY(write(m_tmp.filePath("vms/long/vm.args"), kLong));
@@ -801,6 +805,39 @@ private slots:
         QCOMPARE(QString::fromUtf8(file.readAll()), oneCard);
         /* what QEMU was to run */
         QVERIFY(bravo->runner()->runArgs().toText().contains("virtio-vga-rutabaga"));
+    }
+
+    /*
+     * A VM whose chosen GPU is not on this computer does not start, and
+     * says why in plain words; QEMU did not run, so the log of an earlier
+     * run is not offered
+     */
+    void gpuNotOnThisComputer()
+    {
+        auto w = window();
+        settle(w.get());
+        Vm *bravo = m_store->find("bravo");
+        QVERIFY(bravo->save(ArgsFile::parse(
+            QString(kBravo) + "-vga none\n-device virtio-vga-rutabaga,x-drm=on,cross-domain=on,"
+                              "x-render-node=/dev/dri/by-path/pci-0000:03:00.0-render\n")));
+        const auto restore = qScopeGuard([bravo]() { bravo->save(ArgsFile::parse(kBravo)); });
+        QVERIFY(write(bravo->runner()->logPath(), "qemu-system-x86_64: an earlier run\n"));
+        /* a QEMU there is: the GPU is what keeps the VM from starting */
+        Paths::setQemuBinary("/usr/bin/true");
+        w->select("bravo");
+
+        action(w.get(), "Start")->trigger();
+        QMessageBox *box = nullptr;
+        QTRY_VERIFY((box = qobject_cast<QMessageBox *>(QApplication::activeModalWidget())));
+        QCOMPARE(box->informativeText(),
+                 "The GPU chosen for this VM is not on this computer (PCI 03:00.0): choose "
+                 "another GPU, or Automatic, in its Display settings.");
+        for (QAbstractButton *button : box->buttons()) {
+            QVERIFY2(button->text() != "Show &Log", "the log of an earlier run");
+        }
+        box->close();
+        QCOMPARE(bravo->runner()->state(), VmRunner::State::Stopped);
+        QCOMPARE(bravo->runner()->pid(), 0);
     }
 
     /*

@@ -7,9 +7,11 @@
 #include <QTemporaryDir>
 #include <QTest>
 
+#include "core/hostgpus.h"
 #include "core/nesteddesktop.h"
 #include "core/vmhardware.h"
 #include "core/vmrunner.h"
+#include "fakegpus.h"
 
 using NestedDesktop::Mode;
 
@@ -88,7 +90,62 @@ class TestNestedDesktop : public QObject
     }
 
 private slots:
-    void initTestCase() { QStandardPaths::setTestModeEnabled(true); }
+    void initTestCase()
+    {
+        QStandardPaths::setTestModeEnabled(true);
+        /* a host without GPUs, not this computer's: command lines as with one */
+        FakeGpus(tmp.filePath("no-gpus")).use();
+    }
+
+    void cleanupTestCase() { HostGpus::setRoots("/sys", "/dev"); }
+
+    /*
+     * The GPU the card renders on, as the Display page keeps it: the card's
+     * x-render-node; turned off and on again, the card is a new one, without
+     */
+    void renderNode()
+    {
+        const QString chosen = "/dev/dri/by-path/pci-0000:03:00.0-render";
+        ArgsFile a = ArgsFile::parse(kNested);
+        auto card = [&a]() { return a.lines[a.indexOf("vga") + 1].value; };
+
+        QCOMPARE(NestedDesktop::renderNode(a), "");
+        NestedDesktop::setRenderNode(a, chosen);
+        QCOMPARE(card(), "virtio-vga-rutabaga,x-drm=on,x-virgl2=on,cross-domain=on,hostmem=16G,"
+                         "ioeventfd=on,x-prefault-blobs=on,x-guest-dmabuf=on,"
+                         "x-render-node=/dev/dri/by-path/pci-0000:03:00.0-render");
+        QCOMPARE(NestedDesktop::renderNode(a), chosen);
+        /* another in its place */
+        NestedDesktop::setRenderNode(a, "/dev/dri/renderD128");
+        QCOMPARE(NestedDesktop::renderNode(a), "/dev/dri/renderD128");
+        QCOMPARE(card().count("x-render-node"), 1);
+        /* Automatic: none, the line as it was */
+        NestedDesktop::setRenderNode(a, "");
+        QCOMPARE(a.toText(), QString(kNested));
+        NestedDesktop::setRenderNode(a, "");
+        QCOMPARE(a.toText(), QString(kNested));
+        /* the two cards of before have it on theirs */
+        ArgsFile two = ArgsFile::parse(kTwoCards);
+        NestedDesktop::setRenderNode(two, chosen);
+        QCOMPARE(NestedDesktop::renderNode(two), chosen);
+        QVERIFY(two.toText().contains("-device virtio-gpu-rutabaga-pci,") &&
+                two.toText().contains("x-guest-dmabuf=on,x-render-node=" + chosen + "\n"));
+        /* no rutabaga card: nothing to keep it on */
+        ArgsFile vm = ArgsFile::parse(kVm);
+        NestedDesktop::setRenderNode(vm, chosen);
+        QCOMPARE(vm.toText(), QString(kVm));
+        QCOMPARE(NestedDesktop::renderNode(vm), "");
+        /* off and on again: a new card, Automatic */
+        NestedDesktop::setRenderNode(a, chosen);
+        NestedDesktop::set(a, false);
+        QCOMPARE(NestedDesktop::renderNode(a), "");
+        NestedDesktop::set(a, true);
+        QCOMPARE(NestedDesktop::renderNode(a), "");
+        QVERIFY(!a.toText().contains("x-render-node"));
+        QVERIFY(NestedDesktop::isRutabagaCard("virtio-vga-rutabaga"));
+        QVERIFY(NestedDesktop::isRutabagaCard("virtio-gpu-rutabaga-pci"));
+        QVERIFY(!NestedDesktop::isRutabagaCard("virtio-vga-gl"));
+    }
 
     /* The checkbox: the card and no VGA beside it, shared RAM, the PIT, pvpanic; and back */
     void turnOnAndOff()

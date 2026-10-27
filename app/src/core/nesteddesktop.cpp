@@ -276,6 +276,36 @@ QStringList environment(const ArgsFile &args)
     return {"SDL_RENDER_DRIVER=vulkan"};
 }
 
+bool isRutabagaCard(const QString &driver)
+{
+    return kRutabagaCards.contains(driver);
+}
+
+QString renderNode(const ArgsFile &args)
+{
+    const int line = cardLine(args);
+    return line < 0 ? QString() : args.valueAt(line).get("x-render-node");
+}
+
+void setRenderNode(ArgsFile &args, const QString &path)
+{
+    const int line = cardLine(args);
+
+    if (line < 0) {
+        return;
+    }
+    OptionValue card = args.valueAt(line);
+    if (card.get("x-render-node") == path && (card.has("x-render-node") || path.isEmpty())) {
+        return;
+    }
+    if (path.isEmpty()) {
+        card.remove("x-render-node");
+    } else {
+        card.set("x-render-node", path);
+    }
+    args.setValueAt(line, card);
+}
+
 QString compositorSocket()
 {
     const QString display = qEnvironmentVariable("WAYLAND_DISPLAY");

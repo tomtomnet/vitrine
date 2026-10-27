@@ -19,13 +19,13 @@ its `Subject:`, else the first line of its description.
 patches that go on top, in this order:
 
 1. `qemu/research/`: the research's QEMU series, its `patches/qemu/series`
-   at commit `a4eb00b` (2026-10-15), each patch without its
+   at commit `0ebe3c9` (2026-10-27), each patch without its
    `Claude-Session:` line and otherwise unchanged. Since 2026-10-14 this
    series is the source of the research's QEMU; the qemu-gui fork
    (`https://github.com/tomtomnet/qemu-gui`) it started from is no longer
    used. 0001-0017 are the fork's commits, 0018-0024 the work the fork had
    not committed on 2026-10-12, split by topic (0020 left when upstream
-   took it), and the last six are for `virtio-gpu-rutabaga`, the nested
+   took it), and the last nine are for `virtio-gpu-rutabaga`, the nested
    desktop's device.
 2. `qemu/vitrine/`: Vitrine's own changes, as new files here rather than
    edits of the others.
@@ -63,12 +63,15 @@ patches that go on top, in this order:
 | `b31e726f02fd8ec2955092744453b7b802bfd51bd9720a60844eccaddf36a429` | `virtio-gpu-rutabaga-reset-contexts.patch`: a reset the guest did not see coming (QMP `system_reset`, Machine > Reset) destroys the guest's rutabaga contexts, so that the next boot's contexts do not meet stale ones of the same ids; the errors a guest can cause logged at most 20 a second |
 | `4886a52e553e50b3e40f0a3f3169b0a674281435c41e0fb36e7cd2a24e1be09b` | `virtio-gpu-rutabaga-prefault-async.patch`: `x-prefault-blobs` queues the blob pre-fault on a vCPU (`async_run_on_cpu()`) instead of waiting for it in the command bottom half, which holds the device's re-entrancy guard: the guest's MSI-X table writes meanwhile (an interrupt moved to another CPU) were dropped ("Blocked re-entrant IO") |
 | `4fe7c201777c4eb794dcf2f1751f5ce1e21e4b5c554d4793c31e8c66bf3ffc5c` | `virtio-gpu-rutabaga-gl-scope-blob-maps.patch`: blob map, unmap and export, and `GET_CAPSET`, also run in virglrenderer's GL context: with a GL display (`-display dbus,gl=on`, Vitrine's window) every virgl blob map failed (-22), and a guest whose Mesa uses virgl, such as the stock Fedora 44 KDE live ISO, stayed black |
+| `45d3af19c0978edc7f573496234c2700c4385e94dced2e2c9e679eb2a0f9780e` | `virtio-gpu-rutabaga-render-node.patch`: `x-render-node=PATH`, the host GPU the contexts render on: the render node goes to rutabaga as its GPU channel, and virglrenderer renders on it, vrend and the native context alike (unset: virglrenderer's first, amdgpu before i915 and xe); checked at realize: a path that is not a `/dev/dri/renderD*` QEMU can open read-write stops QEMU with the reason, where virglrenderer would take its first GPU without a word |
+| `028021d21483538f8a570aca800ae9cec0d69408fb9bb8cd3a6b380caac987ce` | `virtio-gpu-rutabaga-2d-partial-updates.patch`: `TRANSFER_TO_HOST_2D` passes the box's offset in the guest's buffer, which virglrenderer copies from: every partial update came from the buffer's start (no '*' at a LUKS prompt, garbled boot text); `RESOURCE_FLUSH` reads back only the flushed rectangle, after virtio-gpu's bounds check, where it read back the whole resource (33 MB at 3840x2160 for a line of text or a firmware blit) |
+| `b454904909a38abc62b766235dcfedfb95d1017a86585cf10ec781241c2210c7` | `virtio-gpu-rutabaga-2d-shadow.patch`: 2D resources (dumb buffers: the guest's console, a boot splash, a cursor) stay in QEMU's own image until a context or a 3D transfer uses them, as virtio-gpu's 2D device keeps them, where every update went into virglrenderer's texture and came back at the flush (a 4K console scrolling 3,000 lines: 11 uploads and read-backs of 33 MB before, none after); the first 3D use hands rutabaga the whole backing |
 
 When the research's series moves (`r` its repository, `c` the commit,
 `v` this folder):
 
 ```sh
-r=~/Documents/virtio-gpu-desktop c=a4eb00b v=~/Documents/vitrine/host/patches/qemu
+r=~/Documents/virtio-gpu-desktop c=0ebe3c9 v=~/Documents/vitrine/host/patches/qemu
 rm -f "$v"/research/*.patch
 for p in $(git -C "$r" show "$c:patches/qemu/series" | sed 's/#.*//'); do
     git -C "$r" show "$c:patches/qemu/$p" | grep -v '^Claude-Session:' > "$v/research/$p"

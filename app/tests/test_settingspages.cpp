@@ -20,12 +20,16 @@
 #include <QTimer>
 
 #include "core/argsfile.h"
+#include "core/hostgpus.h"
 #include "core/paths.h"
 #include "core/vmstore.h"
 #include "ui/argseditor.h"
 #include "ui/banner.h"
 #include "ui/settingspages.h"
 #include "ui/vmpane.h"
+#include "fakegpus.h"
+
+#include <sys/sysmacros.h>
 
 /*
  * The pages as VmPane drives them, without a screen: load() when a page is
@@ -36,6 +40,9 @@
 class TestSettingsPages : public QObject
 {
     Q_OBJECT
+
+    /* a host without GPUs, not this computer's (fakegpus.h) */
+    QTemporaryDir noGpus;
 
     static QString text(const ArgsFile &args) { return args.toText(); }
 
@@ -62,11 +69,14 @@ private slots:
         /* settings of their own, and no QEMU to read the documentation of */
         QStandardPaths::setTestModeEnabled(true);
         Paths::setQemuBinary("/nonexistent/qemu-system-x86_64");
+        FakeGpus(noGpus.path()).use();
     }
 
     void cleanupTestCase()
     {
         Paths::setQemuBinary({});
+        HostGpus::setRoots("/sys", "/dev");
+        HostGpus::setDesktopDevice(std::nullopt);
     }
 
     /* The list: vitrine's window first, then QEMU's GTK and SDL windows, and none */
@@ -531,6 +541,192 @@ private slots:
             QVERIFY2(!nested->isEnabled(), byHand);
             QVERIFY(hint->isHidden());
         }
+    }
+
+    /*
+     * The host GPU the nested desktop renders on: a row under its checkbox
+     * with several GPUs, or with a choice made; Automatic names what it
+     * takes; a GPU chosen is kept on the card by its stable link
+     */
+    void displayPageGpu()
+    {
+        QTemporaryDir tmp;
+        const auto qemuScript = [&tmp](const QString &name, bool renderNode) {
+            const QString dir = tmp.filePath(name);
+            QDir().mkpath(dir);
+            QFile f(dir + '/' + Paths::qemuSystemName());
+            if (!f.open(QIODevice::WriteOnly)) {
+                return QString();
+            }
+            f.write("#!/bin/sh\n"
+                    "case \"$1 $2\" in\n"
+                    "'-display help') printf 'Available display backend types:\\nnone\\nsdl\\n"
+                    "dbus\\n\\nSuboptions\\n' ;;\n"
+                    "'-device virtio-vga-rutabaga,help') printf 'virtio-vga-rutabaga options:\\n"
+                    "  cross-domain=<bool>\\n  hostmem=<size>\\n  x-drm=<bool>\\n"
+                    "  x-virgl2=<bool>\\n");
+            f.write(renderNode ? "  x-render-node=<str>\\n' ;;\n" : "' ;;\n");
+            f.write("esac\n");
+            f.close();
+            f.setPermissions(QFileDevice::ReadOwner | QFileDevice::ExeOwner);
+            return f.fileName();
+        };
+        const QString research = qemuScript("research", true);
+        const QString older = qemuScript("older", false);
+        const auto restore = qScopeGuard([this]() {
+            FakeGpus(noGpus.path()).use();
+            HostGpus::setDesktopDevice(std::nullopt);
+        });
+        const QString vm = "-machine q35,memory-backend=mem\n"
+                           "-object memory-backend-memfd,id=mem,size=4G,share=on\n"
+                           "-vga none\n"
+                           "-device virtio-vga-rutabaga,x-drm=on,x-virgl2=on,cross-domain=on,"
+                           "hostmem=16G\n"
+                           "-device pvpanic\n"
+                           "-display dbus,p2p=yes,gl=on\n";
+        const auto chose = [&vm](const QString &qemu, const QString &path) {
+            return ArgsFile::parse("#qemu " + qemu + '\n' +
+                                   QString(vm).replace("hostmem=16G",
+                                                       "hostmem=16G,x-render-node=" + path));
+        };
+
+        /* the user's desktop: the B50, the compositor's, and the AMD iGPU */
+        FakeGpus desktop(tmp.filePath("desktop"));
+        desktop.desktop();
+        desktop.use();
+        HostGpus::setDesktopDevice(makedev(226, 0));
+        const QList<HostGpu> gpus = HostGpus::list();
+        QCOMPARE(gpus.size(), 2);
+        const QString b50 = gpus[0].name(), igpu = gpus[1].name();
+
+        DisplayPage page;
+        auto *nested = page.findChild<QCheckBox *>("nested");
+        auto *gpu = page.findChild<QComboBox *>("gpu");
+        auto *hint = page.findChild<QLabel *>("gpuHint");
+        QVERIFY(nested && gpu && hint);
+        const auto *model = qobject_cast<const QStandardItemModel *>(gpu->model());
+        QVERIFY(model);
+
+        ArgsFile args = ArgsFile::parse("#qemu " + research + '\n' + vm);
+        page.load(args);
+        QVERIFY(gpu->isVisibleTo(&page));
+        QVERIFY(gpu->isEnabled());
+        QCOMPARE(gpu->count(), 3);
+        QCOMPARE(gpu->itemText(0), "Automatic: " + b50 + ", the desktop's");
+        QCOMPARE(gpu->itemText(1), b50 + ", the desktop's");
+        QCOMPARE(gpu->itemText(2), igpu);
+        QCOMPARE(gpu->itemData(2, Qt::ToolTipRole).toString(),
+                 "/dev/dri/renderD128, driver amdgpu, PCI 7a:00.0");
+        QCOMPARE(gpu->currentIndex(), 0);
+        QVERIFY(hint->isHidden());
+        QVERIFY(!page.isModified());
+
+        /* another GPU: why it may be slower; kept by its stable link */
+        gpu->setCurrentIndex(2);
+        QVERIFY(page.isModified());
+        QVERIFY2(hint->text().startsWith("This computer's desktop runs on " + b50 +
+                                         ": the guest's frames cross from one GPU to the other"),
+                 qPrintable(hint->text()));
+        QVERIFY(hint->text().contains("may show nothing"));
+        page.save(args);
+        QCOMPARE(text(args), text(chose(research, "/dev/dri/by-path/pci-0000:7a:00.0-render")));
+        QCOMPARE(gpu->currentIndex(), 2);
+        QVERIFY(!page.isModified());
+        /* the desktop's: nothing to say */
+        gpu->setCurrentIndex(1);
+        QVERIFY(hint->isHidden());
+        page.save(args);
+        QCOMPARE(text(args), text(chose(research, "/dev/dri/by-path/pci-0000:03:00.0-render")));
+        /* Automatic: none on the card, the VM as it was */
+        gpu->setCurrentIndex(0);
+        page.save(args);
+        QCOMPARE(text(args), "#qemu " + research + '\n' + vm);
+
+        /* the nested desktop off, no row; on again, nothing changed */
+        nested->setChecked(false);
+        QVERIFY(!gpu->isVisibleTo(&page));
+        nested->setChecked(true);
+        QVERIFY(gpu->isVisibleTo(&page));
+        QVERIFY(!page.isModified());
+
+        /* a choice written by hand: the GPU it names by any path, left as written */
+        args = chose(research, "/dev/dri/renderD128");
+        page.load(args);
+        QCOMPARE(gpu->currentIndex(), 2);
+        QVERIFY(!page.isModified());
+        page.save(args);
+        QCOMPARE(text(args), text(chose(research, "/dev/dri/renderD128")));
+
+        /* a GPU taken out: said, until another is chosen */
+        args = chose(research, "/dev/dri/by-path/pci-0000:05:00.0-render");
+        page.load(args);
+        QCOMPARE(gpu->count(), 4);
+        QCOMPARE(gpu->currentText(), "Not on this computer (PCI 05:00.0)");
+        QCOMPARE(gpu->itemData(3, Qt::ToolTipRole).toString(),
+                 "/dev/dri/by-path/pci-0000:05:00.0-render");
+        QCOMPARE(hint->text(), "This GPU is not on this computer: the VM does not start until "
+                               "another GPU, or Automatic, is chosen.");
+        QVERIFY(!page.isModified());
+        gpu->setCurrentIndex(0);
+        QVERIFY(!model->item(3)->isEnabled());
+        page.save(args);
+        QCOMPARE(text(args), "#qemu " + research + '\n' + vm);
+        QCOMPARE(gpu->count(), 3);
+        args = chose(research, "/dev/dri/card0");
+        page.load(args);
+        QCOMPARE(gpu->currentText(), "Not a GPU (/dev/dri/card0)");
+
+        /* a QEMU without x-render-node: Automatic alone, and why */
+        args = ArgsFile::parse("#qemu " + older + '\n' + vm);
+        page.load(args);
+        QVERIFY(gpu->isVisibleTo(&page));
+        QVERIFY(!gpu->isEnabled());
+        QCOMPARE(hint->text(), "This VM's QEMU cannot choose the GPU: an update of Vitrine's QEMU "
+                               "brings it.");
+        /* one chosen with another QEMU before: back to Automatic only */
+        args = chose(older, "/dev/dri/by-path/pci-0000:7a:00.0-render");
+        page.load(args);
+        QVERIFY(gpu->isEnabled());
+        QVERIFY(model->item(0)->isEnabled() && model->item(2)->isEnabled());
+        QVERIFY(!model->item(1)->isEnabled());
+
+        /* one GPU: no row, unless the VM chose one */
+        FakeGpus laptop(tmp.filePath("laptop"));
+        laptop.laptop();
+        laptop.use();
+        HostGpus::setDesktopDevice(std::nullopt);
+        const QString radeon = HostGpus::list().value(0).name();
+        args = ArgsFile::parse("#qemu " + research + '\n' + vm);
+        page.load(args);
+        QVERIFY(!gpu->isVisibleTo(&page));
+        QVERIFY(hint->isHidden());
+        args = chose(research, "/dev/dri/by-path/pci-0000:65:00.0-render");
+        page.load(args);
+        QVERIFY(gpu->isVisibleTo(&page));
+        QCOMPARE(gpu->itemText(0), "Automatic: " + radeon + ", the desktop's");
+        QCOMPARE(gpu->currentIndex(), 1);
+        QVERIFY(hint->isHidden());
+        QVERIFY(!page.isModified());
+        gpu->setCurrentIndex(0);
+        QVERIFY(hint->isHidden());
+
+        /*
+         * A desktop on a GPU without native context: not to be chosen, and
+         * Automatic leaves it to the renderer, whose GPU it names
+         */
+        FakeGpus nvidia(tmp.filePath("nvidia"));
+        nvidia.gpu("0000:01:00.0", "0x10de", "0x2684", "nvidia", true, 0, 128);
+        nvidia.gpu("0000:00:02.0", "0x8086", "0xa780", "i915", false, 1, 129);
+        nvidia.use();
+        const QList<HostGpu> two = HostGpus::list();
+        args = ArgsFile::parse("#qemu " + research + '\n' + vm);
+        page.load(args);
+        QCOMPARE(gpu->itemText(0), "Automatic: " + two[0].name());
+        QCOMPARE(gpu->itemText(2), two[1].name() + ", the desktop's, without native context");
+        QVERIFY(model->item(1)->isEnabled());
+        QVERIFY(!model->item(2)->isEnabled());
+        QVERIFY2(hint->text().contains("which has no native context in Vitrine's QEMU"),
+                 qPrintable(hint->text()));
     }
 
     /* The count is the Hardware page's: edits elsewhere on the page keep -smp */
