@@ -1,0 +1,138 @@
+From 2f3c11fb6e5c82115e679047a33852a1982797b6 Mon Sep 17 00:00:00 2001
+From: virtio-gpu-desktop <local@localhost>
+Date: Tue, 27 Oct 2026 15:36:12 +0100
+Subject: [PATCH] virtio-gpu-rutabaga: x-render-node, the host GPU the contexts
+ render on
+
+With several GPUs (a discrete card next to the CPU's integrated one kept
+on as a fallback console), virglrenderer opens the first render node of
+its backend table for the native contexts and virgl - amdgpu before i915
+or xe - whatever GPU the host's compositor drives. rutabaga can name the
+node: its get_drm_fd callback opens the first path of type GPU (2) from
+the builder's channels, and virglrenderer takes that fd for vrend's GBM
+device and for the DRM (native context) renderer alike. QEMU passed the
+channels only with cross-domain on, and none of type GPU.
+
+x-render-node=PATH adds the path as such a channel. rutabaga hands it on
+only if it resolves under /dev/dri/renderD, and rutabaga and virglrenderer
+both fall back to the first node without a word when it does not or
+cannot be opened - so QEMU checks it at realize: the resolved path must
+be a /dev/dri/renderD* character device this process can open read-write,
+or the device fails to realize with the reason. Unset: as before.
+
+Checked on a one-GPU host (Radeon 780M): with the option, QEMU's own check
+opens the node, then rutabaga's callback (O_NONBLOCK|O_NOCTTY), and
+virglrenderer opens nothing itself; without it, virglrenderer's own open.
+/dev/null, /dev/dri/card1 and a missing renderD200 stop QEMU at start-up.
+---
+ hw/display/virtio-gpu-rutabaga.c | 58 ++++++++++++++++++++++++++++++--
+ include/hw/virtio/virtio-gpu.h   |  2 ++
+ 2 files changed, 57 insertions(+), 3 deletions(-)
+
+diff --git a/hw/display/virtio-gpu-rutabaga.c b/hw/display/virtio-gpu-rutabaga.c
+index dc1c2790e1..fd24603627 100644
+--- a/hw/display/virtio-gpu-rutabaga.c
++++ b/hw/display/virtio-gpu-rutabaga.c
+@@ -1464,12 +1464,51 @@ static void virtio_gpu_rutabaga_poll_cb(void *opaque)
+     RGL(rutabaga_poll(vr->rutabaga));
+ }
+ 
++/* rutabaga's path type for the GPU (RUTABAGA_PATH_TYPE_GPU); its FFI passes a channel's type on as the path's */
++#define RUTABAGA_CHANNEL_TYPE_GPU 2
++
++/*
++ * x-render-node: with several GPUs, which one renders. Unset, virglrenderer opens the first render node of its
++ * backend table, whatever the host's compositor uses. rutabaga hands the path to virglrenderer only if it resolves
++ * under /dev/dri/renderD, and both fall back to that first node without a word when it does not, or when it cannot
++ * be opened - so it is checked here, and a path that is not a render node this process can open stops the device.
++ */
++static char *virtio_gpu_rutabaga_render_node(const char *path, Error **errp)
++{
++    g_autofree char *real = realpath(path, NULL);
++    struct stat st;
++    int fd;
++
++    if (!real) {
++        error_setg_errno(errp, errno, "x-render-node: %s", path);
++        return NULL;
++    }
++    if (!g_str_has_prefix(real, "/dev/dri/renderD")) {
++        error_setg(errp, "x-render-node: %s is not a DRM render node (/dev/dri/renderD*)", real);
++        return NULL;
++    }
++    fd = qemu_open(real, O_RDWR, errp);
++    if (fd < 0) {
++        error_prepend(errp, "x-render-node: ");
++        return NULL;
++    }
++    if (fstat(fd, &st) || !S_ISCHR(st.st_mode)) {
++        close(fd);
++        error_setg(errp, "x-render-node: %s is not a character device", real);
++        return NULL;
++    }
++    close(fd);
++    return g_steal_pointer(&real);
++}
++
+ static bool virtio_gpu_rutabaga_init(VirtIOGPU *g, Error **errp)
+ {
+     int result;
+     struct rutabaga_builder builder = { 0 };
+     struct rutabaga_channel channel = { 0 };
++    struct rutabaga_channel channel_list[2] = { 0 };
+     struct rutabaga_channels channels = { 0 };
++    g_autofree char *render_node = NULL;
+ 
+     VirtIOGPURutabaga *vr = VIRTIO_GPU_RUTABAGA(g);
+     vr->rutabaga = NULL;
+@@ -1533,11 +1572,23 @@ static bool virtio_gpu_rutabaga_init(VirtIOGPU *g, Error **errp)
+ 
+     if ((builder.capset_mask & (1 << RUTABAGA_CAPSET_CROSS_DOMAIN))) {
+         if (channel.channel_name) {
+-            channels.channels = &channel;
+-            channels.num_channels = 1;
+-            builder.channels = &channels;
++            channel_list[channels.num_channels++] = channel;
+         }
+     }
++    if (vr->render_node) {
++        render_node = virtio_gpu_rutabaga_render_node(vr->render_node, errp);
++        if (!render_node) {
++            return false;
++        }
++        channel_list[channels.num_channels].channel_name = render_node;
++        channel_list[channels.num_channels].channel_type = RUTABAGA_CHANNEL_TYPE_GPU;
++        channels.num_channels++;
++        info_report("virtio-gpu-rutabaga: rendering on %s", render_node);
++    }
++    if (channels.num_channels) {
++        channels.channels = channel_list;
++        builder.channels = &channels;
++    }
+ 
+ #ifdef CONFIG_OPENGL
+     /* virglrenderer makes its context current when it starts: the display's goes back */
+@@ -1694,6 +1745,7 @@ static const Property virtio_gpu_rutabaga_properties[] = {
+     DEFINE_PROP_BOOL("x-guest-dmabuf", VirtIOGPURutabaga, guest_dmabuf, true),
+     DEFINE_PROP_STRING("wayland-socket-path", VirtIOGPURutabaga,
+                        wayland_socket_path),
++    DEFINE_PROP_STRING("x-render-node", VirtIOGPURutabaga, render_node),
+     DEFINE_PROP_STRING("wsi", VirtIOGPURutabaga, wsi),
+ };
+ 
+diff --git a/include/hw/virtio/virtio-gpu.h b/include/hw/virtio/virtio-gpu.h
+index 6407b1cb39..c2c4562027 100644
+--- a/include/hw/virtio/virtio-gpu.h
++++ b/include/hw/virtio/virtio-gpu.h
+@@ -401,6 +401,8 @@ struct VirtIOGPURutabaga {
+     bool prefault_blobs;
+     /* x-guest-dmabuf: shareable guest-memory blobs get a udmabuf of their pages */
+     bool guest_dmabuf;
++    /* x-render-node: the host GPU's render node the contexts render on (unset: virglrenderer's first) */
++    char *render_node;
+ };
+ 
+ /*
+-- 
+2.56.0
+
