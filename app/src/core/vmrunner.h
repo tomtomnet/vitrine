@@ -76,6 +76,33 @@ public:
     static ArgsFile withComputedProperties(
         const ArgsFile &args, const std::function<QStringList(const QString &driver)> &propertiesOf);
     /*
+     * @args with x-render-node=@node, the GPU the VMs render on when they
+     * choose none (HostGpus::automaticNode()), on its virtio-gpu-rutabaga
+     * cards that set none, on their line or with -global, and have it in
+     * the VM's QEMU (@propertiesOf, as above).  Nothing for an empty @node,
+     * as on a host with one GPU: the command line stays as it is.
+     */
+    static ArgsFile withRenderNode(
+        const ArgsFile &args, const QString &node,
+        const std::function<QStringList(const QString &driver)> &propertiesOf);
+    /*
+     * @args with rendernode=@node on its D-Bus display with OpenGL
+     * (-display dbus,gl=on), unless it sets one: the GPU whose EGL draws the
+     * VM's screen for vitrine's window, the desktop's on a host with several
+     * (HostGpus::displayNode()), for the nested desktop and the others
+     * alike.  Nothing for an empty @node.
+     */
+    static ArgsFile withDisplayRenderNode(const ArgsFile &args, const QString &node);
+    /*
+     * Why the GPU @args chose for its rutabaga card (x-render-node, also
+     * with -global) cannot be used on this computer: nothing there now (a
+     * GPU taken out), something other than a GPU's render node, or a GPU
+     * without the native context the card asks for (x-drm).  Empty when it
+     * can, and without a choice.  start() refuses such a VM with it, in
+     * plainer words than QEMU's refusal.
+     */
+    static QString renderNodeProblem(const ArgsFile &args);
+    /*
      * The environment variables QEMU gets on top of the manager's, as
      * NAME=VALUE: DISABLE_RTKIT=1 (PipeWire's RTKit fallback would give
      * QEMU a real-time time limit that kills it once the helper makes its

@@ -21,13 +21,16 @@
 #include <csignal>
 #include <utility>
 
+#include <sys/sysmacros.h>
 #include <unistd.h>
 
+#include "core/hostgpus.h"
 #include "core/paths.h"
 #include "core/qmpclient.h"
 #include "core/vmconfig.h"
 #include "core/vmrunner.h"
 #include "core/vmtemplate.h"
+#include "fakegpus.h"
 
 /* Runs $VITRINE_TEST_QEMU, else the qemu-system-x86_64 in PATH, headless */
 static QString testQemu()
@@ -291,12 +294,16 @@ private slots:
         }
         QStandardPaths::setTestModeEnabled(true);
         Paths::setQemuBinary(testQemu());
+        /* a host without GPUs, not this computer's: command lines as with one */
+        FakeGpus(tmp.filePath("no-gpus")).use();
     }
 
     void cleanupTestCase()
     {
         Paths::setQemuBinary({});
         Paths::setVirtiofsd({});
+        HostGpus::setRoots("/sys", "/dev");
+        HostGpus::setDesktopDevice(std::nullopt);
     }
 
     void init()
@@ -456,6 +463,219 @@ private slots:
                  QStringList({"-device", "virtio-gpu-gl-pci,blob=on"}));
         QCOMPARE(runner.commandLine(ArgsFile::parse("#qemu /nonexistent/qemu\n" + vm)).mid(1, 2),
                  QStringList({"-device", "virtio-gpu-gl-pci,blob=on"}));
+    }
+
+    /*
+     * Automatic: the desktop's GPU on the rutabaga cards that chose none,
+     * where the VM's QEMU has x-render-node; nothing with one GPU
+     */
+    void renderNode()
+    {
+        QStringList asked;
+        auto props = [&asked](const QStringList &known) {
+            return [&asked, known](const QString &driver) {
+                asked << driver;
+                return known;
+            };
+        };
+        const QStringList rutabaga = {"cross-domain", "x-drm", "x-render-node"};
+        auto with = [&](const QString &args, const QString &node,
+                        const QStringList &known) {
+            return VmRunner::withRenderNode(ArgsFile::parse(args), node, props(known)).toText();
+        };
+        const QString card = "-vga none\n-device virtio-vga-rutabaga,x-drm=on,cross-domain=on\n";
+        const QString node = "/dev/dri/renderD129";
+
+        QCOMPARE(with(card, node, rutabaga),
+                 "-vga none\n-device virtio-vga-rutabaga,x-drm=on,cross-domain=on,"
+                 "x-render-node=/dev/dri/renderD129\n");
+        QCOMPARE(asked, QStringList({"virtio-vga-rutabaga"}));
+        /* one GPU: as it is, QEMU not even asked */
+        asked.clear();
+        QCOMPARE(with(card, "", rutabaga), card);
+        QVERIFY(asked.isEmpty());
+        /* the VM's choice stays */
+        const QString chosen = "-device virtio-vga-rutabaga,cross-domain=on,"
+                               "x-render-node=/dev/dri/by-path/pci-0000:7a:00.0-render\n";
+        QCOMPARE(with(chosen, node, rutabaga), chosen);
+        /* and -global's, in either form, which QEMU gives the card first */
+        for (const QString &global :
+             {QString("-global virtio-gpu-rutabaga-device.x-render-node=/dev/dri/renderD128\n"),
+              QString("-global driver=virtio-vga-rutabaga,property=x-render-node,"
+                      "value=/dev/dri/renderD128\n")}) {
+            QCOMPARE(with(card + global, node, rutabaga), card + global);
+        }
+        /* a QEMU without it, or whose properties are not known */
+        QCOMPARE(with(card, node, {"cross-domain", "x-drm"}), card);
+        QCOMPARE(with(card, node, {}), card);
+        /* the two cards of before: the rutabaga one; other cards: not asked */
+        QCOMPARE(with("-vga std\n-device virtio-gpu-rutabaga-pci,cross-domain=on\n", node, rutabaga),
+                 "-vga std\n-device virtio-gpu-rutabaga-pci,cross-domain=on,"
+                 "x-render-node=/dev/dri/renderD129\n");
+        asked.clear();
+        QCOMPARE(with("-device virtio-vga-gl\n", node, rutabaga), "-device virtio-vga-gl\n");
+        QVERIFY(asked.isEmpty());
+    }
+
+    /* The D-Bus display with OpenGL draws the screen on the desktop's GPU, with several */
+    void displayRenderNode()
+    {
+        const QString node = "/dev/dri/renderD129";
+        auto with = [](const QString &args, const QString &node) {
+            return VmRunner::withDisplayRenderNode(ArgsFile::parse(args), node).toText();
+        };
+
+        QCOMPARE(with("-display dbus,p2p=yes,gl=on\n", node),
+                 "-display dbus,p2p=yes,gl=on,rendernode=/dev/dri/renderD129\n");
+        QCOMPARE(with("-display dbus,gl=core\n", node),
+                 "-display dbus,gl=core,rendernode=/dev/dri/renderD129\n");
+        /* one GPU */
+        QCOMPARE(with("-display dbus,p2p=yes,gl=on\n", ""), "-display dbus,p2p=yes,gl=on\n");
+        /* the VM's own */
+        QCOMPARE(with("-display dbus,p2p=yes,gl=on,rendernode=/dev/dri/renderD128\n", node),
+                 "-display dbus,p2p=yes,gl=on,rendernode=/dev/dri/renderD128\n");
+        /* no OpenGL, no EGL; other displays */
+        for (const char *display : {"-display dbus,p2p=yes\n", "-display dbus,p2p=yes,gl=off\n",
+                                    "-display sdl,gl=on\n", "-display egl-headless\n",
+                                    "-m 1G\n"}) {
+            QCOMPARE(with(display, node), QString(display));
+        }
+    }
+
+    /*
+     * The command line on a fake host: with one GPU as it was; with two,
+     * Automatic and the display on the desktop's GPU, the VM's choice kept,
+     * the display on the desktop's GPU whatever the card renders on
+     */
+    void gpusOnCommandLine()
+    {
+        QTemporaryDir hosts;
+        const VmRunner runner(id, tmp.path());
+        const QString rutabagaQemu =
+            script("rutabaga-qemu", "case \"$2\" in\n"
+                                    "virtio-vga-rutabaga,help) cat <<EOF\n"
+                                    "virtio-vga-rutabaga options:\n"
+                                    "  cross-domain=<bool>    - on/off (default: off)\n"
+                                    "  x-drm=<bool>           - on/off (default: off)\n"
+                                    "  x-render-node=<str>\n"
+                                    "EOF\n;;\nesac");
+        const QString olderQemu =
+            script("older-rutabaga-qemu", "case \"$2\" in\n"
+                                          "virtio-vga-rutabaga,help) cat <<EOF\n"
+                                          "virtio-vga-rutabaga options:\n"
+                                          "  cross-domain=<bool>    - on/off (default: off)\n"
+                                          "  x-drm=<bool>           - on/off (default: off)\n"
+                                          "EOF\n;;\nesac");
+        const QString nested = "-vga none\n-device virtio-vga-rutabaga,x-drm=on,cross-domain=on\n"
+                               "-display dbus,p2p=yes,gl=on\n";
+        const QString mainLine = "-device virtio-vga-gl,blob=on\n-display dbus,p2p=yes,gl=on\n";
+        auto lines = [&runner](const QString &qemu, const QString &args) {
+            const QStringList c = runner.commandLine(ArgsFile::parse("#qemu " + qemu + "\n" + args));
+            return QStringList({c.value(c.indexOf("-device") + 1), c.value(c.indexOf("-display") + 1)});
+        };
+        const auto restore = qScopeGuard([this]() {
+            FakeGpus(tmp.filePath("no-gpus")).use();
+            HostGpus::setDesktopDevice(std::nullopt);
+        });
+
+        /* one GPU: as it was */
+        FakeGpus laptop(hosts.filePath("laptop"));
+        laptop.laptop();
+        laptop.use();
+        QCOMPARE(lines(rutabagaQemu, nested),
+                 QStringList({"virtio-vga-rutabaga,x-drm=on,cross-domain=on,wayland-socket-path=" +
+                                  runDir + "/nested.sock",
+                              "dbus,p2p=yes,gl=on"}));
+        QCOMPARE(lines(rutabagaQemu, mainLine),
+                 QStringList({"virtio-vga-gl,blob=on", "dbus,p2p=yes,gl=on"}));
+
+        /* two: the desktop's, by boot_vga (the AMD iGPU), then the compositor's (the B50) */
+        FakeGpus desktop(hosts.filePath("desktop"));
+        desktop.desktop();
+        desktop.use();
+        QCOMPARE(lines(rutabagaQemu, nested),
+                 QStringList({"virtio-vga-rutabaga,x-drm=on,cross-domain=on,wayland-socket-path=" +
+                                  runDir + "/nested.sock,x-render-node=/dev/dri/renderD128",
+                              "dbus,p2p=yes,gl=on,rendernode=/dev/dri/renderD128"}));
+        HostGpus::setDesktopDevice(makedev(226, 0));
+        QCOMPARE(lines(rutabagaQemu, nested),
+                 QStringList({"virtio-vga-rutabaga,x-drm=on,cross-domain=on,wayland-socket-path=" +
+                                  runDir + "/nested.sock,x-render-node=/dev/dri/renderD129",
+                              "dbus,p2p=yes,gl=on,rendernode=/dev/dri/renderD129"}));
+        /* the main line: the display alone */
+        QCOMPARE(lines(rutabagaQemu, mainLine),
+                 QStringList({"virtio-vga-gl,blob=on",
+                              "dbus,p2p=yes,gl=on,rendernode=/dev/dri/renderD129"}));
+        /* the VM's choice: kept, the display on the desktop's all the same */
+        QString chosen = nested;
+        chosen.replace("cross-domain=on\n",
+                       "cross-domain=on,x-render-node=/dev/dri/by-path/pci-0000:7a:00.0-render\n");
+        QCOMPARE(lines(rutabagaQemu, chosen),
+                 QStringList({"virtio-vga-rutabaga,x-drm=on,cross-domain=on,"
+                              "x-render-node=/dev/dri/by-path/pci-0000:7a:00.0-render,"
+                              "wayland-socket-path=" + runDir + "/nested.sock",
+                              "dbus,p2p=yes,gl=on,rendernode=/dev/dri/renderD129"}));
+        /* a QEMU without x-render-node: the card as it was */
+        QCOMPARE(lines(olderQemu, nested),
+                 QStringList({"virtio-vga-rutabaga,x-drm=on,cross-domain=on,wayland-socket-path=" +
+                                  runDir + "/nested.sock",
+                              "dbus,p2p=yes,gl=on,rendernode=/dev/dri/renderD129"}));
+        /* -global's choice */
+        QCOMPARE(lines(rutabagaQemu, nested + "-global virtio-vga-rutabaga.x-render-node="
+                                              "/dev/dri/renderD128\n")
+                     .first(),
+                 "virtio-vga-rutabaga,x-drm=on,cross-domain=on,wayland-socket-path=" + runDir +
+                     "/nested.sock");
+        /* SDL's window: the card only */
+        QString sdl = nested;
+        sdl.replace("dbus,p2p=yes,gl=on", "sdl");
+        QCOMPARE(lines(rutabagaQemu, sdl).last(), "sdl");
+    }
+
+    /*
+     * A GPU chosen that cannot be used here: the VM does not start, and says
+     * why in plain words, before QEMU would in its own
+     */
+    void renderNodeProblems()
+    {
+        QTemporaryDir hosts;
+        FakeGpus host(hosts.path());
+        host.laptop();
+        host.gpu("0000:01:00.0", "0x10de", "0x2684", "nvidia", false, 0, 129);
+        host.use();
+        const auto restore = qScopeGuard([this]() { FakeGpus(tmp.filePath("no-gpus")).use(); });
+        auto problem = [](const QString &args) {
+            return VmRunner::renderNodeProblem(ArgsFile::parse(args));
+        };
+        const QString card = "-device virtio-vga-rutabaga,x-drm=on,cross-domain=on,x-render-node=";
+
+        QCOMPARE(problem("-device virtio-vga-rutabaga,x-drm=on,cross-domain=on\n"), "");
+        QCOMPARE(problem(card + "/dev/dri/by-path/pci-0000:65:00.0-render\n"), "");
+        QCOMPARE(problem(card + "/dev/dri/renderD128\n"), "");
+        QCOMPARE(problem(card + "/dev/dri/by-path/pci-0000:03:00.0-render\n"),
+                 "The GPU chosen for this VM, /dev/dri/by-path/pci-0000:03:00.0-render, is not on "
+                 "this computer: choose another GPU, or Automatic, in its Display settings.");
+        QCOMPARE(problem("-global virtio-vga-rutabaga.x-render-node=/dev/dri/renderD200\n"),
+                 "The GPU chosen for this VM, /dev/dri/renderD200, is not on this computer: "
+                 "choose another GPU, or Automatic, in its Display settings.");
+        QVERIFY(problem(card + "/dev/dri/card1\n").contains("is not a GPU's render node"));
+        /* a GPU without native context, for a card that asks for it */
+        const QString nvidia = problem(card + "/dev/dri/renderD129\n");
+        QVERIFY2(nvidia.contains("has no native context in Vitrine's QEMU (its driver: nvidia)"),
+                 qPrintable(nvidia));
+        QCOMPARE(problem("-device virtio-vga-rutabaga,cross-domain=on,"
+                         "x-render-node=/dev/dri/renderD129\n"),
+                 "");
+
+        /* start() refuses it, QEMU never run */
+        VmRunner runner(id, tmp.path());
+        QSignalSpy failed(&runner, &VmRunner::failed);
+        runner.start(ArgsFile::parse(QByteArray(kHeadless) + card.toUtf8() +
+                                     "/dev/dri/by-path/pci-0000:03:00.0-render\n"));
+        QCOMPARE(failed.size(), 1);
+        QVERIFY(failed[0][0].toString().contains("is not on this computer"));
+        QCOMPARE(runner.state(), VmRunner::State::Stopped);
+        QCOMPARE(runner.pid(), 0);
     }
 
     /* A QEMU that could not answer once, e.g. on a host short of memory, is

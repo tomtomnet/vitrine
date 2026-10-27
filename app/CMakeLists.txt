@@ -52,6 +52,8 @@ qt_add_library(vitrine_core STATIC
     src/core/guesttoolsbuilder.h
     src/core/hostdevices.cpp
     src/core/hostdevices.h
+    src/core/hostgpus.cpp
+    src/core/hostgpus.h
     src/core/hostkvm.cpp
     src/core/hostkvm.h
     src/core/hostkwin.cpp
@@ -404,6 +406,7 @@ if(BUILD_TESTING)
             guesttools
             guesttoolsbuilder
             hostdevices
+            hostgpus
             hostkvm
             hostkwin
             hostmemory

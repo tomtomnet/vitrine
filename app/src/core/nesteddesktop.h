@@ -116,6 +116,17 @@ QString bootWords(const ArgsFile &args, const QString &label);
 ArgsFile withRunArgs(const ArgsFile &args, const QString &socket, const QString &label);
 /* QEMU's: SDL's renderer through Vulkan, as its OpenGL one clashes with rutabaga's */
 QStringList environment(const ArgsFile &args);
+
+/* A virtio-gpu-rutabaga card, which takes x-render-node */
+bool isRutabagaCard(const QString &driver);
+/*
+ * The host GPU the nested desktop's card renders on, as the VM chose it:
+ * its x-render-node, a path to the GPU's render node (HostGpus), empty for
+ * none (Automatic: the runner's at start, HostGpus::automatic())
+ */
+QString renderNode(const ArgsFile &args);
+/* The card's x-render-node, none for an empty @path; nothing without the card */
+void setRenderNode(ArgsFile &args, const QString &path);
 /* This computer's compositor's socket (WAYLAND_DISPLAY in XDG_RUNTIME_DIR,
    unless a path); empty when there is none */
 QString compositorSocket();

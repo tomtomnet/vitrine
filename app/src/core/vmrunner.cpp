@@ -14,6 +14,7 @@
 #include <QSaveFile>
 #include <QTimer>
 
+#include <algorithm>
 #include <csignal>
 #include <utility>
 
@@ -24,6 +25,7 @@
 #include "core/guestagent.h"
 #include "core/guestshutdown.h"
 #include "core/guesttools.h"
+#include "core/hostgpus.h"
 #include "core/hostkvm.h"
 #include "core/nesteddesktop.h"
 #include "core/paths.h"
@@ -222,6 +224,44 @@ static QString fstabExtra(const ArgsFile &args, const QString &qemu)
         lines += fstabLine(s) + '\n';
     }
     return lines;
+}
+
+/*
+ * The properties -global sets, of any driver, with their values:
+ * DRIVER.PROPERTY=VALUE (split at the first dot, as QEMU does) or
+ * driver=DRIVER,property=PROPERTY,value=VALUE
+ */
+static QList<std::pair<QString, QString>> globalProperties(const ArgsFile &args)
+{
+    QList<std::pair<QString, QString>> out;
+
+    for (int i : args.indexesOf("global")) {
+        const OptionValue g = args.valueAt(i);
+        if (g.has("property")) {
+            out.append({g.get("property"), g.get("value")});
+        } else if (!g.items().isEmpty()) {
+            out.append({g.items().first().key.section('.', 1), g.items().first().value});
+        }
+    }
+    return out;
+}
+
+/* KEY=on, or KEY alone, which QEMU takes for on */
+static bool isOn(const OptionValue &v, const QString &key)
+{
+    for (const OptionValue::Item &item : v.items()) {
+        if (item.bare && item.key == key) {
+            return true;
+        }
+    }
+    return v.flag(key);
+}
+
+/* A D-Bus display with OpenGL: -display dbus,gl=on (or core, es) */
+static bool isGlDbusDisplay(const OptionValue &v)
+{
+    return v.implied() == "dbus" &&
+           (isOn(v, "gl") || v.get("gl") == "core" || v.get("gl") == "es");
 }
 
 static QString shellQuote(const QStringList &args)
@@ -471,7 +511,8 @@ QString VmRunner::Private::logTail(bool qemuErrors) const
             continue;
         }
         lines << t;
-        if (t.startsWith(prefix) || qemuMessage.match(t).hasMatch()) {
+        /* not QEMU's notes, such as "info: virtio-gpu-rutabaga: rendering on ..." */
+        if ((t.startsWith(prefix) || qemuMessage.match(t).hasMatch()) && !t.contains(": info: ")) {
             errors << t;
         }
         /* [2026-09-25T06:16:39Z WARN  virtiofsd::limits] ... */
@@ -1279,17 +1320,30 @@ QStringList VmRunner::Private::commandLine(const ArgsFile &args, const QString &
         hostArgs = NestedDesktop::withRunArgs(hostArgs, nestedSocketFor(mode),
                                               name.isEmpty() ? id : name);
     }
-    command += withComputedProperties(hostArgs, [&qemu, problems](const QString &driver) {
-                   QString error;
-                   const QStringList names = QemuInfo::probeProperties(qemu, driver, &error);
-                   if (!error.isEmpty() && problems) {
-                       *problems << VmRunner::tr("cannot read the properties of %1 from %2 "
-                                                 "(%3): it runs without those vitrine "
-                                                 "computes, such as its swap targets")
-                                        .arg(driver, qemu, error);
-                   }
-                   return names;
-               }).argv();
+    const auto propertiesOf = [&qemu, problems](const QString &driver) {
+        QString error;
+        const QStringList names = QemuInfo::probeProperties(qemu, driver, &error);
+        if (!error.isEmpty() && problems) {
+            *problems << VmRunner::tr("cannot read the properties of %1 from %2 (%3): it runs "
+                                      "without those vitrine computes, such as %4")
+                             .arg(driver, qemu, error,
+                                  NestedDesktop::isRutabagaCard(driver)
+                                      ? VmRunner::tr("the GPU it renders on")
+                                      : VmRunner::tr("its swap targets"));
+        }
+        return names;
+    };
+    /* the GPU of a rutabaga card that chose none: the desktop's, with several (Automatic) */
+    if (hostArgs.indexOfDevice(NestedDesktop::isRutabagaCard) >= 0) {
+        hostArgs = withRenderNode(hostArgs, HostGpus::automaticNode(), propertiesOf);
+    }
+    /* the GPU the D-Bus display draws the screen on: the desktop's, with several */
+    const QList<int> displays = hostArgs.indexesOf("display");
+    if (std::any_of(displays.cbegin(), displays.cend(),
+                    [&hostArgs](int i) { return isGlDbusDisplay(hostArgs.valueAt(i)); })) {
+        hostArgs = withDisplayRenderNode(hostArgs, HostGpus::displayNode());
+    }
+    command += withComputedProperties(hostArgs, propertiesOf).argv();
     for (qsizetype i = 0; i < shares.size(); i++) {
         command << "-chardev"
                 << QString("socket,id=vitrine-fs%1,path=%2")
@@ -1383,14 +1437,8 @@ ArgsFile VmRunner::withComputedProperties(
      * driver counts, as the card's inner device and parent types take them
      * too, and only vitrine's virtio-gpu has these properties.
      */
-    for (int i : args.indexesOf("global")) {
-        const OptionValue g = args.valueAt(i);
-        if (g.has("property")) {
-            global << g.get("property");
-        } else if (!g.items().isEmpty()) {
-            /* DRIVER.PROPERTY=VALUE, split at the first dot as QEMU does */
-            global << g.items().first().key.section('.', 1);
-        }
+    for (const auto &[property, value] : globalProperties(args)) {
+        global << property;
     }
     for (int i : out.indexesOf("device")) {
         OptionValue v = out.valueAt(i);
@@ -1412,6 +1460,97 @@ ArgsFile VmRunner::withComputedProperties(
         }
     }
     return out;
+}
+
+ArgsFile VmRunner::withRenderNode(
+    const ArgsFile &args, const QString &node,
+    const std::function<QStringList(const QString &driver)> &propertiesOf)
+{
+    ArgsFile out = args;
+
+    /* nor where -global sets it: QEMU applies it first, and the card line's own would win */
+    for (const auto &[property, value] : globalProperties(args)) {
+        if (property == "x-render-node") {
+            return out;
+        }
+    }
+    if (node.isEmpty()) {
+        return out;
+    }
+    for (int i : out.indexesOf("device")) {
+        OptionValue v = out.valueAt(i);
+
+        if (!NestedDesktop::isRutabagaCard(v.implied()) || v.has("x-render-node") ||
+            !propertiesOf(v.implied()).contains("x-render-node")) {
+            continue;
+        }
+        v.set("x-render-node", node);
+        out.setValueAt(i, v);
+    }
+    return out;
+}
+
+ArgsFile VmRunner::withDisplayRenderNode(const ArgsFile &args, const QString &node)
+{
+    ArgsFile out = args;
+
+    if (node.isEmpty()) {
+        return out;
+    }
+    for (int i : out.indexesOf("display")) {
+        OptionValue v = out.valueAt(i);
+        if (isGlDbusDisplay(v) && !v.has("rendernode")) {
+            v.set("rendernode", node);
+            out.setValueAt(i, v);
+        }
+    }
+    return out;
+}
+
+QString VmRunner::renderNodeProblem(const ArgsFile &args)
+{
+    /* each path chosen, and whether its card asks for the native context */
+    QList<std::pair<QString, bool>> chosen;
+
+    for (int i : args.indexesOf("device")) {
+        const OptionValue v = args.valueAt(i);
+        if (NestedDesktop::isRutabagaCard(v.implied()) && v.has("x-render-node")) {
+            chosen.append({v.get("x-render-node"), isOn(v, "x-drm")});
+        }
+    }
+    for (const auto &[property, value] : globalProperties(args)) {
+        if (property == "x-render-node") {
+            chosen.append({value, false});
+        }
+    }
+    if (chosen.isEmpty()) {
+        return {};
+    }
+    const QList<HostGpu> gpus = HostGpus::list();
+    for (const auto &[path, nativeContext] : chosen) {
+        switch (HostGpus::pathState(path)) {
+        case HostGpus::PathState::Missing:
+            return tr("The GPU chosen for this VM, %1, is not on this computer: choose another "
+                      "GPU, or Automatic, in its Display settings.")
+                .arg(path);
+        case HostGpus::PathState::NotRenderNode:
+            return tr("The GPU chosen for this VM, %1, is not a GPU's render node "
+                      "(/dev/dri/renderD*): choose a GPU, or Automatic, in its Display "
+                      "settings.")
+                .arg(path);
+        case HostGpus::PathState::RenderNode:
+            break;
+        }
+        /* virglrenderer would not start, and QEMU would only say that rutabaga failed */
+        const std::optional<HostGpu> gpu = HostGpus::find(gpus, path);
+        if (nativeContext && gpu && !gpu->hasNativeContext()) {
+            return tr("The GPU chosen for this VM, %1, has no native context in Vitrine's QEMU "
+                      "(its driver: %2), which the nested desktop's card needs: choose another "
+                      "GPU, or Automatic, in its Display settings.")
+                .arg(gpu->name(), gpu->driver.isEmpty() ? tr("none") : gpu->driver);
+        }
+    }
+    return {};
 }
 
 /*
@@ -1555,6 +1694,11 @@ void VmRunner::start(const ArgsFile &args)
                     ? tr("QEMU was not found: set its path in the preferences")
                     : tr("%1 was not found: it is the QEMU of this VM, from the #qemu line "
                          "of its arguments").arg(qemu));
+        return;
+    }
+    /* the GPU the VM chose, before QEMU refuses it in its own words */
+    if (const QString problem = renderNodeProblem(args); !problem.isEmpty()) {
+        d->fail(problem);
         return;
     }
     if (!shares.isEmpty()) {
