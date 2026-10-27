@@ -1,0 +1,246 @@
+From 428ad2d6392498112736b067c82e6bd740c0e8db Mon Sep 17 00:00:00 2001
+From: virtio-gpu-desktop <local@localhost>
+Date: Tue, 27 Oct 2026 16:28:14 +0100
+Subject: [PATCH] virtio-gpu-rutabaga: keep 2D resources in QEMU until a
+ context uses them
+
+A resource made with RESOURCE_CREATE_2D (a dumb buffer: the guest's
+console, a boot splash, a cursor) shows what TRANSFER_TO_HOST_2D puts in
+it. Through rutabaga each update went into virglrenderer's texture and
+came back at the flush: for a 3840x2160 console 5-6 ms up and 4.5 ms back
+on an integrated GPU (more over PCIe) per full-screen update, two copies
+through the GPU for a picture QEMU shows from its own memory.
+
+Until a context or a 3D transfer uses such a resource, QEMU now copies
+the transfers from the backing into its own image, as virtio-gpu's 2D
+device does; flushes and cursor updates use that image. The first
+CTX_ATTACH_RESOURCE, TRANSFER_TO_HOST_3D or TRANSFER_FROM_HOST_3D on it
+sends rutabaga the whole backing, and the resource is rutabaga's from
+then on.
+
+Checked with a guest at 3840x2160 (bench/ab/qemu_2d_partial_flush_1027.sh):
+the console's text is pixel-identical to its reference, 3,000 scrolled
+lines no longer cause any rutabaga transfer (11 uploads and read-backs of
+33 MB before), QEMU's CPU time 0.67 -> 0.59 s for them and 1.12 -> 1.06 s
+for 400 one-character writes. A guest KWin on the virtio output
+(bench/ab/qemu_2d_cursor_1027.sh): the same three cursors, same pixels,
+as without the shadow.
+---
+ hw/display/virtio-gpu-rutabaga.c | 121 +++++++++++++++++++++++++++++++
+ include/hw/virtio/virtio-gpu.h   |   5 ++
+ 2 files changed, 126 insertions(+)
+
+diff --git a/hw/display/virtio-gpu-rutabaga.c b/hw/display/virtio-gpu-rutabaga.c
+index f42a90c9a2..0ccb122704 100644
+--- a/hw/display/virtio-gpu-rutabaga.c
++++ b/hw/display/virtio-gpu-rutabaga.c
+@@ -143,6 +143,57 @@ static void rutabaga_gl_leave(RutabagaGlScope *s)
+     rgl_ret_;                                \
+ })
+ 
++/*
++ * The 2D shadow. A resource made with RESOURCE_CREATE_2D shows what the guest's TRANSFER_TO_HOST_2D commands put in
++ * it, as a rule a dumb buffer (a console, a boot splash, a cursor). Sent through rutabaga, every update went to
++ * virglrenderer's texture and came back at the flush: two copies through the GPU for a picture QEMU shows from its
++ * own memory - 5-6 ms up and 4.5 ms back for a 3840x2160 console on an integrated GPU, more over PCIe. Until a
++ * context or a 3D transfer uses such a resource, QEMU copies the transfers from the backing into its own image (as
++ * virtio-gpu's 2D device does) and rutabaga's copy is left behind; the first 3D use sends rutabaga the whole
++ * backing, and the resource is rutabaga's from then on.
++ */
++static bool rutabaga_shadowed(VirtIOGPURutabaga *vr, uint32_t resource_id)
++{
++    return vr->shadow2d && g_hash_table_contains(vr->shadow2d, GUINT_TO_POINTER(resource_id));
++}
++
++static pixman_image_t *rutabaga_shadow_image(struct virtio_gpu_simple_resource *res)
++{
++    if (!res->image) {
++        pixman_format_code_t pformat = virtio_gpu_get_pixman_format(res->format);
++
++        if (!pformat) {
++            return NULL;
++        }
++        res->image = pixman_image_create_bits(pformat, res->width, res->height, NULL, 0);
++    }
++    return res->image;
++}
++
++/* a context or a 3D transfer is about to use the resource: rutabaga gets the pixels, and keeps them from now on */
++static void rutabaga_unshadow(VirtIOGPU *g, uint32_t resource_id)
++{
++    VirtIOGPURutabaga *vr = VIRTIO_GPU_RUTABAGA(g);
++    struct virtio_gpu_simple_resource *res;
++    struct rutabaga_transfer transfer = { 0 };
++
++    if (!rutabaga_shadowed(vr, resource_id)) {
++        return;
++    }
++    g_hash_table_remove(vr->shadow2d, GUINT_TO_POINTER(resource_id));
++    res = virtio_gpu_find_resource(g, resource_id);
++    if (!res || !res->iov) {
++        return;
++    }
++    transfer.w = res->width;
++    transfer.h = res->height;
++    transfer.d = 1;
++    if (RGL(rutabaga_resource_transfer_write(vr->rutabaga, 0, resource_id, &transfer))) {
++        warn_report("virtio-gpu-rutabaga: resource %" PRIu32 " could not be handed to rutabaga",
++                    resource_id);
++    }
++}
++
+ static void
+ virtio_gpu_rutabaga_update_cursor(VirtIOGPU *g, struct virtio_gpu_scanout *s,
+                                   uint32_t resource_id)
+@@ -170,6 +221,23 @@ virtio_gpu_rutabaga_update_cursor(VirtIOGPU *g, struct virtio_gpu_scanout *s,
+     transfer.h = res->height;
+     transfer.d = 1;
+ 
++    if (rutabaga_shadowed(vr, resource_id)) {
++        /* the 2D shadow: QEMU has the cursor's pixels; never transferred, it is clear (as rutabaga's new texture) */
++        uint32_t row;
++
++        for (row = 0; row < res->height; row++) {
++            uint32_t *dst = s->current_cursor->data + (size_t)row * res->width;
++
++            if (res->image) {
++                memcpy(dst, (uint8_t *)pixman_image_get_data(res->image) +
++                       (size_t)row * pixman_image_get_stride(res->image), res->width * 4);
++            } else {
++                memset(dst, 0, res->width * 4);
++            }
++        }
++        return;
++    }
++
+     transfer_iovec.iov_base = s->current_cursor->data;
+     transfer_iovec.iov_len = res->width * res->height * 4;
+ 
+@@ -217,6 +285,7 @@ rutabaga_cmd_create_resource_2d(VirtIOGPU *g,
+     res = virtio_gpu_simple_resource_new(c2d.resource_id, c2d.width,
+                                          c2d.height, c2d.format);
+     QTAILQ_INSERT_HEAD(&g->reslist, res, next);
++    g_hash_table_add(vr->shadow2d, GUINT_TO_POINTER(c2d.resource_id));
+ }
+ 
+ static void
+@@ -310,6 +379,9 @@ virtio_gpu_rutabaga_resource_unref(VirtIOGPU *g,
+     int slot;
+ 
+     virtio_gpu_disable_scanout_for_resource(g, res->resource_id);
++    if (vr->shadow2d) {
++        g_hash_table_remove(vr->shadow2d, GUINT_TO_POINTER(res->resource_id));
++    }
+ 
+     /* still mapped (a guest that did not unmap it, a reset): unmapped first */
+     slot = virtio_gpu_rutabaga_find_slot(vr, res->resource_id);
+@@ -562,6 +634,18 @@ rutabaga_cmd_resource_flush(VirtIOGPU *g, struct virtio_gpu_ctrl_command *cmd)
+         return;
+     }
+ 
++    if (rutabaga_shadowed(vr, rf.resource_id)) {
++        /* QEMU's image has what the transfers brought (the 2D shadow) */
++        for (i = 0; i < vb->conf.max_outputs; i++) {
++            scanout = &vb->scanout[i];
++            if (scanout->resource_id == res->resource_id) {
++                qemu_console_update(scanout->con, rf.r.x, rf.r.y,
++                                    rf.r.width, rf.r.height);
++            }
++        }
++        return;
++    }
++
+     /*
+      * Only the flushed rectangle is read back and shown: a line of console text or a firmware blit used to read
+      * back and redraw the whole resource, 33 MB at 3840x2160. virglrenderer writes the box at the offset with the
+@@ -710,6 +794,39 @@ rutabaga_cmd_transfer_to_host_2d(VirtIOGPU *g,
+     VIRTIO_GPU_FILL_CMD(t2d);
+     trace_virtio_gpu_cmd_res_xfer_toh_2d(t2d.resource_id);
+ 
++    if (rutabaga_shadowed(vr, t2d.resource_id)) {
++        struct virtio_gpu_simple_resource *res = virtio_gpu_find_resource(g, t2d.resource_id);
++        pixman_image_t *img = res ? rutabaga_shadow_image(res) : NULL;
++        uint32_t stride, bpp, h;
++        uint8_t *data;
++
++        if (!res || !res->iov || !img) {
++            qemu_log_mask(LOG_GUEST_ERROR, "%s: no backing or image for resource %d\n",
++                          __func__, t2d.resource_id);
++            cmd->error = VIRTIO_GPU_RESP_ERR_INVALID_RESOURCE_ID;
++            return;
++        }
++        if (t2d.r.x > res->width || t2d.r.y > res->height ||
++            t2d.r.width > res->width - t2d.r.x || t2d.r.height > res->height - t2d.r.y) {
++            qemu_log_mask(LOG_GUEST_ERROR, "%s: transfer bounds outside resource"
++                          " bounds for resource %d: %d %d %d %d vs %d %d\n",
++                          __func__, t2d.resource_id, t2d.r.x, t2d.r.y,
++                          t2d.r.width, t2d.r.height, res->width, res->height);
++            cmd->error = VIRTIO_GPU_RESP_ERR_INVALID_PARAMETER;
++            return;
++        }
++        stride = pixman_image_get_stride(img);
++        bpp = DIV_ROUND_UP(PIXMAN_FORMAT_BPP(pixman_image_get_format(img)), 8);
++        data = (uint8_t *)pixman_image_get_data(img);
++        /* the guest's backing has the resource's stride (virtio-gpu.c's virtio_gpu_transfer_to_host_2d) */
++        for (h = 0; h < t2d.r.height; h++) {
++            iov_to_buf(res->iov, res->iov_cnt, t2d.offset + (uint64_t)stride * h,
++                       data + (size_t)(t2d.r.y + h) * stride + (size_t)t2d.r.x * bpp,
++                       (size_t)t2d.r.width * bpp);
++        }
++        return;
++    }
++
+     transfer.x = t2d.r.x;
+     transfer.y = t2d.r.y;
+     transfer.z = 0;
+@@ -739,6 +856,7 @@ rutabaga_cmd_transfer_to_host_3d(VirtIOGPU *g,
+ 
+     VIRTIO_GPU_FILL_CMD(t3d);
+     trace_virtio_gpu_cmd_res_xfer_toh_3d(t3d.resource_id);
++    rutabaga_unshadow(g, t3d.resource_id);
+ 
+     transfer.x = t3d.box.x;
+     transfer.y = t3d.box.y;
+@@ -768,6 +886,7 @@ rutabaga_cmd_transfer_from_host_3d(VirtIOGPU *g,
+ 
+     VIRTIO_GPU_FILL_CMD(t3d);
+     trace_virtio_gpu_cmd_res_xfer_fromh_3d(t3d.resource_id);
++    rutabaga_unshadow(g, t3d.resource_id);
+ 
+     transfer.x = t3d.box.x;
+     transfer.y = t3d.box.y;
+@@ -850,6 +969,7 @@ rutabaga_cmd_ctx_attach_resource(VirtIOGPU *g,
+     VIRTIO_GPU_FILL_CMD(att_res);
+     trace_virtio_gpu_cmd_ctx_res_attach(att_res.hdr.ctx_id,
+                                         att_res.resource_id);
++    rutabaga_unshadow(g, att_res.resource_id);
+ 
+     result = RGL(rutabaga_context_attach_resource(vr->rutabaga, att_res.hdr.ctx_id,
+                                               att_res.resource_id));
+@@ -1643,6 +1763,7 @@ static bool virtio_gpu_rutabaga_init(VirtIOGPU *g, Error **errp)
+     }
+ 
+     vr->contexts = g_hash_table_new(NULL, NULL);
++    vr->shadow2d = g_hash_table_new(NULL, NULL);
+     vr->poll_fd = -1;
+     if (!rutabaga_poll_descriptor(vr->rutabaga, &vr->poll_fd) && vr->poll_fd >= 0) {
+         qemu_set_fd_handler(vr->poll_fd, virtio_gpu_rutabaga_poll_cb, NULL, vr);
+diff --git a/include/hw/virtio/virtio-gpu.h b/include/hw/virtio/virtio-gpu.h
+index c2c4562027..e1685cf817 100644
+--- a/include/hw/virtio/virtio-gpu.h
++++ b/include/hw/virtio/virtio-gpu.h
+@@ -388,6 +388,11 @@ struct VirtIOGPURutabaga {
+     struct rutabaga *rutabaga;
+     /* the guest's live context ids, destroyed at a reset that the guest did not see coming */
+     GHashTable *contexts;
++    /*
++     * 2D resources (RESOURCE_CREATE_2D) no context has used: QEMU keeps their pixels itself, as virtio-gpu's 2D
++     * device does, and hands them to rutabaga when a context or a 3D transfer first needs them
++     */
++    GHashTable *shadow2d;
+     /* readable when rutabaga_poll() must run (virglrenderer's fence retirement), or -1 */
+     int poll_fd;
+     /*
+-- 
+2.56.0
+
