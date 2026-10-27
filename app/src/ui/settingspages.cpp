@@ -334,6 +334,9 @@ static VmConfig::Graphics cardGraphics(const QString &driver)
  */
 static const char kNestedCard[] = "virtio-vga-rutabaga";
 
+/* The GPU list's entries that can be chosen: one with a native context */
+static const int kGpuChoosable = Qt::UserRole + 1;
+
 static QString nestedCardText()
 {
     return DisplayPage::tr("Nested desktop's, with VGA (virtio-vga-rutabaga)");
@@ -343,6 +346,7 @@ DisplayPage::DisplayPage(QWidget *parent)
     : SettingsPage(parent), m_custom(new Banner(Banner::Information)), m_display(new QComboBox),
       m_displayHint(Widgets::hint()), m_displayLacks(Widgets::hint()),
       m_nested(new QCheckBox(tr("&Nested desktop"))), m_nestedHint(Widgets::hint()),
+      m_gpu(new QComboBox), m_gpuHint(Widgets::hint()),
       m_windowLabel(new QLabel(tr("QEMU's window:"))), m_card(new QComboBox),
       m_cardHint(Widgets::hint()),
       m_nativeContext(new QCheckBox(tr("&DRM native context"))),
@@ -362,6 +366,10 @@ DisplayPage::DisplayPage(QWidget *parent)
     m_displayLacks->setObjectName("displayLacks");
     m_nested->setObjectName("nested");
     m_nestedHint->setObjectName("nestedHint");
+    m_gpu->setObjectName("gpu");
+    m_gpu->setSizeAdjustPolicy(QComboBox::AdjustToContents);
+    m_gpuHint->setObjectName("gpuHint");
+    m_gpuLabel = Widgets::label(tr("&GPU:"), m_gpu);
     m_card->setObjectName("card");
     /* as wide as the entry shown: the nested desktop's comes and goes */
     m_card->setSizeAdjustPolicy(QComboBox::AdjustToContents);
@@ -378,6 +386,9 @@ DisplayPage::DisplayPage(QWidget *parent)
     /* beside the list: it goes with any of its entries */
     form->addRow(QString(), m_nested);
     form->addRow(QString(), m_nestedHint);
+    /* the nested desktop's, under it */
+    form->addRow(m_gpuLabel, m_gpu);
+    form->addRow(QString(), m_gpuHint);
 
     for (const auto &[key, text] : kWindowOptions) {
         auto *box = new QCheckBox(tr(text));
@@ -404,6 +415,7 @@ DisplayPage::DisplayPage(QWidget *parent)
     connect(m_display, &QComboBox::currentIndexChanged, this, &DisplayPage::update);
     connect(m_card, &QComboBox::currentIndexChanged, this, &DisplayPage::update);
     connect(m_nested, &QCheckBox::toggled, this, &DisplayPage::nestedToggled);
+    connect(m_gpu, &QComboBox::currentIndexChanged, this, &DisplayPage::update);
 }
 
 QIcon DisplayPage::icon() const
@@ -428,6 +440,7 @@ DisplayPage::Shown DisplayPage::shown() const
     }
     s.card = m_card->currentData().toString();
     s.nested = m_nested->isChecked();
+    s.gpu = m_gpu->currentData().toString();
     /* vitrine's settings of a 3D card, of those its QEMU has */
     if (!chosen3dCard().isEmpty()) {
         s.nativeContext = m_nativeContext->isEnabled() && m_nativeContext->isChecked();
@@ -527,6 +540,25 @@ void DisplayPage::update()
                                  : tr("This VM's QEMU did not say whether it has "
                                       "virtio-gpu-rutabaga."));
     m_nestedHint->setVisible(!m_nestedHint->text().isEmpty());
+
+    /*
+     * the host GPU it renders on: with several, or with a choice made; with
+     * a QEMU that cannot choose, Automatic alone, back from a choice made
+     */
+    const bool chose = !NestedDesktop::renderNode(m_args).isEmpty();
+    const bool gpuShown = s.nested && (m_gpus.size() > 1 || chose);
+    const auto *gpuModel = qobject_cast<const QStandardItemModel *>(m_gpu->model());
+    for (int i = 1; gpuModel && i < m_gpu->count(); i++) {
+        gpuModel->item(i)->setEnabled(
+            (!lacksGpuChoice() && m_gpu->itemData(i, kGpuChoosable).toBool()) ||
+            i == m_gpu->currentIndex());
+    }
+    m_gpuLabel->setVisible(gpuShown);
+    m_gpu->setVisible(gpuShown);
+    m_gpu->setEnabled(!lacksGpuChoice() || m_gpu->currentIndex() > 0);
+    m_gpuHint->setText(gpuShown ? gpuHint() : QString());
+    m_gpuHint->setVisible(!m_gpuHint->text().isEmpty());
+
     m_displayLacks->setText(lacking.isEmpty()      ? QString()
                             : lacking.size() == 1 ? tr("This VM's QEMU has no %1 display.")
                                                         .arg(lacking.first())
@@ -623,6 +655,110 @@ void DisplayPage::nestedToggled(bool on)
     update();
 }
 
+bool DisplayPage::lacksGpuChoice() const
+{
+    return m_nestedOffer.properties && !m_nestedOffer.properties->contains("x-render-node");
+}
+
+QString DisplayPage::gpuText(const HostGpu &gpu) const
+{
+    QString text = gpu.name();
+
+    /* two of a model, told apart by their place */
+    if (std::count_if(m_gpus.cbegin(), m_gpus.cend(),
+                      [&gpu](const HostGpu &g) { return g.name() == gpu.name(); }) > 1) {
+        text += QString(" (%1)").arg(gpu.shortAddress());
+    }
+    if (m_desktopGpu && m_desktopGpu->address == gpu.address) {
+        text = tr("%1, the desktop's").arg(text);
+    }
+    return text;
+}
+
+void DisplayPage::loadGpus(const QString &chosen)
+{
+    const QSignalBlocker block(m_gpu);
+    /* what Automatic renders on: the desktop's, else the renderer's own choice */
+    std::optional<HostGpu> automatic = HostGpus::automatic(m_gpus);
+    if (!automatic) {
+        automatic = HostGpus::rendererChoice(m_gpus);
+    }
+    int current = 0;
+
+    m_gpu->clear();
+    m_gpu->addItem(automatic ? tr("Automatic: %1").arg(gpuText(*automatic)) : tr("Automatic"),
+                   QString());
+    for (const HostGpu &gpu : m_gpus) {
+        m_gpu->addItem(gpu.hasNativeContext() ? gpuText(gpu)
+                                              : tr("%1, without native context").arg(gpuText(gpu)),
+                       gpu.path());
+        m_gpu->setItemData(m_gpu->count() - 1, gpu.hasNativeContext(), kGpuChoosable);
+        m_gpu->setItemData(m_gpu->count() - 1,
+                           tr("%1, driver %2, PCI %3")
+                               .arg(gpu.node, gpu.driver.isEmpty() ? tr("none") : gpu.driver,
+                                    gpu.shortAddress()),
+                           Qt::ToolTipRole);
+    }
+    /* the VM's: by its path, or any other to the same node */
+    if (!chosen.isEmpty()) {
+        const std::optional<HostGpu> gpu = HostGpus::find(m_gpus, chosen);
+        current = gpu ? m_gpu->findData(gpu->path()) : -1;
+        if (current < 0) {
+            m_gpu->addItem(HostGpus::pathState(chosen) == HostGpus::PathState::Missing
+                               ? tr("Not on this computer: %1").arg(chosen)
+                               : tr("Not a GPU: %1").arg(chosen),
+                           chosen);
+            m_gpu->setItemData(m_gpu->count() - 1, false, kGpuChoosable);
+            current = m_gpu->count() - 1;
+        }
+    }
+    m_gpu->setCurrentIndex(current);
+}
+
+QString DisplayPage::gpuHint() const
+{
+    const QString chosen = m_gpu->currentData().toString();
+
+    if (lacksGpuChoice()) {
+        return tr("This VM's QEMU cannot choose the GPU: an update of Vitrine's QEMU brings "
+                  "it.");
+    }
+    if (chosen.isEmpty()) {
+        /* what Automatic takes: the desktop's, else the renderer's own choice */
+        std::optional<HostGpu> gpu = HostGpus::automatic(m_gpus);
+        if (!gpu) {
+            gpu = HostGpus::rendererChoice(m_gpus);
+        }
+        if (!gpu || !m_desktopGpu || gpu->address == m_desktopGpu->address) {
+            return {};
+        }
+        return tr("This computer's desktop runs on %1, which has no native context in "
+                  "Vitrine's QEMU: the guest's frames cross from one GPU to the other, which is "
+                  "slower.")
+            .arg(m_desktopGpu->name());
+    }
+    const std::optional<HostGpu> gpu = HostGpus::find(m_gpus, chosen);
+    if (!gpu) {
+        return HostGpus::pathState(chosen) == HostGpus::PathState::Missing
+                   ? tr("This GPU is not on this computer: the VM does not start until "
+                        "another GPU, or Automatic, is chosen.")
+                   : tr("This is not a GPU: the VM does not start until a GPU, or "
+                        "Automatic, is chosen.");
+    }
+    if (!gpu->hasNativeContext()) {
+        return tr("Vitrine's QEMU has no native context for this GPU's driver (%1): the VM "
+                  "does not start on it.")
+            .arg(gpu->driver.isEmpty() ? tr("none") : gpu->driver);
+    }
+    if (m_desktopGpu && gpu->address != m_desktopGpu->address) {
+        return tr("This computer's desktop runs on %1: the guest's frames cross from one GPU "
+                  "to the other, which is slower, and the guest may show nothing if the two "
+                  "cannot share buffers.")
+            .arg(m_desktopGpu->name());
+    }
+    return {};
+}
+
 void DisplayPage::load(const ArgsFile &args)
 {
     const VmConfig::Screen screen = VmConfig::screen(args);
@@ -635,6 +771,9 @@ void DisplayPage::load(const ArgsFile &args)
 
     m_args = args;
     m_nestedOffer = NestedDesktop::offer(args);
+    m_gpus = HostGpus::list();
+    m_desktopGpu = HostGpus::desktop(m_gpus);
+    loadGpus(NestedDesktop::renderNode(args));
     /* the screen: no choice for one shown elsewhere, or in another window */
     if (screen == VmConfig::Screen::Embedded) {
         choice = "dbus";
@@ -735,6 +874,10 @@ void DisplayPage::save(ArgsFile &args)
     /* the nested desktop's card in the card's place, or the card back in its place */
     if (s.nested != m_loaded.nested) {
         NestedDesktop::set(args, s.nested, m_nestedOffer.properties);
+    }
+    /* the GPU on its card, a new one too */
+    if (s.nested && (s.gpu != m_loaded.gpu || s.nested != m_loaded.nested)) {
+        NestedDesktop::setRenderNode(args, s.gpu);
     }
     const bool cardChanged = !s.nested && s.card != m_loaded.card;
     /* the card, its 3D as it was: its settings follow */

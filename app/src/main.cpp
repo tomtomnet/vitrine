@@ -8,12 +8,14 @@
 
 #include <cstdio>
 
+#include "core/hostgpus.h"
 #include "core/paths.h"
 #include "core/quitsignals.h"
 #include "core/stackbuilder.h"
 #include "core/vmconfig.h"
 #include "core/vmrunner.h"
 #include "core/vmstore.h"
+#include "ui/desktopgpu.h"
 #include "ui/icons.h"
 #include "ui/mainwindow.h"
 #include "ui/qemudocs.h"
@@ -109,6 +111,9 @@ int main(int argc, char **argv)
                         "answer on %s\n", qPrintable(socketPath));
         return 1;
     }
+
+    /* the GPU the desktop runs on, which the nested desktops render on by default */
+    HostGpus::setDesktopDevice(DesktopGpu::mainDevice());
 
     VmStore store(Paths::vmsDir());
     /* VMs outlive the manager: find those still running */
