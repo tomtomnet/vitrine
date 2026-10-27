@@ -110,6 +110,13 @@ QString displayNode();
  */
 std::optional<HostGpu> find(const QList<HostGpu> &gpus, const QString &path);
 
+/*
+ * @path, a VM's x-render-node, as the user reads it: "PCI 03:00.0" for
+ * udev's by-path link of a PCI device, which outlives the device, else
+ * the path itself
+ */
+QString describe(const QString &path);
+
 /* What a VM's x-render-node names on this host */
 enum class PathState {
     RenderNode,     // a render node, as QEMU wants it

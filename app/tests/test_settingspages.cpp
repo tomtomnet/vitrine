@@ -661,7 +661,9 @@ private slots:
         args = chose(research, "/dev/dri/by-path/pci-0000:05:00.0-render");
         page.load(args);
         QCOMPARE(gpu->count(), 4);
-        QCOMPARE(gpu->currentText(), "Not on this computer: /dev/dri/by-path/pci-0000:05:00.0-render");
+        QCOMPARE(gpu->currentText(), "Not on this computer (PCI 05:00.0)");
+        QCOMPARE(gpu->itemData(3, Qt::ToolTipRole).toString(),
+                 "/dev/dri/by-path/pci-0000:05:00.0-render");
         QCOMPARE(hint->text(), "This GPU is not on this computer: the VM does not start until "
                                "another GPU, or Automatic, is chosen.");
         QVERIFY(!page.isModified());
@@ -672,7 +674,7 @@ private slots:
         QCOMPARE(gpu->count(), 3);
         args = chose(research, "/dev/dri/card0");
         page.load(args);
-        QCOMPARE(gpu->currentText(), "Not a GPU: /dev/dri/card0");
+        QCOMPARE(gpu->currentText(), "Not a GPU (/dev/dri/card0)");
 
         /* a QEMU without x-render-node: Automatic alone, and why */
         args = ArgsFile::parse("#qemu " + older + '\n' + vm);

@@ -1530,13 +1530,12 @@ QString VmRunner::renderNodeProblem(const ArgsFile &args)
     for (const auto &[path, nativeContext] : chosen) {
         switch (HostGpus::pathState(path)) {
         case HostGpus::PathState::Missing:
-            return tr("The GPU chosen for this VM, %1, is not on this computer: choose another "
+            return tr("The GPU chosen for this VM is not on this computer (%1): choose another "
                       "GPU, or Automatic, in its Display settings.")
-                .arg(path);
+                .arg(HostGpus::describe(path));
         case HostGpus::PathState::NotRenderNode:
-            return tr("The GPU chosen for this VM, %1, is not a GPU's render node "
-                      "(/dev/dri/renderD*): choose a GPU, or Automatic, in its Display "
-                      "settings.")
+            return tr("The GPU chosen for this VM is not a GPU's render node (%1): choose a "
+                      "GPU, or Automatic, in its Display settings.")
                 .arg(path);
         case HostGpus::PathState::RenderNode:
             break;

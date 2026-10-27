@@ -246,6 +246,17 @@ std::optional<HostGpu> find(const QList<HostGpu> &gpus, const QString &path)
     return std::nullopt;
 }
 
+QString describe(const QString &path)
+{
+    /* /dev/dri/by-path/pci-0000:03:00.0-render */
+    static const QRegularExpression byPath(
+        "^/dev/dri/by-path/pci-(?:0000:)?([0-9a-f]{4}:[0-9a-f]{2}:[0-9a-f]{2}\\.[0-9a-f]|"
+        "[0-9a-f]{2}:[0-9a-f]{2}\\.[0-9a-f])-render$");
+    const QRegularExpressionMatch m = byPath.match(path);
+
+    return m.hasMatch() ? "PCI " + m.captured(1) : path;
+}
+
 PathState pathState(const QString &path)
 {
     const QString target = resolved(path);

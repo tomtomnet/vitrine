@@ -509,7 +509,8 @@ private slots:
         QCOMPARE(with(card, node, {"cross-domain", "x-drm"}), card);
         QCOMPARE(with(card, node, {}), card);
         /* the two cards of before: the rutabaga one; other cards: not asked */
-        QCOMPARE(with("-vga std\n-device virtio-gpu-rutabaga-pci,cross-domain=on\n", node, rutabaga),
+        const QString twoCards = "-vga std\n-device virtio-gpu-rutabaga-pci,cross-domain=on\n";
+        QCOMPARE(with(twoCards, node, rutabaga),
                  "-vga std\n-device virtio-gpu-rutabaga-pci,cross-domain=on,"
                  "x-render-node=/dev/dri/renderD129\n");
         asked.clear();
@@ -569,9 +570,12 @@ private slots:
         const QString nested = "-vga none\n-device virtio-vga-rutabaga,x-drm=on,cross-domain=on\n"
                                "-display dbus,p2p=yes,gl=on\n";
         const QString mainLine = "-device virtio-vga-gl,blob=on\n-display dbus,p2p=yes,gl=on\n";
+        /* the VM's card and display, as QEMU gets them */
         auto lines = [&runner](const QString &qemu, const QString &args) {
-            const QStringList c = runner.commandLine(ArgsFile::parse("#qemu " + qemu + "\n" + args));
-            return QStringList({c.value(c.indexOf("-device") + 1), c.value(c.indexOf("-display") + 1)});
+            const QStringList c =
+                runner.commandLine(ArgsFile::parse("#qemu " + qemu + "\n" + args));
+            return QStringList(
+                {c.value(c.indexOf("-device") + 1), c.value(c.indexOf("-display") + 1)});
         };
         const auto restore = qScopeGuard([this]() {
             FakeGpus(tmp.filePath("no-gpus")).use();
@@ -653,10 +657,10 @@ private slots:
         QCOMPARE(problem(card + "/dev/dri/by-path/pci-0000:65:00.0-render\n"), "");
         QCOMPARE(problem(card + "/dev/dri/renderD128\n"), "");
         QCOMPARE(problem(card + "/dev/dri/by-path/pci-0000:03:00.0-render\n"),
-                 "The GPU chosen for this VM, /dev/dri/by-path/pci-0000:03:00.0-render, is not on "
-                 "this computer: choose another GPU, or Automatic, in its Display settings.");
+                 "The GPU chosen for this VM is not on this computer (PCI 03:00.0): choose "
+                 "another GPU, or Automatic, in its Display settings.");
         QCOMPARE(problem("-global virtio-vga-rutabaga.x-render-node=/dev/dri/renderD200\n"),
-                 "The GPU chosen for this VM, /dev/dri/renderD200, is not on this computer: "
+                 "The GPU chosen for this VM is not on this computer (/dev/dri/renderD200): "
                  "choose another GPU, or Automatic, in its Display settings.");
         QVERIFY(problem(card + "/dev/dri/card1\n").contains("is not a GPU's render node"));
         /* a GPU without native context, for a card that asks for it */

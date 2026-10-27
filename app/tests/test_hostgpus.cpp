@@ -239,6 +239,19 @@ private slots:
         QCOMPARE(HostGpus::pathState("/dev/null"), S::NotRenderNode);
     }
 
+    /* A VM's choice as the user reads it: a by-path link by its PCI address */
+    void describe()
+    {
+        QCOMPARE(HostGpus::describe("/dev/dri/by-path/pci-0000:03:00.0-render"), "PCI 03:00.0");
+        QCOMPARE(HostGpus::describe("/dev/dri/by-path/pci-0001:c4:00.1-render"),
+                 "PCI 0001:c4:00.1");
+        QCOMPARE(HostGpus::describe("/dev/dri/renderD129"), "/dev/dri/renderD129");
+        QCOMPARE(HostGpus::describe("/dev/dri/by-path/platform-fd4a0000.gpu-render"),
+                 "/dev/dri/by-path/platform-fd4a0000.gpu-render");
+        QCOMPARE(HostGpus::describe("/dev/dri/by-path/pci-0000:03:00.0-card"),
+                 "/dev/dri/by-path/pci-0000:03:00.0-card");
+    }
+
     /* The names: the vendor's short one, and the model people know */
     void names()
     {

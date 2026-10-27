@@ -704,12 +704,13 @@ void DisplayPage::loadGpus(const QString &chosen)
         const std::optional<HostGpu> gpu = HostGpus::find(m_gpus, chosen);
         current = gpu ? m_gpu->findData(gpu->path()) : -1;
         if (current < 0) {
-            m_gpu->addItem(HostGpus::pathState(chosen) == HostGpus::PathState::Missing
-                               ? tr("Not on this computer: %1").arg(chosen)
-                               : tr("Not a GPU: %1").arg(chosen),
+            const bool gone = HostGpus::pathState(chosen) == HostGpus::PathState::Missing;
+            m_gpu->addItem(gone ? tr("Not on this computer (%1)").arg(HostGpus::describe(chosen))
+                                : tr("Not a GPU (%1)").arg(chosen),
                            chosen);
-            m_gpu->setItemData(m_gpu->count() - 1, false, kGpuChoosable);
             current = m_gpu->count() - 1;
+            m_gpu->setItemData(current, false, kGpuChoosable);
+            m_gpu->setItemData(current, chosen, Qt::ToolTipRole);
         }
     }
     m_gpu->setCurrentIndex(current);
