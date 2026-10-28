@@ -1,0 +1,87 @@
+From 55928063aabb053c2401cf36c04f15aad5cbee1d Mon Sep 17 00:00:00 2001
+From: virtio-gpu-desktop <local@localhost>
+Date: Tue, 27 Oct 2026 17:02:53 +0100
+Subject: [PATCH] virtio-gpu-rutabaga: context-0 fences without a context-0
+ renderer
+
+Fenced commands on the global timeline (no ring index: 2D transfers,
+flushes, scanouts) went to rutabaga's default component. Without virgl2
+that is virglrenderer with no vrend, and virgl_renderer_create_fence()
+refuses context-0 fences then (EINVAL): the command failed, the guest
+waited on its fence, and a guest KWin on the virtio output got no further
+than its first fenced cursor upload.
+
+When no renderer runs context 0 (no virgl2, no gfxstream) every such
+command has been done by QEMU synchronously before its fence is created,
+so QEMU signals the fence at once, through the same bottom half as
+rutabaga's fence callback. With virgl2 or gfxstream nothing changes.
+
+With the QEMU-only 2D resources this makes x-virgl2 optional for a
+guest session on the virtio output. Checked without virgl
+(bench/ab/qemu_2d_cursor_1027.sh, four runs): the guest's KWin starts, the
+same three cursors as with virgl (one run showed two hide updates before
+the first cursor, KWin's startup order), no failed fence; the console
+test is pixel-identical. The nested desktop (cross-domain) without virgl2
+is not checked yet.
+---
+ hw/display/virtio-gpu-rutabaga.c | 23 ++++++++++++++++++++---
+ 1 file changed, 20 insertions(+), 3 deletions(-)
+
+diff --git a/hw/display/virtio-gpu-rutabaga.c b/hw/display/virtio-gpu-rutabaga.c
+index 132ef7dd9d..dab2e99ab2 100644
+--- a/hw/display/virtio-gpu-rutabaga.c
++++ b/hw/display/virtio-gpu-rutabaga.c
+@@ -157,6 +157,14 @@ static bool rutabaga_shadowed(VirtIOGPURutabaga *vr, uint32_t resource_id)
+     return vr->shadow2d && g_hash_table_contains(vr->shadow2d, GUINT_TO_POINTER(resource_id));
+ }
+ 
++/* rutabaga has a renderer for 2D resources and context 0 (virglrenderer's vrend runs only with virgl2; gfxstream) */
++static bool rutabaga_ctx0_renderer(VirtIOGPURutabaga *vr)
++{
++    return vr->capset_mask & ((1ULL << RUTABAGA_CAPSET_VIRGL2) | (1ULL << RUTABAGA_CAPSET_GFXSTREAM_VULKAN) |
++                              (1ULL << RUTABAGA_CAPSET_GFXSTREAM_GLES) |
++                              (1ULL << RUTABAGA_CAPSET_GFXSTREAM_COMPOSER));
++}
++
+ static bool rutabaga_qemu_only(VirtIOGPURutabaga *vr, uint32_t resource_id)
+ {
+     return vr->qemu2d && g_hash_table_contains(vr->qemu2d, GUINT_TO_POINTER(resource_id));
+@@ -298,9 +306,7 @@ rutabaga_cmd_create_resource_2d(VirtIOGPU *g,
+     rc_3d.nr_samples = 0;
+     rc_3d.flags = VIRTIO_GPU_RESOURCE_FLAG_Y_0_TOP;
+ 
+-    if (vr->capset_mask & ((1ULL << RUTABAGA_CAPSET_VIRGL2) | (1ULL << RUTABAGA_CAPSET_GFXSTREAM_VULKAN) |
+-                           (1ULL << RUTABAGA_CAPSET_GFXSTREAM_GLES) |
+-                           (1ULL << RUTABAGA_CAPSET_GFXSTREAM_COMPOSER))) {
++    if (rutabaga_ctx0_renderer(vr)) {
+         result = RGL(rutabaga_resource_create_3d(vr->rutabaga, c2d.resource_id, &rc_3d));
+         CHECK(!result, cmd);
+     } else {
+@@ -1435,6 +1441,9 @@ rutabaga_cmd_resource_unmap_blob(VirtIOGPU *g,
+     CHECK(!result, cmd);
+ }
+ 
++static void virtio_gpu_rutabaga_fence_cb(uint64_t user_data,
++                                         const struct rutabaga_fence *fence);
++
+ static void
+ virtio_gpu_rutabaga_process_cmd(VirtIOGPU *g,
+                                 struct virtio_gpu_ctrl_command *cmd)
+@@ -1544,6 +1553,14 @@ virtio_gpu_rutabaga_process_cmd(VirtIOGPU *g,
+ 
+     trace_virtio_gpu_fence_ctrl(cmd->cmd_hdr.fence_id, cmd->cmd_hdr.type);
+ 
++    if (!(fence.flags & RUTABAGA_FLAG_INFO_RING_IDX) && !rutabaga_ctx0_renderer(vr)) {
++        /*
++         * The global timeline with no renderer for context 0: QEMU has done this command and every earlier one, so the
++         * fence is signaled at once (virglrenderer refuses context-0 fences, EINVAL, when vrend does not run)
++         */
++        virtio_gpu_rutabaga_fence_cb((uint64_t)g, &fence);
++        return;
++    }
+     result = RGL(rutabaga_create_fence(vr->rutabaga, &fence));
+     CHECK(!result, cmd);
+ }
+-- 
+2.56.0
+

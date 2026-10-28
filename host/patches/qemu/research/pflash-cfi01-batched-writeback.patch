@@ -1,0 +1,175 @@
+From 45ead05093f8b8eed9de2de812c616d02847709c Mon Sep 17 00:00:00 2001
+From: virtio-gpu-desktop <local@localhost>
+Date: Wed, 28 Oct 2026 01:53:59 +0100
+Subject: [PATCH] pflash_cfi01: write programmed sectors back in batches
+
+Every programmed byte or word was written to the backing file at once,
+one blk_pwrite of its 512-byte sector. A UEFI variable store reclaim
+reprograms the whole store byte by byte: with OVMF's 2 MB build (128 KB
+VARS) that is ~195,000 programmed bytes, as many sector writes, and the
+TianoCore logo freezes for 6-9 s. OVMF reclaims every few boots when its
+BDS rewrites console variables at each boot (two virtio-serial
+controllers: about every 6th boot).
+
+The programmed sectors are now marked in a bitmap and written back in
+runs when the guest returns the flash to read-array mode (OVMF's
+QemuFlashWrite does after every write), from a 100 ms timer for guests
+that do not, at system reset, when the VM stops and after an incoming
+migration. The flash contents seen by the guest are unchanged: only the
+backing file is updated later. x-write-batch=off restores the old
+behaviour.
+
+Measured (bench/ab/qemu_pflash_reclaim_1028.sh: q35, KVM, Fedora's
+OVMF_CODE.fd, one VARS file kept across 12 boots, two virtio-serial-pci,
+each boot timed from QEMU's start to GRUB's menu; Ryzen 7 260):
+- reclaim boots (5 and 11): 7537 / 7325 ms -> 3522 / 3512 ms;
+- other boots: ~1365 ms -> ~1155 ms;
+- the VARS file is identical after every boot (md5).
+The reclaim's remaining ~2.4 s are the guest's MMIO writes themselves:
+~357,000 more exits to QEMU than a normal boot, ~6.6 us each on this
+host (kernel 7.2.9: IBPB before exit to userspace, SRSO safe RET).
+---
+ hw/block/pflash_cfi01.c | 72 +++++++++++++++++++++++++++++++++++++++++
+ 1 file changed, 72 insertions(+)
+
+diff --git a/hw/block/pflash_cfi01.c b/hw/block/pflash_cfi01.c
+index 486fc6350d..c6d81d5e77 100644
+--- a/hw/block/pflash_cfi01.c
++++ b/hw/block/pflash_cfi01.c
+@@ -48,6 +48,7 @@
+ #include "qemu/host-utils.h"
+ #include "qemu/log.h"
+ #include "qemu/option.h"
++#include "qemu/timer.h"
+ #include "hw/core/sysbus.h"
+ #include "migration/vmstate.h"
+ #include "system/blockdev.h"
+@@ -88,6 +89,15 @@ struct PFlashCFI01 {
+     /* block update buffer */
+     unsigned char *blk_bytes;
+     uint32_t blk_offset;
++
++    /*
++     * x-write-batch: programmed bytes are written back per 512-byte sector when the guest is done (read-array mode),
++     * from a timer, at reset and when the VM stops - not one blk_pwrite per programmed byte
++     */
++    bool write_batch;
++    unsigned long *dirty;   /* one bit per BDRV_SECTOR_SIZE of the flash */
++    QEMUTimer *flush_timer;
++    VMChangeStateEntry *flush_vmstate;
+ };
+ 
+ static int pflash_post_load(void *opaque, int version_id);
+@@ -388,12 +398,58 @@ static uint32_t pflash_read(PFlashCFI01 *pfl, hwaddr offset,
+     return ret;
+ }
+ 
++/* write the dirty sectors back to disk, in runs */
++static void pflash_flush_dirty(PFlashCFI01 *pfl)
++{
++    uint64_t nb = DIV_ROUND_UP(pfl->sector_len * pfl->nb_blocs, BDRV_SECTOR_SIZE);
++    uint64_t start = find_first_bit(pfl->dirty, nb);
++
++    while (start < nb) {
++        uint64_t end = find_next_zero_bit(pfl->dirty, nb, start);
++        int ret;
++
++        bitmap_clear(pfl->dirty, start, end - start);
++        ret = blk_pwrite(pfl->blk, start * BDRV_SECTOR_SIZE, (end - start) * BDRV_SECTOR_SIZE,
++                         pfl->storage + start * BDRV_SECTOR_SIZE, 0);
++        if (ret < 0) {
++            error_report("Could not update PFLASH: %s", strerror(-ret));
++        }
++        start = find_next_bit(pfl->dirty, nb, end);
++    }
++}
++
++static void pflash_flush_timer_cb(void *opaque)
++{
++    pflash_flush_dirty(opaque);
++}
++
++static void pflash_flush_vmstate_cb(void *opaque, bool running, RunState state)
++{
++    if (!running) {
++        pflash_flush_dirty(opaque);
++    }
++}
++
+ /* update flash content on disk */
+ static void pflash_update(PFlashCFI01 *pfl, int offset,
+                           int size)
+ {
+     int offset_end;
+     int ret;
++    if (pfl->blk && pfl->dirty) {
++        /*
++         * Batched: an UEFI variable store reclaim programs the whole store byte by byte, each byte one blk_pwrite of
++         * its sector - 380,000 of them and ~10 s with OVMF's 2 MB build. The sectors are marked and written back when
++         * the guest returns the flash to read-array mode (OVMF does after every write it makes), or by the timer
++         */
++        offset_end = offset + size;
++        bitmap_set(pfl->dirty, offset / BDRV_SECTOR_SIZE,
++                   DIV_ROUND_UP(offset_end, BDRV_SECTOR_SIZE) - offset / BDRV_SECTOR_SIZE);
++        if (!timer_pending(pfl->flush_timer)) {
++            timer_mod(pfl->flush_timer, qemu_clock_get_ms(QEMU_CLOCK_REALTIME) + 100);
++        }
++        return;
++    }
+     if (pfl->blk) {
+         offset_end = offset + size;
+         /* widen to sector boundaries */
+@@ -660,6 +716,9 @@ static void pflash_write(PFlashCFI01 *pfl, hwaddr offset,
+  mode_read_array:
+     trace_pflash_mode_read_array(pfl->name);
+     pflash_set_to_read_array_mode(pfl);
++    if (pfl->dirty) {
++        pflash_flush_dirty(pfl);
++    }
+ }
+ 
+ 
+@@ -871,6 +930,12 @@ static void pflash_cfi01_realize(DeviceState *dev, Error **errp)
+ 
+     pfl->blk_bytes = g_malloc(pfl->writeblock_size);
+     pfl->blk_offset = -1;
++
++    if (pfl->blk && !pfl->ro && pfl->write_batch) {
++        pfl->dirty = bitmap_new(DIV_ROUND_UP(total_len, BDRV_SECTOR_SIZE));
++        pfl->flush_timer = timer_new_ms(QEMU_CLOCK_REALTIME, pflash_flush_timer_cb, pfl);
++        pfl->flush_vmstate = qemu_add_vm_change_state_handler(pflash_flush_vmstate_cb, pfl);
++    }
+ }
+ 
+ static void pflash_cfi01_system_reset(DeviceState *dev)
+@@ -886,6 +951,9 @@ static void pflash_cfi01_system_reset(DeviceState *dev)
+     pfl->status = 0x80;
+ 
+     pfl->blk_offset = -1;
++    if (pfl->dirty) {
++        pflash_flush_dirty(pfl);
++    }
+ }
+ 
+ static const Property pflash_cfi01_properties[] = {
+@@ -923,6 +991,7 @@ static const Property pflash_cfi01_properties[] = {
+     DEFINE_PROP_UINT16("id2", PFlashCFI01, ident2, 0),
+     DEFINE_PROP_UINT16("id3", PFlashCFI01, ident3, 0),
+     DEFINE_PROP_STRING("name", PFlashCFI01, name),
++    DEFINE_PROP_BOOL("x-write-batch", PFlashCFI01, write_batch, true),
+ };
+ 
+ static void pflash_cfi01_class_init(ObjectClass *klass, const void *data)
+@@ -1023,6 +1092,9 @@ static void postload_update_cb(void *opaque, bool running, RunState state)
+ 
+     trace_pflash_postload_cb(pfl->name);
+     pflash_update(pfl, 0, pfl->sector_len * pfl->nb_blocs);
++    if (pfl->dirty) {
++        pflash_flush_dirty(pfl);
++    }
+ }
+ 
+ static int pflash_post_load(void *opaque, int version_id)
+-- 
+2.56.0
+
