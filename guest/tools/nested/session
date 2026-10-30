@@ -70,13 +70,16 @@ log() { echo "crosvm-desktop: $1" | systemd-cat -t crosvm-desktop -p "${2:-info}
 # takes none, so the signal ended this script, and the session with it, at any switch: Ctrl+Alt+F3
 # from vitrine's Send Key menu, chvt. In VT_AUTO the kernel switches by itself, which it refuses
 # from a VT in KD_GRAPHICS: KD_TEXT too (the VM's own screen shows this VT's empty console while
-# the session draws through the proxy). Away from its VT the session runs on, as any session
-# switched away from. VT_SETMODE 0x5602 (struct vt_mode {char mode, waitv; short relsig, acqsig,
-# frsig}, mode 0 = VT_AUTO) and KDSETMODE 0x4B3A (0 = KD_TEXT) on the controlling terminal: the VT.
+# the session draws through the proxy), its cursor hidden: once the VT has been switched away from
+# and back, the framebuffer console blinks it 5 times a second, each one a flush of the VM's screen.
+# Away from its VT the session runs on, as any session switched away from. VT_SETMODE 0x5602
+# (struct vt_mode {char mode, waitv; short relsig, acqsig, frsig}, mode 0 = VT_AUTO), KDSETMODE
+# 0x4B3A (0 = KD_TEXT) and DECTCEM off on the controlling terminal: the VT.
 if ! python3 -I -c 'import fcntl, struct
-tty = open("/dev/tty", "rb", buffering=0)
+tty = open("/dev/tty", "r+b", buffering=0)
 fcntl.ioctl(tty, 0x5602, struct.pack("bbhhh", 0, 0, 0, 0, 0))
-fcntl.ioctl(tty, 0x4B3A, 0)' 2> /dev/null; then
+fcntl.ioctl(tty, 0x4B3A, 0)
+tty.write(b"\033[?25l")' 2> /dev/null; then
     log "the session's VT stays as the login manager set it: a switch to another VT ends the session" warning
 fi
 

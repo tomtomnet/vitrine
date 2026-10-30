@@ -182,7 +182,9 @@ fi
   to answer a switch, which nothing did, so a switch to another VT
   (Ctrl+Alt+F3 from vitrine's Send Key menu, chvt) ended the session.  The
   kernel now switches by itself, and the session runs on in the
-  background, as any session switched away from
+  background, as any session switched away from; the VT's cursor is hidden,
+  which the framebuffer console would blink 5 times a second once the VT
+  has been switched away from and back
 
 * Tue Oct 27 2026 vitrine <noreply@anthropic.com> - 0.1.0-24
 - the driver: a DIRTYFB without clips, which means the whole framebuffer,
