@@ -354,12 +354,10 @@ private slots:
         QCOMPARE(toolsPatches[3].name(), "linux-drm-virtio-host-vblank-7.3.patch");
         QCOMPARE(toolsPatches[4].name(), "linux-drm-virtio-flip-grace.patch");
         QCOMPARE(toolsPatches.last().name(), "linux-drm-virtio-deferred-map-error.patch");
-        /* the nested desktop's: the research's work on the proxy and its Intel CCS change,
-           KPipeWire's k2 */
+        /* the nested desktop's: the research's work on the proxy as one patch, KPipeWire's k2 */
         const QList<Patch> proxyPatches = patches(find(all, "proxy"));
-        QCOMPARE(proxyPatches.size(), 2);
+        QCOMPARE(proxyPatches.size(), 1);
         QCOMPARE(proxyPatches[0].path, "proxy/wl-cross-domain-proxy-research.patch");
-        QCOMPARE(proxyPatches[1].path, "proxy/wl-cross-domain-proxy-intel-ccs.patch");
         const QList<Patch> kpipewirePatches = patches(find(all, "kpipewire"));
         QCOMPARE(kpipewirePatches.size(), 2);
         QCOMPARE(kpipewirePatches.last().path, "kpipewire/kpipewire-dmabuf-frame-fds-and-size.patch");

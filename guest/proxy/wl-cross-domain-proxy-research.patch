@@ -1,19 +1,33 @@
 The research's work on wl-cross-domain-proxy (virtio-gpu-desktop,
-src/wl-cross-domain-proxy at its commit 18cb8b2), as one diff against
+src/wl-cross-domain-proxy at its commit cf498ad), as one diff against
 upstream c6ce1ca89fb4, the commit it started from
 (patches/wl-cross-domain-proxy/BASE.md there).  What the nested desktop
 needs of the proxy beyond upstream: the presentation clock translated into
 the guest's, fence waits before a frame reaches the host, the host's pointer
 grab and shortcut capture, the clipboard following the window's focus, an
-opaque toplevel, resizes settled before they reach the guest, AMD DCC
-modifiers left out of the dma-buf feedback (the host can scan the frames out
-then), statistics and their overlay, and the host's hang-up: an empty
-receive (the host end of the connection closed: the app serving QEMU's
-socket quit or crashed) ends that guest client instead of polling on, as
-the app's own close would: xdg_toplevel.close to each of its windows first
-(the nested KWin then quits as after a closed window, without its wrapper
-restarting it), its requests dropped, its connection closed once it
+opaque toplevel, resizes settled before they reach the guest, AMD DCC and
+Intel CCS modifiers left out of the dma-buf feedback (the host can scan the
+frames out then), statistics and their overlay, and the host's hang-up: an
+empty receive (the host end of the connection closed: the app serving
+QEMU's socket quit or crashed) ends that guest client instead of polling
+on, as the app's own close would: xdg_toplevel.close to each of its windows
+first (the nested KWin then quits as after a closed window, without its
+wrapper restarting it), its requests dropped, its connection closed once it
 disconnects or 3 s later (a client without a window: at once).
+
+The grab: a host KWin 6.8 applies a pointer constraint, and its end, at the
+window's next commit, so the proxy commits the window itself after each
+change when the guest has nothing pending on it; out of full screen
+(Ctrl+Alt+F) the capture keeps following the pointer, as QEMU's SDL window
+keeps its grab; a client without a window geometry (Hyprland nested) takes
+its window's size from the host's last configure.
+
+A guest client that stops reading for a while (the nested KWin busy during
+a dnf update in its guest, or as its session starts, with a fast mouse over
+the window): the host's events for it wait in its outgoing buffer, which
+grows from 4 KiB up to 16 MiB instead of failing with E2BIG (the proxy
+exited on that, and the nested session with it), and they go out as soon
+as its socket takes more.
 
 Licence: these changes are GPL-2.0-or-later (the research's, the user's
 choice of 2026-10-14); Victoria Brekenfeld's proxy stays MIT, with her
@@ -92,7 +106,7 @@ diff -ruN a/src/args.rs b/src/args.rs
          }
      }
  }
-@@ -56,6 +65,165 @@
+@@ -56,6 +65,168 @@
                                  via socket-activation. (Conflicts with '--listen' and '--listen-fd'.)
    -f, --filter-global <NAME>    Hides the specified global name from proxied applications.
  
@@ -142,10 +156,13 @@ diff -ruN a/src/args.rs b/src/args.rs
 +                                pause, f12, a, ...) or keyN (evdev code).
 +                                While released, the window title says so.
 +  --fullscreen-chord <CHORD>    Chord that takes the focused window out of full
-+                                screen and releases the shortcuts, or puts it
-+                                back and captures them (default ctrl+alt+f, as
-+                                QEMU's; none for no chord). Its last key never
-+                                reaches the guest.
++                                screen or puts it back (default ctrl+alt+f, as
++                                QEMU's; none for no chord). Back in full screen
++                                the shortcuts are captured again if released;
++                                out of it they keep following the pointer (with
++                                --no-follow-pointer they are released until the
++                                window next gets keyboard focus). Its last key
++                                never reaches the guest.
 +  --resize-settle-ms <MS>       A new size of a forwarded window reaches the guest
 +                                once the window has kept it this long (and is not
 +                                being resized by its edge), as QEMU's displays do;
@@ -258,7 +275,7 @@ diff -ruN a/src/args.rs b/src/args.rs
  ARGS:
    <PROGRAM> <ARGS..>            Spawns the specified program and sets `$WAYLAND_SOCKET` to the proxy.
                                  (Conflicts with '--listen', '--listen-fd' and '--accept-fd'.)
-@@ -118,9 +286,171 @@
+@@ -118,9 +289,171 @@
          .and_then(|fds| fds.into_iter().next())
          .map(|(_name, fd)| fd.into_std());
  
@@ -431,7 +448,7 @@ diff -ruN a/src/args.rs b/src/args.rs
  
      if args.contains(["-h", "--help"]) {
          Ok(Mode::Help.into())
-@@ -132,40 +462,40 @@
+@@ -132,40 +465,40 @@
              bail!("`--accept-fd` without socket-activation");
          }
  
@@ -481,7 +498,7 @@ diff -ruN a/src/args.rs b/src/args.rs
          }
          check_flag("--listen", args)?;
  
-@@ -173,13 +503,13 @@
+@@ -173,13 +506,13 @@
              bail!("`--socket-name` and `--socket-path` are mutually exclusive");
          }
  
@@ -3369,7 +3386,7 @@ diff -ruN a/src/session/fence.rs b/src/session/fence.rs
 diff -ruN a/src/session/grab.rs b/src/session/grab.rs
 --- a/src/session/grab.rs
 +++ b/src/session/grab.rs
-@@ -0,0 +1,454 @@
+@@ -0,0 +1,519 @@
 +//! Pointer grab, as QEMU's SDL window does it (2026-10-08).
 +//!
 +//! Host KWin 6.8 handles Meta + mouse (left drag moves a window, right drag
@@ -3389,10 +3406,22 @@ diff -ruN a/src/session/grab.rs b/src/session/grab.rs
 +//! SDL window, it lets go within 3 logical pixels of the window's edge and
 +//! takes the pointer again 6 pixels inside, so the pointer can leave a windowed
 +//! desktop (the window's size comes from nested KWin's
-+//! xdg_surface.set_window_geometry; no size, no grab). A surface takes one
++//! xdg_surface.set_window_geometry, or - for a client that sets none and is
++//! simply its surface, as Aquamarine's Wayland backend: Hyprland nested,
++//! 2026-10-20 - from the host's last configure with a size; no size, no grab).
++//! A surface takes one
 +//! pointer constraint (`already_constrained` ends the connection): the proxy
 +//! gives its own up before the guest locks or confines the pointer itself
 +//! (nested KWin's Right Ctrl) and takes it again after the guest lets go.
++//!
++//! Since KWin 6.8 the host applies a pointer constraint as surface state, the
++//! confinement as its end: at the surface's next commit. An idle nested desktop
++//! commits nothing, so with Meta held the host still took the right click (and
++//! resized the VM's window), and a confinement the proxy had ended kept the
++//! pointer in the window, until the guest drew something (2026-10-20, the
++//! user: Super + right click stopped working after a while). The proxy commits
++//! the window itself after each change when nothing of the guest is pending on
++//! it ([`super::pending`]); otherwise the guest's own commit follows shortly.
 +
 +use std::collections::HashMap;
 +use std::ffi::CString;
@@ -3425,6 +3454,9 @@ diff -ruN a/src/session/grab.rs b/src/session/grab.rs
 +    parents: HashMap<u32, u32>,
 +    /// window geometry size by toplevel surface (guest ids, logical pixels)
 +    sizes: HashMap<u32, (f64, f64)>,
++    /// the host's last configure with a size, by toplevel surface: the window's size for a client that sets no
++    /// window geometry (its surface is the window)
++    configured: HashMap<u32, (f64, f64)>,
 +    /// the guest's own locks and confinements: id -> toplevel surface
 +    guest_constraints: HashMap<u32, u32>,
 +    /// the guest's wl_pointer that has the pointer focus
@@ -3436,6 +3468,8 @@ diff -ruN a/src/session/grab.rs b/src/session/grab.rs
 +    keyboard: Option<u32>,
 +    /// Meta keys held (evdev 125, 126)
 +    meta: u8,
++    /// a window surface whose commit applies the proxy's last constraint change (see the top)
++    commit: Option<u32>,
 +    warned: bool,
 +}
 +
@@ -3455,14 +3489,22 @@ diff -ruN a/src/session/grab.rs b/src/session/grab.rs
 +            confinement: None,
 +            parents: HashMap::new(),
 +            sizes: HashMap::new(),
++            configured: HashMap::new(),
 +            guest_constraints: HashMap::new(),
 +            pointer: None,
 +            over: None,
 +            pos: (0.0, 0.0),
 +            keyboard: None,
 +            meta: 0,
++            commit: None,
 +            warned: false,
 +        }
++    }
++
++    /// The window surface (guest id) to commit for the host to apply the
++    /// proxy's last grab or release, once.
++    pub(super) fn take_commit(&mut self) -> Option<u32> {
++        self.commit.take()
 +    }
 +
 +    /// The toplevel surface under the pointer (guest id), for shortcuts.rs.
@@ -3483,7 +3525,7 @@ diff -ruN a/src/session/grab.rs b/src/session/grab.rs
 +
 +    /// Whether the pointer is far enough inside the window to (keep) grab(bing) it.
 +    fn inside(&self, surface: u32, grabbed: bool) -> bool {
-+        let Some(&(w, h)) = self.sizes.get(&surface) else {
++        let Some(&(w, h)) = self.sizes.get(&surface).or_else(|| self.configured.get(&surface)) else {
 +            return false;
 +        };
 +        let border = if grabbed { RELEASE_BORDER } else { ACQUIRE_BORDER };
@@ -3498,6 +3540,7 @@ diff -ruN a/src/session/grab.rs b/src/session/grab.rs
 +                opcode: request_opcode(&ZWP_CONFINED_POINTER_V1_INTERFACE, "destroy"),
 +                args: smallvec![],
 +            });
++            self.commit = Some(surface);
 +            debug!("grab: pointer released (surface {surface})");
 +        }
 +    }
@@ -3561,6 +3604,7 @@ diff -ruN a/src/session/grab.rs b/src/session/grab.rs
 +            ],
 +        });
 +        self.confinement = Some((id, surface));
++        self.commit = Some(surface);
 +        debug!("grab: pointer confined to surface {surface}");
 +    }
 +
@@ -3619,6 +3663,7 @@ diff -ruN a/src/session/grab.rs b/src/session/grab.rs
 +                }
 +                self.parents.remove(&surface);
 +                self.sizes.remove(&surface);
++                self.configured.remove(&surface);
 +                if self.over == Some(surface) {
 +                    self.over = None;
 +                }
@@ -3651,6 +3696,13 @@ diff -ruN a/src/session/grab.rs b/src/session/grab.rs
 +            }
 +            ("wl_pointer", "leave") => {
 +                self.over = None;
++            }
++            ("xdg_toplevel", "configure") => {
++                if let (Some(surface), [Argument::Int(w), Argument::Int(h), ..]) = (shell.surface_of(msg.sender_id), &msg.args[..]) {
++                    if *w > 0 && *h > 0 {
++                        self.configured.insert(surface, (*w as f64, *h as f64));
++                    }
++                }
 +            }
 +            ("wl_pointer", "motion") => {
 +                if let [_, ref x, ref y] = msg.args[..] {
@@ -3742,6 +3794,36 @@ diff -ruN a/src/session/grab.rs b/src/session/grab.rs
 +    }
 +
 +    #[test]
++    fn a_window_without_geometry_takes_its_size_from_the_hosts_configure() {
++        // Aquamarine's Wayland backend (Hyprland nested) sets no window geometry: its surface is the window
++        let mut sh = Shell::default();
++        sh.on_request("xdg_wm_base", "get_xdg_surface", &mut m(4, smallvec![Argument::NewId(10), Argument::Object(3)]));
++        sh.on_request("xdg_surface", "get_toplevel", &mut m(10, smallvec![Argument::NewId(11)]));
++        let mut own = OwnObjects::new();
++        own.free.extend(FIRST_OWN + 1..FIRST_OWN + 16);
++        let mut g = Grab::new(true);
++        let mut out = Vec::new();
++        let mut global = m(FIRST_OWN, smallvec![Argument::Uint(9), Argument::Str(Some(Box::new(CString::new("zwp_pointer_constraints_v1").unwrap()))), Argument::Uint(1)]);
++        g.on_own_event(OwnKind::Registry, "global", &mut global);
++        g.on_event("wl_keyboard", "enter", &m(30, smallvec![Argument::Uint(1), Argument::Object(3), Argument::Array(Box::new(vec![]))]), &sh, true, &mut own, &mut out);
++        g.on_event("wl_pointer", "enter", &m(20, smallvec![Argument::Uint(2), Argument::Object(3), fx(800.0), fx(450.0)]), &sh, true, &mut own, &mut out);
++        // a configure without a size (the client decides) gives none: no grab
++        g.on_event("xdg_toplevel", "configure", &m(11, smallvec![Argument::Int(0), Argument::Int(0), Argument::Array(Box::new(vec![]))]), &sh, true, &mut own, &mut out);
++        g.on_event("wl_keyboard", "key", &m(30, smallvec![Argument::Uint(3), Argument::Uint(0), Argument::Uint(125), Argument::Uint(1)]), &sh, true, &mut own, &mut out);
++        assert_eq!(confines(&out), 0, "no size yet");
++        g.on_event("wl_keyboard", "key", &m(30, smallvec![Argument::Uint(3), Argument::Uint(0), Argument::Uint(125), Argument::Uint(0)]), &sh, true, &mut own, &mut out);
++        // full screen 1920x1080: Meta held over it grabs, the edge lets go
++        g.on_event("xdg_toplevel", "configure", &m(11, smallvec![Argument::Int(1920), Argument::Int(1080), Argument::Array(Box::new(vec![]))]), &sh, true, &mut own, &mut out);
++        g.on_event("wl_keyboard", "key", &m(30, smallvec![Argument::Uint(3), Argument::Uint(0), Argument::Uint(125), Argument::Uint(1)]), &sh, true, &mut own, &mut out);
++        assert_eq!(confines(&out), 1);
++        let (id, surface) = g.confinement.unwrap();
++        assert_eq!(surface, 3);
++        out.clear();
++        g.on_event("wl_pointer", "motion", &m(20, smallvec![Argument::Uint(0), fx(1918.0), fx(450.0)]), &sh, true, &mut own, &mut out);
++        assert_eq!(releases(&out, id), 1);
++    }
++
++    #[test]
 +    fn grabs_over_the_focused_window_and_lets_go_at_its_edge_and_for_the_guest() {
 +        // a toplevel (surface 3, xdg_surface 10) with its output on subsurface 39, 1600x900
 +        let mut sh = Shell::default();
@@ -3827,7 +3909,7 @@ diff -ruN a/src/session/grab.rs b/src/session/grab.rs
 diff -ruN a/src/session/mod.rs b/src/session/mod.rs
 --- a/src/session/mod.rs
 +++ b/src/session/mod.rs
-@@ -0,0 +1,647 @@
+@@ -0,0 +1,669 @@
 +//! What the proxy adds on top of plain message forwarding, shared by both
 +//! transports (virtio-gpu cross-domain and the local test transport).
 +//!
@@ -3839,7 +3921,8 @@ diff -ruN a/src/session/mod.rs b/src/session/mod.rs
 +//!   in use; a constant shift keeps that true, provided the proxy's range is
 +//!   taken before the guest's first request (`Session::startup`).
 +//! * Keyboard shortcut capture ([`shortcuts`]) and the pointer grab that goes
-+//!   with it ([`grab`]).
++//!   with it ([`grab`]), which commits the window itself when nothing of the
++//!   guest is pending on it ([`pending`]).
 +//! * The host/guest clipboard ([`clipboard`]).
 +//! * The fence gate ([`fence`]).
 +//! * A guard for host seats that lose their pointer or keyboard ([`seat`]).
@@ -3853,6 +3936,7 @@ diff -ruN a/src/session/mod.rs b/src/session/mod.rs
 +mod shell;
 +mod opaque;
 +mod overlay;
++mod pending;
 +mod resize;
 +mod shortcuts;
 +mod stats;
@@ -3877,6 +3961,7 @@ diff -ruN a/src/session/mod.rs b/src/session/mod.rs
 +use clipboard::Clipboard;
 +use grab::Grab;
 +use overlay::Overlay;
++use pending::Pending;
 +use resize::Resize;
 +use seat::SeatGuard;
 +use shell::Shell;
@@ -4065,6 +4150,7 @@ diff -ruN a/src/session/mod.rs b/src/session/mod.rs
 +    own: OwnObjects,
 +    shortcuts: Shortcuts,
 +    grab: Grab,
++    pending: Pending,
 +    clipboard: Clipboard,
 +    seat: SeatGuard,
 +    shell: Shell,
@@ -4145,6 +4231,7 @@ diff -ruN a/src/session/mod.rs b/src/session/mod.rs
 +            own: OwnObjects::new(),
 +            shortcuts: Shortcuts::new(cfg.shortcuts.clone()),
 +            grab: Grab::new(cfg.shortcuts.enabled && cfg.shortcuts.grab_pointer),
++            pending: Pending::default(),
 +            clipboard,
 +            seat: SeatGuard::default(),
 +            shell: Shell::with_label(cfg.title_label.clone()),
@@ -4278,11 +4365,14 @@ diff -ruN a/src/session/mod.rs b/src/session/mod.rs
 +        if !self.resize.on_request(interface, name, msg, pre, post) {
 +            return false;
 +        }
++        // forwarded: the guest's pending state, before the hooks that may commit
++        self.pending.on_request(interface, name, msg);
 +        self.shortcuts
 +            .on_request(interface, name, msg, &self.shell, &mut self.own, pre, post);
 +        let captured = !self.shortcuts.released();
 +        self.grab
 +            .on_request(interface, name, msg, &self.shell, captured, &mut self.own, pre, post);
++        self.commit_grab(post);
 +        self.opaque
 +            .on_request(interface, name, msg, &self.shell, &mut self.own, pre);
 +        if self.stats.active() {
@@ -4302,6 +4392,19 @@ diff -ruN a/src/session/mod.rs b/src/session/mod.rs
 +            let now = self.clock.borrow().now();
 +            let event = obj.interface.events[msg.opcode as usize].name;
 +            self.stats.on_event(obj.interface.name, event, msg, now);
++        }
++    }
++
++    /// The grab changed a pointer constraint, which the host applies at the
++    /// window's next commit: the proxy's own commit when the guest has nothing
++    /// pending on the window, else the guest's (pending.rs).
++    fn commit_grab(&mut self, out: &mut Vec<HostRequest>) {
++        let Some(surface) = self.grab.take_commit() else { return };
++        if self.pending.clean(surface) {
++            out.push(pending::commit(surface));
++            debug!("grab: committed surface {surface} for the host to apply it");
++        } else {
++            debug!("grab: surface {surface} has guest state pending, its commit applies the grab");
 +        }
 +    }
 +
@@ -4381,6 +4484,7 @@ diff -ruN a/src/session/mod.rs b/src/session/mod.rs
 +        let captured = !self.shortcuts.released();
 +        self.grab
 +            .on_event(interface.name, event, &msg, &self.shell, captured, &mut self.own, out);
++        self.commit_grab(out);
 +        // the capture follows the pointer (shortcuts.rs): grab.rs knows the toplevel under it
 +        self.shortcuts
 +            .set_pointer_over(self.grab.over(), &self.shell, &mut self.own, out);
@@ -4953,6 +5057,299 @@ diff -ruN a/src/session/overlay.rs b/src/session/overlay.rs
 +        let took = t.elapsed();
 +        assert!(took >= EXIT_WAIT && took < EXIT_WAIT * 3, "{took:?}");
 +        assert!(!o.shown());
++    }
++}
+diff -ruN a/src/session/pending.rs b/src/session/pending.rs
+--- a/src/session/pending.rs
++++ b/src/session/pending.rs
+@@ -0,0 +1,289 @@
++//! Which forwarded windows have guest state that is not committed yet.
++//!
++//! Some of the proxy's own requests take effect only at the surface's next
++//! commit: since KWin 6.8 the host applies a pointer constraint, its creation
++//! as its end, as surface state (grab.rs). An idle nested desktop draws
++//! nothing, so its window can go seconds without a commit of the guest, and
++//! the proxy commits the window itself (2026-10-20: Super + right click
++//! resized the VM's window on the host until the guest drew something, and a
++//! grab the proxy had ended kept the host pointer in the window as long).
++//!
++//! That commit must not take part of a guest frame along (an attached buffer,
++//! a subsurface's cached state, an acknowledged configure): it goes only to a
++//! window with nothing of the guest pending, i.e. no request about the window's
++//! surfaces or the objects made for them since the guest last committed the
++//! window, apart from requests the guest means to take effect at once (a title,
++//! a keyboard shortcuts inhibitor). As resize.rs's bookkeeping, conservative:
++//! any other request about the window counts as pending, so at worst the
++//! proxy's request waits for the guest's next commit, as it did before.
++
++use std::collections::{HashMap, HashSet};
++use std::os::fd::OwnedFd;
++
++use smallvec::smallvec;
++use wayland_server::backend::protocol::{Argument, Message};
++use wayland_server::protocol::__interfaces::WL_SURFACE_INTERFACE;
++
++use super::{HostRequest, guest_to_host, request_opcode};
++
++#[derive(Default)]
++pub(super) struct Pending {
++    /// the guest's wl_surfaces
++    surfaces: HashSet<u32>,
++    /// subsurface -> parent (wl_surfaces)
++    parents: HashMap<u32, u32>,
++    /// wl_subsurface -> its wl_surface
++    subsurfaces: HashMap<u32, u32>,
++    /// objects made for a surface (xdg_surface, viewport, commit timer, ...) -> that wl_surface
++    bound: HashMap<u32, u32>,
++    /// surfaces without a parent that have guest requests not committed yet
++    dirty: HashSet<u32>,
++}
++
++/// Requests about a surface that the guest means to take effect at once, not
++/// with its next commit; a commit of the proxy's may go out after them.
++fn immediate(interface: &str, request: &str) -> bool {
++    matches!(
++        (interface, request),
++        (
++            "xdg_toplevel",
++            "set_title"
++                | "set_app_id"
++                | "set_parent"
++                | "show_window_menu"
++                | "move"
++                | "resize"
++                | "set_maximized"
++                | "unset_maximized"
++                | "set_fullscreen"
++                | "unset_fullscreen"
++                | "set_minimized"
++        ) | ("zwp_keyboard_shortcuts_inhibit_manager_v1", "inhibit_shortcuts")
++            | ("zwp_keyboard_shortcuts_inhibitor_v1", "destroy")
++            // the protocol ends a lock or confinement at once (KWin 6.8 waits for a commit)
++            | ("zwp_locked_pointer_v1" | "zwp_confined_pointer_v1", "destroy")
++            | ("xdg_activation_v1", "activate")
++    )
++}
++
++impl Pending {
++    /// The surface without a parent that a surface belongs to.
++    fn root(&self, mut surface: u32) -> u32 {
++        for _ in 0..16 {
++            match self.parents.get(&surface) {
++                Some(&parent) => surface = parent,
++                None => break,
++            }
++        }
++        surface
++    }
++
++    /// Whether the proxy may commit `surface` (a window's surface) now: it
++    /// exists and nothing of the guest is pending on it or its subsurfaces.
++    pub(super) fn clean(&self, surface: u32) -> bool {
++        self.surfaces.contains(&surface) && !self.parents.contains_key(&surface) && !self.dirty.contains(&surface)
++    }
++
++    /// A guest request (guest ids) about to be forwarded to the host.
++    pub(super) fn on_request(&mut self, interface: &str, request: &str, msg: &Message<u32, OwnedFd>) {
++        let sender = msg.sender_id;
++        match (interface, request) {
++            ("wl_compositor", "create_surface") => {
++                if let [Argument::NewId(surface)] = msg.args[..] {
++                    self.bound.remove(&surface);
++                    self.surfaces.insert(surface);
++                }
++                return;
++            }
++            ("wl_surface", "commit") => {
++                if self.parents.contains_key(&sender) {
++                    // a subsurface's state waits for its parent's commit (synchronized, as a
++                    // nested KWin's layers; desynchronized ones count the same way, conservatively)
++                    let root = self.root(sender);
++                    self.dirty.insert(root);
++                } else {
++                    self.dirty.remove(&sender);
++                }
++                return;
++            }
++            ("wl_surface", "destroy") => {
++                self.surfaces.remove(&sender);
++                self.dirty.remove(&sender);
++                self.parents.remove(&sender);
++                self.parents.retain(|_, p| *p != sender);
++                self.subsurfaces.retain(|_, s| *s != sender);
++                self.bound.retain(|_, s| *s != sender);
++                return;
++            }
++            ("wl_subcompositor", "get_subsurface") => {
++                if let [Argument::NewId(sub), Argument::Object(surface), Argument::Object(parent)] = msg.args[..] {
++                    self.bound.remove(&sub);
++                    self.subsurfaces.insert(sub, surface);
++                    self.parents.insert(surface, parent);
++                    // the new subsurface joins its parent with the parent's next commit
++                    let root = self.root(parent);
++                    self.dirty.insert(root);
++                }
++                return;
++            }
++            ("wl_subsurface", "destroy") => {
++                // the subsurface is unmapped at once
++                if let Some(surface) = self.subsurfaces.remove(&sender) {
++                    self.parents.remove(&surface);
++                }
++                return;
++            }
++            _ => {}
++        }
++        let surface_arg = || {
++            msg.args.iter().find_map(|a| match a {
++                Argument::Object(id) if self.surfaces.contains(id) => Some(*id),
++                _ => None,
++            })
++        };
++        let subject = match interface {
++            "wl_surface" => Some(sender),
++            // position and stacking: the parent's state
++            "wl_subsurface" => self.subsurfaces.get(&sender).and_then(|s| self.parents.get(s)).copied(),
++            _ => self.bound.get(&sender).copied().or_else(surface_arg),
++        };
++        // an object made for a surface: its requests are about that surface (ids are reused: a
++        // new object without a surface forgets the old one's)
++        if let Some(new) = msg.args.iter().find_map(|a| match a {
++            Argument::NewId(id) => Some(*id),
++            _ => None,
++        }) {
++            match subject {
++                Some(surface) => self.bound.insert(new, surface),
++                None => self.bound.remove(&new),
++            };
++        }
++        if request == "destroy" {
++            self.bound.remove(&sender);
++        }
++        if let Some(surface) = subject {
++            if !immediate(interface, request) {
++                let root = self.root(surface);
++                self.dirty.insert(root);
++            }
++        }
++    }
++}
++
++/// wl_surface.commit of `surface` (guest id) on the proxy's behalf.
++pub(super) fn commit(surface: u32) -> HostRequest {
++    Message {
++        sender_id: guest_to_host(surface),
++        opcode: request_opcode(&WL_SURFACE_INTERFACE, "commit"),
++        args: smallvec![],
++    }
++}
++
++#[cfg(test)]
++mod tests {
++    use super::*;
++
++    fn m(sender: u32, args: smallvec::SmallVec<[Argument<u32, OwnedFd>; 4]>) -> Message<u32, OwnedFd> {
++        Message {
++            sender_id: sender,
++            opcode: 0,
++            args,
++        }
++    }
++
++    const COMPOSITOR: u32 = 5;
++    const SUBCOMPOSITOR: u32 = 6;
++    const ROOT: u32 = 30;
++    const LAYER: u32 = 31;
++    const SUB: u32 = 32;
++    const XDG: u32 = 33;
++    const TOPLEVEL: u32 = 34;
++    const VIEWPORT: u32 = 35;
++
++    /// A nested KWin's window: a root surface (xdg_toplevel, viewport) and one synchronized layer.
++    fn window() -> Pending {
++        let mut p = Pending::default();
++        p.on_request("wl_compositor", "create_surface", &m(COMPOSITOR, smallvec![Argument::NewId(ROOT)]));
++        p.on_request("wl_compositor", "create_surface", &m(COMPOSITOR, smallvec![Argument::NewId(LAYER)]));
++        p.on_request("xdg_wm_base", "get_xdg_surface", &m(4, smallvec![Argument::NewId(XDG), Argument::Object(ROOT)]));
++        p.on_request("xdg_surface", "get_toplevel", &m(XDG, smallvec![Argument::NewId(TOPLEVEL)]));
++        p.on_request("wp_viewporter", "get_viewport", &m(7, smallvec![Argument::NewId(VIEWPORT), Argument::Object(ROOT)]));
++        p.on_request("wl_subcompositor", "get_subsurface", &m(SUBCOMPOSITOR, smallvec![Argument::NewId(SUB), Argument::Object(LAYER), Argument::Object(ROOT)]));
++        p.on_request("wl_surface", "commit", &m(ROOT, smallvec![]));
++        p
++    }
++
++    /// One frame of a nested KWin, up to (not including) the window's commit.
++    fn frame_without_commit(p: &mut Pending) {
++        p.on_request("wl_surface", "attach", &m(LAYER, smallvec![Argument::Object(40), Argument::Int(0), Argument::Int(0)]));
++        p.on_request("wl_surface", "commit", &m(LAYER, smallvec![]));
++        p.on_request("xdg_surface", "set_window_geometry", &m(XDG, smallvec![Argument::Int(0), Argument::Int(0), Argument::Int(1280), Argument::Int(800)]));
++        p.on_request("wp_viewport", "set_destination", &m(VIEWPORT, smallvec![Argument::Int(1280), Argument::Int(800)]));
++        p.on_request("wp_presentation", "feedback", &m(8, smallvec![Argument::Object(ROOT), Argument::NewId(41)]));
++        p.on_request("wl_surface", "frame", &m(ROOT, smallvec![Argument::NewId(42)]));
++    }
++
++    #[test]
++    fn a_window_is_clean_between_the_guests_frames_only() {
++        let mut p = window();
++        assert!(p.clean(ROOT));
++        assert!(!p.clean(LAYER), "a subsurface is no window");
++        assert!(!p.clean(99), "an unknown surface");
++        // every request of a frame leaves it pending until the window's commit
++        p.on_request("wl_surface", "attach", &m(LAYER, smallvec![Argument::Object(40), Argument::Int(0), Argument::Int(0)]));
++        assert!(!p.clean(ROOT));
++        p.on_request("wl_surface", "commit", &m(LAYER, smallvec![]));
++        assert!(!p.clean(ROOT), "the layer's state is cached until the window's commit");
++        p.on_request("wl_surface", "commit", &m(ROOT, smallvec![]));
++        assert!(p.clean(ROOT));
++        frame_without_commit(&mut p);
++        assert!(!p.clean(ROOT));
++        p.on_request("wl_surface", "commit", &m(ROOT, smallvec![]));
++        assert!(p.clean(ROOT));
++        for (interface, request, sender) in [
++            ("xdg_surface", "ack_configure", XDG),
++            ("xdg_toplevel", "set_min_size", TOPLEVEL),
++            ("wp_viewport", "set_source", VIEWPORT),
++            ("wl_subsurface", "set_position", SUB),
++            ("wl_surface", "set_input_region", ROOT),
++        ] {
++            p.on_request(interface, request, &m(sender, smallvec![Argument::Int(0), Argument::Int(0)]));
++            assert!(!p.clean(ROOT), "{interface}.{request}");
++            p.on_request("wl_surface", "commit", &m(ROOT, smallvec![]));
++        }
++        // the guest's own pointer lock waits for its commit; ending it does not
++        p.on_request("zwp_pointer_constraints_v1", "lock_pointer", &m(9, smallvec![Argument::NewId(43), Argument::Object(ROOT), Argument::Object(20), Argument::Object(0), Argument::Uint(1)]));
++        assert!(!p.clean(ROOT));
++        p.on_request("wl_surface", "commit", &m(ROOT, smallvec![]));
++        p.on_request("zwp_locked_pointer_v1", "destroy", &m(43, smallvec![]));
++        assert!(p.clean(ROOT));
++    }
++
++    #[test]
++    fn titles_and_inhibitors_take_effect_at_once() {
++        let mut p = window();
++        p.on_request("xdg_toplevel", "set_title", &m(TOPLEVEL, smallvec![]));
++        p.on_request("zwp_keyboard_shortcuts_inhibit_manager_v1", "inhibit_shortcuts", &m(10, smallvec![Argument::NewId(44), Argument::Object(ROOT), Argument::Object(11)]));
++        p.on_request("zwp_keyboard_shortcuts_inhibitor_v1", "destroy", &m(44, smallvec![]));
++        // the cursor is a surface of its own
++        p.on_request("wl_compositor", "create_surface", &m(COMPOSITOR, smallvec![Argument::NewId(45)]));
++        p.on_request("wl_pointer", "set_cursor", &m(20, smallvec![Argument::Uint(1), Argument::Object(45), Argument::Int(0), Argument::Int(0)]));
++        p.on_request("wl_surface", "attach", &m(45, smallvec![Argument::Object(46), Argument::Int(0), Argument::Int(0)]));
++        p.on_request("wl_surface", "commit", &m(45, smallvec![]));
++        assert!(p.clean(ROOT));
++    }
++
++    #[test]
++    fn reused_ids_and_destroyed_surfaces() {
++        let mut p = window();
++        // a presentation feedback (made for the window) ends with its event; its id comes back as a buffer
++        frame_without_commit(&mut p);
++        p.on_request("wl_surface", "commit", &m(ROOT, smallvec![]));
++        p.on_request("zwp_linux_buffer_params_v1", "create_immed", &m(12, smallvec![Argument::NewId(41), Argument::Int(64), Argument::Int(64), Argument::Uint(0), Argument::Uint(0)]));
++        p.on_request("wl_buffer", "destroy", &m(41, smallvec![]));
++        assert!(p.clean(ROOT), "the buffer is not the window's");
++        // gone: never committed by the proxy
++        p.on_request("wl_surface", "destroy", &m(ROOT, smallvec![]));
++        assert!(!p.clean(ROOT));
 +    }
 +}
 diff -ruN a/src/session/resize.rs b/src/session/resize.rs
@@ -6452,7 +6849,7 @@ diff -ruN a/src/session/shell.rs b/src/session/shell.rs
 diff -ruN a/src/session/shortcuts.rs b/src/session/shortcuts.rs
 --- a/src/session/shortcuts.rs
 +++ b/src/session/shortcuts.rs
-@@ -0,0 +1,874 @@
+@@ -0,0 +1,906 @@
 +//! Keyboard shortcut capture for forwarded windows, like a VM window.
 +//!
 +//! The host compositor handles its own shortcuts (Meta, Alt+Tab, ...) before
@@ -6486,10 +6883,15 @@ diff -ruN a/src/session/shortcuts.rs b/src/session/shortcuts.rs
 +//! --no-follow-pointer (capture whenever focused, as before).
 +//!
 +//! A second chord (default Ctrl+Alt+F, QEMU's) toggles full screen: the
-+//! proxy asks the host to take the focused toplevel out of full screen (and
-+//! releases the capture, as the first chord does) or back into it (and
-+//! captures again) - the nested compositor asked for full screen itself and
-+//! sizes its output after the host's configure either way. Unlike the first
++//! proxy asks the host to take the focused toplevel out of full screen or back
++//! into it (capturing again if the capture was released) - the nested
++//! compositor asked for full screen itself and sizes its output after the
++//! host's configure either way. Out of full screen the capture keeps following
++//! the pointer, as QEMU's SDL window keeps its grab (2026-10-20, the user: the
++//! chord used to release it until the next focus, and the window, still in
++//! front, said "refocus to capture"); with --no-follow-pointer, where the
++//! capture holds wherever the pointer is, it is released as with the first
++//! chord, so that the host's shortcuts are within reach. Unlike the first
 +//! chord, its last key never reaches the guest (QEMU keeps Ctrl+Alt+F too):
 +//! with Meta+Shift+Esc a host that binds the chord itself may never pass it on
 +//! (2026-10-08, host KWin 6.7.91: the chord did nothing in full screen).
@@ -6655,7 +7057,8 @@ diff -ruN a/src/session/shortcuts.rs b/src/session/shortcuts.rs
 +    /// for none.
 +    pub toggle: Option<Chord>,
 +    /// Chord that takes the focused toplevel out of full screen (releasing
-+    /// capture) or back into it (capturing again), `None` for none.
++    /// capture without `follow_pointer`) or back into it (capturing again),
++    /// `None` for none.
 +    pub fullscreen: Option<Chord>,
 +    /// Chord that shows or hides the stats overlay, `None` for none (no
 +    /// overlay command).
@@ -6885,9 +7288,10 @@ diff -ruN a/src/session/shortcuts.rs b/src/session/shortcuts.rs
 +        }
 +    }
 +
-+    /// The fullscreen chord on `surface`: out of full screen with the capture
-+    /// released, or back into it with the capture on. The host's configure
-+    /// says which state it ended in; the nested compositor follows it.
++    /// The fullscreen chord on `surface`: out of full screen (the capture
++    /// released only without `follow_pointer`), or back into it with the
++    /// capture on. The host's configure says which state it ended in; the
++    /// nested compositor follows it.
 +    fn toggle_fullscreen(&mut self, surface: u32, shell: &Shell, own: &mut OwnObjects, out: &mut Vec<HostRequest>) {
 +        let Some(toplevel) = shell.toplevel_of(surface) else {
 +            return;
@@ -6900,7 +7304,7 @@ diff -ruN a/src/session/shortcuts.rs b/src/session/shortcuts.rs
 +            });
 +            self.leaving.insert(toplevel);
 +            info!("shortcuts: fullscreen chord, leaving full screen");
-+            if !self.released {
++            if !self.released && !self.cfg.follow_pointer {
 +                self.toggle(shell, own, out);
 +            }
 +        } else {
@@ -7291,12 +7695,13 @@ diff -ruN a/src/session/shortcuts.rs b/src/session/shortcuts.rs
 +        assert!(!sc.on_event("wl_keyboard", "enter", &mut enter, &sh, &mut own, &mut out));
 +        out.clear();
 +
-+        // Ctrl+Alt+F: out of full screen, capture released; F never reaches the guest
++        // Ctrl+Alt+F: out of full screen, the capture still following the pointer (as QEMU's
++        // SDL window keeps its grab); F never reaches the guest
 +        assert!(!sc.on_event("wl_keyboard", "key", &mut key(29, 1), &sh, &mut own, &mut out));
 +        assert!(!sc.on_event("wl_keyboard", "key", &mut key(56, 1), &sh, &mut own, &mut out));
 +        assert!(sc.on_event("wl_keyboard", "key", &mut key(33, 1), &sh, &mut own, &mut out));
 +        assert!(out.iter().any(|m| is(m, "unset_fullscreen")));
-+        assert!(sc.released());
++        assert!(!sc.released());
 +        assert!(sc.on_event("wl_keyboard", "key", &mut key(33, 2), &sh, &mut own, &mut out)); // repeat
 +        assert!(sc.on_event("wl_keyboard", "key", &mut key(33, 0), &sh, &mut own, &mut out));
 +        assert!(!sc.on_event("wl_keyboard", "key", &mut key(56, 0), &sh, &mut own, &mut out));
@@ -7311,7 +7716,15 @@ diff -ruN a/src/session/shortcuts.rs b/src/session/shortcuts.rs
 +        sc.on_event("xdg_toplevel", "configure", &mut later, &sh, &mut own, &mut out);
 +        assert!(matches!(later.args[..], [Argument::Int(0), Argument::Int(0), _]));
 +
-+        // windowed now: the chord again goes back to full screen and captures again
++        // windowed now, the capture released with Meta+Shift+Esc: the chord goes back to full
++        // screen and captures again
++        sc.on_event("wl_keyboard", "key", &mut key(125, 1), &sh, &mut own, &mut out);
++        sc.on_event("wl_keyboard", "key", &mut key(42, 1), &sh, &mut own, &mut out);
++        sc.on_event("wl_keyboard", "key", &mut key(1, 1), &sh, &mut own, &mut out);
++        assert!(sc.released());
++        for k in [1, 42, 125] {
++            sc.on_event("wl_keyboard", "key", &mut key(k, 0), &sh, &mut own, &mut out);
++        }
 +        out.clear();
 +        sc.on_event("wl_keyboard", "key", &mut key(97, 1), &sh, &mut own, &mut out); // right Ctrl
 +        sc.on_event("wl_keyboard", "key", &mut key(100, 1), &sh, &mut own, &mut out); // AltGr
@@ -7325,6 +7738,22 @@ diff -ruN a/src/session/shortcuts.rs b/src/session/shortcuts.rs
 +        sc.on_event("wl_keyboard", "key", &mut key(33, 0), &sh, &mut own, &mut out);
 +        assert!(!sc.on_event("wl_keyboard", "key", &mut key(33, 1), &sh, &mut own, &mut out));
 +        assert!(!sc.on_event("wl_keyboard", "key", &mut key(33, 0), &sh, &mut own, &mut out));
++
++        // --no-follow-pointer: out of full screen releases the capture, the host's shortcuts
++        // would be out of reach while the window is focused
++        let mut sc = Shortcuts::new(ShortcutConfig {
++            enabled: true,
++            follow_pointer: false,
++            ..Default::default()
++        });
++        let mut full = ev(11, smallvec![Argument::Int(1920), Argument::Int(1080), Argument::Array(Box::new(2u32.to_ne_bytes().to_vec()))]);
++        sc.on_event("xdg_toplevel", "configure", &mut full, &sh, &mut own, &mut out);
++        let mut enter = ev(20, smallvec![Argument::Uint(1), Argument::Object(3), Argument::Array(Box::new(vec![]))]);
++        sc.on_event("wl_keyboard", "enter", &mut enter, &sh, &mut own, &mut out);
++        sc.on_event("wl_keyboard", "key", &mut key(29, 1), &sh, &mut own, &mut out);
++        sc.on_event("wl_keyboard", "key", &mut key(56, 1), &sh, &mut own, &mut out);
++        assert!(sc.on_event("wl_keyboard", "key", &mut key(33, 1), &sh, &mut own, &mut out));
++        assert!(sc.released());
 +    }
 +}
 diff -ruN a/src/session/stats.rs b/src/session/stats.rs
@@ -8861,7 +9290,19 @@ diff -ruN a/src/source/channel/mod.rs b/src/source/channel/mod.rs
                          }
                      }
                      Err(_) => {
-@@ -654,9 +959,13 @@
+@@ -644,6 +949,11 @@
+             self.pipes_read_from_guest.remove(&id);
+         }
+ 
++        // host events the guest client has not taken yet: wake up when its socket takes more
++        // (ClientConnection::update_write_interest)
++        if self.local.update_write_interest() && res == PostAction::Continue {
++            res = PostAction::Reregister;
++        }
+         Ok(res)
+     }
+ 
+@@ -654,9 +964,13 @@
      ) -> calloop::Result<()> {
          self.local.register(poll, token_factory)?;
          self.drm.register(poll, token_factory)?;
@@ -8875,7 +9316,7 @@ diff -ruN a/src/source/channel/mod.rs b/src/source/channel/mod.rs
          Ok(())
      }
  
-@@ -667,6 +976,7 @@
+@@ -667,6 +981,7 @@
      ) -> calloop::Result<()> {
          self.local.reregister(poll, token_factory)?;
          self.drm.reregister(poll, token_factory)?;
@@ -8883,7 +9324,7 @@ diff -ruN a/src/source/channel/mod.rs b/src/source/channel/mod.rs
          for (pipe, is_registered) in self.pipes_read_from_guest.values_mut() {
              if *is_registered {
                  pipe.reregister(poll, token_factory)?;
-@@ -675,17 +985,24 @@
+@@ -675,17 +990,24 @@
                  *is_registered = true;
              }
          }
@@ -8908,7 +9349,7 @@ diff -ruN a/src/source/channel/mod.rs b/src/source/channel/mod.rs
          Ok(())
      }
  }
-@@ -693,8 +1010,8 @@
+@@ -693,8 +1015,8 @@
  fn try_read_message(
      buffer: &mut Buffer<u8>,
      fds: &mut VecDeque<OwnedFd>,
@@ -8919,7 +9360,7 @@ diff -ruN a/src/source/channel/mod.rs b/src/source/channel/mod.rs
      let (msg, read_data) = {
          let data = buffer.get_contents();
          if data.len() < 2 * 4 {
-@@ -705,7 +1022,7 @@
+@@ -705,7 +1027,7 @@
          let opcode = (word_2 & 0x0000_FFFF) as u16;
          let len = (word_2 >> 16) as usize;
  
@@ -8928,7 +9369,7 @@ diff -ruN a/src/source/channel/mod.rs b/src/source/channel/mod.rs
              // This *really* should not happen, as e.g. incoming events for destroyed objects
              // (before the destruction was ACKed) are handled in the regular happy path.
              error!(
-@@ -723,14 +1040,13 @@
+@@ -723,14 +1045,13 @@
              buffer.offset(len);
              return Err(MessageParseError::Malformed);
          };
@@ -8956,7 +9397,7 @@ diff -ruN a/src/source/channel/wayland.rs b/src/source/channel/wayland.rs
      cross_domain::{CROSS_DOMAIN_ID_TYPE_READ_PIPE, CROSS_DOMAIN_ID_TYPE_VIRTGPU_BLOB},
      sigbus::SIGBUS_WATCHER,
      source::channel::{ImageDesc, Ring, query_image},
-@@ -40,11 +41,65 @@
+@@ -40,11 +41,74 @@
      pipe_id: u32,
  
      wl_shm: Option<u32>,
@@ -8991,11 +9432,20 @@ diff -ruN a/src/source/channel/wayland.rs b/src/source/channel/wayland.rs
 +    is_amd_dcc(modifier) && (modifier >> 14) & 1 == 1
 +}
 +
++/// An Intel compressed (CCS) modifier (vendor 0x01: Y/Yf CCS, Gen12 RC/MC CCS, and the 4-tiled DG2, MTL, LNL and
++/// BMG CCS ones). Battlemage's display takes them only from a buffer with 64 KiB physical alignment
++/// (xe_display_bo.c: intel_fb_needs_64k_phys), which the guest's buffers - made by the host's Xe native context -
++/// lack: the nested KWin's output buffer never reached the plane on an Arc Pro B50 (2026-10-22), as AMD DCC did.
++fn is_intel_ccs(modifier: u64) -> bool {
++    modifier >> 56 == 0x01 && matches!(modifier & 0x00ff_ffff_ffff_ffff, 4..=8 | 10..=17)
++}
++
 +/// --drop-dcc-modifiers: whether a modifier is left out of the tranches the proxy forwards - every AMD DCC
-+/// one, or with --keep-displayable-dcc only the render-only ones.
++/// one (or with --keep-displayable-dcc only the render-only ones) and every Intel CCS one.
 +fn dcc_left_out(modifier: u64) -> bool {
-+    is_amd_dcc(modifier)
-+        && !(super::KEEP_DISPLAYABLE_DCC.load(std::sync::atomic::Ordering::Relaxed) && is_amd_displayable_dcc(modifier))
++    (is_amd_dcc(modifier)
++        && !(super::KEEP_DISPLAYABLE_DCC.load(std::sync::atomic::Ordering::Relaxed) && is_amd_displayable_dcc(modifier)))
++        || is_intel_ccs(modifier)
 +}
 +
 +/// The modifiers of a linux-dmabuf format table (16-byte entries: format u32, padding u32,
@@ -9023,7 +9473,7 @@ diff -ruN a/src/source/channel/wayland.rs b/src/source/channel/wayland.rs
  }
  
  pub struct WlShmPool {
-@@ -71,7 +126,8 @@
+@@ -71,7 +135,8 @@
  }
  
  pub struct WlShmBuffer {
@@ -9033,7 +9483,7 @@ diff -ruN a/src/source/channel/wayland.rs b/src/source/channel/wayland.rs
      offset: usize,
      width: usize,
      height: usize,
-@@ -163,15 +219,19 @@
+@@ -163,15 +228,19 @@
  impl std::error::Error for TransformError {}
  
  impl ProtocolState {
@@ -9054,7 +9504,7 @@ diff -ruN a/src/source/channel/wayland.rs b/src/source/channel/wayland.rs
          }
      }
  
-@@ -252,8 +312,8 @@
+@@ -252,8 +321,8 @@
                  0,
              )
          };
@@ -9065,7 +9515,7 @@ diff -ruN a/src/source/channel/wayland.rs b/src/source/channel/wayland.rs
              return Err(io::ErrorKind::InvalidData.into());
          }
          let host_mmap = unsafe {
-@@ -266,13 +326,23 @@
+@@ -266,13 +335,23 @@
                  0,
              )
          };
@@ -9092,7 +9542,7 @@ diff -ruN a/src/source/channel/wayland.rs b/src/source/channel/wayland.rs
              WlShmPool {
                  size: size as usize,
  
-@@ -307,9 +377,9 @@
+@@ -307,9 +386,9 @@
          mut message: Message<u32, OwnedFd>,
      ) -> io::Result<Vec<Message<u32, Identifier>>> {
          let pool_id = message.sender_id;
@@ -9105,7 +9555,7 @@ diff -ruN a/src/source/channel/wayland.rs b/src/source/channel/wayland.rs
              .filter(|pool| !pool.destroyed)
          else {
              error!("wl_shm_pool::resize on destroyed pool");
-@@ -397,8 +467,8 @@
+@@ -397,8 +476,8 @@
                  0,
              )
          };
@@ -9116,7 +9566,7 @@ diff -ruN a/src/source/channel/wayland.rs b/src/source/channel/wayland.rs
              return Err(io::ErrorKind::InvalidData.into());
          }
  
-@@ -412,8 +482,9 @@
+@@ -412,8 +491,9 @@
                  0,
              )
          };
@@ -9128,7 +9578,7 @@ diff -ruN a/src/source/channel/wayland.rs b/src/source/channel/wayland.rs
              return Err(io::ErrorKind::InvalidData.into());
          }
  
-@@ -450,7 +521,7 @@
+@@ -450,7 +530,7 @@
          for (buffer_id, buffer) in self
              .shm_buffers
              .iter()
@@ -9137,7 +9587,7 @@ diff -ruN a/src/source/channel/wayland.rs b/src/source/channel/wayland.rs
          {
              // wl_buffer::destroy
              messages.push(Message {
-@@ -521,10 +592,14 @@
+@@ -521,10 +601,14 @@
              return Err(io::ErrorKind::InvalidData.into());
          };
  
@@ -9153,7 +9603,7 @@ diff -ruN a/src/source/channel/wayland.rs b/src/source/channel/wayland.rs
                  offset: offset as usize,
                  width: width as usize,
                  height: height as usize,
-@@ -604,6 +679,19 @@
+@@ -604,6 +688,19 @@
                      if let Some(pool) = self.shm_pools.get(&shm_buffer.pool) {
                          // TODO (optimization): Use (buffer)damage
  
@@ -9173,7 +9623,7 @@ diff -ruN a/src/source/channel/wayland.rs b/src/source/channel/wayland.rs
                          let guard = SIGBUS_WATCHER.watch(pool.guest_mmap, pool.size);
  
                          unsafe {
-@@ -625,7 +713,7 @@
+@@ -625,7 +722,7 @@
  
                          // TODO (optimization): We can send release to the client now and hide the host one later
                      } else {
@@ -9182,7 +9632,7 @@ diff -ruN a/src/source/channel/wayland.rs b/src/source/channel/wayland.rs
                      }
                  }
              }
-@@ -673,14 +761,29 @@
+@@ -673,14 +770,29 @@
          })
      }
  
@@ -9213,7 +9663,7 @@ diff -ruN a/src/source/channel/wayland.rs b/src/source/channel/wayland.rs
          match (
              obj.interface.name,
              obj.interface.requests[message.opcode as usize].name,
-@@ -699,14 +802,12 @@
+@@ -699,14 +811,12 @@
                  .map(Into::into)
                  .map_err(TransformError::from),
              ("wl_shm_pool", "destroy") => {
@@ -9234,7 +9684,7 @@ diff -ruN a/src/source/channel/wayland.rs b/src/source/channel/wayland.rs
                      }
                  }
  
-@@ -770,9 +871,15 @@
+@@ -770,9 +880,15 @@
      pub fn filter_host_message(
          &mut self,
          drm: &DrmNode,
@@ -9251,7 +9701,7 @@ diff -ruN a/src/source/channel/wayland.rs b/src/source/channel/wayland.rs
          match (
              obj.interface.name,
              obj.interface.events[message.opcode as usize].name,
-@@ -802,6 +909,54 @@
+@@ -802,6 +918,56 @@
              //      - But it is unclear if that is an actual issue, if the client cannot get a buffer of that format anyway.
              //      - If there is no intersection, we possibly want to hide the protocol though,
              //        which is a little too late at this point. :/
@@ -9265,11 +9715,13 @@ diff -ruN a/src/source/channel/wayland.rs b/src/source/channel/wayland.rs
 +                        Ok(mods) => {
 +                            let dcc = mods.iter().filter(|m| dcc_left_out(**m)).count();
 +                            let kept = mods.iter().filter(|m| is_amd_dcc(**m) && !dcc_left_out(**m)).count();
++                            let ccs = mods.iter().filter(|m| is_intel_ccs(**m)).count();
 +                            log::info!(
-+                                "dmabuf: format table of feedback {}: {} entries, {} AMD DCC left out of its tranches, {} displayable DCC kept",
++                                "dmabuf: format table of feedback {}: {} entries, {} AMD DCC / Intel CCS left out of its tranches ({} Intel CCS), {} displayable DCC kept",
 +                                message.sender_id,
 +                                mods.len(),
 +                                dcc,
++                                ccs,
 +                                kept
 +                            );
 +                            self.dmabuf_tables.insert(message.sender_id, mods);
@@ -9306,14 +9758,14 @@ diff -ruN a/src/source/channel/wayland.rs b/src/source/channel/wayland.rs
              ("zwp_linux_dmabuf_feedback_v1", "main_device")
              | ("zwp_linux_dmabuf_feedback_v1", "tranche_target_device")
              | ("ext_image_copy_capture_session_v1", "dmabuf_device") => {
-@@ -823,3 +978,35 @@
+@@ -823,3 +989,46 @@
          }
      }
  }
 +
 +#[cfg(test)]
 +mod dcc_tests {
-+    use super::{is_amd_dcc, is_amd_displayable_dcc};
++    use super::{is_amd_dcc, is_amd_displayable_dcc, is_intel_ccs};
 +
 +    // drm_fourcc.h: AMD_FMT_MOD | TILE_VERSION(GFX11 = 4) | TILE(64K_R_X = 27) | DCC ...
 +    const AMD: u64 = 0x02 << 56;
@@ -9331,6 +9783,17 @@ diff -ruN a/src/source/channel/wayland.rs b/src/source/channel/wayland.rs
 +    }
 +
 +    #[test]
++    fn intel_ccs_only() {
++        assert!(is_intel_ccs((0x01 << 56) | 17)); // I915_FORMAT_MOD_4_TILED_BMG_CCS
++        assert!(is_intel_ccs((0x01 << 56) | 10)); // I915_FORMAT_MOD_4_TILED_DG2_RC_CCS
++        assert!(is_intel_ccs((0x01 << 56) | 6)); // I915_FORMAT_MOD_Y_TILED_GEN12_RC_CCS
++        assert!(!is_intel_ccs((0x01 << 56) | 9)); // I915_FORMAT_MOD_4_TILED
++        assert!(!is_intel_ccs((0x01 << 56) | 1)); // I915_FORMAT_MOD_X_TILED
++        assert!(!is_intel_ccs(0)); // LINEAR
++        assert!(!is_intel_ccs((0x02 << 56) | 17)); // AMD, not Intel
++    }
++
++    #[test]
 +    fn displayable_dcc_is_retile() {
 +        // the host KWin's own screen buffers on a 780M: GFX11 64K_R_X DCC RETILE (0x0200000010467b04)
 +        assert!(is_amd_displayable_dcc(0x0200_0000_1046_7b04));
@@ -9345,7 +9808,7 @@ diff -ruN a/src/source/channel/wayland.rs b/src/source/channel/wayland.rs
 diff -ruN a/src/source/local.rs b/src/source/local.rs
 --- a/src/source/local.rs
 +++ b/src/source/local.rs
-@@ -0,0 +1,278 @@
+@@ -0,0 +1,281 @@
 +//! Local test transport: forwards a client to a Wayland socket on the same
 +//! machine instead of a virtio-gpu cross-domain context.
 +//!
@@ -9594,6 +10057,9 @@ diff -ruN a/src/source/local.rs b/src/source/local.rs
 +            Ok(PostAction::Continue)
 +        });
 +        match res {
++            // events the client has not taken yet: wake up when its socket takes more (2026-10-30,
++            // ClientConnection::update_write_interest)
++            Ok(PostAction::Continue) if self.local.update_write_interest() => Ok(PostAction::Reregister),
 +            Ok(action) => Ok(action),
 +            Err(e) => {
 +                warn!("Host connection ended: {e}");
@@ -9703,7 +10169,64 @@ diff -ruN a/src/wl_proto/mod.rs b/src/wl_proto/mod.rs
          if self.debug {
              self::debug::print_send_message(
                  obj.interface.name,
-@@ -336,10 +353,12 @@
+@@ -147,6 +164,25 @@
+     pub fn flush(&mut self) -> std::io::Result<()> {
+         unsafe { self.socket.get_mut() }.flush()
+     }
++
++    /// Whether messages wait in the outgoing buffer (the client was not reading)
++    pub fn has_pending_out(&self) -> bool {
++        self.socket.get_ref().has_pending_out()
++    }
++
++    /// Watch the socket for writability while messages wait in its outgoing buffer, and only then
++    /// (2026-10-30). A client that stalled and reads again gets what the stall left at once, not with
++    /// the next event the host happens to send: one it waits for (a frame callback) could otherwise
++    /// sit in the buffer until the pointer moved. Returns whether the interest changed (the caller
++    /// then reregisters the source).
++    pub fn update_write_interest(&mut self) -> bool {
++        let writable = self.has_pending_out();
++        if self.socket.interest.writable == writable {
++            return false;
++        }
++        self.socket.interest = if writable { Interest::BOTH } else { Interest::READ };
++        true
++    }
+ }
+ 
+ fn display_error() -> &'static Message<u32, OwnedFd> {
+@@ -222,7 +258,16 @@
+     where
+         F: FnMut(Self::Event, &mut Self::Metadata) -> Self::Ret,
+     {
+-        self.socket.process_events(readiness, token, |_, socket| {
++        let res = self.socket.process_events(readiness, token, |readiness, socket| {
++            if readiness.writable {
++                // the client reads again: what its stall left in the buffer goes out now
++                if let Err(e) = unsafe { socket.get_mut() }.try_flush() {
++                    if e.kind() != std::io::ErrorKind::WouldBlock {
++                        warn!("Wayland connection died: {:?}", e);
++                        return Ok(PostAction::Remove);
++                    }
++                }
++            }
+             loop {
+                 // SAFETY `next_message` doesn't exchange the socket
+                 let (msg, mut obj) = match next_message(unsafe { socket.get_mut() }, &self.map, self.debug) {
+@@ -289,7 +334,11 @@
+             }
+ 
+             Ok(PostAction::Continue)
+-        })
++        })?;
++        if res == PostAction::Continue && self.update_write_interest() {
++            return Ok(PostAction::Reregister);
++        }
++        Ok(res)
+     }
+ 
+     fn register(
+@@ -336,10 +385,12 @@
      use wayland_protocols::wp::pointer_constraints::zv1::server::__interfaces::ZWP_POINTER_CONSTRAINTS_V1_INTERFACE;
      use wayland_protocols::wp::pointer_gestures::zv1::server::__interfaces::ZWP_POINTER_GESTURES_V1_INTERFACE;
      use wayland_protocols::wp::pointer_warp::v1::server::__interfaces::WP_POINTER_WARP_V1_INTERFACE;
@@ -9717,7 +10240,7 @@ diff -ruN a/src/wl_proto/mod.rs b/src/wl_proto/mod.rs
      use wayland_protocols::wp::tablet::zv2::server::__interfaces::ZWP_TABLET_MANAGER_V2_INTERFACE;
      use wayland_protocols::wp::text_input::zv3::server::__interfaces::ZWP_TEXT_INPUT_MANAGER_V3_INTERFACE;
      use wayland_protocols::wp::viewporter::server::__interfaces::WP_VIEWPORTER_INTERFACE;
-@@ -369,12 +388,13 @@
+@@ -369,12 +420,13 @@
          "wl_seat" => (&WL_SEAT_INTERFACE, 10),
          "wl_output" => (&WL_OUTPUT_INTERFACE, 4),
          "wl_fixes" => (&WL_FIXES_INTERFACE, 1),
@@ -9876,7 +10399,20 @@ diff -ruN a/src/wl_proto/presentation_v3.rs b/src/wl_proto/presentation_v3.rs
 diff -ruN a/src/wl_proto/socket.rs b/src/wl_proto/socket.rs
 --- a/src/wl_proto/socket.rs
 +++ b/src/wl_proto/socket.rs
-@@ -149,8 +149,34 @@
+@@ -20,6 +20,12 @@
+ pub const MAX_FDS_OUT: usize = 28;
+ /// Maximum number of bytes that can be sent in a single socket message
+ pub const MAX_BYTES_OUT: usize = 4096;
++/// How far the outgoing buffer grows while its peer is not reading (2026-10-30). The buffer starts at
++/// MAX_BYTES_OUT; a guest client busy for a few seconds (the nested KWin during a dnf update in its
++/// guest, or while its session starts) let host events fill it, write_message failed with E2BIG and
++/// the proxy exited, taking the nested desktop down - at every login of that session again. 16 MiB
++/// holds minutes of a nested compositor's events; a client stuck longer than that still ends with E2BIG.
++pub const MAX_BYTES_OUT_BUFFERED: usize = 16 << 20;
+ 
+ /*
+  * Socket
+@@ -149,8 +155,45 @@
          }
      }
  
@@ -9908,11 +10444,54 @@ diff -ruN a/src/wl_proto/socket.rs b/src/wl_proto/socket.rs
 +        }
 +    }
 +
++    /// Whether messages or fds wait in the outgoing buffer (the peer was not reading)
++    pub fn has_pending_out(&self) -> bool {
++        !self.out_data.get_contents().is_empty() || !self.out_fds.is_empty()
++    }
++
++    /// One flush attempt that never waits: for the socket's writable readiness, when its peer reads
++    /// again after a stall (2026-10-30)
++    pub fn try_flush(&mut self) -> IoResult<()> {
++        self.flush_once()
++    }
++
 +    fn flush_once(&mut self) -> IoResult<()> {
          let bytes = self.out_data.get_contents();
          let fds = &self.out_fds;
          let mut written_bytes = 0;
-@@ -297,6 +323,29 @@
+@@ -196,6 +239,10 @@
+         self.out_data.offset(written_bytes);
+         self.out_data.move_to_front();
+         self.out_fds.drain(..written_fds);
++        // a buffer grown for a peer that was not reading goes back to its size once it is empty
++        if self.out_data.get_contents().is_empty() && self.out_data.capacity() > MAX_BYTES_OUT {
++            self.out_data = Buffer::new(MAX_BYTES_OUT);
++        }
+         ret
+     }
+ 
+@@ -232,10 +279,16 @@
+                     return Err(e);
+                 }
+             }
+-            if !self.attempt_write_message(msg)? {
+-                // If this fails again, this means the message is too big
+-                // to be transmitted at all
+-                return Err(rustix::io::Errno::TOOBIG.into());
++            // Still no room: the peer is not reading. Keep its messages, growing the buffer up to
++            // MAX_BYTES_OUT_BUFFERED, instead of failing (see there); they go out with later flushes.
++            while !self.attempt_write_message(msg)? {
++                let size = self.out_data.capacity();
++                if size >= MAX_BYTES_OUT_BUFFERED {
++                    return Err(rustix::io::Errno::TOOBIG.into());
++                }
++                let grown = (size * 2).min(MAX_BYTES_OUT_BUFFERED);
++                log::warn!("peer not reading: its outgoing buffer grows to {} KiB", grown / 1024);
++                self.out_data.grow_to(grown);
+             }
+         }
+         Ok(())
+@@ -297,6 +350,29 @@
      }
  }
  
@@ -9942,3 +10521,65 @@ diff -ruN a/src/wl_proto/socket.rs b/src/wl_proto/socket.rs
  impl AsRawFd for BufferedSocket {
      fn as_raw_fd(&self) -> RawFd {
          self.socket.as_raw_fd()
+@@ -328,6 +404,18 @@
+         }
+     }
+ 
++    /// The storage's size
++    pub fn capacity(&self) -> usize {
++        self.storage.len()
++    }
++
++    /// Grow the storage to `size` (never shrinks it), keeping the contents
++    pub fn grow_to(&mut self, size: usize) {
++        if size > self.storage.len() {
++            self.storage.resize(size, T::default());
++        }
++    }
++
+     /// Advance the internal counter of occupied space
+     pub fn advance(&mut self, bytes: usize) {
+         self.occupied += bytes;
+@@ -460,6 +548,42 @@
+         );
+     }
+ 
++    // 2026-10-30: a peer that does not read for a while (a guest's nested KWin busy) must not make
++    // write_message fail: its messages stay buffered, in order, and go out once it reads again
++    #[test]
++    fn peer_not_reading_buffers_instead_of_failing() {
++        static SIGNATURE: &[ArgumentType] = &[ArgumentType::Uint, ArgumentType::Str(AllowNull::No)];
++        let (client, server) = ::std::os::unix::net::UnixStream::pair().unwrap();
++        client.set_nonblocking(true).unwrap();
++        server.set_nonblocking(true).unwrap();
++        let mut client = BufferedSocket::new(Socket::from(client));
++        let mut server = BufferedSocket::new(Socket::from(server));
++        let n: u32 = 40_000; // ~2.6 MB: far more than the socket's and the old 4 KiB buffer's room
++        for i in 0..n {
++            let msg: Message<u32, OwnedFd> = Message {
++                sender_id: 42,
++                opcode: 7,
++                args: smallvec![
++                    Argument::Uint(i),
++                    Argument::Str(Some(Box::new(CString::new(&b"a host event for a busy guest client"[..]).unwrap()))),
++                ],
++            };
++            client.write_message(&msg).expect("write_message failed while the peer was not reading");
++        }
++        assert!(client.has_pending_out(), "the messages the peer did not take stay buffered");
++        let mut next = 0;
++        while next < n {
++            let _ = client.try_flush();
++            let _ = server.fill_incoming_buffers();
++            while let Ok(msg) = server.read_one_message(|s, o| (s == 42 && o == 7).then_some(SIGNATURE)) {
++                assert_eq!(msg.args[0], Argument::Uint(next));
++                next += 1;
++            }
++        }
++        assert!(!client.has_pending_out());
++        assert_eq!(client.out_data.capacity(), MAX_BYTES_OUT, "the grown buffer went back to its size");
++    }
++
+     #[test]
+     fn write_read_cycle_fd() {
+         let (read, write) = std::io::pipe().unwrap();

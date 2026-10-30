@@ -1,14 +1,13 @@
 # Upstream's commit c6ce1ca89fb4, where the research's work starts, with that
-# work as one patch, taken at the research's commit 18cb8b2 (the patch's
-# description has what it adds), and its d81b32d on top (Intel CCS modifiers
-# left out, for an Intel xe host).  Literal, without macros: vitrine's Builds
+# work as one patch, taken at the research's commit cf498ad (the patch's
+# description has what it adds).  Literal, without macros: vitrine's Builds
 # window reads Version and Source0 as they are written.  The date the patch
 # was taken comes first, so that each version sorts after the one before
 # (rpm compares commit hashes as words: rb973b6b sorts after r8ecffaf), and
 # a counter after it for another one on the same day: 20261015.1 sorts after
 # 20261015, .2 after .1, the next day's date after both.
 Name:           wl-cross-domain-proxy
-Version:        0.1.0^20261026gitc6ce1ca.r18cb8b2.d81b32d
+Version:        0.1.0^20261030gitc6ce1ca.rcf498ad
 Release:        1%{?dist}
 Summary:        Wayland proxy over virtio-gpu cross-domain, for vitrine's nested desktop
 
@@ -23,7 +22,6 @@ Source0:        https://codeberg.org/drakulix/wl-cross-domain-proxy/archive/c6ce
 # the GPL's text, which the tree's README names (the research's LICENSE)
 Source1:        GPL-2.0.txt
 Patch0:         wl-cross-domain-proxy-research.patch
-Patch1:         wl-cross-domain-proxy-intel-ccs.patch
 
 ExclusiveArch:  x86_64
 BuildRequires:  cargo
@@ -37,10 +35,11 @@ session - reach the host's compositor through virtio-gpu's cross-domain
 context, their GPU buffers shared without a copy.  Upstream's proxy with the
 research's work for a whole desktop: the presentation clock in the guest's
 time, fence waits, the pointer grab and shortcut capture, the clipboard,
-settled resizes, statistics, and the session's end when the host's side of
-the connection goes away, its windows closed first; AMD DCC and Intel CCS
-modifiers left out, so that the host can put the desktop's frames on a
-plane.
+settled resizes, statistics, the events of a guest client that stops
+reading for a while kept until it reads again, and the session's end when
+the host's side of the connection goes away, its windows closed first; AMD
+DCC and Intel CCS modifiers left out, so that the host can put the
+desktop's frames on a plane.
 
 %prep
 %autosetup -p1 -n %{name}
@@ -64,6 +63,24 @@ install -Dm 0644 %{SOURCE1} %{buildroot}%{_licensedir}/%{name}/GPL-2.0.txt
 %{_bindir}/%{name}
 
 %changelog
+* Fri Oct 30 2026 vitrine <noreply@anthropic.com> - 0.1.0^20261030gitc6ce1ca.rcf498ad-1
+- the research's work at cf498ad, one patch again (d81b32d's Intel CCS
+  change is in it)
+- a guest client that stops reading for a few seconds no longer ends the
+  proxy: the host's events for it wait in its outgoing buffer, which grows
+  from 4 KiB up to 16 MiB instead of failing with E2BIG, and go out as soon
+  as its socket takes more.  The nested KWin, busy during a dnf update in
+  the guest with a 1000 Hz mouse over its window, filled the 4 KiB: the
+  proxy exited, the session ended, and then again at each login
+- on a KWin 6.8 host, which applies a pointer constraint at the window's
+  next commit, the proxy commits the window after each grab change when the
+  guest has nothing pending on it: on an idle desktop Meta + right click
+  resized the VM's window, and a released grab kept the pointer in it
+- out of full screen (Ctrl+Alt+F) the shortcut capture keeps following the
+  pointer, as QEMU's SDL window keeps its grab
+- a window without a window geometry (Hyprland nested) takes its size for
+  the grab from the host's last configure
+
 * Mon Oct 26 2026 vitrine <noreply@anthropic.com> - 0.1.0^20261026gitc6ce1ca.r18cb8b2.d81b32d-1
 - the research's d81b32d: --drop-dcc-modifiers (the nested desktop's
   default) also leaves Intel CCS modifiers out of the dma-buf feedback.  On
