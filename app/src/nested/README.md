@@ -6,18 +6,18 @@ VM's own screen.
 
 `vmview.{h,cpp}`, `protocols.{h,txt}`, `gen_protocols.py` and `LICENSE` are
 the research side's vmview library (`src/vmview` of the virtio-gpu-desktop
-repository, commit a763b59, which took vitrine's changes of 776a6f2 and
-4a8e155). QEMU's cross-domain connects to a socket the library serves; the
-guest's Wayland protocol goes on to the host compositor over vitrine's own
-connection, and the guest's window becomes a subsurface of a surface of
-vitrine's. The library is not stable yet: keep its files as they are, so
-that its changes port over by copying them. `sha256sum -c UPSTREAM.sha256`
-lists the files that no longer match the version taken; the changes vitrine
-needs before the research side has them are under Local changes below, to
-make again after a copy. Not taken: the library's CMakeLists.txt
-(app/CMakeLists.txt builds it the same way: a static library, its protocol
-code generated with wayland-scanner and `gen_protocols.py` from
-wayland-protocols), its demo, tools and README.
+repository, commit 9240dd0, which took vitrine's changes of 776a6f2,
+4a8e155, cbb9ebc and 175aa1a). QEMU's cross-domain connects to a socket the
+library serves; the guest's Wayland protocol goes on to the host compositor
+over vitrine's own connection, and the guest's window becomes a subsurface
+of a surface of vitrine's. The library is not stable yet: keep its files as
+they are, so that its changes port over by copying them. `sha256sum -c
+UPSTREAM.sha256` lists the files that no longer match the version taken;
+the changes vitrine needs before the research side has them are under Local
+changes below, to make again after a copy. Not taken: the library's
+CMakeLists.txt (app/CMakeLists.txt builds it the same way: a static
+library, its protocol code generated with wayland-scanner and
+`gen_protocols.py` from wayland-protocols), its demo, tools and README.
 
 The library is under the GNU General Public License, version 2 or later, as
 `LICENSE` says; the `../../LICENSE` it names is the research repository's
@@ -31,29 +31,32 @@ screen, and the library's callbacks brought to the GUI thread).
 
 ## Local changes
 
-- A `shortcuts` callback (2026-10-15): the guest's shortcuts inhibitor,
-  which the library moves to PARENT, made (captured) and gone. vitrine's
-  PARENT is a surface of its own, a subsurface of a subsurface of its
-  window. The compositor applies an inhibitor only on the surface with the
-  keyboard focus, so Meta reached both the guest's desktop and the host's.
-  `nestedview.cpp` takes the window's shortcuts itself meanwhile, through
-  WaylandExtras, which shares one inhibitor per surface with the D-Bus
-  display's views.
-- A drag that leaves the guest's window (2026-10-30, `View::event`, the
-  pointer's case): the host keeps the pointer on the app's window while a
-  button is down, but moves it between the window's surfaces (KWin 6.7, as
-  for the D-Bus display's screen, ../vmview/README.md). Over one of the
-  app's surfaces the guest lost the pointer: a window dragged by its title
-  bar past the view's edge was never let go in the guest, nor tiled or
-  maximized there. While a button the guest saw pressed is down, the
-  guest keeps the pointer: over the app's surfaces its motion goes to the
-  guest's surface, moved by the offset taken where the pointer crossed (the
-  nested KWin clamps it to its screen's edge, where it tiles), the release
-  reaches the guest, then its leave.
+None: the files are the research's at 9240dd0.
 
 The research side took vitrine's earlier ones: a `pressed` callback for
 button presses on the guest's window and a NULL object where the protocol
 allows none counting as the app's (its 182e74d), and `View::stopAll()`
 sending the guest's toplevel `xdg_toplevel.close` before it closes the
 connections, so that the guest's session ends at once, without KWin
-restarts, when vitrine quits (its a763b59).
+restarts, when vitrine quits (its a763b59). Its 9240dd0 has the last two:
+
+- A `shortcuts` callback (2026-10-15, vitrine's cbb9ebc): the guest's
+  shortcuts inhibitor, which the library moves to PARENT, made (captured)
+  and gone. vitrine's PARENT is a surface of its own, a subsurface of a
+  subsurface of its window. The compositor applies an inhibitor only on the
+  surface with the keyboard focus, so Meta reached both the guest's desktop
+  and the host's. `nestedview.cpp` takes the window's shortcuts itself
+  meanwhile, through WaylandExtras, which shares one inhibitor per surface
+  with the D-Bus display's views.
+- A drag that leaves the guest's window (2026-10-30, vitrine's 175aa1a,
+  `View::event`, the pointer's case): the host keeps the pointer on the
+  app's window while a button is down, but moves it between the window's
+  surfaces (KWin 6.7, as for the D-Bus display's screen,
+  ../vmview/README.md). Over one of the app's surfaces the guest lost the
+  pointer: a window dragged by its title bar past the view's edge was never
+  let go in the guest, nor tiled or maximized there. While a button the
+  guest saw pressed is down, the guest keeps the pointer: over the app's
+  surfaces its motion goes to the guest's surface, moved by the offset
+  taken where the pointer crossed (the nested KWin clamps it to its
+  screen's edge, where it tiles), the release reaches the guest, then its
+  leave.
