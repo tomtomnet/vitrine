@@ -2,7 +2,7 @@
 # exact version, and dnf takes an installed one of the same version as done.
 Name:           vitrine-guest-tools
 Version:        0.1.0
-Release:        26%{?dist}
+Release:        27%{?dist}
 Summary:        vitrine guest tools: patched virtio-gpu driver, settings and agent
 
 # the driver's sources (dkms/vendor, dkms/patches) are the kernel's: MIT
@@ -176,6 +176,12 @@ fi
 %dir %{_sharedstatedir}/%{name}
 
 %changelog
+* Fri Oct 30 2026 vitrine <noreply@anthropic.com> - 0.1.0-27
+- the installer locks vitrine's builds again when it finds the medium's
+  packages installed and has nothing else to do: locks lost some other way
+  (an older installer's failure, dnf remove --duplicates, a hand edit) stayed
+  lost at every retry
+
 * Fri Oct 30 2026 vitrine <noreply@anthropic.com> - 0.1.0-26
 - the installer locks vitrine's Mesa, KWin, KPipeWire and proxy right after
   installing them, before the driver and the initramfs: an install that

@@ -312,6 +312,15 @@ else
 fi
 want+=("${mesa[@]}" "${kwin_pkgs[@]}" "${kpipewire_pkgs[@]}" "${proxy_pkgs[@]}")
 
+# vitrine's builds of this medium locked at the versions installed
+lock_installed() {
+	locks=()
+	for p in "${mesa[@]}" "${kwin_pkgs[@]}" "${kpipewire_pkgs[@]}" "${proxy_pkgs[@]}"; do
+		locks+=("$(rpm -q --qf '%{NAME}=%{EPOCHNUM}:%{VERSION}-%{RELEASE}' "$p")")
+	done
+	versionlock "${locks[@]}"
+}
+
 # nothing to do when what this medium installs is all there
 up_to_date() {
 	[ "$force" = 0 ] && [ "$(cat "$state/medium" 2> /dev/null)" = "$MEDIUM_ID" ] || return 1
@@ -319,6 +328,10 @@ up_to_date() {
 	if [ "$use_kwin" = 1 ]; then [ -s "$state/kwin" ]; else [ ! -e "$state/kwin" ]; fi
 }
 if up_to_date; then
+	# the locks too, which an older installer's failure, dnf remove --duplicates
+	# or a hand edit may have taken away (2026-10-30): else the next dnf upgrade
+	# puts Fedora's Mesa in place of vitrine's
+	lock_installed || die "cannot edit $lockfile"
 	echo "The guest tools of this medium are installed: nothing to do."
 	exit 0
 fi
@@ -384,11 +397,7 @@ done
 # vitrine's builds locked at once, before the driver and the initramfs: a run
 # that failed there (dracut, 2026-10-30) left them unlocked until then, and the
 # next dnf upgrade offered Fedora's Mesa in their place
-locks=()
-for p in "${mesa[@]}" "${kwin_pkgs[@]}" "${kpipewire_pkgs[@]}" "${proxy_pkgs[@]}"; do
-	locks+=("$(rpm -q --qf '%{NAME}=%{EPOCHNUM}:%{VERSION}-%{RELEASE}' "$p")")
-done
-versionlock "${locks[@]}" || die "cannot edit $lockfile"
+lock_installed || die "cannot edit $lockfile"
 unlocked=
 [ ${#locks[@]} -gt 0 ] && say "version locks: ${locks[*]%%=*}"
 installed dkms || die "dkms is not installed"
