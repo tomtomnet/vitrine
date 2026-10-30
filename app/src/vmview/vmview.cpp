@@ -36,10 +36,6 @@
 #include <sys/un.h>
 #include <unistd.h>
 
-/* Linux input codes to QEMU's key numbers: keymap_linux_to_qnum.h, which
-   displaywindow.cpp includes, defines it */
-extern const std::vector<unsigned short> linux_to_qnum;
-
 namespace {
 
 /* The name the fd goes by between getfd and add_client */
@@ -566,26 +562,6 @@ void VmView::focus()
         m_container->setFocus(Qt::OtherFocusReason);
     } else if (m_window) {
         m_window->requestActivate();
-    }
-}
-
-void VmView::sendKeys(const QList<int> &keys)
-{
-    QList<uint32_t> qnums;
-
-    if (!m_dbus) {
-        return;
-    }
-    for (int key : keys) {
-        if (key > 0 && size_t(key) < linux_to_qnum.size() && linux_to_qnum[key]) {
-            qnums << linux_to_qnum[key];
-        }
-    }
-    for (uint32_t qnum : qnums) {
-        m_dbus->keyPress(qnum);
-    }
-    for (auto it = qnums.crbegin(); it != qnums.crend(); ++it) {
-        m_dbus->keyRelease(*it);
     }
 }
 

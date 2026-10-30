@@ -2073,3 +2073,25 @@ QmpClient *VmRunner::qmp() const
 {
     return isActive() ? d->qmp : nullptr;
 }
+
+void VmRunner::sendKeys(const QStringList &keys, const std::function<void(const QString &)> &done)
+{
+    QmpClient *client = qmp();
+    QJsonArray list;
+
+    if (!client) {
+        if (done) {
+            done(tr("the VM is not running"));
+        }
+        return;
+    }
+    for (const QString &key : keys) {
+        list << QJsonObject{{"type", "qcode"}, {"data", key}};
+    }
+    client->execute("send-key", {{"keys", list}},
+                    [done](const QJsonValue &, const QString &error) {
+        if (done) {
+            done(error);
+        }
+    });
+}

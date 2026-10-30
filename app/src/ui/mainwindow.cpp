@@ -19,6 +19,7 @@
 #include <QMessageBox>
 #include <QPainter>
 #include <QPushButton>
+#include <QRegularExpression>
 #include <QSettings>
 #include <QSplitter>
 #include <QStackedWidget>
@@ -33,8 +34,6 @@
 #include <algorithm>
 #include <iterator>
 #include <memory>
-
-#include <linux/input-event-codes.h>
 
 #include "core/buildmanager.h"
 #include "core/consoleviews.h"
@@ -422,24 +421,24 @@ void MainWindow::createActions()
     m_sendKey->setIcon(Icons::themed({"input-keyboard", "preferences-desktop-keyboard"},
                                      QStyle::SP_ComputerIcon));
     m_sendKey->setToolTipsVisible(true);
-    auto sendKey = [this](const QString &text, const QList<int> &keys) {
+    /* QEMU's key names (QMP's send-key): any running VM, whatever shows its screen */
+    auto sendKey = [this](const QString &text, const QStringList &keys) {
         QAction *a = m_sendKey->addAction(text);
         a->setToolTip(tr("Press %1 in the VM").arg(QString(text).remove('&')));
         connect(a, &QAction::triggered, this, [this, keys]() { sendKeys(keys); });
     };
-    sendKey(tr("Ctrl+Alt+&Del"), {KEY_LEFTCTRL, KEY_LEFTALT, KEY_DELETE});
-    sendKey(tr("Ctrl+Alt+&Backspace"), {KEY_LEFTCTRL, KEY_LEFTALT, KEY_BACKSPACE});
+    sendKey(tr("Ctrl+Alt+&Del"), {"ctrl", "alt", "delete"});
+    sendKey(tr("Ctrl+Alt+&Backspace"), {"ctrl", "alt", "backspace"});
     m_sendKey->addSeparator();
     for (int n = 1; n <= 12; n++) {
-        /* F1-F10 follow each other, F11 and F12 came later */
-        const int key = n <= 10 ? KEY_F1 + n - 1 : KEY_F11 + n - 11;
         sendKey(n <= 9    ? tr("Ctrl+Alt+F&%1").arg(n)
                 : n == 10 ? tr("Ctrl+Alt+F1&0")
                           : tr("Ctrl+Alt+F%1").arg(n),
-                {KEY_LEFTCTRL, KEY_LEFTALT, key});
+                {"ctrl", "alt", QString("f%1").arg(n)});
     }
     m_sendKey->addSeparator();
-    sendKey(tr("&Print Screen"), {KEY_SYSRQ});
+    /* the PrintScreen key: QEMU's "print", the guest's KEY_SYSRQ (E0 37 on PS/2) */
+    sendKey(tr("&Print Screen"), {"print"});
     m_releaseInput = action(tr("Release &Input"), {"input-mouse", "transform-move"},
                             QStyle::SP_ArrowBack, {}, &MainWindow::releaseInput);
     m_releaseInput->setToolTip(tr("Give the keyboard and mouse back to the desktop "
@@ -1110,20 +1109,27 @@ bool MainWindow::switchViewByKey(const QKeyEvent *event)
     return true;
 }
 
-void MainWindow::sendKeys(const QList<int> &keys)
+void MainWindow::sendKeys(const QStringList &keys)
 {
-    VmConsole *console = currentConsole();
+    Vm *vm = current();
 
-    if (!console || !console->view()) {
+    if (!vm) {
         return;
     }
-    console->view()->sendKeys(keys);
-    /* the guest's terminals show on the VM's own screen: in a VM with the nested desktop,
-       the Screen view, while the desktop's session goes on in the Desktop view */
-    const bool terminal = std::any_of(keys.cbegin(), keys.cend(), [](int key) {
-        return (key >= KEY_F1 && key <= KEY_F10) || key == KEY_F11 || key == KEY_F12;
+    vm->runner()->sendKeys(keys, [window = QPointer<MainWindow>(this)](const QString &error) {
+        if (window && !error.isEmpty()) {
+            window->statusBar()->showMessage(tr("The keys did not reach the VM: %1").arg(error),
+                                             8000);
+        }
     });
-    if (terminal && console->hasViews()) {
+    /* the guest's terminals show on the VM's own screen: in vitrine's window with the
+       nested desktop, the Screen view, while the desktop's session goes on in the Desktop
+       view */
+    static const QRegularExpression fkey("^f[0-9]+$");
+    VmConsole *console = currentConsole();
+    const bool terminal = std::any_of(keys.cbegin(), keys.cend(),
+                                      [](const QString &key) { return fkey.match(key).hasMatch(); });
+    if (terminal && console && console->hasViews()) {
         m_pane->setTab(VmPane::Console);
         console->showView(ConsoleViews::View::Screen);
     }
@@ -1178,7 +1184,7 @@ void MainWindow::updateActions()
     VmView *view = console ? console->view() : nullptr;
     const bool views = console && console->hasViews();
     m_fullScreen->setEnabled(console && console->screenWidget());
-    m_sendKey->menuAction()->setEnabled(view && state == VmRunner::State::Running);
+    m_sendKey->menuAction()->setEnabled(vm && state == VmRunner::State::Running);
     m_releaseInput->setEnabled(console && (console->hasKeyboard() || (view && view->grabbed())));
     for (int i = 0; i < m_views.size(); i++) {
         m_views[i]->setEnabled(views);

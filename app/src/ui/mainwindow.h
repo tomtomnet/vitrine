@@ -126,7 +126,7 @@ private:
     void showWindow();
     void showCommandLine();
     void toggleFullScreen();
-    void sendKeys(const QList<int> &keys);
+    void sendKeys(const QStringList &keys);
     void releaseInput();
     /*
      * Ctrl+Alt+1/2 from anywhere in the app, the VM's screens included:

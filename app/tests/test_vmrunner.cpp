@@ -147,6 +147,8 @@ public:
     }
     QString status = "running";
     QStringList commands;
+    /* each command's arguments, as @commands */
+    QList<QJsonObject> arguments;
     /* to every monitor connection */
     void event(const QString &name, const QJsonObject &data = {})
     {
@@ -175,6 +177,7 @@ private:
             QJsonObject reply{{"return", QJsonObject()}, {"id", command["id"]}};
             buffer.remove(0, nl + 1);
             commands << command["execute"].toString();
+            arguments << command["arguments"].toObject();
             if (command["execute"] == "query-status") {
                 reply["return"] = QJsonObject{{"running", status == "running"}, {"status", status}};
             } else if (command["execute"] == "cont") {
@@ -1008,6 +1011,49 @@ private slots:
         problems = boot(0, "");
         QVERIFY(problems.isEmpty());
         QCOMPARE(mounted.last().at(0).toStringList(), QStringList{"/mnt/my pub"});
+    }
+
+    /*
+     * The Send Key menu's combinations: QMP's send-key with QEMU's key
+     * names, whatever shows the VM's screen (2026-10-30: the menu was off
+     * for a VM in QEMU's own window); while stopped, an error at once
+     */
+    void sendKeys()
+    {
+        const ArgsFile args = ArgsFile::parse("-machine q35\n-display sdl\n");
+        const QStringList command = VmRunner(id, tmp.path()).commandLine(args);
+        FakeMonitor monitor(runDir + "/qmp.sock");
+        QProcess qemu;
+        QVERIFY(startStandIn(qemu, FAKE_QEMU, {"-qmp", command[command.size() - 3]}));
+        QFile pid(runDir + "/qemu.pid"), kept(runDir + "/run.args");
+        QVERIFY(pid.open(QIODevice::WriteOnly));
+        pid.write(QByteArray::number(qemu.processId()) + '\n');
+        pid.close();
+        QVERIFY(kept.open(QIODevice::WriteOnly));
+        kept.write(args.toText().toUtf8());
+        kept.close();
+        const auto end = qScopeGuard([&]() {
+            qemu.kill();
+            qemu.waitForFinished();
+        });
+        VmRunner runner(id, tmp.path());
+        runner.attach(args);
+        QTRY_COMPARE(runner.state(), VmRunner::State::Running);
+
+        QString error = "no answer";
+        runner.sendKeys({"ctrl", "alt", "f3"}, [&error](const QString &e) { error = e; });
+        QTRY_COMPARE(error, QString());
+        const qsizetype i = monitor.commands.lastIndexOf("send-key");
+        QVERIFY(i >= 0);
+        QCOMPARE(monitor.arguments[i]["keys"].toArray(),
+                 QJsonArray({QJsonObject{{"type", "qcode"}, {"data", "ctrl"}},
+                             QJsonObject{{"type", "qcode"}, {"data", "alt"}},
+                             QJsonObject{{"type", "qcode"}, {"data", "f3"}}}));
+
+        VmRunner stopped(id + "-stopped", tmp.path());
+        QString why;
+        stopped.sendKeys({"ctrl", "alt", "f3"}, [&why](const QString &e) { why = e; });
+        QVERIFY(!why.isEmpty());
     }
 
     /*

@@ -233,6 +233,16 @@ public:
     void setShutdownStallTimeout(int ms);
     /* Null while stopped */
     QmpClient *qmp() const;
+    /*
+     * Presses @keys in the VM in turn, then lets them go the other way round:
+     * QMP's send-key with QEMU's key names (ctrl, alt, f3, delete, print...).
+     * It reaches the guest's keyboard whatever shows the VM's screen,
+     * vitrine's window or QEMU's own (SDL): the Send Key menu's
+     * combinations, which the host keeps for itself.  @done gets QEMU's
+     * error, empty for none.
+     */
+    void sendKeys(const QStringList &keys,
+                  const std::function<void(const QString &error)> &done = {});
     /* QEMU's process, 0 while stopped */
     qint64 pid() const;
 
