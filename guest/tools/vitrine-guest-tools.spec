@@ -2,7 +2,7 @@
 # exact version, and dnf takes an installed one of the same version as done.
 Name:           vitrine-guest-tools
 Version:        0.1.0
-Release:        27%{?dist}
+Release:        28%{?dist}
 Summary:        vitrine guest tools: patched virtio-gpu driver, settings and agent
 
 # the driver's sources (dkms/vendor, dkms/patches) are the kernel's: MIT
@@ -58,6 +58,7 @@ install -d %{buildroot}%{_usrsrc}/%{dkms_name}-%{version}
 cp -r dkms/patches dkms/vendor %{buildroot}%{_usrsrc}/%{dkms_name}-%{version}/
 install -m 0755 dkms/prepare.sh %{buildroot}%{_usrsrc}/%{dkms_name}-%{version}/
 sed 's/@VERSION@/%{version}/' dkms/dkms.conf > %{buildroot}%{_usrsrc}/%{dkms_name}-%{version}/dkms.conf
+install -Dm 0644 dkms/framework.conf.d/vitrine-guest-tools.conf %{buildroot}%{_sysconfdir}/dkms/framework.conf.d/vitrine-guest-tools.conf
 install -Dm 0644 depmod.d/vitrine-virtio-gpu.conf %{buildroot}%{_prefix}/lib/depmod.d/vitrine-virtio-gpu.conf
 install -Dm 0644 modprobe.d/vitrine-virtio-gpu.conf %{buildroot}%{_prefix}/lib/modprobe.d/vitrine-virtio-gpu.conf
 install -Dm 0644 environment.d/60-vitrine-kwin.conf %{buildroot}%{_prefix}/lib/environment.d/60-vitrine-kwin.conf
@@ -116,8 +117,10 @@ fi
 # removed: the driver out of every kernel, all its versions; on an update
 # the new package's %%posttrans builds over it, keeping it if that fails
 if [ $1 -eq 0 ]; then
+	# the initramfs once, in %%postun, not after each version (dkms's
+	# post-transaction command, which the package's dkms config skips)
 	for v in $(dkms status -m %{dkms_name} 2> /dev/null | sed -n 's|^%{dkms_name}/\([^,:]*\)[,:].*|\1|p' | sort -u); do
-		dkms remove -m %{dkms_name} -v "$v" --all > /dev/null 2>&1 || :
+		VITRINE_DKMS_NO_POST_TRANSACTION=1 dkms remove -m %{dkms_name} -v "$v" --all > /dev/null 2>&1 || :
 	done
 fi
 
@@ -133,18 +136,20 @@ fi
 
 %posttrans
 # the driver for every kernel with headers, now that the whole transaction
-# (kernel-devel included) is in; the installer makes the initramfs itself
-rebuild=
-[ -e /run/vitrine-guest-tools/rebuild-driver ] && rebuild=--rebuild
-rm -f /run/vitrine-guest-tools/rebuild-driver
-if [ -e /run/vitrine-guest-tools/installer-active ]; then
-	%{libexec}/dkms-sync $rebuild --no-initramfs || :
-else
+# (kernel-devel included) is in.  Under the installer, its own step builds
+# it, which says so kernel by kernel: here, in dnf's transaction, the
+# builds showed nothing but dnf's "Upgrading" line (2026-10-30).
+# The rebuild marker stays for that step.
+if [ ! -e /run/vitrine-guest-tools/installer-active ]; then
+	rebuild=
+	[ -e /run/vitrine-guest-tools/rebuild-driver ] && rebuild=--rebuild
+	rm -f /run/vitrine-guest-tools/rebuild-driver
 	%{libexec}/dkms-sync $rebuild --all-initramfs || :
 fi
 
 %files
 %{_usrsrc}/%{dkms_name}-%{version}
+%config(noreplace) %{_sysconfdir}/dkms/framework.conf.d/vitrine-guest-tools.conf
 %{_prefix}/lib/depmod.d/vitrine-virtio-gpu.conf
 %{_prefix}/lib/modprobe.d/vitrine-virtio-gpu.conf
 %ghost %config(noreplace) %{_sysconfdir}/modprobe.d/vitrine-virtio-gpu.conf
@@ -176,6 +181,18 @@ fi
 %dir %{_sharedstatedir}/%{name}
 
 %changelog
+* Fri Oct 30 2026 vitrine <noreply@anthropic.com> - 0.1.0-28
+- the tools' own dkms runs skip dkms's post-transaction command (a dkms
+  config of the package): on Fedora it made every kernel's initramfs again
+  after each install and uninstall of the driver, some twenty with three
+  kernels, minutes; the initramfs are made once, after all the builds
+- under the installer, the package leaves the driver's build to the
+  installer's step "Building the graphics driver", which names each kernel
+  as it builds: in dnf's transaction the builds showed nothing but dnf's
+  "Upgrading vitrine-guest-tools" line
+- the installer makes the initramfs kernel by kernel, naming each, and also
+  when only the driver's files changed
+
 * Fri Oct 30 2026 vitrine <noreply@anthropic.com> - 0.1.0-27
 - the installer locks vitrine's builds again when it finds the medium's
   packages installed and has nothing else to do: locks lost some other way

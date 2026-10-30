@@ -78,6 +78,19 @@ medium_names() {  # medium_names PATTERN (awk regex on the name)
 installed() {  # installed NAME [ARCH]: true if installed (in that arch)
 	rpm -q --qf '%{ARCH}\n' "$1" 2> /dev/null | grep -qx "${2:-.*}"
 }
+# the kernels installed, as dkms-sync takes them: what a removed kernel
+# leaves in /lib/modules has no vmlinuz
+kernels() {
+	for d in /lib/modules/*/; do
+		[ -e "$d/vmlinuz" ] && basename "$d"
+	done
+	return 0
+}
+# the patched driver's files in every kernel, with their times: a build, an
+# install or an uninstall changes them
+driver_files() {
+	find /lib/modules/*/extra -maxdepth 1 -name 'virtio-gpu.ko*' -printf '%p %T@\n' 2> /dev/null | sort
+}
 
 secure_boot() {
 	# EFI's global variable SecureBoot: 4 bytes of attributes, then its value;
@@ -378,6 +391,7 @@ EOF
 unlocked=1
 versionlock || die "cannot edit $lockfile"
 before=$(rpm -qa | sort | sha256sum)
+driver_before=$(driver_files)
 old_override=$(cat "$override" 2> /dev/null || true)
 
 step "Installing the packages (Fedora's repositories are needed for dkms and the kernel headers)"
@@ -417,7 +431,13 @@ else
 fi
 
 step "Building the graphics driver for each kernel with headers"
-/usr/libexec/vitrine-guest-tools/dkms-sync --no-initramfs || driver_failed=1
+# the package leaves the build to this step under the installer (its
+# %posttrans), and on an update its marker asks for new sources to be built
+# again where the driver was built: here each kernel is named as it builds
+rebuild=
+[ -e "$run/rebuild-driver" ] && rebuild=--rebuild
+/usr/libexec/vitrine-guest-tools/dkms-sync $rebuild --no-initramfs || driver_failed=1
+rm -f "$run/rebuild-driver"
 # the kernel the guest boots next: the newest
 if [ -n "$newest" ] && ! dkms status -m vitrine-virtio-gpu -k "$newest" 2> /dev/null | grep -q ': installed'; then
 	say "WARNING: the newest kernel, $newest, has no patched driver (no headers: kernel-devel-$newest);"
@@ -426,15 +446,28 @@ if [ -n "$newest" ] && ! dkms status -m vitrine-virtio-gpu -k "$newest" 2> /dev/
 fi
 
 step "Making the initramfs"
+# the driver's files too: a build alone, with no package changed (for a
+# kernel whose build failed before), needs a new initramfs, and dkms no
+# longer makes one then
 if [ "$force" = 1 ] || [ "$(rpm -qa | sort | sha256sum)" != "$before" ] ||
    [ "$(cat "$override" 2> /dev/null || true)" != "$old_override" ] || [ -n "${driver_failed:-}" ] ||
-   ! [ -s "$state/medium" ]; then
-	# its output in the log, its last line in the error (No space left on device...)
-	if ! dracut_out=$(dracut -f --regenerate-all 2>&1); then
-		printf '%s\n' "$dracut_out"
-		die "dracut failed: $(printf '%s\n' "$dracut_out" | grep -v '^[[:space:]]*$' | tail -n 1)"
+   [ "$(driver_files)" != "$driver_before" ] || ! [ -s "$state/medium" ]; then
+	# kernel by kernel, each named as it starts (dracut prints nothing while
+	# it works, 15 s or more each); its output in the log, its last line in
+	# the error (No space left on device...)
+	dracut_failed=()
+	for k in $(kernels); do
+		say "$k"
+		if ! dracut_out=$(dracut -f --kver "$k" 2>&1); then
+			printf '%s\n' "$dracut_out"
+			dracut_failed+=("$k: $(printf '%s\n' "$dracut_out" | grep -v '^[[:space:]]*$' | tail -n 1)")
+		elif [ -n "$dracut_out" ]; then
+			printf '%s\n' "$dracut_out"
+		fi
+	done
+	if [ ${#dracut_failed[@]} -gt 0 ]; then
+		die "dracut failed for $(printf '%s; ' "${dracut_failed[@]}" | sed 's/; $//')"
 	fi
-	[ -z "$dracut_out" ] || printf '%s\n' "$dracut_out"
 	touch "$run/reboot-needed"
 else
 	say "nothing changed"

@@ -14,6 +14,10 @@
 #     --all-initramfs  every kernel's initramfs, not only those of kernels
 #                      the driver was built for now (its options changed)
 set -u
+# no dkms post-transaction command after each install and uninstall (on
+# Fedora, every kernel's initramfs again): the package's dkms config skips
+# it for this script's runs, which make each initramfs once, at the end
+export VITRINE_DKMS_NO_POST_TRANSACTION=1
 name=vitrine-virtio-gpu
 version=@VERSION@
 rebuild=0 initramfs=changed
