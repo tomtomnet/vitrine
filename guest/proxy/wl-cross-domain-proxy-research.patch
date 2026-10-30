@@ -1,5 +1,5 @@
 The research's work on wl-cross-domain-proxy (virtio-gpu-desktop,
-src/wl-cross-domain-proxy at its commit cf498ad), as one diff against
+src/wl-cross-domain-proxy at its commit 0c56aa7), as one diff against
 upstream c6ce1ca89fb4, the commit it started from
 (patches/wl-cross-domain-proxy/BASE.md there).  What the nested desktop
 needs of the proxy beyond upstream: the presentation clock translated into
@@ -27,7 +27,8 @@ a dnf update in its guest, or as its session starts, with a fast mouse over
 the window): the host's events for it wait in its outgoing buffer, which
 grows from 4 KiB up to 16 MiB instead of failing with E2BIG (the proxy
 exited on that, and the nested session with it), and they go out as soon
-as its socket takes more.
+as its socket takes more.  The stall is logged once when it begins and once
+when it ends, with its length and the buffer's peak.
 
 Licence: these changes are GPL-2.0-or-later (the research's, the user's
 choice of 2026-10-14); Victoria Brekenfeld's proxy stays MIT, with her
@@ -8846,13 +8847,17 @@ diff -ruN a/src/source/channel/mod.rs b/src/source/channel/mod.rs
  
      node: DrmNode,
      drm: Generic<DrmDevice, anyhow::Error>,
-@@ -63,8 +218,15 @@
+@@ -63,8 +218,19 @@
      pipe_id: u32,
      pipes_write_from_host: HashMap<u32, OwnedFd>,
      pipes_read_from_guest: HashMap<u32, (Generic<OwnedFd, anyhow::Error>, bool)>,
 +    /// the host's end of the connection closed and the guest client's windows got xdg_toplevel.close:
 +    /// the client's last moments, until it disconnects or this fires (process_host_gone)
 +    host_gone: Option<Timer>,
++    /// a stall of the guest client (not reading its socket): when it began and how far the outgoing
++    /// buffer grew - logged once when it begins and once when it ends (2026-10-30: the warning
++    /// repeated ~10 times a second, and the buffer's growth was logged under wl_proto, filtered out)
++    stall: Option<(std::time::Instant, usize)>,
  }
  
 +/// How long a guest client whose host went away has to quit after its windows' close (the nested KWin
@@ -8862,7 +8867,7 @@ diff -ruN a/src/source/channel/mod.rs b/src/source/channel/mod.rs
  const REQUIRED_PARAMS: [Param; 6] = [
      Param::_3dFeatures,
      Param::CapsetQueryFix,
-@@ -77,7 +239,13 @@
+@@ -77,7 +243,13 @@
  static PAGE_SIZE: OnceLock<usize> = OnceLock::new();
  
  impl ClientChannel {
@@ -8877,7 +8882,7 @@ diff -ruN a/src/source/channel/mod.rs b/src/source/channel/mod.rs
          let drm = DrmDevice(Rc::new(
              OpenOptions::new()
                  .read(true)
-@@ -152,11 +320,25 @@
+@@ -152,11 +324,25 @@
  
          poll(&drm, &channel_ring).context("Poll CMD failed")?;
  
@@ -8904,11 +8909,12 @@ diff -ruN a/src/source/channel/mod.rs b/src/source/channel/mod.rs
  
              node,
              drm,
-@@ -169,8 +351,61 @@
+@@ -169,8 +355,62 @@
              pipes_read_from_guest: HashMap::new(),
              pipes_write_from_host: HashMap::new(),
              pipe_id: 0x80000000,
 +            host_gone: None,
++            stall: None,
          })
      }
 +
@@ -8966,7 +8972,7 @@ diff -ruN a/src/source/channel/mod.rs b/src/source/channel/mod.rs
  }
  
  impl Drop for ClientChannel {
-@@ -304,92 +539,101 @@
+@@ -304,92 +544,101 @@
      where
          F: FnMut(Self::Event, &mut Self::Metadata) -> Self::Ret,
      {
@@ -9144,7 +9150,7 @@ diff -ruN a/src/source/channel/mod.rs b/src/source/channel/mod.rs
          if let Some(msg) = err_msg.take() {
              self.local.write_message(&msg)?;
              self.local.flush()?;
-@@ -455,6 +699,37 @@
+@@ -455,6 +704,37 @@
                          &ring_slice[0..mem::size_of::<CrossDomainSendReceive>()],
                      )
                      .unwrap();
@@ -9182,7 +9188,7 @@ diff -ruN a/src/source/channel/mod.rs b/src/source/channel/mod.rs
                      let data = &ring_slice[mem::size_of::<CrossDomainSendReceive>()
                          ..mem::size_of::<CrossDomainSendReceive>()
                              + (cmd.opaque_data_size as usize)];
-@@ -511,25 +786,49 @@
+@@ -511,25 +791,52 @@
                      self.remote_data.advance(data.len());
                      self.remote_fds.extend(fds.into_iter());
  
@@ -9236,14 +9242,17 @@ diff -ruN a/src/source/channel/mod.rs b/src/source/channel/mod.rs
 +                    if let Err(e) = self.local.flush() {
 +                        if e.kind() != std::io::ErrorKind::WouldBlock {
 +                            return Err(e).context("Failed to flush messages");
++                        }
++                        if self.stall.is_none() {
++                            warn!("guest client not reading: its events stay buffered");
++                            self.stall = Some((std::time::Instant::now(), self.local.out_capacity()));
                          }
-+                        warn!("guest client not reading: its events stay buffered");
                      }
 -                    self.local.flush().context("Failed to flush messages")?;
                  }
                  CROSS_DOMAIN_CMD_READ => {
                      let cmd = CrossDomainReadWrite::read_from_bytes(
-@@ -540,14 +839,20 @@
+@@ -540,14 +847,20 @@
                          ..mem::size_of::<CrossDomainReadWrite>() + (cmd.opaque_data_size as usize)];
  
                      if let Some(write_fd) = self.pipes_write_from_host.get(&cmd.identifier) {
@@ -9270,7 +9279,7 @@ diff -ruN a/src/source/channel/mod.rs b/src/source/channel/mod.rs
                              res = PostAction::Reregister;
                          }
                      } else {
-@@ -600,15 +905,15 @@
+@@ -600,15 +913,15 @@
                      &mut buf[mem::size_of::<CrossDomainReadWrite>()..],
                  ) {
                      Ok(read_bytes) => {
@@ -9290,7 +9299,7 @@ diff -ruN a/src/source/channel/mod.rs b/src/source/channel/mod.rs
                          }
                      }
                      Err(_) => {
-@@ -644,6 +949,11 @@
+@@ -644,6 +957,22 @@
              self.pipes_read_from_guest.remove(&id);
          }
  
@@ -9299,10 +9308,21 @@ diff -ruN a/src/source/channel/mod.rs b/src/source/channel/mod.rs
 +        if self.local.update_write_interest() && res == PostAction::Continue {
 +            res = PostAction::Reregister;
 +        }
++        if let Some((since, peak)) = &mut self.stall {
++            *peak = (*peak).max(self.local.out_capacity());
++            if !self.local.has_pending_out() {
++                log::info!(
++                    "guest client reads again after {:.1} s; its outgoing buffer peaked at {} KiB",
++                    since.elapsed().as_secs_f64(),
++                    *peak / 1024
++                );
++                self.stall = None;
++            }
++        }
          Ok(res)
      }
  
-@@ -654,9 +964,13 @@
+@@ -654,9 +983,13 @@
      ) -> calloop::Result<()> {
          self.local.register(poll, token_factory)?;
          self.drm.register(poll, token_factory)?;
@@ -9316,7 +9336,7 @@ diff -ruN a/src/source/channel/mod.rs b/src/source/channel/mod.rs
          Ok(())
      }
  
-@@ -667,6 +981,7 @@
+@@ -667,6 +1000,7 @@
      ) -> calloop::Result<()> {
          self.local.reregister(poll, token_factory)?;
          self.drm.reregister(poll, token_factory)?;
@@ -9324,7 +9344,7 @@ diff -ruN a/src/source/channel/mod.rs b/src/source/channel/mod.rs
          for (pipe, is_registered) in self.pipes_read_from_guest.values_mut() {
              if *is_registered {
                  pipe.reregister(poll, token_factory)?;
-@@ -675,17 +990,24 @@
+@@ -675,17 +1009,24 @@
                  *is_registered = true;
              }
          }
@@ -9349,7 +9369,7 @@ diff -ruN a/src/source/channel/mod.rs b/src/source/channel/mod.rs
          Ok(())
      }
  }
-@@ -693,8 +1015,8 @@
+@@ -693,8 +1034,8 @@
  fn try_read_message(
      buffer: &mut Buffer<u8>,
      fds: &mut VecDeque<OwnedFd>,
@@ -9360,7 +9380,7 @@ diff -ruN a/src/source/channel/mod.rs b/src/source/channel/mod.rs
      let (msg, read_data) = {
          let data = buffer.get_contents();
          if data.len() < 2 * 4 {
-@@ -705,7 +1027,7 @@
+@@ -705,7 +1046,7 @@
          let opcode = (word_2 & 0x0000_FFFF) as u16;
          let len = (word_2 >> 16) as usize;
  
@@ -9369,7 +9389,7 @@ diff -ruN a/src/source/channel/mod.rs b/src/source/channel/mod.rs
              // This *really* should not happen, as e.g. incoming events for destroyed objects
              // (before the destruction was ACKed) are handled in the regular happy path.
              error!(
-@@ -723,14 +1045,13 @@
+@@ -723,14 +1064,13 @@
              buffer.offset(len);
              return Err(MessageParseError::Malformed);
          };
@@ -10169,7 +10189,7 @@ diff -ruN a/src/wl_proto/mod.rs b/src/wl_proto/mod.rs
          if self.debug {
              self::debug::print_send_message(
                  obj.interface.name,
-@@ -147,6 +164,25 @@
+@@ -147,6 +164,30 @@
      pub fn flush(&mut self) -> std::io::Result<()> {
          unsafe { self.socket.get_mut() }.flush()
      }
@@ -10177,6 +10197,11 @@ diff -ruN a/src/wl_proto/mod.rs b/src/wl_proto/mod.rs
 +    /// Whether messages wait in the outgoing buffer (the client was not reading)
 +    pub fn has_pending_out(&self) -> bool {
 +        self.socket.get_ref().has_pending_out()
++    }
++
++    /// The outgoing buffer's size (it grows while the client is not reading)
++    pub fn out_capacity(&self) -> usize {
++        self.socket.get_ref().out_capacity()
 +    }
 +
 +    /// Watch the socket for writability while messages wait in its outgoing buffer, and only then
@@ -10195,7 +10220,7 @@ diff -ruN a/src/wl_proto/mod.rs b/src/wl_proto/mod.rs
  }
  
  fn display_error() -> &'static Message<u32, OwnedFd> {
-@@ -222,7 +258,16 @@
+@@ -222,7 +263,16 @@
      where
          F: FnMut(Self::Event, &mut Self::Metadata) -> Self::Ret,
      {
@@ -10213,7 +10238,7 @@ diff -ruN a/src/wl_proto/mod.rs b/src/wl_proto/mod.rs
              loop {
                  // SAFETY `next_message` doesn't exchange the socket
                  let (msg, mut obj) = match next_message(unsafe { socket.get_mut() }, &self.map, self.debug) {
-@@ -289,7 +334,11 @@
+@@ -289,7 +339,11 @@
              }
  
              Ok(PostAction::Continue)
@@ -10226,7 +10251,7 @@ diff -ruN a/src/wl_proto/mod.rs b/src/wl_proto/mod.rs
      }
  
      fn register(
-@@ -336,10 +385,12 @@
+@@ -336,10 +390,12 @@
      use wayland_protocols::wp::pointer_constraints::zv1::server::__interfaces::ZWP_POINTER_CONSTRAINTS_V1_INTERFACE;
      use wayland_protocols::wp::pointer_gestures::zv1::server::__interfaces::ZWP_POINTER_GESTURES_V1_INTERFACE;
      use wayland_protocols::wp::pointer_warp::v1::server::__interfaces::WP_POINTER_WARP_V1_INTERFACE;
@@ -10240,7 +10265,7 @@ diff -ruN a/src/wl_proto/mod.rs b/src/wl_proto/mod.rs
      use wayland_protocols::wp::tablet::zv2::server::__interfaces::ZWP_TABLET_MANAGER_V2_INTERFACE;
      use wayland_protocols::wp::text_input::zv3::server::__interfaces::ZWP_TEXT_INPUT_MANAGER_V3_INTERFACE;
      use wayland_protocols::wp::viewporter::server::__interfaces::WP_VIEWPORTER_INTERFACE;
-@@ -369,12 +420,13 @@
+@@ -369,12 +425,13 @@
          "wl_seat" => (&WL_SEAT_INTERFACE, 10),
          "wl_output" => (&WL_OUTPUT_INTERFACE, 4),
          "wl_fixes" => (&WL_FIXES_INTERFACE, 1),
@@ -10412,7 +10437,7 @@ diff -ruN a/src/wl_proto/socket.rs b/src/wl_proto/socket.rs
  
  /*
   * Socket
-@@ -149,8 +155,45 @@
+@@ -149,8 +155,51 @@
          }
      }
  
@@ -10444,6 +10469,12 @@ diff -ruN a/src/wl_proto/socket.rs b/src/wl_proto/socket.rs
 +        }
 +    }
 +
++    /// The outgoing buffer's size: MAX_BYTES_OUT, or more while a peer that was not reading has
++    /// messages waiting
++    pub fn out_capacity(&self) -> usize {
++        self.out_data.capacity()
++    }
++
 +    /// Whether messages or fds wait in the outgoing buffer (the peer was not reading)
 +    pub fn has_pending_out(&self) -> bool {
 +        !self.out_data.get_contents().is_empty() || !self.out_fds.is_empty()
@@ -10459,7 +10490,7 @@ diff -ruN a/src/wl_proto/socket.rs b/src/wl_proto/socket.rs
          let bytes = self.out_data.get_contents();
          let fds = &self.out_fds;
          let mut written_bytes = 0;
-@@ -196,6 +239,10 @@
+@@ -196,6 +245,10 @@
          self.out_data.offset(written_bytes);
          self.out_data.move_to_front();
          self.out_fds.drain(..written_fds);
@@ -10470,7 +10501,7 @@ diff -ruN a/src/wl_proto/socket.rs b/src/wl_proto/socket.rs
          ret
      }
  
-@@ -232,10 +279,16 @@
+@@ -232,10 +285,16 @@
                      return Err(e);
                  }
              }
@@ -10486,12 +10517,12 @@ diff -ruN a/src/wl_proto/socket.rs b/src/wl_proto/socket.rs
 +                    return Err(rustix::io::Errno::TOOBIG.into());
 +                }
 +                let grown = (size * 2).min(MAX_BYTES_OUT_BUFFERED);
-+                log::warn!("peer not reading: its outgoing buffer grows to {} KiB", grown / 1024);
++                log::debug!("peer not reading: its outgoing buffer grows to {} KiB", grown / 1024);
 +                self.out_data.grow_to(grown);
              }
          }
          Ok(())
-@@ -297,6 +350,29 @@
+@@ -297,6 +356,29 @@
      }
  }
  
@@ -10521,7 +10552,7 @@ diff -ruN a/src/wl_proto/socket.rs b/src/wl_proto/socket.rs
  impl AsRawFd for BufferedSocket {
      fn as_raw_fd(&self) -> RawFd {
          self.socket.as_raw_fd()
-@@ -328,6 +404,18 @@
+@@ -328,6 +410,18 @@
          }
      }
  
@@ -10540,7 +10571,7 @@ diff -ruN a/src/wl_proto/socket.rs b/src/wl_proto/socket.rs
      /// Advance the internal counter of occupied space
      pub fn advance(&mut self, bytes: usize) {
          self.occupied += bytes;
-@@ -460,6 +548,42 @@
+@@ -460,6 +554,42 @@
          );
      }
  

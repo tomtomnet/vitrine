@@ -1,5 +1,5 @@
 # Upstream's commit c6ce1ca89fb4, where the research's work starts, with that
-# work as one patch, taken at the research's commit cf498ad (the patch's
+# work as one patch, taken at the research's commit 0c56aa7 (the patch's
 # description has what it adds).  Literal, without macros: vitrine's Builds
 # window reads Version and Source0 as they are written.  The date the patch
 # was taken comes first, so that each version sorts after the one before
@@ -7,7 +7,7 @@
 # a counter after it for another one on the same day: 20261015.1 sorts after
 # 20261015, .2 after .1, the next day's date after both.
 Name:           wl-cross-domain-proxy
-Version:        0.1.0^20261030gitc6ce1ca.rcf498ad
+Version:        0.1.0^20261030.1gitc6ce1ca.r0c56aa7
 Release:        1%{?dist}
 Summary:        Wayland proxy over virtio-gpu cross-domain, for vitrine's nested desktop
 
@@ -63,6 +63,12 @@ install -Dm 0644 %{SOURCE1} %{buildroot}%{_licensedir}/%{name}/GPL-2.0.txt
 %{_bindir}/%{name}
 
 %changelog
+* Fri Oct 30 2026 vitrine <noreply@anthropic.com> - 0.1.0^20261030.1gitc6ce1ca.r0c56aa7-1
+- the research's 0c56aa7: a guest client's stall is logged once when it
+  begins and once when it ends ("guest client reads again after N s; its
+  outgoing buffer peaked at N KiB"), not ~10 times a second while it lasts;
+  the buffer's growth was logged where the default filter hid it
+
 * Fri Oct 30 2026 vitrine <noreply@anthropic.com> - 0.1.0^20261030gitc6ce1ca.rcf498ad-1
 - the research's work at cf498ad, one patch again (d81b32d's Intel CCS
   change is in it)
