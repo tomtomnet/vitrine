@@ -2,7 +2,7 @@
 # exact version, and dnf takes an installed one of the same version as done.
 Name:           vitrine-guest-tools
 Version:        0.1.0
-Release:        25%{?dist}
+Release:        26%{?dist}
 Summary:        vitrine guest tools: patched virtio-gpu driver, settings and agent
 
 # the driver's sources (dkms/vendor, dkms/patches) are the kernel's: MIT
@@ -176,6 +176,16 @@ fi
 %dir %{_sharedstatedir}/%{name}
 
 %changelog
+* Fri Oct 30 2026 vitrine <noreply@anthropic.com> - 0.1.0-26
+- the installer locks vitrine's Mesa, KWin, KPipeWire and proxy right after
+  installing them, before the driver and the initramfs: an install that
+  failed at dracut left them unlocked, and the next dnf upgrade offered
+  Fedora's Mesa in their place.  A run that ends before that (dnf failed,
+  or it was stopped) puts the locks back as they were
+- it stops at once, with the commands to fix it, on a guest with packages
+  installed twice (an update cut short), where it failed half way through
+- dracut's own last line in its error, as "No space left on device"
+
 * Fri Oct 30 2026 vitrine <noreply@anthropic.com> - 0.1.0-25
 - the nested desktop's session puts its VT in VT_AUTO and KD_TEXT at its
   start: the login manager left it in VT_PROCESS with the session's script

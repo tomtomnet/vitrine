@@ -209,6 +209,12 @@ dnf_medium=(dnf -y --setopt=install_weak_deps=False
 # installer itself
 record() {
 	rc=$?
+	# a run that ends after dropping the tools' version locks and before
+	# locking what it installed (dnf failed, or it was stopped): the locks as
+	# they were, else the next dnf upgrade puts Fedora's Mesa and KWin in
+	# place of vitrine's builds
+	# shellcheck disable=SC2086
+	[ -z "${unlocked:-}" ] || versionlock $old_locks 2> /dev/null || true
 	rm -f "$run/installer-active"
 	mkdir -p "$state" 2> /dev/null
 	python3 - "$state/last-install.json" "$MEDIUM_ID" "$TOOLS_EVR" "$rc" "$error" <<'PY' 2> /dev/null || true
@@ -316,6 +322,16 @@ if up_to_date; then
 	echo "The guest tools of this medium are installed: nothing to do."
 	exit 0
 fi
+# Packages installed twice: an update cut short (the guest switched off
+# during a dnf upgrade, 2026-10-30) leaves both versions in the package
+# database, and dnf and dracut then fail half way through this install.
+if ! dnf -q check --duplicates > /dev/null 2>&1; then
+	die "this guest has packages installed twice, left by an update that was cut short
+(dnf check --duplicates lists them). Remove the extra copies, then install the
+tools again:
+    sudo dnf remove --duplicates
+    sudo dnf check"
+fi
 
 if [ "$yes" = 0 ]; then
 	echo
@@ -330,7 +346,23 @@ mkdir -p "$run" "$state"
 # the RPM's scriptlets leave the initramfs to this script (once, at the end)
 touch "$run/installer-active"
 migrate_research
-# the tools' own locks would keep the medium's new builds out
+# the tools' own locks would keep the medium's new builds out; those there
+# now (NAME=EVR) come back if this run ends before it locks its own (record)
+old_locks=$(python3 - "$lockfile" <<'EOF' 2> /dev/null
+import sys, tomllib
+try:
+    with open(sys.argv[1], "rb") as f:
+        data = tomllib.load(f)
+except FileNotFoundError:
+    sys.exit(0)
+for e in data.get("packages", []):
+    if str(e.get("comment", "")).startswith("vitrine-guest-tools"):
+        for c in e.get("conditions", []):
+            if c.get("key") == "evr" and c.get("comparator") == "=":
+                print(f"{e['name']}={c['value']}")
+EOF
+)
+unlocked=1
 versionlock || die "cannot edit $lockfile"
 before=$(rpm -qa | sort | sha256sum)
 old_override=$(cat "$override" 2> /dev/null || true)
@@ -349,6 +381,16 @@ for p in "${want[@]}"; do
 	rpm -q "$p" > /dev/null 2>&1 || missing+=("$p")
 done
 [ ${#missing[@]} -eq 0 ] || die "not installed: ${missing[*]}"
+# vitrine's builds locked at once, before the driver and the initramfs: a run
+# that failed there (dracut, 2026-10-30) left them unlocked until then, and the
+# next dnf upgrade offered Fedora's Mesa in their place
+locks=()
+for p in "${mesa[@]}" "${kwin_pkgs[@]}" "${kpipewire_pkgs[@]}" "${proxy_pkgs[@]}"; do
+	locks+=("$(rpm -q --qf '%{NAME}=%{EPOCHNUM}:%{VERSION}-%{RELEASE}' "$p")")
+done
+versionlock "${locks[@]}" || die "cannot edit $lockfile"
+unlocked=
+[ ${#locks[@]} -gt 0 ] && say "version locks: ${locks[*]%%=*}"
 installed dkms || die "dkms is not installed"
 newest=$(rpm -q --qf '%{VERSION}-%{RELEASE}.%{ARCH}\n' kernel-core | sort -V | tail -1)
 if [ -n "$newest" ] && ! rpm -q "kernel-devel-$newest" > /dev/null 2>&1; then
@@ -378,19 +420,18 @@ step "Making the initramfs"
 if [ "$force" = 1 ] || [ "$(rpm -qa | sort | sha256sum)" != "$before" ] ||
    [ "$(cat "$override" 2> /dev/null || true)" != "$old_override" ] || [ -n "${driver_failed:-}" ] ||
    ! [ -s "$state/medium" ]; then
-	dracut -f --regenerate-all || die "dracut failed"
+	# its output in the log, its last line in the error (No space left on device...)
+	if ! dracut_out=$(dracut -f --regenerate-all 2>&1); then
+		printf '%s\n' "$dracut_out"
+		die "dracut failed: $(printf '%s\n' "$dracut_out" | grep -v '^[[:space:]]*$' | tail -n 1)"
+	fi
+	[ -z "$dracut_out" ] || printf '%s\n' "$dracut_out"
 	touch "$run/reboot-needed"
 else
 	say "nothing changed"
 fi
 
 step "Finishing"
-locks=()
-for p in "${mesa[@]}" "${kwin_pkgs[@]}" "${kpipewire_pkgs[@]}" "${proxy_pkgs[@]}"; do
-	locks+=("$(rpm -q --qf '%{NAME}=%{EPOCHNUM}:%{VERSION}-%{RELEASE}' "$p")")
-done
-versionlock "${locks[@]}" || die "cannot edit $lockfile"
-[ ${#locks[@]} -gt 0 ] && say "version locks: ${locks[*]%%=*}"
 if [ "$use_kwin" = 1 ]; then
 	rpm -q kwin > "$state/kwin"
 else
