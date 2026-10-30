@@ -2,7 +2,7 @@
 # exact version, and dnf takes an installed one of the same version as done.
 Name:           vitrine-guest-tools
 Version:        0.1.0
-Release:        24%{?dist}
+Release:        25%{?dist}
 Summary:        vitrine guest tools: patched virtio-gpu driver, settings and agent
 
 # the driver's sources (dkms/vendor, dkms/patches) are the kernel's: MIT
@@ -176,6 +176,14 @@ fi
 %dir %{_sharedstatedir}/%{name}
 
 %changelog
+* Fri Oct 30 2026 vitrine <noreply@anthropic.com> - 0.1.0-25
+- the nested desktop's session puts its VT in VT_AUTO and KD_TEXT at its
+  start: the login manager left it in VT_PROCESS with the session's script
+  to answer a switch, which nothing did, so a switch to another VT
+  (Ctrl+Alt+F3 from vitrine's Send Key menu, chvt) ended the session.  The
+  kernel now switches by itself, and the session runs on in the
+  background, as any session switched away from
+
 * Tue Oct 27 2026 vitrine <noreply@anthropic.com> - 0.1.0-24
 - the driver: a DIRTYFB without clips, which means the whole framebuffer,
   is flushed as one full-size clip instead of being skipped as a commit
