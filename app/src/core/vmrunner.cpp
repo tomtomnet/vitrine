@@ -93,21 +93,37 @@ static void signalIfOurs(qint64 pid, const QString &marker, int sig)
 static const char kAgentPort[] = "vitrine-ga-port";
 
 /*
- * sh -c SCRIPT TAG DIR OPTIONS TAG-AS-IN-MOUNTINFO, as root in the guest:
- * mounts a shared folder where asked, unless the guest has mounted it
- * already, as systemd does at boot from the fstab.extra credential.  Ends
- * with kConfined when SELinux keeps qemu-ga from mounting, as on Fedora:
- * its commands may neither run mount nor make folders in /mnt.
+ * sh -c SCRIPT TAG DIR OPTIONS TAG-AS-IN-MOUNTINFO DIR-AS-IN-FSTAB, as root
+ * in the guest: mounts a shared folder where asked, unless the guest has
+ * mounted it already, as systemd does at boot from the fstab.extra
+ * credential.  Ends with kConfined when SELinux keeps qemu-ga from
+ * mounting, as on Fedora: its commands may neither run mount nor make
+ * folders in /mnt.  Before that, kTaken and what it found when the guest
+ * mounts something of its own on that folder, in place of systemd's unit
+ * from the credential: a unit file of the same name in /etc/systemd/system,
+ * which comes before the generated one (2026-10-30, a VM with one for an
+ * old share's tag), or an /etc/fstab line, which the generator reads first.
+ * The confined agent may list that folder (a glob; test -e is refused) and
+ * read /etc/fstab, but not read a unit or ask systemctl.
  */
 static const int kConfined = 77;     // the script's exit 77
+static const int kTaken = 78;        // exit 78, "unit PATH" or "fstab SOURCE" on stdout
 static const char kMount[] =
     "umask 022\n"
     "while read -r line; do\n"
     "    case $line in *\" - virtiofs $3 \"*) exit 0 ;; esac\n"
     "done </proc/self/mountinfo\n"
     "mkdir -p \"$1\" && mount -t virtiofs -o \"$2\" \"$0\" \"$1\" && exit 0\n"
-    "grep -qs qemu_ga_t /proc/self/attr/current && exit 77\n"
-    "exit 1\n";
+    "grep -qs qemu_ga_t /proc/self/attr/current || exit 1\n"
+    "unit=$(systemd-escape --path --suffix=mount \"$1\" 2>/dev/null)\n"
+    "for f in /etc/systemd/system/*.mount; do\n"
+    "    [ -n \"$unit\" ] && [ \"${f##*/}\" = \"$unit\" ] && echo \"unit $f\" && exit 78\n"
+    "done\n"
+    "while read -r what where rest; do\n"
+    "    case $what in \"\"|\\#*) continue ;; esac\n"
+    "    [ \"$where\" = \"$4\" ] && [ \"$what\" != \"$3\" ] && echo \"fstab $what\" && exit 78\n"
+    "done </etc/fstab\n"
+    "exit 77\n";
 
 /* The shares the guest mounts at start */
 static QList<VmConfig::Share> sharesToMount(const ArgsFile &args)
@@ -999,14 +1015,35 @@ void VmRunner::Private::mountNext(QList<VmConfig::Share> shares, QStringList mou
     GuestAgent *mounting = agent;
     agent->exec("/bin/sh",
                 {"-c", kMount, share.tag, share.mount, share.readonly ? "ro" : "rw",
-                 mountEscape(share.tag)},
+                 mountEscape(share.tag), mountEscape(share.mount)},
                 [=, this](const GuestAgent::ExecResult &r) mutable {
         /* dropped: the run ended, or the guest booted again */
         if (agent != mounting) {
             return;
         }
+        const QString found = r.out.trimmed();
         if (!r.error.isEmpty()) {
             problems << QString("%1: %2").arg(share.mount, r.error);
+        } else if (r.exitCode == kTaken && found.startsWith("unit /")) {
+            const QString path = found.mid(5);
+            const QString unit = path.mid(path.lastIndexOf('/') + 1);
+            problems << QString("%1: %2").arg(
+                share.mount,
+                VmRunner::tr("the guest has a unit of its own for this folder, %1, which takes "
+                             "the place of the mount vitrine passes it at boot, and SELinux "
+                             "keeps the guest agent from mounting it. Remove that unit in the "
+                             "guest, and the folder mounts, now and at each boot:\n"
+                             "sudo systemctl disable --now %2\nsudo rm %1\n"
+                             "sudo systemctl daemon-reload\nsudo systemctl start %2")
+                    .arg(path, unit));
+        } else if (r.exitCode == kTaken && found.startsWith("fstab ")) {
+            problems << QString("%1: %2").arg(
+                share.mount,
+                VmRunner::tr("the guest's /etc/fstab mounts %1 on this folder, in place of the "
+                             "mount vitrine passes it at boot, and SELinux keeps the guest agent "
+                             "from mounting it. Remove that line from the guest's /etc/fstab, "
+                             "then restart the VM.")
+                    .arg(found.mid(6)));
         } else if (r.exitCode == kConfined) {
             problems << QString("%1: %2").arg(
                 share.mount,

@@ -4,6 +4,7 @@
 #include <QElapsedTimer>
 #include <QFile>
 #include <QFileInfo>
+#include <QJsonArray>
 #include <QJsonDocument>
 #include <QJsonObject>
 #include <QLocalServer>
@@ -211,6 +212,9 @@ public:
     }
     QJsonObject osInfo{{"id", "fedora"}, {"version-id", "44"},
                        {"pretty-name", "Fedora Linux 44 (KDE Plasma Desktop Edition)"}};
+    /* what guest-exec-status answers, and the arguments of each guest-exec */
+    QJsonObject execStatus{{"exited", true}, {"exitcode", 0}};
+    QList<QJsonObject> execArgs;
     QList<std::pair<int, QString>> commands;
     int connections = 0;
 
@@ -244,9 +248,10 @@ private:
             if (m["execute"] == "guest-get-osinfo") {
                 result = osInfo;
             } else if (m["execute"] == "guest-exec") {
+                execArgs << m["arguments"].toObject();
                 result = QJsonObject{{"pid", 42}};
             } else if (m["execute"] == "guest-exec-status") {
-                result = QJsonObject{{"exited", true}, {"exitcode", 0}};
+                result = execStatus;
             }
             peer->write(QJsonDocument(QJsonObject{{"return", result}, {"id", m["id"]}})
                             .toJson(QJsonDocument::Compact) + '\n');
@@ -914,6 +919,95 @@ private slots:
         QTest::qWait(200);
         QCOMPARE(said.size(), 2);
         QCOMPARE(qga.connections, 2);
+    }
+
+    /*
+     * The guest mounts something of its own on a share's folder, which takes
+     * the place of systemd's unit from the credential, and SELinux keeps
+     * qemu-ga from mounting it: the problem says what to remove (2026-10-30)
+     */
+    void shareTakenInGuest()
+    {
+        const QString share = tmp.filePath(id + "-share");
+        QVERIFY(QDir().mkpath(share));
+        const ArgsFile args = ArgsFile::parse(QString("-machine q35\n#share tag=pub,path=%1,"
+                                                      "mount=/mnt/my pub\n").arg(share));
+        const QStringList command = VmRunner(id, tmp.path()).commandLine(args);
+        const QString chardev = "socket,id=vitrine-ga,path=" + runDir + "/qga.sock,server=on,"
+                                "wait=off";
+        QVERIFY(command.contains(chardev));
+        FakeMonitor monitor(runDir + "/qmp.sock");
+        FakeQga qga(runDir + "/qga.sock");
+        QProcess qemu;
+        QVERIFY(startStandIn(qemu, FAKE_QEMU, {"-chardev", chardev, "-qmp",
+                                               command[command.size() - 3]}));
+        QFile pid(runDir + "/qemu.pid"), kept(runDir + "/run.args");
+        QVERIFY(pid.open(QIODevice::WriteOnly));
+        pid.write(QByteArray::number(qemu.processId()) + '\n');
+        pid.close();
+        QVERIFY(kept.open(QIODevice::WriteOnly));
+        kept.write(args.toText().toUtf8());
+        kept.close();
+        const auto end = qScopeGuard([&]() {
+            qemu.kill();
+            qemu.waitForFinished();
+        });
+        VmRunner runner(id, tmp.path());
+        QSignalSpy mounted(&runner, &VmRunner::sharesMounted);
+        runner.attach(args);
+        QTRY_COMPARE(runner.state(), VmRunner::State::Running);
+        /* each boot (qemu-ga opens its port): the script ends as given */
+        auto boot = [&](int code, const QByteArray &out) {
+            qga.execStatus = QJsonObject{{"exited", true}, {"exitcode", code},
+                                         {"out-data", QString::fromLatin1(out.toBase64())}};
+            const qsizetype before = mounted.size();
+            monitor.event("VSERPORT_CHANGE", {{"id", "vitrine-ga-port"}, {"open", true}});
+            if (!QTest::qWaitFor([&]() { return mounted.size() > before; })) {
+                return QStringList{"no answer"};
+            }
+            return mounted.last().at(1).toStringList();
+        };
+
+        /* a unit file for the folder: its path, and how to remove it */
+        QStringList problems = boot(78, "unit /etc/systemd/system/mnt-my\\x20pub.mount\n");
+        QCOMPARE(problems.size(), 1);
+        QVERIFY2(problems.first().startsWith("/mnt/my pub: the guest has a unit of its own for "
+                                             "this folder, /etc/systemd/system/"
+                                             "mnt-my\\x20pub.mount, which takes the place"),
+                 qPrintable(problems.first()));
+        QVERIFY2(problems.first().endsWith("\nsudo systemctl disable --now mnt-my\\x20pub.mount\n"
+                                           "sudo rm /etc/systemd/system/mnt-my\\x20pub.mount\n"
+                                           "sudo systemctl daemon-reload\n"
+                                           "sudo systemctl start mnt-my\\x20pub.mount"),
+                 qPrintable(problems.first()));
+        QVERIFY(mounted.last().at(0).toStringList().isEmpty());
+        /* the script's arguments: the tag and the folder as mountinfo and fstab write them */
+        const QJsonArray arg = qga.execArgs.last()["arg"].toArray();
+        QCOMPARE(arg.size(), 7);
+        QCOMPARE(arg[2].toString(), "pub");
+        QCOMPARE(arg[3].toString(), "/mnt/my pub");
+        QCOMPARE(arg[5].toString(), "pub");
+        QCOMPARE(arg[6].toString(), "/mnt/my\\040pub");
+
+        /* an /etc/fstab line for the folder with another source */
+        problems = boot(78, "fstab host_share\n");
+        QCOMPARE(problems.size(), 1);
+        QVERIFY2(problems.first().startsWith("/mnt/my pub: the guest's /etc/fstab mounts "
+                                             "host_share on this folder"),
+                 qPrintable(problems.first()));
+
+        /* nothing found: SELinux alone, with the line for a guest's fstab */
+        problems = boot(77, "");
+        QCOMPARE(problems.size(), 1);
+        QVERIFY2(problems.first().contains("SELinux keeps the guest agent from mounting it. "
+                                           "Mount it with this line in the guest's /etc/fstab:\n"
+                                           "pub /mnt/my\\040pub virtiofs nofail 0 0"),
+                 qPrintable(problems.first()));
+
+        /* mounted */
+        problems = boot(0, "");
+        QVERIFY(problems.isEmpty());
+        QCOMPARE(mounted.last().at(0).toStringList(), QStringList{"/mnt/my pub"});
     }
 
     /* systemd in the guest mounts what it reads from SMBIOS, as if in /etc/fstab */
