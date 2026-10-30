@@ -39,6 +39,17 @@ screen, and the library's callbacks brought to the GUI thread).
   `nestedview.cpp` takes the window's shortcuts itself meanwhile, through
   WaylandExtras, which shares one inhibitor per surface with the D-Bus
   display's views.
+- A drag that leaves the guest's window (2026-10-30, `View::event`, the
+  pointer's case): the host keeps the pointer on the app's window while a
+  button is down, but moves it between the window's surfaces (KWin 6.7, as
+  for the D-Bus display's screen, ../vmview/README.md). Over one of the
+  app's surfaces the guest lost the pointer: a window dragged by its title
+  bar past the view's edge was never let go in the guest, nor tiled or
+  maximized there. While a button the guest saw pressed is down, the
+  guest keeps the pointer: over the app's surfaces its motion goes to the
+  guest's surface, moved by the offset taken where the pointer crossed (the
+  nested KWin clamps it to its screen's edge, where it tiles), the release
+  reaches the guest, then its leave.
 
 The research side took vitrine's earlier ones: a `pressed` callback for
 button presses on the guest's window and a NULL object where the protocol

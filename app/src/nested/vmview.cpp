@@ -88,7 +88,7 @@ constexpr uint32_t kWmBaseName = 0xfff00001; // our xdg_wm_base in the guest's r
 constexpr uint16_t kDisplayError = 0, kDisplayDeleteId = 1;
 constexpr uint16_t kRegistryGlobal = 0, kRegistryGlobalRemove = 1;
 constexpr uint16_t kPointerEnter = 0, kPointerLeave = 1, kPointerFrame = 5;
-constexpr uint16_t kPointerButton = 3;
+constexpr uint16_t kPointerMotion = 2, kPointerButton = 3;
 constexpr uint16_t kKeyboardEnter = 1, kKeyboardLeave = 2, kKeyboardKey = 3, kKeyboardModifiers = 4;
 constexpr uint16_t kDataDeviceEnter = 1, kDataDeviceLeave = 2, kDataDeviceMotion = 3, kDataDeviceDrop = 4;
 constexpr uint16_t kToplevelConfigure = 0, kToplevelClose = 1, kSurfaceConfigure = 0, kPopupDone = 1;
@@ -212,6 +212,18 @@ struct Object {
     bool pendingFrame = false;    // pointer events sent since the last wl_pointer.frame
     bool hostFocus = false;       // keyboard: the host gave the app's window the keyboard
     uint32_t lastSerial = 0;      // keyboard: the serial of the host's last enter
+    // pointer: the host keeps the pointer on the app's window while a button is down, but moves it
+    // between the window's surfaces, the app's and the guest's (KWin 6.7, a button held or not).
+    // A drag begun on the guest's surface goes on there as the guest would have it of a compositor
+    // of its own: over the app's surfaces the events go to that surface, moved by grabOffset, and
+    // the guest's leave comes after the last button is let go (vitrine, 2026-10-30: a window dragged
+    // past the view's edge was never let go in the guest, nor tiled or maximized there)
+    uint32_t pointerSurface = 0;  // the guest's surface it knows the pointer over
+    int buttonsDown = 0;          // buttons the guest saw pressed and not released
+    bool grabOutside = false;     // meanwhile over one of the app's surfaces
+    double lastX = 0, lastY = 0;  // the last position the guest got, on pointerSurface
+    double grabOffset[2] = {0, 0};
+    uint32_t lastTime = 0;        // the last motion's time
     // xdg
     int32_t geom[4] = {0, 0, 0, 0};
     bool hasGeom = false;
@@ -1133,14 +1145,61 @@ int View::event(wl_proxy *p, uint32_t opcode, const wl_message *m, wl_argument *
         if (foreign(i))
             foreignArg = i;
 
+    // the guest's leave of its surface, sent after this event (the end of a drag over the app's)
+    uint32_t leaveAfter = 0, leaveSerial = 0;
     // focus: events about the app's own surfaces stay with the app
     switch (o->role) {
     case Role::Pointer:
         if (opcode == kPointerEnter) {
-            o->focus = foreignArg < 0;
+            const double x = wl_fixed_to_double(args[2].f), y = wl_fixed_to_double(args[3].f);
+            if (foreignArg >= 0) {
+                // one of the app's surfaces: the guest's drag goes on, its position from here
+                if (o->focus && o->buttonsDown > 0) {
+                    o->grabOutside = true;
+                    o->grabOffset[0] = o->lastX - x;
+                    o->grabOffset[1] = o->lastY - y;
+                } else {
+                    o->focus = false;
+                }
+                closeFds();
+                return 0;
+            }
+            const uint32_t surface = byProxy[reinterpret_cast<wl_proxy *>(args[1].o)]->id;
+            if (o->grabOutside) {
+                o->grabOutside = false;
+                if (surface == o->pointerSurface) {
+                    // back on the surface the guest never left: a move to here
+                    OutMsg move(o->id, kPointerMotion);
+                    move.u(o->lastTime);
+                    move.u(uint32_t(args[2].f));
+                    move.u(uint32_t(args[3].f));
+                    send(c, move);
+                    o->lastX = x;
+                    o->lastY = y;
+                    o->pendingFrame = true;
+                    return 0;
+                }
+                // another of the guest's surfaces: it leaves the one it had
+                if (c.objects.count(o->pointerSurface)) {
+                    OutMsg leave(o->id, kPointerLeave);
+                    leave.u(args[0].u);
+                    leave.u(o->pointerSurface);
+                    send(c, leave);
+                }
+                o->buttonsDown = 0;
+            }
+            o->focus = true;
+            o->pointerSurface = surface;
+            o->lastX = x;
+            o->lastY = y;
         } else if (opcode == kPointerLeave) {
             if (foreignArg >= 0 || !o->focus) {
                 closeFds();
+                return 0;
+            }
+            if (o->buttonsDown > 0) {
+                // a button held: the guest keeps the pointer (the app's enter that follows says where)
+                o->grabOutside = true;
                 return 0;
             }
             o->focus = false;
@@ -1154,10 +1213,32 @@ int View::event(wl_proxy *p, uint32_t opcode, const wl_message *m, wl_argument *
         } else if (!o->focus) {
             return 0;
         }
+        if (opcode == kPointerMotion) {
+            o->lastTime = args[0].u;
+            if (o->grabOutside) {
+                args[1].f = wl_fixed_from_double(wl_fixed_to_double(args[1].f) + o->grabOffset[0]);
+                args[2].f = wl_fixed_from_double(wl_fixed_to_double(args[2].f) + o->grabOffset[1]);
+            }
+            o->lastX = wl_fixed_to_double(args[1].f);
+            o->lastY = wl_fixed_to_double(args[2].f);
+        }
         if (foreignArg < 0)
             o->pendingFrame = true;
-        if (opcode == kPointerButton && args[3].u == WL_POINTER_BUTTON_STATE_PRESSED && cb.pressed)
-            cb.pressed(cb.data);
+        if (opcode == kPointerButton) {
+            if (args[3].u == WL_POINTER_BUTTON_STATE_PRESSED) {
+                o->buttonsDown++;
+                if (cb.pressed)
+                    cb.pressed(cb.data);
+            } else if (o->buttonsDown > 0 && --o->buttonsDown == 0 && o->grabOutside) {
+                // the last one let go over the app's surface: the guest's leave after its release
+                o->grabOutside = false;
+                o->focus = false;
+                if (c.objects.count(o->pointerSurface)) {
+                    leaveAfter = o->pointerSurface;
+                    leaveSerial = args[0].u;
+                }
+            }
+        }
         break;
     case Role::Keyboard:
         if ((opcode == kKeyboardEnter || opcode == kKeyboardLeave) && foreignArg < 0) {
@@ -1246,6 +1327,12 @@ int View::event(wl_proxy *p, uint32_t opcode, const wl_message *m, wl_argument *
         }
     }
     send(c, out);
+    if (leaveAfter) {
+        OutMsg leave(o->id, kPointerLeave);
+        leave.u(leaveSerial);
+        leave.u(leaveAfter);
+        send(c, leave);
+    }
     if (g_debug)
         logf("<- %s@%u.%s", o->info->name, o->id, m->name);
     if (o->info->destructor_events & (1ull << opcode)) {
