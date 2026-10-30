@@ -7,6 +7,7 @@
 #include <QElapsedTimer>
 #include <QFile>
 #include <QFileInfo>
+#include <QHash>
 #include <QJsonArray>
 #include <QJsonObject>
 #include <QProcess>
@@ -1380,6 +1381,7 @@ QStringList VmRunner::Private::commandLine(const ArgsFile &args, const QString &
                     [&hostArgs](int i) { return isGlDbusDisplay(hostArgs.valueAt(i)); })) {
         hostArgs = withDisplayRenderNode(hostArgs, HostGpus::displayNode());
     }
+    hostArgs = withRefcountCache(hostArgs, dir);
     command += withComputedProperties(hostArgs, propertiesOf).argv();
     for (qsizetype i = 0; i < shares.size(); i++) {
         command << "-chardev"
@@ -1438,6 +1440,46 @@ QStringList VmRunner::Private::commandLine(const ArgsFile &args, const QString &
     }
     command << "-qmp" << qmpArg() << "-pidfile" << pidPath();
     return command;
+}
+
+ArgsFile VmRunner::withRefcountCache(const ArgsFile &args, const QString &dir)
+{
+    static const QStringList own = {"cache-size", "l2-cache-size", "refcount-cache-size"};
+    const QDir base(dir);
+    ArgsFile out = args;
+    QHash<QString, QString> files;  // a -blockdev driver=file's filename, by node-name
+
+    auto takes = [](const OptionValue &v) {
+        return !v.flag("readonly") && !v.flag("read-only") && !v.flag("snapshot") &&
+               std::none_of(own.cbegin(), own.cend(), [&v](const QString &k) { return v.has(k); });
+    };
+    auto path = [&base](const QString &file) {
+        return file.isEmpty() ? QString() : base.absoluteFilePath(file);
+    };
+    for (int i : args.indexesOf("blockdev")) {
+        const OptionValue v = args.valueAt(i);
+        if (v.get("driver") == "file" && v.has("node-name")) {
+            files.insert(v.get("node-name"), v.get("filename"));
+        }
+    }
+    for (int i : args.indexesOf("drive")) {
+        OptionValue v = out.valueAt(i);
+        if (v.get("format") == "qcow2" && v.get("if") != "pflash" && !v.get("file").isEmpty() &&
+            takes(v)) {
+            v.set("refcount-cache-size", VmConfig::refcountCacheSize(path(v.get("file"))));
+            out.setValueAt(i, v);
+        }
+    }
+    for (int i : args.indexesOf("blockdev")) {
+        OptionValue v = out.valueAt(i);
+        if (v.get("driver") == "qcow2" && takes(v)) {
+            const QString file = v.has("file.filename") ? v.get("file.filename")
+                                                        : files.value(v.get("file"));
+            v.set("refcount-cache-size", VmConfig::refcountCacheSize(path(file)));
+            out.setValueAt(i, v);
+        }
+    }
+    return out;
 }
 
 ArgsFile VmRunner::withComputedProperties(

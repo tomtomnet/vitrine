@@ -1010,6 +1010,56 @@ private slots:
         QCOMPARE(mounted.last().at(0).toStringList(), QStringList{"/mnt/my pub"});
     }
 
+    /*
+     * A refcount cache for the whole file on writable qcow2 images, for
+     * savevm, loadvm and delvm: QEMU's 4 blocks flushed a large, scattered
+     * image for nearly every cluster of a snapshot (2026-10-30)
+     */
+    void refcountCache()
+    {
+        const QString dir = tmp.filePath("refcount");
+        QVERIFY(QDir().mkpath(dir));
+        QFile big(dir + "/big.qcow2");
+        /* 600 GiB of file, sparse: 18.75 MiB of refcounts */
+        QVERIFY(big.open(QIODevice::WriteOnly) && big.resize(600LL << 30));
+        big.close();
+        const ArgsFile args = ArgsFile::parse(
+            "-drive file=disk.qcow2,format=qcow2,if=none,id=disk0,discard=unmap\n"
+            "-drive file=big.qcow2,format=qcow2,if=virtio\n"
+            "-drive file=raw.img,format=raw,if=virtio\n"
+            "-drive file=base.qcow2,format=qcow2,if=virtio,readonly=on\n"
+            "-drive file=temp.qcow2,format=qcow2,if=virtio,snapshot=on\n"
+            "-drive file=own.qcow2,format=qcow2,if=virtio,cache-size=8M\n"
+            "-drive file=own.qcow2,format=qcow2,if=virtio,refcount-cache-size=1M\n"
+            "-drive if=pflash,format=qcow2,unit=1,file=OVMF_VARS_4M.qcow2\n"
+            "-blockdev driver=file,node-name=f0,filename=big.qcow2\n"
+            "-blockdev driver=qcow2,node-name=q0,file=f0\n"
+            "-blockdev driver=qcow2,node-name=q1,file.driver=file,file.filename=disk.qcow2\n"
+            "-blockdev driver=qcow2,node-name=q2,file=f0,read-only=on\n");
+        const QStringList lines = VmRunner::withRefcountCache(args, dir).toText().split('\n');
+        QCOMPARE(lines.value(0), "-drive file=disk.qcow2,format=qcow2,if=none,id=disk0,"
+                                 "discard=unmap,refcount-cache-size=16M");
+        QCOMPARE(lines.value(1), "-drive file=big.qcow2,format=qcow2,if=virtio,"
+                                 "refcount-cache-size=19M");
+        /* not raw, not read-only or temporary, not one with a cache of its own, not the
+           firmware's */
+        for (int i = 2; i <= 8; i++) {
+            QCOMPARE(lines.value(i), args.toText().split('\n').value(i));
+        }
+        /* a -blockdev's file, by its node or in its options */
+        QCOMPARE(lines.value(9),
+                 "-blockdev driver=qcow2,node-name=q0,file=f0,refcount-cache-size=19M");
+        QCOMPARE(lines.value(10), "-blockdev driver=qcow2,node-name=q1,file.driver=file,"
+                                  "file.filename=disk.qcow2,refcount-cache-size=16M");
+        QCOMPARE(lines.value(11), "-blockdev driver=qcow2,node-name=q2,file=f0,read-only=on");
+
+        /* in the command line QEMU gets; vm.args is left as it is */
+        const QStringList command = VmRunner(id, dir).commandLine(
+            ArgsFile::parse("-m 1G\n-drive file=big.qcow2,format=qcow2,if=virtio\n"));
+        QVERIFY2(command.contains("file=big.qcow2,format=qcow2,if=virtio,refcount-cache-size=19M"),
+                 qPrintable(command.join(' ')));
+    }
+
     /* systemd in the guest mounts what it reads from SMBIOS, as if in /etc/fstab */
     void fstabCredential()
     {

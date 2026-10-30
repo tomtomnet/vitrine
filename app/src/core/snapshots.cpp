@@ -28,6 +28,20 @@ using Done = std::function<void(bool started, int exitCode, const QByteArray &ou
 /* The property of a qemu-img process that changes the files, unlike a listing */
 const char kWrites[] = "vitrineWrites";
 
+/*
+ * qemu-img snapshot @op (-c, -a, -d) @name on the qcow2 image @file, with a
+ * refcount cache for the whole file (VmConfig::refcountCacheSize): with
+ * QEMU's default, deleting or restoring a snapshot of a large, scattered
+ * image flushed it for nearly every cluster.  The file's protocol is left
+ * to QEMU, as without --image-opts; commas double in its options.
+ */
+QStringList snapshotCommand(const QString &op, const QString &name, const QString &file)
+{
+    return {"snapshot", "--image-opts", op, name,
+            QString("driver=qcow2,refcount-cache-size=%1,file.filename=%2")
+                .arg(VmConfig::refcountCacheSize(file), QString(file).replace(',', ",,"))};
+}
+
 }
 
 struct VmSnapshots::Private
@@ -360,27 +374,29 @@ void VmSnapshots::take(const QString &name)
         return;
     }
     QList<QStringList> removals, creations;
+    QStringList files;
     const Snapshot *old = d->find(name);
     for (const Drive &drive : d->snapshotDrives()) {
         if (old && old->files.contains(drive.file)) {
-            removals << QStringList{"snapshot", "-d", name, drive.file};
+            removals << snapshotCommand("-d", name, drive.file);
         }
-        creations << QStringList{"snapshot", "-c", name, drive.file};
+        creations << snapshotCommand("-c", name, drive.file);
+        files << drive.file;
     }
-    d->runAll(removals, [this, name, creations](const QString &error) {
+    d->runAll(removals, [this, name, creations, files](const QString &error) {
         if (!error.isEmpty()) {
             d->end(error);
             return;
         }
-        d->runAll(creations, [this, name, creations](const QString &error) {
+        d->runAll(creations, [this, name, files](const QString &error) {
             if (error.isEmpty()) {
                 d->end({});
                 return;
             }
             /* none, rather than some of the disks */
             QList<QStringList> undo;
-            for (const QStringList &c : creations) {
-                undo << QStringList{"snapshot", "-d", name, c.last()};
+            for (const QString &file : files) {
+                undo << snapshotCommand("-d", name, file);
             }
             d->runAll(undo, [this, error](const QString &) { d->end(error); }, true);
         });
@@ -409,7 +425,7 @@ void VmSnapshots::restore(const QString &name)
     }
     QList<QStringList> commands;
     for (const QString &file : snapshot->files) {
-        commands << QStringList{"snapshot", "-a", name, file};
+        commands << snapshotCommand("-a", name, file);
     }
     d->runAll(commands, [this](const QString &error) { d->end(error); });
 }
@@ -432,7 +448,7 @@ void VmSnapshots::remove(const QString &name)
     }
     QList<QStringList> commands;
     for (const QString &file : snapshot->files) {
-        commands << QStringList{"snapshot", "-d", name, file};
+        commands << snapshotCommand("-d", name, file);
     }
     d->runAll(commands, [this](const QString &error) { d->end(error); });
 }

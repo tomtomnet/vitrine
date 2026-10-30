@@ -96,6 +96,14 @@ public:
      */
     static ArgsFile withDisplayRenderNode(const ArgsFile &args, const QString &node);
     /*
+     * @args with refcount-cache-size on its writable qcow2 images, -drive
+     * format=qcow2 and -blockdev driver=qcow2 (not the firmware's pflash),
+     * that set no cache size of their own: VmConfig::refcountCacheSize() of
+     * the file, relative to the VM's folder @dir, for savevm, loadvm and
+     * delvm while the VM runs
+     */
+    static ArgsFile withRefcountCache(const ArgsFile &args, const QString &dir);
+    /*
      * Why the GPU @args chose for its rutabaga card (x-render-node, also
      * with -global) cannot be used on this computer: nothing there now (a
      * GPU taken out), something other than a GPU's render node, or a GPU

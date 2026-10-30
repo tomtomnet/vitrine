@@ -144,6 +144,19 @@ void setDisc(ArgsFile &args, const Disk &drive, const QString &iso);
 /* The disk format of a file name, e.g. qcow2; empty when unknown */
 QString diskFormat(const QString &path);
 /*
+ * QEMU's refcount-cache-size for the qcow2 image @file: enough for the whole
+ * file, as deleting or restoring an internal snapshot changes the refcount
+ * of each of its clusters, in the guest's order.  QEMU caches 4 refcount
+ * blocks by default, 8 GiB of file with 64 KiB clusters: past that, each
+ * block it pushes out costs a flush of the image, about a millisecond and
+ * 128 KiB written per cluster of a scattered image (2026-10-30: a 200 GB
+ * disk's snapshots took minutes to delete, the host's disk at 64 MiB/s).
+ * 16-bit refcounts in 64 KiB clusters, the default format, take 1/32768
+ * of the file: "16M" (512 GiB of file), or more for a larger file.  QEMU
+ * reserves it at open and fills it only as it is used.
+ */
+QString refcountCacheSize(const QString &file);
+/*
  * The format of an existing disk image, from its first bytes when @path is
  * absolute (cloud images named .img are mostly qcow2), else by its name.
  * A .raw or .iso file stays raw: its first bytes are the guest's, which

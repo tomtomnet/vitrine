@@ -921,6 +921,13 @@ QList<Disk> disks(const ArgsFile &args)
     return list;
 }
 
+QString refcountCacheSize(const QString &file)
+{
+    constexpr qint64 mib = 1024 * 1024;
+    const qint64 needed = QFileInfo(file).size() / 32768;
+    return QString("%1M").arg(qMax<qint64>(16, (needed + mib - 1) / mib));
+}
+
 QString diskFormat(const QString &path)
 {
     const QString suffix = QFileInfo(path).suffix().toLower();

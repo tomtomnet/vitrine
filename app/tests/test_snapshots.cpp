@@ -439,7 +439,9 @@ private slots:
         QTRY_VERIFY_WITH_TIMEOUT(QFile::exists(bin + "/written"), 10000);
         QFile written(bin + "/written");
         QVERIFY(written.open(QIODevice::ReadOnly));
-        QCOMPARE(written.readAll().trimmed(), QByteArray("snapshot -c kept ") + QFile::encodeName(dir + "/disk.qcow2"));
+        QCOMPARE(written.readAll().trimmed(),
+                 QByteArray("snapshot --image-opts -c kept driver=qcow2,refcount-cache-size=16M,"
+                            "file.filename=") + QFile::encodeName(dir + "/disk.qcow2"));
         /* and its process goes once done, quietly */
         QTest::qWait(200);
         QVERIFY2(warnings.isEmpty(), qPrintable(warnings.join('\n')));
