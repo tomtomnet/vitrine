@@ -126,7 +126,7 @@ private:
     void showWindow();
     void showCommandLine();
     void toggleFullScreen();
-    void sendCtrlAltDel();
+    void sendKeys(const QList<int> &keys);
     void releaseInput();
     /*
      * Ctrl+Alt+1/2 from anywhere in the app, the VM's screens included:
@@ -203,7 +203,7 @@ private:
     QAction *m_command;
     QAction *m_fullScreen;
     QAction *m_library;
-    QAction *m_ctrlAltDel;
+    QMenu *m_sendKey;
     QAction *m_releaseInput;
     /* The nested desktop's views of the console: Screen, Desktop */
     QList<QAction *> m_views;

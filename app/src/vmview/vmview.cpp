@@ -36,10 +36,12 @@
 #include <sys/un.h>
 #include <unistd.h>
 
+/* Linux input codes to QEMU's key numbers: keymap_linux_to_qnum.h, which
+   displaywindow.cpp includes, defines it */
+extern const std::vector<unsigned short> linux_to_qnum;
+
 namespace {
 
-/* QEMU's key numbers: left Ctrl, left Alt, Delete */
-constexpr uint32_t kCtrl = 0x1d, kAlt = 0x38, kDelete = 0xd3;
 /* The name the fd goes by between getfd and add_client */
 const char kFdName[] = "vitrine-display";
 
@@ -567,16 +569,23 @@ void VmView::focus()
     }
 }
 
-void VmView::sendCtrlAltDel()
+void VmView::sendKeys(const QList<int> &keys)
 {
+    QList<uint32_t> qnums;
+
     if (!m_dbus) {
         return;
     }
-    for (uint32_t key : {kCtrl, kAlt, kDelete}) {
-        m_dbus->keyPress(key);
+    for (int key : keys) {
+        if (key > 0 && size_t(key) < linux_to_qnum.size() && linux_to_qnum[key]) {
+            qnums << linux_to_qnum[key];
+        }
     }
-    for (uint32_t key : {kDelete, kAlt, kCtrl}) {
-        m_dbus->keyRelease(key);
+    for (uint32_t qnum : qnums) {
+        m_dbus->keyPress(qnum);
+    }
+    for (auto it = qnums.crbegin(); it != qnums.crend(); ++it) {
+        m_dbus->keyRelease(*it);
     }
 }
 

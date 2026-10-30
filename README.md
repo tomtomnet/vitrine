@@ -153,7 +153,11 @@ Keys: Ctrl+Alt+G gives the keyboard and mouse to the VM or takes them back,
 Ctrl+Alt+F toggles full screen, F9 collapses or expands the VM list, F10 or
 Alt with a menu's first letter opens the menus (not while the VM's screen has
 the keys: they go to the VM), Ctrl+H asks the guest to shut down, Ctrl+L shows
-QEMU's log. Closing vitrine can leave its VMs running; it finds them again at
+QEMU's log. Machine > Send Key sends the VM keys the host keeps for itself,
+like virt-manager's menu: Ctrl+Alt+Del, and Ctrl+Alt+F1 to F12, which switch
+the guest's terminals (pressed on the keyboard, they switch the host's). With
+the nested desktop, the terminal shows in the Screen view while the session
+runs on. Closing vitrine can leave its VMs running; it finds them again at
 its next start. SIGTERM (`kill`), SIGINT (Ctrl+C in its terminal) and SIGHUP
 (its terminal closed) close it the same way without asking: its VMs run on,
 settings changes not applied are lost, and what is under way stops, as with

@@ -34,6 +34,7 @@
 
 #include <gio/gio.h>
 #include <gio/gunixfdlist.h>
+#include <linux/input-event-codes.h>
 #include <poll.h>
 #include <sys/mman.h>
 #include <sys/socket.h>
@@ -738,7 +739,7 @@ private Q_SLOTS:
 
         /* key calls answered while the GUI thread does not look */
         const int before = qemu.answered();
-        view->sendCtrlAltDel();
+        view->sendKeys({KEY_LEFTCTRL, KEY_LEFTALT, KEY_DELETE});
         for (int i = 0; i < 400 && qemu.answered() < before + 6; i++) {
             std::this_thread::sleep_for(std::chrono::milliseconds(5));
         }
@@ -750,6 +751,29 @@ private Q_SLOTS:
         QTest::qWait(200);
         qemu.letGo();
         QTest::qWait(50);
+    }
+
+    /*
+     * The Send Key menu's combinations: pressed in turn, let go the other
+     * way round, as QEMU's key numbers (the host's terminals' Ctrl+Alt+F3:
+     * 29, 56, 61); a code with no number is left out
+     */
+    void sendKeys()
+    {
+        FakeDisplay qemu(socketPath());
+        VmView view;
+        QString error;
+        QVERIFY2(view.attach(socketPath(), &error), qPrintable(error));
+        QTRY_VERIFY(qemu.listening());
+
+        view.sendKeys({KEY_LEFTCTRL, KEY_LEFTALT, KEY_F3, 0, 100000});
+        QTRY_COMPARE(qemu.callsTo("Keyboard."),
+                     QStringList({"Keyboard.Press (29,)", "Keyboard.Press (56,)",
+                                  "Keyboard.Press (61,)", "Keyboard.Release (61,)",
+                                  "Keyboard.Release (56,)", "Keyboard.Release (29,)"}));
+        view.sendKeys({KEY_SYSRQ});
+        QTRY_COMPARE(qemu.callsTo("Keyboard.").mid(6),
+                     QStringList({"Keyboard.Press (84,)", "Keyboard.Release (84,)"}));
     }
 
     /*

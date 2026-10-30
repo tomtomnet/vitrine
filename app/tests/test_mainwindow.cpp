@@ -68,7 +68,7 @@ const char kLong[] = "-name A Virtual Machine With a Rather Long Name\n-machine 
 /* The VM's power actions, in the Machine menu alone */
 const QStringList kPower = {"Start", "Pause", "Shut Down", "Reset", "Force Off"};
 /* Actions that were in the bar, in the menus only now */
-const QStringList kMenusOnly = {"New…", "Full Screen", "Send Ctrl+Alt+Del", "USB Devices"};
+const QStringList kMenusOnly = {"New…", "Full Screen", "Send Key", "USB Devices"};
 
 int s_ambiguous = 0;
 
@@ -480,6 +480,22 @@ private slots:
             QVERIFY2(inMenus.contains(a), qPrintable(name + " in no menu"));
             QVERIFY2(!b->widgetForAction(a), qPrintable(name + " in the bar"));
         }
+
+        /* the keys the host keeps, sent to the VM from the Machine menu, as virt-manager's;
+           nothing to send them to without a running VM */
+        QAction *sendKey = action(w.get(), "Send Key");
+        QVERIFY(sendKey && sendKey->menu());
+        QVERIFY(menuOf(w.get(), "Machine")->actions().contains(sendKey));
+        QVERIFY(!sendKey->isEnabled());
+        QStringList keys;
+        for (QAction *a : sendKey->menu()->actions()) {
+            keys << (a->isSeparator() ? QString("-") : plain(a->text()));
+        }
+        QCOMPARE(keys, QStringList({"Ctrl+Alt+Del", "Ctrl+Alt+Backspace", "-",
+                                    "Ctrl+Alt+F1", "Ctrl+Alt+F2", "Ctrl+Alt+F3", "Ctrl+Alt+F4",
+                                    "Ctrl+Alt+F5", "Ctrl+Alt+F6", "Ctrl+Alt+F7", "Ctrl+Alt+F8",
+                                    "Ctrl+Alt+F9", "Ctrl+Alt+F10", "Ctrl+Alt+F11",
+                                    "Ctrl+Alt+F12", "-", "Print Screen"}));
 
         for (const QTabBar *tabs : w->findChildren<QTabBar *>()) {
             QVERIFY2(!tabs->isVisible(), "a row of tabs under the bar");

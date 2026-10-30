@@ -88,7 +88,13 @@ public:
     bool inputEnabled() const;
     /* Gives the keyboard to the guest */
     void focus();
-    void sendCtrlAltDel();
+    /*
+     * Presses @keys (Linux input codes, e.g. KEY_LEFTCTRL) in the VM in
+     * turn, then lets them go the other way round: the Send Key menu's
+     * combinations, which the host keeps for itself (Ctrl+Alt+F1 to F12
+     * switch its own terminals)
+     */
+    void sendKeys(const QList<int> &keys);
     /* Frame statistics since the last call */
     Stats::Summary takeStats();
     /* The guest's screen, e.g. 3840x2160; empty before its first frame */
