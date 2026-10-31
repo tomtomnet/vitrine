@@ -9,14 +9,14 @@
 #include <QWidget>
 
 #include "activation.h"
-#include "core/hostkwin.h"
-#include "hostkwinstandins.h"
-#include "ui/hostkwinbanner.h"
+#include "core/hostkde.h"
+#include "hostkdestandins.h"
+#include "ui/hostkdebanner.h"
 
-using namespace HostKwin;
+using namespace HostKde;
 
 /*
- * The recipe's stand-in (host/kwin/build.sh --print-recipe): each reading
+ * The recipe's stand-in (host/kde/build.sh --print-recipe): each reading
  * of the system says itself in calls, and waits while hold is there (10 s
  * at most), for a reading that takes its time
  */
@@ -33,7 +33,7 @@ printf 'fedora=44\ncopr=copr:copr.fedorainfracloud.org:group_kdesig:kde-beta\nse
  * vitrine comes back in front, from a reading in the background, one at a
  * time.  The system is the stand-ins' (rpm and dnf on a state folder).
  */
-class TestHostKwinBanner : public QObject
+class TestHostKdeBanner : public QObject
 {
     Q_OBJECT
 
@@ -102,7 +102,7 @@ private slots:
         QVERIFY(install("qt6-qtbase", "6.11.2-3.fc44", "qt"));
         QVERIFY(write(m_tmp.filePath("os-release"), "ID=fedora\nVERSION_ID=44\n"));
 
-        HostKwinMonitor *monitor = HostKwinMonitor::instance();
+        HostKdeMonitor *monitor = HostKdeMonitor::instance();
         monitor->setSourceDir(m_recipe);
         monitor->setOutDir(out);
         monitor->setOsRelease(m_tmp.filePath("os-release"));
@@ -116,11 +116,11 @@ private slots:
      */
     void plasmaUpdatedByHand()
     {
-        HostKwinMonitor *monitor = HostKwinMonitor::instance();
-        QSignalSpy changed(monitor, &HostKwinMonitor::changed);
+        HostKdeMonitor *monitor = HostKdeMonitor::instance();
+        QSignalSpy changed(monitor, &HostKdeMonitor::changed);
         /* in a window never shown: no activation of its own */
         QWidget window;
-        auto *banner = new HostKwinBanner(&window);
+        auto *banner = new HostKdeBanner(&window);
         /* the system read at its start */
         QVERIFY(changed.wait(10000));
         QCOMPARE(monitor->status().owner, Status::Owner::Vitrine);
@@ -150,10 +150,10 @@ private slots:
      */
     void oneReadingAtATime()
     {
-        HostKwinMonitor *monitor = HostKwinMonitor::instance();
-        QSignalSpy changed(monitor, &HostKwinMonitor::changed);
+        HostKdeMonitor *monitor = HostKdeMonitor::instance();
+        QSignalSpy changed(monitor, &HostKdeMonitor::changed);
         QWidget window;
-        new HostKwinBanner(&window);
+        new HostKdeBanner(&window);
         if (!monitor->isRead()) {
             QVERIFY(changed.wait(10000));
         }
@@ -178,5 +178,5 @@ private slots:
     }
 };
 
-QTEST_MAIN(TestHostKwinBanner)
-#include "test_hostkwinbanner.moc"
+QTEST_MAIN(TestHostKdeBanner)
+#include "test_hostkdebanner.moc"

@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: GPL-2.0-or-later
-#include "hostkwin.h"
+#include "hostkde.h"
 
 #include <QCoreApplication>
 #include <QCryptographicHash>
@@ -26,7 +26,7 @@ static const int kQueryMs = 30000;
 
 static QString tr(const char *text)
 {
-    return QCoreApplication::translate("HostKwin", text);
+    return QCoreApplication::translate("HostKde", text);
 }
 
 static QByteArray readFile(const QString &path)
@@ -98,7 +98,7 @@ static QHash<QString, QString> confValues(const QByteArray &conf,
     return values;
 }
 
-namespace HostKwin {
+namespace HostKde {
 
 static bool isKwinDir(const QString &dir)
 {
@@ -108,13 +108,13 @@ static bool isKwinDir(const QString &dir)
 
 QString sourceDir()
 {
-    const QString chosen = qEnvironmentVariable("VITRINE_HOST_KWIN_DIR");
+    const QString chosen = qEnvironmentVariable("VITRINE_HOST_KDE_DIR");
 
     if (!chosen.isEmpty()) {
         return isKwinDir(chosen) ? QFileInfo(chosen).canonicalFilePath() : QString();
     }
     const QString host = StackBuilder::hostDir();
-    return isKwinDir(host + "/kwin") ? QFileInfo(host + "/kwin").canonicalFilePath() : QString();
+    return isKwinDir(host + "/kde") ? QFileInfo(host + "/kde").canonicalFilePath() : QString();
 }
 
 QString outDir()
@@ -475,7 +475,7 @@ QList<Build> builds(const QString &out)
 
 QByteArray Record::serialize() const
 {
-    QByteArray out = "# The host's KWin Vitrine installed (host/kwin/install.sh)\n";
+    QByteArray out = "# The host's KWin Vitrine installed (host/kde/install.sh)\n";
     QStringList names = digests.keys();
     QStringList roots = buildroot.keys();
 
@@ -606,7 +606,7 @@ Status status(const System &system, const Recipe &recipe, const QList<Build> &bu
     }
     if (!recipe.isValid()) {
         s.offer = Status::Offer::Unsupported;
-        s.why = tr("Vitrine cannot read the research's recipe in host/kwin.");
+        s.why = tr("Vitrine cannot read the research's recipe in host/kde.");
     } else if (recipe.fedora != system.fedora) {
         s.offer = Status::Offer::Unsupported;
         s.why = tr("The research's recipe builds KWin for Fedora %1, and this computer runs "
@@ -837,21 +837,21 @@ QStringList revertCommand(const QString &sourceDir, const QList<Build> &builds,
 
 }
 
-using namespace HostKwin;
+using namespace HostKde;
 
-HostKwinMonitor *HostKwinMonitor::instance()
+HostKdeMonitor *HostKdeMonitor::instance()
 {
-    static QPointer<HostKwinMonitor> monitor;
+    static QPointer<HostKdeMonitor> monitor;
 
     if (!monitor) {
-        monitor = new HostKwinMonitor(QCoreApplication::instance());
+        monitor = new HostKdeMonitor(QCoreApplication::instance());
     }
     return monitor;
 }
 
-HostKwinMonitor::HostKwinMonitor(QObject *parent) : QObject(parent) {}
+HostKdeMonitor::HostKdeMonitor(QObject *parent) : QObject(parent) {}
 
-HostKwinMonitor::~HostKwinMonitor()
+HostKdeMonitor::~HostKdeMonitor()
 {
     if (m_process) {
         /* pkexec's own: it goes with its dialog; the install, once started, finishes */
@@ -861,32 +861,32 @@ HostKwinMonitor::~HostKwinMonitor()
     }
 }
 
-QString HostKwinMonitor::sourceDir() const
+QString HostKdeMonitor::sourceDir() const
 {
-    return m_sourceDir.isEmpty() ? HostKwin::sourceDir() : m_sourceDir;
+    return m_sourceDir.isEmpty() ? HostKde::sourceDir() : m_sourceDir;
 }
 
-QString HostKwinMonitor::outDir() const
+QString HostKdeMonitor::outDir() const
 {
-    return m_outDir.isEmpty() ? HostKwin::outDir() : m_outDir;
+    return m_outDir.isEmpty() ? HostKde::outDir() : m_outDir;
 }
 
-Record HostKwinMonitor::record() const
+Record HostKdeMonitor::record() const
 {
     return Record::read(Record::path(outDir()));
 }
 
-QList<Build> HostKwinMonitor::builds() const
+QList<Build> HostKdeMonitor::builds() const
 {
-    return HostKwin::builds(outDir());
+    return HostKde::builds(outDir());
 }
 
-Status HostKwinMonitor::status() const
+Status HostKdeMonitor::status() const
 {
-    return HostKwin::status(m_system, m_recipe, builds(), record());
+    return HostKde::status(m_system, m_recipe, builds(), record());
 }
 
-void HostKwinMonitor::refresh()
+void HostKdeMonitor::refresh()
 {
     if (m_reading) {
         m_again = true;
@@ -904,23 +904,23 @@ void HostKwinMonitor::refresh()
             refresh();
         }
     });
-    watcher->setFuture(QtConcurrent::run(&HostKwinMonitor::read, sourceDir(), outDir(), m_osRelease,
+    watcher->setFuture(QtConcurrent::run(&HostKdeMonitor::read, sourceDir(), outDir(), m_osRelease,
                                          m_proc));
 }
 
-void HostKwinMonitor::lookAgain()
+void HostKdeMonitor::lookAgain()
 {
     if (!m_reading && !m_process) {
         refresh();
     }
 }
 
-void HostKwinMonitor::refreshNow()
+void HostKdeMonitor::refreshNow()
 {
     apply(read(sourceDir(), outDir(), m_osRelease, m_proc));
 }
 
-HostKwinMonitor::Reading HostKwinMonitor::read(const QString &source, const QString &out,
+HostKdeMonitor::Reading HostKdeMonitor::read(const QString &source, const QString &out,
                                                const QString &osRelease, const QString &proc)
 {
     Reading r;
@@ -929,12 +929,12 @@ HostKwinMonitor::Reading HostKwinMonitor::read(const QString &source, const QStr
     if (r.system.isPlasmaHost() && !r.system.fedora.isEmpty()) {
         r.recipe = Recipe::read(source, r.system.plasma(), r.system.fedora);
     }
-    r.builds = HostKwin::builds(out);
+    r.builds = HostKde::builds(out);
     r.record = Record::read(Record::path(out));
     return r;
 }
 
-void HostKwinMonitor::apply(const Reading &reading)
+void HostKdeMonitor::apply(const Reading &reading)
 {
     m_system = reading.system;
     m_recipe = reading.recipe;
@@ -942,21 +942,21 @@ void HostKwinMonitor::apply(const Reading &reading)
     emit changed();
 }
 
-void HostKwinMonitor::install(const Build &build)
+void HostKdeMonitor::install(const Build &build)
 {
     if (!m_process) {
         run(installCommand(sourceDir(), build), true, build);
     }
 }
 
-void HostKwinMonitor::revert()
+void HostKdeMonitor::revert()
 {
     if (!m_process) {
         run(revertCommand(sourceDir(), builds(), record()), false, {});
     }
 }
 
-void HostKwinMonitor::run(const QStringList &command, bool install, const Build &build)
+void HostKdeMonitor::run(const QStringList &command, bool install, const Build &build)
 {
     m_log.clear();
     m_partial.clear();

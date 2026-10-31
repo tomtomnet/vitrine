@@ -10,7 +10,7 @@ driver, Mesa, KWin) are used at pinned versions, with the patches vitrine
 needs kept in this repository: `host/versions.conf` and `host/patches` for
 the QEMU, virglrenderer and rutabaga_gfx vitrine builds (upstream QEMU with a
 series of patches, `host/patches/qemu/series`), `guest/` for the guest's,
-and `host/kwin` for the optional host KWin.
+and `host/kde` for the optional host KWin.
 
 Early development. It is built and tried on Fedora 44 KDE Plasma (Wayland)
 with an AMD Radeon 780M, with Fedora 44 KDE guests. It is not packaged.
@@ -214,7 +214,7 @@ KWin with the research's host set: steadier frames and quicker input in
 VMs, and the pointer grab inside the Desktop view. The research has sets
 for Plasma 6.7.91 (the KDE SIG's beta COPR) and 6.8, none for Fedora 44's
 own 6.7.5: the window says so. Build builds it in a Fedora container
-(`host/kwin/build.sh`, about 15 minutes, up to 10 GiB of memory). Install…
+(`host/kde/build.sh`, about 15 minutes, up to 10 GiB of memory). Install…
 says what it does first, then, with the administrator's password, replaces
 kwin, kwin-common and kwin-libs and version-locks them (`dnf versionlock`);
 it takes effect at the next login. It must match the installed Plasma and
@@ -224,7 +224,7 @@ one no longer matches; for an update made while vitrine runs, once its
 window comes back to the front. A KWin that vitrine did not install
 (another patched build) is named before anything replaces it, and vitrine
 never reverts it.
-`host/kwin/README.md` has the details, and the commands that put the
+`host/kde/README.md` has the details, and the commands that put the
 distribution's KWin back from a text console.
 
 Shut Down goes through the guest's agent when it runs one: the guest tools',

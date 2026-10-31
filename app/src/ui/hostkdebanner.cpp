@@ -1,28 +1,28 @@
 // SPDX-License-Identifier: GPL-2.0-or-later
-#include "hostkwinbanner.h"
+#include "hostkdebanner.h"
 
 #include <QGuiApplication>
 #include <QMainWindow>
 #include <QPushButton>
 #include <QVBoxLayout>
 
-#include "core/hostkwin.h"
+#include "core/hostkde.h"
 #include "ui/banner.h"
 
 /* "Plasma 6.8.0" of "plasma-workspace 6.7.91 6.8.0", "Qt 6.11.3" of qt6-qtbase's */
 static QString now(const QString &line)
 {
     const QStringList f = line.split(' ');
-    return HostKwin::packageTitle(f.value(0)) + ' ' + f.value(2);
+    return HostKde::packageTitle(f.value(0)) + ' ' + f.value(2);
 }
 
-HostKwinBanner::HostKwinBanner(QWidget *parent)
+HostKdeBanner::HostKdeBanner(QWidget *parent)
     : QWidget(parent), m_banner(new Banner(Banner::Warning))
 {
     auto *layout = new QVBoxLayout(this);
-    HostKwinMonitor *monitor = HostKwinMonitor::instance();
+    HostKdeMonitor *monitor = HostKdeMonitor::instance();
 
-    setObjectName("hostKwinBanner");
+    setObjectName("hostKdeBanner");
     layout->setContentsMargins(6, 6, 6, 6);
     layout->addWidget(m_banner);
     m_banner->button()->setText(tr("Rebuild…"));
@@ -30,9 +30,9 @@ HostKwinBanner::HostKwinBanner(QWidget *parent)
     m_banner->button()->setToolTip(tr("The Builds window, on the host's KWin"));
     QPushButton *revert = m_banner->addButton(tr("Revert…"));
     revert->setToolTip(tr("Put the distribution's KWin back"));
-    connect(m_banner->button(), &QPushButton::clicked, this, &HostKwinBanner::rebuildRequested);
-    connect(revert, &QPushButton::clicked, this, &HostKwinBanner::revertRequested);
-    connect(monitor, &HostKwinMonitor::changed, this, &HostKwinBanner::refresh);
+    connect(m_banner->button(), &QPushButton::clicked, this, &HostKdeBanner::rebuildRequested);
+    connect(revert, &QPushButton::clicked, this, &HostKdeBanner::revertRequested);
+    connect(monitor, &HostKdeMonitor::changed, this, &HostKdeBanner::refresh);
     /*
      * Back in front, from a terminal say: Plasma or Qt updated meanwhile, or
      * Vitrine's KWin put back by hand.  rpm and dnf take a few hundred
@@ -53,11 +53,11 @@ HostKwinBanner::HostKwinBanner(QWidget *parent)
     }
 }
 
-HostKwinBanner *HostKwinBanner::addTo(QMainWindow *window)
+HostKdeBanner *HostKdeBanner::addTo(QMainWindow *window)
 {
     auto *container = new QWidget;
     auto *layout = new QVBoxLayout(container);
-    auto *banner = new HostKwinBanner;
+    auto *banner = new HostKdeBanner;
 
     layout->setContentsMargins(0, 0, 0, 0);
     layout->setSpacing(0);
@@ -67,9 +67,9 @@ HostKwinBanner *HostKwinBanner::addTo(QMainWindow *window)
     return banner;
 }
 
-QString HostKwinBanner::text() const
+QString HostKdeBanner::text() const
 {
-    const HostKwin::Status status = HostKwinMonitor::instance()->status();
+    const HostKde::Status status = HostKdeMonitor::instance()->status();
     QStringList moved;
 
     if (!status.isOutdated()) {
@@ -84,7 +84,7 @@ QString HostKwinBanner::text() const
         .arg(moved.join(tr(" and ")), status.kwin.version.toHtmlEscaped());
 }
 
-void HostKwinBanner::refresh()
+void HostKdeBanner::refresh()
 {
     const QString text = this->text();
 

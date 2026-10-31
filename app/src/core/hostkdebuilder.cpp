@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: GPL-2.0-or-later
-#include "hostkwinbuilder.h"
+#include "hostkdebuilder.h"
 
 #include <QCoreApplication>
 #include <QFileInfo>
@@ -14,7 +14,7 @@
 #include <unistd.h>
 
 #include "core/guesttoolsbuilder.h"
-#include "core/hostkwin.h"
+#include "core/hostkde.h"
 #include "core/hostmemory.h"
 
 /* The log kept of a build */
@@ -28,24 +28,24 @@ static QString gib(qint64 mib)
     return QString::number(double(mib) / 1024, 'f', mib % 1024 == 0 ? 0 : 1);
 }
 
-HostKwinBuilder *HostKwinBuilder::instance()
+HostKdeBuilder *HostKdeBuilder::instance()
 {
-    static QPointer<HostKwinBuilder> builder;
+    static QPointer<HostKdeBuilder> builder;
 
     if (!builder) {
-        builder = new HostKwinBuilder(QCoreApplication::instance());
+        builder = new HostKdeBuilder(QCoreApplication::instance());
     }
     return builder;
 }
 
-HostKwinBuilder::HostKwinBuilder(QObject *parent)
+HostKdeBuilder::HostKdeBuilder(QObject *parent)
     : QObject(parent), m_meminfo("/proc/meminfo"), m_memoryTimer(new QTimer(this))
 {
     m_memoryTimer->setInterval(2000);
-    connect(m_memoryTimer, &QTimer::timeout, this, &HostKwinBuilder::checkMemory);
+    connect(m_memoryTimer, &QTimer::timeout, this, &HostKdeBuilder::checkMemory);
 }
 
-HostKwinBuilder::~HostKwinBuilder()
+HostKdeBuilder::~HostKdeBuilder()
 {
     if (!m_process) {
         return;
@@ -59,12 +59,12 @@ HostKwinBuilder::~HostKwinBuilder()
     }
 }
 
-void HostKwinBuilder::setMemoryPoll(int ms)
+void HostKdeBuilder::setMemoryPoll(int ms)
 {
     m_memoryTimer->setInterval(ms);
 }
 
-void HostKwinBuilder::start(const QString &plasma)
+void HostKdeBuilder::start(const QString &plasma)
 {
     if (m_running) {
         return;
@@ -89,7 +89,7 @@ void HostKwinBuilder::start(const QString &plasma)
 
 /* Before the container, which takes up to its cap: that much free, and what
    must stay free for the host (HostMemory), else a wait */
-void HostKwinBuilder::checkMemory()
+void HostKdeBuilder::checkMemory()
 {
     const HostMemory::Info host = HostMemory::read(m_meminfo);
     const qint64 needed = GuestToolsBuilder::memoryCapMiB() + HostMemory::reserveMiB(host);
@@ -122,12 +122,12 @@ void HostKwinBuilder::checkMemory()
     }
 }
 
-bool HostKwinBuilder::isWaiting() const
+bool HostKdeBuilder::isWaiting() const
 {
     return m_running && !m_process && m_memoryTimer->isActive();
 }
 
-void HostKwinBuilder::proceed()
+void HostKdeBuilder::proceed()
 {
     if (!isWaiting()) {
         return;
@@ -138,17 +138,17 @@ void HostKwinBuilder::proceed()
     run();
 }
 
-void HostKwinBuilder::run()
+void HostKdeBuilder::run()
 {
-    const QString source = m_sourceDir.isEmpty() ? HostKwin::sourceDir() : m_sourceDir;
-    const QString out = m_outDir.isEmpty() ? HostKwin::outDir() : m_outDir;
-    const QString work = m_workDir.isEmpty() ? HostKwin::workDir() : m_workDir;
+    const QString source = m_sourceDir.isEmpty() ? HostKde::sourceDir() : m_sourceDir;
+    const QString out = m_outDir.isEmpty() ? HostKde::outDir() : m_outDir;
+    const QString work = m_workDir.isEmpty() ? HostKde::workDir() : m_workDir;
     const QString bash = QStandardPaths::findExecutable("bash");
     const int jobs = m_jobs > 0 ? m_jobs : qBound(1, QThread::idealThreadCount(), 8);
     QStringList args;
 
     if (source.isEmpty() || !QFileInfo(source + "/build.sh").isFile()) {
-        finish(tr("This installation of Vitrine has no host/kwin/build.sh"));
+        finish(tr("This installation of Vitrine has no host/kde/build.sh"));
         return;
     }
     args << source + "/build.sh" << "--out" << out << "--work" << work << "-j"
@@ -172,7 +172,7 @@ void HostKwinBuilder::run()
             ::_exit(127);
         }
     });
-    connect(m_process, &QProcess::readyRead, this, &HostKwinBuilder::readOutput);
+    connect(m_process, &QProcess::readyRead, this, &HostKdeBuilder::readOutput);
     connect(m_process, &QProcess::errorOccurred, this, [this](QProcess::ProcessError error) {
         if (error == QProcess::FailedToStart) {
             m_error = tr("Cannot run bash: %1").arg(m_process->errorString());
@@ -189,14 +189,14 @@ void HostKwinBuilder::run()
     }
 }
 
-void HostKwinBuilder::signalGroup(int signal)
+void HostKdeBuilder::signalGroup(int signal)
 {
     if (m_pid > 0) {
         ::kill(pid_t(-m_pid), signal);
     }
 }
 
-void HostKwinBuilder::cancel()
+void HostKdeBuilder::cancel()
 {
     if (!m_running) {
         return;
@@ -213,7 +213,7 @@ void HostKwinBuilder::cancel()
     QTimer::singleShot(kStopMs, m_process, [this]() { signalGroup(SIGKILL); });
 }
 
-void HostKwinBuilder::append(const QString &text)
+void HostKdeBuilder::append(const QString &text)
 {
     m_log += text;
     if (m_log.size() > kMaxLog) {
@@ -223,7 +223,7 @@ void HostKwinBuilder::append(const QString &text)
     emit output(text);
 }
 
-void HostKwinBuilder::readOutput()
+void HostKdeBuilder::readOutput()
 {
     const QString text = QString::fromLocal8Bit(m_process->readAll());
     qsizetype end;
@@ -236,7 +236,7 @@ void HostKwinBuilder::readOutput()
     }
 }
 
-void HostKwinBuilder::setPhase(const QString &text, bool compiling)
+void HostKdeBuilder::setPhase(const QString &text, bool compiling)
 {
     m_compiling = compiling;
     m_done = m_total = 0;
@@ -247,7 +247,7 @@ void HostKwinBuilder::setPhase(const QString &text, bool compiling)
     emit progress(0, 0);
 }
 
-void HostKwinBuilder::handleLine(const QString &text)
+void HostKdeBuilder::handleLine(const QString &text)
 {
     /* rpmbuild's parts of the build, as the guest tools' builds name them */
     static const QHash<QString, QString> sections = {
@@ -304,7 +304,7 @@ void HostKwinBuilder::handleLine(const QString &text)
     }
 }
 
-void HostKwinBuilder::done(int code, bool crashed)
+void HostKdeBuilder::done(int code, bool crashed)
 {
     if (!m_process) {
         return;
@@ -335,7 +335,7 @@ void HostKwinBuilder::done(int code, bool crashed)
     finish({});
 }
 
-void HostKwinBuilder::finish(const QString &error, bool stopped)
+void HostKdeBuilder::finish(const QString &error, bool stopped)
 {
     m_running = false;
     m_memoryTimer->stop();

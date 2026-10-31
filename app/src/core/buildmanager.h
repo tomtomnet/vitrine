@@ -12,7 +12,7 @@
 #include "core/tasks.h"
 
 class GuestToolsBuilder;
-class HostKwinBuilder;
+class HostKdeBuilder;
 class StackBuilder;
 
 /*
@@ -22,8 +22,8 @@ class StackBuilder;
  * built from their sources now, in build order, and after a package of the
  * guest tools their medium, which the VMs install from.  StackBuilder runs
  * host/build.sh for the host's, GuestToolsBuilder the guest's scripts
- * (which waits for memory before a heavy package), HostKwinBuilder
- * host/kwin/build.sh for the host's KWin (which waits too); this follows
+ * (which waits for memory before a heavy package), HostKdeBuilder
+ * host/kde/build.sh for the host's KWin (which waits too); this follows
  * their lines, per component.
  *
  * Each component has its log, kept beside the cache, and the durations of
@@ -67,16 +67,16 @@ public:
     ~BuildManager() override;
 
     /* Defaults: Builds::Places::defaults(), StackBuilder's,
-       GuestToolsBuilder's and HostKwinBuilder's instance(), the files in
+       GuestToolsBuilder's and HostKdeBuilder's instance(), the files in
        Paths' folders */
     void setPlaces(const Builds::Places &places);
-    void setBuilders(StackBuilder *stack, GuestToolsBuilder *tools, HostKwinBuilder *kwin = nullptr);
+    void setBuilders(StackBuilder *stack, GuestToolsBuilder *tools, HostKdeBuilder *kwin = nullptr);
     void setHistoryFile(const QString &path);
     void setLogDir(const QString &path);
 
     QList<Builds::Component> components() const;
-    /* What HostKwin makes of the host's KWin now (Builds::Places::kwin) */
-    HostKwin::Status kwinStatus() const { return places().kwin; }
+    /* What HostKde makes of the host's KWin now (Builds::Places::kwin) */
+    HostKde::Status kwinStatus() const { return places().kwin; }
     Builds::Component component(const QString &id) const;
     Builds::Status status(const QString &id) const;
     /* The components and their state again: the sources may have changed */
@@ -164,7 +164,7 @@ private:
     bool m_placesSet = false;
     QPointer<StackBuilder> m_stack;
     QPointer<GuestToolsBuilder> m_tools;
-    QPointer<HostKwinBuilder> m_kwin;
+    QPointer<HostKdeBuilder> m_kwin;
     QString m_historyFile;
     QString m_logDir;
     QStringList m_cacheDirs;

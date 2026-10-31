@@ -13,16 +13,16 @@
 #include "core/buildcomponents.h"
 #include "core/buildmanager.h"
 #include "core/guesttoolsbuilder.h"
-#include "core/hostkwin.h"
-#include "core/hostkwinbuilder.h"
+#include "core/hostkde.h"
+#include "core/hostkdebuilder.h"
 #include "core/stackbuilder.h"
-#include "hostkwinstandins.h"
+#include "hostkdestandins.h"
 
-using namespace HostKwin;
+using namespace HostKde;
 using Offer = Status::Offer;
 using Owner = Status::Owner;
 
-class TestHostKwin : public QObject
+class TestHostKde : public QObject
 {
     Q_OBJECT
 
@@ -142,7 +142,7 @@ private:
         return system;
     }
 
-    QString hostKwinDir() const { return QStringLiteral(HOST_KWIN_SOURCE_DIR); }
+    QString hostKdeDir() const { return QStringLiteral(HOST_KDE_SOURCE_DIR); }
     /* $XDG_RUNTIME_DIR of the user installing, for install.sh */
     QString runDir() const { return m_state + "/run/" + QString::number(getuid()); }
 
@@ -162,7 +162,7 @@ private:
         p.setProcessEnvironment(env);
         p.setProcessChannelMode(QProcess::MergedChannels);
         QDir().mkpath(m_tmp.filePath("tmp"));
-        p.start("/bin/bash", QStringList{hostKwinDir() + "/install.sh"} + args);
+        p.start("/bin/bash", QStringList{hostKdeDir() + "/install.sh"} + args);
         p.waitForFinished(30000);
         *status = p.exitStatus() == QProcess::NormalExit ? p.exitCode() : -1;
         return QString::fromUtf8(p.readAll());
@@ -226,7 +226,7 @@ private slots:
     /* What versions.sh maps to sets, as the window lists them */
     void setsOfTheRecipe()
     {
-        const QList<Set> sets = HostKwin::sets(hostKwinDir());
+        const QList<Set> sets = HostKde::sets(hostKdeDir());
         QCOMPARE(sets.size(), 3);
         /* "${VGD_HOST_KWIN_SET:-hl39y}": the research's override left out */
         QCOMPARE(sets[0].series, "hl39y");
@@ -240,7 +240,7 @@ private slots:
         QCOMPARE(sets[2].versions, QStringList{"6.8.*"});
         /* their series files are in the copy */
         for (const Set &set : sets) {
-            QVERIFY2(QFileInfo::exists(hostKwinDir() + "/research/patches/kwin/sets/" + set.series +
+            QVERIFY2(QFileInfo::exists(hostKdeDir() + "/research/patches/kwin/sets/" + set.series +
                                        ".series"),
                      qPrintable(set.series));
         }
@@ -249,33 +249,33 @@ private slots:
     /* build.sh --print-recipe: the research's kde_set_for, run by bash */
     void recipeFromTheScript()
     {
-        const Recipe r = Recipe::read(hostKwinDir(), "6.7.91", "44");
+        const Recipe r = Recipe::read(hostKdeDir(), "6.7.91", "44");
         QVERIFY(r.isValid());
         QCOMPARE(r.fedora, "44");
         QCOMPARE(r.copr, "copr:copr.fedorainfracloud.org:group_kdesig:kde-beta");
         QCOMPARE(r.series, "hl39y");
         QCOMPARE(r.tag, "hl39y");
-        QCOMPARE(Recipe::read(hostKwinDir(), "6.8.0", "44").series, "hl39-68");
-        QCOMPARE(Recipe::read(hostKwinDir(), "6.8.0", "44").tag, "h18");
-        QCOMPARE(Recipe::read(hostKwinDir(), "6.8.3", "44").series, "h681a");
+        QCOMPARE(Recipe::read(hostKdeDir(), "6.8.0", "44").series, "hl39-68");
+        QCOMPARE(Recipe::read(hostKdeDir(), "6.8.0", "44").tag, "h18");
+        QCOMPARE(Recipe::read(hostKdeDir(), "6.8.3", "44").series, "h681a");
         /* the research's overrides of its sets stay its own */
         qputenv("VGD_HOST_KWIN_SET", "hl39");
         qputenv("VGD_HOST_KWIN_SET_68", "hl39-681");
-        QCOMPARE(Recipe::read(hostKwinDir(), "6.7.91", "44").series, "hl39y");
-        QCOMPARE(Recipe::read(hostKwinDir(), "6.8.3", "44").series, "h681a");
+        QCOMPARE(Recipe::read(hostKdeDir(), "6.7.91", "44").series, "hl39y");
+        QCOMPARE(Recipe::read(hostKdeDir(), "6.8.3", "44").series, "h681a");
         qunsetenv("VGD_HOST_KWIN_SET");
         qunsetenv("VGD_HOST_KWIN_SET_68");
         /* Fedora 44's own Plasma, and one after the sets */
-        QVERIFY(Recipe::read(hostKwinDir(), "6.7.5", "44").series.isEmpty());
-        QVERIFY(Recipe::read(hostKwinDir(), "6.9.0", "44").series.isEmpty());
-        QVERIFY(Recipe::read(hostKwinDir(), "6.7.5", "44").isValid());
+        QVERIFY(Recipe::read(hostKdeDir(), "6.7.5", "44").series.isEmpty());
+        QVERIFY(Recipe::read(hostKdeDir(), "6.9.0", "44").series.isEmpty());
+        QVERIFY(Recipe::read(hostKdeDir(), "6.7.5", "44").isValid());
         /* VGD_FEDORA: the recipe builds for the host's Fedora */
-        QCOMPARE(Recipe::read(hostKwinDir(), "6.7.91", "45").fedora, "45");
+        QCOMPARE(Recipe::read(hostKdeDir(), "6.7.91", "45").fedora, "45");
         QVERIFY(!Recipe::read(QString(), "6.7.91", "44").isValid());
 
         /* its key is the Builds component's, which a build records */
         Builds::Places places;
-        places.kwinDir = hostKwinDir();
+        places.kwinDir = hostKdeDir();
         const QList<Builds::Component> all = Builds::load(places);
         QCOMPARE(all.size(), 1);
         QCOMPARE(all.first().id, "host-kwin");
@@ -283,7 +283,7 @@ private slots:
         QVERIFY(all.first().heavy);
         QCOMPARE(Builds::key(all.first(), all), r.key);
         QProcess p;
-        p.start("/bin/bash", {hostKwinDir() + "/build.sh", "--print-inputs"});
+        p.start("/bin/bash", {hostKdeDir() + "/build.sh", "--print-inputs"});
         QVERIFY(p.waitForFinished());
         QCOMPARE(p.readAllStandardOutput(), Builds::inputLines(all.first(), all));
     }
@@ -291,7 +291,7 @@ private slots:
     void patchesBySet()
     {
         Builds::Places places;
-        places.kwinDir = hostKwinDir();
+        places.kwinDir = hostKdeDir();
         const Builds::Component c = Builds::load(places).value(0);
         const QList<Builds::Patch> patches = Builds::patches(c);
         QCOMPARE(patches.size(), 29 + 14 + 28);
@@ -624,9 +624,9 @@ private slots:
         qputenv("PATH", m_bin.toUtf8() + ":/usr/bin:/bin");
         QVERIFY(write(m_bin + "/pkexec", "#!/bin/bash\n"));
         QFile::setPermissions(m_bin + "/pkexec", QFile::ReadOwner | QFile::ExeOwner);
-        const QStringList install = installCommand("/src/host/kwin", b);
+        const QStringList install = installCommand("/src/host/kde", b);
         QCOMPARE(install.mid(0, 4), QStringList({m_bin + "/pkexec", "/usr/bin/bash",
-                                                 "/src/host/kwin/install.sh", "install"}));
+                                                 "/src/host/kde/install.sh", "install"}));
         QCOMPARE(install.size(), 4 + b.rpms.size());
         /* sha256sum's hash of the files */
         QCOMPARE(install[4], out + "/kwin/kwin-6.7.91-1.hl39.fc44.x86_64.rpm=" +
@@ -635,8 +635,8 @@ private slots:
         Record record;
         record.digests.insert("kwin", "recorded");
         record.digests.insert("kwin-libs", "not-kwin");
-        const QStringList revert = revertCommand("/src/host/kwin", {b, build()}, record);
-        QCOMPARE(revert.mid(2), QStringList({"/src/host/kwin/install.sh", "revert", "recorded",
+        const QStringList revert = revertCommand("/src/host/kde", {b, build()}, record);
+        QCOMPARE(revert.mid(2), QStringList({"/src/host/kde/install.sh", "revert", "recorded",
                                              "6.7.91-1.hl39.fc44-kwin"}));
         QFile::remove(m_bin + "/pkexec");
     }
@@ -716,7 +716,7 @@ private slots:
         /* the set's switches: an entry each for every user, and the files made now for the one
            installing */
         const QByteArray switches = read(m_state + "/tmpfiles/vitrine-host-kwin.conf");
-        QVERIFY2(switches.startsWith("# Vitrine's host KWin (host/kwin/install.sh)"), switches.constData());
+        QVERIFY2(switches.startsWith("# Vitrine's host KWin (host/kde/install.sh)"), switches.constData());
         QCOMPARE(switches.count("\nf %t/kwin-"), 5);
         QVERIFY(switches.contains("\nf %t/kwin-scanout-variance-cap 0644 - - - 500\n"));
         QVERIFY(out.contains("vitrine-kwin: step: turning the set's run-time switches on"));
@@ -890,12 +890,12 @@ private slots:
         qputenv("PATH", m_bin.toUtf8() + ":/usr/bin:/bin");
         qputenv("STATE", m_state.toUtf8());
 
-        HostKwinMonitor monitor;
-        monitor.setSourceDir(hostKwinDir());
+        HostKdeMonitor monitor;
+        monitor.setSourceDir(hostKdeDir());
         monitor.setOutDir(out);
         monitor.setOsRelease(m_tmp.filePath("os-release"));
         monitor.setProc(m_tmp.filePath("noproc"));
-        QSignalSpy changed(&monitor, &HostKwinMonitor::changed);
+        QSignalSpy changed(&monitor, &HostKdeMonitor::changed);
         monitor.refresh();
         QVERIFY(changed.wait(10000));
         QVERIFY(monitor.isRead());
@@ -908,14 +908,14 @@ private slots:
         QVERIFY(s.recipeChanged);
         QVERIFY(s.canInstall());
 
-        QSignalSpy finished(&monitor, &HostKwinMonitor::finished);
+        QSignalSpy finished(&monitor, &HostKdeMonitor::finished);
         qputenv("PKEXEC_EXIT", "126");
         monitor.install(s.build);
         QVERIFY(monitor.isBusy());
         QVERIFY(finished.wait(10000));
         QCOMPARE(finished.last().value(1).toBool(), true);
         QVERIFY(!QFileInfo::exists(Record::path(out)));
-        QVERIFY(read(m_state + "/pkexec").startsWith("/usr/bin/bash " + hostKwinDir().toUtf8() +
+        QVERIFY(read(m_state + "/pkexec").startsWith("/usr/bin/bash " + hostKdeDir().toUtf8() +
                                                      "/install.sh install " + b.dir.toUtf8()));
 
         qputenv("PKEXEC_EXIT", "1");
@@ -953,15 +953,15 @@ private slots:
                       "[ -n \"${GATE:-}\" ] && while [ ! -e \"$GATE\" ]; do sleep 0.05; done\n"
                       "[ -n \"${FAIL:-}\" ] && { echo 'vitrine-build: error: no host set for kwin 6.7.5' >&2; exit 1; }\n"
                       "echo 'vitrine-build: built: /out/6.7.91-1.hl39.fc44'\n"));
-        HostKwinBuilder builder;
+        HostKdeBuilder builder;
         builder.setSourceDir(src);
         builder.setOutDir(m_tmp.filePath("bout"));
         builder.setWorkDir(m_tmp.filePath("bwork"));
         builder.setJobs(3);
         QVERIFY(write(m_tmp.filePath("meminfo"), "MemTotal: 33554432 kB\nMemAvailable: 33554432 kB\n"));
         builder.setMeminfo(m_tmp.filePath("meminfo"));
-        QSignalSpy finished(&builder, &HostKwinBuilder::finished);
-        QSignalSpy progress(&builder, &HostKwinBuilder::progress);
+        QSignalSpy finished(&builder, &HostKdeBuilder::finished);
+        QSignalSpy progress(&builder, &HostKdeBuilder::progress);
         builder.start("beta");
         QVERIFY(finished.wait(10000));
         QCOMPARE(finished.last().value(0).toString(), QString());
@@ -1010,7 +1010,7 @@ private slots:
     /*
      * A real system, when HOSTKWIN_SYSTEM names a folder of rpm and dnf
      * that run on it (a test VM's, through ssh) and its os-release: what
-     * HostKwin makes of it, against the builds of HOSTKWIN_OUT.  Skipped
+     * HostKde makes of it, against the builds of HOSTKWIN_OUT.  Skipped
      * otherwise.
      */
     void aRealSystem()
@@ -1021,7 +1021,7 @@ private slots:
         }
         qputenv("PATH", dir.toUtf8() + ":/usr/bin:/bin");
         const System system = System::read(dir + "/os-release", m_tmp.filePath("noproc"));
-        const Recipe r = Recipe::read(hostKwinDir(), system.plasma(), system.fedora);
+        const Recipe r = Recipe::read(hostKdeDir(), system.plasma(), system.fedora);
         const QList<Build> list = builds(qEnvironmentVariable("HOSTKWIN_OUT"));
         const Status s = status(system, r, list, Record::read(Record::path(qEnvironmentVariable("HOSTKWIN_OUT"))));
         QStringList kwin;
@@ -1052,14 +1052,14 @@ private slots:
         const QString src = m_tmp.filePath("kwinsrc");
         QVERIFY(QDir().mkpath(src));
         for (const char *name : {"install.sh", "components.conf"}) {
-            QVERIFY(QFile::copy(hostKwinDir() + '/' + name, src + '/' + name));
+            QVERIFY(QFile::copy(hostKdeDir() + '/' + name, src + '/' + name));
         }
         QVERIFY(write(src + "/build.sh", "#!/bin/bash\necho 'vitrine-build: phase: building the packages'\n"
                                          "echo 'vitrine-build: built: /out/x'\n"));
         Builds::Places places;
         places.kwinDir = src;
         places.kwin = status(host(), recipe(), {}, {});
-        HostKwinBuilder kwin;
+        HostKdeBuilder kwin;
         kwin.setSourceDir(src);
         QVERIFY(write(m_tmp.filePath("meminfo2"), "MemTotal: 33554432 kB\nMemAvailable: 33554432 kB\n"));
         kwin.setMeminfo(m_tmp.filePath("meminfo2"));
@@ -1096,5 +1096,5 @@ private slots:
     }
 };
 
-QTEST_GUILESS_MAIN(TestHostKwin)
-#include "test_hostkwin.moc"
+QTEST_GUILESS_MAIN(TestHostKde)
+#include "test_hostkde.moc"

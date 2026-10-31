@@ -17,8 +17,8 @@
 #include <unistd.h>
 
 #include "core/guesttoolsbuilder.h"
-#include "core/hostkwin.h"
-#include "core/hostkwinbuilder.h"
+#include "core/hostkde.h"
+#include "core/hostkdebuilder.h"
 #include "core/paths.h"
 #include "core/stackbuilder.h"
 #include "core/tasks.h"
@@ -57,7 +57,7 @@ BuildManager *BuildManager::instance()
 BuildManager::BuildManager(QObject *parent) : QObject(parent)
 {
     /* the host's KWin's status follows the system: read again, it may differ */
-    connect(HostKwinMonitor::instance(), &HostKwinMonitor::changed, this, [this]() {
+    connect(HostKdeMonitor::instance(), &HostKdeMonitor::changed, this, [this]() {
         if (!m_placesSet) {
             refresh();
         }
@@ -74,7 +74,7 @@ void BuildManager::setPlaces(const Builds::Places &places)
 }
 
 void BuildManager::setBuilders(StackBuilder *stack, GuestToolsBuilder *tools,
-                               HostKwinBuilder *kwin)
+                               HostKdeBuilder *kwin)
 {
     m_stack = stack;
     m_tools = tools;
@@ -215,7 +215,7 @@ void BuildManager::build(const QStringList &ids, bool clean)
         m_tools = GuestToolsBuilder::instance();
     }
     if (!m_kwin) {
-        m_kwin = HostKwinBuilder::instance();
+        m_kwin = HostKdeBuilder::instance();
     }
     /* their lines, per component, while a run of ours goes on */
     if (!m_connected.contains("stack")) {
@@ -333,12 +333,12 @@ void BuildManager::build(const QStringList &ids, bool clean)
     if (!m_connected.contains("kwin")) {
         m_connected << "kwin";
         const auto systemPart = [this]() { return runsPart(2); };
-        connect(m_kwin, &HostKwinBuilder::output, this, [this, systemPart](const QString &text) {
+        connect(m_kwin, &HostKdeBuilder::output, this, [this, systemPart](const QString &text) {
             if (systemPart()) {
                 append(m_part.first(), text);
             }
         });
-        connect(m_kwin, &HostKwinBuilder::phaseChanged, this,
+        connect(m_kwin, &HostKdeBuilder::phaseChanged, this,
                 [this, systemPart](const QString &text) {
             if (systemPart() && !m_current.isEmpty()) {
                 Progress &p = m_progress[m_current];
@@ -348,7 +348,7 @@ void BuildManager::build(const QStringList &ids, bool clean)
                 updateTask();
             }
         });
-        connect(m_kwin, &HostKwinBuilder::progress, this,
+        connect(m_kwin, &HostKdeBuilder::progress, this,
                 [this, systemPart](int done, int total) {
             if (systemPart() && !m_current.isEmpty()) {
                 Progress &p = m_progress[m_current];
@@ -360,7 +360,7 @@ void BuildManager::build(const QStringList &ids, bool clean)
                 }
             }
         });
-        connect(m_kwin, &HostKwinBuilder::waitingChanged, this, [this, systemPart]() {
+        connect(m_kwin, &HostKdeBuilder::waitingChanged, this, [this, systemPart]() {
             if (systemPart() && !m_current.isEmpty()) {
                 const State state = m_progress.value(m_current).state;
                 if (m_kwin->isWaiting() && state == State::Building) {
@@ -372,7 +372,7 @@ void BuildManager::build(const QStringList &ids, bool clean)
                 }
             }
         });
-        connect(m_kwin, &HostKwinBuilder::finished, this, [this, systemPart](const QString &error) {
+        connect(m_kwin, &HostKdeBuilder::finished, this, [this, systemPart](const QString &error) {
             if (!systemPart()) {
                 return;
             }
@@ -380,7 +380,7 @@ void BuildManager::build(const QStringList &ids, bool clean)
                 componentDone(m_part.first(), State::Built);
             }
             /* the builds there are now, for the banner too */
-            HostKwinMonitor::instance()->refresh();
+            HostKdeMonitor::instance()->refresh();
             partFinished(error, m_kwin->wasStopped());
         });
     }
@@ -708,7 +708,7 @@ QStringList BuildManager::cacheDirs() const
     /* every Fedora release's of the guest tools; the host KWin's work folder */
     return m_cacheDirs.isEmpty() ? QStringList{StackBuilder::workDir(),
                                                Paths::cacheDir() + "/guest-build",
-                                               HostKwin::workDir()}
+                                               HostKde::workDir()}
                                  : m_cacheDirs;
 }
 
@@ -757,7 +757,7 @@ bool BuildManager::clearCache(QString *error)
         lockFiles << dir + "/.lock";
     }
     lockFiles << places.rpmsDir + "/.lock";
-    /* host/kwin/build.sh's, in its output */
+    /* host/kde/build.sh's, in its output */
     if (!places.kwinOut.isEmpty()) {
         lockFiles << places.kwinOut + "/.lock";
     }

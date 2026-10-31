@@ -12,8 +12,8 @@
 # builds the RPMs in a Fedora container (rootless podman).  This only
 # builds: install.sh installs them, as root.
 #
-#   host/kwin/build.sh [--plasma beta|testing|fedora] [--out DIR] [--work DIR] [-j N]
-#   host/kwin/build.sh --print-set VERSION | --print-recipe VERSION FEDORA |
+#   host/kde/build.sh [--plasma beta|testing|fedora] [--out DIR] [--work DIR] [-j N]
+#   host/kde/build.sh --print-set VERSION | --print-recipe VERSION FEDORA |
 #                      --print-plasma | --print-inputs | --print-key | --print-deps
 #
 #   --plasma WHERE where the host's Plasma comes from: beta (the COPR that
@@ -280,7 +280,7 @@ evr=$(rpm -qp --qf '%{VERSION}-%{RELEASE}' "$kwin")
 kwin_version=$(rpm -qp --qf '%{VERSION}' "$kwin")
 read -r series tag _ <<< "$(set_for "$kwin_version")" || true
 {
-	echo "# What host/kwin/build.sh built, for Vitrine"
+	echo "# What host/kde/build.sh built, for Vitrine"
 	echo "evr=$evr"
 	echo "version=$kwin_version"
 	echo "set=${series:-}"

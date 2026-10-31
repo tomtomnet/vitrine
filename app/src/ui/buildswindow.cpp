@@ -31,11 +31,11 @@
 
 #include "core/buildmanager.h"
 #include "core/guesttools.h"
-#include "core/hostkwin.h"
-#include "core/hostkwinbuilder.h"
+#include "core/hostkde.h"
+#include "core/hostkdebuilder.h"
 #include "core/paths.h"
 #include "ui/banner.h"
-#include "ui/hostkwindialog.h"
+#include "ui/hostkdedialog.h"
 #include "ui/icons.h"
 #include "ui/taskbutton.h"
 #include "ui/widgets.h"
@@ -81,10 +81,10 @@ QString groupTitle(const QString &group)
 }
 
 /* The host's KWin's icon: what it is to the user, rather than to a build */
-QIcon kwinIcon(const HostKwin::Status &kwin)
+QIcon kwinIcon(const HostKde::Status &kwin)
 {
-    using Owner = HostKwin::Status::Owner;
-    using Offer = HostKwin::Status::Offer;
+    using Owner = HostKde::Status::Owner;
+    using Offer = HostKde::Status::Offer;
 
     if (kwin.offer != Offer::Offered) {
         return Icons::themed({"dialog-information", "help-about"}, QStyle::SP_MessageBoxInformation);
@@ -459,8 +459,8 @@ BuildsWindow::BuildsWindow(QWidget *parent)
     connect(m_build, &QPushButton::clicked, this, [this]() { buildSelected(); });
     connect(m_all, &QPushButton::clicked, m_manager, &BuildManager::buildOutdated);
     connect(m_stop, &QPushButton::clicked, m_manager, &BuildManager::cancel);
-    connect(m_install, &QPushButton::clicked, this, [this]() { HostKwinDialog::install(this); });
-    connect(m_revert, &QPushButton::clicked, this, [this]() { HostKwinDialog::revert(this); });
+    connect(m_install, &QPushButton::clicked, this, [this]() { HostKdeDialog::install(this); });
+    connect(m_revert, &QPushButton::clicked, this, [this]() { HostKdeDialog::revert(this); });
     connect(m_clear, &QPushButton::clicked, this, &BuildsWindow::clearCache);
     connect(m_memory->button(), &QPushButton::clicked, m_manager, &BuildManager::proceed);
     connect(m_tree, &QTreeWidget::currentItemChanged, this, &BuildsWindow::showDetails);
@@ -510,12 +510,12 @@ BuildsWindow::BuildsWindow(QWidget *parent)
     });
     connect(GuestToolsBuilder::instance(), &GuestToolsBuilder::waitingChanged, this,
             &BuildsWindow::showMemory);
-    connect(HostKwinBuilder::instance(), &HostKwinBuilder::waitingChanged, this,
+    connect(HostKdeBuilder::instance(), &HostKdeBuilder::waitingChanged, this,
             &BuildsWindow::showMemory);
 
     /* the host's KWin installed or reverted: its output in its Log tab */
-    HostKwinMonitor *monitor = HostKwinMonitor::instance();
-    connect(monitor, &HostKwinMonitor::started, this, [this]() {
+    HostKdeMonitor *monitor = HostKdeMonitor::instance();
+    connect(monitor, &HostKdeMonitor::started, this, [this]() {
         m_showInstall = true;
         m_shownLog.clear();
         if (kwinSelected()) {
@@ -529,7 +529,7 @@ BuildsWindow::BuildsWindow(QWidget *parent)
         showLog();
         updateButtons();
     });
-    connect(monitor, &HostKwinMonitor::output, this, [this](const QString &text) {
+    connect(monitor, &HostKdeMonitor::output, this, [this](const QString &text) {
         if (m_showInstall && m_items.contains(m_shownLog) &&
             m_manager->component(m_shownLog).kind == Kind::System) {
             m_log->moveCursor(QTextCursor::End);
@@ -537,7 +537,7 @@ BuildsWindow::BuildsWindow(QWidget *parent)
             m_log->moveCursor(QTextCursor::End);
         }
     });
-    connect(monitor, &HostKwinMonitor::finished, this,
+    connect(monitor, &HostKdeMonitor::finished, this,
             [this](const QString &error, bool cancelled) {
         updateButtons();
         if (!error.isEmpty() && !cancelled) {
@@ -576,7 +576,7 @@ void BuildsWindow::shown()
     if (!m_manager->isRunning()) {
         m_manager->refresh();
     }
-    HostKwinMonitor::instance()->refresh();
+    HostKdeMonitor::instance()->refresh();
     updateCache();
 }
 
@@ -602,7 +602,7 @@ void BuildsWindow::lookAgain()
        time, the main window's banner asks too */
     if (!m_manager->isRunning()) {
         m_manager->refresh();
-        HostKwinMonitor::instance()->lookAgain();
+        HostKdeMonitor::instance()->lookAgain();
     }
 }
 
@@ -1121,7 +1121,7 @@ void BuildsWindow::showLog()
     m_shownLog = id;
     QString text = id.isEmpty() ? QString() : m_manager->log(id);
     if (m_showInstall && !id.isEmpty() && m_manager->component(id).kind == Kind::System) {
-        text = HostKwinMonitor::instance()->log();
+        text = HostKdeMonitor::instance()->log();
     }
     /* the end of it: the lines the window keeps */
     qsizetype at = text.size();
@@ -1248,8 +1248,8 @@ void BuildsWindow::updateButtons()
     m_install->setVisible(kwin);
     m_revert->setVisible(kwin);
     if (kwin) {
-        const HostKwin::Status status = m_manager->kwinStatus();
-        const bool busy = HostKwinMonitor::instance()->isBusy() ||
+        const HostKde::Status status = m_manager->kwinStatus();
+        const bool busy = HostKdeMonitor::instance()->isBusy() ||
                           (running && m_manager->component(m_manager->current()).kind == Kind::System);
         QString why;
         m_install->setEnabled(!busy && status.canInstall(&why));
@@ -1303,10 +1303,10 @@ void BuildsWindow::updateHeader()
 
 QString BuildsWindow::kwinSource(const Component &c)
 {
-    using Offer = HostKwin::Status::Offer;
-    using Owner = HostKwin::Status::Owner;
-    const HostKwin::Status kwin = m_manager->kwinStatus();
-    const HostKwin::System system = HostKwinMonitor::instance()->system();
+    using Offer = HostKde::Status::Offer;
+    using Owner = HostKde::Status::Owner;
+    const HostKde::Status kwin = m_manager->kwinStatus();
+    const HostKde::System system = HostKdeMonitor::instance()->system();
     const Builds::Status status = m_manager->status(c.id);
     const BuildManager::Progress p = m_manager->progress(c.id);
     const auto row = [](const QString &label, const QString &value) {
@@ -1337,10 +1337,10 @@ QString BuildsWindow::kwinSource(const Component &c)
         html += para(kwin.why);
     } else if (kwin.offer == Offer::NoSet) {
         QStringList sets;
-        for (const HostKwin::Set &set : HostKwin::sets(c.dir)) {
+        for (const HostKde::Set &set : HostKde::sets(c.dir)) {
             QStringList versions;
             for (const QString &pattern : set.versions) {
-                versions << HostKwin::versionText(pattern);
+                versions << HostKde::versionText(pattern);
             }
             sets << tr("%1 for KWin %2").arg(set.series, versions.join(", "));
         }
@@ -1353,7 +1353,7 @@ QString BuildsWindow::kwinSource(const Component &c)
         for (const QString &line : kwin.outdated) {
             const QStringList f = line.split(' ');
             moved << tr("%1 %2, built for %3")
-                         .arg(HostKwin::packageTitle(f.value(0)), f.value(2), f.value(1));
+                         .arg(HostKde::packageTitle(f.value(0)), f.value(2), f.value(1));
         }
         html += para(tr("Vitrine's KWin no longer matches this computer (%1). At the next login "
                         "the desktop would run it with the new libraries, and might not start: "
@@ -1415,7 +1415,7 @@ QString BuildsWindow::kwinSource(const Component &c)
     if (!kwin.plasma.isEmpty()) {
         computer << tr("Plasma %1").arg(kwin.plasma);
     }
-    if (const HostKwin::Package qt = system.package("qt6-qtbase"); qt.isValid()) {
+    if (const HostKde::Package qt = system.package("qt6-qtbase"); qt.isValid()) {
         computer << tr("Qt %1").arg(qt.version);
     }
     if (!computer.isEmpty()) {
@@ -1452,7 +1452,7 @@ QString BuildsWindow::kwinSource(const Component &c)
         if (!took.isEmpty()) {
             built = tr("%1, in %2").arg(built, duration(took.last()));
         }
-        const HostKwin::Build &b = kwin.build.isValid() ? kwin.build : kwin.other;
+        const HostKde::Build &b = kwin.build.isValid() ? kwin.build : kwin.other;
         if (b.isValid()) {
             built = tr("KWin %1, %2").arg(b.evr, built);
         }
@@ -1574,10 +1574,10 @@ void BuildsWindow::contextMenu(const QPoint &at)
     }
     if (c.kind == Kind::System || id == "system") {
         menu.addAction(m_install->icon(), m_install->text(), this,
-                       [this]() { HostKwinDialog::install(this); })
+                       [this]() { HostKdeDialog::install(this); })
             ->setEnabled(m_install->isEnabled());
         menu.addAction(m_revert->icon(), m_revert->text(), this,
-                       [this]() { HostKwinDialog::revert(this); })
+                       [this]() { HostKdeDialog::revert(this); })
             ->setEnabled(m_revert->isEnabled());
     }
     if (!status.output.isEmpty()) {

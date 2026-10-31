@@ -13,15 +13,15 @@ class QMainWindow;
  * Rebuild… opens the Builds window on it, Revert… puts the distribution's
  * KWin back.  Hidden otherwise, which is nearly always.
  */
-class HostKwinBanner : public QWidget
+class HostKdeBanner : public QWidget
 {
     Q_OBJECT
 
 public:
-    explicit HostKwinBanner(QWidget *parent = nullptr);
+    explicit HostKdeBanner(QWidget *parent = nullptr);
 
     /* Puts a banner over @window's central widget, which it keeps */
-    static HostKwinBanner *addTo(QMainWindow *window);
+    static HostKdeBanner *addTo(QMainWindow *window);
 
     void refresh();
     /* What it says, for the tests; empty while hidden */

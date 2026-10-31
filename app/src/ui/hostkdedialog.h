@@ -4,30 +4,30 @@
 #include <QString>
 #include <QStringList>
 
-#include "core/hostkwin.h"
+#include "core/hostkde.h"
 
 class QWidget;
 
 /*
  * What Vitrine says before it installs its KWin on the host, or puts the
  * distribution's back, then the install or revert itself
- * (HostKwinMonitor: install.sh with pkexec, the desktop's password dialog).
+ * (HostKdeMonitor: install.sh with pkexec, the desktop's password dialog).
  * Plain, and nothing left out: it replaces the compositor as root, it must
  * match Plasma and Qt, it is version-locked and must be built again after
  * their updates, reverting means the distribution's packages, and it takes
  * effect at the next login.  A KWin that is not Vitrine's gets a warning of
  * its own, naming it, before it is replaced.
  */
-namespace HostKwinDialog {
+namespace HostKdeDialog {
 
 /* "kwin, kwin-common and kwin-libs": those of @packages, in words */
 QString names(const QStringList &packages);
 /* The packages an install replaces: the build's that are installed */
-QStringList replaced(const HostKwin::Status &status, const HostKwin::System &system);
+QStringList replaced(const HostKde::Status &status, const HostKde::System &system);
 
-QString installText(const HostKwin::Status &status, const QStringList &packages);
+QString installText(const HostKde::Status &status, const QStringList &packages);
 /* The warning before a KWin that is not Vitrine's goes; empty if it is not one */
-QString foreignText(const HostKwin::Status &status);
+QString foreignText(const HostKde::Status &status);
 QString revertText(const QStringList &packages);
 /* The commands that put the distribution's KWin back from a text console */
 QString consoleCommands(const QStringList &packages);

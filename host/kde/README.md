@@ -119,13 +119,13 @@ compares with the host's before installing.
 | `c28ab03912079127f981603c228443ecfcdf030e7fc0170728f3e400735d2d93` | `src/host-config/kwin-scanout-variance-cap.conf` |
 | `ac0cb19c913e350f76be6c0f5c129dfc77eb7c25b3a717205efaa57aaca46541` | `src/host-config/kwin-skip-empty-layer-render.conf` |
 
-Check: `cd host/kwin/research && find . -type f | sort | xargs sha256sum`.
+Check: `cd host/kde/research && find . -type f | sort | xargs sha256sum`.
 
 When the research's recipe moves (`r` its repository, `c` the commit, `v`
 this folder), take it again as it is, the sets' patches with it:
 
 ```sh
-r=~/Documents/virtio-gpu-desktop c=ce2c5ee v=~/Documents/vitrine/host/kwin/research
+r=~/Documents/virtio-gpu-desktop c=ce2c5ee v=~/Documents/vitrine/host/kde/research
 rm -rf "$v" && mkdir -p "$v/setup/tools" "$v/patches/kwin/sets" "$v/src/host-config"
 for f in setup/lib.sh setup/paths.sh setup/versions.sh setup/tools/kde-rpms.sh \
 	setup/tools/build-patched-rpm.sh patches/kwin/sets/{hl39y,hl39-68,h681a}.series \

@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: GPL-2.0-or-later
-#include "hostkwindialog.h"
+#include "hostkdedialog.h"
 
 #include <QCoreApplication>
 #include <QMessageBox>
@@ -8,13 +8,13 @@
 #include "ui/icons.h"
 #include "ui/widgets.h"
 
-using HostKwin::Status;
+using HostKde::Status;
 
-namespace HostKwinDialog {
+namespace HostKdeDialog {
 
 static QString tr(const char *text)
 {
-    return QCoreApplication::translate("HostKwinDialog", text);
+    return QCoreApplication::translate("HostKdeDialog", text);
 }
 
 QString names(const QStringList &packages)
@@ -25,11 +25,11 @@ QString names(const QStringList &packages)
     return tr("%1 and %2").arg(packages.mid(0, packages.size() - 1).join(", "), packages.last());
 }
 
-QStringList replaced(const Status &status, const HostKwin::System &system)
+QStringList replaced(const Status &status, const HostKde::System &system)
 {
     QStringList list;
 
-    for (const HostKwin::Package &p : system.kwin) {
+    for (const HostKde::Package &p : system.kwin) {
         if (status.build.rpm(p.name).name == p.name) {
             list << p.name;
         }
@@ -113,7 +113,7 @@ QString revertText(const QStringList &packages)
 
 bool install(QWidget *parent)
 {
-    HostKwinMonitor *monitor = HostKwinMonitor::instance();
+    HostKdeMonitor *monitor = HostKdeMonitor::instance();
     const Status status = monitor->status();
     const QStringList packages = replaced(status, monitor->system());
     QString why;
@@ -145,7 +145,7 @@ bool install(QWidget *parent)
 
 bool revert(QWidget *parent)
 {
-    HostKwinMonitor *monitor = HostKwinMonitor::instance();
+    HostKdeMonitor *monitor = HostKdeMonitor::instance();
     const Status status = monitor->status();
     QStringList packages;
     QString why;
@@ -157,7 +157,7 @@ bool revert(QWidget *parent)
         Widgets::warn(parent, tr("Revert to the Distribution's KWin"), why);
         return false;
     }
-    for (const HostKwin::Package &p : monitor->system().kwin) {
+    for (const HostKde::Package &p : monitor->system().kwin) {
         packages << p.name;
     }
     if (!Widgets::confirm(parent, QMessageBox::Question, tr("Revert to the Distribution's KWin"),

@@ -60,8 +60,8 @@
 #include "ui/memorymonitor.h"
 #include "ui/newvmdialog.h"
 #include "ui/preferencesdialog.h"
-#include "ui/hostkwinbanner.h"
-#include "ui/hostkwindialog.h"
+#include "ui/hostkdebanner.h"
+#include "ui/hostkdedialog.h"
 #include "ui/stackbanner.h"
 #include "ui/statusstats.h"
 #include "ui/qemudocs.h"
@@ -176,10 +176,10 @@ MainWindow::MainWindow(VmStore *store, QWidget *parent)
     connect(StackBanner::addTo(this), &StackBanner::buildRequested, this,
             [this]() { showBuilds("qemu"); });
     /* Vitrine's KWin installed on the host, no longer matching its Plasma or Qt */
-    HostKwinBanner *kwin = HostKwinBanner::addTo(this);
-    connect(kwin, &HostKwinBanner::rebuildRequested, this, [this]() { showBuilds("host-kwin"); });
-    connect(kwin, &HostKwinBanner::revertRequested, this,
-            [this]() { HostKwinDialog::revert(this); });
+    HostKdeBanner *kwin = HostKdeBanner::addTo(this);
+    connect(kwin, &HostKdeBanner::rebuildRequested, this, [this]() { showBuilds("host-kwin"); });
+    connect(kwin, &HostKdeBanner::revertRequested, this,
+            [this]() { HostKdeDialog::revert(this); });
 
     m_qemuStatus->setObjectName("qemuStatus");
     m_updates = new UpdateNotifier(this);

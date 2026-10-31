@@ -12,10 +12,10 @@
 class QProcess;
 
 /*
- * The host's KWin (host/kwin, README.md there): this computer's own
+ * The host's KWin (host/kde, README.md there): this computer's own
  * compositor with the research's host set, an optional component of the
- * Builds window ("Host desktop").  host/kwin/build.sh builds it in a
- * container with the research's recipe; host/kwin/install.sh installs it
+ * Builds window ("Host desktop").  host/kde/build.sh builds it in a
+ * container with the research's recipe; host/kde/install.sh installs it
  * as root (pkexec), version-locked, or puts the distribution's KWin back.
  *
  * Here: what the system has (System: rpm, dnf), what the recipe makes of it
@@ -26,9 +26,9 @@ class QProcess;
  * patched KWin from elsewhere (the research's own, say) never passes for
  * it, whatever its version says.
  */
-namespace HostKwin {
+namespace HostKde {
 
-/* host/kwin: $VITRINE_HOST_KWIN_DIR, else the kwin/ of StackBuilder::hostDir(); empty if none */
+/* host/kde: $VITRINE_HOST_KDE_DIR, else the kde/ of StackBuilder::hostDir(); empty if none */
 QString sourceDir();
 /* Where build.sh puts its builds, and the record: <data>/vitrine/host-kwin */
 QString outDir();
@@ -54,7 +54,7 @@ struct Set {
     QString tag;                // what the RPMs' release gets
     QStringList versions;       // the versions it is for, as shell patterns: 6.7.91, 6.8.*
 };
-/* The host sets of host/kwin @sourceDir, in versions.sh's order */
+/* The host sets of host/kde @sourceDir, in versions.sh's order */
 QList<Set> sets(const QString &sourceDir);
 
 /* A package installed */
@@ -237,17 +237,17 @@ QStringList revertCommand(const QString &sourceDir, const QList<Build> &builds,
  * Install and Revert run install.sh with pkexec (the desktop's password
  * dialog), one at a time, their output as it comes.
  */
-class HostKwinMonitor : public QObject
+class HostKdeMonitor : public QObject
 {
     Q_OBJECT
 
 public:
-    static HostKwinMonitor *instance();
+    static HostKdeMonitor *instance();
 
-    explicit HostKwinMonitor(QObject *parent = nullptr);
-    ~HostKwinMonitor() override;
+    explicit HostKdeMonitor(QObject *parent = nullptr);
+    ~HostKdeMonitor() override;
 
-    /* Defaults: HostKwin's folders, /etc/os-release, /proc */
+    /* Defaults: HostKde's folders, /etc/os-release, /proc */
     void setSourceDir(const QString &dir) { m_sourceDir = dir; }
     void setOutDir(const QString &dir) { m_outDir = dir; }
     void setOsRelease(const QString &path) { m_osRelease = path; }
@@ -257,24 +257,24 @@ public:
 
     /* What a reading brings back */
     struct Reading {
-        HostKwin::System system;
-        HostKwin::Recipe recipe;
-        QList<HostKwin::Build> builds;
-        HostKwin::Record record;
+        HostKde::System system;
+        HostKde::Recipe recipe;
+        QList<HostKde::Build> builds;
+        HostKde::Record record;
     };
-    /* The system, the recipe of host/kwin @source for it, the builds and
+    /* The system, the recipe of host/kde @source for it, the builds and
        the record in @out: the processes it takes, in whatever thread */
     static Reading read(const QString &source, const QString &out, const QString &osRelease,
                         const QString &proc);
 
     /* Read once at least */
     bool isRead() const { return m_read; }
-    HostKwin::System system() const { return m_system; }
-    HostKwin::Recipe recipe() const { return m_recipe; }
+    HostKde::System system() const { return m_system; }
+    HostKde::Recipe recipe() const { return m_recipe; }
     /* Of the system as last read, the builds and the record as they are now */
-    HostKwin::Status status() const;
-    QList<HostKwin::Build> builds() const;
-    HostKwin::Record record() const;
+    HostKde::Status status() const;
+    QList<HostKde::Build> builds() const;
+    HostKde::Record record() const;
 
     /* The system again, in the background; changed() then */
     void refresh();
@@ -287,7 +287,7 @@ public:
 
     bool isBusy() const { return m_process != nullptr; }
     /* install.sh, with pkexec: @build's RPMs, then the record */
-    void install(const HostKwin::Build &build);
+    void install(const HostKde::Build &build);
     /* install.sh revert, with pkexec: the record goes */
     void revert();
     /* Of the last install or revert */
@@ -302,7 +302,7 @@ signals:
 
 private:
     void apply(const Reading &reading);
-    void run(const QStringList &command, bool install, const HostKwin::Build &build);
+    void run(const QStringList &command, bool install, const HostKde::Build &build);
 
     QString m_sourceDir;
     QString m_outDir;
@@ -311,8 +311,8 @@ private:
     bool m_read = false;
     bool m_reading = false;
     bool m_again = false;
-    HostKwin::System m_system;
-    HostKwin::Recipe m_recipe;
+    HostKde::System m_system;
+    HostKde::Recipe m_recipe;
     QProcess *m_process = nullptr;
     QString m_log;
     QString m_partial;

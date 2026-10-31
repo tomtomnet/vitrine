@@ -99,7 +99,7 @@ switches_on() {
 	say "step: turning the set's run-time switches on ($switches)"
 	mkdir -p "${switches%/*}"
 	{
-		echo "# Vitrine's host KWin (host/kwin/install.sh): the run-time switches of the research's"
+		echo "# Vitrine's host KWin (host/kde/install.sh): the run-time switches of the research's"
 		echo "# patches, a file each in \$XDG_RUNTIME_DIR that KWin reads as it starts. Reverting"
 		echo "# Vitrine's KWin removes this file; without the patches, KWin ignores them."
 		cat "${entries[@]}"

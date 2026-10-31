@@ -100,7 +100,7 @@ static QHash<QString, QString> plainValues(const QByteArray &conf)
 
 Places Places::defaults()
 {
-    const HostKwinMonitor *monitor = HostKwinMonitor::instance();
+    const HostKdeMonitor *monitor = HostKdeMonitor::instance();
     Places places;
 
     places.hostDir = StackBuilder::hostDir();
@@ -112,7 +112,7 @@ Places Places::defaults()
     /* the builds as they are now, the system as last read */
     places.kwinOut = monitor->outDir();
     places.kwin = monitor->status();
-    if (places.kwin.offer != HostKwin::Status::Offer::Hidden) {
+    if (places.kwin.offer != HostKde::Status::Offer::Hidden) {
         places.kwinDir = monitor->sourceDir();
     }
     return places;
@@ -393,7 +393,7 @@ QList<Patch> patches(const Component &c)
     }
     if (c.kind == Kind::System) {
         /* each set of the recipe, in its order: those of 6.8 are mostly 6.7.91's */
-        for (const HostKwin::Set &set : HostKwin::sets(c.dir)) {
+        for (const HostKde::Set &set : HostKde::sets(c.dir)) {
             const QByteArray series = readFile(c.dir + '/' + where + "/sets/" + set.series + ".series");
             for (const QByteArray &raw : series.split('\n')) {
                 const QString name = QString::fromUtf8(raw).section('#', 0, 0).trimmed();
@@ -402,7 +402,7 @@ QList<Patch> patches(const Component &c)
                     p.path = where + '/' + name;
                     QStringList versions;
                     for (const QString &pattern : set.versions) {
-                        versions << HostKwin::versionText(pattern);
+                        versions << HostKde::versionText(pattern);
                     }
                     p.origin = tr("%1, for KWin %2").arg(set.series, versions.join(", "));
                     list << p;
@@ -946,18 +946,18 @@ static Status mediumStatus(const Component &c, const QList<Component> &all, cons
     return s;
 }
 
-/* What HostKwin makes of the host's KWin (Places::kwin): no set or not
+/* What HostKde makes of the host's KWin (Places::kwin): no set or not
    for this computer, not built, built for another Plasma, or built from
    another recipe or against other packages than the system's */
 static Status systemStatus(const Places &places)
 {
-    const HostKwin::Status &kwin = places.kwin;
+    const HostKde::Status &kwin = places.kwin;
     Status s;
 
-    if (kwin.offer != HostKwin::Status::Offer::Offered) {
+    if (kwin.offer != HostKde::Status::Offer::Offered) {
         return s;
     }
-    const HostKwin::Build &b = kwin.build.isValid() ? kwin.build : kwin.other;
+    const HostKde::Build &b = kwin.build.isValid() ? kwin.build : kwin.other;
     if (!b.isValid()) {
         s.state = Status::State::NotBuilt;
         return s;
