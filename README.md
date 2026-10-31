@@ -122,13 +122,14 @@ files it changes, and the guest packages compile through ccache.
    (Ctrl+S) edits. A Linux VM whose 3D card lacks what new VMs get (native
    context, the host vblank timing) offers Update… on its Details tab.
 3. **Guest tools** for Fedora 44 x86-64 guests (virtio-gpu driver, Mesa, KWin
-   and KPipeWire for Plasma 6.7.5, the nested desktop's session and proxy, an
-   agent). The Builds window (also Build… in Machine > Install Guest Tools…
-   and in Preferences) builds them in a Fedora container with rootless
-   podman, then makes the medium VMs install them from: 20 to 40 minutes the
-   first time (Mesa ~15-25 min, KWin ~10, the proxy and KPipeWire ~2 each,
-   tools ~1), up to 10 GiB of memory. Mesa and KWin wait until that much is
-   free, unless told to build anyway. `guest/build-rpms.sh` then
+   and KPipeWire for Plasma 6.7.5, Qt Base 6.11.2, KSvg and Kirigami 6.31.0,
+   the nested desktop's session and proxy, an agent). The Builds window (also
+   Build… in Machine > Install Guest Tools… and in Preferences) builds them
+   in a Fedora container with rootless podman, then makes the medium VMs
+   install them from: 40 to 70 minutes the first time (Mesa ~15-25 min, Qt
+   Base ~15-25, KWin ~10, Kirigami ~3, the proxy, KPipeWire and KSvg ~2 each,
+   tools ~1), up to 10 GiB of memory. Mesa, Qt Base and KWin wait until that
+   much is free, unless told to build anyway. `guest/build-rpms.sh` then
    `guest/build-medium.sh` do the same by hand, which vitrine takes in the
    same way.
 
@@ -138,6 +139,18 @@ files it changes, and the guest packages compile through ccache.
    network and Secure Boot off (the driver is not signed). Attach Medium Only
    starts the VM with the medium alone: open VITRINETOOL in the guest's file
    manager, then run `sudo bash /run/media/$USER/VITRINETOOL/install`.
+
+   The tools keep their Mesa, KWin, KPipeWire and proxy at those versions
+   (dnf versionlock) until the next guest tools. Qt Base (qtbase 6.11.2,
+   with the research's shm pool reuse for resized Wayland windows), KSvg and
+   Kirigami (6.31.0, with the research's fix for Plasma's popups, which no
+   longer upload their frames again at each opening) replace the guest's
+   only where it has that version, all of a package's subpackages or none.
+   Qt Base is locked too where vitrine's KWin is installed, as that KWin is
+   built against Qt's private API. KSvg, Kirigami, and Qt Base without
+   vitrine's KWin, are not: Fedora's next build of them replaces them with
+   the rest of KDE Frameworks or of Qt, and the next guest tools bring
+   vitrine's back. `--uninstall` puts Fedora's builds of all of them back.
 
    A VM's Console and Details tabs offer them only once its guest has said
    it runs Fedora 44: QEMU's guest agent tells at each boot (Fedora installs
