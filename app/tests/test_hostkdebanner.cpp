@@ -365,10 +365,13 @@ private slots:
         QVERIFY(source->text().contains("Vitrine's KWin 6.7.91-1.hl39.fc44, not version-locked"));
         QVERIFY(revertButton->isEnabled());
         shot("builds-kwin");
-        /* the group: no Install…/Revert… of its own; Build, of what Vitrine installed only */
+        /* the group: no Install…/Revert… of its own; Build, of every package the research
+           has a set for and that is not built yet (Qt base has none here; KSvg is built) */
         window.select("system");
         QVERIFY(!installButton->isVisible());
-        QCOMPARE(window.findChild<QPushButton *>("build")->toolTip(), "Builds KWin");
+        auto *buildButton = window.findChild<QPushButton *>("build");
+        QVERIFY(buildButton->isEnabled());
+        QCOMPARE(buildButton->toolTip(), "Builds KWin, Kirigami");
         QVERIFY(source->text().contains("KSvg, Kirigami and Qt base"));
         shot("builds-group");
         QFile::remove(m_state + "/installed/kf6-ksvg");

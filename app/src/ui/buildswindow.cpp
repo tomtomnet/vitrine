@@ -864,8 +864,10 @@ QStringList BuildsWindow::selectedComponents() const
     if (const QTreeWidgetItem *group = m_groups.value(id)) {
         for (int i = 0; i < group->childCount(); i++) {
             const QString child = group->child(i)->data(NameColumn, IdRole).toString();
-            /* the host packages are optional: of them, those Vitrine installed, as Update All */
-            if (id != "system" || m_manager->systemStatus(child).wantsUpdates()) {
+            /* of the host packages, those the research has a set for: building one
+               installs nothing (Install… does, with the administrator's password),
+               and the group's Build is how they are all built at once */
+            if (id != "system" || m_manager->systemStatus(child).canBuild()) {
                 ids << child;
             }
         }
