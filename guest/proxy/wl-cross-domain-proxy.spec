@@ -1,5 +1,5 @@
 # Upstream's commit c6ce1ca89fb4, where the research's work starts, with that
-# work as one patch, taken at the research's commit 0c56aa7 (the patch's
+# work as one patch, taken at the research's commit ac787d1 (the patch's
 # description has what it adds).  Literal, without macros: vitrine's Builds
 # window reads Version and Source0 as they are written.  The date the patch
 # was taken comes first, so that each version sorts after the one before
@@ -7,7 +7,7 @@
 # a counter after it for another one on the same day: 20261015.1 sorts after
 # 20261015, .2 after .1, the next day's date after both.
 Name:           wl-cross-domain-proxy
-Version:        0.1.0^20261030.1gitc6ce1ca.r0c56aa7
+Version:        0.1.0^20261031gitc6ce1ca.rac787d1
 Release:        1%{?dist}
 Summary:        Wayland proxy over virtio-gpu cross-domain, for vitrine's nested desktop
 
@@ -63,6 +63,16 @@ install -Dm 0644 %{SOURCE1} %{buildroot}%{_licensedir}/%{name}/GPL-2.0.txt
 %{_bindir}/%{name}
 
 %changelog
+* Sat Oct 31 2026 vitrine <noreply@anthropic.com> - 0.1.0^20261031gitc6ce1ca.rac787d1-1
+- the research's ac787d1 (its review of 2026-10-31): input the proxy cannot
+  carry ends the client that sent it with a protocol error instead of
+  panicking the proxy, which ended the guest's session: a dma-buf plane
+  that is not a virtio-gpu buffer, an ICC profile's file (the host's ICC
+  support is no longer passed on) or any other unhandled file descriptor,
+  shm buffers of negative sizes; cross-domain commands out of range are
+  dropped; a message that does not fit the socket's buffer no longer
+  leaves its file descriptors queued twice
+
 * Fri Oct 30 2026 vitrine <noreply@anthropic.com> - 0.1.0^20261030.1gitc6ce1ca.r0c56aa7-1
 - the research's 0c56aa7: a guest client's stall is logged once when it
   begins and once when it ends ("guest client reads again after N s; its

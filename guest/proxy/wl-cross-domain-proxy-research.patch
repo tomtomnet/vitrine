@@ -1,5 +1,5 @@
 The research's work on wl-cross-domain-proxy (virtio-gpu-desktop,
-src/wl-cross-domain-proxy at its commit 0c56aa7), as one diff against
+src/wl-cross-domain-proxy at its commit ac787d1), as one diff against
 upstream c6ce1ca89fb4, the commit it started from
 (patches/wl-cross-domain-proxy/BASE.md there).  What the nested desktop
 needs of the proxy beyond upstream: the presentation clock translated into
@@ -29,6 +29,18 @@ grows from 4 KiB up to 16 MiB instead of failing with E2BIG (the proxy
 exited on that, and the nested session with it), and they go out as soon
 as its socket takes more.  The stall is logged once when it begins and once
 when it ends, with its length and the buffer's peak.
+
+What a guest client sends that the proxy cannot carry ends that client
+with a protocol error, not the proxy with a panic (and the guest's session
+with it; the research's review of 2026-10-31): a dma-buf plane that is not
+a virtio-gpu buffer (a memfd, a pipe: invalid_wl_buffer), an ICC profile's
+file (the host's ICC support is no longer passed on, so colour-managed
+clients use parametric descriptions) and any other request with a file
+descriptor the proxy does not handle; shm buffers of negative sizes.
+Cross-domain commands from the host with counts or sizes out of range are
+dropped.  A message that does not fit the socket's buffer leaves none of
+its file descriptors queued (the retry queued them again, and later
+messages then got the wrong ones).
 
 Licence: these changes are GPL-2.0-or-later (the research's, the user's
 choice of 2026-10-14); Victoria Brekenfeld's proxy stays MIT, with her
@@ -9028,6 +9040,39 @@ diff -ruN a/src/source/channel/mod.rs b/src/source/channel/mod.rs
 -                                Argument::Str(Some(Box::new((*message).into()))),
 -                            ],
 -                        })
+-                    }
+-                })?
+-            {
+-                let read_bytes = write_to_buffers(
+-                    &msg,
+-                    &mut buffer[mem::size_of::<CrossDomainSendReceive>()..],
+-                    &mut identifiers,
+-                )
+-                .context("Failed to write out message")?;
+-
+-                let total_size = mem::size_of::<CrossDomainSendReceive>() + read_bytes;
+-
+-                let mut cmd = CrossDomainSendReceive {
+-                    hdr: CrossDomainHeader {
+-                        cmd: CROSS_DOMAIN_CMD_SEND,
+-                        ring_idx: CROSS_DOMAIN_RING_NONE as u8,
+-                        cmd_size: total_size as u16,
+-                        pad: 0,
+-                    },
+-                    opaque_data_size: read_bytes as u32,
+-                    num_identifiers: identifiers.len() as u32,
+-                    identifiers: [0; CROSS_DOMAIN_MAX_IDENTIFIERS],
+-                    identifier_sizes: [0; CROSS_DOMAIN_MAX_IDENTIFIERS],
+-                    identifier_types: [0; CROSS_DOMAIN_MAX_IDENTIFIERS],
+-                };
+-
+-                let mut bos = SmallVec::<[BufferHandle; CROSS_DOMAIN_MAX_IDENTIFIERS]>::new();
+-                for (i, ident) in identifiers.drain(..).enumerate() {
+-                    cmd.identifier_types[i] = ident.type_;
+-                    cmd.identifier_sizes[i] = ident.size as u32;
+-                    cmd.identifiers[i] = ident.identifier.into();
+-                    if let Some(bo) = ident.bo {
+-                        bos.push(bo);
 +        let drm = unsafe { self.drm.get_mut() };
 +        let mut batch = SendBatch::new();
 +        for own in own_requests {
@@ -9061,30 +9106,15 @@ diff -ruN a/src/source/channel/mod.rs b/src/source/channel/mod.rs
 +                        request_to_host(&mut msg);
 +                        batch.push(drm, &msg)?;
                      }
--                })?
--            {
--                let read_bytes = write_to_buffers(
--                    &msg,
--                    &mut buffer[mem::size_of::<CrossDomainSendReceive>()..],
--                    &mut identifiers,
--                )
--                .context("Failed to write out message")?;
+                 }
 -
--                let total_size = mem::size_of::<CrossDomainSendReceive>() + read_bytes;
--
--                let mut cmd = CrossDomainSendReceive {
--                    hdr: CrossDomainHeader {
--                        cmd: CROSS_DOMAIN_CMD_SEND,
--                        ring_idx: CROSS_DOMAIN_RING_NONE as u8,
--                        cmd_size: total_size as u16,
--                        pad: 0,
--                    },
--                    opaque_data_size: read_bytes as u32,
--                    num_identifiers: identifiers.len() as u32,
--                    identifiers: [0; CROSS_DOMAIN_MAX_IDENTIFIERS],
--                    identifier_sizes: [0; CROSS_DOMAIN_MAX_IDENTIFIERS],
--                    identifier_types: [0; CROSS_DOMAIN_MAX_IDENTIFIERS],
-+                }
+-                cmd.write_to(&mut buffer[0..mem::size_of::<CrossDomainSendReceive>()])
+-                    .unwrap();
+-                drm.execbuffer(&buffer[0..total_size], None)
+-                    .context("send-receive execbuffer failed")?;
+-                for bo in bos {
+-                    drm.close_buffer(bo)
+-                        .context("Failed to close buffer handle")?;
 +                Err(wayland::TransformError::Io(err)) => {
 +                    warn!("Failed to transform message: {}", err);
 +                }
@@ -9103,8 +9133,11 @@ diff -ruN a/src/source/channel/mod.rs b/src/source/channel/mod.rs
 +                        ],
 +                    });
 +                    break;
-+                }
-+            }
+                 }
+             }
+-
+-            Ok(PostAction::Continue)
+-        })?;
 +            for own in post {
 +                batch.push(drm, &own_request(&mut self.protocol_state, &mut self.pipes_write_from_host, own)?)?;
 +            }
@@ -9115,45 +9148,43 @@ diff -ruN a/src/source/channel/mod.rs b/src/source/channel/mod.rs
 +            for msg in guest_events {
 +                let Some(obj) = self.local.map.find(msg.sender_id) else {
 +                    continue;
-                 };
--
--                let mut bos = SmallVec::<[BufferHandle; CROSS_DOMAIN_MAX_IDENTIFIERS]>::new();
--                for (i, ident) in identifiers.drain(..).enumerate() {
--                    cmd.identifier_types[i] = ident.type_;
--                    cmd.identifier_sizes[i] = ident.size as u32;
--                    cmd.identifiers[i] = ident.identifier.into();
--                    if let Some(bo) = ident.bo {
--                        bos.push(bo);
--                    }
++                };
 +                if let Some(msg) = self.protocol_state.filter_host_message(&self.node, msg, &obj) {
 +                    self.session.event_to_guest(&msg, &obj);
 +                    self.local.write_message(&msg).context("Failed to write message")?;
-                 }
--
--                cmd.write_to(&mut buffer[0..mem::size_of::<CrossDomainSendReceive>()])
--                    .unwrap();
--                drm.execbuffer(&buffer[0..total_size], None)
--                    .context("send-receive execbuffer failed")?;
--                for bo in bos {
--                    drm.close_buffer(bo)
--                        .context("Failed to close buffer handle")?;
++                }
 +            }
 +            if let Err(e) = self.local.flush() {
 +                if e.kind() != std::io::ErrorKind::WouldBlock {
 +                    return Err(e).context("Failed to flush messages");
-                 }
-             }
--
--            Ok(PostAction::Continue)
--        })?;
++                }
++            }
 +        }
          if let Some(msg) = err_msg.take() {
              self.local.write_message(&msg)?;
              self.local.flush()?;
-@@ -455,6 +704,37 @@
+@@ -450,11 +699,54 @@
+             .unwrap();
+ 
+             match hdr.cmd {
+-                CROSS_DOMAIN_CMD_RECEIVE => {
++                CROSS_DOMAIN_CMD_RECEIVE => 'receive: {
+                     let cmd = CrossDomainSendReceive::ref_from_bytes(
                          &ring_slice[0..mem::size_of::<CrossDomainSendReceive>()],
                      )
                      .unwrap();
++                    // the host's counts index the command's arrays and the ring page: out of range
++                    // (a buggy or hostile VMM) the command is dropped and the ring polled again,
++                    // instead of an index panic that ended the guest's session (2026-10-31 review)
++                    if cmd.num_identifiers as usize > CROSS_DOMAIN_MAX_IDENTIFIERS
++                        || mem::size_of::<CrossDomainSendReceive>() + cmd.opaque_data_size as usize > ring_slice.len()
++                    {
++                        error!(
++                            "cross-domain receive out of range ({} identifiers, {} bytes): dropped",
++                            cmd.num_identifiers, cmd.opaque_data_size
++                        );
++                        break 'receive;
++                    }
 +                    // Nothing at all: the host end of the connection closed (a stream socket's end; the
 +                    // app serving QEMU's socket quit or crashed). Polling on would get another empty
 +                    // receive at once, forever (QEMU spun at ~3 CPUs, the guest's session lived on
@@ -9188,7 +9219,15 @@ diff -ruN a/src/source/channel/mod.rs b/src/source/channel/mod.rs
                      let data = &ring_slice[mem::size_of::<CrossDomainSendReceive>()
                          ..mem::size_of::<CrossDomainSendReceive>()
                              + (cmd.opaque_data_size as usize)];
-@@ -511,25 +791,52 @@
+@@ -507,47 +799,88 @@
+                     }
+ 
+                     self.remote_data.move_to_front();
++                    if data.len() > self.remote_data.get_writable_storage().len() {
++                        error!("cross-domain receive of {} bytes: no room left for it, dropped", data.len());
++                        break 'receive;
++                    }
+                     self.remote_data.get_writable_storage()[0..data.len()].copy_from_slice(data);
                      self.remote_data.advance(data.len());
                      self.remote_fds.extend(fds.into_iter());
  
@@ -9250,9 +9289,17 @@ diff -ruN a/src/source/channel/mod.rs b/src/source/channel/mod.rs
                      }
 -                    self.local.flush().context("Failed to flush messages")?;
                  }
-                 CROSS_DOMAIN_CMD_READ => {
+-                CROSS_DOMAIN_CMD_READ => {
++                CROSS_DOMAIN_CMD_READ => 'read: {
                      let cmd = CrossDomainReadWrite::read_from_bytes(
-@@ -540,14 +847,20 @@
+                         &ring_slice[0..mem::size_of::<CrossDomainReadWrite>()],
+                     )
+                     .unwrap();
++                    if mem::size_of::<CrossDomainReadWrite>() + cmd.opaque_data_size as usize > ring_slice.len() {
++                        error!("cross-domain read of {} bytes: beyond the ring, dropped", cmd.opaque_data_size);
++                        break 'read;
++                    }
+                     let data = &ring_slice[mem::size_of::<CrossDomainReadWrite>()
                          ..mem::size_of::<CrossDomainReadWrite>() + (cmd.opaque_data_size as usize)];
  
                      if let Some(write_fd) = self.pipes_write_from_host.get(&cmd.identifier) {
@@ -9279,7 +9326,7 @@ diff -ruN a/src/source/channel/mod.rs b/src/source/channel/mod.rs
                              res = PostAction::Reregister;
                          }
                      } else {
-@@ -600,15 +913,15 @@
+@@ -600,15 +933,15 @@
                      &mut buf[mem::size_of::<CrossDomainReadWrite>()..],
                  ) {
                      Ok(read_bytes) => {
@@ -9299,7 +9346,7 @@ diff -ruN a/src/source/channel/mod.rs b/src/source/channel/mod.rs
                          }
                      }
                      Err(_) => {
-@@ -644,6 +957,22 @@
+@@ -644,6 +977,22 @@
              self.pipes_read_from_guest.remove(&id);
          }
  
@@ -9322,7 +9369,7 @@ diff -ruN a/src/source/channel/mod.rs b/src/source/channel/mod.rs
          Ok(res)
      }
  
-@@ -654,9 +983,13 @@
+@@ -654,9 +1003,13 @@
      ) -> calloop::Result<()> {
          self.local.register(poll, token_factory)?;
          self.drm.register(poll, token_factory)?;
@@ -9336,7 +9383,7 @@ diff -ruN a/src/source/channel/mod.rs b/src/source/channel/mod.rs
          Ok(())
      }
  
-@@ -667,6 +1000,7 @@
+@@ -667,6 +1020,7 @@
      ) -> calloop::Result<()> {
          self.local.reregister(poll, token_factory)?;
          self.drm.reregister(poll, token_factory)?;
@@ -9344,7 +9391,7 @@ diff -ruN a/src/source/channel/mod.rs b/src/source/channel/mod.rs
          for (pipe, is_registered) in self.pipes_read_from_guest.values_mut() {
              if *is_registered {
                  pipe.reregister(poll, token_factory)?;
-@@ -675,17 +1009,24 @@
+@@ -675,17 +1029,24 @@
                  *is_registered = true;
              }
          }
@@ -9369,7 +9416,7 @@ diff -ruN a/src/source/channel/mod.rs b/src/source/channel/mod.rs
          Ok(())
      }
  }
-@@ -693,8 +1034,8 @@
+@@ -693,8 +1054,8 @@
  fn try_read_message(
      buffer: &mut Buffer<u8>,
      fds: &mut VecDeque<OwnedFd>,
@@ -9380,7 +9427,7 @@ diff -ruN a/src/source/channel/mod.rs b/src/source/channel/mod.rs
      let (msg, read_data) = {
          let data = buffer.get_contents();
          if data.len() < 2 * 4 {
-@@ -705,7 +1046,7 @@
+@@ -705,7 +1066,7 @@
          let opcode = (word_2 & 0x0000_FFFF) as u16;
          let len = (word_2 >> 16) as usize;
  
@@ -9389,7 +9436,7 @@ diff -ruN a/src/source/channel/mod.rs b/src/source/channel/mod.rs
              // This *really* should not happen, as e.g. incoming events for destroyed objects
              // (before the destruction was ACKed) are handled in the regular happy path.
              error!(
-@@ -723,14 +1064,13 @@
+@@ -723,14 +1084,13 @@
              buffer.offset(len);
              return Err(MessageParseError::Malformed);
          };
@@ -9503,7 +9550,20 @@ diff -ruN a/src/source/channel/wayland.rs b/src/source/channel/wayland.rs
      offset: usize,
      width: usize,
      height: usize,
-@@ -163,15 +228,19 @@
+@@ -151,6 +216,12 @@
+     }
+ }
+ 
++impl From<io::ErrorKind> for TransformError {
++    fn from(kind: io::ErrorKind) -> Self {
++        Self::Io(kind.into())
++    }
++}
++
+ impl std::fmt::Display for TransformError {
+     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+         match self {
+@@ -163,15 +234,19 @@
  impl std::error::Error for TransformError {}
  
  impl ProtocolState {
@@ -9524,7 +9584,7 @@ diff -ruN a/src/source/channel/wayland.rs b/src/source/channel/wayland.rs
          }
      }
  
-@@ -252,8 +321,8 @@
+@@ -252,8 +327,8 @@
                  0,
              )
          };
@@ -9535,7 +9595,7 @@ diff -ruN a/src/source/channel/wayland.rs b/src/source/channel/wayland.rs
              return Err(io::ErrorKind::InvalidData.into());
          }
          let host_mmap = unsafe {
-@@ -266,13 +335,23 @@
+@@ -266,13 +341,23 @@
                  0,
              )
          };
@@ -9562,7 +9622,7 @@ diff -ruN a/src/source/channel/wayland.rs b/src/source/channel/wayland.rs
              WlShmPool {
                  size: size as usize,
  
-@@ -307,9 +386,9 @@
+@@ -307,9 +392,9 @@
          mut message: Message<u32, OwnedFd>,
      ) -> io::Result<Vec<Message<u32, Identifier>>> {
          let pool_id = message.sender_id;
@@ -9575,7 +9635,7 @@ diff -ruN a/src/source/channel/wayland.rs b/src/source/channel/wayland.rs
              .filter(|pool| !pool.destroyed)
          else {
              error!("wl_shm_pool::resize on destroyed pool");
-@@ -397,8 +476,8 @@
+@@ -397,8 +482,8 @@
                  0,
              )
          };
@@ -9586,7 +9646,7 @@ diff -ruN a/src/source/channel/wayland.rs b/src/source/channel/wayland.rs
              return Err(io::ErrorKind::InvalidData.into());
          }
  
-@@ -412,8 +491,9 @@
+@@ -412,8 +497,9 @@
                  0,
              )
          };
@@ -9598,7 +9658,7 @@ diff -ruN a/src/source/channel/wayland.rs b/src/source/channel/wayland.rs
              return Err(io::ErrorKind::InvalidData.into());
          }
  
-@@ -450,7 +530,7 @@
+@@ -450,7 +536,7 @@
          for (buffer_id, buffer) in self
              .shm_buffers
              .iter()
@@ -9607,7 +9667,16 @@ diff -ruN a/src/source/channel/wayland.rs b/src/source/channel/wayland.rs
          {
              // wl_buffer::destroy
              messages.push(Message {
-@@ -521,10 +601,14 @@
+@@ -507,7 +593,7 @@
+     fn handle_shm_pool_create_buffer(
+         &mut self,
+         message: Message<u32, OwnedFd>,
+-    ) -> io::Result<Message<u32, Identifier>> {
++    ) -> Result<Message<u32, Identifier>, TransformError> {
+         let &[
+             Argument::NewId(buffer_id),
+             Argument::Int(offset),
+@@ -521,10 +607,24 @@
              return Err(io::ErrorKind::InvalidData.into());
          };
  
@@ -9615,6 +9684,16 @@ diff -ruN a/src/source/channel/wayland.rs b/src/source/channel/wayland.rs
 +            error!("wl_shm_pool::create_buffer on unknown pool {}", message.sender_id);
 +            return Err(io::ErrorKind::InvalidData.into());
 +        };
++        // negative values would become huge sizes for the copy at each commit (2026-10-31 review):
++        // refused here, as a compositor does (wl_shm.error.invalid_stride on the pool)
++        if offset < 0 || width <= 0 || height <= 0 || stride <= 0 {
++            warn!("wl_shm_pool::create_buffer: offset {offset}, {width}x{height}, stride {stride}: refused");
++            return Err(TransformError::Protocol {
++                object_id: message.sender_id,
++                code: 1,
++                message: c"invalid offset, size or stride",
++            });
++        }
          self.shm_buffers.insert(
              buffer_id,
              WlShmBuffer {
@@ -9623,11 +9702,39 @@ diff -ruN a/src/source/channel/wayland.rs b/src/source/channel/wayland.rs
                  offset: offset as usize,
                  width: width as usize,
                  height: height as usize,
-@@ -604,6 +688,19 @@
+@@ -540,7 +640,7 @@
+         &mut self,
+         drm: &impl VirtioDevice,
+         mut message: Message<u32, OwnedFd>,
+-    ) -> io::Result<Message<u32, Identifier>> {
++    ) -> Result<Message<u32, Identifier>, TransformError> {
+         let [
+             Argument::Fd(dmabuf),
+             Argument::Uint(plane_idx),
+@@ -588,8 +688,17 @@
+                     ],
+                 })
+             }
++            // only virtio-gpu buffers cross to the host. Any other fd (a memfd, a pipe) panicked the
++            // proxy here and ended the guest's session (2026-10-31 review); now only the client goes,
++            // with an error on its params object (dropping the plane instead would let the host
++            // refuse the incomplete buffer on the proxy's own connection, which ends every client)
+             Err(err) => {
+-                unimplemented!("Not doing non virtio-gpu yet. {}", err);
++                warn!("zwp_linux_buffer_params_v1.add: the fd is not a virtio-gpu buffer ({err})");
++                Err(TransformError::Protocol {
++                    object_id: message.sender_id,
++                    code: 7,
++                    message: c"only virtio-gpu buffers can be shared with the host",
++                })
+             }
+         }
+     }
+@@ -604,13 +713,26 @@
                      if let Some(pool) = self.shm_pools.get(&shm_buffer.pool) {
                          // TODO (optimization): Use (buffer)damage
  
-+                        let len = shm_buffer.stride * shm_buffer.height;
++                        let len = shm_buffer.stride.checked_mul(shm_buffer.height).unwrap_or(usize::MAX);
 +                        if shm_buffer.offset.checked_add(len).is_none_or(|end| end > pool.size) {
 +                            warn!(
 +                                "wl_buffer {buffer_id} (offset {}, {} bytes) exceeds its pool ({} bytes)",
@@ -9643,7 +9750,15 @@ diff -ruN a/src/source/channel/wayland.rs b/src/source/channel/wayland.rs
                          let guard = SIGBUS_WATCHER.watch(pool.guest_mmap, pool.size);
  
                          unsafe {
-@@ -625,7 +722,7 @@
+                             ptr::copy_nonoverlapping(
+                                 pool.guest_mmap.byte_add(shm_buffer.offset),
+                                 pool.host_mmap.byte_add(shm_buffer.offset),
+-                                shm_buffer.stride * shm_buffer.height,
++                                len,
+                             );
+                         }
+ 
+@@ -625,7 +747,7 @@
  
                          // TODO (optimization): We can send release to the client now and hide the host one later
                      } else {
@@ -9652,7 +9767,7 @@ diff -ruN a/src/source/channel/wayland.rs b/src/source/channel/wayland.rs
                      }
                  }
              }
-@@ -673,14 +770,29 @@
+@@ -673,14 +795,29 @@
          })
      }
  
@@ -9683,7 +9798,7 @@ diff -ruN a/src/source/channel/wayland.rs b/src/source/channel/wayland.rs
          match (
              obj.interface.name,
              obj.interface.requests[message.opcode as usize].name,
-@@ -699,14 +811,12 @@
+@@ -699,27 +836,19 @@
                  .map(Into::into)
                  .map_err(TransformError::from),
              ("wl_shm_pool", "destroy") => {
@@ -9704,7 +9819,54 @@ diff -ruN a/src/source/channel/wayland.rs b/src/source/channel/wayland.rs
                      }
                  }
  
-@@ -770,9 +880,15 @@
+                 Ok(message.map_fd(|_| unreachable!()).into())
+             }
+-            ("wl_shm_pool", "create_buffer") => self
+-                .handle_shm_pool_create_buffer(message)
+-                .map(Into::into)
+-                .map_err(TransformError::from),
+-            ("zwp_linux_buffer_params_v1", "add") => self
+-                .handle_dmabuf_params_add(drm, message)
+-                .map(Into::into)
+-                .map_err(TransformError::from),
++            ("wl_shm_pool", "create_buffer") => self.handle_shm_pool_create_buffer(message).map(Into::into),
++            ("zwp_linux_buffer_params_v1", "add") => self.handle_dmabuf_params_add(drm, message).map(Into::into),
+             ("wl_buffer", "destroy") => {
+                 if let Some(buffer) = self.shm_buffers.remove(&message.sender_id) {
+                     let id = buffer.pool;
+@@ -760,19 +889,43 @@
+                 .handle_receive(guest_pipes, message)
+                 .map(Into::into)
+                 .map_err(TransformError::from),
+-            ("wp_image_description_creator_icc_v1", "set_icc_file") => unimplemented!(),
+-            (interface, name) => Ok(message
+-                .map_fd(|_| panic!("Unhandled file descriptor: {}.{}", interface, name))
+-                .into()),
++            // An ICC file cannot cross to the host (the transport carries virtio-gpu buffers and
++            // pipes); filter_host_message hides the host's ICC support, so a client asking anyway
++            // goes with an error (wp_image_description_creator_icc_v1.error.bad_fd) instead of
++            // panicking the proxy as before (2026-10-31 review)
++            ("wp_image_description_creator_icc_v1", "set_icc_file") => {
++                warn!("wp_image_description_creator_icc_v1.set_icc_file: ICC files do not cross to the host");
++                Err(TransformError::Protocol {
++                    object_id: message.sender_id,
++                    code: 2,
++                    message: c"ICC files are not supported in this VM",
++                })
++            }
++            // any other request carrying an fd: the same (it panicked the proxy)
++            (interface, name) if message.args.iter().any(|a| matches!(a, Argument::Fd(_))) => {
++                warn!("{interface}.{name} carries a file descriptor the proxy cannot pass on");
++                Err(TransformError::Protocol {
++                    object_id: message.sender_id,
++                    code: 0,
++                    message: c"this request's file descriptor cannot be passed on to the host",
++                })
++            }
++            _ => Ok(message.map_fd(|_| unreachable!("a request without fds")).into()),
+         }
+     }
+ 
      pub fn filter_host_message(
          &mut self,
          drm: &DrmNode,
@@ -9721,7 +9883,20 @@ diff -ruN a/src/source/channel/wayland.rs b/src/source/channel/wayland.rs
          match (
              obj.interface.name,
              obj.interface.events[message.opcode as usize].name,
-@@ -802,6 +918,56 @@
+@@ -797,11 +950,69 @@
+                 // TODO (optimization): send early and then hide this message
+                 Some(message)
+             }
++            // ICC files cannot cross to the host (set_icc_file is refused above): the host's ICC
++            // support (wp_color_manager_v1.feature.icc_v2_v4) is not passed on, so color-managed
++            // clients describe their colours parametrically instead (2026-10-31)
++            ("wp_color_manager_v1", "supported_feature")
++                if matches!(message.args.as_slice(), [Argument::Uint(0)]) =>
++            {
++                None
++            }
+             // TODO (potential issue): Adjust dmabuf formats?
+             //      - Potentially the host advertises formats, that virt-gpu doesn't support.
              //      - But it is unclear if that is an actual issue, if the client cannot get a buffer of that format anyway.
              //      - If there is no intersection, we possibly want to hide the protocol though,
              //        which is a little too late at this point. :/
@@ -9778,7 +9953,7 @@ diff -ruN a/src/source/channel/wayland.rs b/src/source/channel/wayland.rs
              ("zwp_linux_dmabuf_feedback_v1", "main_device")
              | ("zwp_linux_dmabuf_feedback_v1", "tranche_target_device")
              | ("ext_image_copy_capture_session_v1", "dmabuf_device") => {
-@@ -823,3 +989,46 @@
+@@ -823,3 +1034,111 @@
          }
      }
  }
@@ -9823,6 +9998,71 @@ diff -ruN a/src/source/channel/wayland.rs b/src/source/channel/wayland.rs
 +        assert!(!is_amd_displayable_dcc(GFX11_64K_R_X | 1 << 13 | 1 << 17));
 +        assert!(!is_amd_displayable_dcc(GFX11_64K_R_X | 1 << 14)); // RETILE bit without DCC
 +        assert!(!is_amd_displayable_dcc(0x0200_0000_1040_1b04));
++    }
++}
++
++#[cfg(test)]
++mod robustness_tests {
++    use super::*;
++    use crate::clock::{ClockConfig, ClockTranslator};
++    use std::os::fd::BorrowedFd;
++
++    // a device whose ioctls all fail (/dev/null): it imports no fd as a virtio-gpu buffer
++    struct NoGpu(std::fs::File);
++    impl AsFd for NoGpu {
++        fn as_fd(&self) -> BorrowedFd<'_> {
++            self.0.as_fd()
++        }
++    }
++    impl drm::Device for NoGpu {}
++    impl drm::control::Device for NoGpu {}
++    impl VirtioDevice for NoGpu {}
++
++    // 2026-10-31 review: zwp_linux_buffer_params_v1.add with any fd that is not a virtio-gpu buffer
++    // (a pipe here) hit unimplemented!() and ended the guest's session; now its client gets an error
++    #[test]
++    fn dmabuf_add_of_a_foreign_fd_is_a_client_error() {
++        let mut state = ProtocolState::new(ClockTranslator::shared(ClockConfig::default()));
++        let dev = NoGpu(std::fs::File::open("/dev/null").unwrap());
++        let (r, _w) = std::io::pipe().unwrap();
++        let msg: Message<u32, OwnedFd> = Message {
++            sender_id: 9,
++            opcode: 0,
++            args: smallvec![
++                Argument::Fd(OwnedFd::from(r)),
++                Argument::Uint(0),
++                Argument::Uint(0),
++                Argument::Uint(256),
++                Argument::Uint(0),
++                Argument::Uint(0)
++            ],
++        };
++        match state.handle_dmabuf_params_add(&dev, msg) {
++            Err(TransformError::Protocol { object_id: 9, code: 7, .. }) => {}
++            other => panic!("expected a protocol error on the params object, got {other:?}"),
++        }
++    }
++
++    // 2026-10-31 review: negative sizes became huge copy lengths at the buffer's commit
++    #[test]
++    fn shm_buffer_with_a_negative_size_is_refused() {
++        let mut state = ProtocolState::new(ClockTranslator::shared(ClockConfig::default()));
++        let msg: Message<u32, OwnedFd> = Message {
++            sender_id: 5,
++            opcode: 0,
++            args: smallvec![
++                Argument::NewId(6),
++                Argument::Int(0),
++                Argument::Int(64),
++                Argument::Int(-64),
++                Argument::Int(-256),
++                Argument::Uint(0)
++            ],
++        };
++        // no pool behind object 5 here: the unknown pool comes first, an error either way, never a
++        // buffer; with a pool, the size check refuses it (the code path after the pool lookup)
++        assert!(state.handle_shm_pool_create_buffer(msg).is_err());
++        assert!(state.shm_buffers.is_empty());
 +    }
 +}
 diff -ruN a/src/source/local.rs b/src/source/local.rs
@@ -10501,7 +10741,34 @@ diff -ruN a/src/wl_proto/socket.rs b/src/wl_proto/socket.rs
          ret
      }
  
-@@ -232,10 +285,16 @@
+@@ -207,13 +260,24 @@
+     // if false is returned, it means there is not enough space
+     // in the buffer
+     fn attempt_write_message(&mut self, msg: &Message<u32, OwnedFd>) -> IoResult<bool> {
++        // write_to_buffers queues a message's fds as it writes its arguments: a message that does
++        // not fit must leave none of them behind, or its retry queues them a second time and the
++        // peer pairs its later messages with the wrong fds (2026-10-31 review: an fd before an
++        // argument that no longer fitted, e.g. wl_keyboard.keymap with 8 to 11 bytes left)
++        let fds_before = self.out_fds.len();
+         match write_to_buffers(msg, self.out_data.get_writable_storage(), &mut self.out_fds) {
+             Ok(bytes_out) => {
+                 self.out_data.advance(bytes_out);
+                 Ok(true)
+             }
+-            Err(MessageWriteError::BufferTooSmall) => Ok(false),
+-            Err(MessageWriteError::DupFdFailed) => Err(ErrorKind::Unsupported.into()),
++            Err(MessageWriteError::BufferTooSmall) => {
++                self.out_fds.truncate(fds_before);
++                Ok(false)
++            }
++            Err(MessageWriteError::DupFdFailed) => {
++                self.out_fds.truncate(fds_before);
++                Err(ErrorKind::Unsupported.into())
++            }
+         }
+     }
+ 
+@@ -232,10 +296,16 @@
                      return Err(e);
                  }
              }
@@ -10522,7 +10789,7 @@ diff -ruN a/src/wl_proto/socket.rs b/src/wl_proto/socket.rs
              }
          }
          Ok(())
-@@ -297,6 +356,29 @@
+@@ -297,6 +367,29 @@
      }
  }
  
@@ -10552,7 +10819,7 @@ diff -ruN a/src/wl_proto/socket.rs b/src/wl_proto/socket.rs
  impl AsRawFd for BufferedSocket {
      fn as_raw_fd(&self) -> RawFd {
          self.socket.as_raw_fd()
-@@ -328,6 +410,18 @@
+@@ -328,6 +421,18 @@
          }
      }
  
@@ -10571,7 +10838,7 @@ diff -ruN a/src/wl_proto/socket.rs b/src/wl_proto/socket.rs
      /// Advance the internal counter of occupied space
      pub fn advance(&mut self, bytes: usize) {
          self.occupied += bytes;
-@@ -460,6 +554,42 @@
+@@ -460,6 +565,65 @@
          );
      }
  
@@ -10609,6 +10876,29 @@ diff -ruN a/src/wl_proto/socket.rs b/src/wl_proto/socket.rs
 +        }
 +        assert!(!client.has_pending_out());
 +        assert_eq!(client.out_data.capacity(), MAX_BYTES_OUT, "the grown buffer went back to its size");
++    }
++
++    // 2026-10-31: a message whose fd fits but not its next argument leaves no fd behind (it used
++    // to: the retry queued the fd a second time, and the peer paired later messages with wrong fds)
++    #[test]
++    fn message_that_does_not_fit_leaves_no_fd_behind() {
++        let (a, _b) = ::std::os::unix::net::UnixStream::pair().unwrap();
++        let mut sock = BufferedSocket::new(Socket::from(a));
++        let (read, _write) = std::io::pipe().unwrap();
++        let msg: Message<u32, OwnedFd> = Message {
++            sender_id: 3,
++            opcode: 0,
++            args: smallvec![Argument::Fd(read.as_fd().try_clone_to_owned().unwrap()), Argument::Uint(64)],
++        };
++        // room for the header only (10 bytes): the fd is taken, then the uint does not fit
++        let room = sock.out_data.get_writable_storage().len();
++        sock.out_data.advance(room - 10);
++        assert!(!sock.attempt_write_message(&msg).unwrap());
++        assert_eq!(sock.out_fds.len(), 0, "the fd of a message that did not fit stayed queued");
++        // with room, the same message queues its fd once
++        sock.out_data.grow_to(2 * MAX_BYTES_OUT);
++        assert!(sock.attempt_write_message(&msg).unwrap());
++        assert_eq!(sock.out_fds.len(), 1);
 +    }
 +
      #[test]
