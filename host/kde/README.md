@@ -1,0 +1,215 @@
+# The host's KDE packages
+
+Optional components of Vitrine's Builds window ("Host desktop"): this
+computer's own KWin, KSvg, Kirigami and Qt base, with the research's host
+sets. They replace packages the whole desktop runs on, so Vitrine builds
+one only when asked, and installs it only after the administrator's
+password. Each is a section of `components.conf`; all are built from one
+pinned copy of the research's recipe, `research/`.
+
+What the sets change (the research's measurements):
+
+- KWin, sets `hl39y` for Plasma 6.7.91, `hl39-68` for 6.8.0, `h681a` for
+  6.8.1 and later (built once by the research, not run yet); none for
+  Fedora 44's own Plasma 6.7.5. Keys in a VM take 8.5-9.3 ms against 12.5
+  ms with Fedora's KWin; drags and the launcher under load are smoother;
+  the guest's frames are paced to the host's deadlines (presentation-time
+  v3); the pointer grab (Ctrl+Alt+G) works inside Vitrine's Desktop view
+  (patch 0039). On Intel xe GPUs (Arc), KWin no longer makes the GPU read
+  every window the CPU draws from system memory at each frame (patch
+  0075): with Fedora's KWin and the sets before `hl39y`, Konsole drags
+  missed 47 % of the refreshes on an Arc Pro B50. `hl39-68` is the
+  research's set of 2026-10-08, without 0075 and the patches after it:
+  with an Intel xe GPU on Plasma 6.8.0, set `KWIN_DISABLE_UDMABUF_IMPORT=1`
+  (in `~/.config/environment.d`).
+- KSvg 6.31.0, set `k2`: Plasma's popups stop uploading their themed frames
+  again at each opening.
+- Kirigami 6.31.0, set `f1`: its items react to the frame contrast only
+  when it changes (Plasma's style set it again at each color sync). With
+  KSvg's set, on an Arc Pro B50 at 4K and 120 Hz: the launcher opens in
+  61-69 ms instead of 72-78, and Super pressed 8 times a second repeats 0.2
+  frames a second instead of 6-9.
+- Qt base 6.11.2, set `q4`: a window being resized reuses its shared memory
+  pools for the next sizes. Bare 4K resizes: Konsole shows 111-114 sizes a
+  second instead of 85-88, Dolphin 99-102 instead of 62.
+  `QT_WAYLAND_SHM_NO_REUSE=1` in a program's environment turns it off.
+
+How:
+
+- `build.sh --package PACKAGE` builds one: the research's
+  `setup/tools/kde-rpms.sh`, run as it is from `research/`, in a Fedora
+  container (rootless podman, memory capped at 10 GiB). It takes the
+  source RPM of the package's newest version in the repositories the
+  host's Plasma comes from (Fedora's, or the KDE SIG's beta COPR) and the
+  research's set for that version (`kde_set_for host` in
+  `research/setup/versions.sh`). The research's overrides of its sets
+  (`VGD_HOST_KWIN_SET` and the like) and its switches of packages
+  (`HOST_QT_Q4=0` and the like) are ignored. The builds go to
+  `~/.local/share/vitrine/host-kwin/`, `host-ksvg/`, `host-kirigami/` and
+  `host-qtbase/`, a folder per version-release, with the container's logs
+  and the packages they were built against.
+- `install.sh` installs builds, as root (Vitrine runs it with pkexec): of
+  each source package, all its packages installed now are replaced by the
+  build's in one dnf transaction, or none if the build lacks one of them
+  (Qt base's require each other at the same release); they are checked by
+  their header digests, and version-locked by their exact names
+  (`dnf versionlock`) so that updates leave them alone. `install.sh
+  revert` removes the locks and puts the distribution's packages back
+  (`dnf distro-sync`), only for packages Vitrine installed; several at once
+  in one transaction.
+- Some of KWin's patches act only when a file of `$XDG_RUNTIME_DIR` says so
+  (the research's `src/host-config/kwin-*.conf`: the scanout journal's
+  variance cap, the active window as a plane candidate, empty renders and
+  damage-free layers, effects starting one refresh in). `install.sh` turns
+  those of its `kwin_switches` list on for every user, in
+  `/etc/user-tmpfiles.d/vitrine-host-kwin.conf` (made at each login; for
+  the user installing, at once). To turn one off, remove its line there.
+  Reverting KWin removes the file.
+- `components.conf` describes them to the app: which installed package
+  says what release the distribution has (`follows`: Plasma for KWin, the
+  KDE Frameworks for KSvg and Kirigami) and what a build must match
+  (`against`: KWin and Kirigami use Qt's private API).
+
+What the locks mean:
+
+- KWin must match the installed Plasma and Qt, whose updates do not wait
+  for a locked KWin. After one, Vitrine says so (a banner in the main
+  window) and offers to build and install the matching set, or to revert.
+  It runs from the next login.
+- KSvg and Kirigami stay at their version while the other KDE Frameworks
+  update around them, a mix of releases that upstream does not support.
+  When the frameworks move to a new release (each month in Fedora),
+  Vitrine says so and offers the matching set if the research has one,
+  else to revert. Kirigami uses Qt's private API: after a Qt update it must
+  be built again too.
+- Qt base holds every Qt update back while it is locked: Qt's other modules
+  require the same version of it. The Builds window says when an update
+  waits (from dnf's cached metadata); a build of the research's set for
+  the new version takes it, or Revert… lets it in. After a Qt update,
+  Vitrine's KWin and Kirigami must be built again.
+- Programs started after an install use the new libraries, the desktop
+  from the next login.
+
+If the desktop does not start, log in on a text console (Ctrl+Alt+F3) and
+put the distribution's packages back. For KWin:
+
+```sh
+sudo dnf versionlock delete kwin kwin-common kwin-libs
+sudo dnf distro-sync kwin kwin-common kwin-libs
+```
+
+For the others, the same with the packages the Install… dialog names (`rpm
+-qa 'qt6-qtbase*'` lists Qt base's; `kf6-kirigami*` also matches
+kf6-kirigami-addons, which is not Kirigami's).
+
+## `research/`: the research's recipe, pinned
+
+A copy of what `kde-rpms.sh` reads in the research's repository
+(virtio-gpu-desktop) at commit `f659cb4d8fcbcb64d9ff5467ca0ba4891d13a28d`
+(2026-10-31), in its layout (the container mounts the folder as `/repo`),
+byte for byte and with its files' modes: the scripts, the host sets of the
+four packages (`kde_set_for host ...` in `setup/versions.sh`) and the
+patches they name, and the run-time switches of KWin's patches
+(`src/host-config`), which `install.sh` reads. `build.sh` passes it
+everything through the environment: Vitrine's folders (`VGD_BUILD`), no
+`paths.conf` of the research's (`VGD_CONFIG=/dev/null`), the jobs, the
+package (`VGD_KDE_PACKAGES`), the Plasma's origin (`PLASMA`), the host's
+Fedora (`VGD_FEDORA`), podman's options (`VGD_PODMAN_ARGS`: the
+container's name, which Stop needs, and its memory cap) and live output
+(`VGD_VERBOSE=1`). Each build keeps `buildroot-TAG.txt`, the packages it
+was built against, which the app compares with the host's before
+installing.
+
+| sha256 | file |
+|---|---|
+| `a333fddbfabbe12d8e5f224d441f174221be8c321d0634936b3dfea4c46d6c2d` | `patches/kirigami/0001-PlatformTheme-signal-a-frame-contrast-change-only-wh.patch` |
+| `8d04c83da608399e7db51363d7be6e340568a290c0182981c570b0c996cc013d` | `patches/kirigami/sets/f1.series` |
+| `795c21bfd266da8d22a9666c7252b0e865bd5f4e75c9d520059ff686e3c91f27` | `patches/ksvg/0001-Svg-keep-a-cached-pixmap-s-copy-at-the-requested-dev-v2.patch` |
+| `012a24af7c7d5e6402f2c455ac2ba1bc0fb4ea3b5c170d70b4c107a90b70c2e1` | `patches/ksvg/0002-FrameSvgItem-release-the-previous-nodes-after-the-ne.patch` |
+| `5018b0aa3b29d3c19772cc51433a701a1a1580e84044c749d895cc6a56d4e098` | `patches/ksvg/sets/k2.series` |
+| `0d02a6e21c7c8aa7577eef557695bfa2c3bdd86706c1ae62f7b63f3715b811cb` | `patches/kwin/0001-Patch100-kwin-vm-frame-timing-ported-to-6.8.patch` |
+| `61c540b5029879629218f527ade8a48605dbc4a560c2e32056b860526dfcf3f0` | `patches/kwin/0002-Patch101-kwin-render-journal-variance-cap-applies-un.patch` |
+| `7cc5ce66afed63a27dbb6d8c0d1b56f3c4da975a83fd17339aa40df1a7e51437` | `patches/kwin/0003-Patch102-kwin-late-frame-scheduling-ported-to-6.8-re.68.patch` |
+| `8b75a6a1c58fe1a90d7fd418eecfb463ffc5413a847f3e30282cee3c3cb99e6f` | `patches/kwin/0003-Patch102-kwin-late-frame-scheduling-ported-to-6.8-re.patch` |
+| `427a63333f8fb461fde2528addd8cb47376cd4ff8935ae4290d6ce56f80a8848` | `patches/kwin/0004-Patch103-kwin-late-flip-compensation-ported-to-6.8-b.patch` |
+| `3ca0bc02b7703d5d92bb28e72e662e3e60fca1ae7bfe846adaf24cac5a566c80` | `patches/kwin/0005-Patch104-kwin-cursor-frames-estimate-ported-to-6.8-L.patch` |
+| `1422c6baad0b0149ef9013feda199ee713d34fc1e2fb0b1d1aaaca02fe059d79` | `patches/kwin/0006-Patch111-kwin-scanout-frame-slack-applies-with-offse.patch` |
+| `a81c5471ed1c3a9eedf71b9319321acd22d76c0635daa1dac1ec1683b74e049b` | `patches/kwin/0007-FIX-A-Patch102-read-scheduledLate-before-the-commit-.patch` |
+| `bf51b1f59a0707876e42e9dee1ae578028184bb30ac38ab62af8fd09cfc5fe16` | `patches/kwin/0008-FIX-E-Patch103-111-renderedByCompositor-from-the-lay.patch` |
+| `e167a6eca588a715eca608d23ca90878eba47dc328f96208bf6772d8e4b17420` | `patches/kwin/0008-upstream-maximize-size-tolerance.patch` |
+| `0579945143f039832773f7fd862cd604659939365f25ccf77142f797a36a1f68` | `patches/kwin/0009-FIX-F-renderloop-the-2-ms-render-time-floor-only-for.patch` |
+| `040869c66d3e8fade70d8f38b4f1c990b6a9d9d1050318066cf5c87170f4eacd` | `patches/kwin/0010-FIX-G-renderloop-commit-timing-target-sets-the-earliest-vblank.patch` |
+| `e3b01390318bb995147b65772051d2972fdaebe5bdf9c5ad51279442ee9c07a9` | `patches/kwin/0012-presentation-time-v3-content-update-deadline.patch` |
+| `774bf1a2abb37b3accfd5a07e15e1615065d2916e0d86b3aa6a048f1ef4a88e1` | `patches/kwin/0038-FIX-window-activate-raise-and-unrestricted-resize-is-unrestricted.patch` |
+| `727678c258456da0e67cf2db0dd6501f05471f74c3e5d2aefc9d9c6156b140a8` | `patches/kwin/0039-EXP-input-pointer-constraints-on-subsurfaces.68.patch` |
+| `1621f555a8ecd3595a534778c737aea6a4956845a7624d779674eea2596cb102` | `patches/kwin/0039-EXP-input-pointer-constraints-on-subsurfaces.patch` |
+| `87e0964e9c62fea59a7e02c7a60df15d1a967cd9f13928aa7d5e357e78f75d24` | `patches/kwin/0060-EXP-interactive-move-once-per-frame.68.patch` |
+| `4550104619285972c8b59768972dd7974463f28e2bdd725810ae1e99e4e852f7` | `patches/kwin/0060-EXP-interactive-move-once-per-frame.patch` |
+| `dfb62f39fd1b974f0578b04ef46dbff45730880dee43b8c46ac578e162a625fa` | `patches/kwin/0061-EXP-plasma-window-geometry-once-per-pass.patch` |
+| `b4d4b2fadec11d1778afac5efe345846efec5722780351fc196ea39f5bf9c560` | `patches/kwin/0062-EXP-cursor-async-test-once.patch` |
+| `9ff1dfab9937ccef2761a6a470f944887da608f259eb99dddae797dc260c8b47` | `patches/kwin/0063-EXP-pointer-motion-to-clients-once-per-ms.patch` |
+| `77e23df8ec1ac727f8071e84f4218125a6a3c56bcf79692fd1a80fb8dc5fd10e` | `patches/kwin/0066-FIX-renderloop-a-render-journal-of-its-own-for-direct-scanout.patch` |
+| `9632c39dc81d0f01ffe5da4c2327f9615444b93f538c20e503c2432ce9ba1c28` | `patches/kwin/0068-UPSTREAM-e3f5caef-pointerconstraints-no-commit-for-lock-or-unlock.hl.patch` |
+| `c0155baae94d01e5c615ba304c4a7278347cbaac8a71c51b9fbdbd26ba201bf5` | `patches/kwin/0070-FIX-drm-keep-both-layer-surfaces-when-switching-back.patch` |
+| `e192e81e652926ea735b0a275c69a5ac2c3230e9b366a53737dd60551a3f4382` | `patches/kwin/0074-EXP-renderloop-lone-frame-lead-hl.patch` |
+| `557137af68be546c9c66cd78da147f54b056d39a9d654526e7f106962d56cb42` | `patches/kwin/0075-FIX-opengl-no-udmabuf-import-on-Intel-xe-either.patch` |
+| `8fceb6e1df83b20a0d5e15cb4236d31e05a8928fb05fd915f4e6f04b1fd7571a` | `patches/kwin/0077-EXP-effects-first-animation-frame-one-refresh-in-at-run-time.68.patch` |
+| `32b5598cb6e643d11e56bbd0466a4816fc8ea6a42d3cefa4aa569d1cce407916` | `patches/kwin/0077-EXP-effects-first-animation-frame-one-refresh-in-at-run-time.patch` |
+| `0384aba1a9109ae2b2e1e58fd7d68b411136467b9d306764fa5469281a2c3da6` | `patches/kwin/0078-EXP-renderloop-scanout-journal-variance-cap.patch` |
+| `5c5b49f1e59b4332adcec6b5c8433f20b296657ccd996138eef7646f108be75f` | `patches/kwin/0079-EXP-renderloop-scanout-frame-slack-at-run-time.patch` |
+| `31673bd7249b7eb8609e2fb97820f9dc29f5d07636203a32ee6f8bd95f3059af` | `patches/kwin/0080-EXP-scene-the-active-window-a-layer-candidate-at-run-time.patch` |
+| `9a8b47ba2feab7753103975e1e8d8cc9a40762146a5efd0972400489bd0edea1` | `patches/kwin/0081-EXP-compositor-an-empty-render-is-not-content-at-run-time.patch` |
+| `5ca98067b01dba5dc8c9b9c7804d1726d937f19c3fc73ed3b77d89c4636f8642` | `patches/kwin/0082-EXP-compositor-a-layer-with-no-damage-keeps-its-buffer-at-run-time.patch` |
+| `882402feebe54b1a640b542368afd0c2caf9ff3b20b351266f2d14cf2798ac2c` | `patches/kwin/sets/h681a.series` |
+| `c18c004fe7319f2d4509deeadf37df8434088affde845d0eb96b11bb6642367d` | `patches/kwin/sets/hl39-68.series` |
+| `45da20f38c96aeb3d44540c0567de26c293e6aba799b1e64e01eebb79ee7ad11` | `patches/kwin/sets/hl39y.series` |
+| `bdfcd81c8c252a31ffad2f62bd99e793a0c6d0d0300c5704d74ee0ccba454b25` | `patches/qtbase/qtbase-wayland-shm-reuse-pools-v3.patch` |
+| `e1c33999e3ea401a4a5d4017023d34d85962c318c993e3bf5804799baa2ab3b3` | `patches/qtbase/sets/q4.series` |
+| `67830e2765b11774b880c097b0eab79e700e2cdb7c4aaa2e6ac7bcd2514d05f0` | `setup/lib.sh` |
+| `761707846b55e70bac195d24e30520ca5c7b96164c0ce45b113317fc13150deb` | `setup/paths.sh` |
+| `4b4a82cd31efff9ea7ff2572db175bf2d28ce9811513a764e358144b15dc3310` | `setup/tools/build-patched-rpm.sh` |
+| `d49ee93d128f6fab553691631f0a451d19e7bc2b686a226ec5ba3dac0eb65070` | `setup/tools/kde-rpms.sh` |
+| `6c2ee30a56cd367edbc35f38c9aa684a7e276d3d396ee59d53fb5cb9e6114740` | `setup/versions.sh` |
+| `19cf4324887903cc1185fc8dc83d38bb9e97176a36ef8ed9506611be4f6e1ddf` | `src/host-config/kwin-active-window-candidate.conf` |
+| `cf647e7f955d60ec6cae1ee58196b94d939996df44697f9e479023921bbe1f91` | `src/host-config/kwin-animation-start-step.conf` |
+| `ebb40936ea5b94c0970194727a29954e954780bc5b7817421e79fc5ee9d04911` | `src/host-config/kwin-empty-render-not-content.conf` |
+| `c28ab03912079127f981603c228443ecfcdf030e7fc0170728f3e400735d2d93` | `src/host-config/kwin-scanout-variance-cap.conf` |
+| `ac0cb19c913e350f76be6c0f5c129dfc77eb7c25b3a717205efaa57aaca46541` | `src/host-config/kwin-skip-empty-layer-render.conf` |
+
+Check: `cd host/kde/research && find . -type f | LC_ALL=C sort | xargs sha256sum`.
+
+When the research's recipe moves (`r` its repository, `c` the commit, `v`
+this folder), take it again as it is, the sets' patches with it:
+
+```sh
+r=~/Documents/virtio-gpu-desktop c=f659cb4 v=~/Documents/vitrine/host/kde/research
+rm -rf "$v" && mkdir -p "$v/setup/tools" "$v/src/host-config"
+for f in setup/lib.sh setup/paths.sh setup/versions.sh setup/tools/kde-rpms.sh \
+	setup/tools/build-patched-rpm.sh \
+	src/host-config/kwin-{active-window-candidate,animation-start-step,empty-render-not-content,scanout-variance-cap,skip-empty-layer-render}.conf; do
+	git -C "$r" show "$c:$f" > "$v/$f"
+done
+# patches/DIR (kde_patch_dir) and the host sets kde_set_for names for each package
+for d in kwin:hl39y,hl39-68,h681a ksvg:k2 kirigami:f1 qtbase:q4; do
+	dir=${d%%:*} sets=${d#*:}
+	mkdir -p "$v/patches/$dir/sets"
+	for s in ${sets//,/ }; do
+		git -C "$r" show "$c:patches/$dir/sets/$s.series" > "$v/patches/$dir/sets/$s.series"
+	done
+	for p in $(cat "$v/patches/$dir/sets/"*.series | sed 's/#.*//' | sort -u); do
+		git -C "$r" show "$c:patches/$dir/$p" > "$v/patches/$dir/$p"
+	done
+done
+# the research's modes: its scripts are executable
+for f in $(cd "$v" && find . -type f | sed 's|^\./||'); do
+	[ "$(git -C "$r" ls-tree "$c" -- "$f" | cut -d' ' -f1)" = 100755 ] && chmod 755 "$v/$f" || chmod 644 "$v/$f"
+done
+```
+
+Then: a new host set in `kde_set_for` needs its series file in the list
+above, a new host package its section in `components.conf`, and a new
+run-time switch of the research's host session (`setup/steps/host-session.sh`)
+for a patch of the sets its file; `research=` in `components.conf` gets the
+new commit and the table its new checksums. No file may have a
+`Claude-Session:` line (the research removed them on 2026-10-14). A change
+of the copy makes the app's builds of the packages it concerns out of date.

@@ -56,10 +56,10 @@ qt_add_library(vitrine_core STATIC
     src/core/hostgpus.h
     src/core/hostkvm.cpp
     src/core/hostkvm.h
-    src/core/hostkwin.cpp
-    src/core/hostkwin.h
-    src/core/hostkwinbuilder.cpp
-    src/core/hostkwinbuilder.h
+    src/core/hostkde.cpp
+    src/core/hostkde.h
+    src/core/hostkdebuilder.cpp
+    src/core/hostkdebuilder.h
     src/core/hostmemory.cpp
     src/core/hostmemory.h
     src/core/hostsettings.cpp
@@ -274,10 +274,10 @@ qt_add_library(vitrine_ui STATIC
     src/ui/guesttoolsbuildbanner.h
     src/ui/guesttoolsdialog.cpp
     src/ui/guesttoolsdialog.h
-    src/ui/hostkwinbanner.cpp
-    src/ui/hostkwinbanner.h
-    src/ui/hostkwindialog.cpp
-    src/ui/hostkwindialog.h
+    src/ui/hostkdebanner.cpp
+    src/ui/hostkdebanner.h
+    src/ui/hostkdedialog.cpp
+    src/ui/hostkdedialog.h
     src/ui/hosttuningnotifier.cpp
     src/ui/hosttuningnotifier.h
     src/ui/hosttuningprefs.cpp
@@ -424,7 +424,7 @@ if(BUILD_TESTING)
             hostdevices
             hostgpus
             hostkvm
-            hostkwin
+            hostkde
             hostmemory
             hostsettings
             importer
@@ -457,7 +457,7 @@ if(BUILD_TESTING)
             consoleviews
             guestoffer
             guesttoolsdialog
-            hostkwinbanner
+            hostkdebanner
             mainbar
             newvmdialog
             settingspages
@@ -495,7 +495,7 @@ if(BUILD_TESTING)
     # vitrine coming back in front, through Qt's window system events (tests/activation.h)
     target_link_libraries(test_stackbanner PRIVATE Qt6::GuiPrivate)
     target_link_libraries(test_guesttoolsdialog PRIVATE Qt6::GuiPrivate)
-    target_link_libraries(test_hostkwinbanner PRIVATE Qt6::GuiPrivate)
+    target_link_libraries(test_hostkdebanner PRIVATE Qt6::GuiPrivate)
     # the helper's test build on a fake tree, and its QEMU stand-in (helper/)
     target_compile_definitions(test_hostsettings PRIVATE
         HELPER_FAKE="$<TARGET_FILE:vitrine-helper-fake>"
@@ -506,9 +506,9 @@ if(BUILD_TESTING)
     # the scripts of guest/, against a stand-in for podman
     target_compile_definitions(test_guesttoolsbuilder PRIVATE
         GUEST_SOURCE_DIR="${PROJECT_SOURCE_DIR}/guest")
-    # host/kwin's scripts and pinned recipe, against stand-ins for rpm and dnf
-    target_compile_definitions(test_hostkwin PRIVATE
-        HOST_KWIN_SOURCE_DIR="${PROJECT_SOURCE_DIR}/host/kwin")
+    # host/kde's scripts and pinned recipe, against stand-ins for rpm and dnf
+    target_compile_definitions(test_hostkde PRIVATE
+        HOST_KDE_SOURCE_DIR="${PROJECT_SOURCE_DIR}/host/kde")
     # the same stand-in, for QEMUs found running
     target_compile_definitions(test_vmrunner PRIVATE FAKE_QEMU="$<TARGET_FILE:fake-qemu>")
     add_dependencies(test_vmrunner fake-qemu)

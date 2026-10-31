@@ -5,31 +5,34 @@
 #include <QString>
 #include <QStringList>
 
+#include "core/hostkde.h"
+
 class QProcess;
 class QTimer;
 
 /*
- * Builds the host's KWin from the app: host/kwin/build.sh, which runs the
- * research's recipe in a Fedora container capped at $MEMORY (10 GiB), as
- * GuestToolsBuilder runs the guest tools' packages.  It waits until that
- * much memory is free (and what the host keeps free), or until told to go
- * on anyway.  One build at a time; a stop removes the container.  What it
- * built is a folder of HostKwin::outDir(), which install.sh installs.
+ * Builds one of the host's KDE packages from the app: host/kde/build.sh
+ * --package, which runs the research's recipe in a Fedora container capped
+ * at $MEMORY (10 GiB), as GuestToolsBuilder runs the guest tools' packages.
+ * Before a heavy one (KWin, Qt base) it waits until that much memory is
+ * free (and what the host keeps free), or until told to go on anyway.  One
+ * build at a time; a stop removes the container.  What it built is a folder
+ * of the package's Target::outDir(), which install.sh installs.
  */
-class HostKwinBuilder : public QObject
+class HostKdeBuilder : public QObject
 {
     Q_OBJECT
 
 public:
     /* The app's */
-    static HostKwinBuilder *instance();
+    static HostKdeBuilder *instance();
 
-    explicit HostKwinBuilder(QObject *parent = nullptr);
-    ~HostKwinBuilder() override;
+    explicit HostKdeBuilder(QObject *parent = nullptr);
+    ~HostKdeBuilder() override;
 
-    /* Defaults: HostKwin's folders, /proc/meminfo, nproc (at most 8) jobs */
+    /* Defaults: HostKde's folders, /proc/meminfo, nproc (at most 8) jobs */
     void setSourceDir(const QString &dir) { m_sourceDir = dir; }
-    void setOutDir(const QString &dir) { m_outDir = dir; }
+    void setDataDir(const QString &dir) { m_dataDir = dir; }
     void setWorkDir(const QString &dir) { m_workDir = dir; }
     void setMeminfo(const QString &path) { m_meminfo = path; }
     void setJobs(int jobs) { m_jobs = jobs; }
@@ -38,9 +41,11 @@ public:
 
     /* A build runs, or waits for memory */
     bool isRunning() const { return m_running; }
-    /* The set for this computer's Plasma, from where it comes (beta,
-       testing, fedora: HostKwin::Status::plasmaFrom) */
-    void start(const QString &plasma);
+    /* @target's set for this computer, the container with the repositories
+       of its Plasma (beta, testing, fedora: HostKde::Status::plasmaFrom) */
+    void start(const HostKde::Target &target, const QString &plasma);
+    /* The package building, or the last one */
+    HostKde::Target target() const { return m_target; }
     /* Stops build.sh and what it runs (its process group: it removes its
        container first), or the wait */
     void cancel();
@@ -88,11 +93,12 @@ private:
     void append(const QString &text);
 
     QString m_sourceDir;
-    QString m_outDir;
+    QString m_dataDir;
     QString m_workDir;
     QString m_meminfo;
     int m_jobs = 0;
     QString m_plasma;
+    HostKde::Target m_target;
 
     bool m_running = false;
     QProcess *m_process = nullptr;

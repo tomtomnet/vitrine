@@ -2,13 +2,15 @@
 #pragma once
 
 /*
- * Stand-ins for rpm and dnf, shared by the tests of the host's KWin and of
- * its banner, on a state folder STATE: installed/NAME and repo/NAME (what
- * distro-sync brings) hold NAME=value lines as the "RPM files" do (NAME,
- * VERSION, RELEASE, ARCH, DIGEST, SOURCERPM, EPOCHNUM), locks/NAME the EVR
- * locked.  Enough of both for install.sh and for System::read(); rpm
- * --eval goes to the real rpm (vercmp).  (No line of them starts with a #,
- * nor has a \": moc would take them for a directive or a string's end.)
+ * Stand-ins for rpm and dnf, shared by the tests of the host's packages and
+ * of their banner, on a state folder STATE: installed/NAME and repo/NAME
+ * (what distro-sync brings) hold NAME=value lines as the "RPM files" do
+ * (NAME, VERSION, RELEASE, ARCH, DIGEST, SOURCERPM, EPOCHNUM), locks/NAME
+ * the EVR locked, available/NAME the repositories' newest as dnf
+ * repoquery prints it.  Enough of both for install.sh and for
+ * System::read(); rpm --eval goes to the real rpm (vercmp).  (No line of
+ * them starts with a #, nor has a \": moc would take them for a directive
+ * or a string's end.)
  */
 inline constexpr char kFakeRpm[] = R"sh(#!/bin/bash
 state=${STATE:?}
@@ -70,6 +72,7 @@ do)
 	[ "${2:-}" = --help ] && { [ -e "$state/no-do" ] && exit 2; exit 0; }
 	[ -e "$state/fail" ] && { echo "Transaction failed" >&2; exit 1; }
 	shift
+	echo "do $*" >> "$state/transactions"
 	for a; do case "$a" in --action=*) echo "${a#--action=}" >> "$state/actions" ;; *) take "$a" || exit 1 ;; esac; done
 	;;
 upgrade | downgrade | reinstall)
@@ -81,11 +84,15 @@ upgrade | downgrade | reinstall)
 distro-sync)
 	[ -e "$state/fail" ] && exit 1
 	shift
+	echo "distro-sync $*" >> "$state/transactions"
 	for n; do [ -e "$state/repo/$n" ] && { take "$state/repo/$n" || exit 1; }; done
 	;;
 repoquery)
 	shift
-	for n; do [ -e "$state/installed/$n" ] && echo "$n $(field "$state/installed/$n" REPO)"; done
+	case " $* " in
+	*" --installed "*) for n; do [ -e "$state/installed/$n" ] && echo "$n $(field "$state/installed/$n" REPO)"; done ;;
+	*) for n; do [ -e "$state/available/$n" ] && cat "$state/available/$n"; done ;;
+	esac
 	;;
 esac
 exit 0

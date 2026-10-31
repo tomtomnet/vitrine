@@ -12,7 +12,7 @@
 #include "core/tasks.h"
 
 class GuestToolsBuilder;
-class HostKwinBuilder;
+class HostKdeBuilder;
 class StackBuilder;
 
 /*
@@ -22,9 +22,9 @@ class StackBuilder;
  * built from their sources now, in build order, and after a package of the
  * guest tools their medium, which the VMs install from.  StackBuilder runs
  * host/build.sh for the host's, GuestToolsBuilder the guest's scripts
- * (which waits for memory before a heavy package), HostKwinBuilder
- * host/kwin/build.sh for the host's KWin (which waits too); this follows
- * their lines, per component.
+ * (which waits for memory before a heavy package), HostKdeBuilder
+ * host/kde/build.sh for the host's packages, one at a time (it waits too
+ * before KWin and Qt base); this follows their lines, per component.
  *
  * Each component has its log, kept beside the cache, and the durations of
  * its last builds on this machine, kept with the data.  The run is one
@@ -67,16 +67,16 @@ public:
     ~BuildManager() override;
 
     /* Defaults: Builds::Places::defaults(), StackBuilder's,
-       GuestToolsBuilder's and HostKwinBuilder's instance(), the files in
+       GuestToolsBuilder's and HostKdeBuilder's instance(), the files in
        Paths' folders */
     void setPlaces(const Builds::Places &places);
-    void setBuilders(StackBuilder *stack, GuestToolsBuilder *tools, HostKwinBuilder *kwin = nullptr);
+    void setBuilders(StackBuilder *stack, GuestToolsBuilder *tools, HostKdeBuilder *hostKde = nullptr);
     void setHistoryFile(const QString &path);
     void setLogDir(const QString &path);
 
     QList<Builds::Component> components() const;
-    /* What HostKwin makes of the host's KWin now (Builds::Places::kwin) */
-    HostKwin::Status kwinStatus() const { return places().kwin; }
+    /* What HostKde makes of the host package of component @id now (Builds::Places::system) */
+    HostKde::Status systemStatus(const QString &id) const { return places().system.value(id); }
     Builds::Component component(const QString &id) const;
     Builds::Status status(const QString &id) const;
     /* The components and their state again: the sources may have changed */
@@ -86,7 +86,7 @@ public:
        from their sources now, then the medium after a package; in order */
     QStringList plan(const QStringList &ids) const;
     /* What is not built from its sources now: what "Update All" builds;
-       the host's KWin only while Vitrine's is installed */
+       a host package only while Vitrine's is installed */
     QStringList outdated() const;
 
     bool isRunning() const { return m_running; }
@@ -164,7 +164,7 @@ private:
     bool m_placesSet = false;
     QPointer<StackBuilder> m_stack;
     QPointer<GuestToolsBuilder> m_tools;
-    QPointer<HostKwinBuilder> m_kwin;
+    QPointer<HostKdeBuilder> m_hostKde;
     QString m_historyFile;
     QString m_logDir;
     QStringList m_cacheDirs;

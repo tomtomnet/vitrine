@@ -1,0 +1,229 @@
+Qt Wayland: a resized window reuses its shm pools instead of a new pool per size (v3, set q4)
+
+QWaylandShmBackingStore made a new wl_shm pool (memfd, which the kernel zero-fills before the client
+paints over it) for every size of a window being resized, and deleted the others. This gives a free
+buffer of another size the new size on its pool: the smallest pool that holds it without wasting
+more than half of it, else the largest smaller one, grown with an eighth to spare (ftruncate, mremap,
+wl_shm_pool.resize - pools only grow). Buffers of other sizes are kept while the size changes (they
+take the next sizes) unless their pools are more than twice too large; those are pruned as before:
+busy or free when no buffer could be reused, once free when one of the window's size is.
+
+v1 (set q2, 2026-10-09) always took the largest free pool and never pruned until a buffer aged out:
+a window made small kept the pools of its largest size (2026-10-14 qtm1, Konsole on a 4K screen at
+200 %: 84 MiB resident after shrinking to 640x400, against 7.3 MiB with stock Qt). v2 (set q3)
+bounded it but also pruned every buffer of another size whenever one of the window's size was free:
+a window shows each size twice (a second commit with the finished content), so v2 lost its spare
+pools at every size - bare metal 2026-10-14 qtb3, sizes shown per second over a 15 s oscillating
+resize: Konsole stock 86 / v2 106-107 / v1 112-115, Dolphin 63-66 / 78-83 / 100-103.
+
+QT_WAYLAND_SHM_NO_REUSE=1 turns it off (since v2 exactly the old pruning).
+
+A pool grows by mremap where there is one (Linux), else by a new mapping. Each buffer keeps a
+duplicate of its pool's descriptor (to grow the pool): up to MAX_BUFFERS (5) more open descriptors
+per window. The class gains members: everything built against qwaylandshmbackingstore_p.h must be
+rebuilt with it (the xdg-shell plugin constructs QWaylandShmBuffer for window icons - only
+libQt6WaylandClient swapped in made Konsole and Dolphin abort on heap corruption, 2026-10-14 qtb1).
+
+--- a/src/plugins/platforms/wayland/qwaylandshmbackingstore.cpp
++++ b/src/plugins/platforms/wayland/qwaylandshmbackingstore.cpp
+@@ -59,6 +59,12 @@
+         return input;
+ }
+ 
++// the size of the pool for a buffer of this size (the constructor's stride and size alignment)
++static size_t poolSizeFor(const QSize &size)
++{
++    return size_t(alignTo(alignTo(size.width() * 4, 256) * size.height(), getpagesize()));
++}
++
+ QWaylandShmBuffer::QWaylandShmBuffer(QWaylandDisplay *display,
+                                      const QSize &size, QImage::Format format, qreal scale, wl_event_queue *customEventQueue)
+     : mDirtyRegion(QRect(QPoint(0, 0), size / scale))
+@@ -114,6 +120,11 @@
+     wl_shm_format wl_format = shm->formatFrom(format);
+     mImage = QImage(data, size.width(), size.height(), stride, format);
+     mImage.setDevicePixelRatio(scale);
++    mData = data;
++    mPoolSize = alloc;
++    mEventQueue = customEventQueue;
++    // the file object closes its descriptor; keep one to grow the pool for other sizes (reuse())
++    mFd = fcntl(fd, F_DUPFD_CLOEXEC, 0);
+ 
+     mShmPool = wl_shm_create_pool(shm->object(), fd, alloc);
+     init(wl_shm_pool_create_buffer(mShmPool,0, size.width(), size.height(),
+@@ -122,11 +133,55 @@
+         wl_proxy_set_queue(reinterpret_cast<struct wl_proxy *>(buffer()), customEventQueue);
+ }
+ 
++bool QWaylandShmBuffer::reuse(QWaylandDisplay *display, const QSize &size, QImage::Format format, qreal scale)
++{
++    if (busy() || !mShmPool || !mData || mFd < 0)
++        return false;
++
++    const int stride = alignTo(size.width() * 4, 256);
++    const size_t alloc = poolSizeFor(size);
++    if (alloc > mPoolSize) {
++        // grow with an eighth more, so that a window being made larger does not grow it every frame
++        const size_t grown = alignTo(int(alloc + alloc / 8), getpagesize());
++        if (ftruncate(mFd, off_t(grown)) != 0)
++            return false;
++#ifdef MREMAP_MAYMOVE
++        void *data = mremap(mData, mPoolSize, grown, MREMAP_MAYMOVE);
++#else
++        void *data = mmap(nullptr, grown, PROT_READ | PROT_WRITE, MAP_SHARED, mFd, 0);
++        if (data != MAP_FAILED)
++            munmap(mData, mPoolSize);
++#endif
++        if (data == MAP_FAILED)
++            return false;
++        mData = static_cast<uchar *>(data);
++        mPoolSize = grown;
++        wl_shm_pool_resize(mShmPool, int32_t(grown));
++    }
++
++    delete mMarginsImage;
++    mMarginsImage = nullptr;
++    mMargins = QMargins();
++    mImage = QImage(mData, size.width(), size.height(), stride, format);
++    mImage.setDevicePixelRatio(scale);
++    mDirtyRegion = QRegion(QRect(QPoint(0, 0), size / scale));
++
++    if (mBuffer)
++        wl_buffer_destroy(mBuffer);
++    QWaylandShm *shm = display->shm();
++    init(wl_shm_pool_create_buffer(mShmPool, 0, size.width(), size.height(), stride, shm->formatFrom(format)));
++    if (mEventQueue)
++        wl_proxy_set_queue(reinterpret_cast<struct wl_proxy *>(buffer()), mEventQueue);
++    return true;
++}
++
+ QWaylandShmBuffer::~QWaylandShmBuffer(void)
+ {
+     delete mMarginsImage;
+-    if (mImage.constBits())
+-        munmap((void *) mImage.constBits(), mImage.sizeInBytes());
++    if (mData)
++        munmap(mData, mPoolSize);
++    if (mFd >= 0)
++        close(mFd);
+     if (mShmPool)
+         wl_shm_pool_destroy(mShmPool);
+ }
+@@ -363,35 +418,82 @@
+         }
+     }
+ 
+-    // Prune buffers that have mismatching size.
+-    for (auto i = mBuffers.size() - 1; i >= 0; --i) {
+-        QWaylandShmBuffer *buffer = mBuffers[i];
+-        if (buffer->size() != size) {
++    QImage::Format format = QImage::Format_ARGB32_Premultiplied;
++    if (!waylandWindow()->format().hasAlpha())
++        format = QImage::Format_RGB32;
++
++    static const bool reusePools = !qEnvironmentVariableIntValue("QT_WAYLAND_SHM_NO_REUSE");
++    const size_t needed = poolSizeFor(size);
++
++    // Prunes the buffers of other sizes than this one but those KEEP(buffer) holds on to.
++    const auto pruneOtherSizes = [&](auto keep) {
++        for (auto i = mBuffers.size() - 1; i >= 0; --i) {
++            QWaylandShmBuffer *b = mBuffers[i];
++            if (b->size() == size || keep(b))
++                continue;
+             mBuffers.removeAt(i);
+-            if (mBackBuffer == buffer)
++            if (mBackBuffer == b)
+                 mBackBuffer = nullptr;
+-            if (mFrontBuffer == buffer)
++            if (mFrontBuffer == b)
+                 mFrontBuffer = nullptr;
+-            delete buffer;
++            delete b;
+         }
+-    }
++    };
+ 
+     QWaylandShmBuffer *buffer = nullptr;
+     for (QWaylandShmBuffer *candidate : std::as_const(mBuffers)) {
+-        if (candidate->busy())
++        if (candidate->busy() || candidate->size() != size)
+             continue;
+ 
+         if (!buffer || candidate->age() < buffer->age())
+             buffer = candidate;
+     }
+ 
+-    if (buffer)
++    // A buffer of this size is free. The buffers of other sizes go, as before - with pool reuse
++    // (below) only the free ones whose pools are more than twice too large (a window made
++    // smaller): the others may take the next sizes of a window being resized, or age out.
++    if (buffer) {
++        pruneOtherSizes([&](QWaylandShmBuffer *b) {
++            return reusePools && (b->busy() || b->poolSize() / 2 <= needed);
++        });
+         return buffer;
++    }
++
++    // None of this size is free: rather than a new pool for every size of a window being resized
++    // (which the kernel zero-fills before it is painted over), give a free buffer of another size
++    // the new size on its pool: the smallest pool that holds it without wasting more than half of
++    // it, else the largest smaller one, which grows. Its content is stale, so it does not count as
++    // recreated: beginPaint() clears what is painted for windows with alpha.
++    // QT_WAYLAND_SHM_NO_REUSE=1 keeps the old behaviour (a new pool for every size), for comparison.
++    if (reusePools) {
++        QWaylandShmBuffer *smaller = nullptr;
++        for (QWaylandShmBuffer *candidate : std::as_const(mBuffers)) {
++            if (candidate->busy() || candidate->size() == size)
++                continue;
++            const size_t pool = candidate->poolSize();
++            if (pool < needed) {
++                if (!smaller || pool > smaller->poolSize())
++                    smaller = candidate;
++            } else if (pool / 2 <= needed && (!buffer || pool < buffer->poolSize())) {
++                buffer = candidate;
++            }
++        }
++        if (!buffer)
++            buffer = smaller;
++        if (buffer && buffer->reuse(mDisplay, size, format, waylandWindow()->scale())) {
++            if (mFrontBuffer == buffer)
++                mFrontBuffer = nullptr;
++            return buffer;
++        }
++        buffer = nullptr;
++    }
++
++    // A new one: the others go but the busy ones whose pools are no more than twice too large.
++    pruneOtherSizes([&](QWaylandShmBuffer *b) {
++        return reusePools && b->busy() && b->poolSize() / 2 <= needed;
++    });
+ 
+     if (mBuffers.size() < MAX_BUFFERS) {
+-        QImage::Format format = QImage::Format_ARGB32_Premultiplied;
+-        if (!waylandWindow()->format().hasAlpha())
+-            format = QImage::Format_RGB32;
+         QWaylandShmBuffer *b = new QWaylandShmBuffer(mDisplay, size, format, waylandWindow()->scale(), mEventQueue);
+         bufferWasRecreated = true;
+         mBuffers.push_front(b);
+--- a/src/plugins/platforms/wayland/qwaylandshmbackingstore_p.h
++++ b/src/plugins/platforms/wayland/qwaylandshmbackingstore_p.h
+@@ -47,9 +47,19 @@
+     uint age() const { return mAge; }
+     void setAge(uint age) { mAge = age; }
+ 
++    // Makes this buffer a buffer of another size on the same shm pool, growing the pool if it is
++    // too small: a resizing window then does not allocate (and the kernel does not zero) a new
++    // pool for every size. The content is stale afterwards. False if it cannot (busy, no pool).
++    bool reuse(QWaylandDisplay *display, const QSize &size, QImage::Format format, qreal scale);
++    size_t poolSize() const { return mPoolSize; }
++
+ private:
+     QImage mImage;
+     struct wl_shm_pool *mShmPool = nullptr;
++    int mFd = -1;
++    size_t mPoolSize = 0;
++    uchar *mData = nullptr;
++    wl_event_queue *mEventQueue = nullptr;
+     QMargins mMargins;
+     QImage *mMarginsImage = nullptr;
+     QRegion mDirtyRegion;
