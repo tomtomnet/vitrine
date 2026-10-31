@@ -23,6 +23,7 @@ extern "C" const struct wl_interface wp_presentation_interface;
 extern "C" const struct wl_interface wp_presentation_feedback_interface;
 
 #include <algorithm>
+#include <array>
 #include <atomic>
 #include <cerrno>
 #include <cstdarg>
@@ -42,6 +43,7 @@ extern "C" const struct wl_interface wp_presentation_feedback_interface;
 #include <fcntl.h>
 #include <poll.h>
 #include <sys/eventfd.h>
+#include <sys/mman.h>
 #include <sys/socket.h>
 #include <sys/un.h>
 #include <time.h>
@@ -68,6 +70,8 @@ const bool g_stats = getenv("VMVIEW_STATS") != nullptr;
 // VMVIEW_STANDALONE=1 (for comparisons): the guest's xdg-shell goes to the host as well, so its window is
 // an ordinary window of the app's connection instead of a subsurface of the app's window
 const bool g_standalone = getenv("VMVIEW_STANDALONE") != nullptr;
+// the guest's surfaces clipped to the view (2026-10-31); VMVIEW_NO_CLIP=1: as before, for comparisons
+const bool g_clip = !g_standalone && getenv("VMVIEW_NO_CLIP") == nullptr;
 
 // Host globals the guest may see: what the nested desktop and its proxy use, nothing that lets a guest
 // watch or drive the host (data control, virtual input, window management, outputs, layer shell...).
@@ -184,9 +188,9 @@ struct OutMsg {
     void finish() { w[1] = uint32_t(w.size() * 4) << 16 | opcode; }
 };
 
-enum class Kind : uint8_t { Forwarded, Display, Registry, WmBase, Positioner, XdgSurface, Toplevel, Popup };
+enum class Kind : uint8_t { Forwarded, Display, Registry, WmBase, Positioner, XdgSurface, Toplevel, Popup, Viewport };
 enum class Role : uint8_t {
-    None, Pointer, Keyboard, Surface, DataDevice, PrimaryDevice, RelPointer, Gesture, TabletTool, TextInput
+    None, Pointer, Keyboard, Surface, DataDevice, PrimaryDevice, RelPointer, Gesture, TabletTool, TextInput, Touch
 };
 // the role the host gave a guest wl_surface: a second one would be a protocol error on the app's connection
 enum class SurfaceRole : uint8_t { None, Subsurface, Cursor, DragIcon, Toplevel };
@@ -243,6 +247,7 @@ Role roleOf(const char *name)
         {"zwp_pointer_gesture_hold_v1", Role::Gesture},
         {"zwp_tablet_tool_v2", Role::TabletTool},
         {"zwp_text_input_v3", Role::TextInput},
+        {"wl_touch", Role::Touch},
     };
     auto it = roles.find(name);
     return it == roles.end() ? Role::None : it->second;
@@ -250,6 +255,130 @@ Role roleOf(const char *name)
 
 struct Conn;
 struct View;
+struct Object;
+
+// ---- clipping the guest's surfaces to the view: the types (2026-10-31) ----
+//
+// Wayland clips no subsurface to its parent. vitrine's sandbox (2026-10-31): a guest subsurface at (-400, -400) was
+// drawn over the app's menu bar, VM list and toolbar beside the view and took the clicks there; a buffer or a
+// viewport bigger than the view does the same on the right and below. Each surface of the guest's toplevel tree is
+// now cropped to the view by a viewport of ours (the guest's own composed into it) and moved by what is cut on its
+// left and top; a compositor clips input regions to the surface, so input stays in the view too. Coordinates in
+// events and requests are moved back by that cut. A surface all inside the view (the nested desktop's whole tree,
+// normally) goes to the host exactly as the guest made it.
+//
+// Timing: the guest's subsurfaces are all synchronized on the host, so what the host shows of the tree changes only
+// with a commit of the toplevel's surface (the root): the guest's, or one of ours standing for a commit the guest made
+// in desynchronized mode or for a change of the view. Before each, the whole tree is checked against what the host
+// will apply, and a surface that needs other values gets a commit of ours first (cached, applied with the root's):
+// what the host shows is always checked.
+
+constexpr size_t kMaxRegionOps = 256; // a region's rectangles kept; beyond, the bounding box of its adds
+constexpr int kMaxDepth = 32;         // subsurface levels below a surface without a parent
+constexpr size_t kMaxSurfaces = 1024; // wl_surfaces of one connection
+
+// a wl_region as the guest made it
+struct Region {
+    std::vector<std::array<int32_t, 5>> ops; // {0 add | 1 subtract, x, y, width, height}
+    bool overflow = false;
+    int64_t box[4] = {INT64_MAX, INT64_MAX, INT64_MIN, INT64_MIN}; // the adds' bounding box: x0, y0, x1, y1
+    void op(int32_t kind, int32_t x, int32_t y, int32_t w, int32_t h)
+    {
+        if (kind == 0 && w > 0 && h > 0) {
+            box[0] = std::min<int64_t>(box[0], x);
+            box[1] = std::min<int64_t>(box[1], y);
+            box[2] = std::max<int64_t>(box[2], int64_t(x) + w);
+            box[3] = std::max<int64_t>(box[3], int64_t(y) + h);
+        }
+        if (ops.size() < kMaxRegionOps)
+            ops.push_back({kind, x, y, w, h});
+        else
+            overflow = true;
+    }
+};
+using RegionRef = std::shared_ptr<const Region>;
+
+// The double-buffered state that sizes a surface, as the guest set it (pending and cached: the fields in SET only)
+enum : uint32_t {
+    kStBuffer = 1u << 0, kStScale = 1u << 1, kStTransform = 1u << 2, kStSrc = 1u << 3, kStDst = 1u << 4,
+    kStInput = 1u << 5, kStOpaque = 1u << 6,
+};
+struct SurfState {
+    uint32_t set = 0;
+    bool buffer = false; // a buffer attached (else the surface is unmapped)
+    int32_t bw = 0, bh = 0;
+    int32_t scale = 1, transform = 0;
+    wl_fixed_t src[4] = {-256, -256, -256, -256}; // wp_viewport's source, unset: -1
+    int32_t dst[2] = {-1, -1};                     // and destination
+    RegionRef input;                               // null: infinite
+    RegionRef opaque;                              // null: none
+    void merge(const SurfState &o)
+    {
+        if (o.set & kStBuffer)
+            buffer = o.buffer, bw = o.bw, bh = o.bh;
+        if (o.set & kStScale)
+            scale = o.scale;
+        if (o.set & kStTransform)
+            transform = o.transform;
+        if (o.set & kStSrc)
+            memcpy(src, o.src, sizeof src);
+        if (o.set & kStDst)
+            dst[0] = o.dst[0], dst[1] = o.dst[1];
+        if (o.set & kStInput)
+            input = o.input;
+        if (o.set & kStOpaque)
+            opaque = o.opaque;
+        set |= o.set;
+    }
+};
+struct Pos {
+    bool set = false;
+    int32_t x = 0, y = 0;
+};
+// a region as the host has it, or is to have it
+struct HostRegion {
+    uint8_t mode = 0; // 0: the guest's (null: an infinite input region, no opaque region) moved by -(dx, dy);
+                      // 1: empty; 2: the guest's within clip (no viewports on the host: input only)
+    RegionRef r;
+    int64_t dx = 0, dy = 0;
+    int32_t clip[4] = {0, 0, 0, 0};
+    bool operator==(const HostRegion &o) const
+    {
+        return mode == o.mode && r == o.r && dx == o.dx && dy == o.dy && !memcmp(clip, o.clip, sizeof clip);
+    }
+};
+// what the host has, or is to have, of a guest surface's own state: our viewport's values, the cut, the regions
+struct HostVals {
+    wl_fixed_t src[4] = {-256, -256, -256, -256};
+    int32_t dst[2] = {-1, -1};
+    int64_t ox = 0, oy = 0; // where the host's surface starts, in the guest's surface coordinates (the cut)
+    HostRegion input, opaque;
+    bool sameViewport(const HostVals &o) const
+    {
+        return !memcmp(src, o.src, sizeof src) && dst[0] == o.dst[0] && dst[1] == o.dst[1];
+    }
+    bool operator==(const HostVals &o) const
+    {
+        return sameViewport(o) && ox == o.ox && oy == o.oy && input == o.input && opaque == o.opaque;
+    }
+};
+// a guest wl_surface's tree, state and what the host has of it. The host side runs synchronized for every guest
+// subsurface: pending (requests since its commit), cached (committed, not applied), current (applied).
+struct Geo {
+    SurfState pend, cached, cur;
+    bool hasCache = false;                // committed since the host last applied its state
+    Object *parent = nullptr;             // through its live wl_subsurface
+    Object *subsurface = nullptr;         // that wl_subsurface (the guest's object, its host proxy)
+    std::vector<Object *> children;       // surfaces with a live wl_subsurface on it
+    bool guestSync = true;                // the mode the guest set (the host's is always synchronized)
+    Pos posPend, posCached;               // its position, as part of its parent's pending and cached state
+    int32_t px = 0, py = 0;               // and as applied
+    HostVals hostWill, hostCur;           // what the host will apply with its last commit; what it has
+    int32_t hostPosWill[2] = {0, 0}, hostPosCur[2] = {0, 0}; // the host's position of it (sent; applied)
+    wl_proxy *viewport = nullptr;         // our host viewport, made when first needed
+    uint32_t viewportId = 0;              // the guest's wp_viewport (its errors)
+    uint64_t viewportSeq = 0;
+};
 
 struct Object {
     uint32_t id = 0;
@@ -315,6 +444,11 @@ struct Object {
     bool relHeld = false;             // wl_pointer: a relative pointer of it holds motion (a locked pointer's)
     bool groupSent = false;           // wl_pointer: an event of the current frame has gone out
     uint32_t configureSerial = 0;
+    // clipping to the view
+    int32_t bufW = 0, bufH = 0;       // wl_buffer: its size; zwp_linux_buffer_params_v1: its create's
+    std::shared_ptr<Region> region;   // wl_region: what the guest made it of
+    std::unique_ptr<Geo> geo;         // wl_surface (made on first use)
+    std::vector<std::array<uint32_t, 2>> touches; // wl_touch: {touch id, guest surface} of the points down on the guest
 };
 
 struct Conn {
@@ -336,8 +470,21 @@ struct Conn {
     // the next request with an fd got them)
     std::unordered_map<uint32_t, const wl_interface *> zombies;
     Object *toplevel = nullptr;
+    size_t surfaces = 0;   // wl_surfaces (kMaxSurfaces)
+    int64_t clipDue = 0;   // the view changed: the tree is checked by then (CLOCK_MONOTONIC ns) if the guest has
+                           // not committed its root meanwhile; 0: nothing due
     Conn(View *v, int f) : view(v), fd(f) {}
 };
+
+int32_t clamp32(int64_t v)
+{
+    return int32_t(std::clamp<int64_t>(v, INT32_MIN, INT32_MAX));
+}
+
+wl_fixed_t moveFixed(wl_fixed_t f, int64_t d)
+{
+    return clamp32(int64_t(f) + d * 256);
+}
 
 // the object behind a guest id, if it is still the one created with seq (ids are reused)
 Object *objectAt(Conn &c, uint32_t id, uint64_t seq)
@@ -384,6 +531,14 @@ struct View {
     uint64_t seq = 0;
     bool mapped = false;
     bool shortcutsCaptured = false; // a guest's shortcuts inhibitor moved to the app's window exists
+    // clipping to the view: our own compositor (regions) and viewporter (crops); without a viewporter, input only
+    wl_proxy *ownCompositor = nullptr, *ownViewporter = nullptr;
+    // the anchor: a transparent pixel of ours, a subsurface of the app's PARENT at the view's top-left. The guest's
+    // toplevels are subsurfaces of it, so their positions apply with commits of ours: under PARENT, a new toplevel sat
+    // at PARENT's (0, 0) until the app's next commit (the clip's tests, 2026-10-31), over the app's own widgets
+    wl_surface *anchor = nullptr;
+    wl_subsurface *anchorSub = nullptr;
+    wl_buffer *anchorBuffer = nullptr;
     // VMVIEW_STATS
     unsigned presented = 0, zeroCopy = 0, discarded = 0, pointerEvents = 0, keyEvents = 0;
     // the forwarder's own feedback on every guest commit with a new buffer: the guest asks for feedback
@@ -427,6 +582,25 @@ struct View {
     void placeToplevel(Conn &c);
     void setMapped(bool on);
     void setShortcutsCaptured(bool on);
+    // clipping the guest's surfaces to the view
+    Geo &geoOf(Object *s);
+    Object *rootOf(Conn &c);
+    void viewRect(Conn &c, int32_t vr[4]);
+    bool wantFor(const SurfState &st, bool inView, int64_t ax, int64_t ay, const int32_t vr[4], bool hide, HostVals &w,
+                 uint32_t *code, const char **why);
+    void sendRegion(Object *s, bool input, const HostRegion &r);
+    void sendVals(Object *s, const HostVals &w);
+    void sendPos(Object *child, int64_t x, int64_t y);
+    bool expectedAbs(Conn &c, Object *s, int64_t &ax, int64_t &ay);
+    bool guestDesync(Object *s, Object **top);
+    void guestCommit(Conn &c, Object *s);
+    void rootCommit(Conn &c, bool guest);
+    void topCommit(Conn &c, Object *top);
+    void applied(Object *s, bool withPending);
+    void cached(Object *s);
+    bool viewNeedsFix(Conn &c);
+    void detach(Object *s);
+    bool cutOf(Conn &c, uint32_t surfaceId, int32_t &ox, int32_t &oy);
     // host events
     int event(wl_proxy *p, uint32_t opcode, const wl_message *m, wl_argument *args);
     void keyboardFocus(Conn &c);
@@ -716,6 +890,8 @@ Object *View::add(Conn &c, uint32_t id, const vmview_iface *info, uint32_t versi
     o->role = roleOf(info->name);
     o->seq = ++seq;
     o->conn = &c;
+    if (o->role == Role::Surface)
+        c.surfaces++;
     Object *p = o.get();
     c.zombies.erase(id);
     c.objects[id] = std::move(o);
@@ -748,6 +924,11 @@ void View::hostDestroy(Object *o)
         byProxy.erase(reinterpret_cast<wl_proxy *>(o->subsurface));
         wl_subsurface_destroy(o->subsurface);
         o->subsurface = nullptr;
+    }
+    // our viewport of a guest surface (clipping), before the surface
+    if (o->geo && o->geo->viewport) {
+        wl_proxy_marshal_flags(o->geo->viewport, 0, nullptr, 1, WL_MARSHAL_FLAG_DESTROY); // destroy
+        o->geo->viewport = nullptr;
     }
     if (!o->proxy)
         return;
@@ -785,6 +966,22 @@ void View::remove(Conn &c, Object *o, bool sendDeleteId)
             sf->extensions &= ~o->extBit;
             if (o->extBit == kExtSubsurface)
                 sf->parentSurface = 0, sf->parentSeq = 0;
+            // clipping: the surface leaves its parent's tree with its wl_subsurface
+            if (o->extBit == kExtSubsurface && sf->geo && sf->geo->subsurface == o)
+                detach(sf);
+            if (o->extBit == kExtViewport && sf->geo && sf->geo->viewportId == id)
+                sf->geo->viewportId = 0;
+        }
+    }
+    if (o->role == Role::Surface) {
+        c.surfaces--;
+        if (o->geo) {
+            // clipping: out of its parent's tree; its children are unmapped, theirs no longer
+            detach(o);
+            for (Object *ch : o->geo->children)
+                if (ch->geo)
+                    ch->geo->parent = nullptr;
+            o->geo->children.clear();
         }
     }
     const wl_interface *iface = o->info->iface;
@@ -933,6 +1130,12 @@ static bool refusedByHost(const char *iface, uint16_t opcode, const wl_argument 
             *why = "plane index out of bounds";
             return true;
         }
+        // create(width, height, format, flags), create_immed(buffer_id, width, height, ...): invalid_dimensions
+        if ((opcode == 2 && (a[0].i <= 0 || a[1].i <= 0)) || (opcode == 3 && (a[1].i <= 0 || a[2].i <= 0))) {
+            *code = 5;
+            *why = "invalid buffer size";
+            return true;
+        }
     }
     return false;
 }
@@ -1053,6 +1256,8 @@ void View::handle(Conn &c, uint32_t id, uint16_t opcode, const uint8_t *body, si
                 return fail("invalid new id");
             if (c.objects.size() >= kMaxObjects)
                 return fail("too many objects");
+            if (msg.types[i] && !strcmp(msg.types[i]->name, "wl_surface") && c.surfaces >= kMaxSurfaces)
+                return fail("too many surfaces");
             newArg = i;
             newId = v;
             if (msg.types[i]) {
@@ -1147,6 +1352,43 @@ void View::handle(Conn &c, uint32_t id, uint16_t opcode, const uint8_t *body, si
         watch(p, no);
         break;
     }
+    case Kind::Viewport: {
+        // the guest's wp_viewport (clipping to the view): its values are the surface's pending state here, the
+        // host's viewport of the surface is ours. The checks are the host's: bad_value here, bad_size and
+        // out_of_buffer with the commit (wantFor), no_surface
+        Object *sf = objectAt(c, o->extSurface, o->extSurfaceSeq);
+        if (opcode == 0) { // destroy: the surface's source and destination unset with its next commit
+            if (sf) {
+                Geo &g = geoOf(sf);
+                for (auto &v : g.pend.src)
+                    v = -256;
+                g.pend.dst[0] = g.pend.dst[1] = -1;
+                g.pend.set |= kStSrc | kStDst;
+                g.viewportId = 0;
+            }
+            remove(c, o, true);
+            break;
+        }
+        if (!sf)
+            return protocolError(c, id, 3, "wp_viewport.%s: the surface was destroyed", msg.name); // no_surface
+        Geo &g = geoOf(sf);
+        if (opcode == 1) { // set_source(x, y, width, height)
+            const bool unset = args[0].i == -256 && args[1].i == -256 && args[2].i == -256 && args[3].i == -256;
+            if (!unset && (args[0].i < 0 || args[1].i < 0 || args[2].i <= 0 || args[3].i <= 0))
+                return protocolError(c, id, 0, "wp_viewport.set_source: invalid rectangle"); // bad_value
+            for (int i = 0; i < 4; i++)
+                g.pend.src[i] = args[i].i;
+            g.pend.set |= kStSrc;
+        } else if (opcode == 2) { // set_destination(width, height)
+            const bool unset = args[0].i == -1 && args[1].i == -1;
+            if (!unset && (args[0].i <= 0 || args[1].i <= 0))
+                return protocolError(c, id, 0, "wp_viewport.set_destination: invalid size"); // bad_value
+            g.pend.dst[0] = args[0].i;
+            g.pend.dst[1] = args[1].i;
+            g.pend.set |= kStDst;
+        }
+        break;
+    }
     case Kind::WmBase:
     case Kind::Positioner:
     case Kind::XdgSurface:
@@ -1222,6 +1464,19 @@ void View::handle(Conn &c, uint32_t id, uint16_t opcode, const uint8_t *body, si
             for (Object *p = parentSf; p && depth < 4096; p = objectAt(c, p->parentSurface, p->parentSeq), depth++)
                 if (p == sf)
                     return refuse(1, "the parent is a descendant of the surface");
+            // the tree's depth: the parent's levels, and the surface's own subtree below it (clipping walks it)
+            if (g_clip) {
+                int below = 0;
+                std::vector<std::pair<Object *, int>> todo{{sf, 0}};
+                for (size_t k = 0; k < todo.size() && k <= kMaxSurfaces; k++) {
+                    below = std::max(below, todo[k].second);
+                    if (todo[k].first->geo)
+                        for (Object *ch : todo[k].first->geo->children)
+                            todo.push_back({ch, todo[k].second + 1});
+                }
+                if (depth + below > kMaxDepth)
+                    return refuse(1, "the subsurface tree would be deeper than 32 levels");
+            }
             sf->surfaceRole = SurfaceRole::Subsurface;
             subsurfaceOf = sf;
         } else if (!strcmp(o->info->name, "wl_subsurface") && (opcode == 2 || opcode == 3)) {
@@ -1248,6 +1503,8 @@ void View::handle(Conn &c, uint32_t id, uint16_t opcode, const uint8_t *body, si
                 o->bufferAttached = false;
             }
         }
+        if (!strcmp(o->info->name, "zwp_linux_buffer_params_v1") && opcode == 2) // create(width, height, ...)
+            o->bufW = args[0].i, o->bufH = args[1].i;
         if (!strcmp(o->info->name, "zwp_linux_buffer_params_v1") && opcode == 3) {
             // create_immed(buffer, width, height, format, flags): a buffer the host cannot import would end the
             // app's connection (KWin raises invalid_wl_buffer on it). Sent as create and waited for here: created
@@ -1277,6 +1534,7 @@ void View::handle(Conn &c, uint32_t id, uint16_t opcode, const uint8_t *body, si
             }
             Object *no = add(c, newId, newInfo, o->version, Kind::Forwarded);
             no->proxy = bp;
+            no->bufW = args[1].i, no->bufH = args[2].i;
             watch(bp, no);
             break;
         }
@@ -1285,6 +1543,95 @@ void View::handle(Conn &c, uint32_t id, uint16_t opcode, const uint8_t *body, si
         Object *ruleSurface = rule ? objArgs[1] : nullptr;
         if (ruleSurface && (ruleSurface->extensions & rule->bit))
             return refuse(rule->code, rule->what);
+        // wl_surface.attach with an offset from version 5 on: invalid_offset, which the host raises on the app's
+        // connection (2026-10-31: it ended vmview-demo)
+        if (o->role == Role::Surface && opcode == 1 && o->version >= 5 && (args[1].i || args[2].i))
+            return refuse(3, "a buffer offset in attach, from version 5 on");
+        // clipping to the view: what sizes and places the guest's surfaces is kept here; the host gets our values
+        // with each commit ("clipping the guest's surfaces to the view")
+        if (g_clip) {
+            const char *in = o->info->name;
+            if (o->role == Role::Surface) {
+                Geo &g = geoOf(o);
+                switch (opcode) {
+                case 1: { // attach(buffer, x, y)
+                    Object *b = objArgs[0];
+                    g.pend.buffer = b != nullptr;
+                    g.pend.bw = b ? std::max(1, b->bufW) : 0;
+                    g.pend.bh = b ? std::max(1, b->bufH) : 0;
+                    g.pend.set |= kStBuffer;
+                    // hosts that move a subsurface by an offset would move it out of our clip
+                    if ((args[1].i || args[2].i) && o->surfaceRole != SurfaceRole::Cursor &&
+                        o->surfaceRole != SurfaceRole::DragIcon)
+                        args[1].i = args[2].i = 0;
+                    break;
+                }
+                case 10: // offset(x, y): as attach's
+                    if (o->surfaceRole != SurfaceRole::Cursor && o->surfaceRole != SurfaceRole::DragIcon)
+                        return;
+                    break;
+                case 2: // damage(x, y, w, h), surface coordinates: a cut surface's moved, so all of it
+                    if (g.hostWill.ox || g.hostWill.oy)
+                        args[0].i = args[1].i = 0, args[2].i = args[3].i = INT32_MAX;
+                    break;
+                case 4: // set_opaque_region(region)
+                case 5: // set_input_region(region)
+                {
+                    RegionRef r;
+                    if (objArgs[0])
+                        r = objArgs[0]->region ? std::make_shared<const Region>(*objArgs[0]->region)
+                                               : std::make_shared<const Region>();
+                    (opcode == 5 ? g.pend.input : g.pend.opaque) = r;
+                    g.pend.set |= opcode == 5 ? kStInput : kStOpaque;
+                    return; // ours go with the commit
+                }
+                case 6: // commit
+                    guestCommit(c, o);
+                    return;
+                case 7: // set_buffer_transform(transform)
+                    g.pend.transform = args[0].i;
+                    g.pend.set |= kStTransform;
+                    break;
+                case 8: // set_buffer_scale(scale)
+                    g.pend.scale = args[0].i;
+                    g.pend.set |= kStScale;
+                    break;
+                default:
+                    break;
+                }
+            } else if (!strcmp(in, "wl_region") && (opcode == 1 || opcode == 2)) { // add, subtract(x, y, w, h)
+                if (!o->region)
+                    o->region = std::make_shared<Region>();
+                o->region->op(opcode == 1 ? 0 : 1, args[0].i, args[1].i, args[2].i, args[3].i);
+            } else if (!strcmp(in, "wl_subsurface") && (opcode == 1 || opcode == 4 || opcode == 5)) {
+                Object *sf = objectAt(c, o->extSurface, o->extSurfaceSeq);
+                if (sf && sf->geo && sf->geo->subsurface == o) {
+                    if (opcode == 1) // set_position(x, y): part of the parent's state, the host's sent with its commit
+                        sf->geo->posPend = Pos{true, args[0].i, args[1].i};
+                    else // set_sync, set_desync: the host's stays synchronized
+                        sf->geo->guestSync = opcode == 4;
+                }
+                return;
+            } else if (!strcmp(in, "wp_viewporter") && opcode == 1 && ruleSurface) {
+                // get_viewport(id, surface): answered here, the surface's viewport on the host is ours
+                Object *no = add(c, newId, newInfo, o->version, Kind::Viewport);
+                no->extBit = kExtViewport;
+                no->extSurface = ruleSurface->id;
+                no->extSurfaceSeq = ruleSurface->seq;
+                ruleSurface->extensions |= kExtViewport;
+                Geo &g = geoOf(ruleSurface);
+                g.viewportId = newId;
+                g.viewportSeq = no->seq;
+                return;
+            } else if (!strcmp(in, "wp_pointer_warp_v1") && opcode == 1 && objArgs[0]) {
+                // warp_pointer(surface, pointer, x, y, serial): on the host's surface, which starts at the cut
+                int32_t ox = 0, oy = 0;
+                if (cutOf(c, objArgs[0]->id, ox, oy)) {
+                    args[2].f = moveFixed(args[2].f, -int64_t(ox));
+                    args[3].f = moveFixed(args[3].f, -int64_t(oy));
+                }
+            }
+        }
         const bool destructor = o->info->destructor_requests & (1ull << opcode);
         const uint32_t version = o->version;
         wl_proxy *np = wl_proxy_marshal_array_flags(o->proxy, opcode, newInfo ? newInfo->iface : nullptr,
@@ -1308,6 +1655,26 @@ void View::handle(Conn &c, uint32_t id, uint16_t opcode, const uint8_t *body, si
                 owner->extensions |= no->extBit;
                 if (subsurfaceOf)
                     subsurfaceOf->parentSurface = objArgs[2]->id, subsurfaceOf->parentSeq = objArgs[2]->seq;
+            }
+            if (g_clip) {
+                const char *in = o->info->name;
+                if (subsurfaceOf) {
+                    // the tree: at (0, 0) of its parent, synchronized (the host's stays so)
+                    Geo &g = geoOf(subsurfaceOf);
+                    g.parent = objArgs[2];
+                    g.subsurface = no;
+                    g.guestSync = true;
+                    g.posPend = g.posCached = Pos{};
+                    g.px = g.py = 0;
+                    g.hostPosWill[0] = g.hostPosWill[1] = g.hostPosCur[0] = g.hostPosCur[1] = 0;
+                    geoOf(objArgs[2]).children.push_back(subsurfaceOf);
+                } else if (!strcmp(in, "wl_compositor") && opcode == 1) { // create_region
+                    no->region = std::make_shared<Region>();
+                } else if (!strcmp(in, "wl_shm_pool") && opcode == 0) { // create_buffer(id, offset, w, h, ...)
+                    no->bufW = args[2].i, no->bufH = args[3].i;
+                } else if (!strcmp(in, "wp_single_pixel_buffer_manager_v1") && opcode == 1) {
+                    no->bufW = no->bufH = 1;
+                }
             }
             if (movedInhibitor)
                 setShortcutsCaptured(true);
@@ -1365,12 +1732,17 @@ void View::xdgRequest(Conn &c, Object *o, uint16_t opcode, const wl_argument *ar
             surface->surfaceRole = SurfaceRole::Toplevel;
             c.toplevel = tl;
             tl->subsurface = wl_subcompositor_get_subsurface(subcompositor,
-                                                             reinterpret_cast<wl_surface *>(surface->proxy), parent);
+                                                             reinterpret_cast<wl_surface *>(surface->proxy),
+                                                             anchor ? anchor : parent);
             wl_subsurface_set_desync(tl->subsurface);
             placeToplevel(c);
             configureToplevel(c);
             keyboardFocus(c);
             setMapped(true);
+            // what the surface already shows (a buffer before the first configure, subsurfaces) clipped before the
+            // app's next commit shows it
+            if (viewNeedsFix(c))
+                rootCommit(c, false);
             logf("guest window shown as a subsurface of the app's window");
         } else if (opcode == 2) { // get_popup: not shown; dismissed at once
             OutMsg m(objArgs[0]->id, kPopupDone);
@@ -1381,7 +1753,8 @@ void View::xdgRequest(Conn &c, Object *o, uint16_t opcode, const wl_argument *ar
             o->geom[2] = args[2].i;
             o->geom[3] = args[3].i;
             o->hasGeom = true;
-            if (c.toplevel && c.toplevel->link == o)
+            // with crops, the geometry's offset is cut instead (at the root's next commit, as xdg-shell applies it)
+            if (c.toplevel && c.toplevel->link == o && !(anchor && ownViewporter))
                 placeToplevel(c);
         }
         // ack_configure: nothing to do
@@ -1420,6 +1793,16 @@ void View::placeToplevel(Conn &c)
         return;
     Object *xs = tl->link;
     const int gx = xs && xs->hasGeom ? xs->geom[0] : 0, gy = xs && xs->hasGeom ? xs->geom[1] : 0;
+    if (anchor) {
+        // under the anchor, at the view's top-left: with crops the root starts there too (what its window geometry
+        // leaves out on the left and top is cut), without them it is moved by that offset. Applied by our commit
+        if (ownViewporter)
+            wl_subsurface_set_position(tl->subsurface, 0, 0);
+        else
+            wl_subsurface_set_position(tl->subsurface, -gx, -gy);
+        wl_surface_commit(anchor);
+        return;
+    }
     wl_subsurface_set_position(tl->subsurface, state.x - gx, state.y - gy);
 }
 
@@ -1467,6 +1850,561 @@ void View::setShortcutsCaptured(bool on)
     logf("the guest %s the host's keyboard shortcuts", on ? "captures" : "releases");
     if (cb.shortcuts)
         cb.shortcuts(cb.data, on);
+}
+
+// ---- clipping the guest's surfaces to the view (see the types above) ----
+
+Geo &View::geoOf(Object *s)
+{
+    if (!s->geo)
+        s->geo = std::make_unique<Geo>();
+    return *s->geo;
+}
+
+// the guest's toplevel surface, a subsurface of the app's window: the root of what is clipped
+Object *View::rootOf(Conn &c)
+{
+    Object *tl = c.toplevel;
+    return !g_clip || !tl || !tl->subsurface || !tl->link || !tl->link->link ? nullptr : tl->link->link;
+}
+
+// the view in the root's coordinates: the origin of its window geometry (never left of or above the surface's
+// own), the size the app gave
+void View::viewRect(Conn &c, int32_t vr[4])
+{
+    Object *xs = c.toplevel ? c.toplevel->link : nullptr;
+    vr[0] = xs && xs->hasGeom ? xs->geom[0] : 0;
+    vr[1] = xs && xs->hasGeom ? xs->geom[1] : 0;
+    if (ownViewporter) // the root's host surface starts at the view (placeToplevel)
+        vr[0] = std::max(0, vr[0]), vr[1] = std::max(0, vr[1]);
+    vr[2] = state.w;
+    vr[3] = state.h;
+}
+
+// What the host is to have of a surface whose state is ST, at (AX, AY) in the root's coordinates, the view at VR
+// there: the guest's own values when it is all in the view or not in the root's tree (IN_VIEW false), else a crop.
+// False when the host would refuse the guest's state (CODE, WHY: wp_viewport's error) - unless HALF: a state that
+// may be caught half made (a commit of ours): nothing of it is shown then.
+bool View::wantFor(const SurfState &st, bool inView, int64_t ax, int64_t ay, const int32_t vr[4], bool half,
+                   HostVals &w, uint32_t *code, const char **why)
+{
+    w = HostVals{};
+    memcpy(w.src, st.src, sizeof w.src);
+    w.dst[0] = st.dst[0];
+    w.dst[1] = st.dst[1];
+    w.input.r = st.input;
+    w.opaque.r = st.opaque;
+    const bool crop = ownViewporter != nullptr; // else input only
+    // where a surface goes that shows nothing: in the view, so that its children's positions on the host (relative
+    // to it) stay small
+    auto placeInside = [&] {
+        if (!crop)
+            return;
+        w.ox = std::clamp<int64_t>(ax, vr[0], int64_t(vr[0]) + std::max(1, vr[2]) - 1) - ax;
+        w.oy = std::clamp<int64_t>(ay, vr[1], int64_t(vr[1]) + std::max(1, vr[3]) - 1) - ay;
+        w.input.dx = w.opaque.dx = w.ox;
+        w.input.dy = w.opaque.dy = w.oy;
+    };
+    // nothing of it in the view: all of its content in one pixel there, no input
+    auto hidden = [&] {
+        w.input = HostRegion{1, nullptr};
+        w.opaque = HostRegion{};
+        if (!crop)
+            return;
+        w.src[0] = w.src[1] = w.src[2] = w.src[3] = -256;
+        w.dst[0] = w.dst[1] = 1;
+        placeInside();
+        w.input.dx = w.input.dy = w.opaque.dx = w.opaque.dy = 0;
+    };
+    if (!st.buffer) {
+        if (inView)
+            placeInside(); // unmapped: shows nothing
+        return true;
+    }
+    int64_t bw = std::max(1, st.bw), bh = std::max(1, st.bh);
+    if (st.transform & 1) // 90 or 270 degrees, flipped or not
+        std::swap(bw, bh);
+    const int64_t scale = std::max(1, st.scale);
+    const bool hasSrc = !(st.src[0] == -256 && st.src[1] == -256 && st.src[2] == -256 && st.src[3] == -256);
+    const bool hasDst = !(st.dst[0] == -1 && st.dst[1] == -1);
+    // the content in wl_fixed_t units of surface coordinates (after the transform and the scale), and the source
+    int64_t sx = 0, sy = 0, sw = bw * 256 / scale, sh = bh * 256 / scale;
+    bool invalid = false;
+    if (hasSrc) {
+        sx = st.src[0], sy = st.src[1], sw = st.src[2], sh = st.src[3];
+        if ((sx + sw) * scale > bw * 256 || (sy + sh) * scale > bh * 256) {
+            *code = 2; // WP_VIEWPORT_ERROR_OUT_OF_BUFFER
+            *why = "the source rectangle extends outside the buffer";
+            invalid = true;
+        }
+    }
+    int64_t dw, dh; // its size, surface coordinates
+    if (hasDst) {
+        dw = st.dst[0], dh = st.dst[1];
+    } else if (hasSrc) {
+        if (sw % 256 || sh % 256) {
+            *code = 1; // WP_VIEWPORT_ERROR_BAD_SIZE
+            *why = "a source size that is not integer, without a destination size";
+            invalid = true;
+        }
+        dw = sw / 256, dh = sh / 256;
+    } else {
+        dw = (bw + scale - 1) / scale, dh = (bh + scale - 1) / scale;
+    }
+    if (invalid) {
+        if (!half)
+            return false;
+        if (inView) {
+            hidden();
+        } else {
+            w.src[0] = w.src[1] = w.src[2] = w.src[3] = -256; // no viewport: whatever the buffer is, valid
+            w.dst[0] = w.dst[1] = -1;
+        }
+        return true;
+    }
+    if (!inView)
+        return true;
+    // the part in the view, surface coordinates
+    const int64_t x0 = std::max<int64_t>(0, vr[0] - ax), y0 = std::max<int64_t>(0, vr[1] - ay);
+    const int64_t x1 = std::min<int64_t>(dw, int64_t(vr[0]) + vr[2] - ax);
+    const int64_t y1 = std::min<int64_t>(dh, int64_t(vr[1]) + vr[3] - ay);
+    if (x0 == 0 && y0 == 0 && x1 == dw && y1 == dh)
+        return true; // all in the view: the guest's own values
+    if (x1 <= x0 || y1 <= y0 || dw <= 0 || dh <= 0 || sw < 1 || sh < 1) {
+        hidden();
+        return true;
+    }
+    if (!crop) {
+        // no viewports on the host: no crop, the input region alone kept to the view
+        w.input = HostRegion{2, st.input};
+        w.input.clip[0] = clamp32(x0), w.input.clip[1] = clamp32(y0);
+        w.input.clip[2] = clamp32(x1 - x0), w.input.clip[3] = clamp32(y1 - y0);
+        return true;
+    }
+    // the guest's source rectangle cut as its surface is (sw / dw of content per unit of surface)
+    int64_t cx0 = sx + sw * x0 / dw, cx1 = sx + sw * x1 / dw;
+    int64_t cy0 = sy + sh * y0 / dh, cy1 = sy + sh * y1 / dh;
+    cx0 = std::clamp(cx0, sx, sx + sw - 1);
+    cx1 = std::clamp(cx1, cx0 + 1, sx + sw);
+    cy0 = std::clamp(cy0, sy, sy + sh - 1);
+    cy1 = std::clamp(cy1, cy0 + 1, sy + sh);
+    w.src[0] = clamp32(cx0), w.src[1] = clamp32(cy0), w.src[2] = clamp32(cx1 - cx0), w.src[3] = clamp32(cy1 - cy0);
+    w.dst[0] = clamp32(x1 - x0), w.dst[1] = clamp32(y1 - y0);
+    w.ox = x0, w.oy = y0;
+    w.input.dx = w.opaque.dx = x0;
+    w.input.dy = w.opaque.dy = y0;
+    if (st.opaque && st.opaque->overflow)
+        w.opaque.r = nullptr; // its bounding box would claim more than it covers
+    return true;
+}
+
+// a region of ours as the input (INPUT) or opaque region of the guest's surface S
+void View::sendRegion(Object *s, bool input, const HostRegion &r)
+{
+    wl_proxy *reg = nullptr;
+    if ((r.mode != 0 || r.r) && ownCompositor) {
+        reg = wl_proxy_marshal_flags(ownCompositor, 1, &wl_region_interface, 1, 0, nullptr); // create_region
+        auto rect = [&](uint32_t op, int64_t x, int64_t y, int64_t w, int64_t h) { // add 1, subtract 2
+            if (w > 0 && h > 0)
+                wl_proxy_marshal_flags(reg, op, nullptr, 1, 0, clamp32(x), clamp32(y), clamp32(w), clamp32(h));
+        };
+        if (r.mode == 0 || r.mode == 2) {
+            if (!r.r) {
+                rect(1, r.clip[0], r.clip[1], r.clip[2], r.clip[3]); // mode 2, an infinite region: the clip
+            } else if (r.r->overflow) {
+                rect(1, r.r->box[0] - r.dx, r.r->box[1] - r.dy, r.r->box[2] - r.r->box[0], r.r->box[3] - r.r->box[1]);
+            } else {
+                for (const auto &op : r.r->ops)
+                    rect(op[0] == 0 ? 1 : 2, op[1] - r.dx, op[2] - r.dy, op[3], op[4]);
+            }
+            if (r.mode == 2 && r.r) {
+                // all but the clip taken away
+                const int64_t big = int64_t(1) << 29, x = r.clip[0], y = r.clip[1], w = r.clip[2], h = r.clip[3];
+                rect(2, -big, -big, x + big, 2 * big);
+                rect(2, x + w, -big, big, 2 * big);
+                rect(2, x, -big, w, y + big);
+                rect(2, x, y + h, w, big);
+            }
+        }
+    }
+    if (input)
+        wl_surface_set_input_region(reinterpret_cast<wl_surface *>(s->proxy), reinterpret_cast<wl_region *>(reg));
+    else
+        wl_surface_set_opaque_region(reinterpret_cast<wl_surface *>(s->proxy), reinterpret_cast<wl_region *>(reg));
+    if (reg)
+        wl_proxy_marshal_flags(reg, 0, nullptr, 1, WL_MARSHAL_FLAG_DESTROY); // destroy
+}
+
+// the values W for the guest's surface S, where they differ from what the host will have; before a commit of it
+void View::sendVals(Object *s, const HostVals &w)
+{
+    Geo &g = geoOf(s);
+    HostVals &h = g.hostWill;
+    if (!s->proxy)
+        return;
+    if (!w.sameViewport(h)) {
+        if (!g.viewport && ownViewporter) // get_viewport(id, surface)
+            g.viewport = wl_proxy_marshal_flags(ownViewporter, 1, ifaceByName("wp_viewport")->iface, 1, 0, nullptr,
+                                                s->proxy);
+        if (g.viewport) {
+            if (memcmp(w.src, h.src, sizeof w.src)) // set_source
+                wl_proxy_marshal_flags(g.viewport, 1, nullptr, 1, 0, w.src[0], w.src[1], w.src[2], w.src[3]);
+            if (w.dst[0] != h.dst[0] || w.dst[1] != h.dst[1]) // set_destination
+                wl_proxy_marshal_flags(g.viewport, 2, nullptr, 1, 0, w.dst[0], w.dst[1]);
+        }
+    }
+    if (!(w.input == h.input))
+        sendRegion(s, true, w.input);
+    if (!(w.opaque == h.opaque))
+        sendRegion(s, false, w.opaque);
+    // the cut moved, or a cut surface's crop changed: its content moved on the host's surface
+    if (w.ox != h.ox || w.oy != h.oy || ((w.ox || w.oy) && !w.sameViewport(h)))
+        wl_surface_damage(reinterpret_cast<wl_surface *>(s->proxy), 0, 0, INT32_MAX, INT32_MAX);
+    h = w;
+}
+
+// the host's position of the guest's subsurface CHILD, where it differs from what the host will have; before a
+// commit of its parent
+void View::sendPos(Object *child, int64_t x, int64_t y)
+{
+    Geo &g = geoOf(child);
+    const int32_t px = clamp32(x), py = clamp32(y);
+    if (g.hostPosWill[0] == px && g.hostPosWill[1] == py)
+        return;
+    if (g.subsurface && g.subsurface->proxy)
+        wl_subsurface_set_position(reinterpret_cast<wl_subsurface *>(g.subsurface->proxy), px, py);
+    g.hostPosWill[0] = px;
+    g.hostPosWill[1] = py;
+}
+
+// S's position in the root's coordinates from the positions the guest set last, applied or not (as the root's next
+// commit will most likely apply them); false when S is not in the root's tree
+bool View::expectedAbs(Conn &c, Object *s, int64_t &ax, int64_t &ay)
+{
+    Object *root = rootOf(c);
+    ax = ay = 0;
+    for (int depth = 0; s && depth <= kMaxDepth + 1; depth++) {
+        if (s == root)
+            return true;
+        Geo &g = geoOf(s);
+        if (!g.parent)
+            return false;
+        const Pos p = g.posPend.set ? g.posPend : g.posCached.set ? g.posCached : Pos{true, g.px, g.py};
+        ax += p.x;
+        ay += p.y;
+        s = g.parent;
+    }
+    return false;
+}
+
+// whether the guest's commit of S applies at once as the guest has it: desynchronized up to a surface without a
+// parent, TOP
+bool View::guestDesync(Object *s, Object **top)
+{
+    for (int depth = 0; s && depth <= kMaxDepth + 1; depth++) {
+        Geo &g = geoOf(s);
+        if (!g.parent) {
+            *top = s;
+            return true;
+        }
+        if (g.guestSync)
+            return false;
+        s = g.parent;
+    }
+    return false;
+}
+
+// S was committed while synchronized (on the host, every guest subsurface): its state and its children's positions
+// are cached
+void View::cached(Object *s)
+{
+    Geo &g = geoOf(s);
+    g.cached.merge(g.pend);
+    g.pend = SurfState{};
+    g.hasCache = true;
+    for (Object *ch : g.children) {
+        Geo &cg = geoOf(ch);
+        if (cg.posPend.set) {
+            cg.posCached = cg.posPend;
+            cg.posPend = Pos{};
+        }
+    }
+}
+
+// The host applied S's state (WITH_PENDING: a commit of S, desynchronized), and in turn its subtree's caches
+void View::applied(Object *s, bool withPending)
+{
+    std::vector<Object *> todo{s};
+    for (size_t i = 0; i < todo.size() && i <= kMaxSurfaces; i++) {
+        Geo &g = geoOf(todo[i]);
+        const bool pend = i == 0 && withPending;
+        g.cur.merge(g.cached);
+        g.cached = SurfState{};
+        if (pend) {
+            g.cur.merge(g.pend);
+            g.pend = SurfState{};
+        }
+        g.hasCache = false;
+        g.hostCur = g.hostWill;
+        for (Object *ch : g.children) {
+            Geo &cg = geoOf(ch);
+            if (cg.posCached.set)
+                cg.px = cg.posCached.x, cg.py = cg.posCached.y;
+            if (pend && cg.posPend.set)
+                cg.px = cg.posPend.x, cg.py = cg.posPend.y;
+            cg.posCached = Pos{};
+            if (pend)
+                cg.posPend = Pos{};
+            cg.hostPosCur[0] = cg.hostPosWill[0];
+            cg.hostPosCur[1] = cg.hostPosWill[1];
+            todo.push_back(ch);
+        }
+    }
+}
+
+// the guest's wl_surface.commit
+void View::guestCommit(Conn &c, Object *s)
+{
+    if (s == rootOf(c)) {
+        rootCommit(c, true);
+        return;
+    }
+    Geo &g = geoOf(s);
+    SurfState st = g.cur;
+    st.merge(g.cached);
+    st.merge(g.pend);
+    int64_t ax = 0, ay = 0;
+    const bool inView = expectedAbs(c, s, ax, ay);
+    int32_t vr[4];
+    viewRect(c, vr);
+    HostVals w;
+    uint32_t code = 0;
+    const char *why = "";
+    if (!wantFor(st, inView, ax, ay, vr, false, w, &code, &why)) {
+        protocolError(c, objectAt(c, g.viewportId, g.viewportSeq) ? g.viewportId : s->id, code, "wp_viewport: %s", why);
+        return;
+    }
+    sendVals(s, w);
+    // its children's positions go with this commit: as the guest set them, moved by their cuts and its own (the
+    // root's next commit checks them again)
+    for (Object *ch : g.children) {
+        Geo &cg = geoOf(ch);
+        const Pos p = cg.posPend.set ? cg.posPend : cg.posCached.set ? cg.posCached : Pos{true, cg.px, cg.py};
+        sendPos(ch, p.x + cg.hostWill.ox - w.ox, p.y + cg.hostWill.oy - w.oy);
+    }
+    wl_surface_commit(reinterpret_cast<wl_surface *>(s->proxy));
+    if (!g.parent) {
+        // no parent (no role, a cursor, a drag icon, a toplevel not shown): applied at once, not in the view
+        applied(s, true);
+        return;
+    }
+    cached(s);
+    // desynchronized as the guest has it: applied now, with a commit of ours of what the host applies it with
+    Object *top = nullptr;
+    if (guestDesync(s, &top)) {
+        if (top == rootOf(c))
+            rootCommit(c, false);
+        else
+            topCommit(c, top);
+    }
+}
+
+// a commit of ours of a surface without a parent that is not the root (not in the view): what the guest committed
+// desynchronized below it applies
+void View::topCommit(Conn &c, Object *top)
+{
+    Geo &g = geoOf(top);
+    SurfState st = g.cur;
+    st.merge(g.cached);
+    st.merge(g.pend);
+    int32_t vr[4];
+    viewRect(c, vr);
+    HostVals w;
+    uint32_t code = 0;
+    const char *why = "";
+    wantFor(st, false, 0, 0, vr, true, w, &code, &why);
+    sendVals(top, w);
+    for (Object *ch : g.children) {
+        Geo &cg = geoOf(ch);
+        const Pos p = cg.posPend.set ? cg.posPend : cg.posCached.set ? cg.posCached : Pos{true, cg.px, cg.py};
+        sendPos(ch, p.x + cg.hostWill.ox - w.ox, p.y + cg.hostWill.oy - w.oy);
+    }
+    wl_surface_commit(reinterpret_cast<wl_surface *>(top->proxy));
+    applied(top, true);
+}
+
+// The root's state applies now: the guest's commit of it (GUEST), or ours. Every guest subsurface is synchronized on
+// the host, so all the host shows of the tree changes here, at once. The crops, cuts and positions it is to apply
+// are sent first; a surface whose cached values (or children's positions) would not do gets a commit of ours
+// before, cached, applied with the root's. So does each parent of a surface with a cache: hosts differ on whether a
+// cache applies under a parent without one.
+void View::rootCommit(Conn &c, bool guest)
+{
+    Object *root = rootOf(c);
+    if (!root)
+        return;
+    c.clipDue = 0;
+    int32_t vr[4];
+    viewRect(c, vr);
+    struct Node {
+        Object *s;
+        int parent;
+        int64_t ax, ay;   // in the root's coordinates, once this commit applies
+        int32_t px, py;   // its position in its parent then
+        size_t first, n;  // its children (contiguous: breadth first)
+        HostVals w;
+    };
+    std::vector<Node> nodes;
+    std::unordered_set<Object *> ours; // committed by us before the root
+    for (int round = 0;; round++) {
+        nodes.clear();
+        nodes.push_back({root, -1, 0, 0, 0, 0, 0, 0, {}});
+        for (size_t i = 0; i < nodes.size() && nodes.size() <= kMaxSurfaces + 1; i++) {
+            Object *x = nodes[i].s;
+            Geo &g = geoOf(x);
+            const bool pend = i == 0 || ours.count(x);
+            SurfState st = g.cur;
+            st.merge(g.cached);
+            if (pend)
+                st.merge(g.pend);
+            uint32_t code = 0;
+            const char *why = "";
+            HostVals w;
+            if (!wantFor(st, true, nodes[i].ax, nodes[i].ay, vr, !(i == 0 && guest), w, &code, &why)) {
+                // the guest's own commit of its root, refused as the host would refuse it
+                protocolError(c, objectAt(c, g.viewportId, g.viewportSeq) ? g.viewportId : x->id, code,
+                              "wp_viewport: %s", why);
+                return;
+            }
+            nodes[i].w = w;
+            nodes[i].first = nodes.size();
+            nodes[i].n = g.children.size();
+            const int64_t ax = nodes[i].ax, ay = nodes[i].ay;
+            for (Object *ch : g.children) {
+                Geo &cg = geoOf(ch);
+                Pos p{true, cg.px, cg.py};
+                if (cg.posCached.set)
+                    p = cg.posCached;
+                if (pend && cg.posPend.set)
+                    p = cg.posPend;
+                nodes.push_back({ch, int(i), ax + p.x, ay + p.y, p.x, p.y, 0, 0, {}});
+            }
+        }
+        // which others need a commit of ours: values or children's positions the host would not apply as wanted
+        std::vector<char> need(nodes.size(), 0);
+        for (size_t i = 1; i < nodes.size(); i++) {
+            Geo &g = geoOf(nodes[i].s);
+            if (!(nodes[i].w == g.hostWill))
+                need[i] = 1;
+            const Node &p = nodes[size_t(nodes[i].parent)];
+            const int32_t hx = clamp32(nodes[i].px + nodes[i].w.ox - p.w.ox), hy = clamp32(nodes[i].py + nodes[i].w.oy - p.w.oy);
+            if (nodes[i].parent > 0 && (hx != g.hostPosWill[0] || hy != g.hostPosWill[1]))
+                need[size_t(nodes[i].parent)] = 1;
+        }
+        // and the parents of a surface with a cache or a commit of ours, up to the root
+        for (size_t i = nodes.size(); i-- > 1;) {
+            Object *x = nodes[i].s;
+            if (need[i] || ours.count(x) || geoOf(x).hasCache)
+                for (int a = nodes[i].parent; a > 0; a = nodes[size_t(a)].parent)
+                    if (!geoOf(nodes[size_t(a)].s).hasCache)
+                        need[size_t(a)] = 1;
+        }
+        bool grew = false;
+        for (size_t i = 1; i < nodes.size(); i++)
+            if (need[i] && ours.insert(nodes[i].s).second)
+                grew = true;
+        if (!grew)
+            break;
+        if (round >= 8) // a tree that keeps changing what it needs: all of it committed
+            for (size_t i = 1; i < nodes.size(); i++)
+                ours.insert(nodes[i].s);
+    }
+    // our commits, cached; then the root's values and its children's positions, and its commit
+    auto sendChildren = [&](const Node &n) {
+        for (size_t k = 0; k < n.n; k++) {
+            const Node &ch = nodes[n.first + k];
+            sendPos(ch.s, ch.px + ch.w.ox - n.w.ox, ch.py + ch.w.oy - n.w.oy);
+        }
+    };
+    for (size_t i = 1; i < nodes.size(); i++) {
+        if (!ours.count(nodes[i].s))
+            continue;
+        sendVals(nodes[i].s, nodes[i].w);
+        sendChildren(nodes[i]);
+        wl_surface_commit(reinterpret_cast<wl_surface *>(nodes[i].s->proxy));
+        cached(nodes[i].s);
+    }
+    sendVals(root, nodes[0].w);
+    sendChildren(nodes[0]);
+    wl_surface_commit(reinterpret_cast<wl_surface *>(root->proxy));
+    if (g_debug && !ours.empty())
+        logf("   the root's commit with %zu commits of ours before it (the view's clip)", ours.size());
+    applied(root, true);
+}
+
+// whether what the host shows of the tree now is not what it should be for the current view (after a change of it)
+bool View::viewNeedsFix(Conn &c)
+{
+    Object *root = rootOf(c);
+    if (!root)
+        return false;
+    int32_t vr[4];
+    viewRect(c, vr);
+    struct Node {
+        Object *s;
+        int64_t ax, ay;
+    };
+    std::vector<Node> todo{{root, 0, 0}};
+    for (size_t i = 0; i < todo.size() && i <= kMaxSurfaces; i++) {
+        Geo &g = geoOf(todo[i].s);
+        HostVals w;
+        uint32_t code = 0;
+        const char *why = "";
+        wantFor(g.cur, true, todo[i].ax, todo[i].ay, vr, true, w, &code, &why);
+        if (!(w == g.hostCur))
+            return true;
+        for (Object *ch : g.children) {
+            Geo &cg = geoOf(ch);
+            todo.push_back({ch, todo[i].ax + cg.px, todo[i].ay + cg.py});
+            if (clamp32(cg.px + cg.hostCur.ox - w.ox) != cg.hostPosCur[0] ||
+                clamp32(cg.py + cg.hostCur.oy - w.oy) != cg.hostPosCur[1])
+                return true;
+        }
+    }
+    return false;
+}
+
+// S leaves its parent (its wl_subsurface or the surface itself destroyed): the host unmaps it at once
+void View::detach(Object *s)
+{
+    Geo &g = geoOf(s);
+    if (g.parent && g.parent->geo) {
+        auto &v = g.parent->geo->children;
+        v.erase(std::remove(v.begin(), v.end(), s), v.end());
+    }
+    g.parent = nullptr;
+    g.subsurface = nullptr;
+    g.guestSync = true;
+    g.posPend = g.posCached = Pos{};
+    g.px = g.py = 0;
+    g.hostPosWill[0] = g.hostPosWill[1] = g.hostPosCur[0] = g.hostPosCur[1] = 0;
+    // its cache: applied as the surface is unmapped (wlroots), or kept with the same values; either way, as here
+    g.cur.merge(g.cached);
+    g.cached = SurfState{};
+    g.hasCache = false;
+    g.hostCur = g.hostWill;
+}
+
+// the cut of the guest's surface SURFACE_ID as the host has it: its events' coordinates are moved by it
+bool View::cutOf(Conn &c, uint32_t surfaceId, int32_t &ox, int32_t &oy)
+{
+    auto it = c.objects.find(surfaceId);
+    if (it == c.objects.end() || it->second->role != Role::Surface || !it->second->geo)
+        return false;
+    const HostVals &h = it->second->geo->hostCur;
+    ox = clamp32(h.ox);
+    oy = clamp32(h.oy);
+    return ox || oy;
 }
 
 // The keyboard: the guest gets it while the host gives it to the app's window and the app lets it.
@@ -1576,15 +2514,18 @@ int View::event(wl_proxy *p, uint32_t opcode, const wl_message *m, wl_argument *
         o->immedDone = true;
         return 0;
     }
-    // an object the guest does not know: one of the app's, or one destroyed on the app's side, which
-    // libwayland passes as NULL where the protocol allows none (the keyboard's leave of a window the
-    // app just closed): the guest takes a NULL there for a protocol error
+    // an object the guest does not know: one of the app's, one of another guest connection's (vitrine,
+    // 2026-10-31: a test client's pointer got the enter of the nested KWin's surface, by that
+    // connection's id), or one destroyed on the app's side, which libwayland passes as NULL where the
+    // protocol allows none (the keyboard's leave of a window the app just closed): the guest takes a
+    // NULL there for a protocol error
     auto foreign = [&](int i) {
         if (specs[i].type != 'o')
             return false;
         if (!args[i].o)
             return !specs[i].nullable;
-        return !byProxy.count(reinterpret_cast<wl_proxy *>(args[i].o));
+        auto f = byProxy.find(reinterpret_cast<wl_proxy *>(args[i].o));
+        return f == byProxy.end() || f->second->conn != &c;
     };
     int foreignArg = -1;
     for (int i = 0; i < n; i++)
@@ -1597,6 +2538,12 @@ int View::event(wl_proxy *p, uint32_t opcode, const wl_message *m, wl_argument *
     switch (o->role) {
     case Role::Pointer:
         if (opcode == kPointerEnter) {
+            // a guest surface the host shows from its cut on (clipping): its coordinates from the guest's origin
+            int32_t ox = 0, oy = 0;
+            if (foreignArg < 0 && cutOf(c, byProxy[reinterpret_cast<wl_proxy *>(args[1].o)]->id, ox, oy)) {
+                args[2].f = moveFixed(args[2].f, ox);
+                args[3].f = moveFixed(args[3].f, oy);
+            }
             const double x = wl_fixed_to_double(args[2].f), y = wl_fixed_to_double(args[3].f);
             if (foreignArg >= 0) {
                 // one of the app's surfaces: the guest's drag goes on, its position from here
@@ -1681,9 +2628,13 @@ int View::event(wl_proxy *p, uint32_t opcode, const wl_message *m, wl_argument *
         }
         if (opcode == kPointerMotion) {
             o->lastTime = args[0].u;
+            int32_t ox = 0, oy = 0;
             if (o->grabOutside) {
                 args[1].f = wl_fixed_from_double(wl_fixed_to_double(args[1].f) + o->grabOffset[0]);
                 args[2].f = wl_fixed_from_double(wl_fixed_to_double(args[2].f) + o->grabOffset[1]);
+            } else if (cutOf(c, o->pointerSurface, ox, oy)) {
+                args[1].f = moveFixed(args[1].f, ox);
+                args[2].f = moveFixed(args[2].f, oy);
             }
             o->lastX = wl_fixed_to_double(args[1].f);
             o->lastY = wl_fixed_to_double(args[2].f);
@@ -1736,8 +2687,23 @@ int View::event(wl_proxy *p, uint32_t opcode, const wl_message *m, wl_argument *
         }
         if (o->role == Role::PrimaryDevice)
             break;
-        if (opcode == kDataDeviceEnter)
+        if (opcode == kDataDeviceEnter) {
             o->focus = foreignArg < 0;
+            if (o->focus) { // enter(serial, surface, x, y, offer)
+                o->pointerSurface = byProxy[reinterpret_cast<wl_proxy *>(args[1].o)]->id;
+                int32_t ox = 0, oy = 0;
+                if (cutOf(c, o->pointerSurface, ox, oy)) {
+                    args[2].f = moveFixed(args[2].f, ox);
+                    args[3].f = moveFixed(args[3].f, oy);
+                }
+            }
+        } else if (opcode == kDataDeviceMotion && o->focus) { // motion(time, x, y)
+            int32_t ox = 0, oy = 0;
+            if (cutOf(c, o->pointerSurface, ox, oy)) {
+                args[1].f = moveFixed(args[1].f, ox);
+                args[2].f = moveFixed(args[2].f, oy);
+            }
+        }
         else if ((opcode == kDataDeviceLeave || opcode == kDataDeviceMotion || opcode == kDataDeviceDrop) &&
                  !o->focus)
             return 0;
@@ -1747,6 +2713,53 @@ int View::event(wl_proxy *p, uint32_t opcode, const wl_message *m, wl_argument *
     case Role::RelPointer:
         if (o->link && !o->link->focus)
             return 0;
+        break;
+    case Role::Touch: {
+        // down(serial, time, surface, id, x, y) 0 on a guest surface: moved by its cut, the point remembered. up 1,
+        // motion 2, shape 5 and orientation 6 of a point the guest never saw go down (on one of the app's surfaces)
+        // are not its business; motion is moved by its surface's cut
+        auto point = [&](int32_t tid) {
+            return std::find_if(o->touches.begin(), o->touches.end(), [&](const auto &t) { return int32_t(t[0]) == tid; });
+        };
+        if (opcode == 0 && foreignArg < 0) {
+            const uint32_t sid = byProxy[reinterpret_cast<wl_proxy *>(args[2].o)]->id;
+            auto t = point(args[3].i);
+            if (t != o->touches.end())
+                (*t)[1] = sid;
+            else if (o->touches.size() < 64)
+                o->touches.push_back({uint32_t(args[3].i), sid});
+            int32_t ox = 0, oy = 0;
+            if (cutOf(c, sid, ox, oy)) {
+                args[4].f = moveFixed(args[4].f, ox);
+                args[5].f = moveFixed(args[5].f, oy);
+            }
+        } else if (opcode == 1 || opcode == 2 || opcode == 5 || opcode == 6) {
+            auto t = point(opcode == 1 ? args[2].i : opcode == 2 ? args[1].i : args[0].i);
+            if (t == o->touches.end())
+                return 0;
+            int32_t ox = 0, oy = 0;
+            if (opcode == 2 && cutOf(c, (*t)[1], ox, oy)) {
+                args[2].f = moveFixed(args[2].f, ox);
+                args[3].f = moveFixed(args[3].f, oy);
+            }
+            if (opcode == 1)
+                o->touches.erase(t);
+        } else if (opcode == 4) { // cancel
+            o->touches.clear();
+        }
+        break;
+    }
+    case Role::TabletTool:
+        // proximity_in(serial, tablet, surface) 6 remembers the surface, motion(x, y) 10 is moved by its cut
+        if (opcode == 6 && foreignArg < 0)
+            o->pointerSurface = byProxy[reinterpret_cast<wl_proxy *>(args[2].o)]->id;
+        if (opcode == 10) {
+            int32_t ox = 0, oy = 0;
+            if (cutOf(c, o->pointerSurface, ox, oy)) {
+                args[0].f = moveFixed(args[0].f, ox);
+                args[1].f = moveFixed(args[1].f, oy);
+            }
+        }
         break;
     case Role::Gesture:
         if (opcode == 0) // begin(serial, time, surface, ...)
@@ -1798,6 +2811,7 @@ int View::event(wl_proxy *p, uint32_t opcode, const wl_message *m, wl_argument *
             }
             Object *no = add(c, allocServerId(c), info, wl_proxy_get_version(np), Kind::Forwarded);
             no->proxy = np;
+            no->bufW = o->bufW, no->bufH = o->bufH; // zwp_linux_buffer_params_v1.created: its create's size
             watch(np, no);
             out.u(no->id);
             break;
@@ -1909,13 +2923,23 @@ void View::printStats()
 
 void View::applyPending()
 {
+    const int oldW = state.w, oldH = state.h;
     {
         std::lock_guard<std::mutex> lock(mutex);
         state = pending;
     }
+    // the anchor at the view's top-left (applied with the app's next commit, as vmview_set_geometry asks)
+    if (anchorSub)
+        wl_subsurface_set_position(anchorSub, state.x, state.y);
+    timespec now;
+    clock_gettime(CLOCK_MONOTONIC, &now);
     for (auto &c : conns) {
         if (c->dead)
             continue;
+        // the view's size changed: the guest's next commit of its root clips to it, or ours within 100 ms (a paused
+        // or stalled guest)
+        if ((state.w != oldW || state.h != oldH) && rootOf(*c) && !c->clipDue)
+            c->clipDue = int64_t(now.tv_sec) * 1000000000 + now.tv_nsec + 100000000;
         placeToplevel(*c);
         keyboardFocus(*c);
         configureToplevel(*c);
@@ -1944,7 +2968,14 @@ void View::run()
         pf.push_back({listenFd, POLLIN, 0});
         for (auto &c : conns)
             pf.push_back({c->fd, short(POLLIN | (c->wantWrite ? POLLOUT : 0)), 0});
-        const int r = poll(pf.data(), pf.size(), 1000);
+        int timeout = 1000;
+        timespec now;
+        clock_gettime(CLOCK_MONOTONIC, &now);
+        const int64_t nowNs = int64_t(now.tv_sec) * 1000000000 + now.tv_nsec;
+        for (auto &c : conns)
+            if (!c->dead && c->clipDue)
+                timeout = int(std::clamp<int64_t>((c->clipDue - nowNs + 999999) / 1000000, 0, timeout));
+        const int r = poll(pf.data(), pf.size(), timeout);
         if (r > 0 && (pf[0].revents & POLLIN))
             wl_display_read_events(display);
         else
@@ -1973,6 +3004,18 @@ void View::run()
         for (auto &c : conns)
             if (!c->dead && c->overflow)
                 closeConn(*c, "the guest does not read its events");
+        // a change of the view the guest has not committed its root for: clipped by a commit of ours
+        clock_gettime(CLOCK_MONOTONIC, &now);
+        for (auto &c : conns) {
+            if (c->dead || !c->clipDue || int64_t(now.tv_sec) * 1000000000 + now.tv_nsec < c->clipDue)
+                continue;
+            c->clipDue = 0;
+            if (viewNeedsFix(*c)) {
+                if (g_debug)
+                    logf("the view changed, the guest did not commit: clipped by a commit of ours");
+                rootCommit(*c, false);
+            }
+        }
         // the guest reads again: its held pointer motion goes out (the latest position, its frame)
         for (auto &c : conns)
             if (!c->dead && c->anyHeld && c->out.size() <= kCoalesceAbove / 2)
@@ -2016,6 +3059,21 @@ void View::stopAll()
     if (subcompositor)
         wl_subcompositor_destroy(subcompositor);
     subcompositor = nullptr;
+    if (anchorSub)
+        wl_subsurface_destroy(anchorSub);
+    if (anchor)
+        wl_surface_destroy(anchor);
+    if (anchorBuffer)
+        wl_buffer_destroy(anchorBuffer);
+    anchorSub = nullptr;
+    anchor = nullptr;
+    anchorBuffer = nullptr;
+    if (ownViewporter)
+        wl_proxy_marshal_flags(ownViewporter, 0, nullptr, 1, WL_MARSHAL_FLAG_DESTROY); // wp_viewporter.destroy
+    ownViewporter = nullptr;
+    if (ownCompositor)
+        wl_proxy_destroy(ownCompositor);
+    ownCompositor = nullptr;
     for (wl_proxy *f : ownFeedback)
         wl_proxy_destroy(f);
     ownFeedback.clear();
@@ -2052,6 +3110,44 @@ bool View::start(wl_display *d, wl_surface *p, const char *path, const vmview_ca
         logf("the compositor has no wl_subcompositor");
         return false;
     }
+    // clipping to the view: regions of ours, and crops (without wp_viewporter, the input regions only)
+    if (g_clip)
+        for (auto &kv : globals) {
+            if (kv.second.iface == "wl_compositor" && !ownCompositor)
+                ownCompositor = static_cast<wl_proxy *>(wl_registry_bind(registry, kv.first, &wl_compositor_interface, 1));
+            if (kv.second.iface == "wp_viewporter" && !ownViewporter && ifaceByName("wp_viewporter"))
+                ownViewporter = static_cast<wl_proxy *>(
+                    wl_registry_bind(registry, kv.first, ifaceByName("wp_viewporter")->iface, 1));
+        }
+    if (g_clip && !ownViewporter)
+        logf("the compositor has no wp_viewporter: the guest's surfaces are kept to the view for input only");
+    // the anchor: a transparent pixel without input, at the view's top-left (state: the defaults until the app's
+    // vmview_set_geometry)
+    wl_shm *shm = nullptr;
+    if (g_clip)
+        for (auto &kv : globals)
+            if (kv.second.iface == "wl_shm" && !shm)
+                shm = static_cast<wl_shm *>(wl_registry_bind(registry, kv.first, &wl_shm_interface, 1));
+    const int afd = shm && ownCompositor ? memfd_create("vmview-anchor", MFD_CLOEXEC) : -1;
+    if (afd >= 0 && ftruncate(afd, 4) == 0) {
+        auto *comp = reinterpret_cast<wl_compositor *>(ownCompositor);
+        wl_shm_pool *pool = wl_shm_create_pool(shm, afd, 4);
+        anchorBuffer = wl_shm_pool_create_buffer(pool, 0, 1, 1, 4, WL_SHM_FORMAT_ARGB8888); // all zero: transparent
+        wl_shm_pool_destroy(pool);
+        anchor = wl_compositor_create_surface(comp);
+        wl_region *empty = wl_compositor_create_region(comp);
+        wl_surface_set_input_region(anchor, empty);
+        wl_region_destroy(empty);
+        wl_surface_attach(anchor, anchorBuffer, 0, 0);
+        wl_surface_commit(anchor);
+        anchorSub = wl_subcompositor_get_subsurface(subcompositor, anchor, parent);
+        wl_subsurface_set_desync(anchorSub);
+        wl_subsurface_set_position(anchorSub, pending.x, pending.y);
+    }
+    if (afd >= 0)
+        close(afd);
+    if (shm)
+        wl_proxy_destroy(reinterpret_cast<wl_proxy *>(shm));
     if (g_stats)
         for (auto &kv : globals)
             if (kv.second.iface == "wp_presentation")
