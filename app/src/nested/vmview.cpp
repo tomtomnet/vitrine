@@ -33,6 +33,7 @@ extern "C" const struct wl_interface wp_presentation_feedback_interface;
 #include <memory>
 #include <mutex>
 #include <string>
+#include <set>
 #include <thread>
 #include <unordered_map>
 #include <unordered_set>
@@ -91,9 +92,13 @@ constexpr uint16_t kPointerEnter = 0, kPointerLeave = 1, kPointerFrame = 5;
 constexpr uint16_t kPointerMotion = 2, kPointerButton = 3;
 constexpr uint16_t kKeyboardEnter = 1, kKeyboardLeave = 2, kKeyboardKey = 3, kKeyboardModifiers = 4;
 constexpr uint16_t kDataDeviceEnter = 1, kDataDeviceLeave = 2, kDataDeviceMotion = 3, kDataDeviceDrop = 4;
+constexpr uint16_t kDataDeviceSelection = 5, kPrimarySelection = 1;
 constexpr uint16_t kToplevelConfigure = 0, kToplevelClose = 1, kSurfaceConfigure = 0, kPopupDone = 1;
 constexpr uint32_t kStateFullscreen = 2, kStateActivated = 4;
 constexpr uint32_t kServerIdStart = 0xff000000;
+// fds a guest connection may have queued that no complete request has taken yet (a request's fds come
+// with its first bytes; more than this means fds sent for nothing: the connection is closed)
+constexpr size_t kMaxPendingFds = 128;
 constexpr int kMaxArgs = 20;
 constexpr int kMaxFdsOut = 28;
 
@@ -172,7 +177,9 @@ struct OutMsg {
 };
 
 enum class Kind : uint8_t { Forwarded, Display, Registry, WmBase, Positioner, XdgSurface, Toplevel, Popup };
-enum class Role : uint8_t { None, Pointer, Keyboard, Surface, DataDevice, RelPointer, Gesture, TabletTool, TextInput };
+enum class Role : uint8_t {
+    None, Pointer, Keyboard, Surface, DataDevice, PrimaryDevice, RelPointer, Gesture, TabletTool, TextInput
+};
 // the role the host gave a guest wl_surface: a second one would be a protocol error on the app's connection
 enum class SurfaceRole : uint8_t { None, Subsurface, Cursor, DragIcon, Toplevel };
 
@@ -183,6 +190,7 @@ Role roleOf(const char *name)
         {"wl_keyboard", Role::Keyboard},
         {"wl_surface", Role::Surface},
         {"wl_data_device", Role::DataDevice},
+        {"zwp_primary_selection_device_v1", Role::PrimaryDevice},
         {"zwp_relative_pointer_v1", Role::RelPointer},
         {"zwp_pointer_gesture_swipe_v1", Role::Gesture},
         {"zwp_pointer_gesture_pinch_v1", Role::Gesture},
@@ -217,13 +225,26 @@ struct Object {
     // A drag begun on the guest's surface goes on there as the guest would have it of a compositor
     // of its own: over the app's surfaces the events go to that surface, moved by grabOffset, and
     // the guest's leave comes after the last button is let go (vitrine, 2026-10-30: a window dragged
-    // past the view's edge was never let go in the guest, nor tiled or maximized there)
+    // past the view's edge was never let go in the guest, nor tiled or maximized there). The host
+    // groups such a move in one frame (leave + enter); a leave whose frame brings no enter means the
+    // pointer left the app (another window, an effect's grab, Alt+Tab): no release will come, so the
+    // guest gets its leave at that frame and the held buttons are forgotten (2026-10-31 review: the
+    // drag stayed on, and the app's own widgets' clicks went to the guest afterwards)
     uint32_t pointerSurface = 0;  // the guest's surface it knows the pointer over
-    int buttonsDown = 0;          // buttons the guest saw pressed and not released
+    std::set<uint32_t> buttonsHeld; // buttons the guest saw pressed and not released
     bool grabOutside = false;     // meanwhile over one of the app's surfaces
+    bool leaveUnmatched = false;  // a leave during a drag, no enter yet in its frame
+    uint32_t leaveSerial = 0;     // that leave's serial
     double lastX = 0, lastY = 0;  // the last position the guest got, on pointerSurface
     double grabOffset[2] = {0, 0};
     uint32_t lastTime = 0;        // the last motion's time
+    // data devices: the host's last selection, given to the guest only while it has the keyboard
+    wl_proxy *selection = nullptr;
+    bool selectionKnown = false;
+    // zwp_linux_buffer_params_v1: a guest's create_immed sent as create, its answer awaited (handle())
+    uint32_t immedFor = 0;
+    bool immedDone = false, immedFailed = false;
+    wl_proxy *immedProxy = nullptr;
     // xdg
     int32_t geom[4] = {0, 0, 0, 0};
     bool hasGeom = false;
@@ -246,6 +267,10 @@ struct Conn {
     std::unordered_map<uint32_t, std::unique_ptr<Object>> objects;
     std::vector<uint32_t> freeServerIds;
     uint32_t nextServerId = kServerIdStart;
+    // server-created objects removed, until their id is used again: a request the guest sent before it
+    // knew takes its fds, as libwayland-server's zombies do (2026-10-31 review: they stayed queued and
+    // the next request with an fd got them)
+    std::unordered_map<uint32_t, const wl_interface *> zombies;
     Object *toplevel = nullptr;
     Conn(View *v, int f) : view(v), fd(f) {}
 };
@@ -328,6 +353,8 @@ struct View {
     // host events
     int event(wl_proxy *p, uint32_t opcode, const wl_message *m, wl_argument *args);
     void keyboardFocus(Conn &c);
+    bool guestHasKeyboard(Conn &c);   // a guest keyboard has the focus
+    bool guestHasInput(Conn &c);      // that, or a drag is over the guest
     static int dispatch(const void *data, void *target, uint32_t opcode, const wl_message *m, wl_argument *args)
     {
         return static_cast<View *>(const_cast<void *>(data))->event(static_cast<wl_proxy *>(target), opcode, m, args);
@@ -450,11 +477,19 @@ void View::readConn(Conn &c)
             }
             if (c.in.size() - pos < size)
                 break;
-            handle(c, hdr[0], uint16_t(hdr[1] & 0xffff), &c.in[pos + 8], size - 8);
+            // data() + offset, not &c.in[pos + 8]: an argument-less request (wl_surface.commit) at the end of
+            // the buffer indexes one past it, which aborts builds with _GLIBCXX_ASSERTIONS (2026-10-31 review)
+            handle(c, hdr[0], uint16_t(hdr[1] & 0xffff), c.in.data() + pos + 8, size - 8);
             pos += size;
         }
         if (c.dead)
             return;
+        // fds wait here only until the requests that carry them are complete: a guest that sends fds no
+        // request takes would otherwise fill the app's fd table (2026-10-31 review)
+        if (c.inFds.size() > kMaxPendingFds) {
+            closeConn(c, "too many file descriptors not taken by any request");
+            return;
+        }
         c.in.erase(c.in.begin(), c.in.begin() + long(pos));
         if (size_t(n) < sizeof buf)
             break;
@@ -489,6 +524,7 @@ Object *View::add(Conn &c, uint32_t id, const vmview_iface *info, uint32_t versi
     o->seq = ++seq;
     o->conn = &c;
     Object *p = o.get();
+    c.zombies.erase(id);
     c.objects[id] = std::move(o);
     return p;
 }
@@ -551,10 +587,15 @@ void View::remove(Conn &c, Object *o, bool sendDeleteId)
         for (auto &kv : c.objects)
             if (kv.second->link == o)
                 kv.second->link = nullptr;
+    const wl_interface *iface = o->info->iface;
     hostDestroy(o);
     c.objects.erase(id);
-    if (id >= kServerIdStart)
+    if (id >= kServerIdStart) {
         c.freeServerIds.push_back(id);
+        if (c.zombies.size() > 4096)
+            c.zombies.clear();
+        c.zombies[id] = iface;
+    }
     else if (sendDeleteId) {
         OutMsg m(1, kDisplayDeleteId);
         m.u(id);
@@ -656,14 +697,64 @@ void View::hostGlobalRemove(uint32_t name)
 
 // ---- guest requests ----
 
+// A request the host compositor would refuse with a protocol error, which it raises on the app's own
+// connection: the app's whole Wayland connection then ends (the app quits). The one-message cases are
+// refused here instead, with the same error on the guest's connection (2026-10-31 review). Rules that
+// need per-surface state (a second viewport, a subsurface cycle, ...) are not covered.
+static bool refusedByHost(const char *iface, uint16_t opcode, const wl_argument *a, uint32_t *code, const char **why)
+{
+    if (!strcmp(iface, "wl_surface")) {
+        if (opcode == 8 && a[0].i <= 0) { // set_buffer_scale: invalid_scale
+            *code = 0;
+            *why = "the buffer scale must be positive";
+            return true;
+        }
+        if (opcode == 7 && (a[0].i < 0 || a[0].i > 7)) { // set_buffer_transform: invalid_transform
+            *code = 1;
+            *why = "invalid buffer transform";
+            return true;
+        }
+    } else if (!strcmp(iface, "wl_shm")) {
+        if (opcode == 0 && a[2].i <= 0) { // create_pool(id, fd, size): invalid_stride, as libwayland
+            *code = 1;
+            *why = "invalid pool size";
+            return true;
+        }
+    } else if (!strcmp(iface, "wl_shm_pool")) {
+        // create_buffer(id, offset, width, height, stride, format): invalid_stride
+        if (opcode == 0 && (a[1].i < 0 || a[2].i <= 0 || a[3].i <= 0 || a[4].i <= 0)) {
+            *code = 1;
+            *why = "invalid buffer offset, size or stride";
+            return true;
+        }
+    } else if (!strcmp(iface, "zwp_linux_buffer_params_v1")) {
+        if (opcode == 1 && a[1].u > 3) { // add(fd, plane_idx, ...): plane_idx
+            *code = 1;
+            *why = "plane index out of bounds";
+            return true;
+        }
+    }
+    return false;
+}
+
 void View::handle(Conn &c, uint32_t id, uint16_t opcode, const uint8_t *body, size_t len)
 {
     auto it = c.objects.find(id);
     if (it == c.objects.end()) {
         // a request to an object we already destroyed (its destructor event crossed it): ignored, as
-        // libwayland-server does for zombies
-        if (id >= kServerIdStart)
+        // libwayland-server does for zombies, its fds taken and closed
+        if (id >= kServerIdStart) {
+            auto z = c.zombies.find(id);
+            if (z != c.zombies.end() && opcode < z->second->method_count) {
+                for (const char *t = z->second->methods[opcode].signature; *t; t++) {
+                    if (*t == 'h' && !c.inFds.empty()) {
+                        close(c.inFds.front());
+                        c.inFds.erase(c.inFds.begin());
+                    }
+                }
+            }
             return;
+        }
         protocolError(c, 1, WL_DISPLAY_ERROR_INVALID_OBJECT, "invalid object %u", id);
         return;
     }
@@ -787,6 +878,27 @@ void View::handle(Conn &c, uint32_t id, uint16_t opcode, const uint8_t *body, si
         return fail("message longer than its signature");
     if (g_debug)
         logf("-> %s@%u.%s", wi->name, id, msg.name);
+    uint32_t refusedCode = 0;
+    const char *refusedWhy = nullptr;
+    if (refusedByHost(wi->name, opcode, args, &refusedCode, &refusedWhy)) {
+        for (int f : fds)
+            close(f);
+        protocolError(c, id, refusedCode, "%s.%s: %s", wi->name, msg.name, refusedWhy);
+        return;
+    }
+    // the host's clipboard is read only by a guest that has the keyboard, or that a drag is over (a
+    // drag's wl_data_offer): in the background (another VM's view in front, the app's own widgets
+    // focused) it got the host's selection and could read it at any time (2026-10-31 review). Refused,
+    // the fd closed: the guest reads nothing.
+    if (((!strcmp(wi->name, "wl_data_offer") && opcode == 1) ||
+         (!strcmp(wi->name, "zwp_primary_selection_offer_v1") && opcode == 0)) &&
+        !guestHasInput(c)) {
+        if (g_debug)
+            logf("   refused: the guest has neither the keyboard nor a drag over it");
+        for (int f : fds)
+            close(f);
+        return;
+    }
 
     switch (o->kind) {
     case Kind::Display:
@@ -893,6 +1005,38 @@ void View::handle(Conn &c, uint32_t id, uint16_t opcode, const uint8_t *body, si
                 ownFeedbackFor(o);
                 o->bufferAttached = false;
             }
+        }
+        if (!strcmp(o->info->name, "zwp_linux_buffer_params_v1") && opcode == 3) {
+            // create_immed(buffer, width, height, format, flags): a buffer the host cannot import would end the
+            // app's connection (KWin raises invalid_wl_buffer on it). Sent as create and waited for here: created
+            // gives the guest its buffer, failed an error on the guest's connection only (2026-10-31 review, H1).
+            // Guest input is read after the display's read is done or cancelled (run()): a roundtrip is safe here.
+            wl_argument cargs[4];
+            for (int i = 0; i < 4; i++)
+                cargs[i] = args[i + 1];
+            o->immedFor = newId;
+            o->immedDone = o->immedFailed = false;
+            o->immedProxy = nullptr;
+            wl_proxy_marshal_array_flags(o->proxy, 2, nullptr, o->version, 0, cargs);
+            // c.dead first: a connection closed meanwhile has freed its objects, o included
+            while (!c.dead && !o->immedDone && wl_display_roundtrip_queue(display, queue) >= 0) {
+            }
+            if (c.dead)
+                return;
+            wl_proxy *bp = o->immedProxy;
+            const bool ok = o->immedDone && !o->immedFailed && bp;
+            o->immedFor = 0;
+            o->immedProxy = nullptr;
+            if (!ok) {
+                if (bp)
+                    wl_proxy_destroy(bp);
+                protocolError(c, id, 7, "zwp_linux_buffer_params_v1.create_immed: the host could not import the buffer");
+                return;
+            }
+            Object *no = add(c, newId, newInfo, o->version, Kind::Forwarded);
+            no->proxy = bp;
+            watch(bp, no);
+            break;
         }
         const bool destructor = o->info->destructor_requests & (1ull << opcode);
         const uint32_t version = o->version;
@@ -1097,8 +1241,42 @@ void View::keyboardFocus(Conn &c)
         k->focus = want;
         changed = true;
     }
+    if (changed && guestHasKeyboard(c)) {
+        // the host's selection while the guest did not have the keyboard: the latest, now
+        for (auto &kv : c.objects) {
+            Object *d = kv.second.get();
+            if ((d->role != Role::DataDevice && d->role != Role::PrimaryDevice) || !d->selectionKnown)
+                continue;
+            uint32_t offer = 0;
+            if (d->selection) {
+                auto bp = byProxy.find(d->selection);
+                if (bp == byProxy.end() || bp->second->conn != &c)
+                    continue;
+                offer = bp->second->id;
+            }
+            OutMsg m(d->id, d->role == Role::DataDevice ? kDataDeviceSelection : kPrimarySelection);
+            m.u(offer);
+            send(c, m);
+        }
+    }
     if (changed)
         configureToplevel(c);
+}
+
+bool View::guestHasKeyboard(Conn &c)
+{
+    for (auto &kv : c.objects)
+        if (kv.second->role == Role::Keyboard && kv.second->focus)
+            return true;
+    return false;
+}
+
+bool View::guestHasInput(Conn &c)
+{
+    for (auto &kv : c.objects)
+        if ((kv.second->role == Role::Keyboard || kv.second->role == Role::DataDevice) && kv.second->focus)
+            return true;
+    return false;
 }
 
 // ---- host events ----
@@ -1130,6 +1308,16 @@ int View::event(wl_proxy *p, uint32_t opcode, const wl_message *m, wl_argument *
         closeFds();
         return 0;
     }
+    if (o->immedFor) {
+        // the answer to the create that stands for a guest's create_immed (handle()): created(buffer) or failed,
+        // neither passed on (the guest asked for an immediate buffer)
+        if (opcode == 0)
+            o->immedProxy = reinterpret_cast<wl_proxy *>(args[0].o);
+        else
+            o->immedFailed = true;
+        o->immedDone = true;
+        return 0;
+    }
     // an object the guest does not know: one of the app's, or one destroyed on the app's side, which
     // libwayland passes as NULL where the protocol allows none (the keyboard's leave of a window the
     // app just closed): the guest takes a NULL there for a protocol error
@@ -1154,7 +1342,8 @@ int View::event(wl_proxy *p, uint32_t opcode, const wl_message *m, wl_argument *
             const double x = wl_fixed_to_double(args[2].f), y = wl_fixed_to_double(args[3].f);
             if (foreignArg >= 0) {
                 // one of the app's surfaces: the guest's drag goes on, its position from here
-                if (o->focus && o->buttonsDown > 0) {
+                if (o->focus && !o->buttonsHeld.empty()) {
+                    o->leaveUnmatched = false; // the leave's frame brought an enter: a move within the app
                     o->grabOutside = true;
                     o->grabOffset[0] = o->lastX - x;
                     o->grabOffset[1] = o->lastY - y;
@@ -1165,6 +1354,7 @@ int View::event(wl_proxy *p, uint32_t opcode, const wl_message *m, wl_argument *
                 return 0;
             }
             const uint32_t surface = byProxy[reinterpret_cast<wl_proxy *>(args[1].o)]->id;
+            o->leaveUnmatched = false;
             if (o->grabOutside) {
                 o->grabOutside = false;
                 if (surface == o->pointerSurface) {
@@ -1186,26 +1376,44 @@ int View::event(wl_proxy *p, uint32_t opcode, const wl_message *m, wl_argument *
                     leave.u(o->pointerSurface);
                     send(c, leave);
                 }
-                o->buttonsDown = 0;
+                o->buttonsHeld.clear();
             }
             o->focus = true;
             o->pointerSurface = surface;
             o->lastX = x;
             o->lastY = y;
         } else if (opcode == kPointerLeave) {
-            if (foreignArg >= 0 || !o->focus) {
+            if (o->focus && !o->buttonsHeld.empty()) {
+                // a button held: the guest keeps the pointer if the app's enter follows in this frame (it
+                // says where); a frame without one ends the drag (kPointerFrame)
+                o->grabOutside = true;
+                o->leaveUnmatched = true;
+                o->leaveSerial = args[0].u;
                 closeFds();
                 return 0;
             }
-            if (o->buttonsDown > 0) {
-                // a button held: the guest keeps the pointer (the app's enter that follows says where)
-                o->grabOutside = true;
+            if (foreignArg >= 0 || !o->focus) {
+                closeFds();
                 return 0;
             }
             o->focus = false;
             o->pendingFrame = true;
             break;
         } else if (opcode == kPointerFrame) {
+            if (o->leaveUnmatched) {
+                // a leave with no enter in its frame: the pointer left the app, the release will not come
+                o->leaveUnmatched = false;
+                o->grabOutside = false;
+                o->buttonsHeld.clear();
+                o->focus = false;
+                if (c.objects.count(o->pointerSurface)) {
+                    OutMsg leave(o->id, kPointerLeave);
+                    leave.u(o->leaveSerial);
+                    leave.u(o->pointerSurface);
+                    send(c, leave);
+                    o->pendingFrame = true;
+                }
+            }
             if (!o->pendingFrame)
                 return 0;
             o->pendingFrame = false;
@@ -1226,10 +1434,10 @@ int View::event(wl_proxy *p, uint32_t opcode, const wl_message *m, wl_argument *
             o->pendingFrame = true;
         if (opcode == kPointerButton) {
             if (args[3].u == WL_POINTER_BUTTON_STATE_PRESSED) {
-                o->buttonsDown++;
+                o->buttonsHeld.insert(args[2].u);
                 if (cb.pressed)
                     cb.pressed(cb.data);
-            } else if (o->buttonsDown > 0 && --o->buttonsDown == 0 && o->grabOutside) {
+            } else if (o->buttonsHeld.erase(args[2].u) > 0 && o->buttonsHeld.empty() && o->grabOutside) {
                 // the last one let go over the app's surface: the guest's leave after its release
                 o->grabOutside = false;
                 o->focus = false;
@@ -1255,6 +1463,21 @@ int View::event(wl_proxy *p, uint32_t opcode, const wl_message *m, wl_argument *
             return 0;
         break;
     case Role::DataDevice:
+    case Role::PrimaryDevice:
+        // selection(offer): wl_data_device's event 5, zwp_primary_selection_device_v1's 1. Kept, and passed
+        // on only while the guest has the keyboard; keyboardFocus gives it the latest when it gets it
+        if ((o->role == Role::DataDevice && opcode == kDataDeviceSelection) ||
+            (o->role == Role::PrimaryDevice && opcode == kPrimarySelection)) {
+            o->selection = reinterpret_cast<wl_proxy *>(args[0].o);
+            o->selectionKnown = true;
+            if (!guestHasKeyboard(c)) {
+                closeFds();
+                return 0;
+            }
+            break;
+        }
+        if (o->role == Role::PrimaryDevice)
+            break;
         if (opcode == kDataDeviceEnter)
             o->focus = foreignArg < 0;
         else if ((opcode == kDataDeviceLeave || opcode == kDataDeviceMotion || opcode == kDataDeviceDrop) &&

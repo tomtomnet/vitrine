@@ -6,7 +6,7 @@ VM's own screen.
 
 `vmview.{h,cpp}`, `protocols.{h,txt}`, `gen_protocols.py` and `LICENSE` are
 the research side's vmview library (`src/vmview` of the virtio-gpu-desktop
-repository, commit 9240dd0, which took vitrine's changes of 776a6f2,
+repository, commit 1eb4a6a; its 9240dd0 took vitrine's changes of 776a6f2,
 4a8e155, cbb9ebc and 175aa1a). QEMU's cross-domain connects to a socket the
 library serves; the guest's Wayland protocol goes on to the host compositor
 over vitrine's own connection, and the guest's window becomes a subsurface
@@ -29,9 +29,23 @@ vitrine's own code is `nestedview.{h,cpp}`: the Qt side of it (a surface of
 vitrine's that the guest's window hangs from, in the console or full
 screen, and the library's callbacks brought to the GUI thread).
 
+The research's review of 2026-10-31 (its ca39424 and 1eb4a6a) changed
+what a guest can do to vitrine:
+- The host's clipboard reaches a guest only while its view has the keys
+  (`NestedView::updateKeyboard`), and the latest copy when it gets them
+  back. Before, a VM in the background could read what was copied.
+- Requests the host compositor would refuse with an error on vitrine's
+  own connection, which ends vitrine, are refused on the guest's: a bad
+  buffer scale or transform, shared memory sizes <= 0, a dma-buf plane
+  index > 3, and a buffer the host cannot import (create_immed).
+- A drag that leaves vitrine's window without a release (an effect's
+  grab, Alt+Tab) ends in the guest, so that vitrine's own widgets get
+  their clicks again.
+- More than 128 file descriptors left over close the guest's connection.
+
 ## Local changes
 
-None: the files are the research's at 9240dd0.
+None: the files are the research's at 1eb4a6a.
 
 The research side took vitrine's earlier ones: a `pressed` callback for
 button presses on the guest's window and a NULL object where the protocol
