@@ -99,6 +99,14 @@ constexpr uint32_t kServerIdStart = 0xff000000;
 // fds a guest connection may have queued that no complete request has taken yet (a request's fds come
 // with its first bytes; more than this means fds sent for nothing: the connection is closed)
 constexpr size_t kMaxPendingFds = 128;
+// What a guest can make vmview hold or do at once (2026-10-31 review, M2): beyond, its connection goes (or a new one
+// is refused), as a compositor drops a client that does not read its events
+constexpr size_t kMaxBacklog = size_t(16) << 20; // bytes of events not read yet
+constexpr size_t kMaxObjects = 65536;             // objects of one connection
+constexpr size_t kMaxConns = 64;                  // guest connections
+constexpr size_t kCoalesceAbove = size_t(64) << 10; // unread bytes beyond which pointer motion is held
+constexpr int kMaxReadsPerPass = 64;              // 16 KiB reads of one connection per pass of the loop (a flood
+                                                  // kept the loop there: vmview_destroy waited, the app's GUI too)
 constexpr int kMaxArgs = 20;
 constexpr int kMaxFdsOut = 28;
 
@@ -300,6 +308,12 @@ struct Object {
     bool onAppWindow = false;     // a shortcuts inhibitor moved to the app's window
     wl_subsurface *subsurface = nullptr; // toplevel: the host subsurface of its wl_surface
     bool bufferAttached = false;  // wl_surface: a buffer attached since the last commit (VMVIEW_STATS)
+    // pointer events held while the guest does not read (View::coalesce)
+    std::vector<uint32_t> heldMotion; // wl_pointer: its latest motion, not sent yet
+    std::vector<uint32_t> heldRel;    // zwp_relative_pointer_v1: its relative motion, summed, not sent yet
+    bool heldFrame = false;           // wl_pointer: the frame of a group made only of held motion
+    bool relHeld = false;             // wl_pointer: a relative pointer of it holds motion (a locked pointer's)
+    bool groupSent = false;           // wl_pointer: an event of the current frame has gone out
     uint32_t configureSerial = 0;
 };
 
@@ -308,6 +322,8 @@ struct Conn {
     int fd;
     bool dead = false;
     bool wantWrite = false;
+    bool overflow = false; // its events backed up beyond kMaxBacklog: closed by the loop
+    bool anyHeld = false;  // a pointer of it holds motion (View::coalesce)
     std::vector<uint8_t> in;
     std::vector<int> inFds;
     std::vector<uint8_t> out;
@@ -392,6 +408,10 @@ struct View {
     void closeConn(Conn &c, const char *why);
     void protocolError(Conn &c, uint32_t objectId, uint32_t code, const char *fmt, ...);
     void send(Conn &c, OutMsg &m);
+    void append(Conn &c, OutMsg &m);
+    bool coalesce(Conn &c, OutMsg &m);
+    void releaseHeld(Conn &c, Object *pointer, bool withFrame);
+    void releaseAllHeld(Conn &c);
     void handle(Conn &c, uint32_t id, uint16_t opcode, const uint8_t *body, size_t len);
     Object *add(Conn &c, uint32_t id, const vmview_iface *info, uint32_t version, Kind kind);
     uint32_t allocServerId(Conn &c);
@@ -430,6 +450,11 @@ void View::accept()
     const int fd = accept4(listenFd, nullptr, nullptr, SOCK_CLOEXEC | SOCK_NONBLOCK);
     if (fd < 0)
         return;
+    if (conns.size() >= kMaxConns) {
+        logf("guest connection refused: %zu connections already", conns.size());
+        close(fd);
+        return;
+    }
     conns.push_back(std::make_unique<Conn>(this, fd));
     // the guest's wl_display
     add(*conns.back(), 1, ifaceByName("wl_display"), 1, Kind::Display);
@@ -440,17 +465,128 @@ void View::accept()
 
 void View::send(Conn &c, OutMsg &m)
 {
-    if (c.dead) {
+    if (c.dead || c.overflow) {
         for (int f : m.fds)
             close(f);
         return;
     }
+    if (c.out.size() > kMaxBacklog) {
+        // the guest does not read its events: dropped from here, its connection closed by the loop (here, in an
+        // event's handler, its objects may still be in use)
+        c.overflow = true;
+        for (int f : m.fds)
+            close(f);
+        return;
+    }
+    if (coalesce(c, m))
+        return;
+    append(c, m);
+}
+
+void View::append(Conn &c, OutMsg &m)
+{
     m.finish();
     const size_t at = c.out.size();
     c.out.resize(at + m.w.size() * 4);
     memcpy(&c.out[at], m.w.data(), m.w.size() * 4);
     c.outFds.insert(c.outFds.end(), m.fds.begin(), m.fds.end());
     m.fds.clear();
+}
+
+// While the guest does not read (a paused VM, savevm, a stalled guest), its pointers' motion is held, the latest
+// kept, instead of queued without end: 16 MiB of it ended the connection (kMaxBacklog). vitrine 2026-10-31: a paused
+// VM's session would have ended on resume after ~4 min of 1000 Hz motion over its view (~33 s at 8 kHz). Relative
+// motion is summed. A frame closing a group of held motion only is held too; any other event of the pointer sends
+// the held motion first, so the order stays. releaseAllHeld sends what is held once the guest reads again.
+// Returns true when m was held.
+bool View::coalesce(Conn &c, OutMsg &m)
+{
+    auto it = c.objects.find(m.w[0]);
+    if (it == c.objects.end())
+        return false;
+    Object *o = it->second.get();
+    const bool backedUp = c.out.size() > kCoalesceAbove;
+    if (o->role == Role::Pointer) {
+        if (m.opcode == kPointerMotion) {
+            if (!backedUp && o->heldMotion.empty()) {
+                o->groupSent = true;
+                return false;
+            }
+            o->heldMotion = m.w; // the words before finish(): id, 0, time, x, y
+            c.anyHeld = true;
+            return true;
+        }
+        if (m.opcode == kPointerFrame) {
+            if (backedUp && (!o->heldMotion.empty() || o->relHeld) && !o->groupSent) {
+                o->heldFrame = true;
+                return true;
+            }
+            releaseHeld(c, o, false);
+            o->groupSent = false;
+            return false;
+        }
+        releaseHeld(c, o, false);
+        o->groupSent = true;
+        return false;
+    }
+    if (o->role == Role::RelPointer && m.opcode == 0 && m.w.size() == 8) { // relative_motion
+        Object *pointer = o->link;
+        if (!pointer || (!backedUp && pointer->heldMotion.empty() && !pointer->relHeld))
+            return false;
+        if (o->heldRel.empty()) {
+            o->heldRel = m.w;
+        } else {
+            o->heldRel[2] = m.w[2]; // the latest time
+            o->heldRel[3] = m.w[3];
+            for (int k = 4; k < 8; k++) // dx, dy, dx_unaccel, dy_unaccel (wl_fixed_t) summed
+                o->heldRel[k] = uint32_t(int32_t(o->heldRel[k]) + int32_t(m.w[k]));
+        }
+        pointer->relHeld = true;
+        c.anyHeld = true;
+        return true;
+    }
+    return false;
+}
+
+void View::releaseHeld(Conn &c, Object *pointer, bool withFrame)
+{
+    // nothing held: the usual case, called for every pointer event (no scan of the objects)
+    if (pointer->heldMotion.empty() && !pointer->relHeld && !pointer->heldFrame)
+        return;
+    if (!pointer->heldMotion.empty()) {
+        OutMsg m(pointer->id, kPointerMotion);
+        m.w = std::move(pointer->heldMotion);
+        pointer->heldMotion.clear();
+        append(c, m);
+    }
+    if (pointer->relHeld) {
+        for (auto &kv : c.objects) {
+            Object *r = kv.second.get();
+            if (r->role == Role::RelPointer && r->link == pointer && !r->heldRel.empty()) {
+                OutMsg m(r->id, 0);
+                m.w = std::move(r->heldRel);
+                r->heldRel.clear();
+                append(c, m);
+            }
+        }
+        pointer->relHeld = false;
+    }
+    if (withFrame) {
+        OutMsg f(pointer->id, kPointerFrame);
+        append(c, f);
+        pointer->groupSent = false;
+    }
+    pointer->heldFrame = false;
+}
+
+void View::releaseAllHeld(Conn &c)
+{
+    if (!c.anyHeld)
+        return;
+    c.anyHeld = false;
+    for (auto &kv : c.objects)
+        if (kv.second->role == Role::Pointer)
+            releaseHeld(c, kv.second.get(), true);
 }
 
 void View::flushConn(Conn &c)
@@ -493,7 +629,7 @@ void View::readConn(Conn &c)
 {
     uint8_t buf[16384];
     alignas(cmsghdr) char cbuf[CMSG_SPACE(sizeof(int) * 64)];
-    for (;;) {
+    for (int reads = 0; reads < kMaxReadsPerPass; reads++) {
         iovec iov{buf, sizeof buf};
         msghdr mh{};
         mh.msg_iov = &iov;
@@ -915,6 +1051,8 @@ void View::handle(Conn &c, uint32_t id, uint16_t opcode, const uint8_t *body, si
                 return fail("message too short");
             if (v == 0 || v >= kServerIdStart || c.objects.count(v))
                 return fail("invalid new id");
+            if (c.objects.size() >= kMaxObjects)
+                return fail("too many objects");
             newArg = i;
             newId = v;
             if (msg.types[i]) {
@@ -1832,6 +1970,13 @@ void View::run()
             if (!c.dead && (pf[i].revents & POLLOUT))
                 flushConn(c);
         }
+        for (auto &c : conns)
+            if (!c->dead && c->overflow)
+                closeConn(*c, "the guest does not read its events");
+        // the guest reads again: its held pointer motion goes out (the latest position, its frame)
+        for (auto &c : conns)
+            if (!c->dead && c->anyHeld && c->out.size() <= kCoalesceAbove / 2)
+                releaseAllHeld(*c);
         const size_t before = conns.size();
         conns.erase(std::remove_if(conns.begin(), conns.end(), [](auto &c) { return c->dead; }), conns.end());
         if (conns.size() != before && cb.connection)
