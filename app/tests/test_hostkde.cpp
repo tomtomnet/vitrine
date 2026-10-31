@@ -1149,7 +1149,9 @@ private slots:
         /* what it ran: nothing that writes */
         const QByteArray calls = read(m_state + "/calls");
         QVERIFY2(calls.contains("dnf -q -C repoquery --installed"), calls.constData());
-        QVERIFY2(calls.contains("dnf -q -C repoquery --latest-limit=1"), calls.constData());
+        /* the system's metadata cache, not a copy of it in the user's */
+        QVERIFY2(calls.contains("dnf -q -C repoquery --setopt=cachedir=/var/cache/libdnf5 --latest-limit=1"),
+                 calls.constData());
         QVERIFY(!calls.contains("versionlock add"));
 
         /* not Fedora; no dnf5 */

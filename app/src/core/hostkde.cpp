@@ -612,9 +612,13 @@ System System::read(const QList<Target> &targets, const QString &osRelease, cons
     }
     s.locks = parseLocks(locks);
     /* what the repositories have, even what a lock keeps out (versionlock does
-       not filter a query); a cache never filled says nothing */
+       not filter a query), from the system's cache as it is: run by a user,
+       dnf would copy it into the user's own first (some 100 MB), and that
+       copy grows old; a cache never filled says nothing */
     if (!mains.isEmpty()) {
-        s.newest = parseNewest(run(dnf, QStringList{"-q", "-C", "repoquery", "--latest-limit=1", "--qf",
+        s.newest = parseNewest(run(dnf, QStringList{"-q", "-C", "repoquery",
+                                                    "--setopt=cachedir=/var/cache/libdnf5",
+                                                    "--latest-limit=1", "--qf",
                                                     "%{name} %{arch} %{version}-%{release}\\n"} +
                                             mains),
                                s.packages);
