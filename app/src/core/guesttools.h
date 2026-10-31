@@ -53,6 +53,11 @@ struct Medium {
     QString kwin;
     QString kpipewire;
     QString proxy;          // the nested desktop's (wl-cross-domain-proxy)
+    /* in place of the guest's while it has their version: Fedora's next
+       build takes their place until the next guest tools */
+    QString qtbase;         // qt6-qtbase
+    QString ksvg;           // kf6-ksvg
+    QString kirigami;       // kf6-kirigami
     QStringList packages;   // name-version-release.arch
     bool isValid() const { return !image.isEmpty(); }
 };
@@ -153,6 +158,9 @@ struct Report {
     QStringList capsets;                // offered by the host: virgl, venus, drm...
     QHash<QString, QString> packages;   // name: version-release
     bool kwinPatched = false;
+    /* Of qt6-qtbase, kf6-ksvg, kf6-kirigami, those installed: vitrine's build,
+       or the guest's own (Fedora's next build, which is no fault) */
+    QHash<QString, bool> vitrineBuilds;
     QString preempt;
     bool rebootNeeded = false;
     bool installing = false;

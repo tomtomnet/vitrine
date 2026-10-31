@@ -55,7 +55,9 @@ static const char kHello[] =
     R"j("driver":{"loaded":true,"patched":true,"taint":"OE","params":{"blob_flush_fence":"3",)j"
     R"j("tiled_scanout":"1"},"vblankoffdelay":"0"},"gpu":{"capsets":["virgl","virgl2","drm"],)j"
     R"j("contextInit":true},"packages":{"vitrine-guest-tools":"0.1.0-1.fc44",)j"
-    R"j("mesa-dri-drivers":"26.2.3-1.xe.fc44","kwin":"6.7.5-1.21.fc44"},"kwinPatched":true,)j"
+    R"j("mesa-dri-drivers":"26.2.3-1.xe.fc44","kwin":"6.7.5-1.21.fc44",)j"
+    R"j("qt6-qtbase":"6.11.2-3.1.q4.fc44","kf6-ksvg":"6.32.0-1.fc44"},"kwinPatched":true,)j"
+    R"j("vitrineBuilds":{"qt6-qtbase":true,"kf6-ksvg":false},)j"
     R"j("preempt":"full","rebootNeeded":false,"installed":{"medium":"32fe6c83b34e87e8",)j"
     R"j("tools":"0.1.0-1.fc44"},"installing":false}})j";
 
@@ -121,7 +123,9 @@ private:
             json.write(R"({"label": "VITRINETOOL", "mediumId": "32fe6c83b34e87e8", "fedora": "44",
                           "tools": "0.1.0-1.fc44", "mesa": "26.2.3-1.xe.fc44",
                           "kwin": "6.7.5-1.21.fc44", "kpipewire": "6.7.5-1.1.fc44",
-                          "proxy": "0.1.0^gitc6ce1ca.r5799347-1.fc44", "packages": [
+                          "proxy": "0.1.0^gitc6ce1ca.r5799347-1.fc44",
+                          "qtbase": "6.11.2-3.1.q4.fc44", "ksvg": "6.31.0-1.1.k2.fc44",
+                          "kirigami": "6.31.0-1.1.f1.fc44", "packages": [
                           {"name": "kwin", "evr": "6.7.5-1.21.fc44", "arch": "x86_64"},
                           {"name": "vitrine-guest-tools", "evr": "0.1.0-1.fc44", "arch": "noarch"}]})");
         }
@@ -182,6 +186,9 @@ private slots:
         QCOMPARE(m.kwin, "6.7.5-1.21.fc44");
         QCOMPARE(m.kpipewire, "6.7.5-1.1.fc44");
         QCOMPARE(m.proxy, "0.1.0^gitc6ce1ca.r5799347-1.fc44");
+        QCOMPARE(m.qtbase, "6.11.2-3.1.q4.fc44");
+        QCOMPARE(m.ksvg, "6.31.0-1.1.k2.fc44");
+        QCOMPARE(m.kirigami, "6.31.0-1.1.f1.fc44");
         QCOMPARE(m.packages, QStringList({"kwin-6.7.5-1.21.fc44.x86_64",
                                           "vitrine-guest-tools-0.1.0-1.fc44.noarch"}));
         QVERIFY(!parseManifest("{}", image).isValid());
@@ -325,6 +332,11 @@ private slots:
         QCOMPARE(r.capsets, QStringList({"virgl", "virgl2", "drm"}));
         QCOMPARE(r.packages.value("mesa-dri-drivers"), "26.2.3-1.xe.fc44");
         QVERIFY(r.kwinPatched);
+        /* vitrine's Qt Base; KSvg Fedora's newer build, which took its place */
+        QCOMPARE(r.vitrineBuilds.size(), 2);
+        QVERIFY(r.vitrineBuilds.value("qt6-qtbase"));
+        QVERIFY(r.vitrineBuilds.contains("kf6-ksvg") && !r.vitrineBuilds.value("kf6-ksvg"));
+        QCOMPARE(r.packages.value("kf6-ksvg"), "6.32.0-1.fc44");
         QCOMPARE(r.preempt, "full");
         QVERIFY(!r.rebootNeeded);
         QVERIFY(!r.installing);
@@ -499,6 +511,10 @@ private slots:
         in.medium = medium;
         in.agentSeen = true;
         in.report = parseMessage(kHello).report;
+        QCOMPARE(evaluate(in), State::Installed);
+        /* Fedora's next KSvg in the place of vitrine's, or its Qt and Kirigami: no fault */
+        in.report.vitrineBuilds = {{"qt6-qtbase", false}, {"kf6-ksvg", false},
+                                   {"kf6-kirigami", false}};
         QCOMPARE(evaluate(in), State::Installed);
         in.report.rebootNeeded = true;
         QCOMPARE(evaluate(in), State::RebootNeeded);

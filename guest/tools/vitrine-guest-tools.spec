@@ -2,7 +2,7 @@
 # exact version, and dnf takes an installed one of the same version as done.
 Name:           vitrine-guest-tools
 Version:        0.1.0
-Release:        28%{?dist}
+Release:        29%{?dist}
 Summary:        vitrine guest tools: patched virtio-gpu driver, settings and agent
 
 # the driver's sources (dkms/vendor, dkms/patches) are the kernel's: MIT
@@ -44,8 +44,8 @@ the driver and of the host's GPU behind the native context, the nested
 desktop's session (a boot with the VM's Nested desktop box logs Plasma into
 a window of the host's desktop, with KWin's settings for the host's GPU),
 and the vitrine agent, which tells vitrine the state of the guest tools and
-installs their updates.  vitrine's Mesa, KWin, KPipeWire and the nested
-desktop's proxy come from the same tools medium.
+installs their updates.  vitrine's Mesa, KWin, KPipeWire, the nested
+desktop's proxy, Qt Base, KSvg and Kirigami come from the same tools medium.
 
 %prep
 %autosetup
@@ -181,6 +181,24 @@ fi
 %dir %{_sharedstatedir}/%{name}
 
 %changelog
+* Sat Oct 31 2026 vitrine <noreply@anthropic.com> - 0.1.0-29
+- the installer puts vitrine's Qt Base (the research's q4: Wayland windows
+  being resized reuse their shared memory), KSvg (k2) and Kirigami (f1:
+  Plasma's popups no longer upload their frames again at each opening) in
+  place of the guest's, each where the guest has the version it is built
+  from and no newer build, all of its installed packages in one go (none if
+  one of them has no build on the medium, a 32-bit one say)
+- Qt Base is version-locked with vitrine's KWin, which is built against its
+  private API; KSvg, Kirigami, and Qt Base without vitrine's KWin, are not:
+  Fedora's next build of them takes their place, consistent with the rest of
+  KDE's frameworks or of Qt, until the next guest tools
+- --uninstall puts Fedora's builds back by the exact names of the installed
+  packages of each source package (mesa, kwin, kpipewire, qt6-qtbase,
+  kf6-ksvg, kf6-kirigami): the globs mesa-*, kwin* and kpipewire* took other
+  packages along (kwin-x11, mesa-libGLU)
+- the agent also reports Qt Base, KSvg and Kirigami, and whether each is
+  vitrine's build
+
 * Fri Oct 30 2026 vitrine <noreply@anthropic.com> - 0.1.0-28
 - the tools' own dkms runs skip dkms's post-transaction command (a dkms
   config of the package): on Fedora it made every kernel's initramfs again

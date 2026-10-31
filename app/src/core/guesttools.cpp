@@ -54,6 +54,9 @@ Medium parseManifest(const QByteArray &json, const QString &image)
     m.kwin = o["kwin"].toString();
     m.kpipewire = o["kpipewire"].toString();
     m.proxy = o["proxy"].toString();
+    m.qtbase = o["qtbase"].toString();
+    m.ksvg = o["ksvg"].toString();
+    m.kirigami = o["kirigami"].toString();
     for (const QJsonValue &p : o["packages"].toArray()) {
         m.packages << QString("%1-%2.%3").arg(p["name"].toString(), p["evr"].toString(),
                                               p["arch"].toString());
@@ -296,6 +299,10 @@ Report parseReport(const QJsonObject &s)
     }
     r.packages = stringHash(s["packages"].toObject());
     r.kwinPatched = s["kwinPatched"].toBool();
+    const QJsonObject builds = s["vitrineBuilds"].toObject();
+    for (auto it = builds.begin(); it != builds.end(); ++it) {
+        r.vitrineBuilds.insert(it.key(), it.value().toBool());
+    }
     r.preempt = s["preempt"].toString();
     r.rebootNeeded = s["rebootNeeded"].toBool();
     r.installing = s["installing"].toBool();
