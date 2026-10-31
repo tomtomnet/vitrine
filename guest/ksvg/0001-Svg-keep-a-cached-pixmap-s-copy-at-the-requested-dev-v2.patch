@@ -1,0 +1,140 @@
+From 508bdf050b3206cd799b7cbc124c99adfe0c5c48 Mon Sep 17 00:00:00 2001
+From: tomtomnet <tompere8000@proton.me>
+Date: Thu, 15 Oct 2026 02:24:31 +0200
+Subject: [PATCH 1/2] Svg: keep a cached pixmap's copy at the requested device
+ pixel ratio
+
+A pixmap read back from the disk cache has a ratio of 1. SvgPrivate::findInCache()
+gave it the requested ratio on every lookup, and QPixmap::setDevicePixelRatio()
+copies a shared pixmap: at a scale other than 100 % every lookup made a new copy
+with a new QImage::cacheKey(). ImageTexturesCache keys its textures on it, so
+FrameSvgItem's frame pieces were never shared: each new node uploaded its own
+texture, even for pieces that other items or the previous node already had.
+
+Keep the copy with the ratio, keyed like the cache, so lookups return the same
+pixmap. The copies are kept within the limit of the pixmap cache's own pixmaps
+(KImageCache::pixmapCacheLimit()), each counted at its size at a ratio of 1 so
+that as many pieces are kept as the cache keeps in memory at 100 %, the least
+recently used going first.
+---
+ src/ksvg/private/imageset_p.cpp | 25 +++++++++++++++++++++++++
+ src/ksvg/private/imageset_p.h   | 22 ++++++++++++++++++++++
+ src/ksvg/svg.cpp                |  4 +++-
+ 3 files changed, 50 insertions(+), 1 deletion(-)
+
+diff --git a/src/ksvg/private/imageset_p.cpp b/src/ksvg/private/imageset_p.cpp
+index b16ce7d..2500752 100644
+--- a/src/ksvg/private/imageset_p.cpp
++++ b/src/ksvg/private/imageset_p.cpp
+@@ -207,6 +207,10 @@ bool ImageSetPrivate::useCache()
+ 
+         pixmapCache = new KImageCache(cacheFile, cacheSize * 1024);
+         pixmapCache->setEvictionPolicy(KSharedDataCache::EvictLeastRecentlyUsed);
++        {
++            QMutexLocker locked(&pixmapsWithRatioLock);
++            pixmapsWithRatio.setMaxCost(pixmapCache->pixmapCacheLimit());
++        }
+ 
+         if (cachesTooOld) {
+             discardCache(PixmapCache | SvgElementsCache);
+@@ -269,6 +273,11 @@ QString ImageSetPrivate::findInImageSet(const QString &image, const QString &the
+ 
+ void ImageSetPrivate::discardCache(CacheTypes caches)
+ {
++    {
++        QMutexLocker locked(&pixmapsWithRatioLock);
++        pixmapsWithRatio.clear();
++    }
++
+     if (caches & PixmapCache) {
+         pixmapsToCache.clear();
+         pixmapSaveTimer->stop();
+@@ -653,6 +662,22 @@ void ImageSetPrivate::insertIntoCache(const QString &key, const QPixmap &pix)
+     }
+ }
+ 
++QPixmap ImageSetPrivate::withDevicePixelRatio(const QString &key, const QPixmap &pix, qreal ratio)
++{
++    QMutexLocker locked(&pixmapsWithRatioLock);
++    if (const QPixmap *kept = pixmapsWithRatio.object(key); kept && kept->devicePixelRatio() == ratio) {
++        return *kept;
++    }
++
++    QPixmap copy = pix;
++    copy.setDevicePixelRatio(ratio);
++    // KImageCache's cost for its own pixmaps, their size in bytes, taken at a ratio of 1: as many pieces are kept
++    // as it keeps in memory at 100 % (a piece at 200 % has four times the bytes)
++    const qreal bytes = qreal(copy.width()) * copy.height() * copy.depth() / 8;
++    pixmapsWithRatio.insert(key, new QPixmap(copy), qMax<qsizetype>(1, qsizetype(bytes / (ratio * ratio))));
++    return copy;
++}
++
+ void ImageSetPrivate::insertIntoCache(const QString &key, const QPixmap &pix, const QString &id)
+ {
+     if (useCache()) {
+diff --git a/src/ksvg/private/imageset_p.h b/src/ksvg/private/imageset_p.h
+index a8e2c1b..2728200 100644
+--- a/src/ksvg/private/imageset_p.h
++++ b/src/ksvg/private/imageset_p.h
+@@ -10,7 +10,9 @@
+ 
+ #include "imageset.h"
+ #include "svg.h"
++#include <QCache>
+ #include <QHash>
++#include <QMutex>
+ 
+ #include <KColorScheme>
+ #include <KImageCache>
+@@ -104,6 +106,23 @@ public:
+      **/
+     void insertIntoCache(const QString &key, const QPixmap &pix, const QString &id);
+ 
++    /*!
++     * Returns \a pix with the device pixel ratio \a ratio: the same pixmap for every call with the same \a key, as
++     * long as it is kept.
++     *
++     * A pixmap read back from the disk cache has a ratio of 1, and giving it another one copies it. Without a kept
++     * copy every lookup copies it again, and each copy's new QImage::cacheKey() defeats the texture caches that key
++     * on it (ImageTexturesCache, Kirigami's TextureCache): every frame piece is uploaded again.
++     *
++     * The copies are kept within the limit of pixmapCache's own pixmaps, each counted at its size at a ratio of 1,
++     * the least recently used going first.
++     *
++     * \param key the cache key of \a pix
++     * \param pix the pixmap found in the cache
++     * \param ratio the device pixel ratio the caller wants
++     **/
++    QPixmap withDevicePixelRatio(const QString &key, const QPixmap &pix, qreal ratio);
++
+     void colorsChanged();
+ 
+ public Q_SLOTS:
+@@ -142,6 +161,9 @@ public:
+     KConfigGroup cfg;
+     KImageCache *pixmapCache;
+     QHash<QString, QPixmap> pixmapsToCache;
++    // pixmaps of pixmapCache given another device pixel ratio (withDevicePixelRatio()); render threads ask too
++    QCache<QString, QPixmap> pixmapsWithRatio;
++    QMutex pixmapsWithRatioLock;
+     QHash<QString, QString> keysToCache;
+     QHash<QString, QString> idsToCache;
+     QHash<qint64, QString> cachedSvgStyleSheets;
+diff --git a/src/ksvg/svg.cpp b/src/ksvg/svg.cpp
+index 208f50e..ef18a80 100644
+--- a/src/ksvg/svg.cpp
++++ b/src/ksvg/svg.cpp
+@@ -604,7 +604,9 @@ QPixmap SvgPrivate::findInCache(const QString &elementId, qreal ratio, const QSi
+ 
+     QPixmap p;
+     if (cacheRendering && lastModified == SvgRectsCache::instance()->lastModifiedTimeFromCache(path) && actualImageSet()->d->findInCache(id, p, lastModified)) {
+-        p.setDevicePixelRatio(ratio);
++        if (p.devicePixelRatio() != ratio) {
++            p = actualImageSet()->d->withDevicePixelRatio(id, p, ratio);
++        }
+         // qCDebug(LOG_PLASMA) << "found cached version of " << id << p.size();
+         return p;
+     }
+-- 
+2.56.0
+

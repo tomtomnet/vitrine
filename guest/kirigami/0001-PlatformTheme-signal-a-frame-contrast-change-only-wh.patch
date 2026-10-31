@@ -1,0 +1,48 @@
+From 389242c358ce135955a2d640c4003b24b29ab189 Mon Sep 17 00:00:00 2001
+From: tomtomnet <tompere8000@proton.me>
+Date: Thu, 15 Oct 2026 03:15:52 +0200
+Subject: [PATCH] PlatformTheme: signal a frame contrast change only when the
+ value changes
+
+setFrameContrast() marked the contrast changed on every call, so
+frameContrastChanged() went out each time a platform theme synced its colors -
+Plasma's style does it when the window's active state or the item's enabled
+state changes, for every themed item. Every listener updated for nothing:
+KSvg's FrameSvgItem rebuilds its color overrides on it, and a Plasma popup's
+items spent ~12 ms of the GUI thread per opening and closing in a VM guest.
+
+Mark the change only when the effective value changes, as setDataColor()
+already does for the colors.
+---
+ src/platform/platformtheme.cpp | 10 +++++++++-
+ 1 file changed, 9 insertions(+), 1 deletion(-)
+
+diff --git a/src/platform/platformtheme.cpp b/src/platform/platformtheme.cpp
+index 80d0241..781cc27 100644
+--- a/src/platform/platformtheme.cpp
++++ b/src/platform/platformtheme.cpp
+@@ -746,12 +746,20 @@ void PlatformTheme::setFixedWidthFont(const QFont &font)
+ 
+ void PlatformTheme::setFrameContrast(qreal contrast)
+ {
+-    PlatformThemeChangeTracker tracker(this, PlatformThemeChangeTracker::PropertyChange::FrameContrast);
++    PlatformThemeChangeTracker tracker(this);
++    const qreal oldContrast = frameContrast();
+     d->frameContrast = contrast;
+ 
+     if (d->data) {
+         d->data->setFrameContrast(this, contrast);
+     }
++
++    // Only mark the contrast as changed if the value actually changed, as for the colors: the subclasses set it
++    // again each time they sync their colors (e.g. the window's active state, the item's enabled state), and every
++    // frameContrastChanged() makes its listeners update.
++    if (frameContrast() != oldContrast) {
++        tracker.markDirty(PlatformThemeChangeTracker::PropertyChange::FrameContrast);
++    }
+ }
+ 
+ qreal PlatformTheme::frameContrast() const
+-- 
+2.56.0
+

@@ -165,7 +165,7 @@ private slots:
             ids << c.id;
         }
         QCOMPARE(ids, QStringList({"virglrenderer", "rutabaga_gfx", "qemu", "tools", "mesa", "kwin",
-                                   "proxy", "kpipewire", "medium"}));
+                                   "proxy", "kpipewire", "qtbase", "ksvg", "kirigami", "medium"}));
         QCOMPARE(find(all, "qemu").kind, Kind::Host);
         QCOMPARE(find(all, "qemu").title, "QEMU");
         QCOMPARE(find(all, "qemu").deps, QStringList({"virglrenderer", "rutabaga_gfx"}));
@@ -176,9 +176,14 @@ private slots:
         QVERIFY(!find(all, "tools").heavy);
         QCOMPARE(find(all, "medium").kind, Kind::Medium);
         QCOMPARE(find(all, "medium").deps,
-                 QStringList({"tools", "mesa", "kwin", "proxy", "kpipewire"}));
+                 QStringList({"tools", "mesa", "kwin", "proxy", "kpipewire", "qtbase", "ksvg",
+                              "kirigami"}));
         QVERIFY(!find(all, "proxy").heavy);
         QVERIFY(!find(all, "kpipewire").heavy);
+        QCOMPARE(find(all, "qtbase").title, "Qt Base");
+        QVERIFY(find(all, "qtbase").heavy);
+        QVERIFY(!find(all, "ksvg").heavy);
+        QVERIFY(!find(all, "kirigami").heavy);
         QVERIFY(!find(all, "nothing").isValid());
 
         /* none of a folder that is not there; a package without its spec neither */
@@ -215,7 +220,8 @@ private slots:
 
         const QString inputs = run({places.guestDir + "/build-rpms.sh", "--print-inputs"}, &status);
         QCOMPARE(status, 0);
-        for (const char *id : {"tools", "mesa", "kwin", "proxy", "kpipewire"}) {
+        for (const char *id :
+             {"tools", "mesa", "kwin", "proxy", "kpipewire", "qtbase", "ksvg", "kirigami"}) {
             QVERIFY2(inputs.contains(QString("%1 %2\n").arg(id, key(find(all, id), all))),
                      qPrintable(inputs));
             QCOMPARE(key(find(all, id), all), GuestToolsBuilder::inputsHash(places.guestDir, id));
@@ -224,6 +230,58 @@ private slots:
         const QByteArray medium = inputLines(find(all, "medium"), all);
         QVERIFY(medium.startsWith("dep tools " + key(find(all, "tools"), all).toLatin1() + '\n'));
         QVERIFY(medium.endsWith("  build-medium.sh\n"));
+    }
+
+    /*
+     * A distribution's spec: what rpm reads of it (the branch of a switch it
+     * defines, both of any other condition), its %global words, its tags in
+     * any case, and whose its patches are by their numbers
+     */
+    void distributionSpec()
+    {
+        const QString dir = m_tmp.filePath("distribution");
+        QVERIFY(write(dir + "/qtfoo/qt6-foo.spec",
+                      "%global qt_module qtfoo\n"
+                      "#global unstable 0\n"
+                      "%global examples 1\n"
+                      "%if 0%{?unstable}\n%global prerelease rc\n%endif\n"
+                      "Name:    qt6-foo\nVersion: 6.11.2\nRelease: 3.1.q4%{?dist}\n"
+                      "Url:     http://qt-project.org/\n"
+                      "%if 0%{?unstable}\n"
+                      "Source0: https://d/development/%{qt_module}-src-%{version}-%{prerelease}.tar.xz\n"
+                      "%else\n"
+                      "Source0: https://d/official/%{qt_module}-src-%{version}.tar.xz\n"
+                      "%endif\n"
+                      "Patch1:  qtfoo-fedora.patch\n"
+                      "%if 0%{?fedora}\nPatch50: qtfoo-fedora-only.patch\n%endif\n"
+                      "%if 0%{?unstable}\nPatch60: qtfoo-unstable.patch\n%endif\n"
+                      "%if 0%{?examples}\nPatch70: qtfoo-examples.patch\n%endif\n"
+                      "# the research's\nPatch1001: qtfoo-research.patch\n"));
+        Component c;
+        c.id = "qtfoo";
+        c.kind = Kind::Package;
+        c.dir = dir;
+        c.values = {{"spec", "qtfoo/qt6-foo.spec"}, {"patches", "spec"},
+                    {"origin", "Research"}, {"origin.fedora", "Fedora"}};
+        const Source s = source(c);
+        QCOMPARE(s.archive, "qtfoo-src-6.11.2.tar.xz");
+        QCOMPARE(s.archiveHost, "d");
+        QCOMPARE(s.url, "http://qt-project.org/");
+        QCOMPARE(s.revision, "6.11.2-3.1.q4");
+        QStringList names, origins;
+        for (const Patch &p : patches(c)) {
+            names << p.name();
+            origins << p.origin;
+        }
+        QCOMPARE(names, QStringList({"qtfoo-fedora.patch", "qtfoo-fedora-only.patch",
+                                     "qtfoo-examples.patch", "qtfoo-research.patch"}));
+        QCOMPARE(origins, QStringList({"Fedora", "Fedora", "Fedora", "Research"}));
+        QCOMPARE(patches(c).last().note, "the research's");
+        /* without origin.fedora: all of them the section's */
+        c.values.remove("origin.fedora");
+        for (const Patch &p : patches(c)) {
+            QCOMPARE(p.origin, "Research");
+        }
     }
 
     /* A series file names the patches in its order; the folders otherwise */
@@ -361,6 +419,31 @@ private slots:
         const QList<Patch> kpipewirePatches = patches(find(all, "kpipewire"));
         QCOMPARE(kpipewirePatches.size(), 2);
         QCOMPARE(kpipewirePatches.last().path, "kpipewire/kpipewire-dmabuf-frame-fds-and-size.patch");
+        /* Fedora's spec with the research's set after its own patches: Fedora's, by their
+           numbers below 1000, apart from the research's */
+        const Component qtbase = find(all, "qtbase");
+        const QList<Patch> qtPatches = patches(qtbase);
+        QCOMPARE(qtPatches.size(), 10);
+        for (qsizetype i = 0; i < qtPatches.size() - 1; i++) {
+            QCOMPARE(qtPatches[i].origin, "Fedora");
+        }
+        QCOMPARE(qtPatches.last().origin, "Research");
+        QCOMPARE(qtPatches.last().number, "1001");
+        QCOMPARE(qtPatches.last().path, "qtbase/qtbase-wayland-shm-reuse-pools-v3.patch");
+        QVERIFY(subject(qtbase, qtPatches.last()).startsWith("Qt Wayland: a resized window reuses its shm pools"));
+        const QList<Patch> ksvgPatches = patches(find(all, "ksvg"));
+        QCOMPARE(ksvgPatches.size(), 2);
+        QCOMPARE(ksvgPatches[0].origin, "Research");
+        QCOMPARE(subject(find(all, "ksvg"), ksvgPatches[1]),
+                 "FrameSvgItem: release the previous nodes after the new ones took their textures");
+        const QList<Patch> kirigamiPatches = patches(find(all, "kirigami"));
+        QCOMPARE(kirigamiPatches.size(), 1);
+        QCOMPARE(kirigamiPatches[0].origin, "Research");
+        for (const char *id : {"qtbase", "ksvg", "kirigami"}) {
+            for (const Patch &p : patches(find(all, id))) {
+                QVERIFY2(QFileInfo::exists(qtbase.dir + '/' + p.path), qPrintable(p.path));
+            }
+        }
         QVERIFY(patches(find(all, "medium")).isEmpty());
     }
 
@@ -390,6 +473,20 @@ private slots:
         const Source kpipewire = source(find(all, "kpipewire"));
         QVERIFY(kpipewire.archive.startsWith("kpipewire-") && kpipewire.archive.endsWith(".tar.xz"));
         QCOMPARE(kpipewire.archiveHost, "download.kde.org");
+        /* their %global words (%{qt_module}, %{framework}), their tags in any case (Url:) */
+        const Source qtbase = source(find(all, "qtbase"));
+        QCOMPARE(qtbase.archive, "qtbase-everywhere-src-6.11.2.tar.xz");
+        QCOMPARE(qtbase.archiveHost, "download.qt.io");
+        QCOMPARE(qtbase.url, "http://qt-project.org/");
+        QCOMPARE(qtbase.revision, "6.11.2-3.1.q4");
+        const Source ksvg = source(find(all, "ksvg"));
+        QCOMPARE(ksvg.archive, "ksvg-6.31.0.tar.xz");
+        QCOMPARE(ksvg.archiveHost, "download.kde.org");
+        QCOMPARE(ksvg.url, "https://invent.kde.org/frameworks/ksvg");
+        QCOMPARE(ksvg.revision, "6.31.0-1.1.k2");
+        const Source kirigami = source(find(all, "kirigami"));
+        QCOMPARE(kirigami.archive, "kirigami-6.31.0.tar.xz");
+        QCOMPARE(kirigami.revision, "6.31.0-1.1.f1");
         const Source tools = source(find(all, "tools"));
         QVERIFY(tools.archiveHost.isEmpty());
         QVERIFY(tools.revision.startsWith("0.1.0-"));

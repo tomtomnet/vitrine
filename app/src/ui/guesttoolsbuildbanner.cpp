@@ -88,7 +88,7 @@ void GuestToolsBuildBanner::refresh()
             button = tr("Show…");
         } else if (state == State::NotBuilt) {
             text = tr("<b>The guest tools are not built yet.</b> Vitrine builds them in a Fedora "
-                      "container, which takes 20 to 40 minutes.");
+                      "container, which takes 40 to 70 minutes.");
             button = tr("Build…");
         } else if (state == State::Outdated) {
             shown = m_note;

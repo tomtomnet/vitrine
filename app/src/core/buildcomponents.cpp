@@ -297,27 +297,94 @@ static QStringList orderedPatchPaths(const QString &dir, const QString &folder,
     return list;
 }
 
-/* A spec's NAME: value line ("Version"); empty if none */
+/*
+ * What rpm reads of @spec, as far as this file looks: the lines under
+ * "%if 0%{?NAME}", with NAME one of the spec's own switches ("%global NAME
+ * 1" on, "#global NAME 1" off, as Fedora's Qt specs have unstable), only
+ * when it is on, and those under its %else when it is off.  Any other
+ * condition (%if 0%{?fedora}, %ifarch...) as if both its branches held.
+ */
+static QString readLines(const QString &spec)
+{
+    static const QRegularExpression on("^%global\\s+(\\w+)\\s+(\\S+)",
+                                       QRegularExpression::MultilineOption);
+    static const QRegularExpression off("^#global\\s+(\\w+)\\b", QRegularExpression::MultilineOption);
+    static const QRegularExpression ifSwitch("^%if\\s+0%\\{\\?(\\w+)\\}\\s*$");
+    struct Branch {
+        bool known;
+        bool on;
+        bool inElse;
+    };
+    QHash<QString, bool> switches;
+    QList<Branch> open;
+    QStringList lines;
+
+    for (auto it = off.globalMatch(spec); it.hasNext();) {
+        switches.insert(it.next().captured(1), false);
+    }
+    for (auto it = on.globalMatch(spec); it.hasNext();) {
+        const QRegularExpressionMatch m = it.next();
+        switches.insert(m.captured(1), m.captured(2) != "0");
+    }
+    for (const QString &line : spec.split('\n')) {
+        const QString trimmed = line.trimmed();
+        if (trimmed.startsWith("%if")) {
+            const QRegularExpressionMatch m = ifSwitch.match(trimmed);
+            const bool known = m.hasMatch() && switches.contains(m.captured(1));
+            open.append({known, known && switches.value(m.captured(1)), false});
+            continue;
+        }
+        if (!open.isEmpty() && (trimmed.startsWith("%else") || trimmed.startsWith("%elif"))) {
+            open.last().inElse = true;
+            /* %elif: a condition of its own, read as holding */
+            open.last().known = open.last().known && trimmed.startsWith("%else");
+            continue;
+        }
+        if (!open.isEmpty() && trimmed.startsWith("%endif")) {
+            open.removeLast();
+            continue;
+        }
+        if (std::none_of(open.begin(), open.end(),
+                         [](const Branch &b) { return b.known && b.on == b.inElse; })) {
+            lines << line;
+        }
+    }
+    return lines.join('\n');
+}
+
+/* A spec's NAME: value line ("Version"); empty if none.  rpm's tags are
+   in any case: Fedora's qtbase has "Url:" */
 static QString specValue(const QString &spec, const char *name)
 {
     const QRegularExpression line(QString("^%1:\\s*(.*?)\\s*$").arg(name),
-                                  QRegularExpression::MultilineOption);
+                                  QRegularExpression::MultilineOption |
+                                      QRegularExpression::CaseInsensitiveOption);
     const QRegularExpressionMatch m = line.match(spec);
 
     return m.hasMatch() ? m.captured(1) : QString();
 }
 
-/* The macros of a spec a source's name uses most */
+/* The macros of a spec a source's name uses most: its name and version, and
+   its %global words (KDE Frameworks' %{framework}, Qt's %{qt_module}) */
 static QString expand(QString text, const QString &spec)
 {
+    static const QRegularExpression global("^%global\\s+(\\w+)\\s+([^%\\s]+)\\s*$",
+                                           QRegularExpression::MultilineOption);
     const QString version = specValue(spec, "Version");
+    const auto globals = [&spec](QString in) {
+        for (auto it = global.globalMatch(spec); it.hasNext();) {
+            const QRegularExpressionMatch m = it.next();
+            in.replace("%{" + m.captured(1) + '}', m.captured(2));
+        }
+        return in;
+    };
 
-    text.replace("%{name}", specValue(spec, "Name"));
+    text.replace("%{name}", globals(specValue(spec, "Name")));
     text.replace("%{version}", version);
     /* Mesa's: the version with - for ~ */
     text.replace("%{ver}", QString(version).replace('~', '-'));
     text.remove("%{?dist}");
-    return text;
+    return globals(text);
 }
 
 Source source(const Component &c)
@@ -332,12 +399,13 @@ Source source(const Component &c)
         /* the research's recipe, at its commit; the source RPM is the host's */
         s.revision = c.values.value("research");
     } else if (c.kind == Kind::Package) {
-        const QString spec = QString::fromUtf8(readFile(c.dir + '/' + c.values.value("spec")));
+        const QString spec =
+            readLines(QString::fromUtf8(readFile(c.dir + '/' + c.values.value("spec"))));
         const QString release = expand(specValue(spec, "Release"), spec);
         const QString source0 = specValue(spec, "Source0");
         QString archive = source0.section('/', -1);
 
-        s.url = specValue(spec, "URL");
+        s.url = expand(specValue(spec, "URL"), spec);
         s.revision = specValue(spec, "Version");
         if (!release.isEmpty()) {
             s.revision += '-' + release;
@@ -358,7 +426,7 @@ static QList<Patch> specPatches(const Component &c)
     static const QRegularExpression patchLine("^Patch(\\d*)\\s*:\\s*(\\S+)\\s*$");
     const QString specPath = c.values.value("spec");
     const QString folder = specPath.section('/', 0, -2);
-    const QString spec = QString::fromUtf8(readFile(c.dir + '/' + specPath));
+    const QString spec = readLines(QString::fromUtf8(readFile(c.dir + '/' + specPath)));
     QStringList comment;
     QList<Patch> list;
 
@@ -376,8 +444,12 @@ static QList<Patch> specPatches(const Component &c)
         if (const QRegularExpressionMatch m = patchLine.match(trimmed); m.hasMatch()) {
             Patch p;
             p.path = (folder.isEmpty() ? QString() : folder + '/') + expand(m.captured(2), spec);
-            p.origin = c.values.value("origin");
             p.number = m.captured(1);
+            /* the distribution's own below Patch1000, where the section says
+               whose they are (Fedora's qtbase has nine) */
+            p.origin = c.values.contains("origin.fedora") && p.number.toInt() < 1000
+                           ? c.values.value("origin.fedora")
+                           : c.values.value("origin");
             p.note = comment.join(' ').trimmed();
             list << p;
         }

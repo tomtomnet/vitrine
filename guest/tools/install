@@ -18,17 +18,27 @@
 #   - the nested desktop's proxy, wl-cross-domain-proxy (the session, in
 #     vitrine-guest-tools, needs it in the boots of a VM with the Nested
 #     desktop box)
+#   - vitrine's Qt Base (qt6-qtbase: Wayland windows being resized reuse
+#     their shared memory), KSvg and Kirigami (Plasma's popups no longer
+#     upload their frames again at each opening), each where the guest has
+#     the version it is built from, all of its packages or none
 # then keeps Mesa, KWin, KPipeWire and the proxy at those versions (dnf
-# versionlock).  Mesa is
-# 64-bit only for now: on a guest with 32-bit Mesa (Steam, Wine) it stays
-# Fedora's, as dnf wants both at one version.  A reboot finishes it.  It can run again any
-# time: it does what is missing, nothing when all is there.
+# versionlock), and Qt Base with vitrine's KWin, which is built against its
+# private API.  KSvg and Kirigami are not locked, nor Qt Base without
+# vitrine's KWin: Fedora's next build of them (a new version, or a rebuild)
+# replaces them together with the rest of KDE's frameworks or of Qt, and the
+# next guest tools bring vitrine's back.  Mesa is 64-bit only for now: on a
+# guest with 32-bit Mesa (Steam, Wine) it stays Fedora's, as dnf wants both
+# at one version; so do Qt Base, KSvg and Kirigami.  A reboot finishes it.
+# It can run again any time: it does what is missing, nothing when all is
+# there.
 #
 # Options: --reboot     reboot at the end if needed
-#          --no-kwin    keep the installed KWin
+#          --no-kwin    keep the installed KWin (and Qt Base unlocked)
 #          --force      install again what is installed already
 #          --yes        ask nothing (the default off a terminal)
-#          --uninstall  remove the tools, back to Fedora's Mesa and KWin
+#          --uninstall  remove the tools, back to Fedora's Mesa, KWin,
+#                       KPipeWire, Qt Base, KSvg and Kirigami
 # The output goes to the journal too: journalctl -t vitrine-guest-tools
 set -uo pipefail
 
@@ -46,7 +56,7 @@ for a in "$@"; do
 	--force) force=1 ;;
 	--yes) yes=1 ;;
 	--uninstall) uninstall=1 ;;
-	-h|--help) sed -n '3,30p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
+	-h|--help) sed -n '3,/^set /{/^#/p}' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
 	*) echo "unknown option $a (see --help)" >&2; exit 2 ;;
 	esac
 done
@@ -58,6 +68,8 @@ if [ -z "${VITRINE_INSTALL_LOGGED:-}" ] && command -v logger > /dev/null &&
 	exec > >(tee >(logger -t vitrine-guest-tools)) 2>&1
 fi
 
+# The source packages of the builds that take the place of Fedora's
+sources="mesa kwin kpipewire qt6-qtbase kf6-ksvg kf6-kirigami"
 n=0 total=6
 step() { n=$((n + 1)); echo "== [$n/$total] $*"; }
 say() { echo "   $*"; }
@@ -77,6 +89,20 @@ medium_names() {  # medium_names PATTERN (awk regex on the name)
 }
 installed() {  # installed NAME [ARCH]: true if installed (in that arch)
 	rpm -q --qf '%{ARCH}\n' "$1" 2> /dev/null | grep -qx "${2:-.*}"
+}
+# The installed packages built from the source package @1 (mesa, qt6-qtbase),
+# "NAME ARCH" per line: its subpackages by their exact names, which a glob is
+# not (kf6-kirigami* is kf6-kirigami-addons too)
+from_source() {
+	rpm -qa --qf '%{NAME} %{ARCH} %{SOURCERPM}\n' | awk -v s="$1" '{
+		src = $3; sub(/-[^-]+-[^-]+\.src\.rpm$/, "", src)
+		if (src == s) print $1, $2 }' | sort -u
+}
+# -1, 0 or 1: the EVR @1 is older than, the same as or newer than @2, as rpm
+# and dnf order them
+evr_cmp() {
+	[[ "$1$2" =~ ^[0-9A-Za-z._:~^+-]+$ ]] || { echo 0; return 1; }
+	rpm --eval "%{lua: local a, b = rpm.ver('$1'), rpm.ver('$2'); print(a < b and -1 or (a == b and 0 or 1))}"
 }
 # the kernels installed, as dkms-sync takes them: what a removed kernel
 # leaves in /lib/modules has no vmlinuz
@@ -185,7 +211,7 @@ migrate_research() {
 
 if [ "$uninstall" = 1 ]; then
 	total=3
-	step "Removing the version locks of Mesa, KWin, KPipeWire and the proxy"
+	step "Removing the version locks of Mesa, KWin, KPipeWire, the proxy and Qt Base"
 	versionlock || die "cannot edit $lockfile"
 	step "Removing vitrine-guest-tools (driver, settings, agent)"
 	if installed vitrine-guest-tools; then
@@ -195,8 +221,9 @@ if [ "$uninstall" = 1 ]; then
 	if installed wl-cross-domain-proxy; then
 		dnf -y remove wl-cross-domain-proxy || die "dnf remove failed"
 	fi
-	step "Fedora's Mesa, KWin and KPipeWire again"
-	names=$(rpm -qa --qf '%{NAME}\n' 'mesa-*' 'kwin*' 'kpipewire*' | sort -u)
+	step "Fedora's Mesa, KWin, KPipeWire, Qt Base, KSvg and Kirigami again"
+	# every installed package of their source packages, by its exact name
+	names=$(for s in $sources; do from_source "$s"; done | cut -d' ' -f1 | sort -u)
 	# shellcheck disable=SC2086
 	[ -z "$names" ] || dnf -y distro-sync $names || die "dnf distro-sync failed: Fedora's repositories are needed"
 	rm -rf "$state"
@@ -323,12 +350,97 @@ if [ -n "$(medium_nevra wl-cross-domain-proxy)" ]; then
 else
 	say "the nested desktop: no proxy on this medium, the session falls back to Plasma on the VM's screen"
 fi
-want+=("${mesa[@]}" "${kwin_pkgs[@]}" "${kpipewire_pkgs[@]}" "${proxy_pkgs[@]}")
 
-# vitrine's builds of this medium locked at the versions installed
+# Qt Base, KSvg and Kirigami: the medium's build of a source package in place
+# of the guest's, every installed package of it in the same transaction (they
+# require each other at one version-release, and Qt's Wayland plugins must
+# come from the build of its shm buffer), where the guest has the version it
+# is built from and no newer build.  A newer one (Fedora's rebuild or next
+# version) stays: it took the place of vitrine's together with the rest of
+# KDE's frameworks or of Qt, and the next guest tools bring vitrine's back.
+# None of them when one has no build on the medium (32-bit, as for Mesa): dnf
+# could only remove it.  Documentation (-doc: not on the medium, tied to no
+# version) may stay.
+medium_evr() {  # medium_evr NAME: EPOCH:VERSION-RELEASE of the medium's build, if any
+	local f
+	f=$(awk -v n="$1" '$1 == n && ($3 == "x86_64" || $3 == "noarch") { print $4; exit }' "$packages_txt")
+	[ -n "$f" ] && rpm -qp --nosignature --qf '%{EPOCHNUM}:%{VERSION}-%{RELEASE}' "$medium/repo/$f" 2> /dev/null
+}
+take_source() {  # take_source SOURCE MAIN TITLE: vitrine's build of SOURCE in source_pkgs, or none
+	local src=$1 main=$2 title=$3 have ours set name arch p whose missing=()
+	source_pkgs=()
+	have=$(rpm -q --qf '%{EPOCHNUM}:%{VERSION}-%{RELEASE}\n' "$main.x86_64" 2> /dev/null | sort -V | tail -n 1)
+	[ -n "$have" ] || return 0
+	ours=$(medium_evr "$main")
+	if [ -z "$ours" ]; then
+		say "$title: none on this medium, the installed one stays"
+		return 0
+	fi
+	# the research's set it carries: its release is N.C.SET%{?dist}
+	set=$(sed -nE 's/.*\.([a-z][a-z0-9]*)\.fc[0-9]+$/\1/p' <<< "$ours")
+	local back="vitrine's build" from=
+	[ -z "$set" ] || { back=$set; from=" (the research's $set)"; }
+	case "$(evr_cmp "$have" "$ours")" in
+	1)
+		whose=
+		[ "$(rpm -q --qf '%{VENDOR}\n' "$main.x86_64" | head -n 1)" != "Fedora Project" ] || whose="Fedora's "
+		say "$title: ${whose}${have#0:}, newer than this medium's ${ours#0:}: it stays; the next guest tools bring $back back"
+		return 0
+		;;
+	-1)
+		local hv=${have#*:} ov=${ours#*:}
+		if [ "${hv%%-*}" != "${ov%%-*}" ]; then
+			say "$title: this guest has ${hv%%-*}, this medium's is built from ${ov%%-*}: the installed one stays (update the guest, then install the tools again)"
+			return 0
+		fi
+		;;
+	esac
+	while read -r name arch; do
+		p=
+		case "$arch" in x86_64|noarch) p=$(medium_nevra "$name") ;; esac
+		if [ -n "$p" ]; then
+			source_pkgs+=("$p")
+		elif [ "$arch" != noarch ] || [[ $name != *-doc ]]; then
+			missing+=("$name.$arch")
+		fi
+	done < <(from_source "$src")
+	if [ ${#missing[@]} -gt 0 ]; then
+		say "$title: the installed one stays: this medium has no build of ${missing[*]} (64-bit only), and its packages go together"
+		source_pkgs=()
+		return 0
+	fi
+	local count="${#source_pkgs[@]} packages"
+	[ ${#source_pkgs[@]} != 1 ] || count="1 package"
+	say "$title: vitrine's ${ours#0:}$from, $count"
+}
+take_source qt6-qtbase qt6-qtbase "Qt Base"
+qt_pkgs=("${source_pkgs[@]}")
+# Qt Base locked with vitrine's KWin, which uses Qt's private API: it holds the
+# whole of Qt (each module requires its qtbase version) on the Qt that KWin
+# was built against.  Without vitrine's KWin it is not: Fedora's next Qt then
+# replaces the whole of Qt, and a Qt update (security) does not wait for the
+# shm pools
+qt_locked=()
+if [ ${#qt_pkgs[@]} -gt 0 ]; then
+	if [ "$use_kwin" = 1 ]; then
+		qt_locked=("${qt_pkgs[@]}")
+		say "         locked with vitrine's KWin, which is built against it"
+	else
+		say "         not locked (no vitrine's KWin here): Fedora's next Qt takes its place"
+	fi
+fi
+take_source kf6-ksvg kf6-ksvg KSvg
+ksvg_pkgs=("${source_pkgs[@]}")
+take_source kf6-kirigami kf6-kirigami Kirigami
+kirigami_pkgs=("${source_pkgs[@]}")
+want+=("${mesa[@]}" "${kwin_pkgs[@]}" "${kpipewire_pkgs[@]}" "${proxy_pkgs[@]}" "${qt_pkgs[@]}" \
+       "${ksvg_pkgs[@]}" "${kirigami_pkgs[@]}")
+
+# vitrine's builds of this medium locked at the versions installed (Qt Base
+# only with vitrine's KWin; KSvg and Kirigami never)
 lock_installed() {
 	locks=()
-	for p in "${mesa[@]}" "${kwin_pkgs[@]}" "${kpipewire_pkgs[@]}" "${proxy_pkgs[@]}"; do
+	for p in "${mesa[@]}" "${kwin_pkgs[@]}" "${kpipewire_pkgs[@]}" "${proxy_pkgs[@]}" "${qt_locked[@]}"; do
 		locks+=("$(rpm -q --qf '%{NAME}=%{EPOCHNUM}:%{VERSION}-%{RELEASE}' "$p")")
 	done
 	versionlock "${locks[@]}"

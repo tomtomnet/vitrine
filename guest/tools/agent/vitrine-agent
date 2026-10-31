@@ -61,7 +61,11 @@ MAX_LINE = 65536
 STEP = re.compile(r"^== \[(\d+)/(\d+)\] (.*)$")
 PACKAGES = ["vitrine-guest-tools", "mesa-dri-drivers", "mesa-vulkan-drivers", "mesa-libEGL",
             "mesa-libgbm", "kwin", "kwin-common", "kwin-libs", "plasma-workspace",
-            "gnome-shell", "kernel-core", "dkms", "kpipewire", "wl-cross-domain-proxy"]
+            "gnome-shell", "kernel-core", "dkms", "kpipewire", "wl-cross-domain-proxy",
+            "qt6-qtbase", "kf6-ksvg", "kf6-kirigami"]
+# What the tools replace only while the guest has the version they are built
+# from: Fedora's next build takes their place, until the next guest tools
+FOLLOWING = ["qt6-qtbase", "kf6-ksvg", "kf6-kirigami"]
 CAPSETS = {1: "virgl", 2: "virgl2", 3: "gfxstream-vulkan", 4: "venus", 5: "cross-domain",
            6: "drm"}
 # what the VM's own screen shows, looked at this often while the host listens
@@ -122,6 +126,21 @@ def packages():
         if len(parts) == 3 and parts[2] != "i686":
             # the newest kernel-core last
             found[parts[0]] = parts[1]
+    return found
+
+
+def vitrine_builds():
+    """{name: true if vitrine's build} of those of FOLLOWING installed: the
+    packages the installer put in (its list of what it installed), else the
+    guest's own, Fedora's next build among them, which is no fault"""
+    put = set((read(f"{STATE_DIR}/packages") or "").split())
+    out = run(["rpm", "-q", "--qf", "%{NAME} %{NAME}-%{VERSION}-%{RELEASE}.%{ARCH} %{ARCH}\n"]
+              + FOLLOWING)
+    found = {}
+    for line in out.splitlines():
+        parts = line.split()
+        if len(parts) == 3 and parts[2] != "i686":
+            found[parts[0]] = parts[1] in put
     return found
 
 
@@ -425,6 +444,7 @@ def status(installing=False):
         "gpu": capsets(),
         "packages": pkgs,
         "kwinPatched": bool(tools_kwin) and installed_kwin == tools_kwin,
+        "vitrineBuilds": vitrine_builds(),
         "preempt": preempt(),
         "rebootNeeded": os.path.exists(f"{RUN_DIR}/reboot-needed"),
         "installed": load("state.json"),

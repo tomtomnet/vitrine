@@ -9,8 +9,21 @@
 #          caches for radeonsi/iris over virtio, RADV's virtio probe fix
 #   kwin   KWin 6.7.5 + the VM frame pacing and zero-copy patches; for Plasma
 #          6.7.5 guests only (guest/kwin/kwin.spec)
+#   qtbase, ksvg, kirigami  Qt 6.11.2's qtbase, KSvg and Kirigami 6.31.0 with
+#          the research's sets (q4, k2, f1): Fedora's specs, as the others
 # A package is a folder of guest/ with its spec; components.conf gives
-# their order (the app's Builds window shows them from there).
+# their order (the app's Builds window shows them from there).  Two files
+# of the folder are this script's too:
+#   sources             the files the spec downloads, as Fedora's dist-git
+#                       pins them ("SHA512 (FILE) = HASH"): they come from
+#                       Fedora's lookaside cache by that hash (the very files
+#                       Fedora built from; upstream moves and respins some),
+#                       else from the spec's URLs; a copy in the download
+#                       cache that is another file goes before the build, and
+#                       a build counts only when each is that file
+#   container-setup.sh  run in the build's container (as root) before
+#                       rpm-build-inside.sh: what the build needs besides the
+#                       spec's build requirements
 #
 #   guest/build-rpms.sh [--force] [--verbose] [PACKAGE...]  (default: all of them)
 #   guest/build-rpms.sh --print-inputs [PACKAGE...]
@@ -108,6 +121,44 @@ inputs_lines() {
 }
 inputs_hash() { inputs_lines "$1" | sha256sum | cut -d' ' -f1; }
 
+# Run in the container before rpm-build-inside.sh, for a package with a sources
+# file or a container-setup.sh (prepare DIST-GIT-NAME PACKAGE): the files the
+# sources file pins and the cache lacks, from Fedora's lookaside cache by their
+# hash.  KDE respun kirigami-6.31.0.tar.xz after Fedora had taken it (without
+# the delegates' new textFormat): the spec's URL gives the other file.  A file
+# the lookaside does not have is left to the spec's URL.
+prepare='set -eu
+name=$1 t=$2
+if [ -f "/src/$t/sources" ]; then
+	while IFS= read -r line || [ -n "$line" ]; do
+		[[ $line =~ ^SHA512\ \((.+)\)\ =\ ([0-9a-f]{128}) ]] || continue
+		f=${BASH_REMATCH[1]} h=${BASH_REMATCH[2]}
+		[ ! -f "/sources/$f" ] || continue
+		echo "vitrine-build: phase: downloading $f from Fedora"
+		curl -fsSL --retry 2 -o "/sources/.$f.part" \
+			"https://src.fedoraproject.org/repo/pkgs/rpms/$name/$f/sha512/$h/$f" &&
+			mv "/sources/.$f.part" "/sources/$f" ||
+			{ rm -f "/sources/.$f.part"; echo "not in the Fedora lookaside cache: $f"; }
+	done < "/src/$t/sources"
+fi
+[ ! -f "/src/$t/container-setup.sh" ] || bash "/src/$t/container-setup.sh"
+exec bash /src/rpm-build-inside.sh "$t"'
+
+# The files of the package @1's sources file not in the download cache as it
+# pins them, one per line (none without the file)
+sources_wrong() {
+	local line file sum
+	[ -f "$here/$1/sources" ] || return 0
+	while IFS= read -r line || [ -n "$line" ]; do
+		[[ $line =~ ^SHA512\ \((.+)\)\ =\ ([0-9a-f]{128})[[:space:]]*$ ]] || continue
+		file=${BASH_REMATCH[1]} sum=${BASH_REMATCH[2]}
+		case "$file" in */* | . | ..) die "$1/sources names $file: a file name, not a path" ;; esac
+		[ -f "$cache/sources/$file" ] &&
+			[ "$(sha512sum < "$cache/sources/$file" | cut -d' ' -f1)" = "$sum" ] ||
+			echo "$file"
+	done < "$here/$1/sources"
+}
+
 if [ "$action" = print-inputs ]; then
 	for t in "${targets[@]}"; do
 		echo "$t $(inputs_hash "$t")"
@@ -185,6 +236,12 @@ for t in "${targets[@]}"; do
 		say "restored: $out/$t"
 		continue
 	fi
+	# a download that is not the pinned file (another release under its name,
+	# one cut short): downloaded again
+	stale=$(sources_wrong "$t") || exit 1
+	for f in $stale; do
+		rm -f "$cache/sources/$f"
+	done
 	log=$out/$t.log
 	new=$out/.$t.new
 	rm -rf "$new"
@@ -197,6 +254,12 @@ for t in "${targets[@]}"; do
 	fi
 	# emptied first: tail must not show the last build's
 	: > "$log"
+	# what the package's build needs in the container before rpm-build-inside.sh
+	inside=(bash /src/rpm-build-inside.sh "$t")
+	if [ -f "$here/$t/sources" ] || [ -f "$here/$t/container-setup.sh" ]; then
+		spec=$(find "$here/$t" -maxdepth 1 -name '*.spec' | head -n 1)
+		inside=(bash -c "$prepare" prepare "$(basename "$spec" .spec)" "$t")
+	fi
 	# label=disable: no SELinux relabelling of the source tree
 	# the container gets a cgroup of its own, outside the caller's: capped here
 	# in the background, for a stop to come at once (bash waits for a command
@@ -205,7 +268,7 @@ for t in "${targets[@]}"; do
 		-v "$here:/src:ro" -v "$new:/out" -v "$cache/dnf:/var/cache/libdnf5" \
 		-v "$cache/sources:/sources" ${ccache[@]+"${ccache[@]}"} \
 		-e JOBS="${JOBS:-$(( $(nproc) < 8 ? $(nproc) : 8 ))}" -e DEBUGINFO="${DEBUGINFO:-0}" \
-		"$image" bash /src/rpm-build-inside.sh "$t" >> "$log" 2>&1 9>&- &
+		"$image" "${inside[@]}" >> "$log" 2>&1 9>&- &
 	pid=$!
 	follow=
 	if [ "$verbose" = 1 ]; then
@@ -217,6 +280,17 @@ for t in "${targets[@]}"; do
 	pid=
 	# the log to its end
 	[ -z "$follow" ] || wait "$follow" || true
+	# built from what its sources file pins, or not at all
+	wrong=
+	[ "$rc" != 0 ] || wrong=$(sources_wrong "$t" | tr '\n' ' ')
+	if [ -n "$wrong" ]; then
+		for f in $wrong; do
+			rm -f "$cache/sources/$f"
+		done
+		rm -rf "$new"
+		new=
+		die "building $t: the download of ${wrong% } is not the file guest/$t/sources pins (removed: the next build downloads it again)"
+	fi
 	if [ "$rc" = 0 ]; then
 		inputs_lines "$t" > "$new/.inputs.list"
 		echo "$hash" > "$new/.inputs"

@@ -535,6 +535,33 @@ private slots:
         QVERIFY2(!textOf(banner).contains("not built yet"), qPrintable(textOf(banner)));
     }
 
+    /* What the medium's manifest says it installs: Qt Base, KSvg and Kirigami
+       where the guest has their versions, and which follow Fedora's builds */
+    void namesWhatItInstalls()
+    {
+        const QString manifest = dataDir() + "/vitrine-guest-tools-fc44.json";
+        const auto restore = qScopeGuard([this]() {
+            writeMedium();
+            GuestToolsBuilder::instance()->checkMedium();
+        });
+        QVERIFY(writeFile(manifest, R"({"label": "VITRINETOOL", "mediumId": "a1b2c3d4e5f60718",
+                                        "fedora": "44", "tools": "0.1.0-29.fc44",
+                                        "qtbase": "6.11.2-3.1.q4.fc44",
+                                        "ksvg": "6.31.0-1.1.k2.fc44",
+                                        "kirigami": "6.31.0-1.1.f1.fc44", "packages": []})"));
+        GuestToolsBuilder::instance()->checkMedium();
+        GuestToolsDialog::run(m_window, vm());
+        GuestToolsDialog *dialog = GuestToolsDialog::of(vm());
+        QVERIFY(dialog);
+        const QString text = textOf(dialog);
+        QVERIFY2(text.contains("Qt Base 6.11.2-3.1.q4.fc44") &&
+                     text.contains("if the guest's Qt is 6.11.2"),
+                 qPrintable(text));
+        QVERIFY2(text.contains("KSvg 6.31.0-1.1.k2.fc44 and Kirigami 6.31.0-1.1.f1.fc44"),
+                 qPrintable(text));
+        QVERIFY2(text.contains("give way to Fedora's next build"), qPrintable(text));
+    }
+
     /* What the buttons say follows the VM, which may start or stop meanwhile */
     void followsTheVm()
     {

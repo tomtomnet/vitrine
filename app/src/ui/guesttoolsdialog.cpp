@@ -205,11 +205,32 @@ static QString what(Vm *vm, const GuestTools::Medium &medium)
                                      "setting turns on: Plasma as a window of this computer's "
                                      "desktop</li>");
     }
+    /* in place of the guest's while it has their versions */
+    if (!medium.qtbase.isEmpty()) {
+        what += GuestToolsDialog::tr("<li>Qt Base %1 (Wayland windows being resized reuse their "
+                                     "memory), if the guest's Qt is %2</li>")
+                    .arg(medium.qtbase.toHtmlEscaped(), medium.qtbase.section('-', 0, 0));
+    }
+    QStringList frameworks;
+    if (!medium.ksvg.isEmpty()) {
+        frameworks << GuestToolsDialog::tr("KSvg %1").arg(medium.ksvg.toHtmlEscaped());
+    }
+    if (!medium.kirigami.isEmpty()) {
+        frameworks << GuestToolsDialog::tr("Kirigami %1").arg(medium.kirigami.toHtmlEscaped());
+    }
+    if (!frameworks.isEmpty() && (desktop.isEmpty() || desktop == "kde")) {
+        what += GuestToolsDialog::tr("<li>%1 (Plasma's popups open without uploading their "
+                                     "frames again), if the guest's frameworks are those "
+                                     "versions</li>")
+                    .arg(frameworks.join(GuestToolsDialog::tr(" and ")));
+    }
     what += GuestToolsDialog::tr("<li>the vitrine agent, which tells vitrine how the guest is "
                                  "doing</li></ul>");
     what += GuestToolsDialog::tr("<p>Mesa, KWin and KPipeWire then stay at these versions until "
-                                 "the next guest tools. The guest needs the network: dkms and the "
-                                 "kernel headers come from Fedora.</p>");
+                                 "the next guest tools, and so does Qt Base with vitrine's KWin. "
+                                 "KSvg, Kirigami and Qt Base otherwise give way to Fedora's next "
+                                 "build of them. The guest needs the network: dkms and the kernel "
+                                 "headers come from Fedora.</p>");
     what += running ? GuestToolsDialog::tr("<p><b>vitrine shuts the VM down and starts it again"
                                            "</b> with the tools medium. The guest installs them "
                                            "before its desktop starts, which takes a few "
