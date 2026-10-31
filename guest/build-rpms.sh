@@ -15,9 +15,12 @@
 # their order (the app's Builds window shows them from there).  Two files
 # of the folder are this script's too:
 #   sources             the files the spec downloads, as Fedora's dist-git
-#                       pins them ("SHA512 (FILE) = HASH"): a copy in the
-#                       download cache that is another file goes before the
-#                       build, and a build counts only when each is that file
+#                       pins them ("SHA512 (FILE) = HASH"): they come from
+#                       Fedora's lookaside cache by that hash (the very files
+#                       Fedora built from; upstream moves and respins some),
+#                       else from the spec's URLs; a copy in the download
+#                       cache that is another file goes before the build, and
+#                       a build counts only when each is that file
 #   container-setup.sh  run in the build's container (as root) before
 #                       rpm-build-inside.sh: what the build needs besides the
 #                       spec's build requirements
@@ -117,6 +120,29 @@ inputs_lines() {
 		xargs -0 sha256sum)
 }
 inputs_hash() { inputs_lines "$1" | sha256sum | cut -d' ' -f1; }
+
+# Run in the container before rpm-build-inside.sh, for a package with a sources
+# file or a container-setup.sh (prepare DIST-GIT-NAME PACKAGE): the files the
+# sources file pins and the cache lacks, from Fedora's lookaside cache by their
+# hash.  KDE respun kirigami-6.31.0.tar.xz after Fedora had taken it (without
+# the delegates' new textFormat): the spec's URL gives the other file.  A file
+# the lookaside does not have is left to the spec's URL.
+prepare='set -eu
+name=$1 t=$2
+if [ -f "/src/$t/sources" ]; then
+	while IFS= read -r line || [ -n "$line" ]; do
+		[[ $line =~ ^SHA512\ \((.+)\)\ =\ ([0-9a-f]{128}) ]] || continue
+		f=${BASH_REMATCH[1]} h=${BASH_REMATCH[2]}
+		[ ! -f "/sources/$f" ] || continue
+		echo "vitrine-build: phase: downloading $f from Fedora"
+		curl -fsSL --retry 2 -o "/sources/.$f.part" \
+			"https://src.fedoraproject.org/repo/pkgs/rpms/$name/$f/sha512/$h/$f" &&
+			mv "/sources/.$f.part" "/sources/$f" ||
+			{ rm -f "/sources/.$f.part"; echo "not in the Fedora lookaside cache: $f"; }
+	done < "/src/$t/sources"
+fi
+[ ! -f "/src/$t/container-setup.sh" ] || bash "/src/$t/container-setup.sh"
+exec bash /src/rpm-build-inside.sh "$t"'
 
 # The files of the package @1's sources file not in the download cache as it
 # pins them, one per line (none without the file)
@@ -230,9 +256,9 @@ for t in "${targets[@]}"; do
 	: > "$log"
 	# what the package's build needs in the container before rpm-build-inside.sh
 	inside=(bash /src/rpm-build-inside.sh "$t")
-	if [ -f "$here/$t/container-setup.sh" ]; then
-		inside=(bash -c 'bash "/src/$1/container-setup.sh" && exec bash /src/rpm-build-inside.sh "$1"' \
-			setup "$t")
+	if [ -f "$here/$t/sources" ] || [ -f "$here/$t/container-setup.sh" ]; then
+		spec=$(find "$here/$t" -maxdepth 1 -name '*.spec' | head -n 1)
+		inside=(bash -c "$prepare" prepare "$(basename "$spec" .spec)" "$t")
 	fi
 	# label=disable: no SELinux relabelling of the source tree
 	# the container gets a cgroup of its own, outside the caller's: capped here
