@@ -1,5 +1,5 @@
 The research's work on wl-cross-domain-proxy (virtio-gpu-desktop,
-src/wl-cross-domain-proxy at its commit f79a9bc), as one diff against
+src/wl-cross-domain-proxy at its commit a56b97b), as one diff against
 upstream c6ce1ca89fb4, the commit it started from
 (patches/wl-cross-domain-proxy/BASE.md there).  What the nested desktop
 needs of the proxy beyond upstream: the presentation clock translated into
@@ -54,6 +54,13 @@ selection already replaced in the same batch of events (two at login,
 Klipper's: it read the first one's offer, gone by then, and the
 compositor closed the connection, which left the clipboard off for the
 session), and connects again by itself when it is lost.
+
+The message parser takes a message's file descriptors only once all its
+arguments parse (a message refused halfway, a string without its NUL or
+an array longer than the message, left the next message on the
+connection with the wrong ones), and a complete message too short for
+its signature is malformed (the client's connection waited for more of
+it, and hung).
 
 Licence: these changes are GPL-2.0-or-later (the research's, the user's
 choice of 2026-10-14); Victoria Brekenfeld's proxy stays MIT, with her
@@ -11111,3 +11118,318 @@ diff -ruN a/src/wl_proto/socket.rs b/src/wl_proto/socket.rs
      #[test]
      fn write_read_cycle_fd() {
          let (read, write) = std::io::pipe().unwrap();
+diff -ruN a/src/wl_proto/wire.rs b/src/wl_proto/wire.rs
+--- a/src/wl_proto/wire.rs
++++ b/src/wl_proto/wire.rs
+@@ -157,21 +157,23 @@
+ /// and the unused tail of the buffers is returned. If a single message was present,
+ /// the returned slices should thus be empty.
+ ///
+-/// Errors if the message is malformed.
++/// Errors if the message is malformed: MissingData and MissingFD only while the message has not fully
++/// arrived. Its fds are taken from `fds` only when it parses; on an error `fds` is left as it was.
+ #[allow(clippy::type_complexity)]
+ pub fn parse_message<'a, F>(
+     raw: &'a [u8],
+     signature: &[ArgumentType],
+     fds: &mut VecDeque<F>,
+ ) -> Result<(Message<u32, F>, &'a [u8]), MessageParseError> {
+-    // helper function to read arrays
++    // helper function to read arrays: the whole message is there, so an array that does not fit in it
++    // is malformed
+     fn read_array_from_payload(
+         array_len: usize,
+         payload: &[u8],
+     ) -> Result<(&[u8], &[u8]), MessageParseError> {
+         let len = next_multiple_of(array_len, 4);
+         if len > payload.len() {
+-            return Err(MessageParseError::MissingData);
++            return Err(MessageParseError::Malformed);
+         }
+         Ok((&payload[..array_len], &payload[len..]))
+     }
+@@ -199,56 +201,53 @@
+         return Err(MessageParseError::MissingFD);
+     }
+ 
+-    let (mut payload, rest) = raw.split_at(len);
+-    payload = &payload[2 * 4..];
++    let (message, rest) = raw.split_at(len);
++    let mut payload = &message[2 * 4..];
+ 
+-    let arguments = signature
+-        .iter()
+-        .map(|argtype| {
+-            if let ArgumentType::Fd = *argtype {
+-                // don't consume input but fd
+-                if let Some(front) = fds.pop_front() {
+-                    Ok(Argument::Fd(front))
++    // Every argument first, the fds after (2026-10-31): a message refused halfway had already taken
++    // its fds, and the next message on the connection got the wrong ones. An argument that does not
++    // fit in the message is malformed; it was MissingData, which kept the connection waiting for bytes
++    // of a message that had fully arrived.
++    let mut parsed: SmallVec<[Option<Argument<u32, F>>; 4]> = SmallVec::with_capacity(signature.len());
++    for argtype in signature {
++        if let ArgumentType::Fd = *argtype {
++            parsed.push(None);
++            continue;
++        }
++        let Some((front, mut tail)) = payload.split_first_chunk::<4>() else {
++            return Err(MessageParseError::Malformed);
++        };
++        let front = u32::from_ne_bytes(*front);
++        let arg = match *argtype {
++            ArgumentType::Int => Argument::Int(front as i32),
++            ArgumentType::Uint => Argument::Uint(front),
++            ArgumentType::Fixed => Argument::Fixed(front as i32),
++            ArgumentType::Str(_) => {
++                let (v, rest) = read_array_from_payload(front as usize, tail)?;
++                tail = rest;
++                if v.is_empty() {
++                    Argument::Str(None)
+                 } else {
+-                    Err(MessageParseError::MissingFD)
++                    let s = CStr::from_bytes_with_nul(v).map_err(|_| MessageParseError::Malformed)?;
++                    Argument::Str(Some(Box::new(s.into())))
+                 }
+-            } else if payload.len() >= 4 {
+-                let (front, mut tail) = payload.split_at(4);
+-                let front = u32::from_ne_bytes(front.try_into().unwrap());
+-                let arg = match *argtype {
+-                    ArgumentType::Int => Ok(Argument::Int(front as i32)),
+-                    ArgumentType::Uint => Ok(Argument::Uint(front)),
+-                    ArgumentType::Fixed => Ok(Argument::Fixed(front as i32)),
+-                    ArgumentType::Str(_) => {
+-                        read_array_from_payload(front as usize, tail).and_then(|(v, rest)| {
+-                            tail = rest;
+-                            if !v.is_empty() {
+-                                match CStr::from_bytes_with_nul(v) {
+-                                    Ok(s) => Ok(Argument::Str(Some(Box::new(s.into())))),
+-                                    Err(_) => Err(MessageParseError::Malformed),
+-                                }
+-                            } else {
+-                                Ok(Argument::Str(None))
+-                            }
+-                        })
+-                    }
+-                    ArgumentType::Object(_) => Ok(Argument::Object(front)),
+-                    ArgumentType::NewId => Ok(Argument::NewId(front)),
+-                    ArgumentType::Array => {
+-                        read_array_from_payload(front as usize, tail).map(|(v, rest)| {
+-                            tail = rest;
+-                            Argument::Array(Box::new(v.into()))
+-                        })
+-                    }
+-                    ArgumentType::Fd => unreachable!(),
+-                };
+-                payload = tail;
+-                arg
+-            } else {
+-                Err(MessageParseError::MissingData)
+             }
+-        })
+-        .collect::<Result<SmallVec<_>, MessageParseError>>()?;
++            ArgumentType::Object(_) => Argument::Object(front),
++            ArgumentType::NewId => Argument::NewId(front),
++            ArgumentType::Array => {
++                let (v, rest) = read_array_from_payload(front as usize, tail)?;
++                tail = rest;
++                Argument::Array(Box::new(v.into()))
++            }
++            ArgumentType::Fd => unreachable!(),
++        };
++        payload = tail;
++        parsed.push(Some(arg));
++    }
++    let arguments = parsed
++        .into_iter()
++        .map(|arg| arg.unwrap_or_else(|| Argument::Fd(fds.pop_front().expect("counted before parsing"))))
++        .collect();
+ 
+     let msg = Message {
+         sender_id,
+@@ -258,7 +257,6 @@
+     Ok((msg, rest))
+ }
+ 
+-// Stabalized in Rust 1.73
+ fn next_multiple_of(lhs: usize, rhs: usize) -> usize {
+     match lhs % rhs {
+         0 => lhs,
+@@ -314,4 +312,176 @@
+         .unwrap();
+         assert_eq!(rebuilt, msg);
+     }
++
++    /// A header saying 12 bytes, a signature wanting two words: the message has fully arrived, so it
++    /// is malformed (MissingData kept the connection waiting for bytes that never come).
++    #[test]
++    fn a_complete_message_too_short_for_its_signature_is_malformed() {
++        let mut raw = Vec::new();
++        raw.extend_from_slice(&5u32.to_ne_bytes());
++        raw.extend_from_slice(&((12u32 << 16) | 1).to_ne_bytes());
++        raw.extend_from_slice(&7u32.to_ne_bytes());
++        let mut fds: VecDeque<RawFd> = VecDeque::new();
++        let r = parse_message(&raw, &[ArgumentType::Uint, ArgumentType::Uint], &mut fds);
++        assert!(matches!(r, Err(MessageParseError::Malformed)), "{r:?}");
++        // a string longer than the message
++        let mut raw = Vec::new();
++        raw.extend_from_slice(&5u32.to_ne_bytes());
++        raw.extend_from_slice(&((16u32 << 16) | 1).to_ne_bytes());
++        raw.extend_from_slice(&100u32.to_ne_bytes());
++        raw.extend_from_slice(b"abc\0");
++        let r = parse_message(&raw, &[ArgumentType::Str(AllowNull::No)], &mut fds);
++        assert!(matches!(r, Err(MessageParseError::Malformed)), "{r:?}");
++    }
++
++    /// A message refused after its fd argument leaves the fd queue as it was: the next message gets
++    /// its own fds (it got this one's).
++    #[test]
++    fn a_refused_message_keeps_its_fds() {
++        let mut raw = Vec::new();
++        raw.extend_from_slice(&5u32.to_ne_bytes());
++        raw.extend_from_slice(&((16u32 << 16) | 1).to_ne_bytes());
++        raw.extend_from_slice(&4u32.to_ne_bytes());
++        raw.extend_from_slice(b"abcd"); // no terminating nul
++        let mut fds: VecDeque<RawFd> = VecDeque::from(vec![40, 41]);
++        let sig = [ArgumentType::Fd, ArgumentType::Str(AllowNull::No)];
++        assert!(matches!(parse_message(&raw, &sig, &mut fds), Err(MessageParseError::Malformed)));
++        assert_eq!(fds, VecDeque::from(vec![40, 41]));
++    }
++
++    /// xorshift64*: deterministic randomness without a dependency
++    struct Rng(u64);
++    impl Rng {
++        fn next(&mut self) -> u64 {
++            self.0 ^= self.0 >> 12;
++            self.0 ^= self.0 << 25;
++            self.0 ^= self.0 >> 27;
++            self.0.wrapping_mul(0x2545_F491_4F6C_DD1D)
++        }
++        fn below(&mut self, n: u64) -> u64 {
++            self.next() % n.max(1)
++        }
++    }
++
++    fn random_type(rng: &mut Rng) -> ArgumentType {
++        match rng.below(8) {
++            0 => ArgumentType::Int,
++            1 => ArgumentType::Uint,
++            2 => ArgumentType::Fixed,
++            3 => ArgumentType::Str(AllowNull::Yes),
++            4 => ArgumentType::Object(AllowNull::Yes),
++            5 => ArgumentType::NewId,
++            6 => ArgumentType::Array,
++            _ => ArgumentType::Fd,
++        }
++    }
++
++    fn random_arg(rng: &mut Rng, t: &ArgumentType) -> Argument<u32, RawFd> {
++        match t {
++            ArgumentType::Int => Argument::Int(rng.next() as i32),
++            ArgumentType::Uint => Argument::Uint(rng.next() as u32),
++            ArgumentType::Fixed => Argument::Fixed(rng.next() as i32),
++            ArgumentType::Str(_) => {
++                if rng.below(5) == 0 {
++                    Argument::Str(None)
++                } else {
++                    let n = rng.below(24) as usize;
++                    let bytes: Vec<u8> = (0..n).map(|_| 1 + rng.below(255) as u8).collect();
++                    Argument::Str(Some(Box::new(CString::new(bytes).unwrap())))
++                }
++            }
++            ArgumentType::Object(_) => Argument::Object(rng.next() as u32),
++            ArgumentType::NewId => Argument::NewId(rng.next() as u32),
++            ArgumentType::Array => {
++                let n = rng.below(40) as usize;
++                Argument::Array(Box::new((0..n).map(|_| rng.next() as u8).collect()))
++            }
++            ArgumentType::Fd => Argument::Fd(3 + rng.below(1000) as RawFd),
++        }
++    }
++
++    /// Valid messages of random signatures survive a write and a parse unchanged.
++    #[test]
++    fn random_messages_round_trip() {
++        let mut rng = Rng(0x9E37_79B9_7F4A_7C15);
++        for _ in 0..20_000 {
++            let sig: Vec<ArgumentType> = (0..rng.below(8)).map(|_| random_type(&mut rng)).collect();
++            let msg = Message::<u32, RawFd> {
++                sender_id: 1 + rng.below(1 << 20) as u32,
++                opcode: rng.below(32) as u16,
++                args: sig.iter().map(|t| random_arg(&mut rng, t)).collect(),
++            };
++            let mut bytes = vec![0; 4096];
++            let mut out_fds = Vec::new();
++            let n = write_to_buffers(&msg, &mut bytes[..], &mut out_fds).unwrap();
++            let mut fds = VecDeque::from(out_fds);
++            let (rebuilt, rest) = parse_message(&bytes[..n], &sig, &mut fds).unwrap();
++            assert_eq!(rebuilt, msg);
++            assert!(rest.is_empty() && fds.is_empty());
++        }
++    }
++
++    /// Damaged and random messages never panic the parser, and its results keep their promises:
++    /// MissingData only for a message that has not fully arrived, the rest of the buffer returned
++    /// exactly, the fd queue touched only by a message that parsed (by its fd count).
++    #[test]
++    fn damaged_messages_keep_the_parsers_promises() {
++        let mut rng = Rng(0xD1B5_4A32_D192_ED03);
++        for i in 0..200_000 {
++            let sig: Vec<ArgumentType> = (0..rng.below(8)).map(|_| random_type(&mut rng)).collect();
++            let mut bytes = vec![0; 4096];
++            let mut n = if i % 4 == 0 {
++                // plain noise
++                let n = rng.below(96) as usize;
++                for b in &mut bytes[..n] {
++                    *b = rng.next() as u8;
++                }
++                n
++            } else {
++                // a valid message, then damaged
++                let msg = Message::<u32, RawFd> {
++                    sender_id: 1 + rng.below(1 << 20) as u32,
++                    opcode: rng.below(32) as u16,
++                    args: sig.iter().map(|t| random_arg(&mut rng, t)).collect(),
++                };
++                let mut out_fds = Vec::new();
++                let n = write_to_buffers(&msg, &mut bytes[..], &mut out_fds).unwrap();
++                for _ in 0..rng.below(4) {
++                    let at = rng.below(n as u64) as usize;
++                    bytes[at] ^= 1 << rng.below(8);
++                }
++                if rng.below(3) == 0 {
++                    // a size field that lies
++                    let size = rng.below(1 << 16) as u32;
++                    let w = u32::from_ne_bytes(bytes[4..8].try_into().unwrap());
++                    bytes[4..8].copy_from_slice(&((size << 16) | (w & 0xFFFF)).to_ne_bytes());
++                }
++                n
++            };
++            if rng.below(4) == 0 {
++                n = rng.below(n as u64 + 1) as usize; // cut short
++            }
++            let raw = &bytes[..n];
++            let fd_count = sig.iter().filter(|t| matches!(t, ArgumentType::Fd)).count();
++            let queued = rng.below(4) as usize;
++            let mut fds: VecDeque<RawFd> = (0..queued as RawFd).collect();
++            let declared = if n >= 8 { (u32::from_ne_bytes(raw[4..8].try_into().unwrap()) >> 16) as usize } else { 0 };
++            match parse_message(raw, &sig, &mut fds) {
++                Ok((msg, rest)) => {
++                    assert_eq!(msg.args.len(), sig.len());
++                    assert_eq!(rest.len(), n - declared);
++                    assert_eq!(fds.len(), queued - fd_count);
++                }
++                Err(MessageParseError::MissingData) => {
++                    assert!(n < 8 || declared > n, "MissingData for a complete message ({declared} of {n} bytes)");
++                    assert_eq!(fds.len(), queued);
++                }
++                Err(MessageParseError::MissingFD) => {
++                    assert!(fd_count > queued);
++                    assert_eq!(fds.len(), queued);
++                }
++                Err(MessageParseError::Malformed) => assert_eq!(fds.len(), queued),
++            }
++        }
++    }
+ }

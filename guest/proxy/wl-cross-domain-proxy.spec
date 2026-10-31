@@ -1,5 +1,5 @@
 # Upstream's commit c6ce1ca89fb4, where the research's work starts, with that
-# work as one patch, taken at the research's commit f79a9bc (the patch's
+# work as one patch, taken at the research's commit a56b97b (the patch's
 # description has what it adds).  Literal, without macros: vitrine's Builds
 # window reads Version and Source0 as they are written.  The date the patch
 # was taken comes first, so that each version sorts after the one before
@@ -7,7 +7,7 @@
 # a counter after it for another one on the same day: 20261015.1 sorts after
 # 20261015, .2 after .1, the next day's date after both.
 Name:           wl-cross-domain-proxy
-Version:        0.1.0^20261031.2gitc6ce1ca.rf79a9bc
+Version:        0.1.0^20261031.3gitc6ce1ca.ra56b97b
 Release:        1%{?dist}
 Summary:        Wayland proxy over virtio-gpu cross-domain, for vitrine's nested desktop
 
@@ -63,6 +63,13 @@ install -Dm 0644 %{SOURCE1} %{buildroot}%{_licensedir}/%{name}/GPL-2.0.txt
 %{_bindir}/%{name}
 
 %changelog
+* Sat Oct 31 2026 vitrine <noreply@anthropic.com> - 0.1.0^20261031.3gitc6ce1ca.ra56b97b-1
+- the research's a56b97b: the message parser takes a message's file
+  descriptors only once all its arguments parse (a message refused
+  halfway left the next one on the connection with the wrong ones), and a
+  complete message too short for its signature is malformed instead of
+  waited for (the client's connection hung)
+
 * Sat Oct 31 2026 vitrine <noreply@anthropic.com> - 0.1.0^20261031.2gitc6ce1ca.rf79a9bc-1
 - the research's f79a9bc: the clipboard's connection to the nested
   compositor skips a guest selection already replaced in the same batch
