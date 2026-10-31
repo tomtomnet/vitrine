@@ -211,5 +211,5 @@ above, a new host package its section in `components.conf`, and a new
 run-time switch of the research's host session (`setup/steps/host-session.sh`)
 for a patch of the sets its file; `research=` in `components.conf` gets the
 new commit and the table its new checksums. No file may have a
-`Claude-Session:` line (the research removed them on 2026-10-14). A change
+`Claude-Session` trailer line (the research removed them on 2026-10-14). A change
 of the copy makes the app's builds of the packages it concerns out of date.
