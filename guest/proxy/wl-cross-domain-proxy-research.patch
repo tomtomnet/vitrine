@@ -1,5 +1,5 @@
 The research's work on wl-cross-domain-proxy (virtio-gpu-desktop,
-src/wl-cross-domain-proxy at its commit 4dd61fa), as one diff against
+src/wl-cross-domain-proxy at its commit f79a9bc), as one diff against
 upstream c6ce1ca89fb4, the commit it started from
 (patches/wl-cross-domain-proxy/BASE.md there).  What the nested desktop
 needs of the proxy beyond upstream: the presentation clock translated into
@@ -48,6 +48,12 @@ the client's: create_icc_creator always, and the parametric, scRGB and
 BT.2100 creators unless the host announced those features.  A raw client
 of the proxy's socket ended the app serving QEMU's socket that way
 (2026-10-31).
+
+The clipboard's own connection to the nested compositor skips a guest
+selection already replaced in the same batch of events (two at login,
+Klipper's: it read the first one's offer, gone by then, and the
+compositor closed the connection, which left the clipboard off for the
+session), and connects again by itself when it is lost.
 
 Licence: these changes are GPL-2.0-or-later (the research's, the user's
 choice of 2026-10-14); Victoria Brekenfeld's proxy stays MIT, with her
@@ -1209,7 +1215,7 @@ diff -ruN a/src/main.rs b/src/main.rs
 diff -ruN a/src/session/clipboard.rs b/src/session/clipboard.rs
 --- a/src/session/clipboard.rs
 +++ b/src/session/clipboard.rs
-@@ -0,0 +1,1612 @@
+@@ -0,0 +1,1771 @@
 +//! Host/guest clipboard for a forwarded nested desktop, with the semantics of
 +//! VM tools (and of the plasma-vm container): the host's clipboard reaches the
 +//! guest when the forwarded window gets the keyboard focus, and while it has
@@ -1581,6 +1587,8 @@ diff -ruN a/src/session/clipboard.rs b/src/session/clipboard.rs
 +    // guest side
 +    guest: Option<GuestClient>,
 +    guest_tried: Option<Instant>,
++    /// a failed connection was reported (once per outage: the retries are quiet)
++    guest_warned: bool,
 +    guest_sources: HashMap<u32, GuestSource>,
 +    guest_current: Option<u32>,
 +    /// (text hash, image) of what the proxy last set in the guest
@@ -1642,6 +1650,7 @@ diff -ruN a/src/session/clipboard.rs b/src/session/clipboard.rs
 +            host_hash: None,
 +            guest: None,
 +            guest_tried: None,
++            guest_warned: false,
 +            guest_sources: HashMap::new(),
 +            guest_current: None,
 +            guest_applied: None,
@@ -1733,11 +1742,36 @@ diff -ruN a/src/session/clipboard.rs b/src/session/clipboard.rs
 +                    warn!("clipboard: {e}");
 +                    return;
 +                }
++                if std::mem::take(&mut self.guest_warned) {
++                    info!("clipboard: connected to the nested compositor again");
++                }
 +                debug!("clipboard: connected to the nested compositor at {}", path.display());
 +                self.guest = Some(client);
 +            }
-+            Err(e) => warn!("clipboard: cannot connect to the nested compositor at {}: {e}", path.display()),
++            Err(e) if self.guest_warned => debug!("clipboard: cannot connect to the nested compositor at {}: {e}", path.display()),
++            Err(e) => {
++                self.guest_warned = true;
++                warn!("clipboard: cannot connect to the nested compositor at {}: {e}", path.display());
++            }
 +        }
++    }
++
++    /// The connection to the nested compositor failed. Its state goes; the host's selection the
++    /// guest had is set again on the next connection, which is tried at once (at most every
++    /// [`RETRY`]) and then while the window has the focus. vitrine 2026-10-31: one protocol error
++    /// at session start left the clipboard off for the whole session (it reconnected only at a
++    /// new keyboard focus, which an integrated view that keeps the focus never gets).
++    fn lose_guest(&mut self, why: &dyn std::fmt::Display) {
++        warn!("clipboard: lost the nested compositor: {why}");
++        self.guest = None;
++        self.guest_warned = true;
++        let current = self.guest_current.take().and_then(|id| self.guest_sources.remove(&id));
++        self.guest_sources.clear();
++        self.guest_read = None;
++        if self.guest_pending.is_none() {
++            self.guest_pending = current;
++        }
++        self.connect_guest();
 +    }
 +
 +    /// A host event (guest ids) on one of the guest's objects: keyboard focus
@@ -1952,6 +1986,8 @@ diff -ruN a/src/session/clipboard.rs b/src/session/clipboard.rs
 +        }
 +        let Some(guest) = self.guest.as_mut().filter(|g| g.ready()) else {
 +            self.guest_pending = Some(source);
++            // set when the guest connection is ready (no connection: one is tried now)
++            self.connect_guest();
 +            return;
 +        };
 +        match guest.set_selection(&offered_types(source.text.is_some(), source.png)) {
@@ -1963,8 +1999,8 @@ diff -ruN a/src/session/clipboard.rs b/src/session/clipboard.rs
 +            }
 +            Ok(None) => self.guest_pending = Some(source),
 +            Err(e) => {
-+                warn!("clipboard: the nested compositor: {e}");
-+                self.guest = None;
++                self.guest_pending = Some(source);
++                self.lose_guest(&e);
 +            }
 +        }
 +    }
@@ -2136,6 +2172,12 @@ diff -ruN a/src/session/clipboard.rs b/src/session/clipboard.rs
 +            GuestEvent::Missing => {
 +                warn!("clipboard: the nested compositor offers no ext_data_control_manager_v1: the host's clipboard does not reach the guest");
 +            }
++            // a selection replaced in the same batch of events: its offer is destroyed already, and a
++            // receive on it ended the connection with "invalid object" (vitrine 2026-10-31, at a login,
++            // when Klipper set its last item again)
++            GuestEvent::Selection { offer, .. } if self.guest.as_ref().is_none_or(|g| g.selection != Some(offer)) => {
++                debug!("clipboard: the guest's selection {offer:#x} was replaced before it was read");
++            }
 +            GuestEvent::Selection { offer, mimes } => self.guest_selection_changed(offer, mimes),
 +            GuestEvent::Send { source, mime, fd } => self.guest_send(source, mime, fd, out),
 +            GuestEvent::Cancelled { source } => {
@@ -2150,8 +2192,16 @@ diff -ruN a/src/session/clipboard.rs b/src/session/clipboard.rs
 +    /// Finished transfers and the nested compositor's events; `out` receives
 +    /// requests of the proxy to send to the host.
 +    pub(super) fn dispatch(&mut self, own: &mut OwnObjects, out: &mut Vec<HostRequest>) {
++        if !self.enabled() {
++            return;
++        }
++        // no connection to the nested compositor while the window has the focus: tried again (at
++        // most every RETRY; nothing else would try before the next keyboard focus)
++        if self.guest.is_none() && self.focused {
++            self.connect_guest();
++        }
 +        // the event loop passes here for every batch of messages: one syscall when idle
-+        if !self.enabled() || !self.pending() {
++        if !self.pending() {
 +            return;
 +        }
 +        let mut count = [0u8; 8];
@@ -2168,11 +2218,7 @@ diff -ruN a/src/session/clipboard.rs b/src/session/clipboard.rs
 +        }
 +        if let Some(guest) = self.guest.as_mut() {
 +            if let Err(e) = result.and_then(|()| guest.flush()) {
-+                warn!("clipboard: lost the nested compositor: {e}");
-+                self.guest = None;
-+                self.guest_sources.clear();
-+                self.guest_current = None;
-+                self.guest_read = None;
++                self.lose_guest(&e);
 +            }
 +        }
 +    }
@@ -2302,6 +2348,10 @@ diff -ruN a/src/session/clipboard.rs b/src/session/clipboard.rs
 +
 +    /// Asks the guest's selection for `mime`; returns the pipe's read end.
 +    fn receive(&mut self, offer: u32, mime: &str) -> io::Result<OwnedFd> {
++        if !self.offers.contains_key(&offer) {
++            // destroyed already: a request on it is a protocol error that ends the connection
++            return Err(io::Error::new(io::ErrorKind::NotFound, format!("the guest's offer {offer:#x} is gone")));
++        }
 +        let (read, write) = pipe()?;
 +        let mime = CString::new(mime).map_err(io::Error::other)?;
 +        self.request(
@@ -2497,6 +2547,7 @@ diff -ruN a/src/session/clipboard.rs b/src/session/clipboard.rs
 +#[cfg(test)]
 +mod tests {
 +    use super::*;
++    use crate::session::event_opcode;
 +
 +    #[test]
 +    fn modes_and_types() {
@@ -2727,15 +2778,122 @@ diff -ruN a/src/session/clipboard.rs b/src/session/clipboard.rs
 +        assert_eq!(cb.guest_current, before);
 +
 +        // the guest's selection set by the proxy comes back (marker): nothing is read
-+        cb.on_guest_event(GuestEvent::Selection { offer: 0xff00_0100, mimes: vec![MARKER.clone()] }, &mut out);
++        for event in guest_selection(cb.guest.as_mut().unwrap(), 0xff00_0100, &[MARKER.as_str()]) {
++            cb.on_guest_event(event, &mut out);
++        }
 +        assert!(cb.guest_read.is_none());
 +        // a selection made in the guest while focused is read (here: no guest compositor to answer)
-+        cb.on_guest_event(
-+            GuestEvent::Selection { offer: 0xff00_0101, mimes: vec!["text/plain".to_owned()] },
-+            &mut out,
-+        );
++        for event in guest_selection(cb.guest.as_mut().unwrap(), 0xff00_0101, &["text/plain"]) {
++            cb.on_guest_event(event, &mut out);
++        }
 +        assert!(cb.guest_read.is_some());
 +        assert_eq!(cb.guest_current, None);
++    }
++
++    /// A guest client with a data device, over a socket pair (its other end returned).
++    fn ready_guest() -> (GuestClient, UnixStream) {
++        let (ours, theirs) = UnixStream::pair().unwrap();
++        ours.set_nonblocking(true).unwrap();
++        let mut client = GuestClient::new(ours).unwrap();
++        client.manager = Some(client.new_id(&EXT_DATA_CONTROL_MANAGER_V1_INTERFACE));
++        client.device = Some(client.new_id(&EXT_DATA_CONTROL_DEVICE_V1_INTERFACE));
++        (client, theirs)
++    }
++
++    /// The nested compositor's data device announces a new selection: the events the proxy's
++    /// client makes of it.
++    fn guest_selection(client: &mut GuestClient, offer: u32, mimes: &[&str]) -> Vec<GuestEvent> {
++        let device = client.device.expect("a data device");
++        let (dev, off) = (&EXT_DATA_CONTROL_DEVICE_V1_INTERFACE, &EXT_DATA_CONTROL_OFFER_V1_INTERFACE);
++        let mut events = Vec::new();
++        let mut event = |client: &mut GuestClient, sender: u32, opcode: u16, args: Args| {
++            client.handle(Message { sender_id: sender, opcode, args }, &mut events).unwrap();
++        };
++        event(client, device, event_opcode(dev, "data_offer"), smallvec![Argument::NewId(offer)]);
++        for mime in mimes {
++            event(client, offer, event_opcode(off, "offer"), smallvec![s(mime)]);
++        }
++        event(client, device, event_opcode(dev, "selection"), smallvec![Argument::Object(offer)]);
++        events
++    }
++
++    /// The requests on server ids (the guest's offers) the nested compositor got.
++    fn offer_requests(theirs: UnixStream) -> Vec<(u32, &'static str)> {
++        let mut guest = BufferedSocket::new(Socket::from(theirs));
++        std::thread::sleep(Duration::from_millis(20));
++        let _ = guest.fill_incoming_buffers();
++        let off = &EXT_DATA_CONTROL_OFFER_V1_INTERFACE;
++        let mut seen = Vec::new();
++        while let Ok(msg) = guest.read_one_message(|id, op| {
++            let iface: &Interface = match id {
++                1 => &WL_DISPLAY_INTERFACE,
++                _ if id >= SERVER_ID_START => off,
++                _ => return None,
++            };
++            iface.requests.get(op as usize).map(|r| r.signature)
++        }) {
++            if msg.sender_id >= SERVER_ID_START {
++                seen.push((msg.sender_id, off.requests[msg.opcode as usize].name));
++            }
++        }
++        seen
++    }
++
++    /// Two guest selections in one batch of events (vitrine 2026-10-31, at a login: Klipper set
++    /// its last item again). The first offer is destroyed when the second selection comes, so only
++    /// the second is read: a receive on the first ended the connection with "invalid object".
++    #[test]
++    fn a_guest_selection_replaced_in_the_same_batch_is_not_read() {
++        let mut cb = Clipboard::new(ClipboardConfig {
++            mode: ClipboardMode::Focus,
++            guest_display: "/nonexistent".to_owned(),
++        })
++        .unwrap();
++        cb.focused = true;
++        let (mut client, theirs) = ready_guest();
++        let (first, second) = (0xff00_0001, 0xff00_0002);
++        let mut events = guest_selection(&mut client, first, &["text/plain;charset=utf-8"]);
++        events.extend(guest_selection(&mut client, second, &["text/plain;charset=utf-8"]));
++        assert_eq!(events.len(), 2);
++        // a destroyed offer is refused before any request
++        assert_eq!(client.receive(first, "text/plain").unwrap_err().kind(), io::ErrorKind::NotFound);
++        cb.guest = Some(client);
++        cb.guest_tried = Some(Instant::now());
++        let mut out = Vec::new();
++        for event in events {
++            cb.on_guest_event(event, &mut out);
++        }
++        assert!(cb.guest_read.is_some(), "the second selection is read");
++        cb.guest.as_mut().unwrap().flush().unwrap();
++        assert_eq!(offer_requests(theirs), vec![(first, "destroy"), (second, "receive")]);
++    }
++
++    /// A lost connection to the nested compositor: the host's selection the guest had waits for
++    /// the next connection, which is made at once.
++    #[test]
++    fn a_lost_guest_connection_keeps_the_hosts_selection_and_reconnects() {
++        let path = std::env::temp_dir().join(format!("clipboard-test-{}.sock", std::process::id()));
++        let _ = std::fs::remove_file(&path);
++        let listener = std::os::unix::net::UnixListener::bind(&path).unwrap();
++        let mut cb = Clipboard::new(ClipboardConfig {
++            mode: ClipboardMode::Focus,
++            guest_display: path.to_string_lossy().into_owned(),
++        })
++        .unwrap();
++        let (client, _theirs) = ready_guest();
++        cb.guest = Some(client);
++        cb.guest_tried = Instant::now().checked_sub(RETRY * 2);
++        cb.guest_sources.insert(7, GuestSource { text: Some(Arc::new(b"the host's text".to_vec())), png: false });
++        cb.guest_current = Some(7);
++        cb.lose_guest(&"a test");
++        assert_eq!(cb.guest_pending.as_ref().and_then(|s| s.text.as_deref()).map(Vec::as_slice), Some(&b"the host's text"[..]));
++        assert!(cb.guest_sources.is_empty() && cb.guest_current.is_none());
++        assert!(cb.guest.is_some(), "connected again");
++        // a second loss at once: not tried again before RETRY (the next try comes from dispatch)
++        cb.lose_guest(&"a test");
++        assert!(cb.guest.is_none() && cb.guest_pending.is_some());
++        drop(listener);
++        let _ = std::fs::remove_file(&path);
 +    }
 +
 +    /// The guest -> host side: the guest's selection read, set on the host with
@@ -2810,8 +2968,15 @@ diff -ruN a/src/session/clipboard.rs b/src/session/clipboard.rs
 +        // not focused: a new guest selection stays in the guest
 +        let leave = ev(30, smallvec![Argument::Uint(12), Argument::Object(3)]);
 +        cb.on_event("wl_keyboard", "leave", &leave, &mut own, &mut out);
-+        cb.on_guest_event(GuestEvent::Selection { offer: 0xff00_0200, mimes: vec!["text/plain".to_owned()] }, &mut out);
++        let (mut client, theirs) = ready_guest();
++        let events = guest_selection(&mut client, 0xff00_0200, &["text/plain"]);
++        cb.guest = Some(client);
++        for event in events {
++            cb.on_guest_event(event, &mut out);
++        }
 +        assert!(cb.guest_read.is_none());
++        cb.guest.as_mut().unwrap().flush().unwrap();
++        assert!(offer_requests(theirs).is_empty(), "not read");
 +
 +        // the host cancels the proxy's selection: destroyed, once even if cancelled twice
 +        for _ in 0..2 {
