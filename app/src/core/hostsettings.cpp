@@ -30,6 +30,7 @@
 #include <sys/xattr.h>
 #include <unistd.h>
 
+#include "core/nesteddesktop.h"
 #include "core/paths.h"
 #include "core/vmhardware.h"
 #include "core/vmrunner.h"
@@ -218,6 +219,17 @@ QString HostSettings::realtimeLimit(const QString &sysRoot, const QString &kerne
 QString HostSettings::realtimeOff() const
 {
     return m_realtimeKnown ? m_realtimeOff : realtimeLimit(m_sysRoot);
+}
+
+/*
+ * QEMU shows the VM in windows of its own: SDL's or GTK's, or the nested
+ * desktop's own windows (QEMU's cross-domain is their Wayland client).
+ * Which one has the keyboard is the desktop's to say.
+ */
+static bool ownWindows(const ArgsFile &args)
+{
+    return VmConfig::screen(args) == VmConfig::Screen::OwnWindow ||
+           NestedDesktop::mode(args) == NestedDesktop::Mode::OwnWindow;
 }
 
 /* Running, not a zombie (QEMU is not vitrine's child: init reaps it) */
@@ -431,14 +443,14 @@ void HostSettings::vmStateChanged(Vm *vm)
         const qint64 ended = m_tuned.take(vm->id());
         m_udmabuf.remove(ended);
         setUntuned(ended, {});
-        if (m_front == vm->id()) {
-            m_front.clear();
-        }
+        qemuGone(ended);
+        updateWindowFocus();
     } else if ((state == VmRunner::State::Running || state == VmRunner::State::Paused) &&
                pid > 0 && m_tuned.value(vm->id()) != pid) {
         /* a new run, started here or found running: tuned once */
         m_tuned[vm->id()] = pid;
         tune(pid, VmConfig::graphics(vm->runner()->runArgs()).nativeContext);
+        updateWindowFocus();
     }
 }
 
@@ -487,8 +499,22 @@ void HostSettings::queue(qint64 pid)
         m_out += ("udmabuf " + n + '\n').toLatin1();
         m_udmabufAsked << pid;
     }
-    /* real-time in front (or while none was), ordinary behind it */
-    m_out += ((behind(pid) ? "behind " : "rt ") + n + '\n').toLatin1();
+    /*
+     * Real-time in front, ordinary behind it.  In front: this VM, when no
+     * VM is (the first one; QEMUs found running), or when its window is the
+     * active one already - QEMU's own window shows before its VM is tuned.
+     * A VM whose run ended is no longer in front (qemuGone()), and the
+     * QEMU in front may be waiting for its turn here (a helper started
+     * again): alive is what counts.
+     */
+    if (pid != m_frontPid && (m_frontPid <= 0 || !alive(m_frontPid) || pid == m_activePid)) {
+        m_frontPid = pid;
+    }
+    if (pid == m_frontPid) {
+        sendFront(pid);
+    } else {
+        m_out += ("behind " + n + '\n').toLatin1();
+    }
 }
 
 void HostSettings::preferencesChanged()
@@ -512,7 +538,8 @@ void HostSettings::preferencesChanged()
             flush();
         }
         /* focus priority with it: the helper's release put the threads back */
-        m_front.clear();
+        m_frontPid = 0;
+        updateWindowFocus();
         /* and nothing to show: off is the user's choice */
         if (!m_untuned.isEmpty()) {
             m_untuned.clear();
@@ -534,42 +561,100 @@ void HostSettings::preferencesChanged()
 
 void HostSettings::setFront(const QString &vmId)
 {
-    Vm *front = m_store && !vmId.isEmpty() ? m_store->find(vmId) : nullptr;
+    const qint64 pid = vmId.isEmpty() ? 0 : m_tuned.value(vmId);
 
-    if (!front || vmId == m_front || !m_tuned.contains(vmId) || !enabled()) {
-        return;
-    }
-    m_front = vmId;
-    for (Vm *vm : m_store->vms()) {
-        applyFront(vm);
+    if (pid > 0 && enabled()) {
+        setFrontPid(pid);
     }
 }
 
-void HostSettings::applyFront(Vm *vm)
+void HostSettings::windowActivated(qint64 pid)
 {
-    const qint64 pid = m_tuned.value(vm->id());
+    m_activePid = pid;
+    /* a VM's QEMU; vitrine's own windows say it through setFront(), the
+       host's others change nothing */
+    if (pid > 0 && enabled() &&
+        (m_expected.contains(pid) || std::find(m_tuned.cbegin(), m_tuned.cend(), pid) != m_tuned.cend())) {
+        setFrontPid(pid);
+    }
+}
 
-    if (m_front.isEmpty() || !pid || m_fd < 0) {
+void HostSettings::setFrontPid(qint64 pid)
+{
+    if (pid == m_frontPid) {
         return;
     }
-    /* SDL: its window's focus is not known here, behind or not */
-    if (vm->id() != m_front &&
-        VmConfig::screen(vm->runner()->runArgs()) == VmConfig::Screen::OwnWindow) {
-        return;
-    }
-    m_out += (vm->id() == m_front ? "rt " : "behind ") + QByteArray::number(pid) + '\n';
+    m_frontPid = pid;
+    sendFront(pid);
     flush();
 }
 
-bool HostSettings::behind(qint64 pid) const
+void HostSettings::sendFront(qint64 pid)
 {
-    for (Vm *vm : m_store && !m_front.isEmpty() ? m_store->vms() : QList<Vm *>()) {
-        if (m_tuned.value(vm->id()) == pid) {
-            return vm->id() != m_front &&
-                   VmConfig::screen(vm->runner()->runArgs()) != VmConfig::Screen::OwnWindow;
+    /*
+     * Never two VMs real-time at once: every other QEMU watched behind
+     * first - in QEMU's own window too, whose focus may not be known here -
+     * then this one real-time, if it is watched (else when queue() watches
+     * it).  The requests go after those of a helper still starting, if it
+     * is: they watch these QEMUs first.
+     */
+    for (const qint64 other : std::as_const(m_expected)) {
+        /* not one whose end the helper is about to say */
+        if (other != pid && alive(other)) {
+            m_out += "behind " + QByteArray::number(other) + '\n';
+        }
+    }
+    if (m_expected.contains(pid)) {
+        m_out += "rt " + QByteArray::number(pid) + '\n';
+    }
+}
+
+void HostSettings::qemuGone(qint64 pid)
+{
+    QList<qint64> left;
+
+    if (pid > 0 && pid == m_frontPid) {
+        m_frontPid = 0;
+    }
+    if (m_frontPid > 0 && alive(m_frontPid)) {
+        return;
+    }
+    /* none in front, and a VM left alone: real-time, as a single VM always is */
+    for (const qint64 other : std::as_const(m_expected)) {
+        if (other != pid && alive(other)) {
+            left << other;
+        }
+    }
+    if (left.size() == 1) {
+        setFrontPid(left.first());
+    }
+}
+
+bool HostSettings::wantsWindowFocus() const
+{
+    if (!enabled() || !m_store) {
+        return false;
+    }
+    for (Vm *vm : m_store->vms()) {
+        if (m_tuned.contains(vm->id()) && ownWindows(vm->runner()->runArgs())) {
+            return true;
         }
     }
     return false;
+}
+
+void HostSettings::updateWindowFocus()
+{
+    const bool wanted = wantsWindowFocus();
+
+    if (wanted != m_windowFocus) {
+        m_windowFocus = wanted;
+        /* not followed now: what it said last grows stale */
+        if (!wanted) {
+            m_activePid = 0;
+        }
+        emit windowFocusWanted(wanted);
+    }
 }
 
 void HostSettings::start()
@@ -750,6 +835,8 @@ void HostSettings::handleLine(const QString &line)
                                  .arg(name, line.section(':', 1).trimmed())});
         }
         m_expected.remove(pid);
+        /* no longer in front; a VM left alone comes to the front */
+        qemuGone(pid);
         if (m_expected.isEmpty() && m_out.isEmpty() && m_fd >= 0) {
             /* nothing left to watch: it ends, putting everything back */
             ::shutdown(m_fd, SHUT_WR);
@@ -765,6 +852,9 @@ void HostSettings::handleLine(const QString &line)
         fairServerLine(line);
     } else if (line.startsWith("skip rt ")) {
         /* no real-time threads without the fair server: its line said why */
+    } else if ((line.startsWith("error rt ") || line.startsWith("error behind ")) &&
+               !alive(line.section(' ', 2, 2).section(':', 0, 0).toLongLong())) {
+        /* a QEMU that ended as it was asked: no news, its "exited" follows */
     } else if (line == "error behind: unknown request") {
         /* a helper installed before vitrine sent the VMs behind through it */
         say(tr("Host tuning: the installed vitrine-helper is older than Vitrine and cannot "

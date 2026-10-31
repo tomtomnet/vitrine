@@ -149,17 +149,35 @@ public:
     void preferencesChanged();
 
     /*
-     * Focus priority: the threads of the VM in front - its console or
-     * full-screen window has the focus - real-time (the helper's rt), those
-     * of the other VMs ordinary, their vCPUs at nice -5 (the helper's
-     * behind), so that VMs busy in the background cannot take every CPU at
-     * real-time priority.  A host window in front changes nothing: the VM
-     * last in front keeps them.  A VM started later, or tuned again, starts
-     * behind.  VMs in QEMU's own window (SDL) are left real-time: which
-     * window the desktop has in front is not known here.  Real-time only
-     * where the helper could set the fair server.
+     * Focus priority: the threads of the VM in front real-time (the
+     * helper's rt), those of every other VM ordinary, their vCPUs at nice
+     * -5 (the helper's behind), so that VMs busy in the background cannot
+     * take every CPU at real-time priority: one VM real-time at a time, its
+     * others' behind sent before its rt.  In front: the VM whose console or
+     * full-screen window has the keyboard (setFront()), or whose window of
+     * QEMU's own is the desktop's active one (windowActivated()).  A host
+     * window in front changes nothing: the VM last in front stays so.  A
+     * VM tuned while none is in front comes to the front (a single VM is
+     * real-time, as is the first of several found running), and so does a
+     * VM left alone while none is; any other starts behind, unless its
+     * window is the active one already.  Where the desktop does
+     * not say which window is active (not KWin), a VM in QEMU's own window
+     * comes to the front only so, and goes behind for good once another one
+     * does.  Real-time only where the helper could set the fair server.
      */
     void setFront(const QString &vmId);
+    /*
+     * The desktop's active window is now one of process @pid (KWin's report,
+     * WindowFocus): a VM's QEMU, whose window is QEMU's own, comes to the
+     * front; another process (vitrine, a host app) changes nothing
+     */
+    void windowActivated(qint64 pid);
+    /*
+     * A VM is tuned that shows in windows of QEMU's own (SDL, GTK, the
+     * nested desktop's own window): which one is active is the desktop's to
+     * tell, through windowActivated().  windowFocusWanted() when it changes.
+     */
+    bool wantsWindowFocus() const;
     /* The app's (MainWindow makes it), for setFront(); null before */
     static HostSettings *instance();
 
@@ -242,6 +260,8 @@ signals:
      * (tuning turned off or on, the group set up).
      */
     void udmabufAnswered(qint64 pid, bool raised, const QString &why);
+    /* wantsWindowFocus() changed */
+    void windowFocusWanted(bool wanted);
 
 private:
     /* polkit's answer is not kept: Denied only when pkexec itself refused */
@@ -249,10 +269,15 @@ private:
 
     void watchVm(Vm *vm);
     void vmStateChanged(Vm *vm);
-    /* @vm in front or behind, as m_front says */
-    void applyFront(Vm *vm);
-    /* The QEMU @pid is a VM's that goes behind: another is in front */
-    bool behind(qint64 pid) const;
+    /* The QEMU @pid in front: the others behind, then it real-time */
+    void setFrontPid(qint64 pid);
+    /* Its requests queued: every other QEMU watched behind, then @pid rt */
+    void sendFront(qint64 pid);
+    /* The QEMU @pid is gone, or no longer watched: no longer in front, and
+       with none in front, the one VM left, if only one, comes to the front */
+    void qemuGone(qint64 pid);
+    /* windowFocusWanted(), if wantsWindowFocus() changed */
+    void updateWindowFocus();
     void start();
     void spawn(const QStringList &command);
     void readHelper();
@@ -287,7 +312,9 @@ private:
     QStringList m_command;
     QString m_sysRoot = QStringLiteral("/sys");
     QHash<QString, qint64> m_tuned;     // VM id -> its QEMU's pid
-    QString m_front;                    // the VM last in front
+    qint64 m_frontPid = 0;              // the QEMU in front: real-time; 0: none
+    qint64 m_activePid = 0;             // the process of the desktop's active window
+    bool m_windowFocus = false;         // wantsWindowFocus() as last said
     QSet<qint64> m_expected;            // QEMUs asked to be watched, not ended
     Access m_access = Access::Unknown;
     Status m_denied;                    // why, when Denied
