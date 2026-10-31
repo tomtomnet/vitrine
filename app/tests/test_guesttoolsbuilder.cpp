@@ -330,7 +330,8 @@ private slots:
                              .toHex()));
         QCOMPARE(GuestToolsBuilder::version(GUEST_SOURCE_DIR, "kwin"), "6.7.5");
         QCOMPARE(GuestToolsBuilder::packages(GUEST_SOURCE_DIR),
-                 QStringList({"tools", "mesa", "kwin", "proxy", "kpipewire"}));
+                 QStringList({"tools", "mesa", "kwin", "proxy", "kpipewire", "qtbase", "ksvg",
+                              "kirigami"}));
     }
 
     /* guest/ found as host/ is: chosen, installed with the app, or the source tree's */
