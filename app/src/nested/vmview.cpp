@@ -183,6 +183,44 @@ enum class Role : uint8_t {
 // the role the host gave a guest wl_surface: a second one would be a protocol error on the app's connection
 enum class SurfaceRole : uint8_t { None, Subsurface, Cursor, DragIcon, Toplevel };
 
+// Objects a surface may have one of: a second one is the host's protocol error (raised on the app's own
+// connection, which ends the app), refused here on the guest's (2026-10-31 review, H1). The surface is
+// each request's second argument, after the new id. Pointer constraints and shortcut inhibitors are per
+// surface and pointer or seat in the protocols: one seat here.
+enum : uint32_t {
+    kExtViewport = 1u << 0, kExtFractional = 1u << 1, kExtCommitTimer = 1u << 2, kExtFifo = 1u << 3,
+    kExtTearing = 1u << 4, kExtAlpha = 1u << 5, kExtContentType = 1u << 6, kExtColor = 1u << 7,
+    kExtColorRepr = 1u << 8, kExtConstraint = 1u << 9, kExtInhibitor = 1u << 10, kExtSubsurface = 1u << 11,
+};
+struct PerSurfaceRule {
+    const char *iface;
+    uint16_t opcode;
+    uint32_t bit;
+    uint32_t code; // the interface's error
+    const char *what;
+};
+const PerSurfaceRule kPerSurface[] = {
+    {"wp_viewporter", 1, kExtViewport, 0, "the surface has a viewport already"},
+    {"wp_fractional_scale_manager_v1", 1, kExtFractional, 0, "the surface has a fractional scale object already"},
+    {"wp_commit_timing_manager_v1", 1, kExtCommitTimer, 0, "the surface has a commit timer already"},
+    {"wp_fifo_manager_v1", 1, kExtFifo, 0, "the surface has a fifo object already"},
+    {"wp_tearing_control_manager_v1", 1, kExtTearing, 0, "the surface has a tearing control object already"},
+    {"wp_alpha_modifier_v1", 1, kExtAlpha, 0, "the surface has an alpha modifier already"},
+    {"wp_content_type_manager_v1", 1, kExtContentType, 0, "the surface has a content type object already"},
+    {"wp_color_manager_v1", 2, kExtColor, 1, "the surface has a color management surface already"},
+    {"wp_color_representation_manager_v1", 1, kExtColorRepr, 1, "the surface has a color representation already"},
+    {"zwp_pointer_constraints_v1", 1, kExtConstraint, 1, "the surface has a pointer constraint already"},
+    {"zwp_pointer_constraints_v1", 2, kExtConstraint, 1, "the surface has a pointer constraint already"},
+    {"zwp_keyboard_shortcuts_inhibit_manager_v1", 1, kExtInhibitor, 0, "the surface has a shortcuts inhibitor already"},
+};
+const PerSurfaceRule *perSurfaceRule(const char *iface, uint16_t opcode)
+{
+    for (const auto &r : kPerSurface)
+        if (r.opcode == opcode && !strcmp(r.iface, iface))
+            return &r;
+    return nullptr;
+}
+
 Role roleOf(const char *name)
 {
     static const std::unordered_map<std::string, Role> roles = {
@@ -251,6 +289,14 @@ struct Object {
     int32_t geom[4] = {0, 0, 0, 0};
     bool hasGeom = false;
     SurfaceRole surfaceRole = SurfaceRole::None; // wl_surface
+    // per-surface rules (2026-10-31 review, H1): one object of each kind per surface, and the subsurface
+    // tree; the host would raise a second one or a cycle on the app's own connection
+    uint32_t extensions = 0;      // wl_surface: the kinds of objects it has (kExt*)
+    uint32_t parentSurface = 0;   // wl_surface with a live wl_subsurface: its parent (guest id)...
+    uint64_t parentSeq = 0;       // ...and that parent's seq (ids are reused)
+    uint32_t extSurface = 0;      // an object of one of those kinds (wl_subsurface too): its surface...
+    uint64_t extSurfaceSeq = 0;   // ...that surface's seq...
+    uint32_t extBit = 0;          // ...and the kind
     bool onAppWindow = false;     // a shortcuts inhibitor moved to the app's window
     wl_subsurface *subsurface = nullptr; // toplevel: the host subsurface of its wl_surface
     bool bufferAttached = false;  // wl_surface: a buffer attached since the last commit (VMVIEW_STATS)
@@ -276,6 +322,15 @@ struct Conn {
     Object *toplevel = nullptr;
     Conn(View *v, int f) : view(v), fd(f) {}
 };
+
+// the object behind a guest id, if it is still the one created with seq (ids are reused)
+Object *objectAt(Conn &c, uint32_t id, uint64_t seq)
+{
+    if (!id)
+        return nullptr;
+    auto it = c.objects.find(id);
+    return it != c.objects.end() && it->second->seq == seq ? it->second.get() : nullptr;
+}
 
 struct Global {
     std::string iface;
@@ -589,6 +644,13 @@ void View::remove(Conn &c, Object *o, bool sendDeleteId)
         for (auto &kv : c.objects)
             if (kv.second->link == o)
                 kv.second->link = nullptr;
+    if (o->extBit) {
+        if (Object *sf = objectAt(c, o->extSurface, o->extSurfaceSeq)) {
+            sf->extensions &= ~o->extBit;
+            if (o->extBit == kExtSubsurface)
+                sf->parentSurface = 0, sf->parentSeq = 0;
+        }
+    }
     const wl_interface *iface = o->info->iface;
     hostDestroy(o);
     c.objects.erase(id);
@@ -701,8 +763,8 @@ void View::hostGlobalRemove(uint32_t name)
 
 // A request the host compositor would refuse with a protocol error, which it raises on the app's own
 // connection: the app's whole Wayland connection then ends (the app quits). The one-message cases are
-// refused here instead, with the same error on the guest's connection (2026-10-31 review). Rules that
-// need per-surface state (a second viewport, a subsurface cycle, ...) are not covered.
+// refused here instead, with the same error on the guest's connection (2026-10-31 review). The rules that
+// need per-surface state (one viewport and the like per surface, the subsurface tree) are in handle().
 static bool refusedByHost(const char *iface, uint16_t opcode, const wl_argument *a, uint32_t *code, const char **why)
 {
     if (!strcmp(iface, "wl_surface")) {
@@ -1003,10 +1065,36 @@ void View::handle(Conn &c, uint32_t id, uint16_t opcode, const uint8_t *body, si
             sf->surfaceRole = role;
             return true;
         };
+        // the error a request is refused with, on the guest's connection
+        auto refuse = [&](uint32_t code, const char *what) {
+            for (int f : fds)
+                close(f);
+            protocolError(c, id, code, "%s.%s: %s", wi->name, msg.name, what);
+        };
+        Object *subsurfaceOf = nullptr; // get_subsurface: the surface it makes a subsurface
         if (!strcmp(o->info->name, "wl_subcompositor") && opcode == 1) { // get_subsurface(id, surface, parent)
-            if (objArgs[1] == objArgs[2] || objArgs[1]->surfaceRole != SurfaceRole::None)
-                return fail("the surface has a role already, or is its own parent");
-            objArgs[1]->surfaceRole = SurfaceRole::Subsurface;
+            Object *sf = objArgs[1], *parentSf = objArgs[2];
+            // bad_surface: its own parent, another role, or a live wl_subsurface already (one whose
+            // wl_subsurface was destroyed may get a new one)
+            if (sf == parentSf || (sf->surfaceRole != SurfaceRole::None && sf->surfaceRole != SurfaceRole::Subsurface) ||
+                (sf->extensions & kExtSubsurface))
+                return refuse(0, "the surface has another role or a subsurface already, or is its own parent");
+            // bad_parent: the parent is one of the surface's descendants (a cycle)
+            int depth = 0;
+            for (Object *p = parentSf; p && depth < 4096; p = objectAt(c, p->parentSurface, p->parentSeq), depth++)
+                if (p == sf)
+                    return refuse(1, "the parent is a descendant of the surface");
+            sf->surfaceRole = SurfaceRole::Subsurface;
+            subsurfaceOf = sf;
+        } else if (!strcmp(o->info->name, "wl_subsurface") && (opcode == 2 || opcode == 3)) {
+            // place_above/place_below(sibling): bad_surface unless the sibling is the parent or another
+            // subsurface of it (not checked once the surface or its parent is gone)
+            Object *sf = objectAt(c, o->extSurface, o->extSurfaceSeq);
+            Object *parentSf = sf ? objectAt(c, sf->parentSurface, sf->parentSeq) : nullptr;
+            Object *sib = objArgs[0];
+            if (parentSf && sib != parentSf &&
+                (sib == sf || !(sib->extensions & kExtSubsurface) || objectAt(c, sib->parentSurface, sib->parentSeq) != parentSf))
+                return refuse(0, "the sibling is neither the parent nor a subsurface of it");
         } else if (!strcmp(o->info->name, "wl_pointer") && opcode == 0) { // set_cursor(serial, surface, x, y)
             if (!takeRole(objArgs[1], SurfaceRole::Cursor))
                 return fail("cursor surface with another role");
@@ -1054,6 +1142,11 @@ void View::handle(Conn &c, uint32_t id, uint16_t opcode, const uint8_t *body, si
             watch(bp, no);
             break;
         }
+        // one object of a kind per surface (the inhibitor moved to the app's window has its own check)
+        const PerSurfaceRule *rule = movedInhibitor ? nullptr : perSurfaceRule(o->info->name, opcode);
+        Object *ruleSurface = rule ? objArgs[1] : nullptr;
+        if (ruleSurface && (ruleSurface->extensions & rule->bit))
+            return refuse(rule->code, rule->what);
         const bool destructor = o->info->destructor_requests & (1ull << opcode);
         const uint32_t version = o->version;
         wl_proxy *np = wl_proxy_marshal_array_flags(o->proxy, opcode, newInfo ? newInfo->iface : nullptr,
@@ -1069,6 +1162,15 @@ void View::handle(Conn &c, uint32_t id, uint16_t opcode, const uint8_t *body, si
             Object *no = add(c, newId, newInfo, version, Kind::Forwarded);
             no->proxy = np;
             no->onAppWindow = movedInhibitor;
+            Object *owner = ruleSurface ? ruleSurface : subsurfaceOf;
+            if (owner) {
+                no->extBit = ruleSurface ? rule->bit : kExtSubsurface;
+                no->extSurface = owner->id;
+                no->extSurfaceSeq = owner->seq;
+                owner->extensions |= no->extBit;
+                if (subsurfaceOf)
+                    subsurfaceOf->parentSurface = objArgs[2]->id, subsurfaceOf->parentSeq = objArgs[2]->seq;
+            }
             if (movedInhibitor)
                 setShortcutsCaptured(true);
             watch(np, no);
