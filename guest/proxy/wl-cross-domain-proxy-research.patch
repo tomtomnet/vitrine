@@ -1,5 +1,5 @@
 The research's work on wl-cross-domain-proxy (virtio-gpu-desktop,
-src/wl-cross-domain-proxy at its commit ac787d1), as one diff against
+src/wl-cross-domain-proxy at its commit 4dd61fa), as one diff against
 upstream c6ce1ca89fb4, the commit it started from
 (patches/wl-cross-domain-proxy/BASE.md there).  What the nested desktop
 needs of the proxy beyond upstream: the presentation clock translated into
@@ -41,6 +41,13 @@ Cross-domain commands from the host with counts or sizes out of range are
 dropped.  A message that does not fit the socket's buffer leaves none of
 its file descriptors queued (the retry queued them again, and later
 messages then got the wrong ones).
+
+Colour management creators that the host would refuse with an error on
+its own connection, which serves every client of the VM, are refused on
+the client's: create_icc_creator always, and the parametric, scRGB and
+BT.2100 creators unless the host announced those features.  A raw client
+of the proxy's socket ended the app serving QEMU's socket that way
+(2026-10-31).
 
 Licence: these changes are GPL-2.0-or-later (the research's, the user's
 choice of 2026-10-14); Victoria Brekenfeld's proxy stays MIT, with her
@@ -9464,7 +9471,7 @@ diff -ruN a/src/source/channel/wayland.rs b/src/source/channel/wayland.rs
      cross_domain::{CROSS_DOMAIN_ID_TYPE_READ_PIPE, CROSS_DOMAIN_ID_TYPE_VIRTGPU_BLOB},
      sigbus::SIGBUS_WATCHER,
      source::channel::{ImageDesc, Ring, query_image},
-@@ -40,11 +41,74 @@
+@@ -40,11 +41,76 @@
      pipe_id: u32,
  
      wl_shm: Option<u32>,
@@ -9480,6 +9487,8 @@ diff -ruN a/src/source/channel/wayland.rs b/src/source/channel/wayland.rs
      surfaces: HashMap<u32, WlSurface>,
  
      destructions_to_skip: HashMap<u32, usize>,
++    /// wp_color_manager_v1 object -> the features the host announced (supported_feature), as bits
++    color_features: HashMap<u32, u32>,
 +    /// --drop-dcc-modifiers: the modifier of each entry of the last format table of each
 +    /// zwp_linux_dmabuf_feedback_v1 (guest object id), to filter its tranches
 +    dmabuf_tables: HashMap<u32, Vec<u64>>,
@@ -9540,7 +9549,7 @@ diff -ruN a/src/source/channel/wayland.rs b/src/source/channel/wayland.rs
  }
  
  pub struct WlShmPool {
-@@ -71,7 +135,8 @@
+@@ -71,7 +137,8 @@
  }
  
  pub struct WlShmBuffer {
@@ -9550,7 +9559,7 @@ diff -ruN a/src/source/channel/wayland.rs b/src/source/channel/wayland.rs
      offset: usize,
      width: usize,
      height: usize,
-@@ -151,6 +216,12 @@
+@@ -151,6 +218,12 @@
      }
  }
  
@@ -9563,7 +9572,7 @@ diff -ruN a/src/source/channel/wayland.rs b/src/source/channel/wayland.rs
  impl std::fmt::Display for TransformError {
      fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
          match self {
-@@ -163,15 +234,19 @@
+@@ -163,15 +236,20 @@
  impl std::error::Error for TransformError {}
  
  impl ProtocolState {
@@ -9580,11 +9589,12 @@ diff -ruN a/src/source/channel/wayland.rs b/src/source/channel/wayland.rs
              shm_buffers: HashMap::new(),
              surfaces: HashMap::new(),
              destructions_to_skip: HashMap::new(),
++            color_features: HashMap::new(),
 +            dmabuf_tables: HashMap::new(),
          }
      }
  
-@@ -252,8 +327,8 @@
+@@ -252,8 +330,8 @@
                  0,
              )
          };
@@ -9595,7 +9605,7 @@ diff -ruN a/src/source/channel/wayland.rs b/src/source/channel/wayland.rs
              return Err(io::ErrorKind::InvalidData.into());
          }
          let host_mmap = unsafe {
-@@ -266,13 +341,23 @@
+@@ -266,13 +344,23 @@
                  0,
              )
          };
@@ -9622,7 +9632,7 @@ diff -ruN a/src/source/channel/wayland.rs b/src/source/channel/wayland.rs
              WlShmPool {
                  size: size as usize,
  
-@@ -307,9 +392,9 @@
+@@ -307,9 +395,9 @@
          mut message: Message<u32, OwnedFd>,
      ) -> io::Result<Vec<Message<u32, Identifier>>> {
          let pool_id = message.sender_id;
@@ -9635,7 +9645,7 @@ diff -ruN a/src/source/channel/wayland.rs b/src/source/channel/wayland.rs
              .filter(|pool| !pool.destroyed)
          else {
              error!("wl_shm_pool::resize on destroyed pool");
-@@ -397,8 +482,8 @@
+@@ -397,8 +485,8 @@
                  0,
              )
          };
@@ -9646,7 +9656,7 @@ diff -ruN a/src/source/channel/wayland.rs b/src/source/channel/wayland.rs
              return Err(io::ErrorKind::InvalidData.into());
          }
  
-@@ -412,8 +497,9 @@
+@@ -412,8 +500,9 @@
                  0,
              )
          };
@@ -9658,7 +9668,7 @@ diff -ruN a/src/source/channel/wayland.rs b/src/source/channel/wayland.rs
              return Err(io::ErrorKind::InvalidData.into());
          }
  
-@@ -450,7 +536,7 @@
+@@ -450,7 +539,7 @@
          for (buffer_id, buffer) in self
              .shm_buffers
              .iter()
@@ -9667,7 +9677,7 @@ diff -ruN a/src/source/channel/wayland.rs b/src/source/channel/wayland.rs
          {
              // wl_buffer::destroy
              messages.push(Message {
-@@ -507,7 +593,7 @@
+@@ -507,7 +596,7 @@
      fn handle_shm_pool_create_buffer(
          &mut self,
          message: Message<u32, OwnedFd>,
@@ -9676,7 +9686,7 @@ diff -ruN a/src/source/channel/wayland.rs b/src/source/channel/wayland.rs
          let &[
              Argument::NewId(buffer_id),
              Argument::Int(offset),
-@@ -521,10 +607,24 @@
+@@ -521,10 +610,24 @@
              return Err(io::ErrorKind::InvalidData.into());
          };
  
@@ -9702,7 +9712,7 @@ diff -ruN a/src/source/channel/wayland.rs b/src/source/channel/wayland.rs
                  offset: offset as usize,
                  width: width as usize,
                  height: height as usize,
-@@ -540,7 +640,7 @@
+@@ -540,7 +643,7 @@
          &mut self,
          drm: &impl VirtioDevice,
          mut message: Message<u32, OwnedFd>,
@@ -9711,7 +9721,7 @@ diff -ruN a/src/source/channel/wayland.rs b/src/source/channel/wayland.rs
          let [
              Argument::Fd(dmabuf),
              Argument::Uint(plane_idx),
-@@ -588,8 +688,17 @@
+@@ -588,8 +691,17 @@
                      ],
                  })
              }
@@ -9730,7 +9740,7 @@ diff -ruN a/src/source/channel/wayland.rs b/src/source/channel/wayland.rs
              }
          }
      }
-@@ -604,13 +713,26 @@
+@@ -604,13 +716,26 @@
                      if let Some(pool) = self.shm_pools.get(&shm_buffer.pool) {
                          // TODO (optimization): Use (buffer)damage
  
@@ -9758,7 +9768,7 @@ diff -ruN a/src/source/channel/wayland.rs b/src/source/channel/wayland.rs
                              );
                          }
  
-@@ -625,7 +747,7 @@
+@@ -625,7 +750,7 @@
  
                          // TODO (optimization): We can send release to the client now and hide the host one later
                      } else {
@@ -9767,7 +9777,7 @@ diff -ruN a/src/source/channel/wayland.rs b/src/source/channel/wayland.rs
                      }
                  }
              }
-@@ -673,14 +795,29 @@
+@@ -673,14 +798,29 @@
          })
      }
  
@@ -9798,7 +9808,7 @@ diff -ruN a/src/source/channel/wayland.rs b/src/source/channel/wayland.rs
          match (
              obj.interface.name,
              obj.interface.requests[message.opcode as usize].name,
-@@ -699,27 +836,19 @@
+@@ -699,27 +839,19 @@
                  .map(Into::into)
                  .map_err(TransformError::from),
              ("wl_shm_pool", "destroy") => {
@@ -9834,7 +9844,7 @@ diff -ruN a/src/source/channel/wayland.rs b/src/source/channel/wayland.rs
              ("wl_buffer", "destroy") => {
                  if let Some(buffer) = self.shm_buffers.remove(&message.sender_id) {
                      let id = buffer.pool;
-@@ -760,19 +889,43 @@
+@@ -760,19 +892,71 @@
                  .handle_receive(guest_pipes, message)
                  .map(Into::into)
                  .map_err(TransformError::from),
@@ -9842,6 +9852,34 @@ diff -ruN a/src/source/channel/wayland.rs b/src/source/channel/wayland.rs
 -            (interface, name) => Ok(message
 -                .map_fd(|_| panic!("Unhandled file descriptor: {}.{}", interface, name))
 -                .into()),
++            // wp_color_manager_v1's creators: the host raises unsupported_feature on the proxy's own connection
++            // (ending every client) for a feature it does not have - refused here on the client's instead.
++            // create_icc_creator always: ICC files cannot cross (set_icc_file below), and the host's ICC support
++            // is not passed on (vitrine, 2026-10-31: a raw client's create_icc_creator was forwarded, its
++            // set_icc_file refused only after, and the host's error ended the app serving the VM)
++            ("wp_color_manager_v1", request)
++                if matches!(
++                    request,
++                    "create_icc_creator" | "create_parametric_creator" | "create_windows_scrgb" | "create_windows_bt2100"
++                ) =>
++            {
++                let need = match request {
++                    "create_parametric_creator" => Some(1),
++                    "create_windows_scrgb" => Some(7),
++                    "create_windows_bt2100" => Some(8),
++                    _ => None,
++                };
++                let announced = self.color_features.get(&message.sender_id).copied().unwrap_or(0);
++                if need.is_some_and(|f| announced & (1 << f) != 0) {
++                    return Ok(message.map_fd(|_| unreachable!("a creator without fds")).into());
++                }
++                warn!("wp_color_manager_v1.{request}: the host does not offer this feature here");
++                Err(TransformError::Protocol {
++                    object_id: message.sender_id,
++                    code: 0,
++                    message: c"this color management feature is not supported in this VM",
++                })
++            }
 +            // An ICC file cannot cross to the host (the transport carries virtio-gpu buffers and
 +            // pipes); filter_host_message hides the host's ICC support, so a client asking anyway
 +            // goes with an error (wp_image_description_creator_icc_v1.error.bad_fd) instead of
@@ -9883,17 +9921,21 @@ diff -ruN a/src/source/channel/wayland.rs b/src/source/channel/wayland.rs
          match (
              obj.interface.name,
              obj.interface.events[message.opcode as usize].name,
-@@ -797,11 +950,69 @@
+@@ -797,11 +981,73 @@
                  // TODO (optimization): send early and then hide this message
                  Some(message)
              }
 +            // ICC files cannot cross to the host (set_icc_file is refused above): the host's ICC
 +            // support (wp_color_manager_v1.feature.icc_v2_v4) is not passed on, so color-managed
 +            // clients describe their colours parametrically instead (2026-10-31)
-+            ("wp_color_manager_v1", "supported_feature")
-+                if matches!(message.args.as_slice(), [Argument::Uint(0)]) =>
-+            {
-+                None
++            ("wp_color_manager_v1", "supported_feature") => {
++                let &[Argument::Uint(feature)] = message.args.as_slice() else {
++                    return Some(message);
++                };
++                if feature < 32 {
++                    *self.color_features.entry(message.sender_id).or_default() |= 1 << feature;
++                }
++                (feature != 0).then_some(message)
 +            }
              // TODO (potential issue): Adjust dmabuf formats?
              //      - Potentially the host advertises formats, that virt-gpu doesn't support.
@@ -9953,7 +9995,7 @@ diff -ruN a/src/source/channel/wayland.rs b/src/source/channel/wayland.rs
              ("zwp_linux_dmabuf_feedback_v1", "main_device")
              | ("zwp_linux_dmabuf_feedback_v1", "tranche_target_device")
              | ("ext_image_copy_capture_session_v1", "dmabuf_device") => {
-@@ -823,3 +1034,111 @@
+@@ -823,3 +1069,111 @@
          }
      }
  }

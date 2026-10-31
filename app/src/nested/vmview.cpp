@@ -241,6 +241,8 @@ struct Object {
     // data devices: the host's last selection, given to the guest only while it has the keyboard
     wl_proxy *selection = nullptr;
     bool selectionKnown = false;
+    // wp_color_manager_v1: the features the host announced (supported_feature), as bits
+    uint32_t colorFeatures = 0;
     // zwp_linux_buffer_params_v1: a guest's create_immed sent as create, its answer awaited (handle())
     uint32_t immedFor = 0;
     bool immedDone = false, immedFailed = false;
@@ -878,6 +880,20 @@ void View::handle(Conn &c, uint32_t id, uint16_t opcode, const uint8_t *body, si
         return fail("message longer than its signature");
     if (g_debug)
         logf("-> %s@%u.%s", wi->name, id, msg.name);
+    // wp_color_manager_v1's creators for a feature the host did not announce: its unsupported_feature
+    // error, which it raises on the app's own connection (vitrine 2026-10-31: create_icc_creator from a
+    // raw client of the guest's proxy ended vitrine). create_icc_creator 4, create_parametric_creator 5,
+    // create_windows_scrgb 6, create_windows_bt2100 8 - the features icc_v2_v4 0, parametric 1,
+    // windows_scrgb 7, windows_bt2100 8
+    if (!strcmp(wi->name, "wp_color_manager_v1")) {
+        const int need = opcode == 4 ? 0 : opcode == 5 ? 1 : opcode == 6 ? 7 : opcode == 8 ? 8 : -1;
+        if (need >= 0 && !(o->colorFeatures & (1u << need))) {
+            for (int f : fds)
+                close(f);
+            protocolError(c, id, 0, "wp_color_manager_v1.%s: the host does not support this feature", msg.name);
+            return;
+        }
+    }
     uint32_t refusedCode = 0;
     const char *refusedWhy = nullptr;
     if (refusedByHost(wi->name, opcode, args, &refusedCode, &refusedWhy)) {
@@ -1308,6 +1324,8 @@ int View::event(wl_proxy *p, uint32_t opcode, const wl_message *m, wl_argument *
         closeFds();
         return 0;
     }
+    if (opcode == 1 && args[0].u < 32 && !strcmp(o->info->name, "wp_color_manager_v1"))
+        o->colorFeatures |= 1u << args[0].u; // supported_feature: passed on as well
     if (o->immedFor) {
         // the answer to the create that stands for a guest's create_immed (handle()): created(buffer) or failed,
         // neither passed on (the guest asked for an immediate buffer)

@@ -1,5 +1,5 @@
 # Upstream's commit c6ce1ca89fb4, where the research's work starts, with that
-# work as one patch, taken at the research's commit ac787d1 (the patch's
+# work as one patch, taken at the research's commit 4dd61fa (the patch's
 # description has what it adds).  Literal, without macros: vitrine's Builds
 # window reads Version and Source0 as they are written.  The date the patch
 # was taken comes first, so that each version sorts after the one before
@@ -7,7 +7,7 @@
 # a counter after it for another one on the same day: 20261015.1 sorts after
 # 20261015, .2 after .1, the next day's date after both.
 Name:           wl-cross-domain-proxy
-Version:        0.1.0^20261031gitc6ce1ca.rac787d1
+Version:        0.1.0^20261031.1gitc6ce1ca.r4dd61fa
 Release:        1%{?dist}
 Summary:        Wayland proxy over virtio-gpu cross-domain, for vitrine's nested desktop
 
@@ -63,6 +63,13 @@ install -Dm 0644 %{SOURCE1} %{buildroot}%{_licensedir}/%{name}/GPL-2.0.txt
 %{_bindir}/%{name}
 
 %changelog
+* Sat Oct 31 2026 vitrine <noreply@anthropic.com> - 0.1.0^20261031.1gitc6ce1ca.r4dd61fa-1
+- the research's 4dd61fa: colour management creators the host would
+  refuse on its own connection are refused on the client's instead:
+  create_icc_creator always, the parametric, scRGB and BT.2100 creators
+  unless the host announced the feature (a raw client's create_icc_creator
+  reached the host and ended the app serving the VM)
+
 * Sat Oct 31 2026 vitrine <noreply@anthropic.com> - 0.1.0^20261031gitc6ce1ca.rac787d1-1
 - the research's ac787d1 (its review of 2026-10-31): input the proxy cannot
   carry ends the client that sent it with a protocol error instead of
