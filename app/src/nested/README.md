@@ -6,7 +6,7 @@ VM's own screen.
 
 `vmview.{h,cpp}`, `protocols.{h,txt}`, `gen_protocols.py` and `LICENSE` are
 the research side's vmview library (`src/vmview` of the virtio-gpu-desktop
-repository, commit e9a66da; its 9240dd0 took vitrine's changes of 776a6f2,
+repository, commit a4e6e28; its 9240dd0 took vitrine's changes of 776a6f2,
 4a8e155, cbb9ebc and 175aa1a). QEMU's cross-domain connects to a socket the
 library serves; the guest's Wayland protocol goes on to the host compositor
 over vitrine's own connection, and the guest's window becomes a subsurface
@@ -65,10 +65,14 @@ do to vitrine:
   commit applies it, as `NestedView::updateGeometry` does.
 - Events that name another guest connection's object are kept from the
   guest.
+- The guest's window counts as gone (the `mapped` callback, on which
+  vitrine shows the VM's screen) only once no guest connection has one
+  left: a second guest client's window that closed took the console to
+  the Screen view while the nested desktop was still there.
 
 ## Local changes
 
-None: the files are the research's at e9a66da.
+None: the files are the research's at a4e6e28.
 
 The research side took vitrine's earlier ones: a `pressed` callback for
 button presses on the guest's window and a NULL object where the protocol

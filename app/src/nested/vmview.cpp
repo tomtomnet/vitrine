@@ -581,6 +581,7 @@ struct View {
     void configureToplevel(Conn &c);
     void placeToplevel(Conn &c);
     void setMapped(bool on);
+    void updateMapped();
     void setShortcutsCaptured(bool on);
     // clipping the guest's surfaces to the view
     Geo &geoOf(Object *s);
@@ -953,7 +954,7 @@ void View::remove(Conn &c, Object *o, bool sendDeleteId)
     const uint32_t id = o->id;
     if (o == c.toplevel) {
         c.toplevel = nullptr;
-        setMapped(false);
+        updateMapped();
     }
     // links point at pointers (relative pointers, gestures), wl_surfaces and xdg_surfaces only: the
     // frequent removals (frame callbacks, presentation feedback) skip the scan
@@ -1015,7 +1016,7 @@ void View::closeConn(Conn &c, const char *why)
         hostDestroy(o);
     if (c.toplevel) {
         c.toplevel = nullptr;
-        setMapped(false);
+        updateMapped();
     }
     c.objects.clear();
     for (int f : c.inFds)
@@ -1829,6 +1830,16 @@ void View::configureToplevel(Conn &c)
     OutMsg s(tl->link->id, kSurfaceConfigure); // (serial)
     s.u(++tl->configureSerial);
     send(c, s);
+}
+
+// mapped: a guest window is shown, any connection's. vitrine 2026-10-31: a second connection's window going sent
+// mapped(false) while the nested desktop's stayed, and vitrine left it for its Screen view (keys to the VT)
+void View::updateMapped()
+{
+    for (auto &c : conns)
+        if (!c->dead && c->toplevel)
+            return setMapped(true);
+    setMapped(false);
 }
 
 void View::setMapped(bool on)
