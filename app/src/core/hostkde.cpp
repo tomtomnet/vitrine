@@ -481,7 +481,12 @@ QHash<QString, QString> System::parseLocks(const QByteArray &list)
             }
         } else if (const QRegularExpressionMatch m = evr.match(line);
                    m.hasMatch() && !current.isEmpty()) {
-            locks.insert(current, m.captured(1));
+            /* dnf5 writes some with their epoch, 0 too */
+            QString value = m.captured(1);
+            if (value.startsWith("0:")) {
+                value.remove(0, 2);
+            }
+            locks.insert(current, value);
         }
     }
     return locks;

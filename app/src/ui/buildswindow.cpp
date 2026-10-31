@@ -863,7 +863,11 @@ QStringList BuildsWindow::selectedComponents() const
 
     if (const QTreeWidgetItem *group = m_groups.value(id)) {
         for (int i = 0; i < group->childCount(); i++) {
-            ids << group->child(i)->data(NameColumn, IdRole).toString();
+            const QString child = group->child(i)->data(NameColumn, IdRole).toString();
+            /* the host packages are optional: of them, those Vitrine installed, as Update All */
+            if (id != "system" || m_manager->systemStatus(child).wantsUpdates()) {
+                ids << child;
+            }
         }
         return ids;
     }

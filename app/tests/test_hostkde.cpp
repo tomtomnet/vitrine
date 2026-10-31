@@ -517,9 +517,11 @@ private slots:
             "Package name: virglrenderer\nevr = 1.3.0^20260928gitaafa9bd2-1.fc44\n\n"
             "# Added by 'versionlock add' command on 2026-10-13 19:21:58\n"
             "Package name: kwin\nevr = 6.7.91-1.hm4.fc44\n\n"
-            "Package name: kwin-libs\nevr = 6.7.91-1.hm4.fc44\n";
+            "Package name: kwin-libs\nevr = 6.7.91-1.hm4.fc44\n"
+            "Package name: kwin-common\nevr = 0:6.7.5-1.23.fc44\n";
         const QHash<QString, QString> l = System::parseLocks(locks);
-        QCOMPARE(l.size(), 3);
+        QCOMPARE(l.size(), 4);
+        QCOMPARE(l.value("kwin-common"), "6.7.5-1.23.fc44");
         QCOMPARE(l.value("kwin"), "6.7.91-1.hm4.fc44");
         QCOMPARE(l.value("virglrenderer"), "1.3.0^20260928gitaafa9bd2-1.fc44");
 

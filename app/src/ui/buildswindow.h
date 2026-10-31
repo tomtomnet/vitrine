@@ -95,7 +95,8 @@ private:
     bool systemSelected() const;
     /* The size of @path, counted in the background; -1 until then */
     qint64 size(const QString &path);
-    /* The components of the selection: one, or a group's */
+    /* The components of the selection: one, or a group's (the host
+       packages': those Vitrine installed) */
     QStringList selectedComponents() const;
 
     BuildManager *m_manager;

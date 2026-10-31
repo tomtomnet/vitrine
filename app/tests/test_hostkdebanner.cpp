@@ -2,7 +2,10 @@
 #include <QDir>
 #include <QElapsedTimer>
 #include <QFile>
+#include <QLabel>
 #include <QPushButton>
+#include <QTabWidget>
+#include <QTreeWidget>
 #include <QSignalSpy>
 #include <QStandardPaths>
 #include <QTemporaryDir>
@@ -10,9 +13,11 @@
 #include <QWidget>
 
 #include "activation.h"
+#include "core/buildmanager.h"
 #include "core/hostkde.h"
 #include "hostkdestandins.h"
 #include "ui/banner.h"
+#include "ui/buildswindow.h"
 #include "ui/hostkdebanner.h"
 
 using namespace HostKde;
@@ -21,7 +26,7 @@ using namespace HostKde;
  * The recipe's stand-in (host/kde/build.sh --print-recipe FEDORA
  * PACKAGE=VERSION...): each reading of the system says itself in calls,
  * and waits while hold is there (10 s at most), for a reading that takes
- * its time.  Sets for KWin 6.7.91 and Kirigami 6.31.0 only.
+ * its time.  Sets for KWin 6.7.91, KSvg and Kirigami 6.31.0 only.
  */
 static const char kRecipe[] = R"sh(#!/bin/bash
 here=$(cd "$(dirname "$0")" && pwd)
@@ -33,13 +38,14 @@ for a; do
 	case $a in
 	kwin=6.7.91) echo "set.kwin=hl39 hl39" ;;
 	kf6-kirigami=6.31.0) echo "set.kf6-kirigami=f1 f1" ;;
+	kf6-ksvg=6.31.0) echo "set.kf6-ksvg=k2 k2" ;;
 	*) echo "set.${a%%=*}=" ;;
 	esac
 	echo "key.${a%%=*}=k"
 done
 )sh";
 
-/* Two of host/kde/components.conf's packages */
+/* host/kde/components.conf's packages */
 static const char kComponents[] = R"(
 [host-kwin]
 title=KWin
@@ -49,6 +55,13 @@ follows=plasma-workspace 3
 against=qt6-qtbase qt6-qtdeclarative kdecoration libplasma
 patches=research/patches/kwin
 
+[host-ksvg]
+title=KSvg
+kind=system
+package=kf6-ksvg
+follows=kf6-kcoreaddons 2
+patches=research/patches/ksvg
+
 [host-kirigami]
 title=Kirigami
 kind=system
@@ -56,6 +69,13 @@ package=kf6-kirigami
 follows=kf6-kcoreaddons 2
 against=qt6-qtbase qt6-qtdeclarative
 patches=research/patches/kirigami
+
+[host-qtbase]
+title=Qt base
+kind=system
+package=qt6-qtbase
+patches=research/patches/qtbase
+heavy=1
 )";
 
 /*
@@ -273,6 +293,85 @@ private slots:
         QTest::qWait(1000);
         QCOMPARE(readings(), before + 1);
         QCOMPARE(changed.size(), 1);
+    }
+
+    /*
+     * The Builds window's Host desktop group: a row each, what it says of
+     * each package, and Install…/Revert… for the one selected.  With
+     * HOSTKDE_SHOTS set, its pictures there.
+     */
+    void buildsWindow()
+    {
+        HostKdeMonitor *monitor = HostKdeMonitor::instance();
+        QSignalSpy changed(monitor, &HostKdeMonitor::changed);
+        /* KSvg built, not installed */
+        QVERIFY(install("kf6-ksvg", "6.31.0-1.fc44", "ksvg"));
+        QVERIFY(write(m_data + "/host-ksvg/6.31.0-1.k2.fc44/build.conf",
+                      "package=kf6-ksvg\nevr=6.31.0-1.k2.fc44\nversion=6.31.0\nset=k2\ntag=k2\n"
+                      "plasma=fedora\nfedora=44\nkey=k\nbuilt=2026-10-31T22:00:00Z\n"
+                      "rpm=kf6-ksvg x86_64 d1 kf6-ksvg/kf6-ksvg-6.31.0-1.k2.fc44.x86_64.rpm\n"));
+        monitor->refresh();
+        QVERIFY(changed.wait(10000));
+        BuildManager::instance()->refresh();
+
+        BuildsWindow window;
+        window.resize(1100, 820);
+        window.show();
+        QVERIFY(changed.wait(10000));
+        auto *tree = window.findChild<QTreeWidget *>("components");
+        QTreeWidgetItem *group = nullptr;
+        for (int i = 0; i < tree->topLevelItemCount(); i++) {
+            if (tree->topLevelItem(i)->text(0) == "Host desktop") {
+                group = tree->topLevelItem(i);
+            }
+        }
+        QVERIFY(group);
+        QCOMPARE(group->childCount(), 4);
+        QHash<QString, QString> rows;
+        for (int i = 0; i < group->childCount(); i++) {
+            rows.insert(group->child(i)->text(0).section(' ', 0, 0), group->child(i)->text(1));
+        }
+        QCOMPARE(rows.value("KWin"), "Installed, not version-locked");
+        QCOMPARE(rows.value("KSvg"), "Built, not installed");
+        QCOMPARE(rows.value("Kirigami"), "Not built");
+        QCOMPARE(rows.value("Qt"), "No host set for Qt base 6.11.2");
+        QCOMPARE(group->text(1), "Installed: KWin");
+
+        const QString dir = qEnvironmentVariable("HOSTKDE_SHOTS");
+        const auto shot = [&window, &dir](const QString &name) {
+            if (!dir.isEmpty()) {
+                /* the layout of the new text first */
+                QTest::qWait(200);
+                QDir().mkpath(dir);
+                QVERIFY(window.grab().save(dir + '/' + name + ".png"));
+            }
+        };
+        auto *source = window.findChild<QLabel *>("source");
+        auto *installButton = window.findChild<QPushButton *>("install");
+        auto *revertButton = window.findChild<QPushButton *>("revert");
+        window.select("host-ksvg");
+        QVERIFY2(source->text().contains("Plasma's popups stop uploading their frames"),
+                 qPrintable(source->text()));
+        QVERIFY(source->text().contains("61-69 ms"));
+        QVERIFY(installButton->isVisible() && installButton->isEnabled());
+        QVERIFY(revertButton->isVisible() && !revertButton->isEnabled());
+        QVERIFY(revertButton->toolTip().contains("distribution's KSvg is installed"));
+        shot("builds-ksvg");
+        window.select("host-qtbase");
+        QVERIFY(source->text().contains("The research has no host set for Qt base 6.11.2"));
+        QVERIFY(!installButton->isEnabled());
+        shot("builds-qtbase");
+        window.select("host-kwin");
+        QVERIFY(source->text().contains("Vitrine's KWin 6.7.91-1.hl39.fc44, not version-locked"));
+        QVERIFY(revertButton->isEnabled());
+        shot("builds-kwin");
+        /* the group: no Install…/Revert… of its own; Build, of what Vitrine installed only */
+        window.select("system");
+        QVERIFY(!installButton->isVisible());
+        QCOMPARE(window.findChild<QPushButton *>("build")->toolTip(), "Builds KWin");
+        QVERIFY(source->text().contains("KSvg, Kirigami and Qt base"));
+        shot("builds-group");
+        QFile::remove(m_state + "/installed/kf6-ksvg");
     }
 };
 
