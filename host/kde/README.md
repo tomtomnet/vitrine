@@ -1,58 +1,106 @@
-# The host's KWin
+# The host's KDE packages
 
-An optional component of Vitrine's Builds window ("Host desktop"): this
-computer's own KWin with the research's host patches. It replaces the
-desktop's compositor, so Vitrine builds it only when asked, and installs it
-only after the administrator's password.
+Optional components of Vitrine's Builds window ("Host desktop"): this
+computer's own KWin, KSvg, Kirigami and Qt base, with the research's host
+sets. They replace packages the whole desktop runs on, so Vitrine builds
+one only when asked, and installs it only after the administrator's
+password. Each is a section of `components.conf`; all are built from one
+pinned copy of the research's recipe, `research/`.
 
-What the host set changes (the research's measurements, on Plasma 6.7.91):
-keys in a VM take 8.5-9.3 ms against 12.5 ms with Fedora's KWin; drags and
-the launcher under load are smoother; the guest's frames are paced to the
-host's deadlines (presentation-time v3); and the pointer grab
-(Ctrl+Alt+G) works inside Vitrine's Desktop view (patch 0039). On Intel xe
-GPUs (Arc), KWin no longer makes the GPU read every window the CPU draws
-from system memory at each frame (patch 0075): with Fedora's KWin and the
-sets before `hl39y`, Konsole drags missed 47 % of the refreshes on an Arc
-Pro B50.
+What the sets change (the research's measurements):
 
-- `build.sh` builds it: the research's `setup/tools/kde-rpms.sh`, run as
-  it is from the copy in `research/`, in a Fedora container (rootless
-  podman, memory capped). It takes the source RPM of the newest KWin in the
-  repositories the host's Plasma comes from (Fedora's, or the KDE SIG's
-  beta COPR) and the research's set for that version (`kde_set_for` in
-  `research/setup/versions.sh`): `hl39y` for 6.7.91, `hl39-68` for 6.8.0,
-  `h681a` for 6.8.1 and later (the research has built `h681a` once, and
-  not run it yet). `hl39-68` is the research's set of 2026-10-08, without
-  0075 and the patches after it: with an Intel xe GPU on Plasma 6.8.0, set
-  `KWIN_DISABLE_UDMABUF_IMPORT=1` (in `~/.config/environment.d`). Fedora
-  44's own Plasma, 6.7.5, has no set. The research's overrides of its sets
-  (`VGD_HOST_KWIN_SET` and the like) are ignored.
-- `install.sh` installs it, as root (Vitrine runs it with pkexec): the KWin
-  packages installed now (kwin, kwin-common, kwin-libs) are replaced by
-  the build's, checked by their header digests, and version-locked
-  (`dnf versionlock`) so that updates leave them alone. Some of the
-  sets' patches act only when a file of `$XDG_RUNTIME_DIR` says so (the
-  research's `src/host-config/kwin-*.conf`: the scanout journal's
+- KWin, sets `hl39y` for Plasma 6.7.91, `hl39-68` for 6.8.0, `h681a` for
+  6.8.1 and later (built once by the research, not run yet); none for
+  Fedora 44's own Plasma 6.7.5. Keys in a VM take 8.5-9.3 ms against 12.5
+  ms with Fedora's KWin; drags and the launcher under load are smoother;
+  the guest's frames are paced to the host's deadlines (presentation-time
+  v3); the pointer grab (Ctrl+Alt+G) works inside Vitrine's Desktop view
+  (patch 0039). On Intel xe GPUs (Arc), KWin no longer makes the GPU read
+  every window the CPU draws from system memory at each frame (patch
+  0075): with Fedora's KWin and the sets before `hl39y`, Konsole drags
+  missed 47 % of the refreshes on an Arc Pro B50. `hl39-68` is the
+  research's set of 2026-10-08, without 0075 and the patches after it:
+  with an Intel xe GPU on Plasma 6.8.0, set `KWIN_DISABLE_UDMABUF_IMPORT=1`
+  (in `~/.config/environment.d`).
+- KSvg 6.31.0, set `k2`: Plasma's popups stop uploading their themed frames
+  again at each opening.
+- Kirigami 6.31.0, set `f1`: its items react to the frame contrast only
+  when it changes (Plasma's style set it again at each color sync). With
+  KSvg's set, on an Arc Pro B50 at 4K and 120 Hz: the launcher opens in
+  61-69 ms instead of 72-78, and Super pressed 8 times a second repeats 0.2
+  frames a second instead of 6-9.
+- Qt base 6.11.2, set `q4`: a window being resized reuses its shared memory
+  pools for the next sizes. Bare 4K resizes: Konsole shows 111-114 sizes a
+  second instead of 85-88, Dolphin 99-102 instead of 62.
+  `QT_WAYLAND_SHM_NO_REUSE=1` in a program's environment turns it off.
+
+How:
+
+- `build.sh --package PACKAGE` builds one: the research's
+  `setup/tools/kde-rpms.sh`, run as it is from `research/`, in a Fedora
+  container (rootless podman, memory capped at 10 GiB). It takes the
+  source RPM of the package's newest version in the repositories the
+  host's Plasma comes from (Fedora's, or the KDE SIG's beta COPR) and the
+  research's set for that version (`kde_set_for host` in
+  `research/setup/versions.sh`). The research's overrides of its sets
+  (`VGD_HOST_KWIN_SET` and the like) and its switches of packages
+  (`HOST_QT_Q4=0` and the like) are ignored. The builds go to
+  `~/.local/share/vitrine/host-kwin/`, `host-ksvg/`, `host-kirigami/` and
+  `host-qtbase/`, a folder per version-release, with the container's logs
+  and the packages they were built against.
+- `install.sh` installs builds, as root (Vitrine runs it with pkexec): of
+  each source package, all its packages installed now are replaced by the
+  build's in one dnf transaction, or none if the build lacks one of them
+  (Qt base's require each other at the same release); they are checked by
+  their header digests, and version-locked by their exact names
+  (`dnf versionlock`) so that updates leave them alone. `install.sh
+  revert` removes the locks and puts the distribution's packages back
+  (`dnf distro-sync`), only for packages Vitrine installed; several at once
+  in one transaction.
+- Some of KWin's patches act only when a file of `$XDG_RUNTIME_DIR` says so
+  (the research's `src/host-config/kwin-*.conf`: the scanout journal's
   variance cap, the active window as a plane candidate, empty renders and
   damage-free layers, effects starting one refresh in). `install.sh` turns
-  them on for every user, in `/etc/user-tmpfiles.d/vitrine-host-kwin.conf`
-  (made at each login; for the user installing, at once). To turn one off,
-  remove its line there. `install.sh revert` removes the locks and that
-  file, and puts the distribution's KWin back (`dnf distro-sync`), only
-  for a KWin Vitrine installed.
-- `components.conf` describes it to the app.
+  those of its `kwin_switches` list on for every user, in
+  `/etc/user-tmpfiles.d/vitrine-host-kwin.conf` (made at each login; for
+  the user installing, at once). To turn one off, remove its line there.
+  Reverting KWin removes the file.
+- `components.conf` describes them to the app: which installed package
+  says what release the distribution has (`follows`: Plasma for KWin, the
+  KDE Frameworks for KSvg and Kirigami) and what a build must match
+  (`against`: KWin and Kirigami use Qt's private API).
 
-The new KWin runs from the next login. It must match the installed Plasma
-and Qt: KWin uses Qt's private API, and Plasma updates do not wait for a
-locked KWin. After a Plasma or Qt update Vitrine says so, and offers to
-build and install the matching set, or to revert. If the desktop does not
-start after an update, log in on a text console (Ctrl+Alt+F3) and put
-the distribution's KWin back:
+What the locks mean:
+
+- KWin must match the installed Plasma and Qt, whose updates do not wait
+  for a locked KWin. After one, Vitrine says so (a banner in the main
+  window) and offers to build and install the matching set, or to revert.
+  It runs from the next login.
+- KSvg and Kirigami stay at their version while the other KDE Frameworks
+  update around them, a mix of releases that upstream does not support.
+  When the frameworks move to a new release (each month in Fedora),
+  Vitrine says so and offers the matching set if the research has one,
+  else to revert. Kirigami uses Qt's private API: after a Qt update it must
+  be built again too.
+- Qt base holds every Qt update back while it is locked: Qt's other modules
+  require the same version of it. The Builds window says when an update
+  waits (from dnf's cached metadata); a build of the research's set for
+  the new version takes it, or Revert… lets it in. After a Qt update,
+  Vitrine's KWin and Kirigami must be built again.
+- Programs started after an install use the new libraries, the desktop
+  from the next login.
+
+If the desktop does not start, log in on a text console (Ctrl+Alt+F3) and
+put the distribution's packages back. For KWin:
 
 ```sh
 sudo dnf versionlock delete kwin kwin-common kwin-libs
 sudo dnf distro-sync kwin kwin-common kwin-libs
 ```
+
+For the others, the same with the packages the Install… dialog names (`rpm
+-qa 'qt6-qtbase*'` lists Qt base's; `kf6-kirigami*` also matches
+kf6-kirigami-addons, which is not Kirigami's).
 
 ## `research/`: the research's recipe, pinned
 

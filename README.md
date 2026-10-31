@@ -10,7 +10,8 @@ driver, Mesa, KWin) are used at pinned versions, with the patches vitrine
 needs kept in this repository: `host/versions.conf` and `host/patches` for
 the QEMU, virglrenderer and rutabaga_gfx vitrine builds (upstream QEMU with a
 series of patches, `host/patches/qemu/series`), `guest/` for the guest's,
-and `host/kde` for the optional host KWin.
+and `host/kde` for the optional host packages (KWin, KSvg, Kirigami, Qt
+base).
 
 Early development. It is built and tried on Fedora 44 KDE Plasma (Wayland)
 with an AMD Radeon 780M, with Fedora 44 KDE guests. It is not packaged.
@@ -210,22 +211,26 @@ is chosen. Turning the nested desktop off and on again goes back to
 Automatic. All this is tried so far on a computer with one GPU only.
 
 Host desktop (optional): the Builds window also offers this computer's own
-KWin with the research's host set: steadier frames and quicker input in
-VMs, and the pointer grab inside the Desktop view. The research has sets
-for Plasma 6.7.91 (the KDE SIG's beta COPR) and 6.8, none for Fedora 44's
-own 6.7.5: the window says so. Build builds it in a Fedora container
-(`host/kde/build.sh`, about 15 minutes, up to 10 GiB of memory). Install…
-says what it does first, then, with the administrator's password, replaces
-kwin, kwin-common and kwin-libs and version-locks them (`dnf versionlock`);
-it takes effect at the next login. It must match the installed Plasma and
-Qt: after an update of either, build and install it again, or Revert…,
-which puts the distribution's KWin back. A banner says when the installed
-one no longer matches; for an update made while vitrine runs, once its
-window comes back to the front. A KWin that vitrine did not install
-(another patched build) is named before anything replaces it, and vitrine
-never reverts it.
-`host/kde/README.md` has the details, and the commands that put the
-distribution's KWin back from a text console.
+KWin, KSvg, Kirigami and Qt base with the research's host sets. KWin's
+gives steadier frames and quicker input in VMs, and the pointer grab
+inside the Desktop view; KSvg's and Kirigami's make Plasma's popups cheaper
+to open; Qt base's makes windows cheaper to resize. The research has KWin
+sets for Plasma 6.7.91 (the KDE SIG's beta COPR) and 6.8, none for Fedora
+44's own 6.7.5, and sets for KSvg and Kirigami 6.31.0 and Qt 6.11.2: the
+window says which apply. Build builds one in a Fedora container
+(`host/kde/build.sh`, up to 10 GiB of memory). Install… says what it does
+first, then, with the administrator's password, replaces all the installed
+packages of that one (Qt base's: all from the same build) and version-locks
+them (`dnf versionlock`). It must match the system: KWin the installed
+Plasma and Qt, KSvg and Kirigami the KDE Frameworks' release, Kirigami Qt
+too; and while Qt base is locked, Qt updates wait. After an update, build
+and install it again, or Revert…, which puts the distribution's packages
+back. A banner says when one no longer matches; for an update made while
+vitrine runs, once its window comes back to the front. A package that
+vitrine did not install (another patched build) is named before anything
+replaces it, and vitrine never reverts it. `host/kde/README.md` has the
+details, and the commands that put the distribution's packages back from a
+text console.
 
 Shut Down goes through the guest's agent when it runs one: the guest tools',
 else QEMU's guest agent (Fedora installs qemu-guest-agent in VMs). Otherwise
@@ -260,9 +265,10 @@ disk, `qemu.log`), or another folder chosen in Preferences, where vitrine
 lists every folder holding a `vm.args`; vitrine's QEMU in `~/.local/share/vitrine/stack/`, the
 guest tools in `~/.local/share/vitrine/guest-tools/`, QEMU's build trees in
 `~/.cache/vitrine/stack-build/`, the guest tools' downloads in
-`~/.cache/vitrine/guest-build/`, the host's KWin builds in
-`~/.local/share/vitrine/host-kwin/` and its downloads in
-`~/.cache/vitrine/host-kwin-build/`, settings in `~/.config/vitrine/settings.conf`.
+`~/.cache/vitrine/guest-build/`, the host packages' builds in
+`~/.local/share/vitrine/host-kwin/` (`host-ksvg/`, `host-kirigami/`,
+`host-qtbase/`) and their downloads in `~/.cache/vitrine/host-kde-build/`,
+settings in `~/.config/vitrine/settings.conf`.
 
 ## Install
 
