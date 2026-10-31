@@ -31,6 +31,7 @@ static const char kFair[] = "/sys/kernel/debug/sched/fair_server";
 static const char kExt[] = "/sys/kernel/debug/sched/ext_server";
 static const char kCard[] = "/sys/class/drm/card1/device";
 static const char kUdmabuf[] = "/sys/module/udmabuf/parameters";
+static const char kThp[] = "/sys/kernel/mm/transparent_hugepage/shmem_enabled";
 
 static bool writeFile(const QString &path, const QByteArray &data)
 {
@@ -247,6 +248,24 @@ private:
                                     value(QString(kUdmabuf) + "/size_limit_mb"));
     }
     QByteArray odTable() const { return readFile(path(QString(kCard) + "/pp_od_clk_voltage")); }
+    /* shmem_enabled as the kernel shows it: @choice in brackets among the words */
+    void setThp(const QString &choice) const
+    {
+        QStringList words{"always", "within_size", "advise", "never", "deny", "force"};
+        for (QString &word : words) {
+            if (word == choice) {
+                word = '[' + word + ']';
+            }
+        }
+        writeFile(path(kThp), words.join(' ').toLatin1() + '\n');
+    }
+    /* the choice in brackets */
+    QString thp() const
+    {
+        const QString text = QString::fromLatin1(value(kThp));
+        const qsizetype open = text.indexOf('['), close = text.indexOf(']');
+        return open >= 0 && close > open ? text.mid(open + 1, close - open - 1) : QString();
+    }
     /* what the helpers leave in their state folder */
     QStringList stateFiles() const
     {
@@ -320,6 +339,7 @@ private:
         writeFile(path("/sys/class/drm/card0/device/vendor"), "0x8086\n");
         /* the kernel's defaults */
         setUdmabuf(1024, 64);
+        setThp("never");
     }
 
 private slots:
@@ -1561,6 +1581,199 @@ private slots:
     }
 
     /* Every hold taken (the fair server, udmabuf, eight cards): the next says why */
+    /* Huge pages for shared memory: advise from never while a VM runs, never after */
+    void thpAdviseAndRestore()
+    {
+        FakeQemu qemu;
+        Helper h(m_root);
+        QVERIFY(h.ready());
+        /* nothing applied while no VM runs; letting go is always allowed */
+        QCOMPARE(h.answer("thp on"), QString("error thp: watch a QEMU first"));
+        QCOMPARE(h.answer("thp off"), QString("ok thp off"));
+        h.answer("watch " + qemu.pidText());
+        QCOMPARE(h.answer("thp on"), QString("ok thp on: advise (was never)"));
+        QCOMPARE(thp(), QString("advise"));
+        QVERIFY(stateExists("thp"));
+        QCOMPARE(writes(), QStringList({QString(kThp) + " advise"}));
+        QVERIFY(journal().join('\n').contains("log uid "));
+        QCOMPARE(h.answer("thp on"), QString("ok thp on: already"));
+        QCOMPARE(h.answer("thp maybe"), QString("error thp: unknown request"));
+
+        clearJournal();
+        qemu.stop();
+        QCOMPARE(h.waitFor("restored"), QString("restored thp: shmem huge pages back to never"));
+        QCOMPARE(h.waitFor("bye"), QString("bye"));
+        QVERIFY(h.finished());
+        QCOMPARE(thp(), QString("never"));
+        QCOMPARE(writes(), QStringList({QString(kThp) + " never"}));
+        QCOMPARE(stateFiles(), QStringList({"lock"}));
+        QVERIFY(journal().join('\n').contains("log shmem huge pages back to never"));
+    }
+
+    /* thp off puts it back at once, the VM still running; and so does release */
+    void thpOff()
+    {
+        FakeQemu qemu;
+        Helper h(m_root);
+        QVERIFY(h.ready());
+        h.answer("watch " + qemu.pidText());
+        QVERIFY(h.answer("thp on").startsWith("ok thp on: advise"));
+        QCOMPARE(h.ask("thp off"),
+                 QStringList({"restored thp: shmem huge pages back to never", "ok thp off"}));
+        QCOMPARE(thp(), QString("never"));
+        QVERIFY(!stateExists("thp"));
+        QVERIFY(h.answer("thp on").startsWith("ok thp on: advise"));
+        h.ask("release");
+        QVERIFY(h.finished());
+        QVERIFY(h.all().contains("restored thp: shmem huge pages back to never"));
+        QCOMPARE(thp(), QString("never"));
+        QCOMPARE(stateFiles(), QStringList({"lock"}));
+    }
+
+    /* From never only: any other choice is the host owner's, and stays */
+    void thpOtherChoices_data()
+    {
+        QTest::addColumn<QString>("choice");
+        QTest::addColumn<QString>("answer");
+        QTest::newRow("advise") << "advise" << "ok thp on: already advise, left as it is";
+        QTest::newRow("within_size") << "within_size"
+                                     << "ok thp on: already within_size, left as it is";
+        QTest::newRow("always") << "always" << "ok thp on: already always, left as it is";
+        QTest::newRow("force") << "force" << "ok thp on: already force, left as it is";
+        QTest::newRow("deny") << "deny"
+                              << "skip thp: huge pages for shared memory are denied here (deny), "
+                                 "left as they are";
+        QTest::newRow("no such file") << ""
+                                      << "skip thp: this kernel has no transparent huge pages "
+                                         "for shared memory";
+    }
+    void thpOtherChoices()
+    {
+        QFETCH(QString, choice);
+        QFETCH(QString, answer);
+        if (choice.isEmpty()) {
+            QFile::remove(path(kThp));
+        } else {
+            setThp(choice);
+        }
+        FakeQemu qemu;
+        Helper h(m_root);
+        QVERIFY(h.ready());
+        h.answer("watch " + qemu.pidText());
+        QCOMPARE(h.answer("thp on"), answer);
+        QVERIFY(!stateExists("thp"));
+        QCOMPARE(stateFiles(), QStringList({"lock"}));
+        qemu.stop();
+        QVERIFY(h.finished());
+        const QString all = h.all().join('\n');
+        QVERIFY(!all.contains("restored thp") && !all.contains("left thp"));
+        QVERIFY(writes().isEmpty());
+        QCOMPARE(thp(), choice);
+    }
+
+    /* Put back only where it still reads what the helper wrote */
+    void thpRestoreOnlyIfOurs()
+    {
+        FakeQemu qemu;
+        Helper h(m_root);
+        QVERIFY(h.ready());
+        h.answer("watch " + qemu.pidText());
+        QVERIFY(h.answer("thp on").startsWith("ok thp on: advise"));
+        /* an administrator's choice meanwhile */
+        setThp("within_size");
+        qemu.stop();
+        QVERIFY(h.finished());
+        QVERIFY(h.all().contains("left thp: changed by someone else since"));
+        QCOMPARE(thp(), QString("within_size"));
+        QCOMPARE(stateFiles(), QStringList({"lock"}));
+        QVERIFY(journal().join('\n').contains("log shmem huge pages left at within_size"));
+    }
+
+    /* Taken and not kept: back to never, nothing held or recorded */
+    void thpReadBack()
+    {
+        writeFile(path(QString(kThp) + ".stuck"), "");
+        FakeQemu qemu;
+        Helper h(m_root);
+        QVERIFY(h.ready());
+        h.answer("watch " + qemu.pidText());
+        QCOMPARE(h.answer("thp on"), QString("error thp: the setting did not take"));
+        QCOMPARE(thp(), QString("never"));
+        QVERIFY(!stateExists("thp"));
+        QCOMPARE(stateFiles(), QStringList({"lock"}));
+        qemu.stop();
+        QVERIFY(h.finished());
+    }
+
+    /* Killed holding it, setting it or putting it back: the next helper puts it back */
+    void thpCrashRecovery_data()
+    {
+        QTest::addColumn<int>("killAt");
+        QTest::addColumn<bool>("restoring");
+        QTest::addColumn<QString>("restored");
+        QTest::newRow("held") << 0 << false << "restored thp: shmem huge pages back to never";
+        QTest::newRow("setting, after the write")
+            << 1 << false << "restored thp: shmem huge pages back to never";
+        QTest::newRow("restoring, after the write")
+            << 2 << true << "restored thp: shmem huge pages never already";
+    }
+    void thpCrashRecovery()
+    {
+        QFETCH(int, killAt);
+        QFETCH(bool, restoring);
+        QFETCH(QString, restored);
+        {
+            FakeQemu qemu;
+            Helper a(m_root, killAt ? QStringList{QString("VITRINE_HELPER_TEST_KILL_AT=%1").arg(killAt)}
+                                    : QStringList());
+            QVERIFY(a.ready());
+            a.answer("watch " + qemu.pidText());
+            const QString on = a.answer("thp on");
+            if (!killAt) {
+                QVERIFY(on.startsWith("ok thp on: advise"));
+                a.kill();
+            } else if (restoring) {
+                QVERIFY(on.startsWith("ok thp on: advise"));
+                qemu.stop();
+            }
+            QVERIFY(a.finished());
+        }
+        QVERIFY(stateExists("thp"));
+        Helper b(m_root);
+        QCOMPARE(b.line(), restored);
+        QVERIFY(b.ready());
+        QCOMPARE(thp(), QString("never"));
+        QCOMPARE(stateFiles(), QStringList({"lock"}));
+        b.closeInput();
+        QVERIFY(b.finished());
+        QVERIFY(!b.all().join('\n').contains("left thp"));
+    }
+
+    /* Two helpers (vitrine restarted, another user): the second one joins
+       the first's hold, and the last one out restores */
+    void thpTwoHelpers()
+    {
+        FakeQemu q1, q2;
+        Helper a(m_root), b(m_root);
+        QVERIFY(a.ready());
+        QVERIFY(b.ready());
+        a.answer("watch " + q1.pidText());
+        b.answer("watch " + q2.pidText());
+        QVERIFY(a.answer("thp on").startsWith("ok thp on: advise"));
+        clearJournal();
+        QCOMPARE(b.answer("thp on"), QString("ok thp on: set by another vitrine session"));
+        QVERIFY(writes().isEmpty());
+        q1.stop();
+        QVERIFY(a.finished());
+        QVERIFY(!a.all().join('\n').contains("restored"));
+        QCOMPARE(thp(), QString("advise"));
+        q2.stop();
+        QVERIFY(b.finished());
+        QVERIFY(b.all().contains("restored thp: shmem huge pages back to never"));
+        QCOMPARE(thp(), QString("never"));
+        QCOMPARE(stateFiles(), QStringList({"lock"}));
+    }
+
     void holdsExhausted()
     {
         for (int n = 2; n <= 9; n++) {
@@ -1572,6 +1785,7 @@ private slots:
         h.answer("watch " + qemu.pidText());
         QVERIFY(h.answer("fair-server on").startsWith("ok fair-server on"));
         QVERIFY(h.answer("udmabuf " + qemu.pidText()).startsWith("ok udmabuf"));
+        QVERIFY(h.answer("thp on").startsWith("ok thp on: advise"));
         for (int n = 1; n <= 8; n++) {
             QVERIFY(h.answer(QString("gpu-floor card%1 auto").arg(n)).startsWith("ok gpu-floor"));
         }
@@ -1580,6 +1794,7 @@ private slots:
         h.ask("release");
         QVERIFY(h.finished());
         QCOMPARE(udmabuf(), QString("1024/64"));
+        QCOMPARE(thp(), QString("never"));
         QCOMPARE(stateFiles(), QStringList({"lock"}));
     }
 

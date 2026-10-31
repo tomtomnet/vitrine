@@ -1,7 +1,8 @@
 /* SPDX-License-Identifier: GPL-2.0-or-later */
 /*
  * The global settings: the kernel's fair server (and ext server), an AMD
- * GPU's clock floor and the udmabuf limits; and the record of each QEMU
+ * GPU's clock floor, the udmabuf limits and shared memory's transparent huge
+ * pages; and the record of each QEMU
  * whose threads a helper made real-time or ordinary (sched-<pid>).  The
  * settings belong to the whole machine, so several helpers (vitrine
  * restarted while its VMs run, other users' sessions) coordinate through
@@ -43,14 +44,14 @@ static int lock_fd = -1;
 
 struct hold {
     char key[32];       /* fair-server, ext-server, gpu-floor-cardN, udmabuf,
-                           sched-<pid>; empty when free */
+                           thp, sched-<pid>; empty when free */
     int fd;             /* <key>.hold */
     char value[16];     /* what was asked: on, auto or MHz */
 };
-/* the fair and ext servers, the udmabuf limits and eight cards; then the
-   records of the QEMUs watched */
+/* the fair and ext servers, the udmabuf limits, huge pages and eight cards;
+   then the records of the QEMUs watched */
 #define MAX_CARDS 8
-#define MAX_SETTINGS (3 + MAX_CARDS)
+#define MAX_SETTINGS (4 + MAX_CARDS)
 #define MAX_HOLDS (MAX_SETTINGS + MAX_WATCHED)
 static struct hold holds[MAX_HOLDS];
 
@@ -1503,6 +1504,186 @@ void udmabuf_check(void)
     hold_drop(h);
 }
 
+/* --- transparent huge pages for shared memory --- */
+
+/*
+ * shmem_enabled reads "always within_size advise [never] deny force": the
+ * choice in brackets.  Writing a word chooses it; it is read by the kernel
+ * at each fault, a change counts at once.  "deny" and "force" are the
+ * kernel's switches for emergencies and tests.
+ */
+static bool thp_word(const char *word)
+{
+    static const char *const words[] = {"always", "within_size", "advise", "never",
+                                        "deny",   "force",       NULL};
+
+    for (int i = 0; words[i]; i++) {
+        if (strcmp(word, words[i]) == 0) {
+            return true;
+        }
+    }
+    return false;
+}
+
+/* The choice now, one of the kernel's words; false when there is none to
+   read (a kernel without transparent huge pages) */
+static bool thp_get(char *word, size_t size)
+{
+    char buf[256];
+    const char *lb, *rb;
+
+    if (read_attr(THP_SHMEM, buf, sizeof(buf)) <= 0 || !(lb = strchr(buf, '[')) ||
+        !(rb = strchr(lb, ']')) || (size_t)(rb - lb - 1) >= size) {
+        return false;
+    }
+    snprintf(word, size, "%.*s", (int)(rb - lb - 1), lb + 1);
+    return thp_word(word);
+}
+
+/* @word chosen and read back: 0 or -errno (-EIO: taken, not kept) */
+static int thp_set(const char *word)
+{
+    char cmd[32], now[32];
+    int err;
+
+    snprintf(cmd, sizeof(cmd), "%s\n", word);
+    if ((err = write_attr(THP_SHMEM, cmd)) < 0) {
+        return err;
+    }
+    return thp_get(now, sizeof(now)) && strcmp(now, word) == 0 ? 0 : -EIO;
+}
+
+/*
+ * Under the lock, as the last holder or for a dead one: the choice before,
+ * where it still reads what was written.  One that cannot be put back now
+ * stays recorded, for the next helper.
+ */
+static void thp_restore(void)
+{
+    char *text = state_read("thp"), was[32], wrote[32], now[32];
+
+    if (!text) {
+        return;
+    }
+    /* "was WORD" and "wrote WORD" lines */
+    if (sscanf(text, "was %31s wrote %31s", was, wrote) != 2 || !thp_word(was) || !thp_word(wrote)) {
+        free(text);
+        state_remove("thp");
+        return;
+    }
+    free(text);
+    if (!thp_get(now, sizeof(now))) {
+        reply("restored thp: shmem_enabled cannot be read now (kept for later)");
+        return;
+    }
+    if (strcmp(now, wrote) == 0) {
+        if (thp_set(was) < 0) {
+            reply("restored thp: shmem huge pages could not be put back to %s (kept for later)", was);
+            sys_log("shmem huge pages: %s could not be put back", was);
+            return;
+        }
+        reply("restored thp: shmem huge pages back to %s", was);
+        sys_log("shmem huge pages back to %s", was);
+    } else if (strcmp(now, was) == 0) {
+        /* killed before writing it, or after putting it back */
+        reply("restored thp: shmem huge pages %s already", was);
+    } else {
+        reply("left thp: changed by someone else since");
+        sys_log("shmem huge pages left at %s: changed by someone else since", now);
+    }
+    state_remove("thp");
+}
+
+/* What @now means for this helper, which writes only over "never" */
+static void thp_found(const char *now)
+{
+    if (strcmp(now, "deny") == 0) {
+        reply("skip thp: huge pages for shared memory are denied here (deny), left as they are");
+    } else {
+        /* advise, or more: QEMU's madvise takes already */
+        reply("ok thp on: already %s, left as it is", now);
+    }
+}
+
+void thp_on(void)
+{
+    char now[32], text[64];
+    struct hold *h;
+    bool first, readable;
+    int err;
+
+    if (hold_find("thp")) {
+        reply("ok thp on: already");
+        return;
+    }
+    if (!thp_get(now, sizeof(now))) {
+        reply("skip thp: this kernel has no transparent huge pages for shared memory");
+        return;
+    }
+    /*
+     * The hold first, then what the value means: "advise" may be another
+     * helper's, which this one joins - else the first one out would put
+     * "never" back under this one's VMs.  Not another helper's: the
+     * owner's choice, left as it is.
+     */
+    lock_all();
+    if (!(h = hold_take("thp", "on", &first))) {
+        err = errno;
+        unlock_all();
+        reply("error thp: cannot take the hold: %s", strerror(err));
+        return;
+    }
+    if (!first) {
+        unlock_all();
+        reply("ok thp on: set by another vitrine session");
+        return;
+    }
+    /* the hold's restore (a dead helper's) may have changed it: read again */
+    readable = thp_get(now, sizeof(now));
+    if (!readable || strcmp(now, "never") != 0) {
+        hold_close(h, true);
+        unlock_all();
+        if (readable) {
+            thp_found(now);
+        } else {
+            reply("error thp: shmem_enabled cannot be read");
+        }
+        return;
+    }
+    /* recorded before anything is written */
+    snprintf(text, sizeof(text), "was %s\nwrote advise\n", now);
+    if (!state_write("thp", text)) {
+        err = errno;
+        hold_close(h, true);
+        unlock_all();
+        reply("error thp: %s", strerror(err));
+        return;
+    }
+    if ((err = thp_set("advise")) < 0) {
+        /* back as it was, if the write took at all */
+        thp_set(now);
+        state_remove("thp");
+        hold_close(h, true);
+        unlock_all();
+        reply("error thp: %s", err == -EIO ? "the setting did not take" : strerror(-err));
+        return;
+    }
+    hold_share(h);
+    unlock_all();
+    sys_log("uid %u: shmem huge pages advise (was %s)", (unsigned)caller_uid, now);
+    reply("ok thp on: advise (was %s)", now);
+}
+
+void thp_off(void)
+{
+    struct hold *h = hold_find("thp");
+
+    if (h) {
+        hold_drop(h);
+    }
+    reply("ok thp off");
+}
+
 /* --- all of them --- */
 
 /* sched-<pid>'s record ("pid P start S niced N kept T,T..."): those threads
@@ -1594,6 +1775,8 @@ static void restore_key(const char *key)
         gpu_restore(key + 10);
     } else if (strcmp(key, "udmabuf") == 0) {
         udmabuf_restore();
+    } else if (strcmp(key, "thp") == 0) {
+        thp_restore();
     } else {
         state_remove(key);
     }
