@@ -6,6 +6,7 @@
 #include <QActionGroup>
 #include <QApplication>
 #include <QCloseEvent>
+#include <QDBusConnection>
 #include <QDesktopServices>
 #include <QDialog>
 #include <QDir>
@@ -78,6 +79,7 @@
 #include "ui/vmdetails.h"
 #include "ui/vmpane.h"
 #include "ui/vmwindow.h"
+#include "ui/windowfocus.h"
 #include "ui/widgets.h"
 #include "nested/desktopview.h"
 #include "vmview/vmview.h"
@@ -215,6 +217,12 @@ MainWindow::MainWindow(VmStore *store, QWidget *parent)
     auto *host = new HostSettings(store, this);
     connect(host, &HostSettings::notice, this,
             [this](const QString &text) { statusBar()->showMessage(text, 15000); });
+    /* which window of QEMU's own is active, for focus priority: KWin's to
+       say, while such VMs run tuned */
+    auto *windowFocus = new WindowFocus(QDBusConnection::sessionBus(), this);
+    connect(host, &HostSettings::windowFocusWanted, windowFocus, &WindowFocus::setWatching);
+    connect(windowFocus, &WindowFocus::activated, host, &HostSettings::windowActivated);
+    windowFocus->setWatching(host->wantsWindowFocus());
     /* the statistics of the selected VM, and the labels the user may hide
        from their menu: not the running count, which says what a closing
        window waits for */
@@ -936,8 +944,8 @@ void MainWindow::consoleChanged(VmConsole *console)
      * Focus priority: the VM whose screen has the keyboard - its console
      * with the focus in the active window, or its full-screen window active
      * - is in front, any console, selected or not.  Losing the keyboard to
-     * a host window changes nothing (HostSettings::setFront).  VMs in
-     * QEMU's own window are not followed.
+     * a host window changes nothing (HostSettings::setFront).  The windows
+     * of QEMU's own: KWin says which is active (WindowFocus).
      */
     HostSettings *host = HostSettings::instance();
     if (console->hasKeyboard() && console->vm() && host) {

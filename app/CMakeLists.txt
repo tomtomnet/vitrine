@@ -340,6 +340,8 @@ qt_add_library(vitrine_ui STATIC
     src/ui/vmwindow.h
     src/ui/widgets.cpp
     src/ui/widgets.h
+    src/ui/windowfocus.cpp
+    src/ui/windowfocus.h
     ${UI_PROTOCOL_DIR}/linux-dmabuf-v1-client-protocol.h
 )
 target_include_directories(vitrine_ui PRIVATE ${UI_PROTOCOL_DIR})
@@ -466,7 +468,8 @@ if(BUILD_TESTING)
             stackbanner
             udmabufnotifier
             usbmenu
-            vmdetails)
+            vmdetails
+            windowfocus)
         qt_add_executable(test_${name} tests/test_${name}.cpp)
         target_link_libraries(test_${name} PRIVATE vitrine_ui Qt6::Test)
         add_test(NAME ${name} COMMAND test_${name})
