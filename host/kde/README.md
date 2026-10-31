@@ -57,21 +57,28 @@ sudo dnf distro-sync kwin kwin-common kwin-libs
 ## `research/`: the research's recipe, pinned
 
 A copy of what `kde-rpms.sh` reads in the research's repository
-(virtio-gpu-desktop) at commit `ce2c5ee6349ac3eda027743803b17f40ab3f86b0`
-(2026-10-26), in its layout (the container mounts the folder as `/repo`),
-byte for byte: the scripts, the three host sets and the 33 patches they
-name, and the run-time switches of those patches (`src/host-config`),
-which `install.sh` reads. `build.sh` passes it everything through the
-environment: Vitrine's folders (`VGD_BUILD`), no `paths.conf` of the
-research's (`VGD_CONFIG=/dev/null`), the jobs, the Plasma's origin
-(`PLASMA`), the host's Fedora (`VGD_FEDORA`), podman's options
-(`VGD_PODMAN_ARGS`: the container's name, which Stop needs, and its memory
-cap) and live output (`VGD_VERBOSE=1`). Each build keeps
-`buildroot-TAG.txt`, the packages it was built against, which the app
-compares with the host's before installing.
+(virtio-gpu-desktop) at commit `f659cb4d8fcbcb64d9ff5467ca0ba4891d13a28d`
+(2026-10-31), in its layout (the container mounts the folder as `/repo`),
+byte for byte and with its files' modes: the scripts, the host sets of the
+four packages (`kde_set_for host ...` in `setup/versions.sh`) and the
+patches they name, and the run-time switches of KWin's patches
+(`src/host-config`), which `install.sh` reads. `build.sh` passes it
+everything through the environment: Vitrine's folders (`VGD_BUILD`), no
+`paths.conf` of the research's (`VGD_CONFIG=/dev/null`), the jobs, the
+package (`VGD_KDE_PACKAGES`), the Plasma's origin (`PLASMA`), the host's
+Fedora (`VGD_FEDORA`), podman's options (`VGD_PODMAN_ARGS`: the
+container's name, which Stop needs, and its memory cap) and live output
+(`VGD_VERBOSE=1`). Each build keeps `buildroot-TAG.txt`, the packages it
+was built against, which the app compares with the host's before
+installing.
 
 | sha256 | file |
 |---|---|
+| `a333fddbfabbe12d8e5f224d441f174221be8c321d0634936b3dfea4c46d6c2d` | `patches/kirigami/0001-PlatformTheme-signal-a-frame-contrast-change-only-wh.patch` |
+| `8d04c83da608399e7db51363d7be6e340568a290c0182981c570b0c996cc013d` | `patches/kirigami/sets/f1.series` |
+| `795c21bfd266da8d22a9666c7252b0e865bd5f4e75c9d520059ff686e3c91f27` | `patches/ksvg/0001-Svg-keep-a-cached-pixmap-s-copy-at-the-requested-dev-v2.patch` |
+| `012a24af7c7d5e6402f2c455ac2ba1bc0fb4ea3b5c170d70b4c107a90b70c2e1` | `patches/ksvg/0002-FrameSvgItem-release-the-previous-nodes-after-the-ne.patch` |
+| `5018b0aa3b29d3c19772cc51433a701a1a1580e84044c749d895cc6a56d4e098` | `patches/ksvg/sets/k2.series` |
 | `0d02a6e21c7c8aa7577eef557695bfa2c3bdd86706c1ae62f7b63f3715b811cb` | `patches/kwin/0001-Patch100-kwin-vm-frame-timing-ported-to-6.8.patch` |
 | `61c540b5029879629218f527ade8a48605dbc4a560c2e32056b860526dfcf3f0` | `patches/kwin/0002-Patch101-kwin-render-journal-variance-cap-applies-un.patch` |
 | `7cc5ce66afed63a27dbb6d8c0d1b56f3c4da975a83fd17339aa40df1a7e51437` | `patches/kwin/0003-Patch102-kwin-late-frame-scheduling-ported-to-6.8-re.68.patch` |
@@ -108,38 +115,53 @@ compares with the host's before installing.
 | `882402feebe54b1a640b542368afd0c2caf9ff3b20b351266f2d14cf2798ac2c` | `patches/kwin/sets/h681a.series` |
 | `c18c004fe7319f2d4509deeadf37df8434088affde845d0eb96b11bb6642367d` | `patches/kwin/sets/hl39-68.series` |
 | `45da20f38c96aeb3d44540c0567de26c293e6aba799b1e64e01eebb79ee7ad11` | `patches/kwin/sets/hl39y.series` |
+| `bdfcd81c8c252a31ffad2f62bd99e793a0c6d0d0300c5704d74ee0ccba454b25` | `patches/qtbase/qtbase-wayland-shm-reuse-pools-v3.patch` |
+| `e1c33999e3ea401a4a5d4017023d34d85962c318c993e3bf5804799baa2ab3b3` | `patches/qtbase/sets/q4.series` |
 | `67830e2765b11774b880c097b0eab79e700e2cdb7c4aaa2e6ac7bcd2514d05f0` | `setup/lib.sh` |
 | `761707846b55e70bac195d24e30520ca5c7b96164c0ce45b113317fc13150deb` | `setup/paths.sh` |
 | `4b4a82cd31efff9ea7ff2572db175bf2d28ce9811513a764e358144b15dc3310` | `setup/tools/build-patched-rpm.sh` |
 | `d49ee93d128f6fab553691631f0a451d19e7bc2b686a226ec5ba3dac0eb65070` | `setup/tools/kde-rpms.sh` |
-| `615e06fa7e64757ce434af6d4ecbff9f35a7a20aa17c0d2a6c998f1612c0f8dd` | `setup/versions.sh` |
+| `6c2ee30a56cd367edbc35f38c9aa684a7e276d3d396ee59d53fb5cb9e6114740` | `setup/versions.sh` |
 | `19cf4324887903cc1185fc8dc83d38bb9e97176a36ef8ed9506611be4f6e1ddf` | `src/host-config/kwin-active-window-candidate.conf` |
 | `cf647e7f955d60ec6cae1ee58196b94d939996df44697f9e479023921bbe1f91` | `src/host-config/kwin-animation-start-step.conf` |
 | `ebb40936ea5b94c0970194727a29954e954780bc5b7817421e79fc5ee9d04911` | `src/host-config/kwin-empty-render-not-content.conf` |
 | `c28ab03912079127f981603c228443ecfcdf030e7fc0170728f3e400735d2d93` | `src/host-config/kwin-scanout-variance-cap.conf` |
 | `ac0cb19c913e350f76be6c0f5c129dfc77eb7c25b3a717205efaa57aaca46541` | `src/host-config/kwin-skip-empty-layer-render.conf` |
 
-Check: `cd host/kde/research && find . -type f | sort | xargs sha256sum`.
+Check: `cd host/kde/research && find . -type f | LC_ALL=C sort | xargs sha256sum`.
 
 When the research's recipe moves (`r` its repository, `c` the commit, `v`
 this folder), take it again as it is, the sets' patches with it:
 
 ```sh
-r=~/Documents/virtio-gpu-desktop c=ce2c5ee v=~/Documents/vitrine/host/kde/research
-rm -rf "$v" && mkdir -p "$v/setup/tools" "$v/patches/kwin/sets" "$v/src/host-config"
+r=~/Documents/virtio-gpu-desktop c=f659cb4 v=~/Documents/vitrine/host/kde/research
+rm -rf "$v" && mkdir -p "$v/setup/tools" "$v/src/host-config"
 for f in setup/lib.sh setup/paths.sh setup/versions.sh setup/tools/kde-rpms.sh \
-	setup/tools/build-patched-rpm.sh patches/kwin/sets/{hl39y,hl39-68,h681a}.series \
+	setup/tools/build-patched-rpm.sh \
 	src/host-config/kwin-{active-window-candidate,animation-start-step,empty-render-not-content,scanout-variance-cap,skip-empty-layer-render}.conf; do
 	git -C "$r" show "$c:$f" > "$v/$f"
 done
-for p in $(cat "$v"/patches/kwin/sets/*.series | sed 's/#.*//' | sort -u); do
-	git -C "$r" show "$c:patches/kwin/$p" > "$v/patches/kwin/$p"
+# patches/DIR (kde_patch_dir) and the host sets kde_set_for names for each package
+for d in kwin:hl39y,hl39-68,h681a ksvg:k2 kirigami:f1 qtbase:q4; do
+	dir=${d%%:*} sets=${d#*:}
+	mkdir -p "$v/patches/$dir/sets"
+	for s in ${sets//,/ }; do
+		git -C "$r" show "$c:patches/$dir/sets/$s.series" > "$v/patches/$dir/sets/$s.series"
+	done
+	for p in $(cat "$v/patches/$dir/sets/"*.series | sed 's/#.*//' | sort -u); do
+		git -C "$r" show "$c:patches/$dir/$p" > "$v/patches/$dir/$p"
+	done
+done
+# the research's modes: its scripts are executable
+for f in $(cd "$v" && find . -type f | sed 's|^\./||'); do
+	[ "$(git -C "$r" ls-tree "$c" -- "$f" | cut -d' ' -f1)" = 100755 ] && chmod 755 "$v/$f" || chmod 644 "$v/$f"
 done
 ```
 
-Then: a new set in `kde_set_for` for the host needs its series file in
-the list above, and a new run-time switch of the research's host session
-(`setup/steps/host-session.sh`) for a patch of the sets its file; `research=` in `components.conf` gets the new commit and
-the table its new checksums. No file may have a `Claude-Session:` line
-(the research removed them on 2026-10-14). A change of the copy makes the
-app's build of it out of date.
+Then: a new host set in `kde_set_for` needs its series file in the list
+above, a new host package its section in `components.conf`, and a new
+run-time switch of the research's host session (`setup/steps/host-session.sh`)
+for a patch of the sets its file; `research=` in `components.conf` gets the
+new commit and the table its new checksums. No file may have a
+`Claude-Session:` line (the research removed them on 2026-10-14). A change
+of the copy makes the app's builds of the packages it concerns out of date.
