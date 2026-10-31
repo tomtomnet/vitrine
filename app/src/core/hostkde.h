@@ -325,7 +325,7 @@ public:
         HostKde::Recipe recipe;
     };
     /* The packages of host/kde @source, the system, and the recipe for it
-       (the builds and records in @dataData's folders say whose packages are
+       (the builds and records in @dataDir's folders say whose packages are
        installed): the processes it takes, in whatever thread */
     static Reading read(const QString &source, const QString &dataDir, const QString &osRelease,
                         const QString &proc);
