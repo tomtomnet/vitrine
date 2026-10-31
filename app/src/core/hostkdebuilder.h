@@ -112,6 +112,7 @@ private:
     QString m_log;
     QString m_phase;
     bool m_compiling = false;
+    bool m_sections = false; // rpmbuild's first section seen: dnf's counts are over
     int m_done = 0;
     int m_total = 0;
     QStringList m_missing;

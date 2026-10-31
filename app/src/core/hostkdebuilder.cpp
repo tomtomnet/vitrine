@@ -82,6 +82,7 @@ void HostKdeBuilder::start(const HostKde::Target &target, const QString &plasma)
     m_failure.clear();
     m_built.clear();
     m_phase.clear();
+    m_sections = false;
     m_compiling = false;
     m_done = m_total = 0;
     emit started();
@@ -272,12 +273,25 @@ void HostKdeBuilder::handleLine(const QString &text)
         setPhase(line.text, false);
         break;
     case Line::Section:
+        m_sections = true;
         if (const auto it = sections.find(line.text); it != sections.end() && *it != m_phase) {
             setPhase(*it, line.text == "build");
         }
         break;
     case Line::Counted:
         if (m_compiling && line.total > 0 && line.done <= line.total) {
+            m_done = line.done;
+            m_total = line.total;
+            emit progress(m_done, m_total);
+        } else if (!m_sections && line.total > 0 && line.done <= line.total) {
+            /* dnf's, before rpmbuild: what the container downloads and installs to build
+               (Kirigami's build dependencies are some 500 packages, a minute or more), counted
+               as the guest tools' builds count theirs; rpmbuild's own install step counts too,
+               which is why only before its first section */
+            const QString deps = tr("installing the build dependencies");
+            if (m_phase != deps) {
+                setPhase(deps, false);
+            }
             m_done = line.done;
             m_total = line.total;
             emit progress(m_done, m_total);

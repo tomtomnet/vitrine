@@ -1548,9 +1548,12 @@ private slots:
         QVERIFY(write(src + "/build.sh",
                       "#!/bin/bash\necho \"$*\" > \"$(dirname \"$0\")/args\"\n"
                       "echo 'vitrine-build: phase: preparing the container'\n"
+                      "echo '[  3/529] Installing cmake-filesystem-0 100% | 1.8 MiB/s | 9.4 KiB | 00m00s'\n"
                       "echo 'Executing(%build): /bin/sh -e /var/tmp/rpm-tmp.b'\n"
                       "echo '[10/40] Building CXX object a.o'\n"
                       "[ -n \"${GATE:-}\" ] && while [ ! -e \"$GATE\" ]; do sleep 0.05; done\n"
+                      "echo 'Executing(%install): /bin/sh -e /var/tmp/rpm-tmp.c'\n"
+                      "echo '[2/5] Installing a.so'\n"
                       "[ -n \"${FAIL:-}\" ] && { echo 'vitrine-build: error: no host set for kwin 6.7.5' >&2; exit 1; }\n"
                       "echo 'vitrine-build: built: /out/6.7.91-1.hl39.fc44'\n"));
         HostKdeBuilder builder;
@@ -1571,6 +1574,13 @@ private slots:
                      .arg(m_tmp.filePath("bdata/host-kwin"), m_tmp.filePath("bwork")).toUtf8());
         QVERIFY(std::any_of(progress.begin(), progress.end(), [](const QList<QVariant> &a) {
             return a.value(0).toInt() == 10 && a.value(1).toInt() == 40;
+        }));
+        /* dnf's count before rpmbuild, as the guest tools' builds show theirs; not the install step's */
+        QVERIFY(std::any_of(progress.begin(), progress.end(), [](const QList<QVariant> &a) {
+            return a.value(0).toInt() == 3 && a.value(1).toInt() == 529;
+        }));
+        QVERIFY(std::none_of(progress.begin(), progress.end(), [](const QList<QVariant> &a) {
+            return a.value(0).toInt() == 2 && a.value(1).toInt() == 5;
         }));
 
         qputenv("FAIL", "1");
