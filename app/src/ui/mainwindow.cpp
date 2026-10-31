@@ -175,11 +175,12 @@ MainWindow::MainWindow(VmStore *store, QWidget *parent)
     /* Vitrine's QEMU not built, out of date, building */
     connect(StackBanner::addTo(this), &StackBanner::buildRequested, this,
             [this]() { showBuilds("qemu"); });
-    /* Vitrine's KWin installed on the host, no longer matching its Plasma or Qt */
-    HostKdeBanner *kwin = HostKdeBanner::addTo(this);
-    connect(kwin, &HostKdeBanner::rebuildRequested, this, [this]() { showBuilds("host-kwin"); });
-    connect(kwin, &HostKdeBanner::revertRequested, this,
-            [this]() { HostKdeDialog::revert(this); });
+    /* Vitrine's host packages installed, no longer matching Plasma, the KDE Frameworks or Qt */
+    HostKdeBanner *hostBanner = HostKdeBanner::addTo(this);
+    connect(hostBanner, &HostKdeBanner::rebuildRequested, this,
+            [this](const QString &id) { showBuilds(id); });
+    connect(hostBanner, &HostKdeBanner::revertRequested, this,
+            [this](const QStringList &ids) { HostKdeDialog::revert(this, ids); });
 
     m_qemuStatus->setObjectName("qemuStatus");
     m_updates = new UpdateNotifier(this);

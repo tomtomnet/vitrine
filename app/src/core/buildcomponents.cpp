@@ -110,10 +110,12 @@ Places Places::defaults()
     places.mediumImage = GuestToolsBuilder::mediumImage();
 
     /* the builds as they are now, the system as last read */
-    places.kwinOut = monitor->outDir();
-    places.kwin = monitor->status();
-    if (places.kwin.offer != HostKde::Status::Offer::Hidden) {
-        places.kwinDir = monitor->sourceDir();
+    for (const HostKde::Status &s : monitor->statuses()) {
+        places.system.insert(s.target.id, s);
+        places.systemOut.insert(s.target.id, monitor->outDir(s.target.id));
+        if (s.offer != HostKde::Status::Offer::Hidden) {
+            places.systemDir = monitor->sourceDir();
+        }
     }
     return places;
 }
@@ -144,7 +146,7 @@ QList<std::pair<QString, QHash<QString, QString>>> parseConf(const QByteArray &c
 QList<Component> load(const Places &places)
 {
     QList<Component> list;
-    const auto add = [&list](const QString &dir, bool host, const char *defaults) {
+    const auto add = [&list, &places](const QString &dir, bool host, const char *defaults) {
         QByteArray conf;
 
         if (dir.isEmpty()) {
@@ -171,14 +173,19 @@ QList<Component> load(const Places &places)
             if (c.kind == Kind::Package && !QFileInfo(dir + '/' + values.value("spec")).isFile()) {
                 continue;
             }
+            /* a host package where this computer has it (HostKde) */
+            if (c.kind == Kind::System &&
+                places.system.value(c.id).offer == HostKde::Status::Offer::Hidden) {
+                continue;
+            }
             list << c;
         }
     };
 
     add(places.hostDir, true, kHostDefaults);
     add(places.guestDir, false, kGuestDefaults);
-    /* the host's KWin, last: optional, and installed by hand */
-    add(places.kwinDir, true, nullptr);
+    /* the host's packages, last: optional, and installed by hand */
+    add(places.systemDir, true, nullptr);
     return list;
 }
 
@@ -392,8 +399,9 @@ QList<Patch> patches(const Component &c)
         return specPatches(c);
     }
     if (c.kind == Kind::System) {
-        /* each set of the recipe, in its order: those of 6.8 are mostly 6.7.91's */
-        for (const HostKde::Set &set : HostKde::sets(c.dir)) {
+        /* each set of the recipe for the package, in its order: KWin's for
+           6.8 are mostly 6.7.91's */
+        for (const HostKde::Set &set : HostKde::sets(c.dir, c.values.value("package"))) {
             const QByteArray series = readFile(c.dir + '/' + where + "/sets/" + set.series + ".series");
             for (const QByteArray &raw : series.split('\n')) {
                 const QString name = QString::fromUtf8(raw).section('#', 0, 0).trimmed();
@@ -404,7 +412,7 @@ QList<Patch> patches(const Component &c)
                     for (const QString &pattern : set.versions) {
                         versions << HostKde::versionText(pattern);
                     }
-                    p.origin = tr("%1, for KWin %2").arg(set.series, versions.join(", "));
+                    p.origin = tr("%1, for %2 %3").arg(set.series, c.title, versions.join(", "));
                     list << p;
                 }
             }
@@ -518,13 +526,19 @@ QByteArray inputLines(const Component &c, const QList<Component> &all)
     case Kind::Package:
         return GuestToolsBuilder::inputLines(c.dir, c.id);
     case Kind::System: {
-        /* build.sh's inputs_lines: research/ and build.sh, in the C order of
-           their paths, hidden files too */
+        /* build.sh's inputs_lines: build.sh, the recipe's scripts and the
+           package's patches, in the C order of their paths, hidden files too */
         QList<QByteArray> files = {"build.sh"};
-        QDirIterator it(c.dir + "/research", QDir::Files | QDir::Hidden | QDir::System,
-                        QDirIterator::Subdirectories);
-        while (it.hasNext()) {
-            files << QDir(c.dir).relativeFilePath(it.next()).toUtf8();
+        const QString patches = c.values.value("patches");
+        if (patches.isEmpty()) {
+            return {};
+        }
+        for (const QString &folder : {QStringLiteral("research/setup"), patches}) {
+            QDirIterator it(c.dir + '/' + folder, QDir::Files | QDir::Hidden | QDir::System,
+                            QDirIterator::Subdirectories);
+            while (it.hasNext()) {
+                files << QDir(c.dir).relativeFilePath(it.next()).toUtf8();
+            }
         }
         std::sort(files.begin(), files.end());
         for (const QByteArray &file : std::as_const(files)) {
@@ -694,9 +708,11 @@ QString describe(const Change &change)
 {
     switch (change.what) {
     case Change::What::Source:
-        if (change.name == "kwin") {
-            return tr("Built for KWin %1, and this computer has Plasma %2")
-                .arg(change.was, change.now);
+        if (change.name == "system") {
+            return tr("Built for %1, and this computer has %2").arg(change.was, change.now);
+        }
+        if (change.name == "repositories") {
+            return tr("Built from %1, and the repositories have %2 now").arg(change.was, change.now);
         }
         return change.name == "url"
                    ? tr("Fetched from %1 now, %2 before").arg(change.now, change.was)
@@ -756,9 +772,10 @@ QString summary(const QList<Change> &changes)
     for (const Change &change : changes) {
         switch (change.what) {
         case Change::What::Source:
-            parts.prepend(change.name == "url"    ? tr("another repository")
-                          : change.name == "kwin" ? tr("built for KWin %1").arg(change.was)
-                                                  : tr("another commit"));
+            parts.prepend(change.name == "url"            ? tr("another repository")
+                          : change.name == "system"       ? tr("built for %1").arg(change.was)
+                          : change.name == "repositories" ? tr("a newer source package")
+                                                          : tr("another commit"));
             break;
         case Change::What::Patch:
             if (change.name == "order") {
@@ -946,18 +963,19 @@ static Status mediumStatus(const Component &c, const QList<Component> &all, cons
     return s;
 }
 
-/* What HostKde makes of the host's KWin (Places::kwin): no set or not
-   for this computer, not built, built for another Plasma, or built from
-   another recipe or against other packages than the system's */
-static Status systemStatus(const Places &places)
+/* What HostKde makes of a host package (Places::system): no set or not for
+   this computer, not built, built for another version, or built from
+   another recipe or against other packages than the system's, or from an
+   older source package than the repositories have */
+static Status systemStatus(const Component &c, const Places &places)
 {
-    const HostKde::Status &kwin = places.kwin;
+    const HostKde::Status host = places.system.value(c.id);
     Status s;
 
-    if (kwin.offer != HostKde::Status::Offer::Offered) {
+    if (host.offer != HostKde::Status::Offer::Offered) {
         return s;
     }
-    const HostKde::Build &b = kwin.build.isValid() ? kwin.build : kwin.other;
+    const HostKde::Build &b = host.build.isValid() ? host.build : host.other;
     if (!b.isValid()) {
         s.state = Status::State::NotBuilt;
         return s;
@@ -965,16 +983,25 @@ static Status systemStatus(const Places &places)
     s.built = b.built;
     s.output = b.dir;
     s.version = b.version;
-    if (!kwin.build.isValid()) {
-        s.changes << Change{Change::What::Source, Change::How::Changed, "kwin", b.version, kwin.plasma};
+    if (!host.build.isValid()) {
+        s.changes << Change{Change::What::Source, Change::How::Changed,
+                            host.basisInRepositories ? "repositories" : "system",
+                            c.title + ' ' + b.version, host.basis};
     }
-    if (kwin.build.isValid() && kwin.recipeChanged) {
+    if (host.build.isValid() && host.recipeChanged) {
         s.changes << Change{Change::What::Script, Change::How::Changed, "the research's recipe", {}, {}};
     }
-    for (const QString &line : kwin.differs) {
+    for (const QString &line : host.differs) {
         const QStringList f = line.split(' ');
-        s.changes << Change{Change::What::Dependency, Change::How::Changed, f.value(0), f.value(1),
-                            f.value(2)};
+        s.changes << Change{Change::What::Dependency, Change::How::Changed,
+                            HostKde::packageTitle(f.value(0)), f.value(1), f.value(2)};
+    }
+    /* the lock keeps out what the repositories have now, and the build is
+       of the one installed: a build takes the newer one */
+    if (host.build.isValid() && !host.heldBack.isEmpty() &&
+        host.build.rpm(c.values.value("package")).digest == host.installed.digest) {
+        s.changes << Change{Change::What::Source, Change::How::Changed, "repositories",
+                            host.build.sourceEvr(), host.heldBack};
     }
     s.state = s.changes.isEmpty() ? Status::State::UpToDate : Status::State::Outdated;
     return s;
@@ -984,7 +1011,7 @@ Status status(const Component &c, const QList<Component> &all, const Places &pla
 {
     switch (c.kind) {
     case Kind::System:
-        return systemStatus(places);
+        return systemStatus(c, places);
     case Kind::Host:
         return hostStatus(c, all, places);
     case Kind::Package:

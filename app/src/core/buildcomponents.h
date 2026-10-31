@@ -16,9 +16,9 @@
  * What Vitrine builds: the components host/components.conf and
  * guest/components.conf describe (virglrenderer, rutabaga_gfx and QEMU;
  * the guest tools' packages and the medium made of them), and the host's
- * KWin of host/kde/components.conf, each with its source, its patches and
- * what it is built against; and whether what is built is what the sources
- * make now, and if not, why.
+ * KDE packages of host/kde/components.conf (KWin, KSvg, Kirigami, Qt base),
+ * each with its source, its patches and what it is built against; and
+ * whether what is built is what the sources make now, and if not, why.
  *
  * The scripts build them (host/build.sh, guest/build-rpms.sh,
  * guest/build-medium.sh) and record with each build the lines of inputs
@@ -35,7 +35,7 @@ enum class Kind {
 };
 
 struct Component {
-    QString id;                     // virglrenderer, rutabaga_gfx, qemu, tools, mesa, kwin, medium, host-kwin
+    QString id;                     // virglrenderer, rutabaga_gfx, qemu, tools, mesa, kwin, medium, host-kwin...
     QString title;                  // "QEMU"
     Kind kind = Kind::Host;
     QString dir;                    // the host/, guest/ or host/kde/ folder it is described in
@@ -62,12 +62,14 @@ struct Places {
     QString stackDir;               // Paths::stackDir()
     QString rpmsDir;                // GuestToolsBuilder::rpmsDir()
     QString mediumImage;            // GuestToolsBuilder::mediumImage()
-    /* The host's KWin: its folder (HostKde::sourceDir()), empty where it is
-       not offered; its builds' folder, and what HostKde makes of them and
-       of the system (HostKdeMonitor's, with the builds read again) */
-    QString kwinDir;
-    QString kwinOut;
-    HostKde::Status kwin;
+    /* The host's KDE packages: their folder (HostKde::sourceDir()), empty
+       where none is offered; by component id, what HostKde makes of each
+       package and of the system (HostKdeMonitor's, with the builds read
+       again: a component whose offer is Hidden, or that has none, is not
+       loaded) and its builds' folder */
+    QString systemDir;
+    QHash<QString, HostKde::Status> system;
+    QHash<QString, QString> systemOut;
 
     static Places defaults();
 };

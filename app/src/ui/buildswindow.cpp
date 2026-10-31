@@ -80,21 +80,21 @@ QString groupTitle(const QString &group)
                                : BuildsWindow::tr("Guest tools");
 }
 
-/* The host's KWin's icon: what it is to the user, rather than to a build */
-QIcon kwinIcon(const HostKde::Status &kwin)
+/* A host package's icon: what it is to the user, rather than to a build */
+QIcon systemIcon(const HostKde::Status &status)
 {
     using Owner = HostKde::Status::Owner;
     using Offer = HostKde::Status::Offer;
 
-    if (kwin.offer != Offer::Offered) {
-        return Icons::themed({"dialog-information", "help-about"}, QStyle::SP_MessageBoxInformation);
-    }
-    if (kwin.isOutdated() || kwin.owner == Owner::Foreign ||
-        (kwin.owner == Owner::Vitrine && !kwin.locked)) {
+    if (status.isOutdated() || status.owner == Owner::Foreign ||
+        (status.owner == Owner::Vitrine && !status.locked)) {
         return Icons::keepColours(Icons::themed({"dialog-warning"}, QStyle::SP_MessageBoxWarning));
     }
-    if (kwin.owner == Owner::Vitrine) {
+    if (status.owner == Owner::Vitrine) {
         return Icons::upToDate();
+    }
+    if (status.offer != Offer::Offered) {
+        return Icons::themed({"dialog-information", "help-about"}, QStyle::SP_MessageBoxInformation);
     }
     return {};
 }
@@ -444,7 +444,7 @@ BuildsWindow::BuildsWindow(QWidget *parent)
                                                     QStyle::SP_DialogApplyButton));
     Widgets::setButtonIcon(m_revert, Icons::themed({"edit-undo"}, QStyle::SP_ArrowBack));
     buttons->addButton(m_build, QDialogButtonBox::ActionRole);
-    /* the host's KWin's, beside its Build */
+    /* a host package's, beside its Build */
     buttons->addButton(m_install, QDialogButtonBox::ActionRole);
     buttons->addButton(m_revert, QDialogButtonBox::ActionRole);
     buttons->addButton(m_all, QDialogButtonBox::ActionRole);
@@ -459,8 +459,10 @@ BuildsWindow::BuildsWindow(QWidget *parent)
     connect(m_build, &QPushButton::clicked, this, [this]() { buildSelected(); });
     connect(m_all, &QPushButton::clicked, m_manager, &BuildManager::buildOutdated);
     connect(m_stop, &QPushButton::clicked, m_manager, &BuildManager::cancel);
-    connect(m_install, &QPushButton::clicked, this, [this]() { HostKdeDialog::install(this); });
-    connect(m_revert, &QPushButton::clicked, this, [this]() { HostKdeDialog::revert(this); });
+    connect(m_install, &QPushButton::clicked, this,
+            [this]() { HostKdeDialog::install(this, selected()); });
+    connect(m_revert, &QPushButton::clicked, this,
+            [this]() { HostKdeDialog::revert(this, {selected()}); });
     connect(m_clear, &QPushButton::clicked, this, &BuildsWindow::clearCache);
     connect(m_memory->button(), &QPushButton::clicked, m_manager, &BuildManager::proceed);
     connect(m_tree, &QTreeWidget::currentItemChanged, this, &BuildsWindow::showDetails);
@@ -513,16 +515,15 @@ BuildsWindow::BuildsWindow(QWidget *parent)
     connect(HostKdeBuilder::instance(), &HostKdeBuilder::waitingChanged, this,
             &BuildsWindow::showMemory);
 
-    /* the host's KWin installed or reverted: its output in its Log tab */
+    /* a host package installed or reverted: the output in its Log tab */
     HostKdeMonitor *monitor = HostKdeMonitor::instance();
-    connect(monitor, &HostKdeMonitor::started, this, [this]() {
+    connect(monitor, &HostKdeMonitor::started, this, [this, monitor]() {
         m_showInstall = true;
+        m_installIds = monitor->busyWith();
         m_shownLog.clear();
-        if (kwinSelected()) {
-            if (!m_items.contains(selected())) {
-                select(m_groups.value("system") && m_groups.value("system")->childCount() > 0
-                           ? m_groups.value("system")->child(0)->data(NameColumn, IdRole).toString()
-                           : selected());
+        if (selected() == "system" || m_installIds.contains(selected())) {
+            if (!m_installIds.contains(selected()) && !m_installIds.isEmpty()) {
+                select(m_installIds.first());
             }
             m_tabs->setCurrentIndex(2);
         }
@@ -530,8 +531,7 @@ BuildsWindow::BuildsWindow(QWidget *parent)
         updateButtons();
     });
     connect(monitor, &HostKdeMonitor::output, this, [this](const QString &text) {
-        if (m_showInstall && m_items.contains(m_shownLog) &&
-            m_manager->component(m_shownLog).kind == Kind::System) {
+        if (m_showInstall && m_installIds.contains(m_shownLog)) {
             m_log->moveCursor(QTextCursor::End);
             m_log->insertPlainText(text);
             m_log->moveCursor(QTextCursor::End);
@@ -541,7 +541,7 @@ BuildsWindow::BuildsWindow(QWidget *parent)
             [this](const QString &error, bool cancelled) {
         updateButtons();
         if (!error.isEmpty() && !cancelled) {
-            Widgets::warn(this, tr("The Host's KWin"), error);
+            Widgets::warn(this, tr("Host Desktop"), error);
         }
     });
 
@@ -572,7 +572,7 @@ BuildsWindow::~BuildsWindow() = default;
 
 void BuildsWindow::shown()
 {
-    /* the sources may have changed meanwhile, and the system (Plasma, Qt) */
+    /* the sources may have changed meanwhile, and the system (Plasma, the frameworks, Qt) */
     if (!m_manager->isRunning()) {
         m_manager->refresh();
     }
@@ -598,8 +598,8 @@ void BuildsWindow::changeEvent(QEvent *event)
 
 void BuildsWindow::lookAgain()
 {
-    /* a run says itself what it builds; the host's KWin: one reading at a
-       time, the main window's banner asks too */
+    /* a run says itself what it builds; the host packages: one reading at
+       a time, the main window's banner asks too */
     if (!m_manager->isRunning()) {
         m_manager->refresh();
         HostKdeMonitor::instance()->lookAgain();
@@ -720,7 +720,7 @@ void BuildsWindow::refreshItem(const QString &id)
         break;
     }
     if (text.isEmpty() && c.kind == Kind::System) {
-        text = m_manager->kwinStatus().summary();
+        text = m_manager->systemStatus(id).summary();
     }
     if (text.isEmpty()) {
         switch (status.state) {
@@ -744,7 +744,7 @@ void BuildsWindow::refreshItem(const QString &id)
     item->setToolTip(StatusColumn, text);
     item->setIcon(NameColumn, stateIcon(p.state, status.state));
     if (c.kind == Kind::System && p.state == State::Idle) {
-        const QIcon icon = kwinIcon(m_manager->kwinStatus());
+        const QIcon icon = systemIcon(m_manager->systemStatus(id));
         if (!icon.isNull()) {
             item->setIcon(NameColumn, icon);
         }
@@ -791,9 +791,21 @@ void BuildsWindow::refreshGroup(const QString &group)
                                 : outdated == 0 ? tr("Up to date")
                                 : all ? tr("Not built")
                                       : tr("Out of date"));
-    /* optional, and about the system rather than a build: its one component's */
-    if (group == "system" && item->childCount() == 1 && building == 0 && failed == 0) {
-        item->setText(StatusColumn, item->child(0)->text(StatusColumn));
+    /* optional, and about the system rather than builds: what is installed */
+    if (group == "system" && building == 0 && failed == 0) {
+        QStringList installed;
+        bool behind = false;
+        for (int i = 0; i < item->childCount(); i++) {
+            const QString id = item->child(i)->data(NameColumn, IdRole).toString();
+            const HostKde::Status s = m_manager->systemStatus(id);
+            if (s.owner == HostKde::Status::Owner::Vitrine) {
+                installed << s.target.title;
+            }
+            behind = behind || s.isOutdated();
+        }
+        item->setText(StatusColumn, behind               ? tr("Out of date")
+                                    : !installed.isEmpty() ? tr("Installed: %1").arg(installed.join(", "))
+                                                           : tr("Optional"));
     }
 }
 
@@ -838,10 +850,10 @@ void BuildsWindow::select(const QString &component)
     }
 }
 
-bool BuildsWindow::kwinSelected() const
+bool BuildsWindow::systemSelected() const
 {
     const QString id = selected();
-    return id == "system" || (m_items.contains(id) && m_manager->component(id).kind == Kind::System);
+    return m_items.contains(id) && m_manager->component(id).kind == Kind::System;
 }
 
 QStringList BuildsWindow::selectedComponents() const
@@ -902,10 +914,11 @@ void BuildsWindow::showSource()
                         "(rutabaga_gfx: QEMU's virtio-gpu-rutabaga device). Built into %1.</p>")
                          .arg(Paths::stackDir().toHtmlEscaped())
                    : id == "system"
-                   ? tr("<p><b>Host desktop</b>, optional: this computer's own compositor, "
-                        "KWin, with the research's host set, for steadier frames and quicker "
-                        "input in VMs and the pointer grab inside Vitrine's Desktop view. "
-                        "Vitrine builds it only when asked, and installs it only with the "
+                   ? tr("<p><b>Host desktop</b>, optional: this computer's own compositor, KWin, "
+                        "and libraries the desktop draws with, KSvg, Kirigami and Qt base, with "
+                        "the research's host sets: steadier frames and quicker input in VMs, the "
+                        "pointer grab inside Vitrine's Desktop view, popups and resizes that cost "
+                        "less. Vitrine builds each only when asked, and installs it only with the "
                         "administrator's password.</p>")
                    : tr("<p><b>The guest tools</b>: the packages Fedora guests install from the "
                         "medium, built in a Fedora %1 container with podman, and the medium "
@@ -923,7 +936,7 @@ void BuildsWindow::showSource()
         return;
     }
     if (c.kind == Kind::System) {
-        m_source->setText(kwinSource(c));
+        m_source->setText(systemSource(c));
         return;
     }
 
@@ -999,7 +1012,7 @@ void BuildsWindow::showSource()
         break;
     }
     case Kind::System:
-        /* kwinSource() */
+        /* systemSource() */
         break;
     }
     /* its patches, in a word: their number by origin */
@@ -1120,7 +1133,7 @@ void BuildsWindow::showLog()
     }
     m_shownLog = id;
     QString text = id.isEmpty() ? QString() : m_manager->log(id);
-    if (m_showInstall && !id.isEmpty() && m_manager->component(id).kind == Kind::System) {
+    if (m_showInstall && m_installIds.contains(id)) {
         text = HostKdeMonitor::instance()->log();
     }
     /* the end of it: the lines the window keeps */
@@ -1211,7 +1224,7 @@ void BuildsWindow::updateButtons()
     }
     /* "Update QEMU", "Build Guest Tools" */
     const QString title = m_groups.contains(id) ? (id == "host"     ? tr("Vitrine's QEMU")
-                                                   : id == "system" ? tr("KWin")
+                                                   : id == "system" ? tr("Host Desktop")
                                                                     : tr("Guest Tools"))
                                                 : m_manager->component(id).title;
     m_build->setText(title.isEmpty()            ? tr("&Build")
@@ -1243,14 +1256,13 @@ void BuildsWindow::updateButtons()
     m_background->setVisible(running);
     m_clear->setEnabled(!running);
 
-    /* the host's KWin: installed by hand, after warnings */
-    const bool kwin = kwinSelected();
-    m_install->setVisible(kwin);
-    m_revert->setVisible(kwin);
-    if (kwin) {
-        const HostKde::Status status = m_manager->kwinStatus();
-        const bool busy = HostKdeMonitor::instance()->isBusy() ||
-                          (running && m_manager->component(m_manager->current()).kind == Kind::System);
+    /* a host package: installed by hand, after warnings */
+    const bool host = systemSelected();
+    m_install->setVisible(host);
+    m_revert->setVisible(host);
+    if (host) {
+        const HostKde::Status status = m_manager->systemStatus(id);
+        const bool busy = HostKdeMonitor::instance()->isBusy() || (running && m_manager->current() == id);
         QString why;
         m_install->setEnabled(!busy && status.canInstall(&why));
         m_install->setToolTip(!why.isEmpty() ? why
@@ -1258,7 +1270,8 @@ void BuildsWindow::updateButtons()
                                                   "administrator's password"));
         why.clear();
         m_revert->setEnabled(!busy && status.canRevert(&why));
-        m_revert->setToolTip(!why.isEmpty() ? why : tr("Put the distribution's KWin back"));
+        m_revert->setToolTip(!why.isEmpty() ? why
+                                             : tr("Put the distribution's %1 back").arg(status.target.title));
         if (!running && !status.canBuild(&why)) {
             m_build->setToolTip(why);
         }
@@ -1301,11 +1314,47 @@ void BuildsWindow::updateHeader()
     m_header->setText(text.toHtmlEscaped());
 }
 
-QString BuildsWindow::kwinSource(const Component &c)
+/* What a host package is, and what the research's set changes and measured */
+static QString systemAbout(const HostKde::Target &target)
+{
+    if (target.package == "kwin") {
+        return BuildsWindow::tr("This computer's own compositor with the research's host set: "
+                                "steadier frames and quicker input in VMs, and the pointer grab "
+                                "(Ctrl+Alt+G) inside Vitrine's Desktop view.");
+    }
+    if (target.package == "kf6-ksvg") {
+        return BuildsWindow::tr("The KDE framework that draws Plasma's themed frames, with the "
+                                "research's host set: Plasma's popups stop uploading their frames "
+                                "again each time they open. Measured by the research with "
+                                "Kirigami's set, on an Arc Pro B50 at 4K and 120 Hz: the launcher "
+                                "opens in 61-69 ms instead of 72-78, and Super pressed 8 times a "
+                                "second repeats 0.2 frames a second instead of 6-9.");
+    }
+    if (target.package == "kf6-kirigami") {
+        return BuildsWindow::tr("The KDE framework of the controls Plasma and many programs are made "
+                                "of, with the research's host set: their items react to a change of "
+                                "the frame contrast only when it changes (a popup's items reacted "
+                                "some 1,600 times per opening and closing). Measured by the research "
+                                "with KSvg's set, on an Arc Pro B50 at 4K and 120 Hz: the launcher "
+                                "opens in 61-69 ms instead of 72-78.");
+    }
+    if (target.package == "qt6-qtbase") {
+        return BuildsWindow::tr("Qt's base libraries, which every Qt program uses, with the "
+                                "research's host set: a window being resized reuses its shared "
+                                "memory for the next sizes instead of new memory for each. Measured "
+                                "by the research, bare 4K resizes: Konsole shows 111-114 sizes a "
+                                "second instead of 85-88, Dolphin 99-102 instead of 62.");
+    }
+    return BuildsWindow::tr("A package of this computer's with the research's host set.");
+}
+
+QString BuildsWindow::systemSource(const Component &c)
 {
     using Offer = HostKde::Status::Offer;
     using Owner = HostKde::Status::Owner;
-    const HostKde::Status kwin = m_manager->kwinStatus();
+    const HostKde::Status host = m_manager->systemStatus(c.id);
+    const HostKde::Target &target = host.target;
+    const QString title = c.title;
     const HostKde::System system = HostKdeMonitor::instance()->system();
     const Builds::Status status = m_manager->status(c.id);
     const BuildManager::Progress p = m_manager->progress(c.id);
@@ -1317,15 +1366,14 @@ QString BuildsWindow::kwinSource(const Component &c)
         return bold ? "<p><b>" + text.toHtmlEscaped() + "</b></p>"
                     : "<p>" + text.toHtmlEscaped() + "</p>";
     };
-    QString html = "<p><b>" + c.title.toHtmlEscaped() + "</b> — " +
-                   kwin.summary().toHtmlEscaped() + ".</p>";
+    QString html = "<p><b>" + title.toHtmlEscaped() + "</b> — " +
+                   host.summary().toHtmlEscaped() + ".</p>";
     QString rows;
     QString why;
 
-    html += para(tr("This computer's own compositor with the research's host set: steadier "
-                    "frames and quicker input in VMs, and the pointer grab (Ctrl+Alt+G) inside "
-                    "Vitrine's Desktop view. Optional: Vitrine builds it only when asked, and "
-                    "installs it only with the administrator's password."));
+    html += para(systemAbout(target) + ' ' +
+                 tr("Optional: Vitrine builds it only when asked, and installs it only with the "
+                    "administrator's password."));
     if (p.state == State::Failed) {
         html += para(tr("Its last build failed: %1").arg(p.error));
     } else if (p.state == State::Building) {
@@ -1333,87 +1381,116 @@ QString BuildsWindow::kwinSource(const Component &c)
     }
 
     /* what stands in the way, or wants doing */
-    if (kwin.offer == Offer::Unsupported) {
-        html += para(kwin.why);
-    } else if (kwin.offer == Offer::NoSet) {
+    if (host.offer == Offer::Unsupported) {
+        html += para(host.why);
+    } else if (host.offer == Offer::NoSet) {
         QStringList sets;
-        for (const HostKde::Set &set : HostKde::sets(c.dir)) {
+        for (const HostKde::Set &set : HostKde::sets(c.dir, target.package)) {
             QStringList versions;
             for (const QString &pattern : set.versions) {
                 versions << HostKde::versionText(pattern);
             }
-            sets << tr("%1 for KWin %2").arg(set.series, versions.join(", "));
+            sets << tr("%1 for %2 %3").arg(set.series, title, versions.join(", "));
         }
-        html += para(tr("The research has no host set for KWin %1, this computer's Plasma. Its "
-                        "sets: %2.")
-                         .arg(kwin.plasma, sets.join(", ")));
+        html += para(tr("The research has no host set for %1 %2. Its sets: %3.")
+                         .arg(title, host.version, sets.isEmpty() ? tr("none") : sets.join(", ")));
     }
-    if (kwin.isOutdated()) {
+    if (host.isOutdated()) {
         QStringList moved;
-        for (const QString &line : kwin.outdated) {
+        for (const QString &line : host.outdated) {
             const QStringList f = line.split(' ');
             moved << tr("%1 %2, built for %3")
                          .arg(HostKde::packageTitle(f.value(0)), f.value(2), f.value(1));
         }
-        html += para(tr("Vitrine's KWin no longer matches this computer (%1). At the next login "
-                        "the desktop would run it with the new libraries, and might not start: "
-                        "build and install the matching KWin, or revert, before you log out.")
-                         .arg(moved.join(", ")),
+        html += para(target.package == "kwin"
+                         ? tr("Vitrine's KWin no longer matches this computer (%1). At the next login "
+                              "the desktop would run it with the new libraries, and might not start: "
+                              "build and install the matching KWin, or revert, before you log out.")
+                               .arg(moved.join(", "))
+                         : tr("Vitrine's %1 no longer matches this computer (%2): programs use it with "
+                              "the newer libraries, which upstream does not support. Build and install "
+                              "the matching one, or revert.")
+                               .arg(title, moved.join(", ")),
                      true);
-    } else if (kwin.owner == Owner::Foreign) {
-        html += para(kwin.kwin.isLocal()
-                         ? tr("The KWin installed, %1, is not Vitrine's: it was installed from a "
-                              "file. Vitrine leaves it alone: Install… replaces it only after a "
-                              "warning, and Revert… is not offered for it.")
-                               .arg(kwin.kwin.evr())
-                         : tr("KWin is version-locked at %1, not by Vitrine. Install… replaces "
-                              "it and its lock only after a warning.")
-                               .arg(kwin.lockedAt.isEmpty() ? kwin.kwin.evr() : kwin.lockedAt));
+    } else if (host.owner == Owner::Foreign) {
+        html += para(host.installed.isLocal()
+                         ? tr("The %1 installed, %2, is not Vitrine's: it was installed from a file. "
+                              "Vitrine leaves it alone: Install… replaces it only after a warning, "
+                              "and Revert… is not offered for it.")
+                               .arg(title, host.installed.evr())
+                         : tr("%1 is version-locked at %2, not by Vitrine. Install… replaces it and "
+                              "its lock only after a warning.")
+                               .arg(title, host.lockedAt.isEmpty() ? host.installed.evr()
+                                                                   : host.lockedAt));
     }
-    if (kwin.offer == Offer::Offered && kwin.build.isValid() && !kwin.canInstall(&why) &&
-        !kwin.differs.isEmpty()) {
+    if (host.offer == Offer::Offered && host.build.isValid() && !host.canInstall(&why) &&
+        !host.differs.isEmpty()) {
         html += para(why);
     }
-    if (kwin.owner == Owner::Vitrine && !kwin.isOutdated() && kwin.build.isValid() &&
-        kwin.build.rpm("kwin").digest != kwin.kwin.digest && kwin.differs.isEmpty()) {
-        html += para(tr("Another build than the one installed is ready (KWin %1, built %2): "
-                        "Install… replaces it.")
-                         .arg(kwin.build.evr, QLocale().toString(kwin.build.built.toLocalTime().date(),
-                                                                 "d MMMM yyyy")));
+    if (host.owner == Owner::Vitrine && !host.isOutdated() && host.build.isValid() &&
+        host.build.rpm(target.package).digest != host.installed.digest && host.differs.isEmpty()) {
+        html += para(tr("Another build than the one installed is ready (%1 %2, built %3): Install… "
+                        "replaces it.")
+                         .arg(title, host.build.evr,
+                              QLocale().toString(host.build.built.toLocalTime().date(), "d MMMM yyyy")));
     }
-    if (kwin.nextLogin) {
-        html += para(tr("The running desktop still runs the KWin it started with: the one "
-                        "installed now runs from the next login."));
+    if (!host.heldBack.isEmpty()) {
+        html += para((target.package == "qt6-qtbase"
+                          ? tr("Updates wait: the repositories have Qt base %1, and its lock keeps "
+                               "this computer at %2, with the rest of Qt (its modules need the same "
+                               "version).")
+                                .arg(host.heldBack, host.installed.evr())
+                          : tr("An update waits: the repositories have %1 %2, and its lock keeps "
+                               "this computer at %3.")
+                                .arg(title, host.heldBack, host.installed.evr())) +
+                     ' ' +
+                     (host.offer == Offer::Offered
+                          ? tr("Building it again takes the newer one.")
+                          : tr("The research has no set for it yet: Revert… lets the update in.")));
+    }
+    if (host.nextLogin) {
+        html += para(target.package == "kwin"
+                         ? tr("The running desktop still runs the KWin it started with: the one "
+                              "installed now runs from the next login.")
+                         : tr("Programs started before it was installed or reverted keep what they "
+                              "loaded; the desktop gets it at the next login."));
     }
 
     /* where it comes from, and what this computer has */
-    const QString from = kwin.plasmaFrom == "beta"      ? tr("the KDE SIG's beta COPR")
-                         : kwin.plasmaFrom == "testing" ? tr("Fedora's updates-testing")
+    const QString from = host.plasmaFrom == "beta"      ? tr("the KDE SIG's beta COPR")
+                         : host.plasmaFrom == "testing" ? tr("Fedora's updates-testing")
                                                         : tr("Fedora's repositories");
-    rows += row(tr("Source:"), tr("KWin's source RPM from %1, the version of this computer's "
-                                  "Plasma")
-                                   .arg(from)
+    rows += row(tr("Source:"), (target.package == "kwin"
+                                    ? tr("KWin's source RPM from %1, the version of this computer's "
+                                         "Plasma")
+                                          .arg(from)
+                                    : tr("the source RPM of %1 from %2, its newest version there")
+                                          .arg(target.package, from))
                                    .toHtmlEscaped());
     rows += row(tr("Recipe:"),
                 tr("the research's %1 at commit %2, in a Fedora container")
                     .arg("<code>kde-rpms.sh</code>",
                          "<code>" + c.values.value("research").left(12).toHtmlEscaped() + "</code>"));
-    if (!kwin.series.isEmpty()) {
+    if (!host.series.isEmpty()) {
         int count = 0;
         for (const Builds::Patch &patch : Builds::patches(c)) {
-            count += patch.origin.startsWith(kwin.series + ',');
+            count += patch.origin.startsWith(host.series + ',');
         }
-        rows += row(tr("Set:"), tr("%1, %2 patches (the Patches tab)")
-                                    .arg(kwin.series)
-                                    .arg(count)
+        rows += row(tr("Set:"), (count == 1 ? tr("%1, 1 patch (the Patches tab)").arg(host.series)
+                                            : tr("%1, %2 patches (the Patches tab)")
+                                                  .arg(host.series)
+                                                  .arg(count))
                                     .toHtmlEscaped());
     }
     QStringList computer;
     if (!system.fedora.isEmpty()) {
         computer << tr("Fedora %1").arg(system.fedora);
     }
-    if (!kwin.plasma.isEmpty()) {
-        computer << tr("Plasma %1").arg(kwin.plasma);
+    if (!host.plasma.isEmpty()) {
+        computer << tr("Plasma %1").arg(host.plasma);
+    }
+    if (const HostKde::Package kf = system.package("kf6-kcoreaddons"); kf.isValid()) {
+        computer << tr("KDE Frameworks %1").arg(kf.version);
     }
     if (const HostKde::Package qt = system.package("qt6-qtbase"); qt.isValid()) {
         computer << tr("Qt %1").arg(qt.version);
@@ -1421,26 +1498,29 @@ QString BuildsWindow::kwinSource(const Component &c)
     if (!computer.isEmpty()) {
         rows += row(tr("This computer:"), computer.join(", ").toHtmlEscaped());
     }
-    if (kwin.kwin.isValid()) {
+    if (host.installed.isValid()) {
         QString installed;
-        switch (kwin.owner) {
+        switch (host.owner) {
         case Owner::Vitrine:
-            installed = kwin.locked ? tr("Vitrine's KWin %1, version-locked").arg(kwin.kwin.evr())
-                                    : tr("Vitrine's KWin %1, not version-locked")
-                                          .arg(kwin.kwin.evr());
+            installed = host.locked ? tr("Vitrine's %1 %2, version-locked").arg(title, host.installed.evr())
+                                    : tr("Vitrine's %1 %2, not version-locked")
+                                          .arg(title, host.installed.evr());
             break;
         case Owner::Foreign:
-            installed = kwin.kwin.isLocal() ? tr("KWin %1, not Vitrine's: installed from a file")
-                                                  .arg(kwin.kwin.evr())
-                                            : tr("KWin %1, from %2").arg(kwin.kwin.evr(),
-                                                                         kwin.kwin.repo);
-            if (kwin.locked) {
+            installed = host.installed.isLocal()
+                            ? tr("%1 %2, not Vitrine's: installed from a file")
+                                  .arg(title, host.installed.evr())
+                            : tr("%1 %2, from %3").arg(title, host.installed.evr(), host.installed.repo);
+            if (host.locked) {
                 installed += tr(", version-locked");
             }
             break;
         case Owner::Distribution:
-            installed = tr("the distribution's KWin %1").arg(kwin.kwin.evr());
+            installed = tr("the distribution's %1 %2").arg(title, host.installed.evr());
             break;
+        }
+        if (host.names.size() > 1) {
+            installed += tr(" (%1 packages: %2)").arg(host.names.size()).arg(host.names.join(", "));
         }
         rows += row(tr("Installed:"), installed.toHtmlEscaped());
     }
@@ -1452,12 +1532,12 @@ QString BuildsWindow::kwinSource(const Component &c)
         if (!took.isEmpty()) {
             built = tr("%1, in %2").arg(built, duration(took.last()));
         }
-        const HostKde::Build &b = kwin.build.isValid() ? kwin.build : kwin.other;
+        const HostKde::Build &b = host.build.isValid() ? host.build : host.other;
         if (b.isValid()) {
-            built = tr("KWin %1, %2").arg(b.evr, built);
+            built = tr("%1 %2, %3").arg(title, b.evr, built);
         }
         rows += row(tr("Built:"), built.toHtmlEscaped());
-        if (b.isValid() && b.buildroot.contains("qt6-qtbase")) {
+        if (b.isValid() && target.package != "qt6-qtbase" && b.buildroot.contains("qt6-qtbase")) {
             rows += row(tr("Built against:"),
                         tr("Qt %1").arg(b.buildroot.value("qt6-qtbase").section('-', 0, 0))
                             .toHtmlEscaped());
@@ -1469,13 +1549,23 @@ QString BuildsWindow::kwinSource(const Component &c)
                                        (used >= 0 ? " — " + bytes(used).toHtmlEscaped() : QString()));
     }
     rows += row(tr("A build needs:"),
-                tr("up to %1 GiB of memory, in its container")
-                    .arg(GuestToolsBuilder::memoryCapMiB() / 1024)
+                (target.heavy ? tr("up to %1 GiB of memory, in its container")
+                                    .arg(GuestToolsBuilder::memoryCapMiB() / 1024)
+                              : tr("a GiB or two of memory, in its container"))
                     .toHtmlEscaped());
-    return html + "<table>" + rows + "</table>" +
-           para(tr("Installing replaces the compositor, as root, version-locked: after each "
-                   "Plasma or Qt update it must be built and installed again, or reverted to the "
-                   "distribution's KWin. It takes effect at the next login."));
+    const QString after =
+        target.package == "kwin"
+            ? tr("Installing replaces the compositor, as root, version-locked: after each Plasma or "
+                 "Qt update it must be built and installed again, or reverted to the distribution's "
+                 "KWin. It takes effect at the next login.")
+        : target.package == "qt6-qtbase"
+            ? tr("Installing replaces all of Qt base's packages, as root, version-locked: Qt updates "
+                 "wait until it is built and installed again for them, or reverted. Programs started "
+                 "after it use it; the desktop, from the next login.")
+            : tr("Installing replaces it, as root, version-locked: when the KDE Frameworks move to a "
+                 "new release, it must be built and installed again, or reverted. Programs started "
+                 "after it use it; the desktop, from the next login.");
+    return html + "<table>" + rows + "</table>" + para(after);
 }
 
 qint64 BuildsWindow::size(const QString &path)
@@ -1572,12 +1662,12 @@ void BuildsWindow::contextMenu(const QPoint &at)
         menu.addAction(tr("Build from &Scratch"), this, [this]() { buildSelected(true); })
             ->setEnabled(m_build->isEnabled());
     }
-    if (c.kind == Kind::System || id == "system") {
+    if (c.kind == Kind::System) {
         menu.addAction(m_install->icon(), m_install->text(), this,
-                       [this]() { HostKdeDialog::install(this); })
+                       [this, id]() { HostKdeDialog::install(this, id); })
             ->setEnabled(m_install->isEnabled());
         menu.addAction(m_revert->icon(), m_revert->text(), this,
-                       [this]() { HostKdeDialog::revert(this); })
+                       [this, id]() { HostKdeDialog::revert(this, {id}); })
             ->setEnabled(m_revert->isEnabled());
     }
     if (!status.output.isEmpty()) {

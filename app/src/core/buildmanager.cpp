@@ -56,7 +56,7 @@ BuildManager *BuildManager::instance()
 
 BuildManager::BuildManager(QObject *parent) : QObject(parent)
 {
-    /* the host's KWin's status follows the system: read again, it may differ */
+    /* the host packages' statuses follow the system: read again, they may differ */
     connect(HostKdeMonitor::instance(), &HostKdeMonitor::changed, this, [this]() {
         if (!m_placesSet) {
             refresh();
@@ -74,11 +74,11 @@ void BuildManager::setPlaces(const Builds::Places &places)
 }
 
 void BuildManager::setBuilders(StackBuilder *stack, GuestToolsBuilder *tools,
-                               HostKdeBuilder *kwin)
+                               HostKdeBuilder *hostKde)
 {
     m_stack = stack;
     m_tools = tools;
-    m_kwin = kwin;
+    m_hostKde = hostKde;
     m_connected.clear();
 }
 
@@ -192,8 +192,8 @@ QStringList BuildManager::outdated() const
 
     for (const Component &c : components()) {
         const Builds::Status::State state = status(c.id).state;
-        /* optional, and heavy: Vitrine keeps it up to date once it installed it */
-        if (c.kind == Kind::System && !places().kwin.wantsUpdates()) {
+        /* optional, and heavy: Vitrine keeps one up to date once it installed it */
+        if (c.kind == Kind::System && !places().system.value(c.id).wantsUpdates()) {
             continue;
         }
         if (state == Builds::Status::State::NotBuilt || state == Builds::Status::State::Outdated) {
@@ -214,8 +214,8 @@ void BuildManager::build(const QStringList &ids, bool clean)
     if (!m_tools) {
         m_tools = GuestToolsBuilder::instance();
     }
-    if (!m_kwin) {
-        m_kwin = HostKdeBuilder::instance();
+    if (!m_hostKde) {
+        m_hostKde = HostKdeBuilder::instance();
     }
     /* their lines, per component, while a run of ours goes on */
     if (!m_connected.contains("stack")) {
@@ -330,15 +330,15 @@ void BuildManager::build(const QStringList &ids, bool clean)
         });
     }
 
-    if (!m_connected.contains("kwin")) {
-        m_connected << "kwin";
+    if (!m_connected.contains("host-kde")) {
+        m_connected << "host-kde";
         const auto systemPart = [this]() { return runsPart(2); };
-        connect(m_kwin, &HostKdeBuilder::output, this, [this, systemPart](const QString &text) {
+        connect(m_hostKde, &HostKdeBuilder::output, this, [this, systemPart](const QString &text) {
             if (systemPart()) {
                 append(m_part.first(), text);
             }
         });
-        connect(m_kwin, &HostKdeBuilder::phaseChanged, this,
+        connect(m_hostKde, &HostKdeBuilder::phaseChanged, this,
                 [this, systemPart](const QString &text) {
             if (systemPart() && !m_current.isEmpty()) {
                 Progress &p = m_progress[m_current];
@@ -348,7 +348,7 @@ void BuildManager::build(const QStringList &ids, bool clean)
                 updateTask();
             }
         });
-        connect(m_kwin, &HostKdeBuilder::progress, this,
+        connect(m_hostKde, &HostKdeBuilder::progress, this,
                 [this, systemPart](int done, int total) {
             if (systemPart() && !m_current.isEmpty()) {
                 Progress &p = m_progress[m_current];
@@ -360,28 +360,28 @@ void BuildManager::build(const QStringList &ids, bool clean)
                 }
             }
         });
-        connect(m_kwin, &HostKdeBuilder::waitingChanged, this, [this, systemPart]() {
+        connect(m_hostKde, &HostKdeBuilder::waitingChanged, this, [this, systemPart]() {
             if (systemPart() && !m_current.isEmpty()) {
                 const State state = m_progress.value(m_current).state;
-                if (m_kwin->isWaiting() && state == State::Building) {
+                if (m_hostKde->isWaiting() && state == State::Building) {
                     setState(m_current, State::Waiting);
-                } else if (!m_kwin->isWaiting() && state == State::Waiting) {
+                } else if (!m_hostKde->isWaiting() && state == State::Waiting) {
                     /* its time counts from now */
                     m_clocks[m_current].start();
                     setState(m_current, State::Building);
                 }
             }
         });
-        connect(m_kwin, &HostKdeBuilder::finished, this, [this, systemPart](const QString &error) {
+        connect(m_hostKde, &HostKdeBuilder::finished, this, [this, systemPart](const QString &error) {
             if (!systemPart()) {
                 return;
             }
-            if (error.isEmpty() && !m_kwin->wasStopped()) {
+            if (error.isEmpty() && !m_hostKde->wasStopped()) {
                 componentDone(m_part.first(), State::Built);
             }
             /* the builds there are now, for the banner too */
             HostKdeMonitor::instance()->refresh();
-            partFinished(error, m_kwin->wasStopped());
+            partFinished(error, m_hostKde->wasStopped());
         });
     }
 
@@ -436,11 +436,12 @@ void BuildManager::nextPart()
         finishRun({}, false);
         return;
     }
-    /* the components of the same script, one after the other */
+    /* the components of the same script, one after the other; the host
+       packages one per run of theirs */
     const int part = partOf(rest.first());
     m_part.clear();
     for (const QString &id : std::as_const(rest)) {
-        if (partOf(id) != part) {
+        if (partOf(id) != part || (part == 2 && !m_part.isEmpty())) {
             break;
         }
         m_part << id;
@@ -471,9 +472,10 @@ void BuildManager::startGuest(const QStringList &ids)
 
 void BuildManager::startSystem(const QStringList &ids)
 {
-    /* the one component there is: the host's KWin, for where its Plasma comes from */
+    /* one package, in a container with the repositories of the host's Plasma */
+    const HostKde::Status host = places().system.value(ids.first());
     setCurrent(ids.first());
-    m_kwin->start(places().kwin.plasmaFrom);
+    m_hostKde->start(host.target, host.plasmaFrom);
 }
 
 void BuildManager::partFinished(const QString &error, bool stopped)
@@ -569,8 +571,8 @@ void BuildManager::cancel()
         m_stack->cancel();
     } else if (m_tools && m_tools->isRunning()) {
         m_tools->cancel();
-    } else if (m_kwin && m_kwin->isRunning()) {
-        m_kwin->cancel();
+    } else if (m_hostKde && m_hostKde->isRunning()) {
+        m_hostKde->cancel();
     } else {
         finishRun(tr("Stopped"), true);
     }
@@ -580,26 +582,26 @@ void BuildManager::proceed()
 {
     if (m_running && m_tools && m_tools->isWaiting()) {
         m_tools->proceed();
-    } else if (m_running && m_kwin && m_kwin->isWaiting()) {
-        m_kwin->proceed();
+    } else if (m_running && m_hostKde && m_hostKde->isWaiting()) {
+        m_hostKde->proceed();
     }
 }
 
 bool BuildManager::isWaiting() const
 {
-    return m_running && ((m_tools && m_tools->isWaiting()) || (m_kwin && m_kwin->isWaiting()));
+    return m_running && ((m_tools && m_tools->isWaiting()) || (m_hostKde && m_hostKde->isWaiting()));
 }
 
 qint64 BuildManager::availableMiB() const
 {
-    return m_kwin && m_kwin->isWaiting() ? m_kwin->availableMiB()
+    return m_hostKde && m_hostKde->isWaiting() ? m_hostKde->availableMiB()
            : m_tools                     ? m_tools->availableMiB()
                                          : 0;
 }
 
 qint64 BuildManager::neededMiB() const
 {
-    return m_kwin && m_kwin->isWaiting() ? m_kwin->neededMiB()
+    return m_hostKde && m_hostKde->isWaiting() ? m_hostKde->neededMiB()
            : m_tools                     ? m_tools->neededMiB()
                                          : 0;
 }
@@ -705,10 +707,11 @@ void BuildManager::saveLog(const QString &id)
 
 QStringList BuildManager::cacheDirs() const
 {
-    /* every Fedora release's of the guest tools; the host KWin's work folder */
+    /* every Fedora release's of the guest tools; the host packages' work
+       folder, and an older Vitrine's of its KWin */
     return m_cacheDirs.isEmpty() ? QStringList{StackBuilder::workDir(),
                                                Paths::cacheDir() + "/guest-build",
-                                               HostKde::workDir()}
+                                               HostKde::workDir(), HostKde::oldWorkDir()}
                                  : m_cacheDirs;
 }
 
@@ -747,7 +750,7 @@ bool BuildManager::clearCache(QString *error)
     };
 
     if (m_running || (m_stack && m_stack->isRunning()) || (m_tools && m_tools->isRunning()) ||
-        (m_kwin && m_kwin->isRunning())) {
+        (m_hostKde && m_hostKde->isRunning())) {
         *error = tr("A build is running: clear the cache once it is done.");
         return false;
     }
@@ -757,9 +760,9 @@ bool BuildManager::clearCache(QString *error)
         lockFiles << dir + "/.lock";
     }
     lockFiles << places.rpmsDir + "/.lock";
-    /* host/kde/build.sh's, in its output */
-    if (!places.kwinOut.isEmpty()) {
-        lockFiles << places.kwinOut + "/.lock";
+    /* host/kde/build.sh's, in each package's output (and its work folder's, above) */
+    for (const QString &out : places.systemOut) {
+        lockFiles << out + "/.lock";
     }
     for (const QString &path : std::as_const(lockFiles)) {
         const int fd = ::open(QFile::encodeName(path).constData(), O_WRONLY | O_CLOEXEC);
@@ -874,7 +877,7 @@ void BuildManager::updateTask()
     const bool compiling = p.state == State::Building && p.total > 0 &&
                            (kind == Kind::Host     ? p.phase.startsWith("compiling ") ||
                                                          p.phase.startsWith("building ")
-                            : kind == Kind::System ? m_kwin && m_kwin->isCompiling()
+                            : kind == Kind::System ? m_hostKde && m_hostKde->isCompiling()
                                                    : m_tools && m_tools->isCompiling());
     qint64 done = compiling ? qint64(p.done) * 1000 / p.total : 0;
 

@@ -1,44 +1,51 @@
 #!/bin/bash
 # SPDX-License-Identifier: GPL-2.0-or-later
 #
-# Installs the host's KWin set that build.sh built, or puts the
-# distribution's KWin back.  Run as root: Vitrine runs it with pkexec, one
-# action per run (one password).  The packages are the KWin ones installed
-# now (kwin, kwin-common, kwin-libs; kwin-devel if it is): the set's RPMs of
-# other packages are left out, as the research's host-kde.sh does.  It takes
-# effect at the next login: nothing here restarts the desktop.
+# Installs the builds of the host's KDE packages that build.sh made (KWin,
+# KSvg, Kirigami, Qt base: the package= lines of components.conf), or puts
+# the distribution's packages back.  Run as root: Vitrine runs it with
+# pkexec, one action per run (one password).  Of each source package, the
+# packages installed now are replaced, all of them from the same build:
+# they require each other at the same version (Qt base's do, at the same
+# release), so if one of them is installed and the build has none, nothing
+# is done.  The build's packages not installed are left out, as the
+# research's host-kde.sh does.  It takes effect for programs started after
+# it, the desktop at the next login: nothing here restarts it.
 #
 #   install.sh install FILE=SHA256...
-#       The set's RPMs and their sha256: copied to a folder of root's and
+#       Builds' RPMs and their sha256: copied to a folder of root's and
 #       checked first (the files are in the user's folders), installed in
 #       one dnf transaction (an upgrade, a downgrade, or a reinstall for a
 #       rebuild of the same version), checked once installed (rpm's header
-#       digests), then version-locked so that updates leave them alone.
-#       Then the set's run-time switches (below) go on.
-#   install.sh revert DIGEST...
-#       The version locks of the KWin packages go, and dnf distro-sync puts
-#       the repositories' KWin back; only if the installed kwin's header
-#       digest (rpm's SHA256HEADER) is one of these: Vitrine's own.  The
-#       switches go too.
+#       digests), then version-locked by their exact names so that updates
+#       leave them alone.  With KWin, its set's run-time switches (below) go
+#       on.
+#   install.sh revert PACKAGE=DIGEST...
+#       Of each source package named, when its package (kwin, qt6-qtbase...)
+#       has one of its header digests given (rpm's SHA256HEADER: Vitrine's
+#       own): the version locks of its installed packages go, and dnf
+#       distro-sync puts the repositories' back, one transaction for all.
+#       KWin's switches go too.
 #
-# The switches: some of the research's patches act only when a file of
-# $XDG_RUNTIME_DIR says so, which KWin reads as it starts (research/src/
+# KWin's switches: some of the research's KWin patches act only when a file
+# of $XDG_RUNTIME_DIR says so, which KWin reads as it starts (research/src/
 # host-config/kwin-*.conf, user tmpfiles entries: each one's comment says
-# what it does).  They go into /etc/user-tmpfiles.d/vitrine-host-kwin.conf,
-# which makes the files at each user's login, and are made at once for the
-# user who installs (pkexec's PKEXEC_UID): a login soon after a logout may
-# find their session manager still running, and its tmpfiles not read
-# again.  Another KWin ignores the files.
+# what it does).  Those of kwin_switches go into
+# /etc/user-tmpfiles.d/vitrine-host-kwin.conf, which makes the files at each
+# user's login, and are made at once for the user who installs (pkexec's
+# PKEXEC_UID): a login soon after a logout may find their session manager
+# still running, and its tmpfiles not read again.  Another KWin ignores the
+# files.
 #
 # A failure puts back the locks there were.  Lines starting with
-# "vitrine-kwin: " are for the app:
-#   vitrine-kwin: step: WHAT
-#   vitrine-kwin: left out: NAME, not installed
-#   vitrine-kwin: installed: NEVRA
-#   vitrine-kwin: locked: NAME...
-#   vitrine-kwin: warning: MESSAGE
-#   vitrine-kwin: error: MESSAGE
-#   vitrine-kwin: done
+# "vitrine-kde: " are for the app:
+#   vitrine-kde: step: WHAT
+#   vitrine-kde: left out: NAME, not installed
+#   vitrine-kde: installed: NEVRA
+#   vitrine-kde: locked: NAME...
+#   vitrine-kde: warning: MESSAGE
+#   vitrine-kde: error: MESSAGE
+#   vitrine-kde: done
 set -eu
 shopt -s nullglob
 umask 022
@@ -46,17 +53,33 @@ umask 022
 here=$(cd -- "$(dirname -- "$(readlink -f "${BASH_SOURCE[0]}")")" && pwd)
 # VITRINE_TMPFILES_DIR and VITRINE_RUN_USER are the tests' (pkexec passes no environment)
 switches=${VITRINE_TMPFILES_DIR:-/etc/user-tmpfiles.d}/vitrine-host-kwin.conf
+# KWin's run-time switches that an install turns on, by their file in
+# research/src/host-config (kwin-NAME.conf, the patch it is for in its
+# comment): remove a line to leave one off
+kwin_switches=(
+	active-window-candidate
+	animation-start-step
+	empty-render-not-content
+	scanout-variance-cap
+	skip-empty-layer-render
+)
 
-say() { echo "vitrine-kwin: $*"; }
+say() { echo "vitrine-kde: $*"; }
 die() { say "error: $*" >&2; exit 1; }
-usage() { sed -n '/^#   install.sh install/,/^#       digest/p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,3\}//'; }
+usage() { sed -n '/^#   install.sh install/,/^#       KWin.s switches go too/p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,3\}//'; }
 
-# The KWin packages installed: those made from KWin's source RPM (kwin-x11
-# has its own), but its debug information, which an install leaves alone
-# and whose repository is seldom enabled
-kwin_installed() {
-	rpm -qa --qf '%{NAME} %{SOURCERPM}\n' |
-		awk '$2 ~ /^kwin-[0-9]/ && $1 !~ /-debug(info|source)$/ { print $1 }' | LC_ALL=C sort -u
+# The source packages this installs: components.conf's
+allowed() {
+	sed -n 's/^package=//p' "$here/components.conf"
+}
+
+# "NAME ARCH" of the packages installed of source package $1, but its debug
+# information, which an install leaves alone and whose repository is seldom
+# enabled
+of_source() {
+	rpm -qa --qf '%{NAME} %{ARCH} %{SOURCERPM}\n' |
+		awk -v s="$1" '{ n = $3; sub(/\.(no)?src\.rpm$/, "", n); sub(/-[^-]+-[^-]+$/, "", n) }
+			n == s && $1 !~ /-debug(info|source)$/ { print $1, $2 }' | LC_ALL=C sort -u
 }
 
 # Of the names given, those dnf's versionlock has an entry for
@@ -93,8 +116,13 @@ installed() {
 # installs.  A failure to make those is only a warning: the next login makes
 # them.
 switches_on() {
-	local -a entries=("$here"/research/src/host-config/kwin-*.conf)
-	local uid=${PKEXEC_UID:-} run user
+	local -a entries=()
+	local uid=${PKEXEC_UID:-} run user name
+	for name in "${kwin_switches[@]}"; do
+		[ -f "$here/research/src/host-config/kwin-$name.conf" ] ||
+			{ say "warning: no switch kwin-$name in research/src/host-config"; continue; }
+		entries+=("$here/research/src/host-config/kwin-$name.conf")
+	done
 	[ ${#entries[@]} -gt 0 ] || return 0
 	say "step: turning the set's run-time switches on ($switches)"
 	mkdir -p "${switches%/*}"
@@ -119,12 +147,12 @@ switches_off() {
 	fi
 }
 
-install_set() {
-	local arg file sum name arch digest evr have have_digest have_evr c kwin=0
-	local -a names=() files=() up=() down=() re=() was=() actions=()
+install_sets() {
+	local arg file sum name arch digest evr have have_digest have_evr c src n a found
+	local -a names=() files=() up=() down=() re=() was=() actions=() sources=() rpms=()
 	[ $# -gt 0 ] || die "no packages given"
 	# root's own: pkexec gives no TMPDIR, so /var/tmp, on disk rather than in memory
-	tmp=$(mktemp -d "${TMPDIR:-/var/tmp}/vitrine-kwin.XXXXXX")
+	tmp=$(mktemp -d "${TMPDIR:-/var/tmp}/vitrine-kde.XXXXXX")
 	trap 'rm -rf "$tmp"' EXIT
 	say "step: checking the packages"
 	for arg; do
@@ -136,8 +164,26 @@ install_set() {
 		[ "$(sha256sum < "$tmp/${file##*/}" | cut -d' ' -f1)" = "$sum" ] ||
 			die "${file##*/} is not the file that was built: its sha256 differs"
 	done
-	for file in "$tmp"/*.rpm; do
-		[[ $(rpm -qp --qf '%{SOURCERPM}' "$file") == kwin-[0-9]* ]] || die "${file##*/} is not a KWin package"
+	rpms=("$tmp"/*.rpm)
+	# each file's source package, one of those this installs
+	for file in "${rpms[@]}"; do
+		src=$(rpm -qp --qf '%{SOURCERPM}' "$file" | sed -E 's/\.(no)?src\.rpm$//; s/-[^-]+-[^-]+$//')
+		allowed | grep -qxF -- "$src" || die "${file##*/} is not a package of $(allowed | tr '\n' ' ')"
+		[[ " ${sources[*]-} " == *" $src "* ]] || sources+=("$src")
+	done
+	# of each, all its packages installed or none: they need each other at one version
+	for src in "${sources[@]}"; do
+		rpm -q "$src" > /dev/null 2>&1 || die "$src is not installed here: there is nothing to replace"
+		while read -r n a; do
+			found=0
+			for file in "${rpms[@]}"; do
+				[ "$(rpm -qp --qf '%{NAME} %{ARCH}' "$file")" != "$n $a" ] || found=1
+			done
+			[ "$found" = 1 ] ||
+				die "$n ($a) is installed and the build of $src has none: Vitrine replaces all of $src's packages or none"
+		done < <(of_source "$src")
+	done
+	for file in "${rpms[@]}"; do
 		name=$(rpm -qp --qf '%{NAME}' "$file")
 		arch=$(rpm -qp --qf '%{ARCH}' "$file")
 		digest=$(rpm -qp --qf '%{SHA256HEADER}' "$file")
@@ -151,7 +197,6 @@ install_set() {
 		have_evr=${have#* }
 		names+=("$name")
 		files+=("$file")
-		[ "$name" != kwin ] || kwin=1
 		# this very build already
 		[ "$have_digest" != "$digest" ] || continue
 		c=$(vercmp "$evr" "$have_evr")
@@ -161,7 +206,6 @@ install_set() {
 		*) re+=("$file") ;;     # a rebuild of the same version
 		esac
 	done
-	[ "$kwin" = 1 ] || die "KWin is not installed here: there is nothing to replace"
 	mapfile -t was < <(locked_of "${names[@]}")
 
 	if [ $(( ${#up[@]} + ${#down[@]} + ${#re[@]} )) -gt 0 ]; then
@@ -193,11 +237,11 @@ install_set() {
 			{ relock "${was[@]}"; die "${names[$i]} is not the package built once installed"; }
 	done
 	say "step: locking ${names[*]}"
-	# entries at the versions installed now
+	# entries at the versions installed now, of these exact names
 	mapfile -t was < <(locked_of "${names[@]}")
 	[ ${#was[@]} = 0 ] || dnf versionlock delete "${was[@]}" > /dev/null
 	dnf versionlock add "${names[@]}"
-	switches_on
+	[[ " ${sources[*]} " != *" kwin "* ]] || switches_on
 	for name in "${names[@]}"; do
 		say "installed: $(rpm -q --qf '%{NEVRA}\n' "$name" | head -n 1)"
 	done
@@ -206,30 +250,58 @@ install_set() {
 }
 
 revert() {
-	local digest d mine=0
-	local -a names=() was=()
-	[ $# -gt 0 ] || die "no digests given"
-	mapfile -t names < <(kwin_installed)
-	[ ${#names[@]} -gt 0 ] || die "KWin is not installed here"
-	digest=$(rpm -q --qf '%{SHA256HEADER}\n' kwin 2> /dev/null | head -n 1)
-	for d; do
-		[ "$d" != "$digest" ] || mine=1
+	local arg src d digest mine n a kwin=0
+	local -a sources=() names=() was=() again=() stayed=()
+	local -A given=() before=()
+	[ $# -gt 0 ] || die "no packages given"
+	for arg; do
+		src=${arg%%=*}
+		d=${arg#*=}
+		[[ $arg == *=* && $d =~ ^[0-9a-f]{64}$ ]] || die "not a package and a digest (PACKAGE=SHA256): $arg"
+		allowed | grep -qxF -- "$src" || die "$src is not a package of $(allowed | tr '\n' ' ')"
+		[[ " ${sources[*]-} " == *" $src "* ]] || sources+=("$src")
+		given[$src]="${given[$src]:-} $d"
 	done
-	[ "$mine" = 1 ] || die "the KWin installed is not one Vitrine installed: Vitrine leaves it alone"
+	for src in "${sources[@]}"; do
+		digest=$(rpm -q --qf '%{SHA256HEADER}\n' "$src" 2> /dev/null | head -n 1)
+		[ -n "$digest" ] || die "$src is not installed here"
+		mine=0
+		for d in ${given[$src]}; do
+			[ "$d" != "$digest" ] || mine=1
+		done
+		[ "$mine" = 1 ] || die "the $src installed is not one Vitrine installed: Vitrine leaves it alone"
+		before[$src]=$digest
+		while read -r n a; do
+			[[ " ${names[*]-} " == *" $n "* ]] || names+=("$n")
+		done < <(of_source "$src")
+		[ "$src" != kwin ] || kwin=1
+	done
 	mapfile -t was < <(locked_of "${names[@]}")
 	if [ ${#was[@]} -gt 0 ]; then
 		say "step: removing the version locks of ${was[*]}"
 		dnf versionlock delete "${was[@]}"
 	fi
-	say "step: installing the distribution's KWin"
+	say "step: installing the distribution's packages"
 	dnf -y --setopt=install_weak_deps=False distro-sync "${names[@]}" ||
-		{ relock "${was[@]}"; die "dnf could not install the distribution's KWin"; }
-	# the same build still: the repositories have no other KWin
-	[ "$(rpm -q --qf '%{SHA256HEADER}\n' kwin | head -n 1)" != "$digest" ] ||
-		{ relock "${was[@]}"; die "the repositories have no other KWin: this one stays"; }
-	switches_off
-	for name in "${names[@]}"; do
-		say "installed: $(rpm -q --qf '%{NEVRA}\n' "$name" | head -n 1)"
+		{ relock "${was[@]}"; die "dnf could not install the distribution's packages"; }
+	# the same build still: the repositories have no other; its locks back
+	for src in "${sources[@]}"; do
+		if [ "$(rpm -q --qf '%{SHA256HEADER}\n' "$src" | head -n 1)" = "${before[$src]}" ]; then
+			stayed+=("$src")
+			while read -r n a; do
+				for d in "${was[@]}"; do
+					[ "$d" != "$n" ] || again+=("$n")
+				done
+			done < <(of_source "$src")
+		fi
+	done
+	if [ ${#stayed[@]} -gt 0 ]; then
+		relock ${again[@]+"${again[@]}"}
+		die "the repositories have no other ${stayed[*]}: Vitrine's stays"
+	fi
+	[ "$kwin" = 0 ] || switches_off
+	for n in "${names[@]}"; do
+		say "installed: $(rpm -q --qf '%{NEVRA}\n' "$n" | head -n 1)"
 	done
 	say "done"
 }
@@ -246,8 +318,8 @@ esac
 command -v rpm > /dev/null || die "rpm not found"
 dnf --version 2> /dev/null | grep -q '^dnf5' || die "this needs dnf5 (Fedora 41 or later)"
 dnf versionlock list > /dev/null 2>&1 ||
-	die "dnf has no versionlock command: without it an update would replace this KWin"
+	die "dnf has no versionlock command: without it an update would replace these packages"
 case "$action" in
-install) install_set "$@" ;;
+install) install_sets "$@" ;;
 revert) revert "$@" ;;
 esac

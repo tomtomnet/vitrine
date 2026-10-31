@@ -26,11 +26,12 @@ class QTreeWidgetItem;
  * The builds of what Vitrine builds (BuildManager), in one window, not
  * modal: Vitrine's QEMU (virglrenderer, rutabaga_gfx, QEMU), the guest
  * tools (their packages and the medium) and, optional, the host's desktop
- * (the host's KWin), each with its state and why, when it was built and how
- * long a build of it takes; the selected one's source, patches by origin
- * (their text on demand) and log.  Build for the selected one, Update All
- * for what is out of date, Stop; Install… and Revert… for the host's KWin;
- * the cache's size, and Clear.  The builds go on when it closes.
+ * (the host's KWin, KSvg, Kirigami and Qt base), each with its state and
+ * why, when it was built and how long a build of it takes; the selected
+ * one's source, patches by origin (their text on demand) and log.  Build
+ * for the selected one, Update All for what is out of date, Stop; Install…
+ * and Revert… for a host package; the cache's size, and Clear.  The builds
+ * go on when it closes.
  */
 class BuildsWindow : public QDialog
 {
@@ -88,10 +89,10 @@ private:
     void clearCache();
     void buildSelected(bool clean = false);
     void contextMenu(const QPoint &at);
-    /* The host's KWin's part of the details: what it is, the system's state */
-    QString kwinSource(const Builds::Component &c);
-    /* The host's KWin, or its group, is selected */
-    bool kwinSelected() const;
+    /* A host package's part of the details: what it is, the system's state */
+    QString systemSource(const Builds::Component &c);
+    /* A host package is selected (not its group) */
+    bool systemSelected() const;
     /* The size of @path, counted in the background; -1 until then */
     qint64 size(const QString &path);
     /* The components of the selection: one, or a group's */
@@ -116,8 +117,9 @@ private:
     QPushButton *m_stop;
     QPushButton *m_install;
     QPushButton *m_revert;
-    /* the Log tab of the host's KWin shows its last install or revert */
+    /* the Log tab of the host packages of the last install or revert shows it */
     bool m_showInstall = false;
+    QStringList m_installIds;
     QHash<QString, QTreeWidgetItem *> m_items;
     QHash<QString, QTreeWidgetItem *> m_groups;
     QString m_shownPatches;

@@ -64,12 +64,13 @@ void HostKdeBuilder::setMemoryPoll(int ms)
     m_memoryTimer->setInterval(ms);
 }
 
-void HostKdeBuilder::start(const QString &plasma)
+void HostKdeBuilder::start(const HostKde::Target &target, const QString &plasma)
 {
     if (m_running) {
         return;
     }
     m_running = true;
+    m_target = target;
     m_cancelled = false;
     m_stopped = false;
     m_plasma = plasma;
@@ -99,7 +100,8 @@ void HostKdeBuilder::checkMemory()
         m_memoryTimer->stop();
         return;
     }
-    if (host.totalMiB <= 0 || host.availableMiB >= needed) {
+    /* a small package's build takes a GiB or two: it does not wait */
+    if (!m_target.heavy || host.totalMiB <= 0 || host.availableMiB >= needed) {
         m_memoryTimer->stop();
         if (waiting) {
             emit waitingChanged();
@@ -112,10 +114,10 @@ void HostKdeBuilder::checkMemory()
         m_available = host.availableMiB;
         m_needed = needed;
         if (!waiting) {
-            append(tr("Waiting for memory: KWin's build takes up to %1 GiB, and %2 GiB is free; "
-                      "it starts once %3 GiB is.\n")
-                       .arg(gib(GuestToolsBuilder::memoryCapMiB()), gib(host.availableMiB),
-                            gib(needed)));
+            append(tr("Waiting for memory: %1's build takes up to %2 GiB, and %3 GiB is free; "
+                      "it starts once %4 GiB is.\n")
+                       .arg(m_target.title, gib(GuestToolsBuilder::memoryCapMiB()),
+                            gib(host.availableMiB), gib(needed)));
             m_memoryTimer->start();
         }
         emit waitingChanged();
@@ -141,7 +143,7 @@ void HostKdeBuilder::proceed()
 void HostKdeBuilder::run()
 {
     const QString source = m_sourceDir.isEmpty() ? HostKde::sourceDir() : m_sourceDir;
-    const QString out = m_outDir.isEmpty() ? HostKde::outDir() : m_outDir;
+    const QString out = m_target.outDir(m_dataDir.isEmpty() ? HostKde::dataDir() : m_dataDir);
     const QString work = m_workDir.isEmpty() ? HostKde::workDir() : m_workDir;
     const QString bash = QStandardPaths::findExecutable("bash");
     const int jobs = m_jobs > 0 ? m_jobs : qBound(1, QThread::idealThreadCount(), 8);
@@ -151,8 +153,12 @@ void HostKdeBuilder::run()
         finish(tr("This installation of Vitrine has no host/kde/build.sh"));
         return;
     }
-    args << source + "/build.sh" << "--out" << out << "--work" << work << "-j"
-         << QString::number(jobs);
+    if (!m_target.isValid()) {
+        finish(tr("Nothing to build: no package given"));
+        return;
+    }
+    args << source + "/build.sh" << "--package" << m_target.package << "--out" << out << "--work"
+         << work << "-j" << QString::number(jobs);
     if (!m_plasma.isEmpty()) {
         args << "--plasma" << m_plasma;
     }
