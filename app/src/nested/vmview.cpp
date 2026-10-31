@@ -42,6 +42,7 @@ extern "C" const struct wl_interface wp_presentation_feedback_interface;
 
 #include <fcntl.h>
 #include <poll.h>
+#include <pthread.h>
 #include <sys/eventfd.h>
 #include <sys/mman.h>
 #include <sys/socket.h>
@@ -541,6 +542,10 @@ struct View {
     wl_buffer *anchorBuffer = nullptr;
     // VMVIEW_STATS
     unsigned presented = 0, zeroCopy = 0, discarded = 0, pointerEvents = 0, keyEvents = 0;
+    // the thread's own delays (VMVIEW_STATS, 2026-10-31: integrated mode's slow animation starts): the round trips a
+    // guest's create_immed waits for, and the longest pass of the loop (nothing else is forwarded meanwhile)
+    unsigned immedWaits = 0;
+    double immedMaxMs = 0, immedTotalMs = 0, passMaxMs = 0;
     // the forwarder's own feedback on every guest commit with a new buffer: the guest asks for feedback
     // on the surface it chooses (the nested desktop: one that is not the one scanned out), this one is
     // on the surface the buffer is on, so its ZERO_COPY says whether that buffer went to the screen
@@ -1519,8 +1524,17 @@ void View::handle(Conn &c, uint32_t id, uint16_t opcode, const uint8_t *body, si
             o->immedProxy = nullptr;
             wl_proxy_marshal_array_flags(o->proxy, 2, nullptr, o->version, 0, cargs);
             // c.dead first: a connection closed meanwhile has freed its objects, o included
+            timespec w0, w1;
+            clock_gettime(CLOCK_MONOTONIC, &w0);
             while (!c.dead && !o->immedDone && wl_display_roundtrip_queue(display, queue) >= 0) {
             }
+            clock_gettime(CLOCK_MONOTONIC, &w1);
+            const double waitMs = double(w1.tv_sec - w0.tv_sec) * 1e3 + double(w1.tv_nsec - w0.tv_nsec) / 1e6;
+            immedWaits++;
+            immedTotalMs += waitMs;
+            immedMaxMs = std::max(immedMaxMs, waitMs);
+            if (g_debug || (g_stats && waitMs > 2))
+                logf("create_immed: %.2f ms waiting for the host's answer", waitMs);
             if (c.dead)
                 return;
             wl_proxy *bp = o->immedProxy;
@@ -2919,13 +2933,20 @@ void View::printStats()
     size_t objects = 0;
     for (auto &c : conns)
         objects += c->objects.size();
-    logf("stats %.1f s: %u frames presented (%.1f/s), %u straight to the screen (%.0f %%), %u discarded; "
+    char clock[16];
+    const time_t wall = time(nullptr);
+    strftime(clock, sizeof clock, "%H:%M:%S", localtime(&wall));
+    logf("stats %s %.1f s: %u frames presented (%.1f/s), %u straight to the screen (%.0f %%), %u discarded; "
          "%u pointer and %u key events to the guest; %zu guest objects, %zu host objects; "
-         "the guest's new buffers: %u presented, %u straight to the screen (%.0f %%), %u discarded",
-         dt, presented, presented / dt, zeroCopy, presented ? 100.0 * zeroCopy / presented : 0.0, discarded,
+         "the guest's new buffers: %u presented, %u straight to the screen (%.0f %%), %u discarded; "
+         "create_immed waits %u (max %.2f ms, total %.1f ms), longest loop pass %.2f ms",
+         clock, dt, presented, presented / dt, zeroCopy, presented ? 100.0 * zeroCopy / presented : 0.0, discarded,
          pointerEvents, keyEvents, objects, byProxy.size(), ownPresented, ownZeroCopy,
-         ownPresented ? 100.0 * ownZeroCopy / ownPresented : 0.0, ownDiscarded);
+         ownPresented ? 100.0 * ownZeroCopy / ownPresented : 0.0, ownDiscarded, immedWaits, immedMaxMs, immedTotalMs,
+         passMaxMs);
     presented = zeroCopy = discarded = pointerEvents = keyEvents = 0;
+    immedWaits = 0;
+    immedMaxMs = immedTotalMs = passMaxMs = 0;
     ownPresented = ownZeroCopy = ownDiscarded = 0;
     statsSince = now;
 }
@@ -2987,6 +3008,8 @@ void View::run()
             if (!c->dead && c->clipDue)
                 timeout = int(std::clamp<int64_t>((c->clipDue - nowNs + 999999) / 1000000, 0, timeout));
         const int r = poll(pf.data(), pf.size(), timeout);
+        timespec passStart;
+        clock_gettime(CLOCK_MONOTONIC, &passStart);
         if (r > 0 && (pf[0].revents & POLLIN))
             wl_display_read_events(display);
         else
@@ -3038,8 +3061,13 @@ void View::run()
         for (auto &c : conns)
             flushConn(*c);
         wl_display_flush(display);
-        if (g_stats)
+        if (g_stats) {
+            timespec passEnd;
+            clock_gettime(CLOCK_MONOTONIC, &passEnd);
+            passMaxMs = std::max(passMaxMs, double(passEnd.tv_sec - passStart.tv_sec) * 1e3 +
+                                                double(passEnd.tv_nsec - passStart.tv_nsec) / 1e6);
             printStats();
+        }
     }
     stopAll();
 }
@@ -3183,7 +3211,10 @@ bool View::start(wl_display *d, wl_surface *p, const char *path, const vmview_ca
     for (auto &kv : globals)
         shown += kv.second.shown;
     logf("serving %s; %u of the compositor's %zu globals go to the guest", path, shown, globals.size());
-    thread = std::thread([this] { run(); });
+    thread = std::thread([this] {
+        pthread_setname_np(pthread_self(), "vmview");
+        run();
+    });
     return true;
 }
 

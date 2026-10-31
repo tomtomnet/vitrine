@@ -6,7 +6,7 @@ VM's own screen.
 
 `vmview.{h,cpp}`, `protocols.{h,txt}`, `gen_protocols.py` and `LICENSE` are
 the research side's vmview library (`src/vmview` of the virtio-gpu-desktop
-repository, commit a4e6e28; its 9240dd0 took vitrine's changes of 776a6f2,
+repository, commit edd07c4; its 9240dd0 took vitrine's changes of 776a6f2,
 4a8e155, cbb9ebc and 175aa1a). QEMU's cross-domain connects to a socket the
 library serves; the guest's Wayland protocol goes on to the host compositor
 over vitrine's own connection, and the guest's window becomes a subsurface
@@ -72,7 +72,7 @@ do to vitrine:
 
 ## Local changes
 
-None: the files are the research's at a4e6e28.
+None: the files are the research's at edd07c4.
 
 The research side took vitrine's earlier ones: a `pressed` callback for
 button presses on the guest's window and a NULL object where the protocol
