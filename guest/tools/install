@@ -409,7 +409,9 @@ take_source() {  # take_source SOURCE MAIN TITLE: vitrine's build of SOURCE in s
 		source_pkgs=()
 		return 0
 	fi
-	say "$title: vitrine's ${ours#0:}$from, ${#source_pkgs[@]} packages"
+	local count="${#source_pkgs[@]} packages"
+	[ ${#source_pkgs[@]} != 1 ] || count="1 package"
+	say "$title: vitrine's ${ours#0:}$from, $count"
 }
 take_source qt6-qtbase qt6-qtbase "Qt Base"
 qt_pkgs=("${source_pkgs[@]}")
