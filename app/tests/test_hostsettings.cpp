@@ -39,6 +39,7 @@
 
 static const char kFair[] = "/sys/kernel/debug/sched/fair_server";
 static const char kUdmabuf[] = "/sys/module/udmabuf/parameters";
+static const char kThp[] = "/sys/kernel/mm/transparent_hugepage/shmem_enabled";
 
 /* What QCOMPARE prints of a Status */
 char *toString(const HostSettings::Status &status)
@@ -207,6 +208,13 @@ private:
         }
         return false;
     }
+    /* The choice in brackets of shmem_enabled in the fake tree */
+    QString thp() const
+    {
+        const QString text = QString::fromLatin1(readFile(m_root + kThp));
+        const qsizetype open = text.indexOf('['), close = text.indexOf(']');
+        return open >= 0 && close > open ? text.mid(open + 1, close - open - 1) : QString();
+    }
 
 private slots:
     void initTestCase() { QStandardPaths::setTestModeEnabled(true); }
@@ -232,6 +240,7 @@ private slots:
         /* the kernel's defaults */
         writeFile(m_root + kUdmabuf + "/list_limit", "1024\n");
         writeFile(m_root + kUdmabuf + "/size_limit_mb", "64\n");
+        writeFile(m_root + kThp, "always within_size advise [never] deny force\n");
         qputenv("VITRINE_HELPER_TEST_ROOT", m_root.toLocal8Bit());
     }
 
@@ -274,8 +283,10 @@ private slots:
         hs.tune(qemu.pid());
         QTRY_VERIFY(saw(lines, QString("ok rt %1").arg(qemu.pid())));
         QVERIFY(saw(lines, "ok fair-server on: 2 cpus"));
+        QVERIFY(saw(lines, "ok thp on: advise (was never)"));
         QVERIFY(saw(lines, "ok gpu-floor card1 1800 MHz"));
         QCOMPARE(fair(0), QString("10000000/1000000"));
+        QCOMPARE(thp(), QString("advise"));
         QCOMPARE(level(), QString("manual"));
         QCOMPARE(odTable(), od(1800, 2700).trimmed());
         QVERIFY(notices.isEmpty());
@@ -285,6 +296,7 @@ private slots:
         QTRY_COMPARE(finished.size(), 1);
         QVERIFY(!hs.helperRunning());
         QCOMPARE(fair(0), QString("1000000000/50000000"));
+        QCOMPARE(thp(), QString("never"));
         QCOMPARE(level(), QString("auto"));
         QCOMPARE(odTable(), od(800, 2700).trimmed());
         QVERIFY(notices.isEmpty());
@@ -1758,7 +1770,11 @@ private slots:
             QVERIFY(answered(answers, q2.pid(), false,
                              "the installed vitrine-helper is older than Vitrine and cannot raise "
                              "them: install it again"));
-            QVERIFY(notices.isEmpty());
+            /* nor huge pages: said once */
+            QTRY_COMPARE(notices.size(), 1);
+            QCOMPARE(notices.first().first().toString(),
+                     QString("Host tuning: the installed vitrine-helper is older than Vitrine and "
+                             "cannot turn on huge pages for VM memory: install it again."));
         }
         {
             /* tuning off: at once */

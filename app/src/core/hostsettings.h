@@ -19,6 +19,7 @@ class VmStore;
 /*
  * The host settings that keep VMs smooth, for as long as they run: the
  * kernel's fair server at 10 ms / 1 ms, a GPU clock floor on AMD APUs,
+ * transparent huge pages for shared memory (the guests' memfd RAM),
  * real-time QEMU threads for the VM in front (with the fair server only),
  * and for VMs whose GPU has native context higher udmabuf limits.  They
  * need root: vitrine-helper applies them, started with pkexec when a VM

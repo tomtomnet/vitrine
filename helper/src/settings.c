@@ -1598,7 +1598,7 @@ static void thp_restore(void)
 static void thp_found(const char *now)
 {
     if (strcmp(now, "deny") == 0) {
-        reply("skip thp: huge pages for shared memory are denied here (deny), left as they are");
+        reply("skip thp: denied on this host (shmem_enabled is deny), left as it is");
     } else {
         /* advise, or more: QEMU's madvise takes already */
         reply("ok thp on: already %s, left as it is", now);
@@ -1617,7 +1617,7 @@ void thp_on(void)
         return;
     }
     if (!thp_get(now, sizeof(now))) {
-        reply("skip thp: this kernel has no transparent huge pages for shared memory");
+        reply("skip thp: this kernel has no transparent huge pages");
         return;
     }
     /*

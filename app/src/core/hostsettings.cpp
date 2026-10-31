@@ -474,7 +474,8 @@ void HostSettings::queue(qint64 pid)
     const QString floor = gpuFloor();
 
     m_expected.insert(pid);
-    m_out += ("watch " + n + "\nfair-server on\n").toLatin1();
+    /* huge pages for its memfd RAM, as for every VM's */
+    m_out += ("watch " + n + "\nfair-server on\nthp on\n").toLatin1();
     /* auto: on APUs only (measured on a Radeon 780M), none on the other
        cards, where a fixed one chosen before goes; off: let a floor go */
     const QStringList apus = amdCards(m_sysRoot, true);
@@ -768,6 +769,13 @@ void HostSettings::handleLine(const QString &line)
         /* a helper installed before vitrine sent the VMs behind through it */
         say(tr("Host tuning: the installed vitrine-helper is older than Vitrine and cannot "
                "make the threads of the VMs behind ordinary: install it again."));
+    } else if (line == "error thp: unknown request") {
+        /* a helper installed before vitrine asked for huge pages */
+        say(tr("Host tuning: the installed vitrine-helper is older than Vitrine and cannot "
+               "turn on huge pages for VM memory: install it again."));
+    } else if (line.startsWith("skip thp: ") || line.startsWith("error thp: ")) {
+        /* "skip thp: this kernel has no transparent huge pages" */
+        say(tr("Host tuning: no huge pages for VM memory: %1.").arg(line.section(':', 1).trimmed()));
     } else if (word == "skip" || word == "error") {
         /* "skip gpu-floor card1: no overdrive clock table (pp_od_clk_voltage)" */
         say(tr("Host tuning: %1").arg(line.section(' ', 1)));

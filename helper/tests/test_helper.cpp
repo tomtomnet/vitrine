@@ -1641,11 +1641,10 @@ private slots:
         QTest::newRow("always") << "always" << "ok thp on: already always, left as it is";
         QTest::newRow("force") << "force" << "ok thp on: already force, left as it is";
         QTest::newRow("deny") << "deny"
-                              << "skip thp: huge pages for shared memory are denied here (deny), "
-                                 "left as they are";
+                              << "skip thp: denied on this host (shmem_enabled is deny), left as "
+                                 "it is";
         QTest::newRow("no such file") << ""
-                                      << "skip thp: this kernel has no transparent huge pages "
-                                         "for shared memory";
+                                      << "skip thp: this kernel has no transparent huge pages";
     }
     void thpOtherChoices()
     {
