@@ -127,7 +127,7 @@ files it changes, and the guest packages compile through ccache.
    Build… in Machine > Install Guest Tools… and in Preferences) builds them
    in a Fedora container with rootless podman, then makes the medium VMs
    install them from: 40 to 70 minutes the first time (Mesa ~15-25 min, Qt
-   Base ~15-25, KWin ~10, Kirigami ~3, the proxy, KPipeWire and KSvg ~2 each,
+   Base ~15, KWin ~10, Kirigami ~3, the proxy, KPipeWire and KSvg ~2 each,
    tools ~1), up to 10 GiB of memory. Mesa, Qt Base and KWin wait until that
    much is free, unless told to build anyway. `guest/build-rpms.sh` then
    `guest/build-medium.sh` do the same by hand, which vitrine takes in the
