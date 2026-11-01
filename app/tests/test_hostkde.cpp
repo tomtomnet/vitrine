@@ -233,6 +233,7 @@ private:
         env.insert("FAKE_UID", root ? "0" : "1000");
         /* the switches: entries and files of the user installing, here */
         env.insert("VITRINE_TMPFILES_DIR", m_state + "/tmpfiles");
+        env.insert("VITRINE_ENVIRONMENT_DIR", m_state + "/environment");
         env.insert("VITRINE_RUN_USER", m_state + "/run");
         env.insert("PKEXEC_UID", QString::number(getuid()));
         p.setProcessEnvironment(env);
@@ -294,7 +295,10 @@ private slots:
         QVERIFY(write(m_bin + "/runuser", "#!/bin/bash\necho \"$*\" >> \"$STATE/runuser\"\n"
                                           "while [ $# -gt 0 ] && [ \"$1\" != -- ]; do shift; done\n"
                                           "shift\nexec \"$@\"\n"));
-        for (const char *name : {"rpm", "dnf", "id", "runuser"}) {
+        /* the session manager of the user installing: its calls, never this computer's */
+        QVERIFY(write(m_bin + "/systemctl", "#!/bin/bash\necho \"$*\" >> \"$STATE/systemctl\"\n"
+                                            "[ ! -e \"$STATE/systemctl-fails\" ]\n"));
+        for (const char *name : {"rpm", "dnf", "id", "runuser", "systemctl"}) {
             QFile::setPermissions(m_bin + '/' + name, QFile::ReadOwner | QFile::WriteOwner | QFile::ExeOwner);
         }
         m_path = qgetenv("PATH");
@@ -1193,15 +1197,29 @@ private slots:
            installing */
         const QByteArray switches = read(m_state + "/tmpfiles/vitrine-host-kwin.conf");
         QVERIFY2(switches.startsWith("# Vitrine's host KWin (host/kde/install.sh)"), switches.constData());
-        QCOMPARE(switches.count("\nf %t/kwin-"), 5);
+        QCOMPARE(switches.count("\nf %t/kwin-"), 4);
         QVERIFY(switches.contains("\nf %t/kwin-scanout-variance-cap 0644 - - - 500\n"));
+        /* 0082's stays off: Firefox froze in a VM under a host window */
+        QVERIFY(!switches.contains("kwin-skip-empty-layer-render"));
         QVERIFY(out.contains("vitrine-kde: step: turning the set's run-time switches on"));
         QVERIFY2(read(m_state + "/runuser").contains(" -- env XDG_RUNTIME_DIR=" + runDir().toUtf8() +
                                                      " systemd-tmpfiles --user --create "),
                  read(m_state + "/runuser").constData());
         QCOMPARE(read(runDir() + "/kwin-scanout-variance-cap"), "500");
-        QCOMPARE(read(runDir() + "/kwin-skip-empty-layer-render"), "1");
-        QCOMPARE(QDir(runDir()).entryList(QDir::Files).size(), 5);
+        QVERIFY(!QFileInfo::exists(runDir() + "/kwin-skip-empty-layer-render"));
+        QCOMPARE(QDir(runDir()).entryList(QDir::Files).size(), 4);
+        /* commit timing for every user, a value of their own first; the installing user's
+           session manager reads it now */
+        const QByteArray environment = read(m_state + "/environment/vitrine-host-kwin.conf");
+        QVERIFY2(environment.startsWith("# Vitrine's host KWin (host/kde/install.sh)"), environment.constData());
+        QVERIFY(environment.endsWith("\nKWIN_WAYLAND_SUPPORT_COMMIT_TIMING_V1="
+                                     "${KWIN_WAYLAND_SUPPORT_COMMIT_TIMING_V1:-1}\n"));
+        QVERIFY(out.contains("vitrine-kde: step: turning commit timing on"));
+        QVERIFY2(read(m_state + "/runuser").contains(" -- env XDG_RUNTIME_DIR=" + runDir().toUtf8() +
+                                                     " systemctl --user daemon-reload"),
+                 read(m_state + "/runuser").constData());
+        QCOMPARE(read(m_state + "/systemctl"), "--user daemon-reload\n");
+        QVERIFY(!out.contains("warning"));
         /* its copies went with it */
         QCOMPARE(QDir(m_tmp.filePath("tmp")).entryList(QDir::NoDotAndDotDot | QDir::AllEntries), QStringList());
 
@@ -1212,6 +1230,14 @@ private slots:
         QVERIFY2(status == 0, qPrintable(out));
         QVERIFY(!QFileInfo::exists(m_state + "/actions"));
         QVERIFY(QFileInfo::exists(m_state + "/locks/kwin"));
+
+        /* a session manager that does not answer: a warning, the install done */
+        QVERIFY(write(m_state + "/systemctl-fails", ""));
+        out = installScript(QStringList{"install"} + files, &status);
+        QVERIFY2(status == 0, qPrintable(out));
+        QVERIFY(out.contains("vitrine-kde: warning: your session did not take commit timing now"));
+        QVERIFY(QFileInfo::exists(m_state + "/environment/vitrine-host-kwin.conf"));
+        QFile::remove(m_state + "/systemctl-fails");
 
         /* a rebuild of the same version (a Qt update): reinstalled, not "installed already" */
         const QStringList rebuilt = {rpmFile("kwin", "6.7.91-1.hl39.fc44", "v2-kwin"),
@@ -1267,8 +1293,10 @@ private slots:
         }
         QCOMPARE(QDir(m_state + "/locks").entryList(QDir::Files).size(), 4);
         QVERIFY(out.contains("vitrine-kde: locked: qt6-qtbase qt6-qtbase-common qt6-qtbase-gui qt6-qtbase-mysql"));
-        /* KWin's switches are KWin's */
+        /* KWin's switches and commit timing are KWin's */
         QVERIFY(!QFileInfo::exists(m_state + "/tmpfiles/vitrine-host-kwin.conf"));
+        QVERIFY(!QFileInfo::exists(m_state + "/environment/vitrine-host-kwin.conf"));
+        QVERIFY(!QFileInfo::exists(m_state + "/systemctl"));
         /* the debug information as it was */
         QCOMPARE(installed("qt6-qtbase-debuginfo"), "dbg");
 
@@ -1373,6 +1401,8 @@ private slots:
             QVERIFY(write(m_state + "/repo/" + name, pkg(name, "6.7.91-1.fc44", "distro")));
         }
         QVERIFY(write(m_state + "/tmpfiles/vitrine-host-kwin.conf", "f %t/kwin-animation-start-step 0644 - - - 1\n"));
+        QVERIFY(write(m_state + "/environment/vitrine-host-kwin.conf",
+                      "KWIN_WAYLAND_SUPPORT_COMMIT_TIMING_V1=${KWIN_WAYLAND_SUPPORT_COMMIT_TIMING_V1:-1}\n"));
         /* another's: left alone */
         QString out = installScript({"revert", "kwin=" + hex("hm4")}, &status);
         QCOMPARE(status, 1);
@@ -1380,6 +1410,7 @@ private slots:
         QCOMPARE(installed("kwin"), hex("v-kwin"));
         QVERIFY(QFileInfo::exists(m_state + "/locks/kwin"));
         QVERIFY(QFileInfo::exists(m_state + "/tmpfiles/vitrine-host-kwin.conf"));
+        QVERIFY(QFileInfo::exists(m_state + "/environment/vitrine-host-kwin.conf"));
         /* not a package and a digest, or not one of these packages */
         out = installScript({"revert", hex("v-kwin")}, &status);
         QCOMPARE(status, 1);
@@ -1394,6 +1425,8 @@ private slots:
         QCOMPARE(status, 1);
         QVERIFY(out.contains("could not install the distribution's packages"));
         QCOMPARE(read(m_state + "/locks/kwin").trimmed(), "6.7.91-1.hl39.fc44");
+        QVERIFY(QFileInfo::exists(m_state + "/environment/vitrine-host-kwin.conf"));
+        QVERIFY(!QFileInfo::exists(m_state + "/systemctl"));
 
         QFile::remove(m_state + "/fail");
         /* debug information an install left alone: not reverted either */
@@ -1410,6 +1443,24 @@ private slots:
         /* the switches with it */
         QVERIFY(out.contains("vitrine-kde: step: removing the set's run-time switches"));
         QVERIFY(!QFileInfo::exists(m_state + "/tmpfiles/vitrine-host-kwin.conf"));
+        /* and commit timing: the value the session copied into its manager goes, then the
+           files are read again (a value of the user's own stays) */
+        QVERIFY(out.contains("vitrine-kde: step: turning commit timing off"));
+        QVERIFY(!QFileInfo::exists(m_state + "/environment/vitrine-host-kwin.conf"));
+        QCOMPARE(read(m_state + "/systemctl"),
+                 "--user unset-environment KWIN_WAYLAND_SUPPORT_COMMIT_TIMING_V1\n--user daemon-reload\n");
+        QVERIFY(!out.contains("warning"));
+
+        /* a KWin installed before Vitrine set commit timing: the session's own value stays */
+        for (const char *name : {"kwin", "kwin-common", "kwin-libs"}) {
+            QVERIFY(write(m_state + "/installed/" + name,
+                          pkg(name, "6.7.91-1.hl39.fc44", hex(QString("v-%1").arg(name)), "@commandline")));
+        }
+        QFile::remove(m_state + "/systemctl");
+        out = installScript({"revert", "kwin=" + hex("v-kwin")}, &status);
+        QVERIFY2(status == 0, qPrintable(out));
+        QVERIFY(!out.contains("commit timing"));
+        QVERIFY(!QFileInfo::exists(m_state + "/systemctl"));
     }
 
     /* Several packages reverted in one run, one transaction; one the repositories have no other of stays locked */

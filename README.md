@@ -236,7 +236,10 @@ window says which apply. Build builds one in a Fedora container
 (`host/kde/build.sh`, up to 10 GiB of memory). Install… says what it does
 first, then, with the administrator's password, replaces all the installed
 packages of that one (Qt base's: all from the same build) and version-locks
-them (`dnf versionlock`). It must match the system: KWin the installed
+them (`dnf versionlock`). With KWin it also turns the set's run-time
+switches on, and has KWin offer commit timing again (Plasma 6.8.2 turned it
+off by default): VMs in the Desktop view pace their frames with it. It must
+match the system: KWin the installed
 Plasma and Qt, KSvg and Kirigami the KDE Frameworks' release, Kirigami Qt
 too; and while Qt base is locked, Qt updates wait. After an update, build
 and install it again, or Revert…, which puts the distribution's packages

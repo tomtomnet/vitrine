@@ -18,14 +18,14 @@
 #       one dnf transaction (an upgrade, a downgrade, or a reinstall for a
 #       rebuild of the same version), checked once installed (rpm's header
 #       digests), then version-locked by their exact names so that updates
-#       leave them alone.  With KWin, its set's run-time switches (below) go
-#       on.
+#       leave them alone.  With KWin, its set's run-time switches and commit
+#       timing (below) go on.
 #   install.sh revert PACKAGE=DIGEST...
 #       Of each source package named, when its package (kwin, qt6-qtbase...)
 #       has one of its header digests given (rpm's SHA256HEADER: Vitrine's
 #       own): the version locks of its installed packages go, and dnf
 #       distro-sync puts the repositories' back, one transaction for all.
-#       KWin's switches go too.
+#       KWin's switches and commit timing go too.
 #
 # KWin's switches: some of the research's KWin patches act only when a file
 # of $XDG_RUNTIME_DIR says so, which KWin reads as it starts (research/src/
@@ -36,6 +36,17 @@
 # PKEXEC_UID): a login soon after a logout may find their session manager
 # still running, and its tmpfiles not read again.  Another KWin ignores the
 # files.
+#
+# KWin's commit timing: from Plasma 6.8.2, KWin offers commit timing to
+# programs (wp_commit_timing_manager_v1) only with
+# KWIN_WAYLAND_SUPPORT_COMMIT_TIMING_V1=1 (upstream turned it off for
+# frame-time spikes in games and an NVIDIA driver's frozen videos, KDE bugs
+# 525514 and 527500); a VM in Vitrine's Desktop view paces its frames with it
+# (the guest KWin's commit-timing stamps).  An install sets it in
+# /etc/environment.d/vitrine-host-kwin.conf, which each user's session
+# manager reads as it starts, and has the installing user's read it now, for
+# the same reason as the switches.  A value of a user's own
+# (~/.config/environment.d) wins.  Earlier KWins offer commit timing anyway.
 #
 # A failure puts back the locks there were.  Lines starting with
 # "vitrine-kde: " are for the app:
@@ -51,22 +62,28 @@ shopt -s nullglob
 umask 022
 
 here=$(cd -- "$(dirname -- "$(readlink -f "${BASH_SOURCE[0]}")")" && pwd)
-# VITRINE_TMPFILES_DIR and VITRINE_RUN_USER are the tests' (pkexec passes no environment)
+# VITRINE_TMPFILES_DIR, VITRINE_ENVIRONMENT_DIR and VITRINE_RUN_USER are the
+# tests' (pkexec passes no environment)
 switches=${VITRINE_TMPFILES_DIR:-/etc/user-tmpfiles.d}/vitrine-host-kwin.conf
+environment=${VITRINE_ENVIRONMENT_DIR:-/etc/environment.d}/vitrine-host-kwin.conf
+commit_timing=KWIN_WAYLAND_SUPPORT_COMMIT_TIMING_V1
 # KWin's run-time switches that an install turns on, by their file in
 # research/src/host-config (kwin-NAME.conf, the patch it is for in its
-# comment): remove a line to leave one off
+# comment): remove a line to leave one off.  skip-empty-layer-render (0082)
+# is off since 2026-11-01, as in the research's host session: with a host
+# window over a VM, the host reported the guest's frames discarded and
+# Firefox in the guest froze (the research's findings/
+# firefox-webgl-freeze-composited-vm-2026-11-01.md).
 kwin_switches=(
 	active-window-candidate
 	animation-start-step
 	empty-render-not-content
 	scanout-variance-cap
-	skip-empty-layer-render
 )
 
 say() { echo "vitrine-kde: $*"; }
 die() { say "error: $*" >&2; exit 1; }
-usage() { sed -n '/^#   install.sh install/,/^#       KWin.s switches go too/p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,3\}//'; }
+usage() { sed -n '/^#   install.sh install/,/^#       KWin.s switches and commit timing go too/p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,3\}//'; }
 
 # The source packages this installs: components.conf's
 allowed() {
@@ -112,12 +129,25 @@ installed() {
 		awk -v arch="$2" '$1 == arch { print $2, $3; exit }'
 }
 
+# The user who installs (pkexec's PKEXEC_UID), when logged in: their name in
+# $user and their $XDG_RUNTIME_DIR in $run, the caller's locals
+installer() {
+	local uid=${PKEXEC_UID:-}
+	run=${VITRINE_RUN_USER:-/run/user}/$uid
+	[[ $uid =~ ^[1-9][0-9]*$ ]] && [ -d "$run" ] && user=$(id -nu "$uid" 2> /dev/null)
+}
+
+# A command of theirs, in their session
+as_installer() {
+	runuser -u "$user" -- env XDG_RUNTIME_DIR="$run" "$@"
+}
+
 # The switches on: the entries of every user, and the files of the user who
 # installs.  A failure to make those is only a warning: the next login makes
 # them.
 switches_on() {
 	local -a entries=()
-	local uid=${PKEXEC_UID:-} run user name
+	local run user name
 	for name in "${kwin_switches[@]}"; do
 		[ -f "$here/research/src/host-config/kwin-$name.conf" ] ||
 			{ say "warning: no switch kwin-$name in research/src/host-config"; continue; }
@@ -133,9 +163,8 @@ switches_on() {
 		cat "${entries[@]}"
 	} > "$switches.new"
 	mv -f "$switches.new" "$switches"
-	run=${VITRINE_RUN_USER:-/run/user}/$uid
-	if [[ $uid =~ ^[1-9][0-9]*$ ]] && [ -d "$run" ] && user=$(id -nu "$uid" 2> /dev/null); then
-		runuser -u "$user" -- env XDG_RUNTIME_DIR="$run" systemd-tmpfiles --user --create "$switches" ||
+	if installer; then
+		as_installer systemd-tmpfiles --user --create "$switches" ||
 			say "warning: the switches' files were not made now: they come at the next login"
 	fi
 }
@@ -144,6 +173,42 @@ switches_off() {
 	if [ -e "$switches" ]; then
 		say "step: removing the set's run-time switches ($switches)"
 		rm -f "$switches"
+	fi
+}
+
+# Commit timing on: the entry of every user, read by the installing user's
+# session manager now (a reload runs its environment generators again).  A
+# failure of that is only a warning: their next session manager reads it.
+commit_timing_on() {
+	local run user
+	say "step: turning commit timing on ($environment)"
+	mkdir -p "${environment%/*}"
+	{
+		echo "# Vitrine's host KWin (host/kde/install.sh): KWin offers commit timing (wp_commit_timing_manager_v1),"
+		echo "# which Plasma 6.8.2 turned off by default; VMs in Vitrine's Desktop view pace their frames with it."
+		echo "# A value of your own in ~/.config/environment.d wins (0: off). Reverting Vitrine's KWin removes this file."
+		echo "$commit_timing=\${$commit_timing:-1}"
+	} > "$environment.new"
+	mv -f "$environment.new" "$environment"
+	if installer; then
+		as_installer systemctl --user daemon-reload ||
+			say "warning: your session did not take commit timing now: it comes at the next login"
+	fi
+}
+
+# Commit timing back to KWin's default, only if an install set it: the file
+# goes, and the installing user's session manager forgets the value (each
+# login copies the session's environment into it, which a reload keeps),
+# then reads the files again, keeping a value of their own
+commit_timing_off() {
+	local run user
+	[ -e "$environment" ] || return 0
+	say "step: turning commit timing off ($environment)"
+	rm -f "$environment"
+	if installer; then
+		{ as_installer systemctl --user unset-environment "$commit_timing" &&
+			as_installer systemctl --user daemon-reload; } ||
+			say "warning: your session keeps commit timing until the next login"
 	fi
 }
 
@@ -241,7 +306,7 @@ install_sets() {
 	mapfile -t was < <(locked_of "${names[@]}")
 	[ ${#was[@]} = 0 ] || dnf versionlock delete "${was[@]}" > /dev/null
 	dnf versionlock add "${names[@]}"
-	[[ " ${sources[*]} " != *" kwin "* ]] || switches_on
+	[[ " ${sources[*]} " != *" kwin "* ]] || { switches_on; commit_timing_on; }
 	for name in "${names[@]}"; do
 		say "installed: $(rpm -q --qf '%{NEVRA}\n' "$name" | head -n 1)"
 	done
@@ -299,7 +364,7 @@ revert() {
 		relock ${again[@]+"${again[@]}"}
 		die "the repositories have no other ${stayed[*]}: Vitrine's stays"
 	fi
-	[ "$kwin" = 0 ] || switches_off
+	[ "$kwin" = 0 ] || { switches_off; commit_timing_off; }
 	for n in "${names[@]}"; do
 		say "installed: $(rpm -q --qf '%{NEVRA}\n' "$n" | head -n 1)"
 	done

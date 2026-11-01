@@ -106,6 +106,17 @@ static QString lock(const Status &status)
     return text;
 }
 
+/* What an install of KWin does to commit timing, in a sentence or two */
+static QString commitTiming()
+{
+    return tr("KWin offers commit timing to programs again, for every user of this computer "
+              "(/etc/environment.d/vitrine-host-kwin.conf): VMs in Vitrine's Desktop view pace "
+              "their frames with it. Plasma 6.8.2 turned it off by default because of frame-time "
+              "spikes in some games and an NVIDIA driver bug that freezes resumed Vulkan videos; "
+              "KWIN_WAYLAND_SUPPORT_COMMIT_TIMING_V1=0 in ~/.config/environment.d keeps it off "
+              "for you.");
+}
+
 QString installText(const Status &status, const QStringList &packages)
 {
     const bool kwin = status.target.package == "kwin";
@@ -120,11 +131,11 @@ QString installText(const Status &status, const QStringList &packages)
                 tr("The set's run-time switches go on for every user of this computer "
                    "(/etc/user-tmpfiles.d/vitrine-host-kwin.conf, whose comments say what each "
                    "does); another KWin ignores them.") +
-                "</li>";
+                "</li><li>" + commitTiming() + "</li>";
     }
     html += "<li>" +
             (kwin ? tr("Revert… puts the distribution's KWin back, from your repositories, and "
-                       "removes the switches.")
+                       "removes the switches and the commit timing setting.")
                   : tr("Revert… puts the distribution's packages back, from your repositories.")) +
             "</li><li>" +
             (kwin ? tr("It takes effect at your next login: the running desktop is not restarted.")
@@ -257,7 +268,7 @@ QString installAllText(const QList<Status> &statuses)
                 tr("KWin's run-time switches go on for every user of this computer "
                    "(/etc/user-tmpfiles.d/vitrine-host-kwin.conf, whose comments say what each "
                    "does); another KWin ignores them.") +
-                "</li>";
+                "</li><li>" + commitTiming() + "</li>";
     }
     html += "<li>" +
             tr("Revert… puts the distribution's packages back, from your repositories, one "

@@ -59,12 +59,26 @@ How:
   in one transaction.
 - Some of KWin's patches act only when a file of `$XDG_RUNTIME_DIR` says so
   (the research's `src/host-config/kwin-*.conf`: the scanout journal's
-  variance cap, the active window as a plane candidate, empty renders and
-  damage-free layers, effects starting one refresh in). `install.sh` turns
+  variance cap, the active window as a plane candidate, empty renders,
+  effects starting one refresh in, damage-free layers). `install.sh` turns
   those of its `kwin_switches` list on for every user, in
   `/etc/user-tmpfiles.d/vitrine-host-kwin.conf` (made at each login; for
   the user installing, at once). To turn one off, remove its line there.
-  Reverting KWin removes the file.
+  Reverting KWin removes the file. Damage-free layers (patch 0082) stay off
+  since 2026-11-01: with a host window over a VM, Firefox in the guest froze.
+- From Plasma 6.8.2, KWin offers commit timing to programs only with
+  `KWIN_WAYLAND_SUPPORT_COMMIT_TIMING_V1=1`. Upstream turned it off by
+  default because of frame-time spikes in some games and an NVIDIA driver
+  bug that freezes resumed Vulkan videos (KDE bugs 525514 and 527500). VMs
+  in the Desktop view pace their frames with it: on an Arc Pro B50 under
+  FurMark, a VM's launcher opening missed 0.55 of the 12 refreshes after its
+  first frame instead of 4.45, and an idle VM's QEMU used about 0 % of the
+  GPU's render engine instead of 18-22 %. `install.sh` sets it
+  for every user in `/etc/environment.d/vitrine-host-kwin.conf`, read as
+  each user's session starts (for the user installing, at once); earlier
+  KWins offer commit timing anyway. A value of your own in
+  `~/.config/environment.d` wins: `KWIN_WAYLAND_SUPPORT_COMMIT_TIMING_V1=0`
+  keeps it off. Reverting KWin removes the file.
 - `components.conf` describes them to the app: which installed package
   says what release the distribution has (`follows`: Plasma for KWin, the
   KDE Frameworks for KSvg and Kirigami) and what a build must match
@@ -100,7 +114,13 @@ sudo dnf distro-sync kwin kwin-common kwin-libs
 
 For the others, the same with the packages the Install… dialog names (`rpm
 -qa 'qt6-qtbase*'` lists Qt base's; `kf6-kirigami*` also matches
-kf6-kirigami-addons, which is not Kirigami's).
+kf6-kirigami-addons, which is not Kirigami's). Revert… also removes KWin's
+switches and commit timing; after KWin is put back from a console, remove
+them by hand (the distribution's KWin reads the commit timing variable too):
+
+```sh
+sudo rm -f /etc/user-tmpfiles.d/vitrine-host-kwin.conf /etc/environment.d/vitrine-host-kwin.conf
+```
 
 ## `research/`: the research's recipe, pinned
 
