@@ -1,21 +1,22 @@
 #!/bin/bash
 # SPDX-License-Identifier: GPL-2.0-or-later
 #
-# Builds Vitrine's QEMU: virglrenderer, rutabaga_gfx and upstream QEMU,
-# each fetched at the commit versions.conf pins and patched with the *.patch
-# files of patches/<component> and of its folders, or those its series file
-# lists (see patches_of), each installed into a folder of its own:
+# Builds Vitrine's QEMU: virglrenderer, rutabaga_gfx, passt and upstream
+# QEMU, each fetched at the commit versions.conf pins and patched with the
+# *.patch files of patches/<component> and of its folders, or those its
+# series file lists (see patches_of), each installed into a folder of its own:
 #
 #   <stack>/virglrenderer/<key>/lib64/libvirglrenderer.so.1
 #   <stack>/rutabaga_gfx/<key>/lib64/librutabaga_gfx_ffi.so  for virtio-gpu-rutabaga
+#   <stack>/passt/<key>/bin/passt             the NAT network's back-end
 #   <stack>/<stamp>/bin/qemu-system-x86_64, qemu-img and QEMU's other tools
 #   <stack>/<stamp>/share/qemu/               firmware, keymaps, qemu-options.hx
 #   <stack>/<stamp>/share/vitrine/stack.conf  what was built, written last
 #   <stack>/current -> <stamp>                flipped once a build is complete
 #
 # A component's key sums up its inputs (its source, its patches, this
-# script, the keys of the components it is built against: key_lines) and
-# names its folder; QEMU's is the stamp.  Inputs built already leave
+# script, the keys of the components it is built against or runs with:
+# key_lines) and names its folder; QEMU's is the stamp.  Inputs built already leave
 # nothing to do; other inputs build into another folder, and the VMs
 # running keep theirs.  The sources and build trees stay in the work
 # folder: a patch changed rewrites only the files whose content changes,
@@ -25,8 +26,8 @@
 #   build.sh [--deps|--print-deps|--print-stamp|--print-keys|--print-inputs COMPONENT]
 #            [--stack DIR|--prefix DIR] [--work DIR] [-j N] [--clean] [COMPONENT]
 #
-#   COMPONENT      virglrenderer, rutabaga_gfx or qemu: builds it and what it
-#                  needs [qemu]
+#   COMPONENT      virglrenderer, rutabaga_gfx, passt or qemu: builds it and
+#                  what it needs [qemu]
 #   --deps         install the build dependencies first (Fedora, sudo dnf)
 #   --print-deps   tell the missing build dependencies, then stop (status 1
 #                  if something is missing)
@@ -47,6 +48,12 @@
 # named after their own keys, so that a change of QEMU alone keeps those
 # paths, and QEMU links as it did.  rutabaga_gfx has no run path of its own:
 # the virglrenderer it needs is the one QEMU loads already.
+#
+# QEMU is not built against passt, which it runs for a VM's -netdev passt:
+# the app gives that option the path of the passt of QEMU's build
+# (stack.conf's PASST_PREFIX).  Its key is in QEMU's all the same, so that
+# `current` names one set: a passt changed makes a new stamp folder, with
+# QEMU installed again but nothing compiled.
 #
 # Lines starting with "vitrine-build: " are for the app:
 #   vitrine-build: step N/M: <what>
@@ -70,12 +77,21 @@ say() { echo "vitrine-build: $*"; }
 died=0
 die() { say "error: $*"; died=1; exit 1; }
 
-# The components, in build order, and those each is built against
-components=(virglrenderer rutabaga_gfx qemu)
+# The components, in build order, and those each is built against, then
+# those it runs with (components.conf's deps, then runs)
+components=(virglrenderer rutabaga_gfx passt qemu)
 deps_of() {
 	case "$1" in
 	rutabaga_gfx) echo virglrenderer ;;
-	qemu) echo virglrenderer rutabaga_gfx ;;
+	qemu) echo virglrenderer rutabaga_gfx passt ;;
+	esac
+}
+# needs COMPONENT: whether the target is it or needs it
+needs() {
+	case "$target" in
+	qemu) return 0 ;;
+	rutabaga_gfx) [ "$1" = rutabaga_gfx ] || [ "$1" = virglrenderer ] ;;
+	*) [ "$1" = "$target" ] ;;
 	esac
 }
 
@@ -133,13 +149,18 @@ VIRGL_URL=$(conf VIRGL_URL)
 VIRGL_COMMIT=$(conf VIRGL_COMMIT)
 RUTABAGA_URL=$(conf RUTABAGA_URL)
 RUTABAGA_COMMIT=$(conf RUTABAGA_COMMIT)
-for v in QEMU_URL QEMU_COMMIT VIRGL_URL VIRGL_COMMIT RUTABAGA_URL RUTABAGA_COMMIT; do
+PASST_URL=$(conf PASST_URL)
+PASST_COMMIT=$(conf PASST_COMMIT)
+PASST_SHA256=$(conf PASST_SHA256)
+for v in QEMU_URL QEMU_COMMIT VIRGL_URL VIRGL_COMMIT RUTABAGA_URL RUTABAGA_COMMIT PASST_URL \
+	PASST_COMMIT PASST_SHA256; do
 	[ -n "${!v}" ] || die "versions.conf has no $v"
 done
 source_of() {
 	case "$1" in
 	virglrenderer) echo "$VIRGL_URL $VIRGL_COMMIT" ;;
 	rutabaga_gfx) echo "$RUTABAGA_URL $RUTABAGA_COMMIT" ;;
+	passt) echo "$PASST_URL $PASST_COMMIT" ;;
 	qemu) echo "$QEMU_URL $QEMU_COMMIT" ;;
 	esac
 }
@@ -197,12 +218,14 @@ esac
 mapfile -t qemu_patches < <(patches_of qemu)
 mapfile -t virgl_patches < <(patches_of virglrenderer)
 mapfile -t rutabaga_patches < <(patches_of rutabaga_gfx)
+mapfile -t passt_patches < <(patches_of passt)
 for p in ${qemu_patches[@]+"${qemu_patches[@]}"} ${virgl_patches[@]+"${virgl_patches[@]}"} \
-	${rutabaga_patches[@]+"${rutabaga_patches[@]}"}; do
+	${rutabaga_patches[@]+"${rutabaga_patches[@]}"} ${passt_patches[@]+"${passt_patches[@]}"}; do
 	[ -f "$here/$p" ] || die "$p, which a series file names, is not there"
 done
 vkey=$(key_of virglrenderer)
 rkey=$(key_of rutabaga_gfx)
+pkey=$(key_of passt)
 stamp=$(key_of qemu)
 
 # --- dependencies -------------------------------------------------------------
@@ -278,6 +301,7 @@ if [ -n "$prefix" ]; then
 	name=
 	vprefix=$prefix
 	rprefix=$prefix
+	pprefix=$prefix
 	qconf=$prefix
 else
 	mkdir -p "$stack"
@@ -286,6 +310,7 @@ else
 	prefix=$stack/$name
 	vprefix=$stack/virglrenderer/${vkey:0:16}
 	rprefix=$stack/rutabaga_gfx/${rkey:0:16}
+	pprefix=$stack/passt/${pkey:0:16}
 	qconf=$stack/current
 fi
 mkdir -p "$work"
@@ -293,6 +318,7 @@ work=$(cd "$work" && pwd)
 manifest=$prefix/share/vitrine/stack.conf
 vmanifest=$vprefix/share/vitrine/virglrenderer.conf
 rmanifest=$rprefix/share/vitrine/rutabaga_gfx.conf
+pmanifest=$pprefix/share/vitrine/passt.conf
 # QEMU's configure installs Python packages with pip, whose cache would go
 # to the home folder; and so does a configure that make runs again
 export PIP_CACHE_DIR=$work/pip-cache
@@ -313,23 +339,28 @@ flip_current() {
 }
 
 # what is built already: the manifests, written last, with these keys.
-# QEMU's key has those of the libraries: a QEMU built already names these
-# library folders, built again if they went
+# QEMU's key has those of the libraries and passt: a QEMU built already
+# names these folders, built again if they went
 virgl_built() { [ -f "$vmanifest" ] && grep -qx "KEY=$vkey" "$vmanifest"; }
 rutabaga_built() { [ -f "$rmanifest" ] && grep -qx "KEY=$rkey" "$rmanifest"; }
+passt_built() { [ -f "$pmanifest" ] && grep -qx "KEY=$pkey" "$pmanifest"; }
 qemu_built() { [ -f "$manifest" ] && grep -qx "STAMP=$stamp" "$manifest"; }
-build_virgl=1
-! virgl_built || build_virgl=0
+build_virgl=0
+! needs virglrenderer || virgl_built || build_virgl=1
 build_rutabaga=0
-[ "$target" = virglrenderer ] || rutabaga_built || build_rutabaga=1
+! needs rutabaga_gfx || rutabaga_built || build_rutabaga=1
+build_passt=0
+! needs passt || passt_built || build_passt=1
 build_qemu=0
-[ "$target" != qemu ] || qemu_built || build_qemu=1
+! needs qemu || qemu_built || build_qemu=1
 
-if [ "$build_virgl" = 0 ] && [ "$build_rutabaga" = 0 ] && [ "$build_qemu" = 0 ]; then
+if [ "$build_virgl" = 0 ] && [ "$build_rutabaga" = 0 ] && [ "$build_passt" = 0 ] &&
+	[ "$build_qemu" = 0 ]; then
 	# no Stop between switching `current` and saying so (see the end)
 	trap '' TERM INT HUP
-	say "done: virglrenderer up to date $vprefix"
-	[ "$target" = virglrenderer ] || say "done: rutabaga_gfx up to date $rprefix"
+	! needs virglrenderer || say "done: virglrenderer up to date $vprefix"
+	! needs rutabaga_gfx || say "done: rutabaga_gfx up to date $rprefix"
+	! needs passt || say "done: passt up to date $pprefix"
 	case "$target" in
 	qemu)
 		flip_current
@@ -337,6 +368,7 @@ if [ "$build_virgl" = 0 ] && [ "$build_rutabaga" = 0 ] && [ "$build_qemu" = 0 ];
 		say "up to date: $prefix"
 		;;
 	rutabaga_gfx) say "up to date: $rprefix" ;;
+	passt) say "up to date: $pprefix" ;;
 	*) say "up to date: $vprefix" ;;
 	esac
 	exit 0
@@ -350,12 +382,13 @@ fi
 partial=
 vpartial=
 rpartial=
+ppartial=
 stage=
 on_exit() {
 	local rc=$?
 	if [ "$rc" -ne 0 ]; then
 		local d
-		for d in "$partial" "$vpartial" "$rpartial" "$stage"; do
+		for d in "$partial" "$vpartial" "$rpartial" "$ppartial" "$stage"; do
 			[ -z "$d" ] || rm -rf "$d"
 		done
 		[ "$died" = 1 ] || say "error: ${step:-the build} failed (status $rc)"
@@ -366,7 +399,7 @@ trap on_exit EXIT
 trap 'exit 143' TERM
 trap 'exit 130' INT
 trap 'exit 129' HUP
-steps=$((1 + 2 * build_virgl + 2 * build_rutabaga + 5 * build_qemu))
+steps=$((1 + 2 * build_virgl + 2 * build_rutabaga + 2 * build_passt + 5 * build_qemu))
 n=0
 step=
 begin() { n=$((n + 1)); step=$1; say "step $n/$steps: $1"; }
@@ -377,8 +410,6 @@ if [ ${#missing[@]} -gt 0 ]; then
 	tell_missing
 	die "build dependencies are missing (build.sh --deps installs them on Fedora)"
 fi
-command -v passt > /dev/null 2>&1 ||
-	say "warning: no passt on this host: VMs fall back to QEMU's user-mode network (Fedora: dnf install passt)"
 
 src=$work/src
 vbuild=$work/virglrenderer-build
@@ -572,6 +603,95 @@ devel() {
 # their paths in patches/<component>: research/0001-x.patch
 patch_names() { local p; for p in "$@"; do printf '%s ' "${p#patches/*/}"; done; }
 
+# tree_sha256 DIR COMMIT: the sha256 of the files of COMMIT in repository
+# DIR, as versions.conf's PASST_SHA256 is: sha256sum's line of each file
+# (of a link, of its target), in the C order of their paths, then the
+# sha256 of those lines
+tree_sha256() {
+	local d=$1 commit=$2 path
+	git -C "$d" ls-tree -r -z --name-only "$commit" | LC_ALL=C sort -z |
+		while IFS= read -r -d '' path; do
+			printf '%s  %s\n' "$(git -C "$d" cat-file blob "$commit:$path" | sha256sum | cut -c1-64)" \
+				"$path"
+		done | sha256sum | cut -c1-64
+}
+
+# --- passt --------------------------------------------------------------------
+# The NAT network's back-end, which QEMU runs for a VM: on its own, built
+# against nothing; for `build.sh passt` before the libraries, which it does
+# not need, else after them
+passt_component() {
+	local sum line b pversion
+	local -a bins margs
+	say "component: passt"
+	if [ "$build_passt" = 0 ]; then
+		echo "passt built already: $pprefix"
+		say "done: passt up to date $pprefix"
+		return 0
+	fi
+	[ -z "$name" ] || ppartial=$pprefix
+	if [ -n "$name" ]; then
+		rm -rf "$pprefix"
+	fi
+	rm -f "$pmanifest"
+	begin "fetching passt"
+	checkout "$src/passt" "$PASST_URL" "$PASST_COMMIT" "" ${passt_patches[@]+"${passt_patches[@]}"}
+	sum=$(tree_sha256 "$src/passt" "$PASST_COMMIT")
+	[ "$sum" = "$PASST_SHA256" ] ||
+		die "the files of passt at ${PASST_COMMIT:0:12} have the sha256 $sum, not versions.conf's $PASST_SHA256"
+	echo "passt's files at ${PASST_COMMIT:0:12}: sha256 $sum, as versions.conf says"
+
+	begin "building passt"
+	# with its Makefile, in its source tree: passt, and on x86_64 passt.avx2,
+	# which passt runs instead where the CPU has AVX2 (its own path, .avx2).
+	# Its version names the commit and Vitrine's patches, which its log's
+	# first line shows; on top of the Makefile's hardening (PIE, stack
+	# protector, _FORTIFY_SOURCE), Fedora's other flags.  Made again from
+	# nothing when this line changes, which make would not see
+	bins=(passt)
+	[ "$(uname -m)" != x86_64 ] || bins+=(passt.avx2)
+	margs=("VERSION=${PASST_COMMIT:0:12}+vitrine.${#passt_patches[@]}"
+		"CFLAGS=-g -fstack-clash-protection -fcf-protection"
+		"LDFLAGS=-Wl,-z,relro -Wl,-z,now")
+	line="${margs[*]} ${bins[*]}"
+	if [ "$(cat "$src/passt/.vitrine-make" 2> /dev/null)" != "$line" ]; then
+		rm -f "$src/passt/.vitrine-make"
+		make -C "$src/passt" clean > /dev/null
+	fi
+	make -C "$src/passt" -j "$jobs" "${margs[@]}" "${bins[@]}"
+	echo "$line" > "$src/passt/.vitrine-make"
+	mkdir -p "$pprefix/bin"
+	for b in "${bins[@]}"; do
+		install -m 0755 "$src/passt/$b" "$pprefix/bin/$b"
+	done
+	# it runs (passt.avx2 instead, where the CPU has AVX2), as this build
+	pversion=$("$pprefix/bin/passt" --version 2> /dev/null | sed -n '1s/^passt //p')
+	[ "$pversion" = "${margs[0]#VERSION=}" ] ||
+		die "passt --version says ${pversion:-nothing}, not ${margs[0]#VERSION=}"
+	echo "passt $pversion: ${bins[*]}"
+	mkdir -p "$(dirname "$pmanifest")"
+	key_lines passt > "$pprefix/share/vitrine/passt.inputs"
+	# what was built, written last: a folder with it is complete
+	cat > "$pmanifest.new" << EOF
+# What host/build.sh built here
+KEY=$pkey
+BUILT=$(date -u +%Y-%m-%dT%H:%M:%SZ)
+URL=$PASST_URL
+COMMIT=$PASST_COMMIT
+VERSION=$pversion
+PATCHES=$(patch_names ${passt_patches[@]+"${passt_patches[@]}"})
+EOF
+	mv -f "$pmanifest.new" "$pmanifest"
+	ppartial=
+	say "done: passt built $pprefix"
+}
+if [ "$target" = passt ]; then
+	passt_component
+	trap '' TERM INT HUP
+	say "built: $pprefix"
+	exit 0
+fi
+
 # --- virglrenderer ------------------------------------------------------------
 say "component: virglrenderer"
 if [ "$build_virgl" = 0 ]; then
@@ -693,6 +813,7 @@ if [ "$target" = rutabaga_gfx ]; then
 	say "built: $rprefix"
 	exit 0
 fi
+passt_component
 
 # --- QEMU ---------------------------------------------------------------------
 say "component: qemu"
@@ -859,6 +980,12 @@ RUTABAGA_VERSION=$(PKG_CONFIG_PATH=$rprefix/lib64/pkgconfig pkg-config --modvers
 RUTABAGA_PATCHES=$(patch_names ${rutabaga_patches[@]+"${rutabaga_patches[@]}"})
 RUTABAGA_KEY=$rkey
 RUTABAGA_PREFIX=$rprefix
+PASST_URL=$PASST_URL
+PASST_COMMIT=$PASST_COMMIT
+PASST_VERSION=$(sed -n 's/^VERSION=//p' "$pmanifest")
+PASST_PATCHES=$(patch_names ${passt_patches[@]+"${passt_patches[@]}"})
+PASST_KEY=$pkey
+PASST_PREFIX=$pprefix
 EOF
 mv -f "$manifest.new" "$manifest"
 partial=

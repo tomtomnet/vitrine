@@ -96,6 +96,15 @@ public:
      */
     static ArgsFile withDisplayRenderNode(const ArgsFile &args, const QString &node);
     /*
+     * @args with path=@passt on each -netdev passt and -nic passt (JSON
+     * -netdev lines too) that sets no path of its own: Vitrine's passt,
+     * which has the fix for a VM paused while a connection is closed or
+     * gets data (host/patches/passt), for QEMU to run instead of the passt
+     * of PATH (StackBuilder::passtFor()).  At start, not in vm.args: the
+     * VMs made before get it too.  Nothing for an empty @passt.
+     */
+    static ArgsFile withPasstPath(const ArgsFile &args, const QString &passt);
+    /*
      * @args with refcount-cache-size on its writable qcow2 images, -drive
      * format=qcow2 and -blockdev driver=qcow2 (not the firmware's pflash),
      * that set no cache size of their own: VmConfig::refcountCacheSize() of

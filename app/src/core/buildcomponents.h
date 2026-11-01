@@ -14,7 +14,7 @@
 
 /*
  * What Vitrine builds: the components host/components.conf and
- * guest/components.conf describe (virglrenderer, rutabaga_gfx and QEMU;
+ * guest/components.conf describe (virglrenderer, rutabaga_gfx, passt and QEMU;
  * the guest tools' packages and the medium made of them), and the host's
  * KDE packages of host/kde/components.conf (KWin, KSvg, Kirigami, Qt base),
  * each with its source, its patches and what it is built against; and
@@ -35,12 +35,15 @@ enum class Kind {
 };
 
 struct Component {
-    QString id;                     // virglrenderer, rutabaga_gfx, qemu, tools, mesa, kwin, medium, host-kwin...
+    QString id;                     // virglrenderer, rutabaga_gfx, passt, qemu, tools, mesa, kwin, medium, host-kwin...
     QString title;                  // "QEMU"
     Kind kind = Kind::Host;
     QString dir;                    // the host/, guest/ or host/kde/ folder it is described in
     QHash<QString, QString> values; // its NAME=value lines
     QStringList deps;
+    /* those it runs with (QEMU runs passt): in its key and its builds as
+       deps are, but not built against */
+    QStringList runs;
     bool heavy = false;             // takes up to the container's memory cap
 
     bool isValid() const { return !id.isEmpty(); }

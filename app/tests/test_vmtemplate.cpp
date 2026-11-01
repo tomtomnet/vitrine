@@ -2,6 +2,7 @@
 #include <QDir>
 #include <QFile>
 #include <QFileInfo>
+#include <QScopeGuard>
 #include <QStandardPaths>
 #include <QTemporaryDir>
 #include <QTest>
@@ -324,6 +325,49 @@ private slots:
         QVERIFY(!hasPasst(&info, plain));
         info.netdevs << QemuNamedDoc{"passt", {}};
         QCOMPARE(hasPasst(&info, plain), installed);
+    }
+
+    /* NAT through passt without the system's: Vitrine's, built with its QEMU */
+    void vitrinesPasst()
+    {
+        const QByteArray path = qgetenv("PATH");
+        const QString stack = Paths::stackDir();
+        const QString library = stack + "/passt/0123456789abcdef";
+        const auto restore = qScopeGuard([&]() {
+            qputenv("PATH", path);
+            QFile::remove(stack + "/current");
+            QDir(stack + "/fedcba9876543210").removeRecursively();
+            QDir(stack + "/passt").removeRecursively();
+        });
+        QemuInfo info;
+        info.netdevs = {{"user", {}}, {"passt", {}}};
+        const QString plain = m_tmp.filePath("plain/" + Paths::qemuSystemName());
+
+        /* no passt in PATH, none built */
+        QVERIFY(QDir().mkpath(m_tmp.filePath("empty-bin")));
+        qputenv("PATH", m_tmp.filePath("empty-bin").toUtf8());
+        QVERIFY(QStandardPaths::findExecutable("passt").isEmpty());
+        QVERIFY(!hasPasst(nullptr, {}));
+        QVERIFY(!hasPasst(&info, plain));
+        /* Vitrine's QEMU built with it: for vitrine's QEMU, and others that have passt */
+        QVERIFY(script(stack + "/fedcba9876543210/bin/" + Paths::qemuSystemName(), "exit 1"));
+        QVERIFY(QFile::link("fedcba9876543210", stack + "/current"));
+        QFile conf(stack + "/fedcba9876543210/share/vitrine/stack.conf");
+        QVERIFY(QDir().mkpath(QFileInfo(conf).absolutePath()) && conf.open(QIODevice::WriteOnly));
+        conf.write("STAMP=" + QByteArray(64, 'f') + "\nPASST_PREFIX=" + library.toUtf8() + '\n');
+        conf.close();
+        QVERIFY(script(library + "/bin/passt", "exit 0"));
+        QVERIFY(!hasPasst(nullptr, {}));
+        QFile passtConf(library + "/share/vitrine/passt.conf");
+        QVERIFY(QDir().mkpath(QFileInfo(passtConf).absolutePath()) &&
+                passtConf.open(QIODevice::WriteOnly));
+        passtConf.write("KEY=" + QByteArray(64, 'e') + '\n');
+        passtConf.close();
+        QVERIFY(hasPasst(nullptr, {}));
+        QVERIFY(hasPasst(&info, plain));
+        /* a QEMU without it still has none */
+        info.netdevs = {{"user", {}}};
+        QVERIFY(!hasPasst(&info, plain));
     }
 
     void windows()

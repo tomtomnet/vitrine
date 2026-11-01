@@ -7,6 +7,7 @@
 #include <QProcess>
 #include <QSignalSpy>
 #include <QStandardPaths>
+#include <QSysInfo>
 #include <QTemporaryDir>
 #include <QTest>
 
@@ -35,6 +36,12 @@ RUTABAGA_VERSION=0.1.85
 RUTABAGA_PATCHES=changes.patch
 RUTABAGA_KEY=0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef
 RUTABAGA_PREFIX=/s/rutabaga_gfx/0123456789abcdef
+PASST_URL=https://passt.top/passt
+PASST_COMMIT=6aa4f88bd9846411edff3ed70460475b538addca
+PASST_VERSION=6aa4f88bd984+vitrine.1
+PASST_PATCHES=0001-virtio-no-notification-without-a-call-fd.patch 
+PASST_KEY=fedcba9876543210fedcba9876543210fedcba9876543210fedcba9876543210
+PASST_PREFIX=/s/passt/fedcba9876543210
 )";
 
 /*
@@ -121,6 +128,28 @@ int main(int argc, char **argv)
         return 0;
     }
     return virgl_renderer_init() + rutabaga_init();
+}
+)c";
+/*
+ * passt: a Makefile building passt and passt.avx2 in its tree with
+ * VERSION, CFLAGS and LDFLAGS as passt's does, and a passt that tells its
+ * version as passt's does
+ */
+static const char kPasstMakefile[] =
+    "VERSION ?= unknown\n"
+    "passt passt.avx2: passt.c Makefile\n"
+    "\t$(CC) $(CFLAGS) -DVERSION='\"$(VERSION)\"' -o $@ passt.c $(LDFLAGS)\n"
+    "clean:\n"
+    "\trm -f passt passt.avx2\n";
+static const char kPasstMain[] = R"c(#include <stdio.h>
+#include <string.h>
+int main(int argc, char **argv)
+{
+    if (argc > 1 && !strcmp(argv[1], "--version")) {
+        printf("passt %s\nCopyright Red Hat\n", VERSION);
+        return 0;
+    }
+    return 1;
 }
 )c";
 
@@ -300,6 +329,14 @@ private slots:
         QCOMPARE(b.rutabagaPatches, QStringList({"changes.patch"}));
         QCOMPARE(b.rutabagaKey.size(), 64);
         QCOMPARE(b.libraryPrefix("rutabaga_gfx"), "/s/rutabaga_gfx/0123456789abcdef");
+        QCOMPARE(b.passtCommit, "6aa4f88bd9846411edff3ed70460475b538addca");
+        QCOMPARE(b.passtVersion, "6aa4f88bd984+vitrine.1");
+        QCOMPARE(b.passtPatches,
+                 QStringList({"0001-virtio-no-notification-without-a-call-fd.patch"}));
+        QCOMPARE(b.passtKey.size(), 64);
+        QCOMPARE(b.libraryPrefix("passt"), "/s/passt/fedcba9876543210");
+        /* not there */
+        QVERIFY(b.passtBinary().isEmpty());
         /* a build of an older Vitrine: the library in the prefix's lib64 */
         QVERIFY(b.libraryPrefix("virglrenderer").isEmpty());
         QVERIFY(b.libraryPrefix("qemu").isEmpty());
@@ -506,6 +543,67 @@ private slots:
         QVERIFY(QFile::remove(Paths::stackDir() + "/current"));
     }
 
+    /* Vitrine's passt for a VM's QEMU: that of its build, else `current`'s */
+    void passtForQemu()
+    {
+        const QString stack = m_tmp.filePath("passt-stack");
+        const QString system = "/usr/bin/qemu-system-x86_64";
+        /* a QEMU build in @name, naming @passt */
+        const auto build = [&stack](const char *name, const QString &passt) {
+            QByteArray conf = "STAMP=" + QByteArray(64, name[0]) + '\n';
+            if (!passt.isEmpty()) {
+                conf += "PASST_PREFIX=" + passt.toUtf8() + '\n';
+            }
+            return write(stack + '/' + name + "/bin/qemu-system-x86_64", "x\n", true) &&
+                   write(stack + '/' + name + "/share/vitrine/stack.conf", conf);
+        };
+        const auto passt = [&stack](const char *name, bool complete = true) {
+            const QString dir = stack + "/passt/" + name;
+            return write(dir + "/bin/passt", "x\n", true) &&
+                   (!complete || write(dir + "/share/vitrine/passt.conf", "KEY=k\n"));
+        };
+        const auto qemu = [&stack](const char *name) {
+            return stack + '/' + name + "/bin/qemu-system-x86_64";
+        };
+        const QString one = stack + "/passt/1111111111111111";
+        const QString two = stack + "/passt/2222222222222222";
+
+        QVERIFY(StackBuilder::passtFor(system, stack).isEmpty());
+        QVERIFY(passt("1111111111111111"));
+        QVERIFY(passt("2222222222222222"));
+        QVERIFY(passt("3333333333333333", false));
+        QVERIFY(build("aaaaaaaaaaaaaaaa", one));
+        QVERIFY(build("bbbbbbbbbbbbbbbb", two));
+        /* an older Vitrine's, without passt; one whose passt did not end */
+        QVERIFY(build("cccccccccccccccc", {}));
+        QVERIFY(build("dddddddddddddddd", stack + "/passt/3333333333333333"));
+        /* no `current`: a QEMU of the stack still has its own */
+        QCOMPARE(StackBuilder::passtFor(qemu("bbbbbbbbbbbbbbbb"), stack), two + "/bin/passt");
+        QVERIFY(StackBuilder::passtFor(system, stack).isEmpty());
+
+        QVERIFY(QFile::link("aaaaaaaaaaaaaaaa", stack + "/current"));
+        /* the system's QEMU, the preferences' or a VM's #qemu: `current`'s */
+        QCOMPARE(StackBuilder::passtFor(system, stack), one + "/bin/passt");
+        QCOMPARE(StackBuilder::passtFor({}, stack), one + "/bin/passt");
+        QCOMPARE(StackBuilder::passtFor(stack + "/current/bin/qemu-system-x86_64", stack),
+                 one + "/bin/passt");
+        /* a build before: its own */
+        QCOMPARE(StackBuilder::passtFor(qemu("bbbbbbbbbbbbbbbb"), stack), two + "/bin/passt");
+        QCOMPARE(StackBuilder::Build::read(stack + "/bbbbbbbbbbbbbbbb").passtBinary(),
+                 two + "/bin/passt");
+        /* without one, or with one that did not end: `current`'s */
+        QCOMPARE(StackBuilder::passtFor(qemu("cccccccccccccccc"), stack), one + "/bin/passt");
+        QCOMPARE(StackBuilder::passtFor(qemu("dddddddddddddddd"), stack), one + "/bin/passt");
+        QVERIFY(StackBuilder::Build::read(stack + "/dddddddddddddddd").passtBinary().isEmpty());
+        /* a `current` without: none, the passt of PATH */
+        QVERIFY(QFile::remove(stack + "/current"));
+        QVERIFY(QFile::link("cccccccccccccccc", stack + "/current"));
+        QVERIFY(StackBuilder::passtFor(system, stack).isEmpty());
+        /* its binary gone */
+        QVERIFY(QFile::remove(two + "/bin/passt"));
+        QVERIFY(StackBuilder::passtFor(qemu("bbbbbbbbbbbbbbbb"), stack).isEmpty());
+    }
+
     /* What the app makes of build.sh's lines, and the hook after a build */
     void runsBuildSh()
     {
@@ -635,15 +733,18 @@ echo "vitrine-build: built: /nowhere"
         const QString stack = m_tmp.filePath("prune-stack");
         const QString virgl = stack + "/virglrenderer/";
         const QString rutabaga = stack + "/rutabaga_gfx/";
-        /* @day: of October; @library, @rutabaga: the library folders it is built against */
+        const QString passt = stack + "/passt/";
+        /* @day: of October; @library, @rutabaga: the library folders it is
+           built against, @net the passt it runs */
         const auto prefix = [&stack](const char *name, int day, const QString &library = {},
-                                     bool complete = true, const QString &rutabaga = {}) {
+                                     bool complete = true, const QString &rutabaga = {},
+                                     const QString &net = {}) {
             const QString dir = stack + '/' + name;
             const QString binary = dir + "/bin/qemu-system-x86_64";
             const QString conf = QString("STAMP=x\nBUILT=2026-10-%1T10:00:00Z\nVIRGL_PREFIX=%2\n"
-                                         "RUTABAGA_PREFIX=%3\n")
+                                         "RUTABAGA_PREFIX=%3\nPASST_PREFIX=%4\n")
                                      .arg(day, 2, 10, QChar('0'))
-                                     .arg(library, rutabaga);
+                                     .arg(library, rutabaga, net);
             if (!write(binary, "x\n", true) ||
                 (complete && !write(dir + "/share/vitrine/stack.conf", conf.toUtf8()))) {
                 return QString();
@@ -667,6 +768,9 @@ echo "vitrine-build: built: /nowhere"
             return libraryOf(rutabaga, "rutabaga_gfx", "librutabaga_gfx_ffi.so", name, day,
                              complete);
         };
+        const auto passtBuild = [&](const char *name, int day, bool complete = true) {
+            return libraryOf(passt, "passt", "passt", name, day, complete);
+        };
         QVERIFY(library("1111111111111111", 1));
         QVERIFY(library("2222222222222222", 2));
         QVERIFY(library("3333333333333333", 3));
@@ -676,10 +780,16 @@ echo "vitrine-build: built: /nowhere"
         QVERIFY(rutabagaLibrary("7777777777777777", 2));
         QVERIFY(rutabagaLibrary("8888888888888888", 9));
         QVERIFY(rutabagaLibrary("9999999999999999", 10, false));
+        /* passt's folders (lib64/passt: libraryOf's file, any) */
+        QVERIFY(passtBuild("1111111111111111", 1));
+        QVERIFY(passtBuild("2222222222222222", 2));
+        QVERIFY(passtBuild("3333333333333333", 3));
+        QVERIFY(passtBuild("4444444444444444", 9));
+        QVERIFY(passtBuild("5555555555555555", 10, false));
         QVERIFY(!prefix("aaaaaaaaaaaaaaaa", 8, virgl + "1111111111111111", true,
-                        rutabaga + "6666666666666666").isEmpty());
+                        rutabaga + "6666666666666666", passt + "1111111111111111").isEmpty());
         QVERIFY(!prefix("bbbbbbbbbbbbbbbb", 4, virgl + "2222222222222222", true,
-                        rutabaga + "7777777777777777").isEmpty());
+                        rutabaga + "7777777777777777", passt + "2222222222222222").isEmpty());
         const QString named = prefix("cccccccccccccccc", 5);
         const QString running = prefix("dddddddddddddddd", 6);
         QVERIFY(!prefix("eeeeeeeeeeeeeeee", 9, {}, false).isEmpty());
@@ -695,6 +805,16 @@ echo "vitrine-build: built: /nowhere"
         QProcess vm;
         vm.start(running, {"60"});
         QVERIFY(vm.waitForStarted());
+        /* a passt that runs, which no build kept names (started by a QEMU
+           since gone, or by the build before) */
+        const QString passtRunning = passt + "3333333333333333/bin/passt";
+        QVERIFY(QDir().mkpath(passt + "3333333333333333/bin"));
+        QVERIFY(QFile::copy(QStandardPaths::findExecutable("sleep"), passtRunning));
+        QVERIFY(QFile::setPermissions(passtRunning,
+                                      QFileDevice::ReadOwner | QFileDevice::ExeOwner));
+        QProcess net;
+        net.start(passtRunning, {"60"});
+        QVERIFY(net.waitForStarted());
 
         /* not while a build holds the stack */
         QFile lock(stack + "/.lock");
@@ -707,6 +827,8 @@ echo "vitrine-build: built: /nowhere"
         const QStringList removed = StackBuilder::prune(stack, {named});
         vm.kill();
         vm.waitForFinished();
+        net.kill();
+        net.waitForFinished();
         const QString canonical = QFileInfo(stack).canonicalFilePath();
         QCOMPARE(removed, QStringList({canonical + "/bbbbbbbbbbbbbbbb",
                                        canonical + "/eeeeeeeeeeeeeeee",
@@ -714,6 +836,8 @@ echo "vitrine-build: built: /nowhere"
                                        canonical + "/virglrenderer/2222222222222222",
                                        canonical + "/rutabaga_gfx/9999999999999999",
                                        canonical + "/rutabaga_gfx/7777777777777777",
+                                       canonical + "/passt/5555555555555555",
+                                       canonical + "/passt/2222222222222222",
                                        canonical + "/.stage-0123456789abcdef"}));
         for (const char *kept : {"aaaaaaaaaaaaaaaa", "cccccccccccccccc", "dddddddddddddddd",
                                  "ffffffffffffffff", "other", "virglrenderer/1111111111111111",
@@ -721,7 +845,10 @@ echo "vitrine-build: built: /nowhere"
                                  /* the newest: a build of virglrenderer alone */
                                  "virglrenderer/4444444444444444",
                                  "rutabaga_gfx/6666666666666666",
-                                 "rutabaga_gfx/8888888888888888"}) {
+                                 "rutabaga_gfx/8888888888888888",
+                                 /* current's, the one running, the newest */
+                                 "passt/1111111111111111", "passt/3333333333333333",
+                                 "passt/4444444444444444"}) {
             QVERIFY2(QFileInfo::exists(stack + '/' + kept), kept);
         }
         QVERIFY(StackBuilder::current(stack).isValid());
@@ -815,6 +942,7 @@ sh -c 'echo $$ > %1; exec sleep 300'
            folder of another name than its wrap's */
         const QString virglRepo = m_tmp.filePath("e2e/virgl-repo");
         const QString rutabagaRepo = m_tmp.filePath("e2e/rutabaga-repo");
+        const QString passtRepo = m_tmp.filePath("e2e/passt-repo");
         const QString qemuRepo = m_tmp.filePath("e2e/qemu-repo");
         const QString subRepo = m_tmp.filePath("e2e/keycodemapdb-repo");
         QVERIFY(write(virglRepo + "/meson.build", kVirglMeson));
@@ -843,13 +971,22 @@ sh -c 'echo $$ > %1; exec sleep 300'
                       "project('crate', 'c', version : '1.0')\n"
                       "dep = declare_dependency(include_directories : include_directories('.'))\n"));
         QVERIFY(write(subRepo + "/README", "v1\n"));
+        /* passt, with a link, which its files' sha256 takes as its target */
+        QVERIFY(write(passtRepo + "/Makefile", kPasstMakefile));
+        QVERIFY(write(passtRepo + "/passt.c", kPasstMain));
+        QVERIFY(QFile::link("passt.c", passtRepo + "/link.c"));
+        const auto sha = [](const QByteArray &data) {
+            return QCryptographicHash::hash(data, QCryptographicHash::Sha256).toHex();
+        };
+        const QByteArray passtSum = sha(sha(kPasstMakefile) + "  Makefile\n" + sha("passt.c") +
+                                        "  link.c\n" + sha(kPasstMain) + "  passt.c\n");
         QVERIFY(write(qemuRepo + "/configure", kQemuConfigure, true));
         QVERIFY(write(qemuRepo + "/qemu.c", kQemuMain));
         QVERIFY(write(qemuRepo + "/qemu-options.hx", "DEF(\"m\", HAS_ARG, QEMU_OPTION_m, \"\", QEMU_ARCH_ALL)\n"));
         QVERIFY(write(qemuRepo + "/meson.build", "project('qemu', 'c')\n"));
         QVERIFY(write(qemuRepo + "/subprojects/.gitignore", "/keycodemapdb\n"));
         QVERIFY(write(qemuRepo + "/subprojects/packagefiles/keycodemapdb/meson.build", "pf1\n"));
-        for (const QString &repo : {virglRepo, rutabagaRepo, subRepo}) {
+        for (const QString &repo : {virglRepo, rutabagaRepo, subRepo, passtRepo}) {
             git(repo, {"init", "-q", "-b", "main"});
             git(repo, {"add", "."});
             git(repo, {"commit", "-q", "-m", "first"});
@@ -870,12 +1007,15 @@ sh -c 'echo $$ > %1; exec sleep 300'
         QVERIFY(QDir().mkpath(host));
         QVERIFY(QFile::copy(realHost + "/build.sh", host + "/build.sh"));
         QVERIFY(QFile::copy(realHost + "/components.conf", host + "/components.conf"));
+        QByteArray passtSha256 = passtSum;
         const auto versions = [&]() {
             return QString("QEMU_URL=file://%1\nQEMU_COMMIT=%2\nVIRGL_URL=file://%3\n"
-                           "VIRGL_COMMIT=%4\nRUTABAGA_URL=file://%5\nRUTABAGA_COMMIT=%6\n")
+                           "VIRGL_COMMIT=%4\nRUTABAGA_URL=file://%5\nRUTABAGA_COMMIT=%6\n"
+                           "PASST_URL=file://%7\nPASST_COMMIT=%8\nPASST_SHA256=%9\n")
                 .arg(qemuRepo, git(qemuRepo, {"rev-parse", "HEAD"}), virglRepo,
                      git(virglRepo, {"rev-parse", "HEAD"}), rutabagaRepo,
-                     git(rutabagaRepo, {"rev-parse", "HEAD"}))
+                     git(rutabagaRepo, {"rev-parse", "HEAD"}), passtRepo,
+                     git(passtRepo, {"rev-parse", "HEAD"}), QString::fromLatin1(passtSha256))
                 .toUtf8();
         };
         QVERIFY(write(host + "/versions.conf", versions()));
@@ -887,6 +1027,8 @@ sh -c 'echo $$ > %1; exec sleep 300'
                       QString(newFile).arg("MARK", "virgl").toUtf8()));
         QVERIFY(write(host + "/patches/rutabaga_gfx/0001-mark.patch",
                       QString(newFile).arg("MARK", "rutabaga").toUtf8()));
+        QVERIFY(write(host + "/patches/passt/0001-mark.patch",
+                      QString(newFile).arg("MARK", "passt").toUtf8()));
         /* folder after folder: by their names alone, research's would come
            before the file it changes is there */
         QVERIFY(write(host + "/patches/qemu/fork/0002-base.patch",
@@ -909,7 +1051,7 @@ sh -c 'echo $$ > %1; exec sleep 300'
         /* 1. from nothing */
         QString error = build(b, 300000);
         QVERIFY2(error.isEmpty(), qPrintable(error + "\n" + b.log()));
-        QCOMPARE(steps.size(), 10);
+        QCOMPARE(steps.size(), 12);
         const StackBuilder::Build first = StackBuilder::current(stack);
         QVERIFY(first.isValid());
         const QString stamp = StackBuilder::inputStamp(host);
@@ -944,6 +1086,29 @@ sh -c 'echo $$ > %1; exec sleep 300'
         QCOMPARE(first.rutabagaVersion, "0.1.85");
         QVERIFY(QFileInfo::exists(first.rutabagaPrefix + "/lib64/librutabaga_gfx_ffi.so"));
         QVERIFY(QFileInfo::exists(first.rutabagaPrefix + "/include/rutabaga_gfx/rutabaga_gfx_ffi.h"));
+        /* passt in its own, which QEMU's build names: the binaries, its
+           version the commit's and the patches' */
+        const QString pkey = run("bash", {host + "/build.sh", "--print-keys"})
+                                 .section("passt ", 1).section('\n', 0, 0);
+        QCOMPARE(pkey.size(), 64);
+        QCOMPARE(first.passtKey, pkey);
+        QCOMPARE(first.passtPrefix,
+                 QFileInfo(stack).canonicalFilePath() + "/passt/" + pkey.left(16));
+        const QString passtVersion = git(passtRepo, {"rev-parse", "HEAD"}).left(12) + "+vitrine.1";
+        QCOMPARE(first.passtVersion, passtVersion);
+        QCOMPARE(first.passtPatches, QStringList({"0001-mark.patch"}));
+        QCOMPARE(first.passtBinary(), first.passtPrefix + "/bin/passt");
+        QVERIFY(QFileInfo(first.passtPrefix + "/bin/passt.avx2").isExecutable() ||
+                QSysInfo::currentCpuArchitecture() != "x86_64");
+        QCOMPARE(run(first.passtBinary(), {"--version"}).section('\n', 0, 0),
+                 "passt " + passtVersion);
+        QVERIFY(read(first.passtPrefix + "/share/vitrine/passt.conf")
+                    .contains("\nVERSION=" + passtVersion + '\n'));
+        QCOMPARE(StackBuilder::passtFor(first.qemuBinary(), stack), first.passtBinary());
+        QVERIFY(QFileInfo::exists(work + "/src/passt/MARK"));
+        QVERIFY(b.log().contains("passt's files at "));
+        QVERIFY(b.log().contains("sha256 " + QString::fromLatin1(passtSum) +
+                                 ", as versions.conf says"));
         QVERIFY(QFileInfo::exists(work + "/src/rutabaga_gfx/MARK"));
         QVERIFY(read(work + "/rutabaga_gfx-build/.vitrine-configure")
                     .contains("--pkg-config-path=" + QFileInfo(work).canonicalFilePath() +
@@ -962,6 +1127,8 @@ sh -c 'echo $$ > %1; exec sleep 300'
                  run("bash", {host + "/build.sh", "--print-inputs", "virglrenderer"}));
         QCOMPARE(read(first.rutabagaPrefix + "/share/vitrine/rutabaga_gfx.inputs"),
                  run("bash", {host + "/build.sh", "--print-inputs", "rutabaga_gfx"}));
+        QCOMPARE(read(first.passtPrefix + "/share/vitrine/passt.inputs"),
+                 run("bash", {host + "/build.sh", "--print-inputs", "passt"}));
         /* configured for the stack's `current`, installed into its own folder:
            the descriptors name it */
         QCOMPARE(read(first.prefix + "/share/qemu/firmware/60-edk2-x86_64.json").trimmed(),
@@ -1031,6 +1198,10 @@ sh -c 'echo $$ > %1; exec sleep 300'
         QVERIFY(second.prefix != first.prefix);
         QCOMPARE(second.virglPrefix, first.virglPrefix);
         QCOMPARE(second.rutabagaPrefix, first.rutabagaPrefix);
+        QCOMPARE(second.passtPrefix, first.passtPrefix);
+        QVERIFY2(log(output).contains("vitrine-build: done: passt up to date " + first.passtPrefix) &&
+                     !log(output).contains("fetching passt"),
+                 qPrintable(log(output)));
         QVERIFY2(log(output).contains("vitrine-build: done: virglrenderer up to date " +
                                       first.virglPrefix) &&
                      !log(output).contains("fetching virglrenderer") &&
@@ -1075,6 +1246,54 @@ sh -c 'echo $$ > %1; exec sleep 300'
         QVERIFY(StackBuilder::Build::read(first.prefix).isValid());
         QVERIFY(QFileInfo(first.qemuBinary()).isExecutable());
 
+        /* 3b. a passt patch changed: passt built again in its new folder; QEMU
+           installed again into a new one that names it, but nothing
+           configured or linked again: QEMU is not built against passt */
+        const StackBuilder::Build beforePasst = StackBuilder::current(stack);
+        const qint64 linked = mtime(work + "/qemu-build/qemu-system-x86_64");
+        QVERIFY(write(host + "/patches/passt/0001-mark.patch",
+                      QString(newFile).arg("MARK", "passt two").toUtf8()));
+        QCOMPARE(StackBuilder::state(host, stack), StackBuilder::State::Outdated);
+        output.clear();
+        error = build(b, 300000);
+        QVERIFY2(error.isEmpty(), qPrintable(error + "\n" + log(output)));
+        const StackBuilder::Build passtTwo = StackBuilder::current(stack);
+        QVERIFY(passtTwo.prefix != beforePasst.prefix);
+        QVERIFY(passtTwo.passtPrefix != beforePasst.passtPrefix);
+        QCOMPARE(passtTwo.virglPrefix, beforePasst.virglPrefix);
+        QCOMPARE(passtTwo.rutabagaPrefix, beforePasst.rutabagaPrefix);
+        QVERIFY2(log(output).contains("configured already") &&
+                     log(output).contains("vitrine-build: done: passt built " +
+                                          passtTwo.passtPrefix),
+                 qPrintable(log(output)));
+        QCOMPARE(mtime(work + "/qemu-build/qemu-system-x86_64"), linked);
+        QCOMPARE(read(work + "/src/passt/MARK"), "passt two\n");
+        QCOMPARE(StackBuilder::passtFor(passtTwo.qemuBinary(), stack), passtTwo.passtBinary());
+        /* the build before keeps its own */
+        QCOMPARE(StackBuilder::passtFor(beforePasst.qemuBinary(), stack), beforePasst.passtBinary());
+        /* its files are not what versions.conf says: an error, nothing built */
+        passtSha256 = QByteArray(64, '0');
+        QVERIFY(write(host + "/versions.conf", versions()));
+        QVERIFY(write(host + "/patches/passt/0001-mark.patch",
+                      QString(newFile).arg("MARK", "passt three").toUtf8()));
+        output.clear();
+        error = build(b, 300000);
+        QVERIFY2(error.startsWith("The files of passt at ") &&
+                     error.contains(QString::fromLatin1(passtSum)),
+                 qPrintable(error));
+        QCOMPARE(StackBuilder::current(stack).prefix, passtTwo.prefix);
+        passtSha256 = passtSum;
+        QVERIFY(write(host + "/versions.conf", versions()));
+        QVERIFY(write(host + "/patches/passt/0001-mark.patch",
+                      QString(newFile).arg("MARK", "passt two").toUtf8()));
+        QCOMPARE(build(b), "");
+        QCOMPARE(StackBuilder::current(stack).prefix, passtTwo.prefix);
+        /* back to the passt before: that build again */
+        QVERIFY(write(host + "/patches/passt/0001-mark.patch",
+                      QString(newFile).arg("MARK", "passt").toUtf8()));
+        QCOMPARE(build(b), "");
+        QCOMPARE(StackBuilder::current(stack).prefix, second.prefix);
+
         /* 4. a patch that does not apply: an error, `current` as it was, no half
            prefix, the sources as they were */
         QVERIFY(write(host + "/patches/qemu/0002-broken.patch",
@@ -1086,7 +1305,8 @@ sh -c 'echo $$ > %1; exec sleep 300'
         QCOMPARE(StackBuilder::current(stack).prefix, second.prefix);
         QVERIFY(!QFileInfo::exists(stack + '/' + StackBuilder::inputStamp(host).left(16)));
         QCOMPARE(StackBuilder::state(host, stack), StackBuilder::State::Outdated);
-        QCOMPARE(built.size(), 5);
+        /* those of 1-3, and 3b's three that ended well */
+        QCOMPARE(built.size(), 8);
         QCOMPARE(read(work + "/src/qemu/MARK"), "two\n");
         QCOMPARE(mtime(work + "/src/qemu/MARK"), markTwo);
 
@@ -1225,7 +1445,7 @@ sh -c 'echo $$ > %1; exec sleep 300'
         QVERIFY(log(output).contains("vitrine-build: done: virglrenderer up to date " + virglAlone));
         /* QEMU configured again, against it; rutabaga_gfx, built against it, too */
         QVERIFY(!log(output).contains("configured already"));
-        QCOMPARE(components.size(), 3);
+        QCOMPARE(components.size(), 4);
 
         /* rutabaga_gfx alone: its folder, `current` as it was, virglrenderer as
            it is; then QEMU, against it */
@@ -1258,7 +1478,41 @@ sh -c 'echo $$ > %1; exec sleep 300'
         QVERIFY(log(output).contains("vitrine-build: done: rutabaga_gfx up to date " +
                                      rutabagaAlone));
         QVERIFY(!log(output).contains("configured already"));
-        QCOMPARE(components.size(), 3);
+        QCOMPARE(components.size(), 4);
+
+        /* passt alone: it, and nothing else, `current` as it was; then QEMU,
+           installed again, nothing compiled */
+        const StackBuilder::Build beforeAlone = StackBuilder::current(stack);
+        QVERIFY(write(host + "/patches/passt/0001-mark.patch",
+                      QString(newFile).arg("MARK", "passt four").toUtf8()));
+        components.clear();
+        output.clear();
+        {
+            QSignalSpy finished(&b, &StackBuilder::finished);
+            b.start("passt");
+            QVERIFY(finished.wait(300000));
+            QVERIFY2(finished[0][0].toString().isEmpty(),
+                     qPrintable(finished[0][0].toString() + "\n" + log(output)));
+        }
+        QCOMPARE(StackBuilder::current(stack).prefix, beforeAlone.prefix);
+        QVERIFY(!log(output).contains("component: qemu"));
+        QVERIFY(!log(output).contains("component: virglrenderer"));
+        QVERIFY(!log(output).contains("component: rutabaga_gfx"));
+        QVERIFY2(log(output).contains("vitrine-build: step 3/3: building passt"),
+                 qPrintable(log(output)));
+        QCOMPARE(components.size(), 1);
+        QCOMPARE(components[0][0].toString(), "passt");
+        QCOMPARE(components[0][1].toBool(), true);
+        const QString passtAlone = components[0][2].toString();
+        QVERIFY(passtAlone != beforeAlone.passtPrefix);
+        QVERIFY(QFileInfo::exists(passtAlone + "/share/vitrine/passt.conf"));
+        components.clear();
+        failure = buildOk();
+        QVERIFY2(failure.isEmpty(), qPrintable(failure));
+        QCOMPARE(StackBuilder::current(stack).passtPrefix, passtAlone);
+        QVERIFY(log(output).contains("vitrine-build: done: passt up to date " + passtAlone));
+        QVERIFY(log(output).contains("configured already"));
+        QCOMPARE(components.size(), 4);
 
         /* 8. --clean: the build trees from nothing */
         QVERIFY(write(work + "/qemu-build/KEPT", "\n"));

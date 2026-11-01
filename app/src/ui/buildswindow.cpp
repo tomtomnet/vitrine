@@ -912,10 +912,11 @@ void BuildsWindow::showSource()
                          group->child(i)->text(StatusColumn).toHtmlEscaped();
         }
         html = id == "host"
-                   ? tr("<p><b>Vitrine's QEMU</b>: upstream QEMU, virglrenderer and "
-                        "rutabaga_gfx at pinned commits, with Vitrine's patches, for the display "
-                        "in Vitrine's window and 3D acceleration by the host GPU's own driver "
-                        "(rutabaga_gfx: QEMU's virtio-gpu-rutabaga device). Built into %1.</p>")
+                   ? tr("<p><b>Vitrine's QEMU</b>: upstream QEMU, virglrenderer, rutabaga_gfx "
+                        "and passt at pinned commits, with Vitrine's patches, for the display in "
+                        "Vitrine's window, 3D acceleration by the host GPU's own driver "
+                        "(rutabaga_gfx: QEMU's virtio-gpu-rutabaga device) and the VMs' NAT "
+                        "network (passt). Built into %1.</p>")
                          .arg(Paths::stackDir().toHtmlEscaped())
                    : id == "system"
                    ? tr("<p><b>Host desktop</b>, optional: this computer's own compositor, KWin, "
@@ -1044,6 +1045,14 @@ void BuildsWindow::showSource()
             titles << m_manager->component(dep).title.toHtmlEscaped();
         }
         rows += row(tr("Built against:"), titles.join(", "));
+    }
+    /* QEMU and passt, which it starts for a VM's network */
+    if (c.kind == Kind::Host && !c.runs.isEmpty()) {
+        QStringList titles;
+        for (const QString &dep : c.runs) {
+            titles << m_manager->component(dep).title.toHtmlEscaped();
+        }
+        rows += row(tr("Runs with:"), titles.join(", "));
     }
     if (status.built.isValid()) {
         const QDateTime when = status.built.toLocalTime();

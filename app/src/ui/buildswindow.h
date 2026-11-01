@@ -24,7 +24,7 @@ class QTreeWidgetItem;
 
 /*
  * The builds of what Vitrine builds (BuildManager), in one window, not
- * modal: Vitrine's QEMU (virglrenderer, rutabaga_gfx, QEMU), the guest
+ * modal: Vitrine's QEMU (virglrenderer, rutabaga_gfx, passt, QEMU), the guest
  * tools (their packages and the medium) and, optional, the host's desktop
  * (the host's KWin, KSvg, Kirigami and Qt base), each with its state and
  * why, when it was built and how long a build of it takes; the selected

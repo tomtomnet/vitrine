@@ -89,8 +89,9 @@ bool hasVga(const QString &arch = {});
  * binary itself.  One that does not answer offers none of it, unless it
  * is vitrine's.
  *
- * NAT through passt: installed on this computer, and in that QEMU, which
- * has it if built with it, as vitrine's is.
+ * NAT through passt: installed on this computer or built with Vitrine's
+ * QEMU (StackBuilder::passtFor()), and in that QEMU, which has it if
+ * built with it, as vitrine's is.
  */
 bool hasPasst(const QemuInfo *info, const QString &chosen);
 /* The properties of the 3D card (virtio-vga-gl); not set for vitrine's QEMU */

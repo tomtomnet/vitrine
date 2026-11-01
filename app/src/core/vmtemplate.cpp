@@ -8,6 +8,7 @@
 #include "core/hostdevices.h"
 #include "core/paths.h"
 #include "core/qemuinfo.h"
+#include "core/stackbuilder.h"
 #include "core/vmconfig.h"
 #include "core/vmhardware.h"
 
@@ -55,7 +56,9 @@ bool hasPasst(const QemuInfo *info, const QString &chosen)
 {
     QString error;
 
-    if (QStandardPaths::findExecutable("passt").isEmpty()) {
+    /* the system's, or Vitrine's, which the VM's QEMU then runs instead */
+    if (QStandardPaths::findExecutable("passt").isEmpty() &&
+        StackBuilder::passtFor(chosen).isEmpty()) {
         return false;
     }
     /* vitrine's, built with it (host/build.sh) */

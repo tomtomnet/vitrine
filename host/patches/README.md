@@ -183,4 +183,39 @@ Connection reset by peer"), and the guest never heard of it: an app that
 crashed with data it had not read left the session running without a
 window (sha256 `59fd9f15...`, their `8ecffaf`).
 
-Check: `cd host/patches && sha256sum qemu/*/*.patch virglrenderer/*.patch virglrenderer/*/*.patch rutabaga_gfx/*.patch`.
+## passt (upstream at `6aa4f88b`)
+
+`https://passt.top/passt` at `6aa4f88bd9846411edff3ed70460475b538addca`,
+upstream's master of 2026-10-25 (Fedora 44 has its tag 2026_10_02.cba3570,
+five commits before; the 265a9f9 among them is a vhost-user fix, "virtio:
+Limit number of mapped iovec entries"). passt is the back-end of the VMs'
+NAT network: QEMU starts it for a `-netdev passt` and, with
+`vhost-user=on`, it moves the packets in the guest's memory itself.
+
+`versions.conf`'s `PASST_SHA256` (`decd7f01...`) is that of the commit's
+files, which build.sh checks once it fetched them: `sha256sum`'s line of
+each file (of a link, of its target), in the C order of their paths, then
+the sha256 of those lines. passt.top's snapshot
+`passt-6aa4f88bd9846411edff3ed70460475b538addca.tar.xz` unpacked gives the
+same (the tarball itself had the sha256 `27456886...` on 2026-11-01; it is
+made on demand, the files' sum is the one that holds).
+
+build.sh builds `passt` and `passt.avx2` with passt's Makefile in its source
+tree (passt runs `<its own path>.avx2` where the CPU has AVX2), with
+`VERSION=<commit>+vitrine.<patches>`, which passt's log starts with, and
+Fedora's hardening flags on top of the Makefile's; into
+`<stack>/passt/<key>/bin`. QEMU's stack.conf names that folder
+(`PASST_PREFIX`), and the app gives it to each `-netdev passt` and `-nic
+passt` without a `path=` at the VM's start (`VmRunner::withPasstPath()`).
+That passt runs unconfined, as vitrine's QEMU does, where SELinux can
+confine Fedora's `/usr/bin/passt` in its `passt_t` domain.
+
+| sha256 | patch |
+|---|---|
+| `0708d92d3f110cc3ae2d8a02bcf6624c206cda9cfb70bc09b7776b2ebd65b55f` | `0001-virtio-no-notification-without-a-call-fd.patch`: no notification of a virtqueue without a call file descriptor. When a VM paused (QMP `stop`, a live snapshot) resumes, QEMU sends `SET_VRING_KICK` of a ring before its `SET_VRING_CALL`; a socket that got data or a FIN while the VM was paused stays ready, and passt sends its frame in between, writes to the descriptor `GET_VRING_BASE` had closed, and exits ("Error writing vhost-user queue eventfd: Bad file descriptor"): the guest had no network until the VM was started again. `SET_VRING_CALL` signals the new descriptor once, which delivers the frame. Not upstream as of 2026-11-01 |
+
+When the pin moves: the new commit in `PASST_COMMIT`, its files' sum in
+`PASST_SHA256` (build.sh says the one it found when they differ), and
+build.sh stops at the patch if it no longer applies.
+
+Check: `cd host/patches && sha256sum qemu/*/*.patch virglrenderer/*.patch virglrenderer/*/*.patch rutabaga_gfx/*.patch passt/*.patch`.

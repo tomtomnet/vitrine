@@ -551,6 +551,99 @@ private slots:
         }
     }
 
+    /* Vitrine's passt on each passt network without a path of its own */
+    void passtPath()
+    {
+        const QString passt = "/s/passt/0123456789abcdef/bin/passt";
+        auto with = [](const QString &args, const QString &passt) {
+            return VmRunner::withPasstPath(ArgsFile::parse(args), passt).toText();
+        };
+
+        /* the New VM dialog's, and its other forms */
+        QCOMPARE(with("-netdev passt,id=net0,vhost-user=on,tcp-ports=127.0.0.1/2222:22\n"
+                      "-device virtio-net-pci,netdev=net0\n",
+                      passt),
+                 "-netdev passt,id=net0,vhost-user=on,tcp-ports=127.0.0.1/2222:22,path=" + passt +
+                     "\n-device virtio-net-pci,netdev=net0\n");
+        QCOMPARE(with("-netdev type=passt,id=net0\n", passt),
+                 "-netdev type=passt,id=net0,path=" + passt + '\n');
+        QCOMPARE(with("-nic passt,model=e1000e\n", passt),
+                 "-nic passt,model=e1000e,path=" + passt + '\n');
+        QCOMPARE(with("-netdev passt,id=a\n-netdev passt,id=b,path=/opt/passt\n", passt),
+                 "-netdev passt,id=a,path=" + passt + "\n-netdev passt,id=b,path=/opt/passt\n");
+        /* QEMU's ,, for a comma in the path */
+        QCOMPARE(with("-netdev passt,id=net0\n", "/a,b/passt"),
+                 "-netdev passt,id=net0,path=/a,,b/passt\n");
+        /* none built: as it was, for the passt of PATH */
+        QCOMPARE(with("-netdev passt,id=net0\n", ""), "-netdev passt,id=net0\n");
+        /* other networks, and the VM's own passt */
+        for (const char *args : {"-netdev passt,id=net0,path=/opt/passt\n",
+                                 "-netdev user,id=net0,hostfwd=tcp::2222-:22\n", "-nic user\n",
+                                 "-nic none\n", "-netdev tap,id=t0,ifname=tap0\n", "-m 1G\n",
+                                 "-netdev {\"type\":\"user\",\"id\":\"net0\"}\n",
+                                 "-netdev {\"type\":\"passt\",\"id\":\"net0\",\"path\":\"/opt/passt\"}\n"}) {
+            QCOMPARE(with(args, passt), QString(args));
+        }
+        /* QAPI's JSON */
+        const ArgsFile json = VmRunner::withPasstPath(
+            ArgsFile::parse("-netdev {\"type\":\"passt\",\"id\":\"net0\",\"vhost-user\":true,"
+                            "\"tcp-ports\":[{\"str\":\"127.0.0.1/2222:22\"}]}\n"),
+            passt);
+        const QJsonObject netdev =
+            QJsonDocument::fromJson(json.lines[json.indexOf("netdev")].value.toUtf8()).object();
+        QCOMPARE(netdev.value("path").toString(), passt);
+        QCOMPARE(netdev.value("id").toString(), "net0");
+        QVERIFY(netdev.value("vhost-user").toBool());
+        QCOMPARE(netdev.value("tcp-ports").toArray().first()["str"].toString(),
+                 "127.0.0.1/2222:22");
+    }
+
+    /* The passt of Vitrine's stack, at start, not in the VM's arguments */
+    void passtOnCommandLine()
+    {
+        const QString stack = Paths::stackDir();
+        const QString library = stack + "/passt/0123456789abcdef";
+        QVERIFY(!QFileInfo::exists(stack + "/current"));
+        const auto cleanup = qScopeGuard([&stack] {
+            QFile::remove(stack + "/current");
+            QDir(stack + "/fedcba9876543210").removeRecursively();
+            QDir(stack + "/passt").removeRecursively();
+        });
+        const auto write = [](const QString &path, const QByteArray &data) {
+            QFile f(path);
+            return QDir().mkpath(QFileInfo(path).absolutePath()) &&
+                   f.open(QIODevice::WriteOnly) && f.write(data) == data.size();
+        };
+        const ArgsFile args = ArgsFile::parse(
+            "-netdev passt,id=net0,vhost-user=on\n-device virtio-net-pci,netdev=net0\n");
+        const VmRunner runner(id, tmp.path());
+        const auto netdev = [&runner, &args]() {
+            const QStringList command = runner.commandLine(args);
+            return command.value(command.indexOf("-netdev") + 1);
+        };
+
+        /* no stack: QEMU runs the passt of PATH */
+        QCOMPARE(netdev(), "passt,id=net0,vhost-user=on");
+        /* a build of an older Vitrine, without passt */
+        QVERIFY(write(stack + "/fedcba9876543210/share/vitrine/stack.conf", "STAMP=" +
+                                                                                QByteArray(64, 'f') +
+                                                                                '\n'));
+        QVERIFY(QFile::link("fedcba9876543210", stack + "/current"));
+        QCOMPARE(netdev(), "passt,id=net0,vhost-user=on");
+        /* one with it: its passt, for the QEMU of PATH too */
+        QVERIFY(write(stack + "/fedcba9876543210/share/vitrine/stack.conf",
+                      "STAMP=" + QByteArray(64, 'f') + "\nPASST_PREFIX=" + library.toUtf8() + '\n'));
+        QVERIFY(write(library + "/bin/passt", "#!/bin/sh\n"));
+        QVERIFY(QFile::setPermissions(library + "/bin/passt",
+                                      QFile::ReadOwner | QFile::WriteOwner | QFile::ExeOwner));
+        /* its folder without its manifest: a build that did not end */
+        QCOMPARE(netdev(), "passt,id=net0,vhost-user=on");
+        QVERIFY(write(library + "/share/vitrine/passt.conf", "KEY=" + QByteArray(64, 'e') + '\n'));
+        QCOMPARE(netdev(), "passt,id=net0,vhost-user=on,path=" + library + "/bin/passt");
+        QCOMPARE(args.toText(),
+                 "-netdev passt,id=net0,vhost-user=on\n-device virtio-net-pci,netdev=net0\n");
+    }
+
     /*
      * The command line on a fake host: with one GPU as it was; with two,
      * Automatic and the display on the desktop's GPU, the VM's choice kept,

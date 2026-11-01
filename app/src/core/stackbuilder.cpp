@@ -31,8 +31,8 @@ static const char kManifest[] = "/share/vitrine/stack.conf";
 static const char kTag[] = "vitrine-build: ";
 /* The log kept of a build: QEMU's is about 1 MB */
 static const qsizetype kMaxLog = 4 << 20;
-/* The libraries of the stack, each in folders <stack>/<name>/<key> */
-static const QStringList kLibraries = {"virglrenderer", "rutabaga_gfx"};
+/* The libraries of the stack, and passt, each in folders <stack>/<name>/<key> */
+static const QStringList kLibraries = {"virglrenderer", "rutabaga_gfx", "passt"};
 
 /*
  * NAME=value lines, as build.sh reads versions.conf: no shell, the name
@@ -123,6 +123,11 @@ StackBuilder::Build StackBuilder::Build::parse(const QString &prefix, const QByt
     build.rutabagaPatches = values.value("RUTABAGA_PATCHES").split(' ', Qt::SkipEmptyParts);
     build.rutabagaKey = values.value("RUTABAGA_KEY");
     build.rutabagaPrefix = values.value("RUTABAGA_PREFIX");
+    build.passtCommit = values.value("PASST_COMMIT");
+    build.passtVersion = values.value("PASST_VERSION");
+    build.passtPatches = values.value("PASST_PATCHES").split(' ', Qt::SkipEmptyParts);
+    build.passtKey = values.value("PASST_KEY");
+    build.passtPrefix = values.value("PASST_PREFIX");
     return build;
 }
 
@@ -134,7 +139,21 @@ QString StackBuilder::Build::libraryPrefix(const QString &component) const
     if (component == "rutabaga_gfx") {
         return rutabagaPrefix;
     }
+    if (component == "passt") {
+        return passtPrefix;
+    }
     return {};
+}
+
+QString StackBuilder::Build::passtBinary() const
+{
+    /* build.sh's manifest of it, written last: a folder that has it is complete */
+    if (!isValid() || passtPrefix.isEmpty() ||
+        !QFileInfo(passtPrefix + "/share/vitrine/passt.conf").isFile()) {
+        return {};
+    }
+    const QFileInfo passt(passtPrefix + "/bin/passt");
+    return passt.isExecutable() ? passt.absoluteFilePath() : QString();
 }
 
 StackBuilder::Build StackBuilder::Build::read(const QString &prefix)
@@ -267,6 +286,27 @@ StackBuilder::Build StackBuilder::current()
     return current(Paths::stackDir());
 }
 
+QString StackBuilder::passtFor(const QString &qemu, const QString &stackDir)
+{
+    const QString stack = QFileInfo(stackDir).canonicalFilePath();
+    const QString binary = QFileInfo(qemu).canonicalFilePath();
+
+    /* <stack>/<stamp>/bin/qemu-system-*: the passt its build names */
+    if (!stack.isEmpty() && binary.startsWith(stack + '/')) {
+        const QString passt =
+            Build::read(QFileInfo(QFileInfo(binary).absolutePath()).absolutePath()).passtBinary();
+        if (!passt.isEmpty()) {
+            return passt;
+        }
+    }
+    return current(stackDir).passtBinary();
+}
+
+QString StackBuilder::passtFor(const QString &qemu)
+{
+    return passtFor(qemu, Paths::stackDir());
+}
+
 StackBuilder::State StackBuilder::state(const QString &hostDir, const QString &stackDir)
 {
     const QString stamp = inputStamp(hostDir);
@@ -320,12 +360,18 @@ QStringList StackBuilder::prune(const QString &stackDir, const QStringList &keep
     /*
      * What runs, by argv[0]: VmRunner starts QEMU by the path of its build,
      * and /proc/PID/exe of a QEMU with file capabilities is not readable;
-     * a QEMU keeps loading modules and firmware from its prefix
+     * a QEMU keeps loading modules and firmware from its prefix.  QEMU
+     * starts passt by the path VmRunner gives it, which keeps its folder
      */
+    QStringList running;
     for (const QString &pid : QDir("/proc").entryList(QDir::Dirs | QDir::NoDotAndDotDot)) {
         QFile cmdline("/proc/" + pid + "/cmdline");
         if (pid.front().isDigit() && cmdline.open(QIODevice::ReadOnly)) {
-            needed << folderOf(QString::fromLocal8Bit(cmdline.readAll().split('\0').value(0)));
+            const QString program = QString::fromLocal8Bit(cmdline.readAll().split('\0').value(0));
+            needed << folderOf(program);
+            if (QDir::isAbsolutePath(program)) {
+                running << QFileInfo(program).canonicalFilePath();
+            }
         }
     }
     /* the build before `current`: the newest complete one but it */
@@ -342,7 +388,7 @@ QStringList StackBuilder::prune(const QString &stackDir, const QStringList &keep
     }
     needed << previous;
     needed.remove(QString());
-    /* the libraries those kept are built against */
+    /* the libraries those kept are built against, the passt they run */
     QSet<QString> libraries;
     for (const QString &name : std::as_const(needed)) {
         const Build build = Build::read(stack + '/' + name);
@@ -351,6 +397,14 @@ QStringList StackBuilder::prune(const QString &stackDir, const QStringList &keep
             if (!library.isEmpty()) {
                 libraries << QFileInfo(library).canonicalFilePath();
             }
+        }
+    }
+    /* and the folders of those running: <stack>/passt/<key>/bin/passt */
+    for (const QString &program : std::as_const(running)) {
+        const QStringList parts = program.mid(stack.size() + 1).split('/');
+        if (program.startsWith(stack + '/') && parts.size() > 2 && kLibraries.contains(parts[0]) &&
+            stampFolder.match(parts[1]).hasMatch()) {
+            libraries << stack + '/' + parts[0] + '/' + parts[1];
         }
     }
     for (const QString &name : folders) {
