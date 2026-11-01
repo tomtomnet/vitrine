@@ -156,7 +156,7 @@ QStringList BuildManager::plan(const QStringList &ids) const
         if (!c.isValid() || wanted.contains(id)) {
             return;
         }
-        for (const QString &dep : c.deps) {
+        for (const QString &dep : c.deps + c.runs) {
             if (status(dep).state != Builds::Status::State::UpToDate) {
                 add(dep);
             }

@@ -168,6 +168,7 @@ QList<Component> load(const Places &places)
                      : values.value("kind") == "medium" ? Kind::Medium
                                                          : Kind::Package;
             c.deps = values.value("deps").split(' ', Qt::SkipEmptyParts);
+            c.runs = values.value("runs").split(' ', Qt::SkipEmptyParts);
             c.heavy = values.value("heavy") == "1";
             /* a package is its spec */
             if (c.kind == Kind::Package && !QFileInfo(dir + '/' + values.value("spec")).isFile()) {
@@ -586,7 +587,8 @@ QByteArray inputLines(const Component &c, const QList<Component> &all)
             }
             lines += hash + "  " + file.toUtf8() + '\n';
         }
-        for (const QString &id : c.deps) {
+        /* build.sh's deps_of: those it is built against, then those it runs with */
+        for (const QString &id : c.deps + c.runs) {
             const QString depKey = key(find(all, id), all);
             if (depKey.isEmpty()) {
                 return {};
@@ -958,7 +960,8 @@ static Status hostStatus(const Component &c, const QList<Component> &all, const 
                             now);
         return s;
     }
-    /* a library the current QEMU is built without (rutabaga_gfx, new) */
+    /* a library the current QEMU is built without, or a component it runs
+       without (rutabaga_gfx, passt: new) */
     if (c.id != "virglrenderer") {
         return s;
     }

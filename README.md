@@ -5,13 +5,13 @@ The guest uses the host's GPU through virtio-gpu DRM native context, and the
 app shows the guest's display in its window through QEMU's D-Bus display, or
 leaves it to QEMU's own SDL or GTK window.
 
-QEMU, virglrenderer, rutabaga_gfx and the guest's graphics stack (virtio-gpu
-driver, Mesa, KWin) are used at pinned versions, with the patches vitrine
-needs kept in this repository: `host/versions.conf` and `host/patches` for
-the QEMU, virglrenderer and rutabaga_gfx vitrine builds (upstream QEMU with a
-series of patches, `host/patches/qemu/series`), `guest/` for the guest's,
-and `host/kde` for the optional host packages (KWin, KSvg, Kirigami, Qt
-base).
+QEMU, virglrenderer, rutabaga_gfx, passt and the guest's graphics stack
+(virtio-gpu driver, Mesa, KWin) are used at pinned versions, with the
+patches vitrine needs kept in this repository: `host/versions.conf` and
+`host/patches` for the QEMU, virglrenderer, rutabaga_gfx and passt vitrine
+builds (upstream QEMU with a series of patches, `host/patches/qemu/series`),
+`guest/` for the guest's, and `host/kde` for the optional host packages
+(KWin, KSvg, Kirigami, Qt base).
 
 Early development. It is built and tried on Fedora 44 KDE Plasma (Wayland)
 with an AMD Radeon 780M, with Fedora 44 KDE guests. It is not packaged.
@@ -66,9 +66,10 @@ Building the guest tools (without createrepo_c, the script runs it in podman):
 sudo dnf install podman dosfstools mtools createrepo_c
 ```
 
-Running VMs: UEFI firmware (else new VMs use BIOS), passt for the NAT network
-(else QEMU's user-mode one), virtiofsd for shared folders, Qt's Wayland and SVG
-plugins (Plasma has them):
+Running VMs: UEFI firmware (else new VMs use BIOS), virtiofsd for shared
+folders, Qt's Wayland and SVG plugins (Plasma has them). The NAT network
+uses the passt that vitrine builds with its QEMU, else the system's passt,
+else QEMU's user-mode network:
 
 ```
 sudo dnf install edk2-ovmf passt virtiofsd qt6-qtwayland qt6-qtsvg
@@ -100,7 +101,7 @@ dragging its edge. Under the list, a button shows the long tasks under way
 a menu of the tasks when there are several.
 
 File > Builds… (Ctrl+B) shows what vitrine builds: its QEMU (virglrenderer,
-rutabaga_gfx, QEMU), the guest tools (their packages and medium) and,
+rutabaga_gfx, passt, QEMU), the guest tools (their packages and medium) and,
 optional, the host's KWin, each with its source, its patches by origin,
 whether it is up to date and why not, when it was built and how long that
 took, and its log. A build redoes only what changed: a component built
@@ -108,9 +109,9 @@ from the same inputs is not built again, a changed patch compiles only the
 files it changes, and the guest packages compile through ccache.
 
 1. **Build vitrine's QEMU.** The banner's Build… button (or File > Builds…)
-   opens the Builds window, whose Build button fetches QEMU, virglrenderer
-   and rutabaga_gfx at their pinned commits, patches them and installs them
-   into `~/.local/share/vitrine/stack` (a few minutes). VMs need it for their
+   opens the Builds window, whose Build button fetches QEMU, virglrenderer,
+   rutabaga_gfx and passt at their pinned commits, patches them and installs
+   them into `~/.local/share/vitrine/stack` (a few minutes). VMs need it for their
    display in vitrine's window and for 3D. Until it is built, they use the
    system's QEMU, if there is one, except those that use what it lacks,
    such as the native context of new Linux VMs: these wait for the build.
@@ -250,6 +251,16 @@ else QEMU's guest agent (Fedora installs qemu-guest-agent in VMs). Otherwise
 it presses the VM's power button, which some guests answer with a question
 on their screen, as Plasma does with its logout screen: answer it there.
 
+Network: VMs with passt's NAT network (new VMs, when there is a passt) run
+the passt vitrine builds with its QEMU, which has a fix
+(`host/patches/passt`): Fedora 44's passt exits when a paused VM resumes
+after one of its connections was closed or got data meanwhile, and the VM
+has no network until it is started again. vitrine gives each `-netdev
+passt` and `-nic passt` that passt's path at start (`path=`), unless the
+VM's arguments set one; without vitrine's QEMU built, QEMU runs the
+system's. vitrine's passt runs unconfined, as its QEMU does, where SELinux
+can confine Fedora's `/usr/bin/passt` in its `passt_t` domain.
+
 Clipboard: text copied on the host can be pasted in the guest, and the other
 way around, through spice-vdagent in the guest (new VMs have its channel).
 Text only. In a Plasma Wayland guest, text copied in Wayland applications
@@ -275,7 +286,7 @@ the device is unplugged. A udev rule gives it for good, e.g. in
 
 Files: VMs in `~/.local/share/vitrine/vms/<id>/` (`vm.args`, a new VM's
 disk, `qemu.log`), or another folder chosen in Preferences, where vitrine
-lists every folder holding a `vm.args`; vitrine's QEMU in `~/.local/share/vitrine/stack/`, the
+lists every folder holding a `vm.args`; vitrine's QEMU and its passt in `~/.local/share/vitrine/stack/`, the
 guest tools in `~/.local/share/vitrine/guest-tools/`, QEMU's build trees in
 `~/.cache/vitrine/stack-build/`, the guest tools' downloads in
 `~/.cache/vitrine/guest-build/`, the host packages' builds in

@@ -9,6 +9,7 @@
 #include <QFileInfo>
 #include <QHash>
 #include <QJsonArray>
+#include <QJsonDocument>
 #include <QJsonObject>
 #include <QProcess>
 #include <QRegularExpression>
@@ -32,6 +33,7 @@
 #include "core/paths.h"
 #include "core/qemuinfo.h"
 #include "core/qmpclient.h"
+#include "core/stackbuilder.h"
 #include "core/vmconfig.h"
 #include "core/vmhardware.h"
 #include "core/waylandsandbox.h"
@@ -1382,6 +1384,8 @@ QStringList VmRunner::Private::commandLine(const ArgsFile &args, const QString &
         hostArgs = withDisplayRenderNode(hostArgs, HostGpus::displayNode());
     }
     hostArgs = withRefcountCache(hostArgs, dir);
+    /* the NAT network's passt: Vitrine's, with its fix */
+    hostArgs = withPasstPath(hostArgs, StackBuilder::passtFor(qemu));
     command += withComputedProperties(hostArgs, propertiesOf).argv();
     for (qsizetype i = 0; i < shares.size(); i++) {
         command << "-chardev"
@@ -1581,6 +1585,38 @@ ArgsFile VmRunner::withDisplayRenderNode(const ArgsFile &args, const QString &no
         if (isGlDbusDisplay(v) && !v.has("rendernode")) {
             v.set("rendernode", node);
             out.setValueAt(i, v);
+        }
+    }
+    return out;
+}
+
+ArgsFile VmRunner::withPasstPath(const ArgsFile &args, const QString &passt)
+{
+    ArgsFile out = args;
+
+    if (passt.isEmpty()) {
+        return out;
+    }
+    for (const char *option : {"netdev", "nic"}) {
+        for (int i : out.indexesOf(option)) {
+            const QString text = out.lines[i].value.trimmed();
+
+            /* QAPI's JSON: {"type": "passt", "id": "net0", ...} */
+            if (text.startsWith('{')) {
+                QJsonObject netdev = QJsonDocument::fromJson(text.toUtf8()).object();
+                if (netdev.value("type").toString() == "passt" && !netdev.contains("path")) {
+                    netdev.insert("path", passt);
+                    out.setValueAt(i, QString::fromUtf8(
+                                          QJsonDocument(netdev).toJson(QJsonDocument::Compact)));
+                }
+                continue;
+            }
+            OptionValue v = out.valueAt(i);
+            const QString type = v.implied().isEmpty() ? v.get("type") : v.implied();
+            if (type == "passt" && !v.has("path")) {
+                v.set("path", passt);
+                out.setValueAt(i, v);
+            }
         }
     }
     return out;

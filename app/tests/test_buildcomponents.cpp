@@ -76,26 +76,35 @@ class TestBuildComponents : public QObject
     }
 
     /* @stack's `current` as build.sh leaves it for @host's inputs now: a
-       QEMU and the libraries it is built against, with their inputs; with
-       @rutabaga false, as an older Vitrine left it, without rutabaga_gfx */
-    static bool builtStack(const QString &host, const QString &stack, bool rutabaga = true)
+       QEMU, the libraries it is built against and the passt it runs, with
+       their inputs; with @rutabaga or @passt false, as an older Vitrine
+       left it, without rutabaga_gfx or passt */
+    static bool builtStack(const QString &host, const QString &stack, bool rutabaga = true,
+                           bool passt = true)
     {
         Places places;
         places.hostDir = host;
         const QList<Component> all = load(places);
         const Component virgl = find(all, "virglrenderer");
         const Component ffi = find(all, "rutabaga_gfx");
+        const Component net = find(all, "passt");
         const Component qemu = find(all, "qemu");
         const QString vkey = key(virgl, all);
         const QString rkey = key(ffi, all);
+        const QString pkey = key(net, all);
         const QString library = stack + "/virglrenderer/" + vkey.left(16);
         const QString rlibrary = stack + "/rutabaga_gfx/" + rkey.left(16);
+        const QString plibrary = stack + "/passt/" + pkey.left(16);
         QByteArray inputs = inputLines(qemu, all);
         QFile::remove(stack + "/current");
         QDir(rlibrary).removeRecursively();
+        QDir(plibrary).removeRecursively();
         /* an older one's inputs had no such line, and so another stamp */
         if (!rutabaga) {
             inputs.replace("dep rutabaga_gfx " + rkey.toLatin1() + '\n', "");
+        }
+        if (!passt) {
+            inputs.replace("dep passt " + pkey.toLatin1() + '\n', "");
         }
         const QString stamp = QString::fromLatin1(
             QCryptographicHash::hash(inputs, QCryptographicHash::Sha256).toHex());
@@ -110,6 +119,15 @@ class TestBuildComponents : public QObject
                        "KEY=" + rkey.toUtf8() +
                            "\nBUILT=2026-10-12T08:30:00Z\nVERSION=0.1.85\n") ||
                 !write(rlibrary + "/share/vitrine/rutabaga_gfx.inputs", inputLines(ffi, all))) {
+                return false;
+            }
+        }
+        if (passt) {
+            manifest += "PASST_KEY=" + pkey.toUtf8() + "\nPASST_PREFIX=" + plibrary.toUtf8() + '\n';
+            if (!write(plibrary + "/share/vitrine/passt.conf",
+                       "KEY=" + pkey.toUtf8() +
+                           "\nBUILT=2026-10-12T08:40:00Z\nVERSION=6aa4f88bd984+vitrine.1\n") ||
+                !write(plibrary + "/share/vitrine/passt.inputs", inputLines(net, all))) {
                 return false;
             }
         }
@@ -164,13 +182,22 @@ private slots:
         for (const Component &c : all) {
             ids << c.id;
         }
-        QCOMPARE(ids, QStringList({"virglrenderer", "rutabaga_gfx", "qemu", "tools", "mesa", "kwin",
-                                   "proxy", "kpipewire", "qtbase", "ksvg", "kirigami", "medium"}));
+        QCOMPARE(ids, QStringList({"virglrenderer", "rutabaga_gfx", "passt", "qemu", "tools", "mesa",
+                                   "kwin", "proxy", "kpipewire", "qtbase", "ksvg", "kirigami",
+                                   "medium"}));
         QCOMPARE(find(all, "qemu").kind, Kind::Host);
         QCOMPARE(find(all, "qemu").title, "QEMU");
         QCOMPARE(find(all, "qemu").deps, QStringList({"virglrenderer", "rutabaga_gfx"}));
+        /* not built against passt: it runs it */
+        QCOMPARE(find(all, "qemu").runs, QStringList({"passt"}));
         QCOMPARE(find(all, "rutabaga_gfx").kind, Kind::Host);
         QCOMPARE(find(all, "rutabaga_gfx").deps, QStringList({"virglrenderer"}));
+        QVERIFY(find(all, "rutabaga_gfx").runs.isEmpty());
+        QCOMPARE(find(all, "passt").kind, Kind::Host);
+        QCOMPARE(find(all, "passt").title, "passt");
+        QVERIFY(find(all, "passt").deps.isEmpty());
+        QCOMPARE(patches(find(all, "passt")).size(), 1);
+        QCOMPARE(patches(find(all, "passt")).first().origin, "Vitrine");
         QCOMPARE(find(all, "mesa").kind, Kind::Package);
         QVERIFY(find(all, "mesa").heavy);
         QVERIFY(!find(all, "tools").heavy);
@@ -208,10 +235,15 @@ private slots:
 
         const QString keys = run({places.hostDir + "/build.sh", "--print-keys"}, &status);
         QCOMPARE(status, 0);
-        QCOMPARE(keys, QString("virglrenderer %1\nrutabaga_gfx %2\nqemu %3\n")
+        QCOMPARE(keys, QString("virglrenderer %1\nrutabaga_gfx %2\npasst %3\nqemu %4\n")
                            .arg(key(find(all, "virglrenderer"), all),
-                                key(find(all, "rutabaga_gfx"), all), key(find(all, "qemu"), all)));
-        for (const char *id : {"virglrenderer", "rutabaga_gfx", "qemu"}) {
+                                key(find(all, "rutabaga_gfx"), all), key(find(all, "passt"), all),
+                                key(find(all, "qemu"), all)));
+        /* QEMU's: those it is built against, then passt */
+        QVERIFY(inputLines(find(all, "qemu"), all)
+                    .endsWith("dep rutabaga_gfx " + key(find(all, "rutabaga_gfx"), all).toLatin1() +
+                              "\ndep passt " + key(find(all, "passt"), all).toLatin1() + '\n'));
+        for (const char *id : {"virglrenderer", "rutabaga_gfx", "passt", "qemu"}) {
             QCOMPARE(run({places.hostDir + "/build.sh", "--print-inputs", id}).toUtf8(),
                      inputLines(find(all, id), all));
         }
@@ -457,6 +489,9 @@ private slots:
         const Source ffi = source(find(all, "rutabaga_gfx"));
         QCOMPARE(ffi.url, "https://github.com/magma-gpu/rutabaga_gfx.git");
         QCOMPARE(ffi.revision.size(), 40);
+        const Source passt = source(find(all, "passt"));
+        QCOMPARE(passt.url, "https://passt.top/passt");
+        QCOMPARE(passt.revision.size(), 40);
         const Source mesa = source(find(all, "mesa"));
         QCOMPARE(mesa.archive, "mesa-" + GuestToolsBuilder::version(find(all, "mesa").dir, "mesa") +
                                    ".tar.xz");
@@ -497,13 +532,16 @@ private slots:
     {
         const QByteArray pins = "QEMU_URL=https://q/qemu.git\nQEMU_COMMIT=%1\n"
                                 "VIRGL_URL=https://v/virgl.git\nVIRGL_COMMIT=%2\n"
-                                "RUTABAGA_URL=https://r/rutabaga.git\nRUTABAGA_COMMIT=4444\n";
+                                "RUTABAGA_URL=https://r/rutabaga.git\nRUTABAGA_COMMIT=4444\n"
+                                "PASST_URL=https://p/passt\nPASST_COMMIT=5555\n"
+                                "PASST_SHA256=0000\n";
         const QString host =
             hostFixture("status-host", QString(pins).arg("1111", "2222").toUtf8(),
                         {{"qemu/fork/0001-a.patch", "a\n"},
                          {"qemu/research/0001-b.patch", "b\n"},
                          {"virglrenderer/0001-v.patch", "v\n"},
-                         {"rutabaga_gfx/changes.patch", "r\n"}});
+                         {"rutabaga_gfx/changes.patch", "r\n"},
+                         {"passt/0001-p.patch", "p\n"}});
         QVERIFY(!host.isEmpty());
         Places places;
         places.hostDir = host;
@@ -527,6 +565,34 @@ private slots:
         Status ffi = statusOf("rutabaga_gfx");
         QCOMPARE(ffi.state, Status::State::UpToDate);
         QCOMPARE(ffi.version, "0.1.85");
+        Status passt = statusOf("passt");
+        QCOMPARE(passt.state, Status::State::UpToDate);
+        QCOMPARE(passt.version, "6aa4f88bd984+vitrine.1");
+        QCOMPARE(QFileInfo(passt.output).dir().dirName(), "passt");
+
+        /* a passt patch changed: it, and QEMU, which runs it (a new folder
+           naming it, nothing compiled: build.sh's QEMU configure line has
+           no passt) */
+        QVERIFY(write(host + "/patches/passt/0001-p.patch", "p, again\n"));
+        passt = statusOf("passt");
+        QCOMPARE(passt.state, Status::State::Outdated);
+        QCOMPARE(summary(passt.changes), "1 patch changed");
+        QCOMPARE(describe(passt.changes[0]), "Patch 0001-p.patch changed");
+        qemu = statusOf("qemu");
+        QCOMPARE(qemu.state, Status::State::Outdated);
+        QCOMPARE(summary(qemu.changes), "passt changed");
+        QCOMPARE(statusOf("virglrenderer").state, Status::State::UpToDate);
+        QCOMPARE(statusOf("rutabaga_gfx").state, Status::State::UpToDate);
+        QVERIFY(write(host + "/patches/passt/0001-p.patch", "p\n"));
+        QCOMPARE(statusOf("qemu").state, Status::State::UpToDate);
+        /* a QEMU of an older Vitrine, without it: the system's passt ran */
+        QVERIFY(builtStack(host, places.stackDir, true, false));
+        QCOMPARE(statusOf("passt").state, Status::State::NotBuilt);
+        qemu = statusOf("qemu");
+        QCOMPARE(qemu.state, Status::State::Outdated);
+        QCOMPARE(describe(qemu.changes.value(0)), "Built without passt");
+        QVERIFY(builtStack(host, places.stackDir));
+        QCOMPARE(statusOf("qemu").state, Status::State::UpToDate);
 
         /* a rutabaga_gfx patch changed: it, and QEMU built against it */
         QVERIFY(write(host + "/patches/rutabaga_gfx/changes.patch", "r, rebased\n"));
@@ -590,6 +656,8 @@ private slots:
         QCOMPARE(qemu.changes[0].what, Change::What::Dependency);
         QCOMPARE(describe(qemu.changes[0]), "virglrenderer changed");
         QCOMPARE(summary(qemu.changes), "virglrenderer changed, rutabaga_gfx changed");
+        /* passt is built against nothing */
+        QCOMPARE(statusOf("passt").state, Status::State::UpToDate);
         /* rutabaga_gfx too, built against it */
         QCOMPARE(summary(statusOf("rutabaga_gfx").changes), "virglrenderer changed");
         /* the script changed: all of them */
@@ -597,7 +665,9 @@ private slots:
         QVERIFY(write(host + "/build.sh", read(host + "/build.sh") + "\n# changed\n"));
         QCOMPARE(summary(statusOf("virglrenderer").changes), "build script changed");
         QCOMPARE(summary(statusOf("qemu").changes),
-                 "build script changed, virglrenderer changed, rutabaga_gfx changed");
+                 "build script changed, virglrenderer changed, rutabaga_gfx changed, "
+                 "passt changed");
+        QCOMPARE(summary(statusOf("passt").changes), "build script changed");
 
         /* a build of an older Vitrine, which kept no inputs */
         QVERIFY(QFile::remove(QFileInfo(places.stackDir + "/current").canonicalFilePath() +

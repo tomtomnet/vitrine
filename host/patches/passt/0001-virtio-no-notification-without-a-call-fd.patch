@@ -1,0 +1,61 @@
+From: Vitrine
+Subject: [PATCH] virtio: Don't notify a virtqueue that has no call file descriptor
+
+When QEMU stops a VM (QMP "stop", or "savevm"), it stops the rings with
+VHOST_USER_GET_VRING_BASE, and vu_get_vring_base_exec() closes the call
+file descriptor and sets it to -1. When the VM resumes ("cont"), QEMU
+sends SET_VRING_ENABLE, SET_FEATURES, SET_MEM_TABLE, then for each ring
+SET_VRING_NUM, _BASE, _ADDR, _KICK and only then _CALL.
+vu_set_vring_kick_exec() marks the ring as started, and passt handles one
+vhost-user message per epoll wakeup.
+
+A socket that became ready while the VM was stopped (its peer closed the
+connection, or sent data) stays ready: tcp_vu_data_from_sock() returns
+early, "RX virtqueue not usable yet", and the socket is level-triggered.
+Its event comes right after SET_VRING_KICK of the RX ring, before
+SET_VRING_CALL: the frame goes into the ring, and vu_queue_notify()
+writes to call_fd -1:
+
+  Error writing vhost-user queue eventfd: Bad file descriptor
+
+passt exits, QEMU falls back to userspace virtio ("unable to start vhost
+net"), and the guest has no network until the VM is started again.
+
+A ring can also have no call file descriptor at all: the front-end then
+sets VHOST_USER_VRING_NOFD_MASK, and polls.
+
+Skip the notification while there's no call file descriptor:
+vu_set_vring_call_exec() writes to a new descriptor once, "in case of I/O
+hang after reconnecting", which delivers what was queued meanwhile. Check
+it before vring_can_notify(), which, with VIRTIO_RING_F_EVENT_IDX, takes
+the notification as sent.
+
+Vitrine's own patch, for upstream passt to take over.
+---
+ virtio.c | 14 ++++++++++++++
+ 1 file changed, 14 insertions(+)
+
+diff --git a/virtio.c b/virtio.c
+--- a/virtio.c
++++ b/virtio.c
+@@ -339,6 +339,20 @@ void vu_queue_notify(const struct vu_dev *dev, struct vu_virtq *vq)
+ 	if (!vq->vring.avail)
+ 		return;
+ 
++	/* No call file descriptor yet: the front-end starts a ring with
++	 * SET_VRING_KICK, then sends SET_VRING_CALL, and GET_VRING_BASE
++	 * closed the previous descriptor when the ring stopped. Frames for
++	 * sockets that became ready meanwhile can be queued in between, and
++	 * vu_set_vring_call_exec() signals the new descriptor once, which
++	 * covers them. Without any descriptor (VHOST_USER_VRING_NOFD_MASK),
++	 * the front-end polls. Checked before vring_can_notify(), which
++	 * takes the notification as sent.
++	 */
++	if (vq->call_fd == -1) {
++		debug("vhost-user: no call file descriptor, skip notify");
++		return;
++	}
++
+ 	if (!vring_can_notify(dev, vq)) {
+ 		debug("vhost-user: virtqueue can skip notify...");
+ 		return;
