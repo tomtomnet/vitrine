@@ -31,16 +31,20 @@ enum class Kind {
     None,           // another (i915, NVIDIA...): neither
 };
 /*
- * @gpu's, from sysfs under @sysRoot: amdgpu describes an APU's metrics with
- * the APU layouts (gpu_metrics v2 and v3), a discrete GPU's with v1
+ * @gpu's, from sysfs under @sysRoot (HostGpus's): amdgpu describes an APU's
+ * metrics with the APU layouts (gpu_metrics v2 and v3), a discrete GPU's
+ * with v1
  */
-Kind kind(const HostGpu &gpu, const QString &sysRoot = QStringLiteral("/sys"));
+Kind kind(const HostGpu &gpu, const QString &sysRoot = {});
 /* The GPUs of @gpus it serves */
-QList<HostGpu> served(const QList<HostGpu> &gpus, const QString &sysRoot = QStringLiteral("/sys"));
+QList<HostGpu> served(const QList<HostGpu> &gpus, const QString &sysRoot = {});
 
-/* Its files on this host (under @root, a fake one for tests) */
-QString scriptPath(const QString &root = {});
-QString unitPath(const QString &root = {});
+/* Where its files are looked for: "", this host's /; $VITRINE_AWAKE_ROOT
+   names a fake root (tests: pkexec passes no environment to install.sh) */
+QString root();
+/* Its files under @root */
+QString scriptPath(const QString &root = GpuInputAwake::root());
+QString unitPath(const QString &root = GpuInputAwake::root());
 QString unitName();
 
 /* The pinned copy and its installer: <host>/gpu-input-awake, "" if this
@@ -53,7 +57,7 @@ enum class Installed {
     Other,      // both, not Vitrine's version: the research's own install, an older one
     Partial,    // one of the two
 };
-Installed installed(const QString &source, const QString &root = {});
+Installed installed(const QString &source, const QString &root = GpuInputAwake::root());
 
 /* "pkexec bash <source>/install.sh install" or "... remove" */
 QStringList command(const QString &source, bool install);

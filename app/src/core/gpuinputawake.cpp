@@ -54,7 +54,8 @@ Kind kind(const HostGpu &gpu, const QString &sysRoot)
         return Kind::None;
     }
     /* the header: structure_size (16 bits), format_revision, content_revision */
-    QFile metrics(sysRoot + "/bus/pci/devices/" + gpu.address + "/gpu_metrics");
+    QFile metrics((sysRoot.isEmpty() ? HostGpus::sysfs() : sysRoot) + "/bus/pci/devices/" +
+                  gpu.address + "/gpu_metrics");
     const QByteArray header = metrics.open(QIODevice::ReadOnly) ? metrics.read(4) : QByteArray();
     return header.size() >= 4 && (header[2] == 2 || header[2] == 3) ? Kind::ClockFloor
                                                                      : Kind::InputWake;
@@ -70,6 +71,11 @@ QList<HostGpu> served(const QList<HostGpu> &gpus, const QString &sysRoot)
         }
     }
     return out;
+}
+
+QString root()
+{
+    return qEnvironmentVariable("VITRINE_AWAKE_ROOT");
 }
 
 QString scriptPath(const QString &root)

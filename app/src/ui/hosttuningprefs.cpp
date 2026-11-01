@@ -7,9 +7,11 @@
 #include <QHBoxLayout>
 #include <QLabel>
 #include <QLayout>
+#include <QMessageBox>
 #include <QPushButton>
 #include <QSpinBox>
 
+#include "core/hostgpus.h"
 #include "ui/hosttuningnotifier.h"
 #include "ui/widgets.h"
 
@@ -72,6 +74,27 @@ HostTuningPrefs::HostTuningPrefs(Form *form, QWidget *parent)
     form->addRow(QString(), m_setUp);
     form->addRow(QString(), Widgets::hint(HostTuningNotifier::summary()));
     form->addRow(Widgets::label(tr("&GPU clock floor:"), m_floor), floorRow);
+    /* the dedicated GPUs, which a floor does nothing for: gpu-input-awake */
+    for (const HostGpu &gpu : GpuInputAwake::served(HostGpus::list())) {
+        m_dedicated << gpu.name();
+    }
+    if (!m_dedicated.isEmpty()) {
+        auto *awakeRow = new QHBoxLayout;
+        m_awake = Widgets::note();
+        m_awake->setObjectName("gpuInputAwake");
+        m_awakeInstall = new QPushButton(tr("&Install…"));
+        m_awakeInstall->setObjectName("gpuInputAwakeInstall");
+        m_awakeRemove = new QPushButton(tr("Re&move…"));
+        m_awakeRemove->setObjectName("gpuInputAwakeRemove");
+        awakeRow->addWidget(m_awakeInstall);
+        awakeRow->addWidget(m_awakeRemove);
+        awakeRow->addStretch();
+        form->addRow(QString(), m_awake);
+        form->addRow(QString(), awakeRow);
+        connect(m_awakeInstall, &QPushButton::clicked, this, [this]() { runAwake(true); });
+        connect(m_awakeRemove, &QPushButton::clicked, this, [this]() { runAwake(false); });
+        refreshAwake();
+    }
 
     connect(m_tune, &QCheckBox::toggled, this, &HostTuningPrefs::update);
     connect(m_floor, &QComboBox::currentIndexChanged, this, &HostTuningPrefs::update);
@@ -134,6 +157,107 @@ void HostTuningPrefs::showState(const HostSettings::Status &status)
     m_needsGroup = status.needsGroup();
     m_setUp->setVisible(m_needsGroup && m_tune->isChecked());
     fitWindow(m_state);
+}
+
+void HostTuningPrefs::refreshAwake()
+{
+    if (!m_awake) {
+        return;
+    }
+    m_installed = GpuInputAwake::installed(GpuInputAwake::sourceDir());
+    m_awakeInstall->setEnabled(false);
+    m_awakeRemove->setEnabled(false);
+    if (m_installed == GpuInputAwake::Installed::No) {
+        showAwake(QString());
+        return;
+    }
+    GpuInputAwake::serviceState(this, [this](const QString &active, const QString &) {
+        showAwake(active);
+    });
+}
+
+void HostTuningPrefs::showAwake(const QString &active)
+{
+    using enum GpuInputAwake::Installed;
+    const bool source = !GpuInputAwake::sourceDir().isEmpty();
+    const bool busy = GpuInputAwake::running();
+    QString state;
+
+    switch (m_installed) {
+    case No:
+        state = tr("It is not installed.");
+        break;
+    case Vitrine:
+        state = active == "active" ? tr("It is installed and runs.")
+                : active.isEmpty()  ? tr("It is installed.")
+                                    : tr("It is installed and does not run (%1): <nobr>journalctl -u "
+                                         "gpu-input-awake</nobr> says why.")
+                                          .arg(active.toHtmlEscaped());
+        break;
+    case Other:
+        state = tr("It is installed, not Vitrine's version.");
+        break;
+    case Partial:
+        state = tr("It is partly installed: one of its two files is missing.");
+        break;
+    }
+    m_awake->setText(tr("%1: a clock floor does nothing on a dedicated GPU. gpu-input-awake, a "
+                        "service that runs as root from boot, wakes it at each key or pointer "
+                        "event instead.")
+                         .arg(m_dedicated.join(", ").toHtmlEscaped()) +
+                     ' ' + state);
+    m_awakeInstall->setVisible(m_installed != Vitrine);
+    m_awakeInstall->setEnabled(source && !busy);
+    m_awakeInstall->setToolTip(source ? tr("Asks for an administrator's password")
+                                      : tr("This installation of Vitrine has no "
+                                           "host/gpu-input-awake"));
+    m_awakeRemove->setVisible(m_installed != No);
+    m_awakeRemove->setEnabled(!busy);
+    m_awakeRemove->setToolTip(tr("Asks for an administrator's password"));
+    fitWindow(m_awake);
+}
+
+void HostTuningPrefs::runAwake(bool install)
+{
+    using enum GpuInputAwake::Installed;
+    const QString title = install ? tr("Install gpu-input-awake") : tr("Remove gpu-input-awake");
+    QString text;
+
+    if (install) {
+        text = tr("gpu-input-awake runs as root from now on, and at each boot: it reads the "
+                  "keyboard's and the pointer's events, without taking them, and wakes the GPU "
+                  "at each one.");
+        if (m_installed == Other) {
+            text += ' ' + tr("It replaces the copy installed now, which is not Vitrine's version.");
+        } else if (m_installed == Partial) {
+            text += ' ' + tr("It replaces what is installed of it now.");
+        }
+    } else {
+        text = tr("gpu-input-awake stops now and no longer starts at boot.");
+        if (m_installed == Other) {
+            text += ' ' + tr("This removes the copy installed now, which is not Vitrine's "
+                             "version: another tool may have installed it.");
+        }
+    }
+    text += ' ' + tr("It takes an administrator's password.");
+    if (!Widgets::confirm(m_parent, QMessageBox::Question, title, text,
+                          install ? tr("&Install") : tr("&Remove"), QIcon())) {
+        return;
+    }
+    m_awakeInstall->setEnabled(false);
+    m_awakeRemove->setEnabled(false);
+    const bool started = GpuInputAwake::run(this, install, [this, title](GpuInputAwake::Result result,
+                                                                         const QString &error) {
+        if (result == GpuInputAwake::Result::Failed) {
+            Widgets::warn(m_parent, title, tr("It did not work: %1.").arg(error));
+        }
+        refreshAwake();
+    });
+    if (started) {
+        m_awake->setText(install ? tr("Installing gpu-input-awake…") : tr("Removing gpu-input-awake…"));
+    } else {
+        refreshAwake();
+    }
 }
 
 void HostTuningPrefs::save() const

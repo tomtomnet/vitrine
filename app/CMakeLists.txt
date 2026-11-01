@@ -463,6 +463,7 @@ if(BUILD_TESTING)
             guestoffer
             guesttoolsdialog
             hostkdebanner
+            hosttuningprefs
             mainbar
             newvmdialog
             settingspages
@@ -514,6 +515,8 @@ if(BUILD_TESTING)
         GUEST_SOURCE_DIR="${PROJECT_SOURCE_DIR}/guest")
     # host/gpu-input-awake's pinned copy and installer, against stand-ins
     target_compile_definitions(test_gpuinputawake PRIVATE
+        GPU_AWAKE_SOURCE_DIR="${PROJECT_SOURCE_DIR}/host/gpu-input-awake")
+    target_compile_definitions(test_hosttuningprefs PRIVATE
         GPU_AWAKE_SOURCE_DIR="${PROJECT_SOURCE_DIR}/host/gpu-input-awake")
     # host/kde's scripts and pinned recipe, against stand-ins for rpm and dnf
     target_compile_definitions(test_hostkde PRIVATE
