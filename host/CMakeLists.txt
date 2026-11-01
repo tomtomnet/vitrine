@@ -31,3 +31,14 @@ else()
 endif()
 install(CODE "file(REMOVE_RECURSE \"\$ENV{DESTDIR}${vitrine_kde}\" \"\$ENV{DESTDIR}${vitrine_kwin}\")")
 install(DIRECTORY kde/ DESTINATION ${VITRINE_HOST_DESTINATION}/kde USE_SOURCE_PERMISSIONS)
+# gpu-input-awake (gpu-input-awake/README.md): the research's service as
+# Vitrine pins it, and its installer, with their modes; the folder first
+# too, as the app tells its copy by the files' checksums
+if(IS_ABSOLUTE "${VITRINE_HOST_DESTINATION}")
+    set(vitrine_awake "${VITRINE_HOST_DESTINATION}/gpu-input-awake")
+else()
+    set(vitrine_awake "\${CMAKE_INSTALL_PREFIX}/${VITRINE_HOST_DESTINATION}/gpu-input-awake")
+endif()
+install(CODE "file(REMOVE_RECURSE \"\$ENV{DESTDIR}${vitrine_awake}\")")
+install(DIRECTORY gpu-input-awake/ DESTINATION ${VITRINE_HOST_DESTINATION}/gpu-input-awake
+    USE_SOURCE_PERMISSIONS)

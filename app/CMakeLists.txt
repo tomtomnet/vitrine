@@ -42,6 +42,8 @@ qt_add_library(vitrine_core STATIC
     src/core/firmwarefiles.h
     src/core/gpucontexts.cpp
     src/core/gpucontexts.h
+    src/core/gpuinputawake.cpp
+    src/core/gpuinputawake.h
     src/core/guestagent.cpp
     src/core/guestagent.h
     src/core/guestshutdown.cpp
@@ -419,6 +421,7 @@ if(BUILD_TESTING)
             firmware
             firmwarefiles
             gpucontexts
+            gpuinputawake
             guestagent
             guestshutdown
             guesttools
@@ -509,6 +512,9 @@ if(BUILD_TESTING)
     # the scripts of guest/, against a stand-in for podman
     target_compile_definitions(test_guesttoolsbuilder PRIVATE
         GUEST_SOURCE_DIR="${PROJECT_SOURCE_DIR}/guest")
+    # host/gpu-input-awake's pinned copy and installer, against stand-ins
+    target_compile_definitions(test_gpuinputawake PRIVATE
+        GPU_AWAKE_SOURCE_DIR="${PROJECT_SOURCE_DIR}/host/gpu-input-awake")
     # host/kde's scripts and pinned recipe, against stand-ins for rpm and dnf
     target_compile_definitions(test_hostkde PRIVATE
         HOST_KDE_SOURCE_DIR="${PROJECT_SOURCE_DIR}/host/kde")
