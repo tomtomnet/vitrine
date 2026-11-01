@@ -4,8 +4,8 @@
 # vitrine-helper end to end on this host, as root through sudo (pkexec would
 # need the polkit files installed): a test VM boots, the helper watches its
 # QEMU and applies the fair server, the GPU clock floor (an AMD APU), the
-# udmabuf limits and real-time threads; the VM powers off and everything
-# must be back as it was.  Then: a helper killed while holding the settings
+# udmabuf limits, shared memory's huge pages and real-time threads; the VM
+# powers off and everything must be back as it was.  Then: a helper killed while holding the settings
 # (the next one restores them), vitrine gone while the VM runs (stdin
 # closed), two helpers, a udmabuf limit changed by hand meanwhile (left as
 # it is), focus priority on a real QEMU's threads (rt for the VM in front,
@@ -48,6 +48,7 @@ mem=${E2E_MEM:-2G}
 dev=$repo/.dev/helper-e2e
 fs=/sys/kernel/debug/sched/fair_server
 udma=/sys/module/udmabuf/parameters
+thp=/sys/kernel/mm/transparent_hugepage/shmem_enabled
 
 fails=0
 ok() { echo "  ok   $*"; }
@@ -71,6 +72,8 @@ done
 fair_now() { for c in $(sudo ls $fs | sort -V); do echo "$c $(sudo cat $fs/$c/period) $(sudo cat $fs/$c/runtime)"; done; }
 gpu_now() { [ -n "$card" ] && { cat "/sys/class/drm/$card/device/power_dpm_force_performance_level"; cat "/sys/class/drm/$card/device/pp_od_clk_voltage"; }; }
 udma_now() { [ -d $udma ] && echo "$(cat $udma/list_limit) $(cat $udma/size_limit_mb)"; }
+# the choice in brackets: "always within_size advise [never] deny force"
+thp_now() { [ -e $thp ] && sed -n 's/.*\[\(.*\)\].*/\1/p' $thp; }
 set_udma() {  # LIST SIZE_MB
 	echo "$1" | sudo tee $udma/list_limit > /dev/null
 	echo "$2" | sudo tee $udma/size_limit_mb > /dev/null
@@ -98,6 +101,7 @@ fi
 fair_before=$(fair_now)
 gpu_before=$(gpu_now)
 udma_before=$(udma_now)
+thp_before=$(thp_now)
 ncpu=$(echo "$fair_before" | wc -l)
 # the cpus the helper changes, and puts back: those not at 10 ms / 1 ms (a
 # tool may have left some there)
@@ -114,6 +118,7 @@ else
 fi
 echo "host: $ncpu cpus, fair server $(echo "$fair_before" | head -1 | cut -d' ' -f2-), gpu ${card:-none} level $(echo "$gpu_before" | head -1)"
 echo "udmabuf before: ${udma_before:-no parameters} (list_limit size_limit_mb)"
+echo "shmem huge pages before: ${thp_before:-none in this kernel}"
 # what the helper raises from in this test, both below host tuning's values
 udma_low=
 if [ -n "$udma_before" ]; then
@@ -147,9 +152,12 @@ restore_by_hand() {
 	fi
 	# shellcheck disable=SC2086
 	[ "$(udma_now)" = "$udma_before" ] || set_udma $udma_before
+	if [ -n "$thp_before" ] && [ "$(thp_now)" != "$thp_before" ]; then
+		echo "$thp_before" | sudo tee $thp > /dev/null
+	fi
 }
-host_now() { fair_now; gpu_now; echo "udmabuf $(udma_now)"; }
-host_before() { echo "$fair_after"; echo "$gpu_before"; echo "udmabuf $udma_before"; }
+host_now() { fair_now; gpu_now; echo "udmabuf $(udma_now)"; echo "thp $(thp_now)"; }
+host_before() { echo "$fair_after"; echo "$gpu_before"; echo "udmabuf $udma_before"; echo "thp $thp_before"; }
 cleanup() {
 	local p c
 	for p in "${helpers[@]}"; do
@@ -276,6 +284,15 @@ fi
 if [ -n "$card" ]; then
 	say "gpu-floor $card auto"; expect "gpu floor" "ok gpu-floor $card 1800 MHz \(was [0-9]+ MHz, level auto\)"
 fi
+say "thp on"
+case "$thp_before" in
+never) expect "huge pages" "ok thp on: advise \(was never\)"
+	check "shmem huge pages advise" '[ "$(thp_now)" = advise ]'
+	check "huge pages state recorded" 'sudo test -e /run/vitrine-helper/thp.state' ;;
+deny) expect "huge pages" "skip thp: .*" ;;
+"") expect "huge pages" "skip thp: this kernel has no transparent huge pages" ;;
+*) expect "huge pages" "ok thp on: already $thp_before, left as it is" ;;
+esac
 say "rt $vm"; expect "rt" "ok rt $vm: ([0-9]+) of ([0-9]+) threads real-time"
 check "rt: every thread" '[ "${BASH_REMATCH[1]:-x}" = "${BASH_REMATCH[2]:-y}" ]'
 if [ -n "$udma_before" ]; then
