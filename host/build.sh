@@ -16,9 +16,9 @@
 #
 # A component's key sums up its inputs (its source, its patches, this
 # script, the keys of the components it is built against or runs with:
-# key_lines) and names its folder; QEMU's is the stamp.  Inputs built already leave
-# nothing to do; other inputs build into another folder, and the VMs
-# running keep theirs.  The sources and build trees stay in the work
+# key_lines) and names its folder; QEMU's is the stamp.  Inputs built
+# already leave nothing to do; other inputs build into another folder, and
+# the VMs running keep theirs.  The sources and build trees stay in the work
 # folder: a patch changed rewrites only the files whose content changes,
 # and a build tree is configured again in place, never made anew, so that
 # an update compiles only what it has to (--clean starts them over).
