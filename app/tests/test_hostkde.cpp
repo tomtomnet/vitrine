@@ -1081,6 +1081,11 @@ private slots:
         /* sha256sum's hash of the files */
         QCOMPARE(install[4], out + "/kwin/kwin-6.7.91-1.hl39.fc44.x86_64.rpm=" +
                                  QCryptographicHash::hash("kwin", QCryptographicHash::Sha256).toHex());
+        /* several builds at once (Install All…): their files one after the other, one run */
+        const QStringList both = installCommand("/src/host/kde", QList<Build>{b, b});
+        QCOMPARE(both.size(), 4 + 2 * b.rpms.size());
+        QCOMPARE(both.mid(4, b.rpms.size()), install.mid(4));
+        QCOMPARE(both.mid(4 + b.rpms.size()), install.mid(4));
 
         Record record;
         record.digests.insert("kwin", "recorded");

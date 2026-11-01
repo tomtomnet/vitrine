@@ -230,6 +230,96 @@ bool install(QWidget *parent, const QString &id)
     return true;
 }
 
+QString installAllText(const QList<Status> &statuses)
+{
+    QStringList titles;
+    QStringList packages;
+    QString items;
+    bool kwin = false;
+
+    for (const Status &s : statuses) {
+        titles << s.target.title;
+        packages << replaced(s);
+        kwin = kwin || s.target.package == "kwin";
+        items += "<li><b>" + s.target.title.toHtmlEscaped() + "</b>: " + what(s) + ' ' + lock(s) +
+                 "</li>";
+    }
+    QString html = "<p>" +
+                   tr("This installs Vitrine's builds of %1 in one go, with the administrator's "
+                      "password once, in place of the distribution's packages:")
+                       .arg(names(titles).toHtmlEscaped()) +
+                   "</p><ul>" + items + "</ul><ul><li>" +
+                   tr("They are installed as root in one transaction, each package's installed "
+                      "parts all from its build.") +
+                   "</li>";
+    if (kwin) {
+        html += "<li>" +
+                tr("KWin's run-time switches go on for every user of this computer "
+                   "(/etc/user-tmpfiles.d/vitrine-host-kwin.conf, whose comments say what each "
+                   "does); another KWin ignores them.") +
+                "</li>";
+    }
+    html += "<li>" +
+            tr("Revert… puts the distribution's packages back, from your repositories, one "
+               "package or several at once.") +
+            "</li><li>" +
+            tr("Programs started from now on use them, the desktop from your next login: nothing "
+               "is restarted.") +
+            "</li></ul><p>" +
+            tr("If the desktop does not start afterwards, log in on a text console (Ctrl+Alt+F3) "
+               "and put the distribution's packages back:") +
+            "</p><pre>" + consoleCommands(packages).toHtmlEscaped() + "</pre>";
+    return html;
+}
+
+bool installAll(QWidget *parent, const QStringList &ids)
+{
+    HostKdeMonitor *monitor = HostKdeMonitor::instance();
+    QList<Status> statuses;
+    QStringList ready;
+    QStringList titles;
+
+    if (monitor->isBusy()) {
+        return false;
+    }
+    for (const QString &id : ids) {
+        const Status s = monitor->status(id);
+        if (s.canInstall()) {
+            statuses << s;
+            ready << id;
+            titles << s.target.title;
+        }
+    }
+    if (ready.size() <= 1) {
+        return !ready.isEmpty() && install(parent, ready.first());
+    }
+    const QString title = tr("Install Vitrine's %1").arg(names(titles));
+    if (!Widgets::confirm(parent, QMessageBox::Warning, title, installAllText(statuses),
+                          tr("&Install…"),
+                          Icons::themed({"run-install", "system-software-install"},
+                                        QStyle::SP_DialogApplyButton))) {
+        return false;
+    }
+    /* a package that is not Vitrine's: its own warning before it goes */
+    for (const Status &s : std::as_const(statuses)) {
+        if (const QString foreign = foreignText(s);
+            !foreign.isEmpty() &&
+            !Widgets::confirm(parent, QMessageBox::Warning,
+                              tr("Replace Another %1").arg(s.target.title), foreign,
+                              tr("&Replace It"),
+                              Icons::themed({"edit-delete-shred", "edit-delete"},
+                                            QStyle::SP_DialogDiscardButton))) {
+            return false;
+        }
+    }
+    QList<std::pair<QString, HostKde::Build>> builds;
+    for (qsizetype i = 0; i < ready.size(); i++) {
+        builds << std::make_pair(ready[i], statuses[i].build);
+    }
+    monitor->install(builds);
+    return true;
+}
+
 bool revert(QWidget *parent, const QStringList &ids)
 {
     HostKdeMonitor *monitor = HostKdeMonitor::instance();

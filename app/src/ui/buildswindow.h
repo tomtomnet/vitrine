@@ -98,6 +98,8 @@ private:
     /* The components of the selection: one, or a group's (the host
        packages': those Vitrine installed) */
     QStringList selectedComponents() const;
+    /* The Host desktop group's packages that can be installed now: Install All… */
+    QStringList installableHostPackages() const;
 
     BuildManager *m_manager;
     QSplitter *m_split = nullptr;

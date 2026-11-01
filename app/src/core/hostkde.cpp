@@ -1188,16 +1188,23 @@ static QString executable(const char *name, const char *fallback)
     return found.isEmpty() ? QString::fromLatin1(fallback) : found;
 }
 
-QStringList installCommand(const QString &sourceDir, const Build &build)
+QStringList installCommand(const QString &sourceDir, const QList<Build> &builds)
 {
     QStringList command = {executable("pkexec", "/usr/bin/pkexec"), executable("bash", "/bin/bash"),
                            sourceDir + "/install.sh", "install"};
 
-    for (const Build::Rpm &rpm : build.rpms) {
-        const QString file = build.dir + '/' + rpm.file;
-        command << file + '=' + fileHash(file);
+    for (const Build &build : builds) {
+        for (const Build::Rpm &rpm : build.rpms) {
+            const QString file = build.dir + '/' + rpm.file;
+            command << file + '=' + fileHash(file);
+        }
     }
     return command;
+}
+
+QStringList installCommand(const QString &sourceDir, const Build &build)
+{
+    return installCommand(sourceDir, QList<Build>{build});
 }
 
 QStringList revertCommand(const QString &sourceDir, const QHash<QString, QStringList> &digests)
@@ -1366,8 +1373,27 @@ void HostKdeMonitor::apply(const Reading &reading)
 
 void HostKdeMonitor::install(const QString &id, const Build &build)
 {
-    if (!m_process && target(id).isValid()) {
-        run(installCommand(sourceDir(), build), {id}, true, build);
+    install(QList<std::pair<QString, Build>>{{id, build}});
+}
+
+void HostKdeMonitor::install(const QList<std::pair<QString, Build>> &builds)
+{
+    QList<std::pair<QString, Build>> installs;
+    QStringList ids;
+    QList<Build> list;
+
+    if (m_process) {
+        return;
+    }
+    for (const auto &item : builds) {
+        if (target(item.first).isValid()) {
+            installs << item;
+            ids << item.first;
+            list << item.second;
+        }
+    }
+    if (!installs.isEmpty()) {
+        run(installCommand(sourceDir(), list), ids, true, installs);
     }
 }
 
@@ -1390,7 +1416,7 @@ void HostKdeMonitor::revert(const QStringList &ids)
 }
 
 void HostKdeMonitor::run(const QStringList &command, const QStringList &ids, bool install,
-                         const Build &build)
+                         const QList<std::pair<QString, Build>> &installs)
 {
     m_log.clear();
     m_partial.clear();
@@ -1412,7 +1438,7 @@ void HostKdeMonitor::run(const QStringList &command, const QStringList &ids, boo
         }
         emit output(text);
     });
-    const auto done = [this, ids, install, build](int code, bool crashed) {
+    const auto done = [this, ids, install, installs](int code, bool crashed) {
         QString error;
         /* pkexec: 126 when its dialog was dismissed, 127 when not authorized */
         const bool cancelled = !crashed && (code == 126 || code == 127);
@@ -1425,10 +1451,14 @@ void HostKdeMonitor::run(const QStringList &command, const QStringList &ids, boo
                     : !m_error.isEmpty() ? m_error
                                          : tr("install.sh failed (status %1)").arg(code);
         } else if (install) {
-            const QString out = outDir(ids.value(0));
-            if (!Record::of(build, QDateTime::currentDateTimeUtc(), target(ids.value(0)).against)
-                     .write(Record::path(out))) {
-                error = tr("Installed, but Vitrine could not write its record in %1").arg(out);
+            /* the record of each package installed: Vitrine's own, by its digests */
+            for (const auto &item : installs) {
+                const QString out = outDir(item.first);
+                if (!Record::of(item.second, QDateTime::currentDateTimeUtc(), target(item.first).against)
+                         .write(Record::path(out)) &&
+                    error.isEmpty()) {
+                    error = tr("Installed, but Vitrine could not write its record in %1").arg(out);
+                }
             }
         } else {
             for (const QString &id : ids) {

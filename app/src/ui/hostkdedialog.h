@@ -29,6 +29,8 @@ QString names(const QStringList &packages);
 QStringList replaced(const HostKde::Status &status);
 
 QString installText(const HostKde::Status &status, const QStringList &packages);
+/* The same for several packages installed at once (Install All…) */
+QString installAllText(const QList<HostKde::Status> &statuses);
 /* The warning before a package that is not Vitrine's goes; empty if it is not one */
 QString foreignText(const HostKde::Status &status);
 QString revertText(const QList<HostKde::Status> &statuses);
@@ -38,6 +40,9 @@ QString consoleCommands(const QStringList &packages);
 /* Asks, then starts the install of @id's build for this computer; false if
    it did not start (not possible, or not wanted) */
 bool install(QWidget *parent, const QString &id);
+/* The same for those of @ids that can be installed, at once (one password, one
+   transaction): the Host desktop group's Install All… */
+bool installAll(QWidget *parent, const QStringList &ids);
 /* The same for a revert of @ids, at once (one password) */
 bool revert(QWidget *parent, const QStringList &ids);
 

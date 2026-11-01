@@ -283,6 +283,9 @@ Status status(const Target &target, const System &system, const Recipe &recipe,
 
 /* pkexec bash <install.sh> install FILE=SHA256...: @build's RPMs */
 QStringList installCommand(const QString &sourceDir, const Build &build);
+/* The same for several builds at once: one password, one transaction (install.sh groups
+   their files by source package) */
+QStringList installCommand(const QString &sourceDir, const QList<Build> &builds);
 /* pkexec bash <install.sh> revert PACKAGE=DIGEST...: for each package, the
    digests of Vitrine's (its builds' and its record's) */
 QStringList revertCommand(const QString &sourceDir, const QHash<QString, QStringList> &digests);
@@ -354,6 +357,9 @@ public:
     QStringList busyWith() const { return m_busy; }
     /* install.sh, with pkexec: @build's RPMs, then the record of @id */
     void install(const QString &id, const HostKde::Build &build);
+    /* The same for several packages at once (the group's Install All…): each id with its
+       build, one password, one transaction, then the record of each */
+    void install(const QList<std::pair<QString, HostKde::Build>> &builds);
     /* install.sh revert, with pkexec, of @ids at once: their records go */
     void revert(const QStringList &ids);
     /* Of the last install or revert */
@@ -369,7 +375,7 @@ signals:
 private:
     void apply(const Reading &reading);
     void run(const QStringList &command, const QStringList &ids, bool install,
-             const HostKde::Build &build);
+             const QList<std::pair<QString, HostKde::Build>> &installs);
 
     QString m_sourceDir;
     QString m_dataDir;

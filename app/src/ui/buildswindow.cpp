@@ -459,8 +459,14 @@ BuildsWindow::BuildsWindow(QWidget *parent)
     connect(m_build, &QPushButton::clicked, this, [this]() { buildSelected(); });
     connect(m_all, &QPushButton::clicked, m_manager, &BuildManager::buildOutdated);
     connect(m_stop, &QPushButton::clicked, m_manager, &BuildManager::cancel);
-    connect(m_install, &QPushButton::clicked, this,
-            [this]() { HostKdeDialog::install(this, selected()); });
+    connect(m_install, &QPushButton::clicked, this, [this]() {
+        /* the group: every package built and ready, at once (one password) */
+        if (selected() == "system") {
+            HostKdeDialog::installAll(this, installableHostPackages());
+        } else {
+            HostKdeDialog::install(this, selected());
+        }
+    });
     connect(m_revert, &QPushButton::clicked, this,
             [this]() { HostKdeDialog::revert(this, {selected()}); });
     connect(m_clear, &QPushButton::clicked, this, &BuildsWindow::clearCache);
@@ -854,6 +860,21 @@ bool BuildsWindow::systemSelected() const
 {
     const QString id = selected();
     return m_items.contains(id) && m_manager->component(id).kind == Kind::System;
+}
+
+QStringList BuildsWindow::installableHostPackages() const
+{
+    QStringList ids;
+
+    if (const QTreeWidgetItem *group = m_groups.value("system")) {
+        for (int i = 0; i < group->childCount(); i++) {
+            const QString child = group->child(i)->data(NameColumn, IdRole).toString();
+            if (m_manager->systemStatus(child).canInstall()) {
+                ids << child;
+            }
+        }
+    }
+    return ids;
 }
 
 QStringList BuildsWindow::selectedComponents() const
@@ -1271,10 +1292,28 @@ void BuildsWindow::updateButtons()
     m_background->setVisible(running);
     m_clear->setEnabled(!running);
 
-    /* a host package: installed by hand, after warnings */
+    /* a host package: installed by hand, after warnings; the Host desktop group: all those
+       ready at once, one password (Install All…) */
     const bool host = systemSelected();
-    m_install->setVisible(host);
+    const bool hostGroup = id == "system" && m_groups.contains(id);
+    m_install->setVisible(host || hostGroup);
+    m_install->setText(hostGroup ? tr("&Install All…") : tr("&Install…"));
     m_revert->setVisible(host);
+    if (hostGroup) {
+        const QStringList ready = installableHostPackages();
+        QStringList readyTitles;
+        for (const QString &c : ready) {
+            readyTitles << m_manager->systemStatus(c).target.title;
+        }
+        const bool busy = HostKdeMonitor::instance()->isBusy() ||
+                          (running && ready.contains(m_manager->current()));
+        m_install->setEnabled(!busy && !ready.isEmpty());
+        m_install->setToolTip(ready.isEmpty()
+                                  ? tr("No build is waiting to be installed")
+                                  : tr("Install %1 on this computer at once, with the "
+                                       "administrator's password")
+                                        .arg(HostKdeDialog::names(readyTitles)));
+    }
     if (host) {
         const HostKde::Status status = m_manager->systemStatus(id);
         const bool busy = HostKdeMonitor::instance()->isBusy() || (running && m_manager->current() == id);
