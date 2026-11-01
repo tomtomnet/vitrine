@@ -39,6 +39,7 @@
 
 static const char kFair[] = "/sys/kernel/debug/sched/fair_server";
 static const char kUdmabuf[] = "/sys/module/udmabuf/parameters";
+static const char kThp[] = "/sys/kernel/mm/transparent_hugepage/shmem_enabled";
 
 /* What QCOMPARE prints of a Status */
 char *toString(const HostSettings::Status &status)
@@ -207,6 +208,40 @@ private:
         }
         return false;
     }
+    /* The index of the first line of @spy starting with @start, or -1 */
+    static qsizetype lineOf(const QSignalSpy &spy, const QString &start)
+    {
+        for (qsizetype i = 0; i < spy.size(); i++) {
+            if (spy.at(i).value(0).toString().startsWith(start)) {
+                return i;
+            }
+        }
+        return -1;
+    }
+    /* The helper answered the request that put @pid in front or behind */
+    static bool tuned(const QSignalSpy &spy, qint64 pid)
+    {
+        return saw(spy, QString("ok rt %1:").arg(pid)) || saw(spy, QString("ok behind %1:").arg(pid));
+    }
+    /* The choice in brackets of shmem_enabled in the fake tree */
+    QString thp() const
+    {
+        const QString text = QString::fromLatin1(readFile(m_root + kThp));
+        const qsizetype open = text.indexOf('['), close = text.indexOf(']');
+        return open >= 0 && close > open ? text.mid(open + 1, close - open - 1) : QString();
+    }
+    /* Threads of @pid at SCHED_FIFO, as the fake kernel has them */
+    int fifoThreads(qint64 pid) const
+    {
+        const QStringList tids =
+            QDir(QString("/proc/%1/task").arg(pid)).entryList(QDir::Dirs | QDir::NoDotAndDotDot);
+        int n = 0;
+        for (const QByteArray &line : readFile(m_root + "/sched").split('\n')) {
+            const QList<QByteArray> f = line.split(' ');
+            n += f.size() == 4 && f[1] == "1" && tids.contains(QString::fromLatin1(f[0]));
+        }
+        return n;
+    }
 
 private slots:
     void initTestCase() { QStandardPaths::setTestModeEnabled(true); }
@@ -232,6 +267,7 @@ private slots:
         /* the kernel's defaults */
         writeFile(m_root + kUdmabuf + "/list_limit", "1024\n");
         writeFile(m_root + kUdmabuf + "/size_limit_mb", "64\n");
+        writeFile(m_root + kThp, "always within_size advise [never] deny force\n");
         qputenv("VITRINE_HELPER_TEST_ROOT", m_root.toLocal8Bit());
     }
 
@@ -274,8 +310,10 @@ private slots:
         hs.tune(qemu.pid());
         QTRY_VERIFY(saw(lines, QString("ok rt %1").arg(qemu.pid())));
         QVERIFY(saw(lines, "ok fair-server on: 2 cpus"));
+        QVERIFY(saw(lines, "ok thp on: advise (was never)"));
         QVERIFY(saw(lines, "ok gpu-floor card1 1800 MHz"));
         QCOMPARE(fair(0), QString("10000000/1000000"));
+        QCOMPARE(thp(), QString("advise"));
         QCOMPARE(level(), QString("manual"));
         QCOMPARE(odTable(), od(1800, 2700).trimmed());
         QVERIFY(notices.isEmpty());
@@ -285,12 +323,17 @@ private slots:
         QTRY_COMPARE(finished.size(), 1);
         QVERIFY(!hs.helperRunning());
         QCOMPARE(fair(0), QString("1000000000/50000000"));
+        QCOMPARE(thp(), QString("never"));
         QCOMPARE(level(), QString("auto"));
         QCOMPARE(odTable(), od(800, 2700).trimmed());
         QVERIFY(notices.isEmpty());
     }
 
-    /* A second VM joins the same helper; the settings go with the last one */
+    /*
+     * A second VM joins the same helper, behind the first one: one VM
+     * real-time at a time.  Left alone, it comes to the front.  The settings
+     * go with the last one.
+     */
     void twoVms()
     {
         FakeQemu q1, q2;
@@ -298,19 +341,26 @@ private slots:
         QSignalSpy lines(&hs, &HostSettings::helperLine), finished(&hs, &HostSettings::helperFinished);
         fake(hs);
         hs.tune(q1.pid());
-        QTRY_VERIFY(saw(lines, QString("ok rt %1").arg(q1.pid())));
+        QTRY_VERIFY(saw(lines, QString("ok rt %1:").arg(q1.pid())));
         hs.tune(q2.pid());
-        QTRY_VERIFY(saw(lines, QString("ok rt %1").arg(q2.pid())));
+        QTRY_VERIFY(saw(lines, QString("ok behind %1:").arg(q2.pid())));
+        QVERIFY(!saw(lines, QString("ok rt %1:").arg(q2.pid())));
         QVERIFY(saw(lines, "ok fair-server on: already"));
+        QVERIFY(saw(lines, "ok thp on: already"));
         QVERIFY(saw(lines, "ok gpu-floor card1 auto: already"));
+        QVERIFY(fifoThreads(q1.pid()) > 0);
+        QCOMPARE(fifoThreads(q2.pid()), 0);
         q1.stop();
         QTRY_VERIFY(saw(lines, QString("exited %1").arg(q1.pid())));
-        QTest::qWait(200);
+        QTRY_VERIFY(saw(lines, QString("ok rt %1:").arg(q2.pid())));
+        QVERIFY(fifoThreads(q2.pid()) > 0);
         QVERIFY(hs.helperRunning());
         QCOMPARE(fair(1), QString("10000000/1000000"));
+        QCOMPARE(thp(), QString("advise"));
         q2.stop();
         QTRY_COMPARE(finished.size(), 1);
         QCOMPARE(fair(1), QString("1000000000/50000000"));
+        QCOMPARE(thp(), QString("never"));
         QCOMPARE(level(), QString("auto"));
     }
 
@@ -534,14 +584,14 @@ private slots:
         /* joined the group */
         writeFile(m_root + "/answer", "0\n");
         hs.tune(q2.pid());
-        QTRY_VERIFY(saw(lines, QString("ok rt %1").arg(q2.pid())));
+        QTRY_VERIFY(tuned(lines, q2.pid()));
         QCOMPARE(polkitLog("pkcheck").size(), 2);
         QCOMPARE(polkitLog("pkexec").size(), 1);
         /* the installed helper, the one the action names, and its verb */
         QCOMPARE(polkitLog("pkexec").first(),
                  QString("--disable-internal-agent " VITRINE_HELPER_PATH " session"));
         /* the one started before, untuned until now, with it */
-        QTRY_VERIFY(saw(lines, QString("ok rt %1").arg(q1.pid())));
+        QTRY_VERIFY(tuned(lines, q1.pid()));
         QTRY_VERIFY(!hs.untuned());
         QCOMPARE(polkitLog("pkexec").size(), 1);
         q1.stop();
@@ -594,8 +644,9 @@ private slots:
         fake(hs);
         hs.tune(q1.pid());
         QTRY_VERIFY(saw(lines, QString("skip rt %1").arg(q1.pid())));
+        /* behind the first one, which would be real-time */
         hs.tune(q2.pid());
-        QTRY_VERIFY(saw(lines, QString("skip rt %1").arg(q2.pid())));
+        QTRY_VERIFY(saw(lines, QString("ok behind %1: 0 threads ordinary, 0 vCPUs").arg(q2.pid())));
         QVERIFY(saw(lines, "ok gpu-floor card1 1800 MHz"));
         QCOMPARE(notices.size(), 1);
         const QString off = "Real-time QEMU threads are off: the kernel's lockdown (Secure Boot) blocks "
@@ -801,9 +852,9 @@ private slots:
 
     /*
      * VMs found running (as at vitrine's start): tuned as their runners see
-     * them run, then focus priority between them.  "three" starts while
-     * "one" is in front; "four" shows in QEMU's own window (SDL), whose
-     * focus is not known.
+     * them run, then focus priority between them, one VM real-time at a
+     * time.  "four" shows in QEMU's own window (SDL), which KWin reports
+     * active (windowActivated()); "three" starts while its window is active.
      */
     void runningVmsAndFocus()
     {
@@ -826,47 +877,88 @@ private slots:
             writeFile(run + "/qemu.pid", QByteArray::number(qemus.back()->pid()) + "\n");
             qmps.push_back(std::make_unique<FakeQmp>(run + "/qmp.sock"));
         }
+        const qint64 one = qemus[0]->pid(), two = qemus[1]->pid(), three = qemus[2]->pid(),
+                     four = qemus[3]->pid();
+        /* a VM's end, as its runner sees it: QEMU gone, its QMP closed */
+        auto stop = [&](int i) {
+            qemus[size_t(i)]->stop();
+            qmps[size_t(i)].reset();
+        };
+        /* the QEMUs with real-time threads, as the fake kernel has them */
+        auto realtime = [&]() {
+            QList<qint64> out;
+            for (const auto &qemu : qemus) {
+                if (fifoThreads(qemu->pid()) > 0) {
+                    out << qemu->pid();
+                }
+            }
+            return out;
+        };
         VmStore store(vms.path());
         HostSettings hs(&store);
-        QSignalSpy lines(&hs, &HostSettings::helperLine), notices(&hs, &HostSettings::notice);
+        QSignalSpy lines(&hs, &HostSettings::helperLine), notices(&hs, &HostSettings::notice),
+            focus(&hs, &HostSettings::windowFocusWanted);
         fake(hs);
         QCOMPARE(HostSettings::instance(), &hs);
+        QVERIFY(!hs.wantsWindowFocus());
         for (const QString id : {"one", "two", "four"}) {
             store.find(id)->runner()->attach(store.find(id)->args());
         }
-        for (int i : {0, 1, 3}) {
-            QTRY_VERIFY(saw(lines, QString("ok rt %1").arg(qemus[i]->pid())));
-        }
+        /* the first one in front, the others behind it, SDL's too */
+        QTRY_VERIFY(saw(lines, QString("ok rt %1:").arg(one)));
+        QTRY_VERIFY(saw(lines, QString("ok behind %1: 0 threads ordinary, 2 vCPUs at nice -5").arg(two)));
+        QTRY_VERIFY(saw(lines, QString("ok behind %1: 0 threads ordinary, 2 vCPUs at nice -5").arg(four)));
+        QCOMPARE(realtime(), QList<qint64>({one}));
         QCOMPARE(fair(0), QString("10000000/1000000"));
         QVERIFY(notices.isEmpty());
+        /* "four" is in a window of QEMU's own: KWin is asked which is active */
+        QVERIFY(hs.wantsWindowFocus());
+        QCOMPARE(focus.size(), 1);
+        QCOMPARE(focus.first().first().toBool(), true);
 
-        /* "one" in front: real-time, the others behind (the helper's
-           behind), "four" (SDL) left as it is */
-        lines.clear();
-        hs.setFront("one");
-        QTRY_VERIFY(saw(lines, QString("ok rt %1").arg(qemus[0]->pid())));
-        QTRY_VERIFY(saw(lines, QString("ok behind %1: 4 threads ordinary, 2 vCPUs at nice -5")
-                                   .arg(qemus[1]->pid())));
-        QVERIFY(!saw(lines, QString("ok behind %1").arg(qemus[3]->pid())));
         /* the same again: nothing */
         lines.clear();
         hs.setFront("one");
         QTest::qWait(100);
         QVERIFY(lines.isEmpty());
-        /* a VM started meanwhile: behind from the start, never real-time */
-        store.find("three")->runner()->attach(store.find("three")->args());
-        QTRY_VERIFY(saw(lines, QString("ok behind %1").arg(qemus[2]->pid())));
-        QVERIFY(!saw(lines, QString("ok rt %1").arg(qemus[2]->pid())));
-        /* "two" in front */
-        lines.clear();
+
+        /* "two" in front: the others behind first, "four" too, then "two" */
         hs.setFront("two");
-        QTRY_VERIFY(saw(lines, QString("ok rt %1").arg(qemus[1]->pid())));
-        QTRY_VERIFY(saw(lines, QString("ok behind %1").arg(qemus[0]->pid())));
-        QTRY_VERIFY(saw(lines, QString("ok behind %1").arg(qemus[2]->pid())));
-        QVERIFY(!saw(lines, QString("ok behind %1").arg(qemus[3]->pid())));
-        /* unknown VMs change nothing */
+        QTRY_VERIFY(saw(lines, QString("ok rt %1:").arg(two)));
+        QVERIFY(lineOf(lines, QString("ok behind %1: 4 threads ordinary").arg(one)) >= 0);
+        QVERIFY(lineOf(lines, QString("ok behind %1:").arg(one)) < lineOf(lines, QString("ok rt %1:").arg(two)));
+        QVERIFY(lineOf(lines, QString("ok behind %1:").arg(four)) < lineOf(lines, QString("ok rt %1:").arg(two)));
+        QCOMPARE(realtime(), QList<qint64>({two}));
+
+        /* "three"'s window active before its start is seen: in front from it */
+        lines.clear();
+        hs.windowActivated(three);
+        QTest::qWait(100);
+        QVERIFY(lines.isEmpty());
+        store.find("three")->runner()->attach(store.find("three")->args());
+        QTRY_VERIFY(saw(lines, QString("ok rt %1:").arg(three)));
+        QVERIFY(lineOf(lines, QString("ok behind %1:").arg(two)) < lineOf(lines, QString("ok rt %1:").arg(three)));
+        QCOMPARE(realtime(), QList<qint64>({three}));
+
+        /* SDL's window active (KWin's report): "four" in front */
+        lines.clear();
+        hs.windowActivated(four);
+        QTRY_VERIFY(saw(lines, QString("ok rt %1:").arg(four)));
+        for (const qint64 other : {one, two, three}) {
+            QVERIFY(lineOf(lines, QString("ok behind %1:").arg(other)) >= 0);
+            QVERIFY(lineOf(lines, QString("ok behind %1:").arg(other)) < lineOf(lines, QString("ok rt %1:").arg(four)));
+        }
+        QCOMPARE(realtime(), QList<qint64>({four}));
+
+        /* another window (vitrine's, a host app's), unknown VMs: nothing */
+        lines.clear();
+        hs.windowActivated(getpid());
+        hs.windowActivated(0);
         hs.setFront("five");
         hs.setFront(QString());
+        QTest::qWait(100);
+        QVERIFY(lines.isEmpty());
+        QCOMPARE(realtime(), QList<qint64>({four}));
         /* QEMU is asked nothing: the helper does it all */
         for (const auto &qmp : qmps) {
             for (const QJsonObject &c : qmp->commands) {
@@ -874,19 +966,68 @@ private slots:
             }
         }
 
+        /* the one in front stops: none in front among three; then the one
+           left alone comes to the front */
+        lines.clear();
+        stop(3);
+        QTRY_VERIFY(saw(lines, QString("exited %1").arg(four)));
+        QTRY_VERIFY(!hs.wantsWindowFocus());
+        QCOMPARE(focus.size(), 2);
+        QCOMPARE(focus.last().first().toBool(), false);
+        stop(1);
+        QTRY_VERIFY(saw(lines, QString("exited %1").arg(two)));
+        QTest::qWait(100);
+        QVERIFY(!saw(lines, "ok rt "));
+        QCOMPARE(realtime(), QList<qint64>());
+        stop(2);
+        QTRY_VERIFY(saw(lines, QString("ok rt %1:").arg(one)));
+        QCOMPARE(realtime(), QList<qint64>({one}));
+
         /* tuning turned off: every thread back, by the helper's release */
         lines.clear();
         HostSettings::setEnabled(false);
         hs.preferencesChanged();
         QTRY_VERIFY(!hs.helperRunning());
-        for (const auto &qemu : qemus) {
-            QVERIFY(saw(lines, QString("restored rt %1: ").arg(qemu->pid())));
-        }
+        QVERIFY(saw(lines, QString("restored rt %1: ").arg(one)));
+        QCOMPARE(realtime(), QList<qint64>());
 
+        qemus[0]->stop();
+        QTRY_COMPARE(fair(0), QString("1000000000/50000000"));
+        QTRY_VERIFY(!hs.helperRunning());
+    }
+
+    /* Two VMs started at once, each in QEMU's own window, without KWin: one
+       real-time, the other behind - never both, as before */
+    void ownWindowsNeverBothRealtime()
+    {
+        QTemporaryDir runtime(QDir::tempPath() + "/vt-XXXXXX");
+        QTemporaryDir vms;
+        QVERIFY(runtime.isValid() && vms.isValid());
+        qputenv("XDG_RUNTIME_DIR", runtime.path().toLocal8Bit());
+        std::vector<std::unique_ptr<FakeQemu>> qemus;
+        std::vector<std::unique_ptr<FakeQmp>> qmps;
+        for (const QString id : {"a", "b"}) {
+            QDir(vms.path()).mkpath(id);
+            writeFile(vms.path() + "/" + id + "/vm.args", "-name " + id.toLatin1() + "\n-display sdl\n");
+            const QString run = Paths::vmRuntimeDir(id);
+            qemus.push_back(std::make_unique<FakeQemu>(
+                QStringList{"-qmp", QString("unix:%1/qmp.sock,server=on,wait=off").arg(run)}));
+            writeFile(run + "/qemu.pid", QByteArray::number(qemus.back()->pid()) + "\n");
+            qmps.push_back(std::make_unique<FakeQmp>(run + "/qmp.sock"));
+        }
+        VmStore store(vms.path());
+        HostSettings hs(&store);
+        QSignalSpy lines(&hs, &HostSettings::helperLine);
+        fake(hs);
+        for (const QString id : {"a", "b"}) {
+            store.find(id)->runner()->attach(store.find(id)->args());
+        }
+        QTRY_VERIFY(tuned(lines, qemus[0]->pid()) && tuned(lines, qemus[1]->pid()));
+        QTest::qWait(100);
+        QCOMPARE(int(fifoThreads(qemus[0]->pid()) > 0) + int(fifoThreads(qemus[1]->pid()) > 0), 1);
         for (auto &qemu : qemus) {
             qemu->stop();
         }
-        QTRY_COMPARE(fair(0), QString("1000000000/50000000"));
         QTRY_VERIFY(!hs.helperRunning());
     }
 
@@ -1337,8 +1478,8 @@ private slots:
         QCOMPARE(readFile(m_root + "/etc/group"),
                  QByteArray("wheel:x:10:\nvitrine:x:977:") + pw->pw_name);
         /* the running VMs, tuned now */
-        QTRY_VERIFY(saw(lines, QString("ok rt %1").arg(q1.pid())));
-        QTRY_VERIFY(saw(lines, QString("ok rt %1").arg(q2.pid())));
+        QTRY_VERIFY(tuned(lines, q1.pid()));
+        QTRY_VERIFY(tuned(lines, q2.pid()));
         QTRY_VERIFY(!hs.untuned());
     }
 
@@ -1535,8 +1676,8 @@ private slots:
             QTRY_VERIFY(hs.untuned());
             writeFile(m_root + "/answer", "0\n");
             hs.tune(q3.pid());
-            QTRY_VERIFY(saw(lines, QString("ok rt %1").arg(q3.pid())));
-            QTRY_VERIFY(saw(lines, QString("ok rt %1").arg(q2.pid())));
+            QTRY_VERIFY(tuned(lines, q3.pid()));
+            QTRY_VERIFY(tuned(lines, q2.pid()));
             QTRY_VERIFY(!hs.untuned());
             QCOMPARE(polkitLog("pkexec").size(), 1);
         }
@@ -1709,7 +1850,7 @@ private slots:
         QVERIFY(answered(answers, q1.pid(), true, QString()));
         QCOMPARE(udmabuf(), QString("65536/2048"));
         hs.tune(q2.pid());
-        QTRY_VERIFY(saw(lines, QString("ok rt %1").arg(q2.pid())));
+        QTRY_VERIFY(tuned(lines, q2.pid()));
         QVERIFY(!saw(lines, QString("ok udmabuf %1").arg(q2.pid())));
         QCOMPARE(answers.size(), 1);
         /* the one that asked ends: back, while the other runs on */
@@ -1758,7 +1899,11 @@ private slots:
             QVERIFY(answered(answers, q2.pid(), false,
                              "the installed vitrine-helper is older than Vitrine and cannot raise "
                              "them: install it again"));
-            QVERIFY(notices.isEmpty());
+            /* nor huge pages: said once */
+            QTRY_COMPARE(notices.size(), 1);
+            QCOMPARE(notices.first().first().toString(),
+                     QString("Host tuning: the installed vitrine-helper is older than Vitrine and "
+                             "cannot turn on huge pages for VM memory: install it again."));
         }
         {
             /* tuning off: at once */
@@ -1914,7 +2059,7 @@ private slots:
         QTRY_VERIFY(store.find("b"));
         store.find("b")->runner()->attach(store.find("b")->args());
         QTRY_VERIFY(saw(lines, QString("ok udmabuf %1: already").arg(b)));
-        QTRY_VERIFY(saw(lines, QString("ok rt %1").arg(b)));
+        QTRY_VERIFY(tuned(lines, b));
         watch.poll();
         QVERIFY(watch.issues().isEmpty());
 

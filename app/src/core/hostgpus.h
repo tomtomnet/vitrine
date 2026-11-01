@@ -135,5 +135,7 @@ PathState pathState(const QString &path);
 
 /* "/sys" and "/dev" elsewhere: a fake host, for tests */
 void setRoots(const QString &sysfs, const QString &dev);
+/* The sysfs it reads: "/sys", or setRoots()'s */
+QString sysfs();
 
 }

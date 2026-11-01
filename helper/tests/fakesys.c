@@ -9,9 +9,10 @@
  * order of the writes is tested, not just their values.  A file with a
  * sibling <file>.stuck takes writes without keeping them (for
  * pp_od_clk_voltage, its commits), for the read back; a server's file with
- * <file>.writes N takes N more writes, then refuses them.  Other files (the
- * udmabuf module's parameters) take any value, as the kernel's int
- * parameters do.  Every write, scheduler and nice
+ * <file>.writes N takes N more writes, then refuses them.  transparent_
+ * hugepage/shmem_enabled takes one of its words and shows it in brackets
+ * among them, as the kernel does.  Other files (the udmabuf module's
+ * parameters) take any value, as the kernel's int parameters do.  Every write, scheduler and nice
  * change and log line is appended to <root>/journal.  Schedulers and nice
  * values are kept in <root>/sched (an unprivileged test cannot make threads
  * real-time nor lower their nice), where the next helper finds them, and
@@ -317,6 +318,36 @@ static int od_write(const char *path, const char *value)
     return 0;
 }
 
+/* transparent_hugepage/shmem_enabled: "always within_size advise [never] deny force" */
+static int thp_write(const char *path, const char *value)
+{
+    static const char *const words[] = {"always", "within_size", "advise", "never",
+                                        "deny",   "force",       NULL};
+    char text[160] = "", stuck[PATH_MAX];
+    size_t len = 0;
+    bool known = false;
+
+    for (int i = 0; words[i]; i++) {
+        known |= strcmp(value, words[i]) == 0;
+    }
+    if (!known) {
+        return -EINVAL;
+    }
+    snprintf(stuck, sizeof(stuck), "%s.stuck", path);
+    if (access(stuck, F_OK) == 0) {
+        /* taken, not kept */
+        return 0;
+    }
+    for (int i = 0; words[i]; i++) {
+        const bool chosen = strcmp(value, words[i]) == 0;
+
+        len += (size_t)snprintf(text + len, sizeof(text) - len, "%s%s%s%s", i ? " " : "",
+                                chosen ? "[" : "", words[i], chosen ? "]" : "");
+    }
+    snprintf(text + len, sizeof(text) - len, "\n");
+    return put(path, text);
+}
+
 int sys_write(const char *path, const char *value)
 {
     const char *rel = path + strlen(root);
@@ -334,6 +365,8 @@ int sys_write(const char *path, const char *value)
         err = level_write(path, v);
     } else if (strcmp(base, "pp_od_clk_voltage") == 0) {
         err = od_write(path, v);
+    } else if (strcmp(rel, THP_SHMEM) == 0) {
+        err = thp_write(path, v);
     } else {
         char stuck[PATH_MAX];
 

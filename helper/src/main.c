@@ -36,10 +36,12 @@
  *   udmabuf PID            the udmabuf limits raised (65536 entries, 2048 MB)
  *                          while that watched QEMU runs: one with a
  *                          native-context GPU
+ *   thp on|off             shared memory's transparent huge pages on madvise
+ *                          (from never only): the guest RAM QEMU madvises
  *   release                everything back now, then exit
  * The settings need a watched QEMU.  Replies start with a word: ready,
  * ok, skip (cannot apply here: lockdown, no debugfs, no amdgpu, no udmabuf
- * module...), error;
+ * module, no huge pages...), error;
  * unprompted: exited PID, restored ..., left ... (changed by someone else
  * since, so not restored), bye.
  *
@@ -205,15 +207,19 @@ static bool request(char *line)
         watch(words[1]);
     } else if (IS("fair-server", 1) && strcmp(words[1], "off") == 0) {
         fair_server_off();
+    } else if (IS("thp", 1) && strcmp(words[1], "off") == 0) {
+        thp_off();
     } else if (IS("gpu-floor", 2) && strcmp(words[2], "off") == 0) {
         gpu_floor(words[1], words[2]);
-    } else if ((IS("fair-server", 1) || IS("gpu-floor", 2) || IS("rt", 1) || IS("behind", 1) ||
-                IS("udmabuf", 1)) &&
+    } else if ((IS("fair-server", 1) || IS("thp", 1) || IS("gpu-floor", 2) || IS("rt", 1) ||
+                IS("behind", 1) || IS("udmabuf", 1)) &&
                !nwatched) {
         /* nothing applied while no VM runs */
         reply("error %s: watch a QEMU first", words[0]);
     } else if (IS("fair-server", 1) && strcmp(words[1], "on") == 0) {
         fair_server_on();
+    } else if (IS("thp", 1) && strcmp(words[1], "on") == 0) {
+        thp_on();
     } else if (IS("gpu-floor", 2)) {
         gpu_floor(words[1], words[2]);
     } else if (IS("rt", 1)) {

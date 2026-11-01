@@ -495,12 +495,23 @@ void rt_on(const char *arg)
         return;
     }
     if (!w->rt_once) {
-        /* before any change of this helper's: what is real-time already
-           (FIFO 1, the priority rt sets and puts back) is not its own */
         struct pass found = {.found = w->kept, .maxfound = MAX_KEPT};
+        bool niced = false;
 
-        each_thread(w->procfd, find_fifo1, &found);
-        w->nkept = found.nfound;
+        /*
+         * Another helper's record of it (vitrine restarted while it runs):
+         * what was real-time before is what that one kept - the rest of
+         * its real-time threads are that helper's rt, to be put back.
+         * Else, before any change of this helper's: what is real-time
+         * already (FIFO 1, the priority rt sets and puts back) is not its
+         * own.
+         */
+        if (sched_record(w, w->kept, &w->nkept, &niced)) {
+            w->behind |= niced;
+        } else {
+            each_thread(w->procfd, find_fifo1, &found);
+            w->nkept = found.nfound;
+        }
     }
     /* recorded first: a helper that dies leaves them to the next one */
     w->rt = true;
@@ -553,6 +564,20 @@ void behind(const char *arg)
         return;
     }
     w->rt = false;
+    /*
+     * Another helper's record of it (vitrine restarted while it runs, the
+     * old helper going on): the threads that one made real-time are known,
+     * and go back as if this one had - else a VM that was in front stayed
+     * real-time beside the one in front now
+     */
+    if (!w->rt_once) {
+        bool niced = false;
+
+        if (sched_record(w, w->kept, &w->nkept, &niced)) {
+            w->rt_once = true;
+            w->behind |= niced;
+        }
+    }
     if (settings_bound(&why)) {
         const bool was = w->behind;
 

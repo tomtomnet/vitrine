@@ -1,0 +1,323 @@
+#!/usr/bin/env python3
+"""Keep an Intel Xe GPU out of its deep idle (gt-c6) while someone uses the machine: the device's forcewake
+(debugfs forcewake_all, held open) from the first key or pointer event until HOLD seconds without input.
+On an AMD GPU (2026-10-28, the RX 6900 XT): GFXOFF disallowed instead (debugfs amdgpu_gfxoff = 0, back to 1 after
+--gfxoff-hold s; the driver counts the requests, so each hold writes 0 once and 1 once). Held for good it took the
+6900 XT's bare keys 8.9-9.2 -> 8.1-8.2 ms p50, 10.8-10.9 -> 9.5-9.8 p90, at no cost at rest at 4K 240 (32-33 W either
+way; a69gk1); clocks held high did nothing. Held from each input event (a69ia2): 0.3 s 8.1 / 9.6-9.7 ms against
+8.6-8.9 / 10.9-11.0 without, at rest 33 W either way. --activity and --temp-refresh are the Xe's (GT C6, its hwmon): off on AMD.
+
+2026-10-22, the Arc Pro B50 at 4K 240: waking the GT from C6 cost a bare-metal key ~1-1.5 ms (the keys test p50
+8.8-9.4 -> 7.8-7.9 ms, p90 11.0-11.9 -> 9.5-9.7 with forcewake held), and holding it always costs ~9 W (card
+21.7 -> 30.7 W idle). During VM use the GT stays out of C6 on its own. Passive readers of /dev/input/event* (no
+grab); devices that appear later (uinput test keyboards) are picked up within a second.
+Hold times (bench/ab/b50_wake_hold_1022.sh): waking the GT at the key is all it takes - 0.01-0.02 s keep the whole
+gain (keys 7.6 ms, typing into Konsole 21.1 against 22.7) for +1.4-2.1 W of non-stop typing; 3 s cost +8.4 W.
+--activity (2026-10-22 night): also hold it while the GT draws continuously (out of C6 for more than --gt-busy of
+the time) and the CPUs are busy (more than --cpu-busy): a 60 fps video under a compile kept its cadence with mpv's
+display-resample at 96.7-99.1 % with the GT held, 54.8-85.3 % without (b50video / b50videofw); held it costs +5 W
+while a video plays (30.1 -> 35.2 W, b50vp), nothing with the CPUs idle, where the cadence held anyway. While held
+the GT's activity cannot be seen (it never enters C6): the hold lapses after --activity-hold s and the next sample
+(--sample s, the GT free to idle) decides again.
+--vm-activity: a running VM (a QEMU or crosvm process) counts as load like busy CPUs: a 60 fps video in the nested
+VM on an idle host kept its cadence with display-resample at 27.6-47.5 % with the GT free to idle, 100 % with it held
+(b50vmvid / b50vmvidfw); the VM's longer way to the screen misses the vblank when the GT wakes for each frame.
+--temp-refresh S (2026-10-23): the card's "pkg" temperature reading (and "pcie") updates only while the GT is awake,
+and the B50's firmware drives its fan from it: after a GPU load the reading stayed at the load's 65 C for minutes with
+the GT in C6 and the blower at ~3,000 rpm, until a GPU wake let both drop at once (b50pc, b50fr). Every S seconds,
+with the GT free to idle, the GT is woken for --poke-ms while the card's fan spins above --fan-above rpm within
+--fan-window s of the GT's last drawing (after a load: the firmware may be running on a frozen reading; a warm card
+resting above that speed is left alone) or a "pkg" reading is --stale C or more above the memory
+controller's (which keeps updating): after a 70 W load the fan then glides down within ~50 s (2,850 -> 1,460 rpm)
+instead of holding ~3,000 rpm; nothing at rest (b50fr: pokes every 2 s cost +0.3 W). The "pkg" against "mctrl" test
+alone came late (b50fs: the memory controller cools slowly, the fan held ~2,900 rpm for 20-25 s, then fell at once).
+    sudo ./gpu_input_awake.py [--hold 0.02] [--activity [--cpu-busy 0.5] [--vm-activity] [--gt-busy 0.1]
+                              [--activity-hold 4] [--sample 0.1] [--busy-samples 2]] [--temp-refresh 2 [--fan-above 1500]
+                              [--fan-window 120] [--stale 2] [--poke-ms 20]]
+                              [--forcewake PATH] [--wait 60] [--verbose]
+"""
+import argparse
+import glob
+import os
+import select
+import signal
+import sys
+import time
+
+ap = argparse.ArgumentParser()
+ap.add_argument("--hold", type=float, default=0.02, help="seconds without input before the GPU may idle again")
+ap.add_argument("--gfxoff-hold", type=float, default=0.3,
+                help="AMD: the hold instead of --hold (a69ia2: 0.3 s 8.1 / 9.6-9.7 ms, 0.02 s 8.1-8.3 / 9.8-10.3, none 8.6-8.9 / 10.9-11.0)")
+ap.add_argument("--activity", action="store_true", help="also hold while the GT draws continuously and the CPUs are busy")
+ap.add_argument("--cpu-busy", type=float, default=0.5, help="--activity: the CPUs' busy share that counts as loaded")
+ap.add_argument("--vm-activity", action="store_true", help="--activity: a running VM counts as load, busy CPUs or not")
+ap.add_argument("--gt-busy", type=float, default=0.1, help="--activity: the GT's share out of C6 that counts as drawing")
+ap.add_argument("--activity-hold", type=float, default=4.0, help="--activity: seconds a hold lasts before a new sample")
+ap.add_argument("--sample", type=float, default=0.1, help="--activity: seconds per sample of the CPUs and the GT")
+ap.add_argument("--busy-samples", type=int, default=2,
+                help="--activity: consecutive samples the GT must draw in before a hold (2026-10-24: one sample let a stray "
+                     "idle job of the VM hold the GT: the idle VM 25.7 W, C6 68 %%, instead of 22.1 W, 100 %%)")
+ap.add_argument("--temp-refresh", type=float, default=0.0,
+                help="seconds between checks of the card's temperature readings, a stale 'pkg' refreshed (0 = off)")
+ap.add_argument("--fan-above", type=float, default=1500.0, help="--temp-refresh: poke while the fan spins faster (rpm, 0 = never)")
+ap.add_argument("--fan-window", type=float, default=120.0, help="--temp-refresh: seconds after the GT last drew that --fan-above applies")
+ap.add_argument("--stale", type=float, default=2.0, help="--temp-refresh: 'pkg' this many C above 'mctrl' = stale")
+ap.add_argument("--poke-ms", type=float, default=20.0, help="--temp-refresh: milliseconds the GT is woken")
+ap.add_argument("--forcewake", default=None, help="debugfs forcewake_all (default: the first one found)")
+ap.add_argument("--wait", type=float, default=60.0, help="seconds to wait at start for the driver's debugfs, sysfs and hwmon files")
+ap.add_argument("--verbose", action="store_true")
+a = ap.parse_args()
+
+
+def wait_for(find):
+    # at boot the unit can start before the driver has registered its files (2026-10-23: two of three boots skipped by a
+    # unit condition checked ~150-200 ms before xe's forcewake_all appeared - xe registers debugfs and hwmon after its
+    # "Initialized" line): look again for up to --wait seconds
+    deadline = time.monotonic() + a.wait
+    while not (found := find()) and time.monotonic() < deadline:
+        time.sleep(0.5)
+    return found
+
+
+# the Xe's forcewake, or an AMD GPU's GFXOFF control (its counterpart of the Xe's C6) - whichever the driver registers
+fw_path = wait_for(lambda: (a.forcewake if os.path.exists(a.forcewake) else None) if a.forcewake
+                   else next(iter(sorted(glob.glob("/sys/kernel/debug/dri/*/forcewake_all"))
+                                  + sorted(glob.glob("/sys/kernel/debug/dri/*/amdgpu_gfxoff"))), None))
+backend = "amdgpu" if fw_path and fw_path.endswith("amdgpu_gfxoff") else "xe"
+if not fw_path:
+    print("neither forcewake_all nor amdgpu_gfxoff in debugfs (no Intel Xe/i915 or AMD GPU, or debugfs not mounted): "
+          "nothing to do", flush=True)
+    sys.exit(0)
+if backend == "amdgpu":
+    a.hold = a.gfxoff_hold
+if backend == "amdgpu" and (a.activity or a.temp_refresh > 0):
+    print("amdgpu: --activity and --temp-refresh are for the Xe's GT C6 and hwmon - off", flush=True)
+    a.activity = False
+    a.temp_refresh = 0.0
+
+
+def hold():
+    """Keep the GPU awake: the Xe's forcewake held open (its fd), or AMD's GFXOFF disallowed (True)."""
+    if backend == "xe":
+        return os.open(fw_path, os.O_RDONLY)
+    with open(fw_path, "wb", buffering=0) as f:
+        f.write((0).to_bytes(4, "little"))
+    return True
+
+
+def release(token):
+    if backend == "xe":
+        os.close(token)
+        return
+    with open(fw_path, "wb", buffering=0) as f:
+        f.write((1).to_bytes(4, "little"))
+
+
+# SIGTERM (systemd's stop) and SIGINT (ignored by default in a background job of a non-interactive shell) end the
+# main loop through its finally, which releases a hold: an AMD GPU's GFXOFF requests are counted, so a hold left by a
+# killed process would keep GFXOFF off until reboot (2026-10-28, a69ia1)
+signal.signal(signal.SIGTERM, lambda *_: sys.exit(0))
+signal.signal(signal.SIGINT, signal.default_int_handler)
+
+
+def log(msg):
+    if a.verbose:
+        print(f"{time.strftime('%H:%M:%S')} {msg}", flush=True)
+
+
+EV_KEY, EV_REL, EV_ABS = 1, 2, 3
+devices = {}   # path -> fd
+
+
+def wanted(path):
+    # keyboards and pointers: devices reporting keys, relative or absolute motion (capabilities from sysfs)
+    name = os.path.basename(path)
+    try:
+        with open(f"/sys/class/input/{name}/device/capabilities/ev") as f:
+            ev = int(f.read().strip(), 16)
+    except OSError:
+        return False
+    return bool(ev & ((1 << EV_KEY) | (1 << EV_REL) | (1 << EV_ABS)))
+
+
+def rescan():
+    for path in glob.glob("/dev/input/event*"):
+        if path in devices or not wanted(path):
+            continue
+        try:
+            devices[path] = os.open(path, os.O_RDONLY | os.O_NONBLOCK)
+            log(f"watching {path}")
+        except OSError:
+            pass
+
+
+gtidle = wait_for(lambda: next(iter(sorted(glob.glob("/sys/class/drm/card*/device/tile*/gt0/gtidle/idle_residency_ms"))), None)) \
+    if backend == "xe" else None
+if a.activity and not gtidle:
+    sys.exit("--activity: no gtidle/idle_residency_ms in sysfs")
+
+
+def xe_temps():
+    # the xe hwmon's "pkg" and "mctrl" temperature inputs and its fan1_input, if any (--temp-refresh)
+    for h in sorted(glob.glob("/sys/class/hwmon/hwmon*")):
+        try:
+            with open(f"{h}/name") as f:
+                if f.read().strip() != "xe":
+                    continue
+        except OSError:
+            continue
+        found = {}
+        for lab in glob.glob(f"{h}/temp*_label"):
+            try:
+                with open(lab) as f:
+                    found[f.read().strip()] = lab[:-len("_label")] + "_input"
+            except OSError:
+                pass
+        if "pkg" in found and "mctrl" in found:
+            return found["pkg"], found["mctrl"], f"{h}/fan1_input" if os.path.exists(f"{h}/fan1_input") else None
+    return None
+
+
+temps = wait_for(xe_temps) if a.temp_refresh > 0 else None
+if a.temp_refresh > 0 and not temps:
+    sys.exit("--temp-refresh: no xe hwmon with 'pkg' and 'mctrl' temperatures")
+
+
+def millideg(path):
+    with open(path) as f:
+        return int(f.read().strip())
+
+
+def cpu_times():
+    # (busy, total) jiffies of all CPUs: busy = everything but idle and iowait
+    with open("/proc/stat") as f:
+        v = [int(x) for x in f.readline().split()[1:]]
+    total = sum(v[:8])
+    return total - v[3] - v[4], total
+
+
+def c6_ms():
+    with open(gtidle) as f:
+        return int(f.read().strip())
+
+
+def vm_running():
+    # a QEMU or crosvm process (their command names), looked up at most every 2 s
+    for pid in os.listdir("/proc"):
+        if not pid.isdigit():
+            continue
+        try:
+            with open(f"/proc/{pid}/comm") as f:
+                comm = f.read().strip()
+        except OSError:
+            continue
+        if comm.startswith("qemu-system") or comm == "crosvm":
+            return True
+    return False
+
+
+fw_fd = None
+last_input = 0.0
+last_scan = 0.0
+activity_until = 0.0
+sample_at = 0.0
+busy_run = 0    # consecutive samples in which the GT drew
+sample = None   # (time, cpu busy, cpu total, C6 ms) at the sample's start, taken with the GT free to idle
+vm_checked = 0.0
+vm = False
+refresh_at = 0.0
+refresh_c6 = None   # (time, C6 ms) at the last temperature check
+last_drawing = float("-inf")
+try:
+    while True:
+        now = time.monotonic()
+        if now - last_scan > 1.0:
+            rescan()
+            last_scan = now
+        deadlines = [now + 1.0]
+        if fw_fd is not None:
+            deadlines.append(max(last_input + a.hold, activity_until))
+        if a.activity:
+            deadlines.append(sample_at)
+        if temps:
+            deadlines.append(refresh_at)
+        timeout = max(0.0, min(deadlines) - now)
+        readable, _, _ = select.select(list(devices.values()), [], [], timeout)
+        got = False
+        for fd in readable:
+            try:
+                while os.read(fd, 4096):
+                    got = True
+            except BlockingIOError:
+                pass
+            except OSError:   # the device went away
+                for path, dfd in list(devices.items()):
+                    if dfd == fd:
+                        os.close(fd)
+                        del devices[path]
+        now = time.monotonic()
+        if got:
+            last_input = now
+            if fw_fd is None:
+                fw_fd = hold()
+                log("input: GPU held awake")
+            sample = None   # a sample needs the GT free to idle
+        if a.activity and now >= sample_at:
+            sample_at = now + a.sample
+            if fw_fd is None:
+                busy, total = cpu_times()
+                c6 = c6_ms()
+                if sample is not None:
+                    t0, busy0, total0, c60 = sample
+                    cpu = (busy - busy0) / max(1, total - total0)
+                    gt = 1.0 - (c6 - c60) / 1000.0 / max(1e-3, now - t0)
+                    if a.vm_activity and now - vm_checked > 2.0:
+                        vm = vm_running()
+                        vm_checked = now
+                    busy_run = busy_run + 1 if gt >= a.gt_busy and (cpu >= a.cpu_busy or (a.vm_activity and vm)) else 0
+                    if busy_run >= a.busy_samples:
+                        busy_run = 0
+                        activity_until = now + a.activity_hold
+                        fw_fd = hold()
+                        log(f"drawing under load (CPUs {cpu:.0%} busy{', a VM running' if vm else ''}, GT {gt:.0%} out of C6): GPU held awake")
+                        sample = None
+                        continue
+                sample = (now, busy, total, c6)
+            else:
+                sample = None
+        if temps and now >= refresh_at:
+            refresh_at = now + a.temp_refresh
+            if gtidle:
+                c6 = c6_ms()
+                if refresh_c6 is not None and 1.0 - (c6 - refresh_c6[1]) / 1000.0 / max(1e-3, now - refresh_c6[0]) > 0.1:
+                    last_drawing = now   # out of C6 for over a tenth of the interval (a poke is 1 %)
+                refresh_c6 = (now, c6)
+            if fw_fd is None:
+                try:
+                    pkg, mctrl = millideg(temps[0]), millideg(temps[1])
+                except (OSError, ValueError):
+                    pkg = mctrl = 0
+                try:
+                    fan = int(open(temps[2]).read().strip()) if temps[2] else 0   # reads 0 at times: no poke then
+                except (OSError, ValueError):
+                    fan = 0
+                recent = not gtidle or now - last_drawing < a.fan_window
+                if pkg - mctrl >= a.stale * 1000 or (a.fan_above > 0 and fan > a.fan_above and recent):
+                    fd = os.open(fw_path, os.O_RDONLY)
+                    time.sleep(a.poke_ms / 1000)
+                    os.close(fd)
+                    sample = None   # the poke's wake is not the GT drawing
+                    log(f"pkg {pkg / 1000:.0f} C, mctrl {mctrl / 1000:.0f} C, fan {fan} rpm: GT woken for {a.poke_ms:.0f} ms")
+        if fw_fd is not None and now >= last_input + a.hold and now >= activity_until:
+            release(fw_fd)
+            fw_fd = None
+            # the GT takes a few ms to reach C6 once released: the next sample starts after it settled
+            sample = None
+            busy_run = 0
+            sample_at = max(sample_at, now + 0.02)
+            log("no input, no load with drawing: GPU may idle")
+except (KeyboardInterrupt, SystemExit):
+    pass
+finally:
+    if fw_fd is not None:
+        release(fw_fd)

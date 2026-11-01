@@ -10,8 +10,9 @@ QEMU, virglrenderer, rutabaga_gfx, passt and the guest's graphics stack
 patches vitrine needs kept in this repository: `host/versions.conf` and
 `host/patches` for the QEMU, virglrenderer, rutabaga_gfx and passt vitrine
 builds (upstream QEMU with a series of patches, `host/patches/qemu/series`),
-`guest/` for the guest's, and `host/kde` for the optional host packages
-(KWin, KSvg, Kirigami, Qt base).
+`guest/` for the guest's, `host/kde` for the optional host packages (KWin,
+KSvg, Kirigami, Qt base), and `host/gpu-input-awake` for an optional service
+that wakes a dedicated GPU at each key or pointer event.
 
 Early development. It is built and tried on Fedora 44 KDE Plasma (Wayland)
 with an AMD Radeon 780M, with Fedora 44 KDE guests. It is not packaged.

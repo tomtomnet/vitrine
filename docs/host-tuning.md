@@ -6,9 +6,14 @@ A desktop VM stays smooth under host load when the host gives it a hand:
   its console or full-screen window has the keyboard: the guest's vCPUs and
   QEMU's display and I/O threads run before ordinary host tasks. The other
   VMs' threads stay ordinary, their vCPUs at nice -5, so that VMs busy in
-  the background cannot take every CPU at real-time priority. VMs in QEMU's
-  own window (SDL) keep real-time threads: which window is in front is not
-  known there.
+  the background cannot take every CPU at real-time priority: one VM is
+  real-time at a time. A host window in front changes nothing; a VM alone
+  is real-time, and so is the first one started or found running until
+  another comes to the front. A VM in QEMU's own window (SDL, GTK) is in
+  front when that window is the active one: on KDE Plasma a small KWin
+  script tells vitrine which window is active, while such VMs run. On
+  other desktops vitrine cannot tell: such a VM goes behind as soon as
+  another VM comes to the front, and comes back only when it is alone.
 - **A shorter fair-server period**: the kernel keeps some CPU time for
   ordinary tasks while real-time ones run, 50 ms per second by default. An
   ordinary task stuck behind a real-time vCPU (a kernel worker pushing GPU
@@ -23,6 +28,15 @@ A desktop VM stays smooth under host load when the host gives it a hand:
   lowest clock, where copying a 4K frame takes about 1 ms. With the lowest
   gfx clock at 1800 MHz a Radeon 780M showed new images at 94-95 % of the
   refreshes during window animations instead of 87-90 %, for about 0.3 W.
+  On a dedicated GPU (Intel xe, an AMD card) a floor does nothing; there,
+  the optional gpu-input-awake service wakes the GPU at each key or pointer
+  event instead (below).
+- **Huge pages for VM memory**: shared memory's transparent huge pages go
+  from `never` (Fedora's default) to `advise`. QEMU asks for them on the
+  guest's memory (a memfd, which vitrine's QEMU aligns to 2 MiB): each
+  first touch of guest memory is one fault per 2 MiB instead of 512. A
+  guest's first app start after its boot took 0.79 s instead of 1.38 s.
+  Any other value is the host owner's choice, and is left as it is.
 - **Higher udmabuf limits** (VMs whose GPU has native context): QEMU
   hands the host GPU each guest buffer in guest memory as a udmabuf, one
   entry per contiguous piece of guest RAM. A maximized 4K window drawn by
@@ -94,6 +108,7 @@ for them. It does only this, for the user who started it:
 | `rt PID` | SCHED_FIFO 1 on every thread of a watched QEMU (the VM in front), its real-time time limit (`RLIMIT_RTTIME`) lifted first | Only once `fair-server on` holds; watched first, and checked again to be the caller's QEMU (it may have run another program since); no thread made real-time if the limit cannot be lifted; real-time threads it finds are left as they are; its child processes (passt) are not touched |
 | `behind PID` | The threads `rt` made real-time back to SCHED_OTHER, its vCPU threads (`CPU n/KVM`) at nice -5 (a VM behind the one in front) | The same checks as `rt`; nice -5 only while the fair server holds, and only for vCPUs at nice 0 |
 | `udmabuf PID` | The udmabuf module's `list_limit` at 65536 and `size_limit_mb` at 2048, while that watched QEMU runs | A watched QEMU (its GPU is not checked: vitrine asks only for native-context ones); fixed values; raised only, a higher value stays; skipped when the module is not loaded; put back after the last QEMU that asked for it |
+| `thp on` | `/sys/kernel/mm/transparent_hugepage/shmem_enabled` at `advise` | A watched QEMU; a fixed value, written only over `never`; read back |
 | `setup-group` | The caller in the `vitrine` group, the group created (`groupadd --system`) if there is none | See below |
 
 The settings need a watched QEMU, and each value is put back only if it
@@ -108,7 +123,7 @@ What this amounts to:
   as `rtprio 1` in `limits.conf`. The shorter fair-server period keeps
   ordinary tasks running beside them, and without it there is no
   real-time priority.
-- Three host-wide settings changed while your VMs run, and put back after.
+- Four host-wide settings changed while your VMs run, and put back after.
 - Bigger udmabufs. `/dev/udmabuf` is open to the user at the desktop
   already (systemd's `uaccess` rule), and to the `kvm` group: they can turn
   their own memory into a udmabuf. The limits only set how many pieces and bytes
@@ -163,6 +178,24 @@ action names its argument, so exactly one matches, and the helper refuses
 to run without one, which pkexec would put under its generic action.)
 
 Give the group to the people you would give real-time priority to.
+
+## gpu-input-awake, for dedicated GPUs
+
+The research's small root service that wakes the GPU from its deep idle at
+each key or pointer event, an optional component
+([host/gpu-input-awake](../host/gpu-input-awake/README.md)): on an Intel xe
+GPU it keeps the GT out of gt-c6 until 0.02 s without input, on an AMD GPU
+GFXOFF off for 0.3 s. On an Arc Pro B50, keys on the bare desktop showed in
+7.8 ms instead of 9.0 ms, for about 2 W while typing and nothing at rest.
+
+Unlike host tuning it runs from boot, all the time, as root: it reads the
+keyboard and pointer events (without taking them) and writes to debugfs.
+Preferences > Host shows it on the GPU clock floor row of each dedicated
+GPU, with Install… and Remove…, which ask for an administrator's password.
+Its files are those of the research's setup, at the same paths:
+`/usr/local/sbin/gpu-input-awake` and
+`/etc/systemd/system/gpu-input-awake.service`; a copy that is not
+vitrine's shows as such, and Install replaces it.
 
 ## The udmabuf limits without host tuning
 
@@ -265,7 +298,11 @@ configuring: `cmake --install --prefix` with another prefix is refused.
   (before 7.0). Preferences says so ("Real-time QEMU threads are off:
   ..."), and the status bar at the first VM start.
 - GPUs other than AMD APUs get no automatic floor. A discrete AMD GPU needs
-  the overdrive bit of `amdgpu.ppfeaturemask` for any floor.
+  the overdrive bit of `amdgpu.ppfeaturemask` for any floor; gpu-input-awake
+  is what helps there (below).
+- `cat /sys/kernel/mm/transparent_hugepage/shmem_enabled` shows the huge
+  pages' setting, in brackets; `grep ShmemPmdMapped /proc/PID/smaps_rollup`
+  how much of a QEMU's memory has them.
 - `cat /sys/module/udmabuf/parameters/list_limit /sys/module/udmabuf/parameters/size_limit_mb`
   shows the udmabuf limits. Where udmabuf is a module that is not loaded
   yet, the helper cannot raise them (it does not load modules).

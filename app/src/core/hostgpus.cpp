@@ -267,6 +267,11 @@ PathState pathState(const QString &path)
                : PathState::NotRenderNode;
 }
 
+QString sysfs()
+{
+    return s_sysfs;
+}
+
 void setRoots(const QString &sysfs, const QString &dev)
 {
     s_sysfs = sysfs;

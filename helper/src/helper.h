@@ -40,6 +40,15 @@
  */
 #define UDMABUF_LIST_LIMIT 65536ULL
 #define UDMABUF_SIZE_LIMIT_MB 2048ULL
+/*
+ * Transparent huge pages for shared memory while VMs run: "advise", from
+ * "never" only (Fedora's default; any other choice is the host owner's).
+ * vitrine's guest RAM is a memfd, which QEMU madvises (MADV_HUGEPAGE) and
+ * vitrine's QEMU aligns to 2 MiB: each first touch of guest memory is then
+ * one fault per 2 MiB instead of 512 - a guest's first app start after its
+ * boot 1.38 -> 0.79 s (the research's vm-host-session, 2026-10-06).
+ */
+#define THP_SHMEM "/sys/kernel/mm/transparent_hugepage/shmem_enabled"
 
 #define FAIR_SERVER_DIR "/sys/kernel/debug/sched/fair_server"
 #define EXT_SERVER_DIR "/sys/kernel/debug/sched/ext_server"
@@ -114,6 +123,9 @@ void fair_server_on(void);
 void fair_server_off(void);
 /* That bound is in place, held by this helper; else why not in @why */
 bool settings_bound(const char **why);
+/* Shared memory's transparent huge pages on madvise (THP_SHMEM), and back */
+void thp_on(void);
+void thp_off(void);
 /* @card: "cardN"; @value: a clock in MHz, "auto" or "off" */
 void gpu_floor(const char *card, const char *value);
 /* The protocol's udmabuf <pid>: the udmabuf limits raised while that
@@ -134,6 +146,14 @@ struct watched;
 bool sched_hold(struct watched *w);
 /* Lets go of it: the threads put back by the last holder, if still there */
 void sched_drop(struct watched *w);
+/*
+ * The record of @w's QEMU another helper keeps (vitrine restarted while it
+ * runs) and this one has not joined yet: the threads that were real-time
+ * before any helper's rt (@kept, at most MAX_KEPT) and whether the vCPUs
+ * were niced.  False when there is none, or it does not say which threads
+ * were real-time before.
+ */
+bool sched_record(const struct watched *w, pid_t *kept, int *nkept, bool *niced);
 
 /* --- process.c: QEMU processes and their threads' scheduling --- */
 
