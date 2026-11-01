@@ -206,14 +206,15 @@ void HostTuningPrefs::showAwake(const QString &active)
                         "event instead.")
                          .arg(m_dedicated.join(", ").toHtmlEscaped()) +
                      ' ' + state);
+    /* both run install.sh of Vitrine's copy */
+    const QString tip = source ? tr("Asks for an administrator's password")
+                               : tr("This installation of Vitrine has no host/gpu-input-awake");
     m_awakeInstall->setVisible(m_installed != Vitrine);
     m_awakeInstall->setEnabled(source && !busy);
-    m_awakeInstall->setToolTip(source ? tr("Asks for an administrator's password")
-                                      : tr("This installation of Vitrine has no "
-                                           "host/gpu-input-awake"));
+    m_awakeInstall->setToolTip(tip);
     m_awakeRemove->setVisible(m_installed != No);
-    m_awakeRemove->setEnabled(!busy);
-    m_awakeRemove->setToolTip(tr("Asks for an administrator's password"));
+    m_awakeRemove->setEnabled(source && !busy);
+    m_awakeRemove->setToolTip(tip);
     fitWindow(m_awake);
 }
 
@@ -246,6 +247,8 @@ void HostTuningPrefs::runAwake(bool install)
     }
     m_awakeInstall->setEnabled(false);
     m_awakeRemove->setEnabled(false);
+    /* before: the answer may come at once, and its state goes over this */
+    m_awake->setText(install ? tr("Installing gpu-input-awake…") : tr("Removing gpu-input-awake…"));
     const bool started = GpuInputAwake::run(this, install, [this, title](GpuInputAwake::Result result,
                                                                          const QString &error) {
         if (result == GpuInputAwake::Result::Failed) {
@@ -253,9 +256,8 @@ void HostTuningPrefs::runAwake(bool install)
         }
         refreshAwake();
     });
-    if (started) {
-        m_awake->setText(install ? tr("Installing gpu-input-awake…") : tr("Removing gpu-input-awake…"));
-    } else {
+    if (!started) {
+        /* one runs already (another window's) */
         refreshAwake();
     }
 }
