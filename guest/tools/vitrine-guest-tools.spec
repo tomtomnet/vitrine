@@ -2,7 +2,7 @@
 # exact version, and dnf takes an installed one of the same version as done.
 Name:           vitrine-guest-tools
 Version:        0.1.0
-Release:        29%{?dist}
+Release:        30%{?dist}
 Summary:        vitrine guest tools: patched virtio-gpu driver, settings and agent
 
 # the driver's sources (dkms/vendor, dkms/patches) are the kernel's: MIT
@@ -181,6 +181,15 @@ fi
 %dir %{_sharedstatedir}/%{name}
 
 %changelog
+* Sun Nov 01 2026 vitrine <noreply@anthropic.com> - 0.1.0-30
+- with vitrine's KWin, the installer keeps Fedora's Plasma at the version
+  that KWin is built for (dnf versionlock on the packages installed at that
+  version): Fedora 44's Plasma 6.8.2 requires an unversioned kwin, and dnf
+  updated the rest of Plasma around the locked KWin 6.7.5
+- where vitrine's KWin or KPipeWire of earlier tools no longer matches the
+  guest's Plasma (updated before these tools), Fedora's go back in (dnf
+  distro-sync), until guest tools built for that Plasma
+
 * Sat Oct 31 2026 vitrine <noreply@anthropic.com> - 0.1.0-29
 - the installer puts vitrine's Qt Base (the research's q4: Wayland windows
   being resized reuse their shared memory), KSvg (k2) and Kirigami (f1:

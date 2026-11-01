@@ -227,7 +227,8 @@ static QString what(Vm *vm, const GuestTools::Medium &medium)
     what += GuestToolsDialog::tr("<li>the vitrine agent, which tells vitrine how the guest is "
                                  "doing</li></ul>");
     what += GuestToolsDialog::tr("<p>Mesa, KWin and KPipeWire then stay at these versions until "
-                                 "the next guest tools, and so does Qt Base with vitrine's KWin. "
+                                 "the next guest tools, and so do Qt Base and the guest's Plasma "
+                                 "with vitrine's KWin. "
                                  "KSvg, Kirigami and Qt Base otherwise give way to Fedora's next "
                                  "build of them. The guest needs the network: dkms and the kernel "
                                  "headers come from Fedora.</p>");
@@ -631,6 +632,7 @@ void GuestToolsBanner::update()
         break;
     case State::DriverNotActive:
     case State::MesaNotActive:
+    case State::KwinMismatch:
         button = other ? QString() : tr("Install Again…");
         warning = true;
         break;

@@ -428,6 +428,9 @@ State evaluate(const Inputs &in)
         if (!r.driverPatched && r.driverPresent) {
             return State::DriverNotActive;
         }
+        if (kwinMismatch(r)) {
+            return State::KwinMismatch;
+        }
         if (in.medium.isValid() &&
             (in.medium.tools != r.tools ||
              (!r.installedMedium.isEmpty() && r.installedMedium != in.medium.mediumId))) {
@@ -502,6 +505,14 @@ QString driverProblem(const Report &r)
         return QObject::tr("the driver did not build for the running kernel (%1)").arg(k.version);
     }
     return QObject::tr("the driver is not loaded");
+}
+
+bool kwinMismatch(const Report &r)
+{
+    const QString plasma = r.desktops.value("kde");
+    const QString kwin = r.packages.value("kwin").section('-', 0, 0);
+
+    return r.kwinPatched && !plasma.isEmpty() && !kwin.isEmpty() && kwin != plasma;
 }
 
 }
@@ -641,6 +652,7 @@ void GuestToolsMonitor::remember()
     case State::RebootNeeded:
     case State::DriverNotActive:
     case State::MesaNotActive:
+    case State::KwinMismatch:
         value = "installed " + m_in.report.tools;
         break;
     default:
@@ -1002,6 +1014,12 @@ QString GuestToolsMonitor::text() const
     case State::MesaNotActive:
         return tr("The guest tools are installed, but the guest draws through virgl, not "
                   "native context: its Mesa is not the one of the tools.");
+    case State::KwinMismatch:
+        return tr("This guest runs vitrine's KWin %1 with Plasma %2, which Fedora's updates "
+                  "brought in around it: a mix nobody tested. Install the guest tools again: "
+                  "Fedora's KWin goes back in until guest tools built for Plasma %2.")
+            .arg(r.packages.value("kwin").section('-', 0, 0).toHtmlEscaped(),
+                 r.desktops.value("kde").toHtmlEscaped());
     case State::UpdateAvailable:
         if (!m_in.running) {
             return tr("Guest tools %1 are available; this guest had %2 when it last ran.")

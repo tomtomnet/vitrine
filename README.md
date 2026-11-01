@@ -150,7 +150,13 @@ files it changes, and the guest packages compile through ccache.
    longer upload their frames again at each opening) replace the guest's
    only where it has that version, all of a package's subpackages or none.
    Qt Base is locked too where vitrine's KWin is installed, as that KWin is
-   built against Qt's private API. KSvg, Kirigami, and Qt Base without
+   built against Qt's private API, and so is the guest's Plasma, at the
+   version that KWin is built for: Fedora's updates moved Fedora 44 to
+   Plasma 6.8.2 while the tools' KWin is 6.7.5, and would update the rest of
+   Plasma around it; guest tools built for the newer Plasma let it in. Where
+   a guest got Fedora's newer Plasma before these tools, the VM's Console
+   and Details tabs say so, and installing the tools again puts Fedora's
+   KWin back until then. KSvg, Kirigami, and Qt Base without
    vitrine's KWin, are not: Fedora's next build of them replaces them with
    the rest of KDE Frameworks or of Qt, and the next guest tools bring
    vitrine's back. `--uninstall` puts Fedora's builds of all of them back.

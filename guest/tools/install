@@ -24,7 +24,14 @@
 #     the version it is built from, all of its packages or none
 # then keeps Mesa, KWin, KPipeWire and the proxy at those versions (dnf
 # versionlock), and Qt Base with vitrine's KWin, which is built against its
-# private API.  KSvg and Kirigami are not locked, nor Qt Base without
+# private API.  With vitrine's KWin, Fedora's Plasma stays at the version
+# that KWin is built for too (its packages installed at that version):
+# Plasma's packages require an unversioned kwin, so dnf would update the
+# rest of Plasma around the locked KWin (Fedora 44's Plasma 6.8.2,
+# 2026-11-01); guest tools built for the newer Plasma let it in.  Where
+# vitrine's KWin or KPipeWire of earlier tools no longer matches the
+# guest's Plasma (updated before these tools), Fedora's go back in until
+# then.  KSvg and Kirigami are not locked, nor Qt Base without
 # vitrine's KWin: Fedora's next build of them (a new version, or a rebuild)
 # replaces them together with the rest of KDE's frameworks or of Qt, and the
 # next guest tools bring vitrine's back.  Mesa is 64-bit only for now: on a
@@ -34,7 +41,8 @@
 # there.
 #
 # Options: --reboot     reboot at the end if needed
-#          --no-kwin    keep the installed KWin (and Qt Base unlocked)
+#          --no-kwin    keep the installed KWin (and Qt Base and Plasma
+#                       unlocked)
 #          --force      install again what is installed already
 #          --yes        ask nothing (the default off a terminal)
 #          --uninstall  remove the tools, back to Fedora's Mesa, KWin,
@@ -132,13 +140,19 @@ secure_boot() {
 # The version locks of the tools in /etc/dnf/versionlock.toml (dnf5): for
 # each package NAME=EVR, that EVR (dnf wants the architectures of a
 # multilib package at one version anyway: a 32-bit build of the same
-# version would pass).  The entries are told by their comment; the user's
-# own stay.
+# version would pass).  The entries are told by their comment, which says
+# whether the package is a build of the medium's or Fedora's Plasma kept
+# with vitrine's KWin; the user's own stay.
 versionlock() {  # versionlock NAME=EVR... (none: only remove the tools' entries)
-	python3 - "$lockfile" "$@" <<'EOF'
+	python3 - "$lockfile" "$packages_txt" "$@" <<'EOF'
 import json, os, sys, tomllib
-path, pairs = sys.argv[1], sys.argv[2:]
+path, medium, pairs = sys.argv[1], sys.argv[2], sys.argv[3:]
 tag = "vitrine-guest-tools"
+try:
+    with open(medium, encoding="utf-8") as f:
+        ours = {line.split()[0] for line in f if line.strip()}
+except OSError:
+    ours = None
 try:
     with open(path, "rb") as f:
         data = tomllib.load(f)
@@ -147,7 +161,8 @@ except FileNotFoundError:
 entries = [e for e in data.get("packages", []) if not str(e.get("comment", "")).startswith(tag)]
 for pair in pairs:
     name, evr = pair.split("=", 1)
-    entries.append({"name": name, "comment": f"{tag}: vitrine's build",
+    what = "vitrine's build" if ours is None or name in ours else "Fedora's Plasma, kept with vitrine's KWin"
+    entries.append({"name": name, "comment": f"{tag}: {what}",
                     "conditions": [{"key": "evr", "comparator": "=", "value": evr}]})
 q = json.dumps
 out = [f"version = {q(str(data.get('version', '1.0')))}"]
@@ -163,6 +178,24 @@ tmp = path + ".vitrine-new"
 with open(tmp, "w") as f:
     f.write("\n".join(out) + "\n")
 os.replace(tmp, path)
+EOF
+}
+
+# The tools' own locks there now, NAME=EVR per line: what an earlier run
+# installed and locked
+tools_locks() {
+	python3 - "$lockfile" <<'EOF' 2> /dev/null
+import sys, tomllib
+try:
+    with open(sys.argv[1], "rb") as f:
+        data = tomllib.load(f)
+except FileNotFoundError:
+    sys.exit(0)
+for e in data.get("packages", []):
+    if str(e.get("comment", "")).startswith("vitrine-guest-tools"):
+        for c in e.get("conditions", []):
+            if c.get("key") == "evr" and c.get("comparator") == "=":
+                print(f"{e['name']}={c['value']}")
 EOF
 }
 
@@ -211,7 +244,7 @@ migrate_research() {
 
 if [ "$uninstall" = 1 ]; then
 	total=3
-	step "Removing the version locks of Mesa, KWin, KPipeWire, the proxy and Qt Base"
+	step "Removing the version locks of Mesa, KWin, KPipeWire, the proxy, Qt Base and Plasma"
 	versionlock || die "cannot edit $lockfile"
 	step "Removing vitrine-guest-tools (driver, settings, agent)"
 	if installed vitrine-guest-tools; then
@@ -343,6 +376,30 @@ else
 	done
 	say "KPipeWire: vitrine's build for Plasma $KPIPEWIRE_VERSION"
 fi
+# vitrine's KWin or KPipeWire of earlier tools, which this medium does not
+# replace, with a Plasma they are not built for (Fedora updated Plasma
+# around them before these tools): Fedora's go back in, all of the source
+# package's packages, the same version as the rest of Plasma.  Earlier
+# tools locked them: their entries say which build was theirs.
+old_locks=$(tools_locks)
+fedora_again=()
+for again in kwin kpipewire; do
+	case "$again" in
+	kwin) again_title=KWin again_medium=${#kwin_pkgs[@]} ;;
+	*) again_title=KPipeWire again_medium=${#kpipewire_pkgs[@]} ;;
+	esac
+	again_evr=$(printf '%s\n' $old_locks | sed -n "s/^$again=//p" | head -n 1)
+	[ "$again_medium" = 0 ] && [ -n "$again_evr" ] && [ -n "$plasma" ] || continue
+	[ "$(rpm -q --qf '%{EPOCHNUM}:%{VERSION}-%{RELEASE}\n' "$again" 2> /dev/null | head -n 1)" = "$again_evr" ] ||
+		continue
+	again_version=${again_evr#*:}
+	again_version=${again_version%-*}
+	[ "$again_version" != "$plasma" ] || continue
+	say "$again_title: vitrine's $again_version does not go with this guest's Plasma $plasma: Fedora's goes back in"
+	while read -r name; do
+		fedora_again+=("$name")
+	done < <(from_source "$again" | cut -d' ' -f1 | sort -u)
+done
 # the nested desktop's proxy, whatever the desktop: the session needs it
 proxy_pkgs=()
 if [ -n "$(medium_nevra wl-cross-domain-proxy)" ]; then
@@ -437,18 +494,29 @@ want+=("${mesa[@]}" "${kwin_pkgs[@]}" "${kpipewire_pkgs[@]}" "${proxy_pkgs[@]}" 
        "${ksvg_pkgs[@]}" "${kirigami_pkgs[@]}")
 
 # vitrine's builds of this medium locked at the versions installed (Qt Base
-# only with vitrine's KWin; KSvg and Kirigami never)
+# only with vitrine's KWin; KSvg and Kirigami never), and with vitrine's
+# KWin, Fedora's Plasma: the packages installed at KWin's version (all of
+# Plasma's share it), at the versions installed
 lock_installed() {
-	locks=()
+	local p names
+	locks=() held=()
 	for p in "${mesa[@]}" "${kwin_pkgs[@]}" "${kpipewire_pkgs[@]}" "${proxy_pkgs[@]}" "${qt_locked[@]}"; do
 		locks+=("$(rpm -q --qf '%{NAME}=%{EPOCHNUM}:%{VERSION}-%{RELEASE}' "$p")")
 	done
-	versionlock "${locks[@]}"
+	if [ "$use_kwin" = 1 ]; then
+		names=" ${locks[*]%%=*} "
+		while read -r p; do
+			[[ $names == *" ${p%%=*} "* ]] || held+=("$p")
+		done < <(rpm -qa --qf '%{NAME}=%{EPOCHNUM}:%{VERSION}-%{RELEASE} %{VERSION}\n' |
+			awk -v v="$KWIN_VERSION" '$2 == v { print $1 }' | LC_ALL=C sort -u)
+	fi
+	versionlock "${locks[@]}" "${held[@]}"
 }
 
 # nothing to do when what this medium installs is all there
 up_to_date() {
 	[ "$force" = 0 ] && [ "$(cat "$state/medium" 2> /dev/null)" = "$MEDIUM_ID" ] || return 1
+	[ ${#fedora_again[@]} = 0 ] || return 1
 	rpm -q "${want[@]}" > /dev/null 2>&1 || return 1
 	if [ "$use_kwin" = 1 ]; then [ -s "$state/kwin" ]; else [ ! -e "$state/kwin" ]; fi
 }
@@ -485,21 +553,8 @@ mkdir -p "$run" "$state"
 touch "$run/installer-active"
 migrate_research
 # the tools' own locks would keep the medium's new builds out; those there
-# now (NAME=EVR) come back if this run ends before it locks its own (record)
-old_locks=$(python3 - "$lockfile" <<'EOF' 2> /dev/null
-import sys, tomllib
-try:
-    with open(sys.argv[1], "rb") as f:
-        data = tomllib.load(f)
-except FileNotFoundError:
-    sys.exit(0)
-for e in data.get("packages", []):
-    if str(e.get("comment", "")).startswith("vitrine-guest-tools"):
-        for c in e.get("conditions", []):
-            if c.get("key") == "evr" and c.get("comparator") == "=":
-                print(f"{e['name']}={c['value']}")
-EOF
-)
+# now (old_locks, NAME=EVR) come back if this run ends before it locks its
+# own (record)
 unlocked=1
 versionlock || die "cannot edit $lockfile"
 before=$(rpm -qa | sort | sha256sum)
@@ -513,6 +568,11 @@ step "Installing the packages (Fedora's repositories are needed for dkms and the
 # The newest kernel's headers come next, by name: dnf takes kernel-devel, or
 # dkms's kernel-devel-matched, as there with any version installed.
 extra=(dkms kernel "kernel-devel-$(uname -r)")
+if [ ${#fedora_again[@]} -gt 0 ]; then
+	say "Fedora's ${fedora_again[*]}, as the rest of Plasma"
+	dnf -y --setopt=install_weak_deps=False distro-sync "${fedora_again[@]}" ||
+		die "dnf could not put Fedora's ${fedora_again[*]} back: see above (the guest needs Fedora's repositories)"
+fi
 "${dnf_medium[@]}" install --skip-unavailable "${want[@]}" "${extra[@]}" ||
 	die "dnf failed: see above (no network? the guest needs Fedora's repositories)"
 missing=()
@@ -526,6 +586,7 @@ done
 lock_installed || die "cannot edit $lockfile"
 unlocked=
 [ ${#locks[@]} -gt 0 ] && say "version locks: ${locks[*]%%=*}"
+[ ${#held[@]} -gt 0 ] && say "and Fedora's Plasma $KWIN_VERSION with vitrine's KWin: ${#held[@]} packages"
 installed dkms || die "dkms is not installed"
 newest=$(rpm -q --qf '%{VERSION}-%{RELEASE}.%{ARCH}\n' kernel-core | sort -V | tail -1)
 if [ -n "$newest" ] && ! rpm -q "kernel-devel-$newest" > /dev/null 2>&1; then

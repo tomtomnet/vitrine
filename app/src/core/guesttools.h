@@ -212,6 +212,7 @@ enum class State {
     RebootNeeded,
     DriverNotActive,    // tools in, the stock virtio-gpu driver runs
     MesaNotActive,      // tools in, the guest draws through virgl (from QEMU's counts)
+    KwinMismatch,       // tools in, vitrine's KWin with a Plasma it is not built for
     UpdateAvailable,
     Installed,
     Unsupported,        // a guest the tools are not for
@@ -243,6 +244,9 @@ State evaluate(const Inputs &in);
 bool screenShown(const Inputs &in);
 /* Why the stock driver runs, from the report */
 QString driverProblem(const Report &report);
+/* vitrine's KWin of the tools runs with a Plasma it is not built for: Fedora
+   updated Plasma around it (6.8.2 around the tools' 6.7.5, 2026-11-01) */
+bool kwinMismatch(const Report &report);
 /* The installer's error from its output (the agent's result) or its record */
 QString failureReason(const QString &output);
 

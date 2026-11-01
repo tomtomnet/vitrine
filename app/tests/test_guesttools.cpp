@@ -512,6 +512,21 @@ private slots:
         in.agentSeen = true;
         in.report = parseMessage(kHello).report;
         QCOMPARE(evaluate(in), State::Installed);
+        QVERIFY(!kwinMismatch(in.report));
+        /* vitrine's KWin 6.7.5 with the Plasma 6.8.2 that Fedora's updates brought in
+           around it */
+        in.report.desktops["kde"] = "6.8.2";
+        QVERIFY(kwinMismatch(in.report));
+        QCOMPARE(evaluate(in), State::KwinMismatch);
+        in.report.kwinPatched = false;              // Fedora's KWin 6.7.5: no tools' mix
+        QCOMPARE(evaluate(in), State::Installed);
+        in.report.kwinPatched = true;
+        in.report.packages["kwin"] = "6.8.2-1.30.fc44";    // tools built for 6.8.2
+        QCOMPARE(evaluate(in), State::Installed);
+        in.report.desktops.remove("kde");           // no Plasma said: nothing to compare
+        in.report.packages["kwin"] = "6.7.5-1.21.fc44";
+        QCOMPARE(evaluate(in), State::Installed);
+        in.report = parseMessage(kHello).report;
         /* Fedora's next KSvg in the place of vitrine's, or its Qt and Kirigami: no fault */
         in.report.vitrineBuilds = {{"qt6-qtbase", false}, {"kf6-ksvg", false},
                                    {"kf6-kirigami", false}};
