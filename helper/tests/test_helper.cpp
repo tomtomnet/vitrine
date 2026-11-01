@@ -20,6 +20,7 @@
 #include <pwd.h>
 #include <signal.h>
 #include <spawn.h>
+#include <sys/file.h>
 #include <sys/socket.h>
 #include <sys/stat.h>
 #include <sys/wait.h>
@@ -1030,7 +1031,7 @@ private slots:
             QCOMPARE(schedOf(tid), QString("0 0 %1").arg(cpus.contains(tid) ? -5 : 0));
         }
         QVERIFY(readFile(path("/run/vitrine-helper/sched-" + qemu.pidText() + ".state"))
-                    .contains(" niced 1 kept -\n"));
+                    .contains(" niced 1 rt 1 kept -\n"));
         /* again: nothing more to do */
         QCOMPARE(h.answer("behind " + qemu.pidText()),
                  QString("ok behind %1: 0 threads ordinary, 0 vCPUs at nice -5").arg(qemu.pid()));
@@ -1045,6 +1046,100 @@ private slots:
             QCOMPARE(schedOf(tid), QString("0 0 0"));
         }
         QCOMPARE(stateFiles(), QStringList({"lock"}));
+    }
+
+    /*
+     * vitrine restarted while its VMs run: the old helper goes on (its input
+     * closed) with the VM it made real-time, and the new one sends that VM
+     * behind - from the old one's record, which tells its threads made
+     * real-time from those real-time before - and another to the front:
+     * never two VMs real-time
+     */
+    void behindAfterRestart()
+    {
+        FakeQemu q1, q2;
+        const QString worker = tids(q1.pid()).last();
+        /* real-time before any helper: QEMU's own choice, kept by both */
+        writeFile(path("/sched"), worker.toLatin1() + " 1 1 0\n");
+        Helper a(m_root);
+        QVERIFY(a.ready());
+        a.answer("watch " + q1.pidText());
+        a.answer("watch " + q2.pidText());
+        QVERIFY(a.answer("fair-server on").startsWith("ok fair-server on"));
+        QVERIFY(a.answer("behind " + q2.pidText()).startsWith("ok behind"));
+        QVERIFY(a.answer("rt " + q1.pidText()).startsWith("ok rt"));
+        a.closeInput();
+        QVERIFY(!a.finished(300));
+
+        Helper b(m_root);
+        QVERIFY(b.ready());
+        b.answer("watch " + q1.pidText());
+        b.answer("watch " + q2.pidText());
+        QCOMPARE(b.answer("fair-server on"), QString("ok fair-server on: set by another vitrine session"));
+        QCOMPARE(b.answer("behind " + q1.pidText()),
+                 QString("ok behind %1: 3 threads ordinary, 2 vCPUs at nice -5").arg(q1.pid()));
+        QCOMPARE(b.answer("rt " + q2.pidText()),
+                 QString("ok rt %1: 4 of 4 threads real-time").arg(q2.pid()));
+        const QStringList cpus = vcpus(q1.pid());
+        for (const QString &tid : tids(q1.pid())) {
+            QCOMPARE(schedOf(tid), tid == worker ? QString("1 1 0")
+                                   : QString("0 0 %1").arg(cpus.contains(tid) ? -5 : 0));
+        }
+        for (const QString &tid : tids(q2.pid())) {
+            QVERIFY(schedOf(tid).startsWith("1 1 "));
+        }
+        /* and back: q1 in front again, under the new helper */
+        QCOMPARE(b.answer("behind " + q2.pidText()),
+                 QString("ok behind %1: 4 threads ordinary, 0 vCPUs at nice -5").arg(q2.pid()));
+        QCOMPARE(b.answer("rt " + q1.pidText()),
+                 QString("ok rt %1: 4 of 4 threads real-time").arg(q1.pid()));
+        b.ask("release");
+        QVERIFY(b.finished());
+        /* a still holds them: the last one out puts them back */
+        QVERIFY(a.running());
+        q1.stop();
+        q2.stop();
+        QVERIFY(a.finished());
+        QCOMPARE(stateFiles(), QStringList({"lock"}));
+    }
+
+    /*
+     * A record that does not say which threads were real-time before (an
+     * older helper's), held by a helper still running: not taken - as far
+     * as this one knows, those threads are QEMU's own, and they stay
+     */
+    void olderRecordNotTaken()
+    {
+        FakeQemu qemu;
+        QByteArray sched;
+        for (const QString &tid : tids(qemu.pid())) {
+            sched += tid.toLatin1() + " 1 1 0\n";
+        }
+        writeFile(path("/sched"), sched);
+        /* its start time, field 22 of /proc/PID/stat */
+        const QByteArray stat = readFile(QString("/proc/%1/stat").arg(qemu.pid()));
+        const QByteArray start = stat.mid(stat.lastIndexOf(')') + 2).split(' ').value(19);
+        QVERIFY(QDir().mkpath(path("/run/vitrine-helper")));
+        QFile::setPermissions(path("/run/vitrine-helper"),
+                              QFileDevice::ReadOwner | QFileDevice::WriteOwner | QFileDevice::ExeOwner);
+        writeFile(path("/run/vitrine-helper/sched-" + qemu.pidText() + ".state"),
+                  "pid " + qemu.pidText().toLatin1() + " start " + start + " niced 0 kept -\n");
+        /* the older helper, alive: its hold */
+        QFile hold(path("/run/vitrine-helper/sched-" + qemu.pidText() + ".hold"));
+        QVERIFY(hold.open(QIODevice::ReadWrite));
+        QVERIFY(flock(hold.handle(), LOCK_SH) == 0);
+        Helper b(m_root);
+        QVERIFY(b.ready());
+        b.answer("watch " + qemu.pidText());
+        QVERIFY(b.answer("fair-server on").startsWith("ok fair-server on"));
+        QCOMPARE(b.answer("behind " + qemu.pidText()),
+                 QString("ok behind %1: 0 threads ordinary, 2 vCPUs at nice -5").arg(qemu.pid()));
+        for (const QString &tid : tids(qemu.pid())) {
+            QVERIFY(schedOf(tid).startsWith("1 1 "));
+        }
+        b.ask("release");
+        QVERIFY(b.finished());
+        hold.close();
     }
 
     /* Behind from the start (a VM that starts while another is in front) */

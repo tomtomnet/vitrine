@@ -146,6 +146,14 @@ struct watched;
 bool sched_hold(struct watched *w);
 /* Lets go of it: the threads put back by the last holder, if still there */
 void sched_drop(struct watched *w);
+/*
+ * The record of @w's QEMU another helper keeps (vitrine restarted while it
+ * runs) and this one has not joined yet: the threads that were real-time
+ * before any helper's rt (@kept, at most MAX_KEPT) and whether the vCPUs
+ * were niced.  False when there is none, or it does not say which threads
+ * were real-time before.
+ */
+bool sched_record(const struct watched *w, pid_t *kept, int *nkept, bool *niced);
 
 /* --- process.c: QEMU processes and their threads' scheduling --- */
 

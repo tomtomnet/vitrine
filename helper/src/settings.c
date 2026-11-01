@@ -1686,35 +1686,73 @@ void thp_off(void)
 
 /* --- all of them --- */
 
-/* sched-<pid>'s record ("pid P start S niced N kept T,T..."): those threads
-   put back, but the ones kept */
+/* The threads of a record's "kept T,T...", into @keep: their count (an
+   older record has no "kept": none) */
+static int record_kept(const char *text, pid_t *keep)
+{
+    const char *list = strstr(text, " kept ");
+    int nkeep = 0;
+
+    for (const char *t = list ? list + 6 : ""; *t && *t != '\n' && nkeep < MAX_KEPT;) {
+        unsigned long long tid;
+        char num[16];
+        size_t len = strcspn(t, ",\n");
+
+        snprintf(num, sizeof(num), "%.*s", (int)(len < 15 ? len : 15), t);
+        if (parse_uint(num, 4194304, &tid)) {
+            keep[nkeep++] = (pid_t)tid;
+        }
+        t += len + (t[len] == ',');
+    }
+    return nkeep;
+}
+
+/* sched-<pid>'s record ("pid P start S niced N rt R kept T,T..."): those
+   threads put back, but the ones kept */
 static void sched_state_restore(const char *key)
 {
-    char *text = state_read(key), *list;
+    char *text = state_read(key);
     pid_t keep[MAX_KEPT];
-    int pid, niced, nkeep = 0;
+    int pid, niced;
     u64 start;
 
     if (text && sscanf(text, "pid %d start %llu niced %d", &pid, &start, &niced) == 3 &&
         pid > 1) {
-        /* an older record has no "kept": none */
-        if ((list = strstr(text, " kept "))) {
-            for (char *t = list + 6; *t && *t != '\n' && nkeep < MAX_KEPT;) {
-                unsigned long long tid;
-                char num[16];
-                size_t len = strcspn(t, ",\n");
-
-                snprintf(num, sizeof(num), "%.*s", (int)(len < 15 ? len : 15), t);
-                if (parse_uint(num, 4194304, &tid)) {
-                    keep[nkeep++] = (pid_t)tid;
-                }
-                t += len + (t[len] == ',');
-            }
-        }
+        const int nkeep = record_kept(text, keep);
         sched_restore((pid_t)pid, start, niced != 0, keep, nkeep, true);
     }
     free(text);
     state_remove(key);
+}
+
+bool sched_record(const struct watched *w, pid_t *kept, int *nkept, bool *niced)
+{
+    char key[32], *text;
+    int pid, n;
+    u64 start;
+    bool found;
+
+    /* this helper's own, or one it joined: what it knows already */
+    if (w->held) {
+        return false;
+    }
+    snprintf(key, sizeof(key), "sched-%d", (int)w->pid);
+    lock_all();
+    text = state_read(key);
+    unlock_all();
+    /*
+     * The same process (pid and start time), and a writer that knew which
+     * threads were real-time before it ("rt 1": it had made them real-time
+     * once); a record of an older helper says nothing of it: not taken
+     */
+    found = text && sscanf(text, "pid %d start %llu niced %d", &pid, &start, &n) == 3 &&
+            pid == (int)w->pid && start == w->start && strstr(text, " rt 1 ");
+    if (found) {
+        *nkept = record_kept(text, kept);
+        *niced = n != 0;
+    }
+    free(text);
+    return found;
 }
 
 bool sched_hold(struct watched *w)
@@ -1731,9 +1769,10 @@ bool sched_hold(struct watched *w)
         return false;
     }
     /* what to put back: threads made real-time (FIFO 1) but those kept,
-       vCPUs niced or not */
-    len = snprintf(text, sizeof(text), "pid %d start %llu niced %d kept ", (int)w->pid, w->start,
-                   w->behind ? 1 : 0);
+       vCPUs niced or not; rt 1: kept is known (rt found them, or another
+       helper's record said) */
+    len = snprintf(text, sizeof(text), "pid %d start %llu niced %d rt %d kept ", (int)w->pid,
+                   w->start, w->behind ? 1 : 0, w->rt || w->rt_once ? 1 : 0);
     for (int i = 0; i < w->nkept; i++) {
         len += snprintf(text + len, sizeof(text) - (size_t)len, "%s%d", i ? "," : "",
                         (int)w->kept[i]);
