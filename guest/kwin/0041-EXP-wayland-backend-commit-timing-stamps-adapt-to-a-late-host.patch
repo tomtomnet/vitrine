@@ -1,0 +1,125 @@
+From 8dcf0d98b1740b9c25be92144ebeadbdf7cfd549 Mon Sep 17 00:00:00 2001
+From: research <research@localhost>
+Date: Sat, 10 Oct 2026 15:43:26 +0200
+Subject: [PATCH] EXP wayland backend: commit-timing stamps adapt to a host
+ that shows them a refresh late
+
+KWin 6.8 counts its pipeline depth from a wp_commit_timer_v1 timestamp instead of from now
+(upstream-6.8/0002, reported in bug 525514): while it triple buffers - a direct-scanout client at
+240 Hz, with the 2 ms render floor - every stamped frame is shown a refresh after the vblank asked
+for, and a nested desktop with KWIN_WAYLAND_COMMIT_TIMING=1 runs at half its rate (2026-10-10, kv1
+s1: 123 images/s). Eight frames in a row committed in time for their target (the host's v3
+deadline + 0.5 ms, or 3.5 ms) but shown exactly a refresh after it move the stamps a refresh
+earlier, which that host's arithmetic turns into the target again; a frame shown before its
+target means the host does not do that (any more), and the stamps go back at once.
+---
+ src/backends/wayland/wayland_output.cpp | 38 +++++++++++++++++++++++--
+ src/backends/wayland/wayland_output.h   |  7 +++++
+ 2 files changed, 43 insertions(+), 2 deletions(-)
+
+diff --git a/src/backends/wayland/wayland_output.cpp b/src/backends/wayland/wayland_output.cpp
+index e7ca919..8d86cac 100644
+--- a/src/backends/wayland/wayland_output.cpp
++++ b/src/backends/wayland/wayland_output.cpp
+@@ -17,6 +17,7 @@
+ #include "wayland_backend.h"
+ #include "wayland_display.h"
+ #include "wayland_layer.h"
++#include "wayland_logging.h"
+ 
+ #include <KWayland/Client/compositor.h>
+ #include <KWayland/Client/pointer.h>
+@@ -319,6 +320,7 @@ WaylandOutput::FrameData::FrameData(FrameData &&move)
+     , commitTime(move.commitTime)
+     , contentUpdateDeadline(std::exchange(move.contentUpdateDeadline, std::nullopt))
+     , contentUpdateReady(std::exchange(move.contentUpdateReady, std::nullopt))
++    , commitTimingShift(std::exchange(move.commitTimingShift, std::nullopt))
+ {
+ }
+ 
+@@ -339,6 +341,7 @@ WaylandOutput::FrameData &WaylandOutput::FrameData::operator=(FrameData &&move)
+         commitTime = move.commitTime;
+         contentUpdateDeadline = std::exchange(move.contentUpdateDeadline, std::nullopt);
+         contentUpdateReady = std::exchange(move.contentUpdateReady, std::nullopt);
++        commitTimingShift = std::exchange(move.commitTimingShift, std::nullopt);
+     }
+     return *this;
+ }
+@@ -399,9 +402,11 @@ std::expected<void, OutputError> WaylandOutput::present(const QList<OutputLayer
+     if (m_commitTimer) {
+         // not before half a refresh ahead of the target: the host's first vblank at or
+         // after that is the target itself (the timestamp is in this guest's clock; the
+-        // cross-domain proxy translates it to the host's)
++        // cross-domain proxy translates it to the host's). A refresh earlier still against a
++        // host that shows stamped frames a refresh late (framePresented)
+         const std::chrono::nanoseconds vblankInterval(1'000'000'000'000LL / std::max<uint32_t>(m_refreshRate, 1));
+-        const auto notBefore = std::chrono::duration_cast<std::chrono::nanoseconds>(frame->targetPageflipTime().time_since_epoch()) - vblankInterval / 2;
++        const auto notBefore = std::chrono::duration_cast<std::chrono::nanoseconds>(frame->targetPageflipTime().time_since_epoch()) - vblankInterval / 2 - m_commitTimingShift * vblankInterval;
++        frameData.commitTimingShift = m_commitTimingShift;
+         const uint64_t ns = std::max<int64_t>(notBefore.count(), 0);
+         const uint64_t sec = ns / 1'000'000'000;
+         wp_commit_timer_v1_set_timestamp(m_commitTimer, uint32_t(sec >> 32), uint32_t(sec & 0xffffffff), uint32_t(ns % 1'000'000'000));
+@@ -469,6 +474,35 @@ void WaylandOutput::framePresented(struct wp_presentation_feedback *feedback, st
+         m_renderLoop->setRefreshRate(m_refreshRate);
+     }
+     const auto &frame = m_frames.front();
++    if (frame.commitTimingShift && frame.outputFrame) {
++        // KWin 6.8 counts its pipeline depth from a commit-timing stamp instead of from now: while
++        // it triple buffers (a direct-scanout client at 240 Hz) every stamped frame is shown a
++        // refresh after the vblank asked for, and this nested desktop runs at half its rate. Such a
++        // host shows itself by frames committed in time for their target but shown exactly a
++        // refresh after it: eight in a row move the stamps a refresh earlier (with that host's
++        // arithmetic, the target again). A frame shown before its target means the host does not
++        // do that (any more): the stamps go back at once.
++        const std::chrono::nanoseconds vblankInterval(1'000'000'000'000LL / std::max<uint32_t>(m_refreshRate, 1));
++        const auto target = std::chrono::duration_cast<std::chrono::nanoseconds>(frame.outputFrame->targetPageflipTime().time_since_epoch());
++        const auto lead = target - std::chrono::duration_cast<std::chrono::nanoseconds>(frame.commitTime.time_since_epoch());
++        const auto inTime = frame.contentUpdateDeadline.value_or(std::chrono::microseconds(3000)) + std::chrono::microseconds(500);
++        const auto off = timestamp - target;
++        if (*frame.commitTimingShift == m_commitTimingShift) {
++            if (m_commitTimingShift == 0 && lead > inTime && off > vblankInterval * 3 / 4 && off < vblankInterval * 5 / 4) {
++                if (++m_commitTimingLateRun >= 8) {
++                    m_commitTimingShift = 1;
++                    m_commitTimingLateRun = 0;
++                    qCWarning(KWIN_WAYLAND_BACKEND) << "The host shows frames with a commit-timing target a refresh late; stamping them a refresh earlier";
++                }
++            } else {
++                m_commitTimingLateRun = 0;
++            }
++            if (m_commitTimingShift != 0 && off < -vblankInterval / 2) {
++                m_commitTimingShift = 0;
++                qCWarning(KWIN_WAYLAND_BACKEND) << "The host showed a frame before its commit-timing target; stamping frames with their target again";
++            }
++        }
++    }
+     // KWIN_WAYLAND_SAFETY_MARGIN_US: a fixed commit deadline before the host's vblank instead
+     // of the frame callback estimate below. A host that scans the nested output out directly
+     // latches it ~3 ms before its vblank, but sends the frame callback ~5.4 ms ahead (KWin
+diff --git a/src/backends/wayland/wayland_output.h b/src/backends/wayland/wayland_output.h
+index 044be62..b343b11 100644
+--- a/src/backends/wayland/wayland_output.h
++++ b/src/backends/wayland/wayland_output.h
+@@ -155,6 +155,8 @@ private:
+         std::optional<std::chrono::nanoseconds> contentUpdateDeadline;
+         // when the host had this frame's buffers ready (v4, ours), in this guest's clock
+         std::optional<std::chrono::nanoseconds> contentUpdateReady;
++        // the commit-timing shift this frame was stamped with (see m_commitTimingShift)
++        std::optional<int> commitTimingShift;
+     };
+     std::deque<FrameData> m_frames;
+     // KWIN_WAYLAND_ADAPTIVE_MARGIN: the largest commit lead (target vblank - commit) that
+@@ -174,6 +176,11 @@ private:
+     // KWIN_WAYLAND_COMMIT_TIMING=1: each frame's commit carries its target vblank
+     // (wp_commit_timer_v1), so the host shows it then and not a refresh earlier
+     wp_commit_timer_v1 *m_commitTimer = nullptr;
++    // refreshes the stamps go earlier than half a refresh before the target: 1 against a host
++    // that shows stamped frames a refresh late (KWin 6.8 while triple buffering); the run of
++    // frames that showed it so far
++    int m_commitTimingShift = 0;
++    int m_commitTimingLateRun = 0;
+     std::unique_ptr<WaylandClient::Viewport> m_viewport;
+     zwp_keyboard_shortcuts_inhibitor_v1 *m_shortcutInhibition = nullptr;
+     uint32_t m_refreshRate = 60'000;
+-- 
+2.56.0
+

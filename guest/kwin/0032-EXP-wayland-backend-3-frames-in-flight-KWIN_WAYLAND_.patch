@@ -1,0 +1,39 @@
+From 3e876f7d6830a32cc4f8ec48545a650e6dd6681b Mon Sep 17 00:00:00 2001
+From: research <local@localhost>
+Date: Thu, 8 Oct 2026 13:01:41 +0200
+Subject: [PATCH] EXP wayland backend: 3 frames in flight
+ (KWIN_WAYLAND_MAX_PENDING_FRAMES)
+
+The host's commit deadline can sit two refreshes before its vblank for seconds (its
+render time estimate after a full-screen transition or while composited). Planning
+a frame that far ahead with only 2 frames in flight dropped frames: a nested desktop
+at 160-208 fps instead of 240 for ~2 s after each full-screen toggle (2026-10-08).
+With 3 those frames come a refresh later instead; otherwise the render loop plans at
+most 2 ahead anyway. KWIN_WAYLAND_MAX_PENDING_FRAMES=2 restores upstream's limit.
+---
+ src/backends/wayland/wayland_output.cpp | 9 ++++++++-
+ 1 file changed, 8 insertions(+), 1 deletion(-)
+
+diff --git a/src/backends/wayland/wayland_output.cpp b/src/backends/wayland/wayland_output.cpp
+index 88b183a..e1ae234 100644
+--- a/src/backends/wayland/wayland_output.cpp
++++ b/src/backends/wayland/wayland_output.cpp
+@@ -127,7 +127,14 @@ WaylandOutput::WaylandOutput(const QString &name, Capabilities capabilities, Way
+     , m_backend(backend)
+     , m_cursor(std::make_unique<WaylandCursor>(backend))
+ {
+-    m_renderLoop->setMaxPendingFrameCount(2);
++    // EXP: 3 frames in flight by default (KWIN_WAYLAND_MAX_PENDING_FRAMES, 2 as upstream). The
++    // host's commit deadline can sit two refreshes before its vblank for seconds (its render
++    // time estimate after a full-screen transition, a composited window); planning a frame that
++    // far ahead with only 2 in flight dropped every few frames: 160-208 fps at 240 Hz for ~2 s
++    // after each full-screen toggle of a nested desktop (2026-10-08). With 3 the frames are a
++    // refresh later in those moments instead; otherwise the render loop plans at most 2 anyway.
++    static const int s_maxPendingFrames = std::clamp(environmentVariableIntValue("KWIN_WAYLAND_MAX_PENDING_FRAMES").value_or(3), 1, 3);
++    m_renderLoop->setMaxPendingFrameCount(s_maxPendingFrames);
+     if (KWayland::Client::XdgDecorationManager *manager = m_backend->display()->xdgDecorationManager()) {
+         m_xdgDecoration.reset(manager->getToplevelDecoration(m_xdgShellSurface.get()));
+         m_xdgDecoration->setMode(KWayland::Client::XdgDecoration::Mode::ServerSide);
+-- 
+2.55.0
+

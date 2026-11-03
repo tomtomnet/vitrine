@@ -9,7 +9,7 @@ The item now imports its own copies of the frame's fds, at the frame's own
 size rather than the size negotiated last.
 
 From the research (virtio-gpu-desktop patches/kpipewire, set k2), for
-KPipeWire 6.7.91; applies to 6.7.5 unchanged.
+KPipeWire 6.7.91; applies to 6.8.2 unchanged.
 
 --- a/src/pipewiresourceitem.cpp	2026-09-24 13:29:59.000000000 +0200
 +++ b/src/pipewiresourceitem.cpp	2026-10-08 22:04:01.578035162 +0200

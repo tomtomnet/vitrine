@@ -1,0 +1,218 @@
+From 7a5a6724dc69b317a977b5182cbe2d3e072c4d82 Mon Sep 17 00:00:00 2001
+From: research <local@localhost>
+Date: Thu, 8 Oct 2026 09:02:46 +0200
+Subject: [PATCH] EXP wayland backend: KWIN_WAYLAND_READY, the way to the host
+ measured from presentation-time v4 content_update_ready
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+With KWIN_WAYLAND_READY=1 the backend binds wp_presentation version 4 (ours: the host's
+content_update_ready, after Michel Dänzer's proposal on wayland-protocols MR 454) and
+takes its commit margin as the host's deadline plus the measured way from the end of its
+own GPU work to the host having the frame's buffers ready - the guest's fence wait, a
+VM's proxy and its crossing - instead of the fixed KWIN_WAYLAND_DEADLINE_MARGIN_US
+[1000]: smoothed over ~0.5 s plus twice its largest recent excess (forgotten over ~2 s),
+at least KWIN_WAYLAND_READY_FLOOR_US [250]. Off: unchanged.
+---
+ src/backends/wayland/wayland_display.cpp    |  6 ++-
+ src/backends/wayland/wayland_output.cpp     | 41 +++++++++++++++++++++
+ src/backends/wayland/wayland_output.h       |  9 +++++
+ src/wayland/protocols/presentation-time.xml | 26 +++++++++++--
+ 4 files changed, 78 insertions(+), 4 deletions(-)
+
+diff --git a/src/backends/wayland/wayland_display.cpp b/src/backends/wayland/wayland_display.cpp
+index 89061d9..a6eb96d 100644
+--- a/src/backends/wayland/wayland_display.cpp
++++ b/src/backends/wayland/wayland_display.cpp
+@@ -425,7 +425,11 @@ void WaylandDisplay::registry_global(void *data, wl_registry *registry, uint32_t
+         // version 3 (proposed: wayland-protocols merge request 454) adds the host's commit
+         // deadline to each presentation feedback; KWIN_WAYLAND_DEADLINE=0 stays at 2
+         static const bool s_deadline = environmentVariableBoolValue("KWIN_WAYLAND_DEADLINE").value_or(true);
+-        display->m_presentationTime = reinterpret_cast<wp_presentation *>(wl_registry_bind(registry, name, &wp_presentation_interface, std::min(version, s_deadline ? 3u : 2u)));
++        // version 4 (EXP, ours: content_update_ready, after Michel Dänzer's proposal on MR 454)
++        // with KWIN_WAYLAND_READY=1: when the host had this frame's buffers ready
++        static const bool s_ready = environmentVariableBoolValue("KWIN_WAYLAND_READY").value_or(false);
++        const uint32_t wanted = s_deadline ? (s_ready ? 4u : 3u) : 2u;
++        display->m_presentationTime = reinterpret_cast<wp_presentation *>(wl_registry_bind(registry, name, &wp_presentation_interface, std::min(version, wanted)));
+     } else if (strcmp(interface, wp_commit_timing_manager_v1_interface.name) == 0) {
+         display->m_commitTiming = reinterpret_cast<wp_commit_timing_manager_v1 *>(wl_registry_bind(registry, name, &wp_commit_timing_manager_v1_interface, 1));
+     } else if (strcmp(interface, wp_tearing_control_manager_v1_interface.name) == 0) {
+diff --git a/src/backends/wayland/wayland_output.cpp b/src/backends/wayland/wayland_output.cpp
+index 4db7bfa..88b183a 100644
+--- a/src/backends/wayland/wayland_output.cpp
++++ b/src/backends/wayland/wayland_output.cpp
+@@ -247,11 +247,19 @@ static void handleDeadline(void *data, struct wp_presentation_feedback *wp_prese
+     reinterpret_cast<WaylandOutput *>(data)->frameDeadline(wp_presentation_feedback, std::chrono::nanoseconds(tv_nsec));
+ }
+ 
++// version 4 (ours): when the host had this frame's buffers ready (sent before the deadline)
++static void handleReady(void *data, struct wp_presentation_feedback *wp_presentation_feedback, uint32_t tv_sec_hi, uint32_t tv_sec_lo, uint32_t tv_nsec)
++{
++    const auto ready = std::chrono::seconds((uint64_t(tv_sec_hi) << 32) | tv_sec_lo) + std::chrono::nanoseconds(tv_nsec);
++    reinterpret_cast<WaylandOutput *>(data)->frameReady(wp_presentation_feedback, ready);
++}
++
+ static constexpr struct wp_presentation_feedback_listener s_presentationListener{
+     .sync_output = handleSyncOutput,
+     .presented = handlePresented,
+     .discarded = handleDiscarded,
+     .content_update_deadline = handleDeadline,
++    .content_update_ready = handleReady,
+ };
+ 
+ void WaylandOutput::handleFrame(void *data, wl_callback *callback, uint32_t time)
+@@ -298,6 +306,7 @@ WaylandOutput::FrameData::FrameData(FrameData &&move)
+     , frameCallbackTime(std::exchange(move.frameCallbackTime, std::nullopt))
+     , commitTime(move.commitTime)
+     , contentUpdateDeadline(std::exchange(move.contentUpdateDeadline, std::nullopt))
++    , contentUpdateReady(std::exchange(move.contentUpdateReady, std::nullopt))
+ {
+ }
+ 
+@@ -317,6 +326,7 @@ WaylandOutput::FrameData &WaylandOutput::FrameData::operator=(FrameData &&move)
+         frameCallbackTime = std::exchange(move.frameCallbackTime, std::nullopt);
+         commitTime = move.commitTime;
+         contentUpdateDeadline = std::exchange(move.contentUpdateDeadline, std::nullopt);
++        contentUpdateReady = std::exchange(move.contentUpdateReady, std::nullopt);
+     }
+     return *this;
+ }
+@@ -416,6 +426,16 @@ void WaylandOutput::frameDeadline(struct wp_presentation_feedback *feedback, std
+     }
+ }
+ 
++void WaylandOutput::frameReady(struct wp_presentation_feedback *feedback, std::chrono::nanoseconds ready)
++{
++    const auto it = std::ranges::find_if(m_frames, [feedback](const FrameData &frame) {
++        return frame.presentationFeedback == feedback;
++    });
++    if (it != m_frames.end()) {
++        it->contentUpdateReady = ready;
++    }
++}
++
+ void WaylandOutput::framePresented(struct wp_presentation_feedback *feedback, std::chrono::nanoseconds timestamp, uint32_t refreshRate)
+ {
+     const auto it = std::ranges::find_if(m_frames, [feedback](const FrameData &frame) {
+@@ -459,6 +479,27 @@ void WaylandOutput::framePresented(struct wp_presentation_feedback *feedback, st
+         m_renderLoop->setPresentationSafetyMargin(std::max<std::chrono::nanoseconds>(m_missLead + std::chrono::microseconds(500), std::chrono::microseconds(1500)));
+     } else if (s_safetyMarginUs) {
+         m_renderLoop->setPresentationSafetyMargin(std::chrono::microseconds(*s_safetyMarginUs));
++    } else if (auto deadline = frame.contentUpdateDeadline; deadline && frame.contentUpdateReady && frame.outputFrame) {
++        // KWIN_WAYLAND_READY=1 (EXP): the way to the host measured instead of guessed - the host
++        // says when it had the frame's buffers ready (v4, after Michel Dänzer's proposal on
++        // wayland-protocols MR 454); the way is that minus the end of our own GPU work, which
++        // the render journal already counts. Smoothed over ~0.5 s, plus twice its largest recent
++        // excess (forgotten over ~2 s), at least KWIN_WAYLAND_READY_FLOOR_US [250]
++        static const std::chrono::nanoseconds s_readyFloor = std::chrono::microseconds(environmentVariableIntValue("KWIN_WAYLAND_READY_FLOOR_US").value_or(250));
++        const auto span = frame.outputFrame->queryRenderTime();
++        if (span && span->end.time_since_epoch().count()) {
++            const auto way = std::max(*frame.contentUpdateReady - std::chrono::duration_cast<std::chrono::nanoseconds>(span->end.time_since_epoch()), std::chrono::nanoseconds::zero());
++            if (way < std::chrono::milliseconds(50)) {
++                const auto elapsed = m_wayLast ? timestamp - *m_wayLast : std::chrono::seconds(1);
++                m_wayLast = timestamp;
++                const double smooth = std::clamp(elapsed.count() / 500e6, 0.01, 1.0);
++                const double forget = std::clamp(elapsed.count() / 2000e6, 0.001, 1.0);
++                m_waySmoothed = std::chrono::nanoseconds(int64_t(m_waySmoothed.count() * (1 - smooth) + way.count() * smooth));
++                const auto excess = std::max(way - m_waySmoothed, std::chrono::nanoseconds::zero());
++                m_wayExcess = std::max(excess, std::chrono::nanoseconds(int64_t(m_wayExcess.count() * (1 - forget))));
++            }
++        }
++        m_renderLoop->setPresentationSafetyMargin(*deadline + std::max(m_waySmoothed + 2 * m_wayExcess, s_readyFloor));
+     } else if (auto deadline = frame.contentUpdateDeadline) {
+         // the host's own word (wp_presentation v3, proposed in wayland-protocols merge request
+         // 454): its latching deadline for this frame, plus our way to it -
+diff --git a/src/backends/wayland/wayland_output.h b/src/backends/wayland/wayland_output.h
+index f620b9a..044be62 100644
+--- a/src/backends/wayland/wayland_output.h
++++ b/src/backends/wayland/wayland_output.h
+@@ -107,6 +107,7 @@ public:
+     void frameDiscarded(struct wp_presentation_feedback *feedback);
+     void framePresented(struct wp_presentation_feedback *feedback, std::chrono::nanoseconds timestamp, uint32_t refreshRate);
+     void frameDeadline(struct wp_presentation_feedback *feedback, std::chrono::nanoseconds deadline);
++    void frameReady(struct wp_presentation_feedback *feedback, std::chrono::nanoseconds ready);
+ 
+     void applyChanges(const OutputConfiguration &config) override;
+ 
+@@ -152,11 +153,19 @@ private:
+         std::chrono::steady_clock::time_point commitTime;
+         // the host's latching deadline before this frame's presentation (wp_presentation v3)
+         std::optional<std::chrono::nanoseconds> contentUpdateDeadline;
++        // when the host had this frame's buffers ready (v4, ours), in this guest's clock
++        std::optional<std::chrono::nanoseconds> contentUpdateReady;
+     };
+     std::deque<FrameData> m_frames;
+     // KWIN_WAYLAND_ADAPTIVE_MARGIN: the largest commit lead (target vblank - commit) that
+     // still missed its vblank recently; the commit deadline is kept just above it
+     std::chrono::nanoseconds m_missLead{2'500'000};
++    // KWIN_WAYLAND_READY: the way from this compositor's GPU work done to the host having the
++    // frame (the guest's fence wait, a VM's proxy and its crossing): smoothed, and its largest
++    // recent excess over that, which decays
++    std::chrono::nanoseconds m_waySmoothed{0};
++    std::chrono::nanoseconds m_wayExcess{0};
++    std::optional<std::chrono::nanoseconds> m_wayLast;
+     quint32 m_pendingConfigureSerial = 0;
+     QSize m_pendingConfigureSize;
+     QTimer m_configureThrottleTimer;
+diff --git a/src/wayland/protocols/presentation-time.xml b/src/wayland/protocols/presentation-time.xml
+index 53d3c96..d46d705 100644
+--- a/src/wayland/protocols/presentation-time.xml
++++ b/src/wayland/protocols/presentation-time.xml
+@@ -2,7 +2,9 @@
+ <protocol name="presentation_time">
+   <!-- Local copy: wayland-protocols' stable presentation-time with the proposed
+        version 3 (content_update_deadline, wayland-protocols merge request 454,
+-       not merged as of 2026-10-07), for an experimental host build. -->
++       not merged as of 2026-10-07) and an experimental version 4
++       (content_update_ready, Michel Dänzer's proposal there), for an
++       experimental host build. -->
+ <!-- wrap:70 -->
+ 
+   <copyright>
+@@ -28,7 +30,7 @@
+     DEALINGS IN THE SOFTWARE.
+   </copyright>
+ 
+-  <interface name="wp_presentation" version="3">
++  <interface name="wp_presentation" version="4">
+     <description summary="timed presentation related wl_surface requests">
+ 
+ <!-- Introduction -->
+@@ -126,7 +128,7 @@
+ 
+   </interface>
+ 
+-  <interface name="wp_presentation_feedback" version="3">
++  <interface name="wp_presentation_feedback" version="4">
+     <description summary="presentation time feedback event">
+       A presentation_feedback object returns an indication that a
+       wl_surface content update has become visible to the user.
+@@ -279,6 +281,24 @@
+       </description>
+       <arg name="tv_nsec" type="uint" summary="duration in nanoseconds"/>
+     </event>
++
++    <event name="content_update_ready" since="4">
++      <description summary="when the content update's buffers were ready">
++        EXPERIMENTAL, a local extension after Michel Dänzer's proposal on
++        wayland-protocols merge request 454: the time the compositor first
++        considered the buffers of this content update ready as far as the
++        deadline is concerned (their acquire fences seen signaled, or the
++        commit if they had none pending), in the presentation clock. Waits for
++        other reasons (commit timing targets, FIFO barriers, an earlier
++        content update) do not count. The client can tell how long it needs
++        from starting a frame to its buffers being ready, and aim at the
++        deadline. Sent before content_update_deadline; not sent if the update
++        was discarded.
++      </description>
++      <arg name="tv_sec_hi" type="uint" summary="high 32 bits of the seconds part"/>
++      <arg name="tv_sec_lo" type="uint" summary="low 32 bits of the seconds part"/>
++      <arg name="tv_nsec" type="uint" summary="nanoseconds part"/>
++    </event>
+   </interface>
+ 
+ </protocol>
+-- 
+2.55.0
+

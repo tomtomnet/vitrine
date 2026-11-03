@@ -1,0 +1,153 @@
+From a2487e54ef9ab3c238605833696b45deff34a1f8 Mon Sep 17 00:00:00 2001
+From: research <research@localhost>
+Date: Sat, 10 Oct 2026 16:27:45 +0200
+Subject: [PATCH] EXP renderloop: KWIN_RENDERLOOP_TRACE=PATH logs the
+ scheduling decisions
+
+Diagnostics only, off unless set: one line per event (repaint request, schedule, timer dispatch,
+frame prepared, presented, dropped) with the render loop's state - pending frames, last
+presentation and target, the chosen target and render time, the expected compositing time, the
+pipeline depth, the safety margin - appended to PATH.<output name>. Written to find out why a
+nested KWin with commit timing renders every other refresh on a stock KWin 6.8 host
+(2026-10-10, research/commit-timing-holes-2026-10-10.md).
+---
+ src/core/renderloop.cpp | 32 ++++++++++++++++++++++++++++++++
+ src/core/renderloop_p.h |  3 +++
+ 2 files changed, 35 insertions(+)
+
+diff --git a/src/core/renderloop.cpp b/src/core/renderloop.cpp
+index 3585a3a..958edb8 100644
+--- a/src/core/renderloop.cpp
++++ b/src/core/renderloop.cpp
+@@ -67,6 +67,26 @@ static const std::optional<std::chrono::nanoseconds> s_loneFrameLead = qEnvironm
+     ? std::nullopt
+     : std::optional<std::chrono::nanoseconds>(std::chrono::microseconds(std::max(0, qEnvironmentVariableIntValue("KWIN_LONE_FRAME_LEAD_US"))));
+ 
++// KWIN_RENDERLOOP_TRACE=PATH (diagnostics): the render loop's scheduling decisions, one line per
++// event - "EVENT now=NS key=value...", times in CLOCK_MONOTONIC ns - appended to PATH.OUTPUT
++static const QByteArray s_tracePath = qgetenv("KWIN_RENDERLOOP_TRACE");
++
++void RenderLoopPrivate::trace(const char *event, std::initializer_list<std::pair<const char *, int64_t>> fields)
++{
++    if (s_tracePath.isEmpty() || !output) {
++        return;
++    }
++    if (!m_traceOutput) {
++        const QByteArray path = s_tracePath + "." + output->name().toUtf8();
++        m_traceOutput = std::fstream(path.constData(), std::ios::out | std::ios::app);
++    }
++    *m_traceOutput << event << " now=" << std::chrono::steady_clock::now().time_since_epoch().count();
++    for (const auto &[key, value] : fields) {
++        *m_traceOutput << " " << key << "=" << value;
++    }
++    *m_traceOutput << "\n";
++}
++
+ RenderLoopPrivate::RenderLoopPrivate(RenderLoop *q, BackendOutput *output)
+     : q(q)
+     , output(output)
+@@ -85,6 +105,7 @@ void RenderLoopPrivate::scheduleNextRepaint(std::optional<std::chrono::steady_cl
+     if (compositeTimer.isActive() && presentNotBeforeTime >= lastPresentNotBefore) {
+         // this would present later than what we already scheduled for,
+         // so we can ignore it
++        trace("next-ignored", {{"pending", pendingFrameCount}, {"target", nextPresentationTimestamp.count()}});
+         return;
+     }
+     scheduleRepaint(nextPresentationTimestamp, presentNotBeforeTime);
+@@ -98,6 +119,8 @@ void RenderLoopPrivate::scheduleRepaint(std::chrono::nanoseconds lastTargetTimes
+     presentNotBefore = std::max(presentNotBefore, currentTime);
+ 
+     std::chrono::nanoseconds targetTimestamp;
++    int64_t tracePageflips = 0;
++    const bool traceTimerWasActive = compositeTimer.isActive();
+ 
+     // Estimate when it's a good time to perform the next compositing cycle.
+     // the 1ms on top of the safety margin is required for timer and scheduler inaccuracies
+@@ -167,6 +190,7 @@ void RenderLoopPrivate::scheduleRepaint(std::chrono::nanoseconds lastTargetTimes
+             }
+         }
+ 
++        tracePageflips = pageflipsInAdvance;
+         if (compositeTimer.isActive() && presentNotBefore >= lastPresentNotBefore) {
+             // we already scheduled this frame, but we got a new timestamp
+             // which might require starting to composite earlier than we planned.
+@@ -203,6 +227,7 @@ void RenderLoopPrivate::scheduleRepaint(std::chrono::nanoseconds lastTargetTimes
+         } else {
+             // but this would schedule at a later time
+             lastPresentNotBefore = presentNotBefore;
++            trace("sched-later", {{"pending", pendingFrameCount}, {"last", lastPresentationTimestamp.count()}, {"lastTarget", lastTargetTimestamp.count()}, {"want", targetTimestamp.count()}, {"keep", nextPresentationTimestamp.count()}, {"expected", expectedCompositingTime.count()}, {"advance", tracePageflips}, {"margin", safetyMargin.count()}});
+             return;
+         }
+     } else {
+@@ -214,12 +239,14 @@ void RenderLoopPrivate::scheduleRepaint(std::chrono::nanoseconds lastTargetTimes
+     const std::chrono::nanoseconds nextRenderTimestamp = nextPresentationTimestamp - expectedCompositingTime;
+     scheduledLate = nextRenderTimestamp < currentTime;
+     compositeTimer.start(nextRenderTimestamp);
++    trace("sched", {{"pending", pendingFrameCount}, {"timerWasActive", traceTimerWasActive}, {"last", lastPresentationTimestamp.count()}, {"lastTarget", lastTargetTimestamp.count()}, {"notBefore", presentNotBefore.count()}, {"target", nextPresentationTimestamp.count()}, {"render", nextRenderTimestamp.count()}, {"expected", expectedCompositingTime.count()}, {"advance", tracePageflips}, {"margin", safetyMargin.count()}, {"triple", wasTripleBuffering}});
+ }
+ 
+ void RenderLoopPrivate::notifyFrameDropped()
+ {
+     Q_ASSERT(pendingFrameCount > 0);
+     pendingFrameCount--;
++    trace("dropped", {{"pending", pendingFrameCount}, {"reschedule", pendingReschedule ? 1 : 0}});
+ 
+     if (!inhibitCount && pendingReschedule) {
+         scheduleNextRepaint(pendingReschedule);
+@@ -242,6 +269,7 @@ void RenderLoopPrivate::notifyFrameCompleted(std::chrono::nanoseconds timestamp,
+ 
+     Q_ASSERT(pendingFrameCount > 0);
+     pendingFrameCount--;
++    trace("presented", {{"pending", pendingFrameCount}, {"at", timestamp.count()}, {"target", frame ? frame->targetPageflipTime().time_since_epoch().count() : 0}, {"reschedule", pendingReschedule ? 1 : 0}});
+ 
+     notifyVblank(timestamp);
+ 
+@@ -325,6 +353,7 @@ void RenderLoop::timerEvent(QTimerEvent *event)
+ 
+ void RenderLoopPrivate::dispatch()
+ {
++    trace("dispatch", {{"pending", pendingFrameCount}, {"target", nextPresentationTimestamp.count()}});
+     Q_EMIT q->frameRequested(q);
+ }
+ 
+@@ -360,6 +389,7 @@ void RenderLoop::prepareNewFrame()
+ {
+     d->pendingFrameCount++;
+     d->preparingNewFrame = true;
++    d->trace("prepare", {{"pending", d->pendingFrameCount}, {"target", d->nextPresentationTimestamp.count()}});
+ }
+ 
+ void RenderLoop::newFramePrepared()
+@@ -393,6 +423,7 @@ void RenderLoop::setPresentationSafetyMargin(std::chrono::nanoseconds safetyMarg
+ void RenderLoop::scheduleRepaint(Item *item, OutputLayer *outputLayer, std::optional<std::chrono::steady_clock::time_point> presentNotBefore)
+ {
+     if (d->preparingNewFrame) {
++        d->trace("request-while-preparing", {{"pending", d->pendingFrameCount}, {"item", item ? 1 : 0}, {"layer", outputLayer ? 1 : 0}});
+         return;
+     }
+     const auto surfaceItem = repaintDriver();
+@@ -406,6 +437,7 @@ void RenderLoop::scheduleRepaint(Item *item, OutputLayer *outputLayer, std::opti
+     const bool vrr = d->presentationMode == PresentationMode::AdaptiveSync || d->presentationMode == PresentationMode::AdaptiveAsync;
+     const bool tearing = d->presentationMode == PresentationMode::Async || d->presentationMode == PresentationMode::AdaptiveAsync;
+     const int effectiveMaxPendingFrameCount = (vrr || tearing) ? 1 : d->maxPendingFrameCount;
++    d->trace("request", {{"pending", d->pendingFrameCount}, {"max", effectiveMaxPendingFrameCount}, {"inhibit", d->inhibitCount}, {"timer", d->compositeTimer.isActive()}, {"item", item ? 1 : 0}, {"layer", outputLayer ? 1 : 0}});
+     if (d->pendingFrameCount < effectiveMaxPendingFrameCount && !d->inhibitCount) {
+         d->scheduleNextRepaint(presentNotBefore);
+     } else if (d->pendingReschedule) {
+diff --git a/src/core/renderloop_p.h b/src/core/renderloop_p.h
+index ede711d..5df06bc 100644
+--- a/src/core/renderloop_p.h
++++ b/src/core/renderloop_p.h
+@@ -40,6 +40,9 @@ public:
+     RenderLoop *const q;
+     BackendOutput *const output;
+     std::optional<std::fstream> m_debugOutput;
++    // KWIN_RENDERLOOP_TRACE=PATH: one line per scheduling event (renderloop.cpp, trace())
++    void trace(const char *event, std::initializer_list<std::pair<const char *, int64_t>> fields);
++    std::optional<std::fstream> m_traceOutput;
+     std::chrono::nanoseconds lastPresentationTimestamp = std::chrono::nanoseconds::zero();
+     std::chrono::nanoseconds nextPresentationTimestamp = std::chrono::nanoseconds::zero();
+     std::chrono::nanoseconds lastPresentNotBefore = std::chrono::nanoseconds::zero();
+-- 
+2.56.0
+

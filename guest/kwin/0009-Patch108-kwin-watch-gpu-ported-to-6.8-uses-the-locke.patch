@@ -1,0 +1,191 @@
+From 5a681a369432169fd5bdf9989d113c1472d86e4d Mon Sep 17 00:00:00 2001
+From: tomtomnet <tompere8000@proton.me>
+Date: Sat, 3 Oct 2026 14:30:03 +0200
+Subject: [PATCH 09/22] Patch108 kwin-watch-gpu (ported to 6.8: uses the locked
+ wakeupTime)
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ src/backends/drm/drm_commit.cpp        | 16 ++++++
+ src/backends/drm/drm_commit.h          | 10 ++++
+ src/backends/drm/drm_commit_thread.cpp | 68 ++++++++++++++++++++++++++
+ src/backends/drm/drm_commit_thread.h   |  2 +
+ 4 files changed, 96 insertions(+)
+
+diff --git a/src/backends/drm/drm_commit.cpp b/src/backends/drm/drm_commit.cpp
+index c2a592f7e7..a152bed47a 100644
+--- a/src/backends/drm/drm_commit.cpp
++++ b/src/backends/drm/drm_commit.cpp
+@@ -258,6 +258,22 @@ bool DrmAtomicCommit::areBuffersReadable() const
+     });
+ }
+ 
++std::vector<DrmAtomicCommit::Watched> DrmAtomicCommit::watched() const
++{
++    std::vector<Watched> ret;
++    for (const auto &[plane, buffer] : m_buffers) {
++        if (!buffer) {
++            continue;
++        }
++        const auto it = m_frames.find(plane);
++        ret.push_back(Watched{
++            .buffer = buffer,
++            .frame = it == m_frames.end() ? nullptr : it->second,
++        });
++    }
++    return ret;
++}
++
+ void DrmAtomicCommit::markGpuDone(std::chrono::steady_clock::time_point when)
+ {
+     for (const auto &[plane, frame] : m_frames) {
+diff --git a/src/backends/drm/drm_commit.h b/src/backends/drm/drm_commit.h
+index 60ddfbf797..9ff19a17b3 100644
+--- a/src/backends/drm/drm_commit.h
++++ b/src/backends/drm/drm_commit.h
+@@ -92,6 +92,16 @@ public:
+      * GPU work ended then
+      */
+     void markGpuDone(std::chrono::steady_clock::time_point when);
++    /**
++     * The buffers of this commit and the frames they carry, to be watched
++     * for their GPU work without the commit thread's lock
++     */
++    struct Watched
++    {
++        std::shared_ptr<DrmFramebuffer> buffer;
++        std::shared_ptr<OutputFrame> frame;
++    };
++    std::vector<Watched> watched() const;
+     void setDeadline(std::chrono::steady_clock::time_point deadline);
+     std::optional<bool> isVrr() const;
+     /**
+diff --git a/src/backends/drm/drm_commit_thread.cpp b/src/backends/drm/drm_commit_thread.cpp
+index e6ea926d10..9503859a5e 100644
+--- a/src/backends/drm/drm_commit_thread.cpp
++++ b/src/backends/drm/drm_commit_thread.cpp
+@@ -8,11 +8,14 @@
+ */
+ #include "drm_commit_thread.h"
+ #include "drm_commit.h"
++#include "drm_buffer.h"
+ #include "drm_gpu.h"
++#include "core/renderbackend.h"
+ #include "drm_logging.h"
+ #include "utils/envvar.h"
+ #include "utils/realtime.h"
+ 
++#include <poll.h>
+ #include <ranges>
+ #include <span>
+ #include <thread>
+@@ -23,6 +26,9 @@ using namespace std::chrono_literals;
+ namespace KWin
+ {
+ 
++// KWIN_DRM_WATCH_GPU=1: the commit thread waits for the GPU with the commit's
++// buffers and tells the frames when it was done, for the render time estimate
++static const bool s_watchGpu = environmentVariableBoolValue("KWIN_DRM_WATCH_GPU").value_or(false);
+ // KWIN_DRM_COMMIT_GRACE_US: how long after the vblank a commit may still go out
+ // while its buffers become readable, instead of waiting for the next vblank
+ static const std::chrono::microseconds s_commitGrace{environmentVariableIntValue("KWIN_DRM_COMMIT_GRACE_US").value_or(0)};
+@@ -83,7 +89,15 @@ DrmCommitThread::DrmCommitThread(DrmGpu *gpu, const QString &name)
+             const auto now = std::chrono::steady_clock::now();
+             const auto wakeupTime = m_targetPageflipTime - m_safetyMargin;
+             if (wakeupTime > now) {
++                // Until the commit is due, watch the GPU finish the buffers of
++                // the commit at hand, and tell its frames when it did: the
++                // render loop then knows the GPU's time, which the GL queries
++                // do not give where they are off (virtual machines)
++                auto watched = s_watchGpu ? m_commits.front()->watched() : std::vector<DrmAtomicCommit::Watched>{};
+                 lock.unlock();
++                if (!watched.empty()) {
++                    watchGpu(std::move(watched), wakeupTime);
++                }
+                 std::this_thread::sleep_until(wakeupTime);
+                 lock.lock();
+                 // the main thread might've modified the list
+@@ -182,6 +196,60 @@ static std::unique_ptr<DrmAtomicCommit> mergeCommits(std::span<const std::unique
+     return ret;
+ }
+ 
++/*
++ * Poll the sync files of the buffers until all are readable or @p until
++ * comes; the frames get the time the last one became readable.
++ */
++void DrmCommitThread::watchGpu(std::vector<DrmAtomicCommit::Watched> &&watched, TimePoint until)
++{
++    std::vector<pollfd> fds;
++    for (const auto &w : watched) {
++        if (!w.buffer->isReadable()) {
++            const auto &fd = w.buffer->syncFd();
++            if (fd.isValid()) {
++                fds.push_back(pollfd{.fd = fd.get(), .events = POLLIN, .revents = 0});
++            }
++        }
++    }
++    if (fds.empty()) {
++        // done before the commit was handed over, or nothing to poll
++        return;
++    }
++    while (true) {
++        const auto now = std::chrono::steady_clock::now();
++        if (now >= until) {
++            return;
++        }
++        const auto left = std::chrono::duration_cast<std::chrono::milliseconds>(until - now);
++        const int ret = poll(fds.data(), fds.size(), std::max<int>(1, left.count() + 1));
++        if (ret < 0 && errno != EINTR) {
++            return;
++        }
++        bool all = true;
++        for (const auto &w : watched) {
++            if (!w.buffer->isReadable()) {
++                all = false;
++                break;
++            }
++        }
++        if (all) {
++            const auto done = std::chrono::steady_clock::now();
++            for (const auto &w : watched) {
++                if (w.frame) {
++                    w.frame->setGpuDone(done);
++                }
++            }
++            return;
++        }
++        std::erase_if(fds, [&](const pollfd &p) {
++            return p.revents & (POLLIN | POLLERR | POLLHUP | POLLNVAL);
++        });
++        if (fds.empty()) {
++            return;
++        }
++    }
++}
++
+ void DrmCommitThread::submit()
+ {
+     DrmAtomicCommit *commit = m_commits.front().get();
+diff --git a/src/backends/drm/drm_commit_thread.h b/src/backends/drm/drm_commit_thread.h
+index 94ecee4126..53ca0b1152 100644
+--- a/src/backends/drm/drm_commit_thread.h
++++ b/src/backends/drm/drm_commit_thread.h
+@@ -8,6 +8,7 @@
+ */
+ #pragma once
+ 
++#include "drm_commit.h"
+ #include <QObject>
+ #include <QThread>
+ #include <condition_variable>
+@@ -50,6 +51,7 @@ private:
+     TimePoint estimateNextVblank(TimePoint now) const;
+     void optimizeCommits(TimePoint pageflipTarget);
+     void submit();
++    void watchGpu(std::vector<DrmAtomicCommit::Watched> &&watched, TimePoint until);
+     void handlePing();
+ 
+     DrmGpu *const m_gpu;
+-- 
+2.55.0
+

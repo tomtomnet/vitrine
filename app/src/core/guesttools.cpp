@@ -1016,8 +1016,9 @@ QString GuestToolsMonitor::text() const
                   "native context: its Mesa is not the one of the tools.");
     case State::KwinMismatch:
         return tr("This guest runs vitrine's KWin %1 with Plasma %2, which Fedora's updates "
-                  "brought in around it: a mix nobody tested. Install the guest tools again: "
-                  "Fedora's KWin goes back in until guest tools built for Plasma %2.")
+                  "brought in around it: Plasma does not start with a KWin of another version. "
+                  "Install the guest tools again: they put in a KWin for Plasma %2, vitrine's or "
+                  "Fedora's.")
             .arg(r.packages.value("kwin").section('-', 0, 0).toHtmlEscaped(),
                  r.desktops.value("kde").toHtmlEscaped());
     case State::UpdateAvailable:

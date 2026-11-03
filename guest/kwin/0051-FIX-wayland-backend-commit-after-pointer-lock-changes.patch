@@ -1,0 +1,43 @@
+From: virtio-gpu-desktop <local@localhost>
+Date: Wed, 14 Oct 2026 02:00:00 +0200
+Subject: [PATCH] FIX: wayland backend: commit the surface when the pointer lock is taken or dropped
+
+togglePointerLock (Right Ctrl upstream, Ctrl+Alt+G with 0045) creates or destroys a zwp_locked_pointer_v1
+on the output's main surface. Its region is double-buffered surface state, and a host compositor applies the
+lock - and, in KWin, its removal - at the surface's next wl_surface.commit (KWin's pointerconstraints_v1.cpp
+sets and resets the pending pointerLockRegion). The output commits only when it presents a frame, and an
+idle nested session presents none (pointer motion moves the cursor surface only), so the grab took effect
+whenever something next repainted, and so did its release: pressed on a quiet desktop, nothing happened.
+
+Measured 2026-10-14 on host KWin 6.7.91 (bench/ab/vmview_grab_test_1014.sh VMVIEW=0 with
+bench/tools/host_pointer_constraints.bt): after Ctrl+Alt+G the lock request arrives but stays inactive and
+the host cursor still moves 284 px for a 200-count relative move; after a guest repaint the lock is active
+and the cursor holds; after the second Ctrl+Alt+G it stays locked until the next repaint. With this change
+the main surface is committed right after the lock is created or destroyed (between frames the layers have
+no cached state, so the commit applies nothing else).
+
+(An earlier 0051 - layers without input - rested on a wrong reading and is withdrawn: the main-surface lock
+does activate once committed.)
+---
+--- a/src/backends/wayland/wayland_output.cpp	2026-10-14 01:55:55.808704109 +0200
++++ b/src/backends/wayland/wayland_output.cpp	2026-10-14 01:55:55.829298137 +0200
+@@ -750,6 +750,8 @@
+         const bool surfaceWasLocked = m_pointerLock && m_hasPointerLock;
+         m_pointerLock.reset();
+         m_hasPointerLock = false;
++        // the lock's end is surface state too: committed now, not at the next frame (an idle session has none)
++        m_surface->commit(KWayland::Client::Surface::CommitFlag::None);
+         if (surfaceWasLocked) {
+             inhibitShortcuts(false);
+             updateWindowTitle();
+@@ -777,6 +779,10 @@
+         updateWindowTitle();
+         Q_EMIT m_backend->pointerLockChanged(false);
+     });
++    // A lock (its region) is double-buffered surface state: the host applies it at the surface's next commit.
++    // An idle nested session commits nothing - pointer motion only moves the cursor - so the lock waited for
++    // whatever repainted next. Commit now (the layers have no cached state between frames).
++    m_surface->commit(KWayland::Client::Surface::CommitFlag::None);
+ }
+ 
+ void WaylandOutput::inhibitShortcuts(bool inhibit)

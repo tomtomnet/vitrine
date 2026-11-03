@@ -1,0 +1,44 @@
+From d6b6b477a56d66eb47aca73966aa47cd0d9a0bd2 Mon Sep 17 00:00:00 2001
+From: tomtomnet <tompere8000@proton.me>
+Date: Sat, 3 Oct 2026 14:31:41 +0200
+Subject: [PATCH 16/22] Patch116 kwin-frame-slack (ported to 6.8: the timerfd
+ part dropped, PreciseTimer does it; the slack kept)
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ src/core/renderloop.cpp | 12 +++++++++++-
+ 1 file changed, 11 insertions(+), 1 deletion(-)
+
+diff --git a/src/core/renderloop.cpp b/src/core/renderloop.cpp
+index 831cbab034..4db54ba7ce 100644
+--- a/src/core/renderloop.cpp
++++ b/src/core/renderloop.cpp
+@@ -36,6 +36,14 @@ static const bool s_lateFlipCompensation = qEnvironmentVariableIntValue("KWIN_LA
+ static const bool s_idleFrameEarly = qEnvironmentVariableIntValue("KWIN_IDLE_FRAME_EARLY") != 0;
+ // KWIN_RENDER_ESTIMATE_UPSTREAM=1: the frames for which only the cursor was rendered count for the render time estimate
+ static const bool s_upstreamEstimate = qEnvironmentVariableIntValue("KWIN_RENDER_ESTIMATE_UPSTREAM") != 0;
++// KWIN_FRAME_SLACK_US: how much earlier than the estimate and the safety margin demand a
++// frame starts, instead of the millisecond on top. The composite timer is a timerfd since
++// 6.8 (cd46f9c9c3) and no longer cuts the wait down to whole milliseconds. In the guest of
++// a virtual machine the commit and the flip have a grace after the tick (the virtio-gpu
++// flip grace), so a frame that runs over still makes its vblank. Unset: nothing changes.
++static const std::optional<std::chrono::nanoseconds> s_frameSlack = qEnvironmentVariableIsEmpty("KWIN_FRAME_SLACK_US")
++    ? std::nullopt
++    : std::optional<std::chrono::nanoseconds>(std::chrono::microseconds(std::max(0, qEnvironmentVariableIntValue("KWIN_FRAME_SLACK_US"))));
+ static const std::chrono::nanoseconds s_lateFlipStep = std::chrono::microseconds(qEnvironmentVariableIsEmpty("KWIN_LATE_FLIP_STEP_US") ? 500 : std::max(10, qEnvironmentVariableIntValue("KWIN_LATE_FLIP_STEP_US")));
+ 
+ RenderLoopPrivate::RenderLoopPrivate(RenderLoop *q, BackendOutput *output)
+@@ -72,7 +80,9 @@ void RenderLoopPrivate::scheduleRepaint(std::chrono::nanoseconds lastTargetTimes
+ 
+     // Estimate when it's a good time to perform the next compositing cycle.
+     // the 1ms on top of the safety margin is required for timer and scheduler inaccuracies
+-    std::chrono::nanoseconds expectedCompositingTime = std::min(renderJournal.result() + safetyMargin + 1ms + lateFlipCompensation, 2 * vblankInterval);
++    // (KWIN_FRAME_SLACK_US: that slack instead)
++    const std::chrono::nanoseconds slack = s_frameSlack.value_or(1ms);
++    std::chrono::nanoseconds expectedCompositingTime = std::min(renderJournal.result() + safetyMargin + slack + lateFlipCompensation, 2 * vblankInterval);
+ 
+     if (presentationMode == PresentationMode::VSync) {
+         // normal presentation: pageflips only happen at vblank
+-- 
+2.55.0
+

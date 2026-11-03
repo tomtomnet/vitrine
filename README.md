@@ -125,7 +125,7 @@ files it changes, and the guest packages compile through ccache.
    (Ctrl+S) edits. A Linux VM whose 3D card lacks what new VMs get (native
    context, the host vblank timing) offers Update… on its Details tab.
 3. **Guest tools** for Fedora 44 x86-64 guests (virtio-gpu driver, Mesa, KWin
-   and KPipeWire for Plasma 6.7.5, Qt Base 6.11.2, KSvg and Kirigami 6.31.0,
+   and KPipeWire for Plasma 6.8.2, Qt Base 6.11.2, KSvg and Kirigami 6.31.0,
    the nested desktop's session and proxy, an agent). The Builds window (also
    Build… in Machine > Install Guest Tools… and in Preferences) builds them
    in a Fedora container with rootless podman, then makes the medium VMs
@@ -151,12 +151,15 @@ files it changes, and the guest packages compile through ccache.
    only where it has that version, all of a package's subpackages or none.
    Qt Base is locked too where vitrine's KWin is installed, as that KWin is
    built against Qt's private API, and so is the guest's Plasma, at the
-   version that KWin is built for: Fedora's updates moved Fedora 44 to
-   Plasma 6.8.2 while the tools' KWin is 6.7.5, and would update the rest of
-   Plasma around it; guest tools built for the newer Plasma let it in. Where
-   a guest got Fedora's newer Plasma before these tools, the VM's Console
-   and Details tabs say so, and installing the tools again puts Fedora's
-   KWin back until then. KSvg, Kirigami, and Qt Base without
+   version that KWin is built for: Plasma's packages would otherwise update
+   around it, and Plasma with a KWin of another version has no session at
+   all. A guest with Fedora's older Plasma (6.7.5, which the tools held
+   until 0.1.0-30) moves to Fedora's Plasma 6.8.2 in the transaction that
+   installs the tools' KWin, as long as Fedora's repositories still have
+   that Plasma; otherwise its KWin stays and its Plasma is no longer held.
+   Where a guest got a Plasma that does not match the tools' KWin, the VM's
+   Console and Details tabs say so, and installing the tools again repairs
+   it. KSvg, Kirigami, and Qt Base without
    vitrine's KWin, are not: Fedora's next build of them replaces them with
    the rest of KDE Frameworks or of Qt, and the next guest tools bring
    vitrine's back. `--uninstall` puts Fedora's builds of all of them back.

@@ -14,7 +14,9 @@
 #     when the running one's headers are gone from the repositories)
 #   - vitrine's Mesa (native context) in place of each Mesa package installed
 #   - vitrine's KWin and KPipeWire, on a Plasma guest whose Plasma is the
-#     version they were built for (else the ones installed stay)
+#     version they were built for, or Fedora's Plasma of an older version,
+#     which then moves to Fedora's Plasma of their version in the same
+#     transaction (else the ones installed stay)
 #   - the nested desktop's proxy, wl-cross-domain-proxy (the session, in
 #     vitrine-guest-tools, needs it in the boots of a VM with the Nested
 #     desktop box)
@@ -28,8 +30,13 @@
 # that KWin is built for too (its packages installed at that version):
 # Plasma's packages require an unversioned kwin, so dnf would update the
 # rest of Plasma around the locked KWin (Fedora 44's Plasma 6.8.2,
-# 2026-11-01); guest tools built for the newer Plasma let it in.  Where
-# vitrine's KWin or KPipeWire of earlier tools no longer matches the
+# 2026-11-01); guest tools built for the newer Plasma let it in.  A Plasma
+# with a KWin of another version has no session at all (the research,
+# 2026-11-02): an older Fedora Plasma moves with the transaction that puts
+# vitrine's newer KWin in, never before or after it.  Fedora's
+# repositories keep only their newest Plasma: once it is newer than the
+# medium's KWin, the installed KWin stays and Plasma is no longer held.
+# Where vitrine's KWin or KPipeWire of earlier tools no longer matches the
 # guest's Plasma (updated before these tools), Fedora's go back in until
 # then.  KSvg and Kirigami are not locked, nor Qt Base without
 # vitrine's KWin: Fedora's next build of them (a new version, or a rebuild)
@@ -316,22 +323,82 @@ Turn Secure Boot off for this VM (its firmware settings), then run this again." 
 fi
 say "Fedora $VERSION_ID, kernel $(uname -r), tools $TOOLS_EVR (medium $MEDIUM_ID)"
 
-# the KWin of the medium only for the Plasma it was built for
+# Fedora's packages installed at version $1 that Fedora's repositories have at
+# KWIN_VERSION, as NAME-KWIN_VERSION in plasma_move: Plasma's, which all
+# share its version (the medium's own come from the medium).  dnf's queries
+# see past the version locks (earlier tools held Plasma at its version); its
+# transactions do not.  Status 1, with move_why, when the repositories could
+# not be reached.
+fedora_at() {
+	local names=() n have
+	plasma_move=()
+	while read -r n; do
+		[ -n "$(medium_nevra "$n")" ] || names+=("$n")
+	done < <(rpm -qa --qf '%{NAME}|%{VERSION}|%{VENDOR}\n' |
+		awk -F'|' -v v="$1" '$2 == v && $3 == "Fedora Project" { print $1 }' | LC_ALL=C sort -u)
+	[ ${#names[@]} -gt 0 ] || return 0
+	if ! have=$(dnf -q repoquery --qf '%{name}\n' "${names[@]/%/-$KWIN_VERSION}" 2> /dev/null); then
+		move_why="Fedora's repositories could not be reached"
+		return 1
+	fi
+	for n in "${names[@]}"; do
+		if grep -qx -- "$n" <<< "$have"; then
+			plasma_move+=("$n-$KWIN_VERSION")
+		fi
+	done
+}
+
+# Whether this guest's Plasma moves to KWIN_VERSION with the medium's KWin:
+# Fedora's Plasma of an older version, which Fedora's repositories still have
+# at KWIN_VERSION (fedora_at); move_why says why not where that is worth
+# telling
+plasma_moves() {
+	move_why=
+	[ "$(evr_cmp "$plasma" "$KWIN_VERSION")" = -1 ] || return 1
+	if [ "$(rpm -q --qf '%{VENDOR}' plasma-workspace 2> /dev/null)" != "Fedora Project" ]; then
+		move_why="its Plasma is not Fedora's"
+		return 1
+	fi
+	fedora_at "$plasma" || return 1
+	if [[ " ${plasma_move[*]} " != *" plasma-workspace-$KWIN_VERSION "* ]]; then
+		move_why="Fedora's repositories no longer have Plasma $KWIN_VERSION"
+		plasma_move=()
+		return 1
+	fi
+}
+
+# the KWin of the medium only for the Plasma it was built for, which an older
+# Fedora Plasma moves to.  With the Plasma it is for, what an update to that
+# Plasma left at the version of the KWin it kept (vitrine's of earlier tools)
+# comes along: xdg-desktop-portal-kde waits for KPipeWire of its version.
 plasma=$(rpm -q --qf '%{VERSION}' plasma-workspace 2> /dev/null || true)
 [ -n "$plasma" ] || plasma=$(rpm -q --qf '%{VERSION}' kwin 2> /dev/null || true)
-use_kwin=0
+use_kwin=0 plasma_move=() move_why='' move_from=$plasma
 if [ "$kwin" = 0 ]; then
 	say "KWin: kept (--no-kwin)"
 elif ! installed kwin; then
 	say "KWin: not installed (no Plasma), nothing to do"
 elif [ -z "${KWIN_VERSION:-}" ]; then
 	say "KWin: none on this medium, the installed one stays"
-elif [ "$plasma" != "$KWIN_VERSION" ]; then
-	say "KWin: this guest has Plasma $plasma, the medium's KWin is for $KWIN_VERSION: the installed KWin stays"
-else
+elif [ "$plasma" = "$KWIN_VERSION" ]; then
 	use_kwin=1
 	say "KWin: vitrine's build for Plasma $KWIN_VERSION"
+	move_from=$(rpm -q --qf '%{VERSION}\n' kwin 2> /dev/null | head -n 1)
+	if [ "$move_from" != "$KWIN_VERSION" ] && fedora_at "$move_from" && [ ${#plasma_move[@]} -gt 0 ]; then
+		say "      and Fedora's $KWIN_VERSION of what Plasma's update left at $move_from:"
+		say "      ${plasma_move[*]%-"$KWIN_VERSION"}"
+	fi
+elif plasma_moves; then
+	use_kwin=1
+	say "KWin: vitrine's build for Plasma $KWIN_VERSION, with Fedora's Plasma $KWIN_VERSION in place of"
+	say "      this guest's $plasma (${#plasma_move[@]} packages), in the same transaction"
+else
+	say "KWin: this guest has Plasma $plasma, the medium's KWin is for $KWIN_VERSION: the installed KWin stays"
+	[ -z "$move_why" ] || say "      ($move_why)"
 fi
+# the guest's Plasma once installed
+plasma_after=$plasma
+[ ${#plasma_move[@]} = 0 ] || plasma_after=$KWIN_VERSION
 
 # Mesa: the medium's build of each Mesa package installed (x86_64)
 want=("$(medium_nevra vitrine-guest-tools)")
@@ -365,8 +432,8 @@ if ! installed kpipewire; then
 	:
 elif [ -z "${KPIPEWIRE_VERSION:-}" ]; then
 	say "KPipeWire: none on this medium, the installed one stays"
-elif [ "$plasma" != "$KPIPEWIRE_VERSION" ]; then
-	say "KPipeWire: this guest has Plasma $plasma, the medium's KPipeWire is for $KPIPEWIRE_VERSION: the installed one stays"
+elif [ "$plasma_after" != "$KPIPEWIRE_VERSION" ]; then
+	say "KPipeWire: this guest has Plasma $plasma_after, the medium's KPipeWire is for $KPIPEWIRE_VERSION: the installed one stays"
 else
 	for name in $(medium_names '^kpipewire'); do
 		case "$name" in
@@ -389,13 +456,13 @@ for again in kwin kpipewire; do
 	*) again_title=KPipeWire again_medium=${#kpipewire_pkgs[@]} ;;
 	esac
 	again_evr=$(printf '%s\n' $old_locks | sed -n "s/^$again=//p" | head -n 1)
-	[ "$again_medium" = 0 ] && [ -n "$again_evr" ] && [ -n "$plasma" ] || continue
+	[ "$again_medium" = 0 ] && [ -n "$again_evr" ] && [ -n "$plasma_after" ] || continue
 	[ "$(rpm -q --qf '%{EPOCHNUM}:%{VERSION}-%{RELEASE}\n' "$again" 2> /dev/null | head -n 1)" = "$again_evr" ] ||
 		continue
 	again_version=${again_evr#*:}
 	again_version=${again_version%-*}
-	[ "$again_version" != "$plasma" ] || continue
-	say "$again_title: vitrine's $again_version does not go with this guest's Plasma $plasma: Fedora's goes back in"
+	[ "$again_version" != "$plasma_after" ] || continue
+	say "$again_title: vitrine's $again_version does not go with this guest's Plasma $plasma_after: Fedora's goes back in"
 	while read -r name; do
 		fedora_again+=("$name")
 	done < <(from_source "$again" | cut -d' ' -f1 | sort -u)
@@ -516,7 +583,7 @@ lock_installed() {
 # nothing to do when what this medium installs is all there
 up_to_date() {
 	[ "$force" = 0 ] && [ "$(cat "$state/medium" 2> /dev/null)" = "$MEDIUM_ID" ] || return 1
-	[ ${#fedora_again[@]} = 0 ] || return 1
+	[ ${#fedora_again[@]} = 0 ] && [ ${#plasma_move[@]} = 0 ] || return 1
 	rpm -q "${want[@]}" > /dev/null 2>&1 || return 1
 	if [ "$use_kwin" = 1 ]; then [ -s "$state/kwin" ]; else [ ! -e "$state/kwin" ]; fi
 }
@@ -542,6 +609,8 @@ fi
 if [ "$yes" = 0 ]; then
 	echo
 	echo "This installs: ${want[*]}"
+	[ ${#plasma_move[@]} = 0 ] ||
+		echo "with Fedora's Plasma $KWIN_VERSION in place of $move_from: ${plasma_move[*]}"
 	echo "and dkms with the kernel headers from Fedora, then rebuilds the initramfs."
 	read -r -p "Go on? [Y/n] " answer
 	case "$answer" in [nN]*) exit 1 ;; esac
@@ -573,10 +642,17 @@ if [ ${#fedora_again[@]} -gt 0 ]; then
 	dnf -y --setopt=install_weak_deps=False distro-sync "${fedora_again[@]}" ||
 		die "dnf could not put Fedora's ${fedora_again[*]} back: see above (the guest needs Fedora's repositories)"
 fi
-"${dnf_medium[@]}" install --skip-unavailable "${want[@]}" "${extra[@]}" ||
+# Plasma's move in this transaction, with vitrine's KWin (plasma_moves), or
+# what an update to its Plasma left behind
+if [ ${#plasma_move[@]} = 1 ]; then
+	say "Fedora's ${plasma_move[0]}, with vitrine's KWin"
+elif [ ${#plasma_move[@]} -gt 1 ]; then
+	say "Fedora's Plasma $KWIN_VERSION in place of $move_from, with vitrine's KWin: ${#plasma_move[@]} packages"
+fi
+"${dnf_medium[@]}" install --skip-unavailable "${want[@]}" "${plasma_move[@]}" "${extra[@]}" ||
 	die "dnf failed: see above (no network? the guest needs Fedora's repositories)"
 missing=()
-for p in "${want[@]}"; do
+for p in "${want[@]}" "${plasma_move[@]}"; do
 	rpm -q "$p" > /dev/null 2>&1 || missing+=("$p")
 done
 [ ${#missing[@]} -eq 0 ] || die "not installed: ${missing[*]}"
@@ -667,6 +743,8 @@ if [ -n "${driver_failed:-}" ]; then
 else
 	echo "The guest tools are installed."
 fi
+[ "$plasma_after" = "$plasma" ] ||
+	echo "Plasma moved from $plasma to $KWIN_VERSION: restart the guest before going on with its desktop."
 if [ -e "$run/reboot-needed" ]; then
 	echo "Restart the guest to use them."
 	[ "$reboot" = 1 ] && systemctl --no-block reboot

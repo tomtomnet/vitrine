@@ -192,12 +192,14 @@ static QString what(Vm *vm, const GuestTools::Medium &medium)
     }
     const QString desktop = VmConfig::guest(vm->args()).desktop;
     if (!medium.kwin.isEmpty() && (desktop.isEmpty() || desktop == "kde")) {
-        what += GuestToolsDialog::tr("<li>KWin %1, if the guest's Plasma is %2</li>")
+        what += GuestToolsDialog::tr("<li>KWin %1 for Plasma %2; a guest with Fedora's older "
+                                     "Plasma gets Fedora's Plasma %2 with it, in the same "
+                                     "update</li>")
                     .arg(medium.kwin.toHtmlEscaped(), medium.kwin.section('-', 0, 0));
     }
     if (!medium.kpipewire.isEmpty() && (desktop.isEmpty() || desktop == "kde")) {
-        what += GuestToolsDialog::tr("<li>KPipeWire %1 (Plasma's window thumbnails), if the "
-                                     "guest's Plasma is %2</li>")
+        what += GuestToolsDialog::tr("<li>KPipeWire %1 (Plasma's window thumbnails) for "
+                                     "Plasma %2</li>")
                     .arg(medium.kpipewire.toHtmlEscaped(), medium.kpipewire.section('-', 0, 0));
     }
     if (!medium.proxy.isEmpty() && (desktop.isEmpty() || desktop == "kde")) {
@@ -230,8 +232,8 @@ static QString what(Vm *vm, const GuestTools::Medium &medium)
                                  "the next guest tools, and so do Qt Base and the guest's Plasma "
                                  "with vitrine's KWin. "
                                  "KSvg, Kirigami and Qt Base otherwise give way to Fedora's next "
-                                 "build of them. The guest needs the network: dkms and the kernel "
-                                 "headers come from Fedora.</p>");
+                                 "build of them. The guest needs the network: dkms, the kernel "
+                                 "headers and a newer Plasma come from Fedora.</p>");
     what += running ? GuestToolsDialog::tr("<p><b>vitrine shuts the VM down and starts it again"
                                            "</b> with the tools medium. The guest installs them "
                                            "before its desktop starts, which takes a few "

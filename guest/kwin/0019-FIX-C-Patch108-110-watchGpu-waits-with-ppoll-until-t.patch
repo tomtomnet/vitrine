@@ -1,0 +1,36 @@
+From 3a65933810c8fa11f40e7c2becd77ea5a7946b78 Mon Sep 17 00:00:00 2001
+From: tomtomnet <tompere8000@proton.me>
+Date: Sat, 3 Oct 2026 14:33:31 +0200
+Subject: [PATCH 19/22] FIX-C Patch108/110: watchGpu waits with ppoll until the
+ wakeup time exactly (poll's rounded-up milliseconds overshot it by up to 1
+ ms)
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ src/backends/drm/drm_commit_thread.cpp | 10 ++++++++--
+ 1 file changed, 8 insertions(+), 2 deletions(-)
+
+diff --git a/src/backends/drm/drm_commit_thread.cpp b/src/backends/drm/drm_commit_thread.cpp
+index 5b7963ed56..6f2ff8f829 100644
+--- a/src/backends/drm/drm_commit_thread.cpp
++++ b/src/backends/drm/drm_commit_thread.cpp
+@@ -238,8 +238,14 @@ bool DrmCommitThread::watchGpu(std::vector<DrmAtomicCommit::Watched> &&watched,
+         if (now >= until) {
+             return false;
+         }
+-        const auto left = std::chrono::duration_cast<std::chrono::milliseconds>(until - now);
+-        const int ret = poll(fds.data(), fds.size(), std::max<int>(1, left.count() + 1));
++        // wait exactly until @p until: poll()'s whole milliseconds, rounded up, let
++        // the commit thread sleep up to a millisecond past its wakeup time
++        const auto left = std::chrono::duration_cast<std::chrono::nanoseconds>(until - now);
++        const timespec timeout{
++            .tv_sec = time_t(left.count() / 1'000'000'000),
++            .tv_nsec = long(left.count() % 1'000'000'000),
++        };
++        const int ret = ppoll(fds.data(), fds.size(), &timeout, nullptr);
+         if (ret < 0 && errno != EINTR) {
+             return false;
+         }
+-- 
+2.55.0
+

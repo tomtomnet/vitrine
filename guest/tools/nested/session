@@ -94,8 +94,8 @@ fi
 #    operations went from 22 to 6.3-7.3 repeated refreshes a second at 4K 120, from 96 to 11.5 at
 #    4K 240 (2026-10-23);
 #  - KWIN_WAYLAND_SCANOUT_BUFFERS=1: the output's buffers allocated for scanout, the only ones xe
-#    puts on a plane (the research's KWin 0073; vitrine's 6.7.5 allocates them so already and
-#    ignores the variable, which is for a KWin 6.8);
+#    puts on a plane (the research's KWin 0073, in vitrine's KWin 6.8.2; its 6.7.5 allocated them
+#    so anyway and ignored the variable);
 #  - KWIN_LONE_FRAME_LEAD_US=1500 in place of the 2500 tuned on AMD hosts: keys 11.4 -> 10.1-10.6 ms
 #    on the B50, the launcher no worse (2026-10-23).
 kwin_env_value() {   # the value VAR has in CROSVM_DESKTOP_KWIN_ENV; status 1 if it has none

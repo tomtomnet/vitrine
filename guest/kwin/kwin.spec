@@ -1,104 +1,93 @@
 Name:    kwin
-Version: 6.7.5
-Release: 1.28.1%{?dist}
+Version: 6.8.2
+Release: 2.1.g24%{?dist}
 Summary: KDE Window manager
 
 License: BSD-2-Clause AND BSD-3-Clause AND CC0-1.0 AND GPL-2.0-only AND GPL-2.0-or-later AND GPL-3.0-only AND GPL-3.0-or-later AND LGPL-2.0-only AND LGPL-2.0-or-later AND LGPL-2.1-only AND LGPL-2.1-or-later AND LGPL-3.0-only AND (GPL-2.0-only OR GPL-3.0-only) AND (LGPL-2.1-only OR LGPL-3.0-only) AND MIT
-URL:     https://userbase.kde.org/KWin
+URL:     https://invent.kde.org/plasma/kwin
 
 %global plasma_version %(echo %{version} | cut -d. -f1-3)
 
 Source0: http://download.kde.org/%{stable_kf6}/plasma/%{maj_ver_kf6}.%{min_ver_kf6}.%{bug_ver_kf6}/%{name}-%{version}.tar.xz
 Source1: http://download.kde.org/%{stable_kf6}/plasma/%{maj_ver_kf6}.%{min_ver_kf6}.%{bug_ver_kf6}/%{name}-%{version}.tar.xz.sig
 
+# macros
+Source10: macros.kwin.in
+
 ## upstream patches
 
+
 ## proposed patches
-# In virtual machines: CPU-only render timing and a 2.5 ms commit safety margin
-Patch100: kwin-vm-frame-timing.patch
-Patch101: kwin-render-journal-variance-cap.patch
-Patch102: kwin-late-frame-scheduling.patch
-Patch103: kwin-late-flip-compensation.patch
-Patch104: kwin-cursor-frames-estimate.patch
-# A commit whose buffers are not readable yet waits up to KWIN_DRM_COMMIT_GRACE_US
-# after the vblank instead of the next vblank (for the guest of a VM)
-Patch105: kwin-commit-grace.patch
-# A scene repaint asked by an effect no longer re-renders the cursor plane's layer
-# (a synchronous readback per frame where the cursor plane takes a dumb buffer)
-Patch106: kwin-cursor-layer-scene-repaints.patch
-# The commit thread that waited for the GPU (the grace) tells the frame when it was
-# done: the render time estimate then has the GPU's time without a GL query
-Patch107: kwin-gpu-done-from-commit.patch
-# KWIN_DRM_WATCH_GPU=1: the commit thread polls the commit's buffers until the GPU is
-# done and tells the frames, for every frame
-Patch108: kwin-watch-gpu.patch
-# KWIN_WARMUP_FRAMES=N: the N frames after an idle stretch start a refresh early
-Patch109: kwin-warmup-frames.patch
-# KWIN_DRM_COMMIT_EARLY=1: a commit after an idle stretch goes out as soon as the GPU is
-# done with its buffers (2: every commit); KWIN_IDLE_FRAME_EARLY=1: a frame requested
-# while the loop was idle renders at once (measured harmful, kept for reference)
-Patch110: kwin-early-lone-frames.patch
-# FB_DAMAGE_CLIPS = what changed since the buffer on the plane (KWin always sent 0, the
-# whole plane): the host of a VM then copies only that (KWIN_DRM_DAMAGE_CLIPS=0: off)
-Patch112: kwin-drm-damage-clips.patch
-# KWIN_SWAPCHAIN_MIN_SLOTS=N: at least N buffers, reused oldest first
-Patch113: kwin-swapchain-min-slots.patch
-# KWIN_SWAPCHAIN_WAIT_READERS=1: a slot is busy while its dma-buf has readers (VM zero
-# copy: the guest driver's fence on a buffer the host may still show)
-Patch114: kwin-swapchain-wait-readers.patch
-# the same knob for client dma-bufs: released to the client once their readers are done
-# (a buffer the guest scans out directly, still on the host's screen)
-Patch115: kwin-dmabuf-release-wait-readers.patch
-# KWIN_FRAME_SLACK_US=N: a frame starts N us before its estimate and margin demand instead
-# of 1 ms, and the composite timer (a timerfd) keeps the planned time instead of waking up
-# to a millisecond early
-Patch116: kwin-frame-slack-precise-timer.patch
-## The nested desktop: the research's fixes for the Wayland backend, which only a KWin
-## nested in a window of the host's desktop runs (the guest's own KWin on the VM's screen
-## never does)
-# presentation feedback matched to its frame, not taken in order
-Patch117: kwin-nested-feedback-pairing.patch
-# a configure that keeps the window's size keeps the output's mode (a focus change was a
-# mode change for every client)
-Patch118: kwin-nested-same-size-configure.patch
-# the output starts at the host's refresh rate, not 60 Hz (plasmashell's animations kept it)
-Patch119: kwin-nested-host-refresh.patch
-# Ctrl+Alt+G grabs and releases the pointer, as QEMU's windows; Right Ctrl is a key again
-Patch120: kwin-nested-grab-ctrl-alt-g.patch
-# the host's preferred scale applied when it arrives, not at the next resize
-Patch121: kwin-nested-preferred-scale.patch
-# the pointer grab committed at once, not at the next frame of an idle desktop
-Patch122: kwin-nested-commit-pointer-lock.patch
-
-## A high-rate mouse (4000 Hz and more): the research's 1.24-1.27 fixes, each with a
-## switch back to the old way
-# a 4000 Hz mouse moved a dragged window 4000 times a second, each move sent to plasmashell's task models
-# (its panel froze for seconds behind them): the move once per frame, the plasma window geometry once per pass
-Patch123: kwin-move-once-per-frame.patch
-Patch124: kwin-plasma-window-geometry-coalesce.patch
-# the same mouse sent every motion to the client under the pointer: at most one per 750 us (the latest)
-Patch125: kwin-pointer-motion-interval.patch
-# and every cursor move started with an atomic test of the whole state: reused while only the position changes
-Patch126: kwin-cursor-async-test-once.patch
-
-## The nested desktop again
-# wl_output follows the refresh rate learned from presentation feedback (the research's 0064, ported to
-# 6.7.5): a guest on a 165 Hz screen of a host with a 240 Hz one told its clients 240 Hz
-Patch127: kwin-nested-wl-output-presented-refresh.patch
-
-## The nested desktop on an Intel xe host, and lone frames
-# Patch128: none.  The research's 0073 (KWIN_WAYLAND_SCANOUT_BUFFERS) allocates the nested output's buffers
-# for scanout, which an Intel xe host needs to put them on a plane: KWin 6.7.91 asks for them without it.
-# 6.7.5 allocates them with gbm_bo_create_with_modifiers, which implies GBM_BO_USE_SCANOUT, or with that
-# flag itself.
-
-# a lone frame (the first after an idle stretch: a key, a click) aimed at the next vblank when that is at
-# least KWIN_LONE_FRAME_LEAD_US away, and rendered at once (the research's 0039, ported to 6.7.5; unset:
-# off): the nested desktop's session sets 2500, 1500 on an Intel xe host
-Patch129: kwin-lone-frame-lead.patch
-# KWIN_DISABLE_UDMABUF_IMPORT=1 also skips making the udmabufs nothing then reads (the research's 0036):
-# the nested desktop sets it on an Intel xe host, and where the host takes no guest dma-bufs
-Patch130: kwin-skip-udmabufs-when-import-disabled.patch
+## the research's guest set g21jmc87-681, as g24 (virtio-gpu-desktop 9535bf2,
+## patches/kwin/sets/g21jmc87-681.series), without its 0033 (upstream in 6.8).
+# KWin as the guest's compositor, on the VM's screen and as the nested desktop:
+# - frames paced to the host's: render timing from the CPU, a commit grace for
+#   buffers the GPU has not finished, late frames scheduled for the next vblank,
+#   presentation-time v3 deadlines and commit timing (0001-0034, 0039, 0041-0044)
+# - buffers shared with the host without copies, swapchains that wait for their
+#   readers, no udmabufs when their import is off (0013-0015, 0036, 0073)
+# - the nested desktop's Wayland backend: the pointer grab (Ctrl+Alt+G), the host's
+#   preferred scale, its refresh rate, no resent geometry, frames whose
+#   presentation feedback the host loses (0045-0046, 0051, 0064, 0084-0087)
+# - a high-rate mouse: moves, window geometry and pointer motion once per frame or
+#   per ms (0060-0063); animations on a steady clock, one refresh in (0035, 0037)
+# Most act only with their KWIN_* variable, which the guest tools set.
+Patch1001: 0001-Patch100-kwin-vm-frame-timing-ported-to-6.8.v2.patch
+Patch1002: 0002-Patch101-kwin-render-journal-variance-cap-applies-un.v2.patch
+Patch1003: 0003-Patch102-kwin-late-frame-scheduling-ported-to-6.8-re.v2.68.patch
+Patch1004: 0004-Patch103-kwin-late-flip-compensation-ported-to-6.8-b.v2.patch
+Patch1005: 0005-Patch104-kwin-cursor-frames-estimate-ported-to-6.8-L.v2.patch
+Patch1006: 0006-Patch105-kwin-commit-grace-applies-with-offset-NB-th.patch
+Patch1007: 0007-Patch106-kwin-cursor-layer-scene-repaints-applies-wi.patch
+Patch1008: 0008-Patch107-kwin-gpu-done-from-commit-ported-to-6.8-Out.patch
+Patch1009: 0009-Patch108-kwin-watch-gpu-ported-to-6.8-uses-the-locke.patch
+Patch1010: 0010-Patch109-kwin-warmup-frames-applies-with-offset.patch
+Patch1011: 0011-Patch110-kwin-early-lone-frames-ported-to-6.8-wait-b.patch
+Patch1012: 0012-Patch112-kwin-drm-damage-clips-ported-to-6.8-endFram.patch
+Patch1013: 0013-Patch113-kwin-swapchain-min-slots-ported-to-6.8-allo.patch
+Patch1014: 0014-kwin-swapchain-wait-readers-applies-with-offset.patch
+Patch1015: 0015-kwin-dmabuf-release-wait-readers-applies-with-offset.patch
+Patch1016: 0016-Patch116-kwin-frame-slack-ported-to-6.8-the-timerfd-.patch
+Patch1017: 0017-FIX-A-Patch102-read-scheduledLate-before-the-commit-.patch
+Patch1018: 0018-FIX-B-Patch105-make-the-commit-grace-reachable-the-c.patch
+Patch1019: 0019-FIX-C-Patch108-110-watchGpu-waits-with-ppoll-until-t.patch
+Patch1020: 0020-FIX-D-Patch112-queued-buffers-recorded-only-for-comm.patch
+Patch1021: 0021-FIX-E-Patch103-111-renderedByCompositor-from-the-lay.patch
+Patch1022: 0022-FIX-F-renderloop-the-2-ms-render-time-floor-only-for.patch
+Patch1023: 0023-FIX-G-renderloop-commit-timing-target-sets-the-earliest-vblank.patch
+Patch1024: 0024-EXP-compositor-KWIN_CURSOR_IMAGE_IN_FRAME.68.patch
+Patch1025: 0025-EXP-wayland-backend-KWIN_WAYLAND_SAFETY_MARGIN_US.patch
+Patch1026: 0026-EXP-wayland-backend-KWIN_WAYLAND_ADAPTIVE_MARGIN.patch
+Patch1027: 0027-EXP-wayland-backend-KWIN_WAYLAND_COMMIT_TIMING.patch
+Patch1028: 0028-FIX-H-wayland-backend-match-presentation-feedback-to-its-frame.patch
+Patch1029: 0029-EXP-wayland-backend-commit-deadline-from-presentation-time-v3.patch
+Patch1030: 0030-EXP-renderloop-wayland-backend-KWIN_RENDER_TIME_FLOO.patch
+Patch1031: 0031-EXP-wayland-backend-KWIN_WAYLAND_READY-the-way-to-th.patch
+Patch1032: 0032-EXP-wayland-backend-3-frames-in-flight-KWIN_WAYLAND_.patch
+Patch1033: 0034-FIX-J-wayland-backend-start-at-the-host-output-s-ref.patch
+Patch1034: 0035-EXP-effects-QML-animations-steady-animation-clock.68.patch
+Patch1035: 0036-EXP-shmclientbuffer-skip-udmabufs-when-import-disabled.patch
+Patch1036: 0037-EXP-effects-first-animation-frame-one-refresh-in.68.patch
+Patch1037: 0038-FIX-window-activate-raise-and-unrestricted-resize-is-unrestricted.patch
+Patch1038: 0039-EXP-renderloop-lone-frames-aimed-at-the-next-vblank.patch
+Patch1039: 0028-EXP-outputlayer-async-cursor-moves-do-not-wake-the-render-loop.68.patch
+Patch1040: 0041-EXP-wayland-backend-commit-timing-stamps-adapt-to-a-late-host.patch
+Patch1041: 0042-EXP-renderloop-KWIN_RENDERLOOP_TRACE.68.patch
+Patch1042: 0043-EXP-wayland-backend-commit-timing-auto-waits-for-a-host-deadline.patch
+Patch1043: 0044-EXP-wayland-backend-no-stamp-shifting-with-a-deadline-host.patch
+Patch1044: 0045-FIX-wayland-backend-pointer-grab-on-ctrl-alt-g.patch
+Patch1045: 0046-FIX-wayland-backend-apply-the-host-s-preferred-scale-when-it-arrives.patch
+Patch1046: 0051-FIX-wayland-backend-commit-after-pointer-lock-changes.patch
+Patch1047: 0060-EXP-interactive-move-once-per-frame.68.patch
+Patch1048: 0061-EXP-plasma-window-geometry-once-per-pass.patch
+Patch1049: 0062-EXP-cursor-async-test-once.g21.patch
+Patch1050: 0063-EXP-pointer-motion-to-clients-once-per-ms.patch
+Patch1051: 0064-FIX-wayland-backend-wl_output-follows-the-presented-refresh-rate.patch
+Patch1052: 0073-EXP-wayland-backend-KWIN_WAYLAND_SCANOUT_BUFFERS.patch
+Patch1053: 0084-FIX-wayland-backend-black-background-without-single-pixel-buffers.patch
+Patch1054: 0085-FIX-wayland-backend-layer-image-description-only-when-the-color-changes.patch
+Patch1055: 0086-FIX-wayland-backend-unchanged-geometry-viewports-positions-not-resent.patch
+Patch1056: 0087-FIX-wayland-backend-frames-whose-feedback-the-host-loses-are-dropped.patch
 
 
 # Base
@@ -227,13 +216,9 @@ Provides:  %{name}-wayland%{?_isa} = %{version}-%{release}
 # by kwin-wayland
 Obsoletes:      %{name}-wayland-nvidia < 5.20.2-2
 Provides:       %{name}-wayland-nvidia = %{version}-%{release}
-# Obsolete -x11 for Plasma 6
-%if 0%{?fedora}
-Obsoletes:      %{name}-x11 < 5.92.0
-%else
-Obsoletes:      %{name}-x11 < %{version}-%{release}
-Conflicts:      %{name}-x11 < %{version}-%{release}
-%endif
+# Obsolete -x11 for Plasma 6.8
+Obsoletes:      %{name}-x11 < 6.7.90
+Conflicts:      %{name}-x11 < 6.7.90
 %if ! 0%{?rhel} >= 10
 Requires:       (kwayland-integration%{?_isa} if kf5-kwindowsystem%{?_isa})
 %endif
@@ -248,7 +233,7 @@ Requires:       xorg-x11-server-Xwayland
 
 
 %package        common
-Summary:        Common files for KWin X11 and KWin Wayland
+Summary:        Common files for KWin
 Requires:       %{name}-libs%{?_isa} = %{version}-%{release}
 Requires:       kwayland%{?_isa}
 # Split of X11 variant into subpackage
@@ -313,11 +298,20 @@ mkdir -p %{buildroot}%{_sysconfdir}/xdg/Xwayland-session.d
 # temporary(?) hack to allow initial-setup to use /usr/bin/kwin too
 ln -sr %{buildroot}%{_kf6_bindir}/kwin_wayland %{buildroot}%{_bindir}/kwin
 
+# rpm macros
+install -p -m644 -D %{SOURCE10} \
+  %{buildroot}%{_rpmmacrodir}/macros.kwin
+sed -i \
+  -e "s|@@NAME@@|%{name}|g" \
+  -e "s|@@EPOCH@@|%{?epoch}%{!?epoch:0}|g" \
+  -e "s|@@VERSION@@|%{version}|g" \
+  -e "s|@@EVR@@|%{?epoch:%{epoch:}}%{version}-%{release}|g" \
+  %{buildroot}%{_rpmmacrodir}/macros.kwin
+
 
 %files
 %{_bindir}/kwin
 %{_bindir}/kwin_wayland_wrapper
-%{_datadir}/kwin-wayland/
 %caps(cap_sys_nice=ep) %{_kf6_bindir}/kwin_wayland
 %{_userunitdir}/plasma-kwin_wayland.service
 %dir %{_sysconfdir}/xdg/Xwayland-session.d
@@ -328,7 +322,6 @@ ln -sr %{buildroot}%{_kf6_bindir}/kwin_wayland %{buildroot}%{_bindir}/kwin
 %{_kf6_qtplugindir}/kwin/
 %{_kf6_qtplugindir}/kf6/packagestructure/kwin_*.so
 %{_qt6_qmldir}/org/kde/kwin/
-%{_kf6_libdir}/kconf_update_bin/kwin5_update_default_rules
 %{_kf6_libdir}/kconf_update_bin/kwin-6.0-delete-desktop-switching-shortcuts
 %{_kf6_libdir}/kconf_update_bin/kwin-6.0-remove-breeze-tabbox-default
 %{_kf6_libdir}/kconf_update_bin/kwin-6.0-reset-active-mouse-screen
@@ -349,6 +342,7 @@ ln -sr %{buildroot}%{_kf6_bindir}/kwin_wayland %{buildroot}%{_bindir}/kwin
 %{_datadir}/knsrcfiles/*.knsrc
 %{_datadir}/krunner/dbusplugins/kwin-runner-windows.desktop
 %{_datadir}/applications/*.desktop
+%{_kf6_datadir}/kwin/
 %{_bindir}/kwindowprop
 
 %files libs
@@ -362,96 +356,44 @@ ln -sr %{buildroot}%{_kf6_bindir}/kwin_wayland %{buildroot}%{_bindir}/kwin
 %{_includedir}/kwin
 %{_libdir}/cmake/KWin
 %{_libdir}/libkwin.so
+%{_rpmmacrodir}/macros.kwin
 
 %files doc -f %{name}-doc.lang
 %license LICENSES/*.txt
 
 
 %changelog
-* Mon Oct 26 2026 vitrine <noreply@anthropic.com> - 6.7.5-1.28.1
-- kwin-lone-frame-lead, from the research (its 0039, ported to this series): with
-  KWIN_LONE_FRAME_LEAD_US, a lone frame - the first after an idle stretch, a key or a
-  click - is aimed at the next vblank when that is at least the lead away, else at the
-  one after, and rendered at once.  The nested desktop's session sets 2500 (with the
-  guest tools 0.1.0-23, 1500 on an Intel xe host), which this KWin ignored until now;
-  unset, nothing changes
-- kwin-skip-udmabufs-when-import-disabled, from the research (its 0036):
-  KWIN_DISABLE_UDMABUF_IMPORT=1 also skips making a udmabuf of every shared-memory
-  client buffer, which nothing reads with the import off (a UDMABUF_CREATE and two
-  syncs per use: ~15 ms a second of the compositor thread with three windows
-  resizing, the research's measurement)
-- the research's 0073 (KWIN_WAYLAND_SCANOUT_BUFFERS) is not needed: this KWin allocates
-  the nested output's buffers for scanout already
+* Tue Nov 03 2026 vitrine <noreply@anthropic.com> - 6.8.2-2.1.g24
+- the research's guest set g21jmc87-681 as g24 (56 patches, its 0033 is upstream)
+  on Fedora's 6.8.2-2, in place of vitrine's ports of its earlier sets to 6.7.5:
+  for Fedora 44's Plasma 6.8.2, which the guest tools install with it
 
-* Sun Oct 18 2026 vitrine <noreply@anthropic.com> - 6.7.5-1.27.2
-- kwin-nested-wl-output-presented-refresh, from the research (its 0064, ported to this
-  series): when presentation feedback sets the nested output's refresh rate, the logical
-  output, and with it wl_output, follows. Clients kept the rate the output started at
-  (the highest host rate): on a host with a 165 Hz and a 240 Hz monitor, a guest on the
-  165 Hz one told its clients 240 Hz (mpv's display-resample at 48 frames a second)
+* Sat Oct 31 2026 Neal Gompa <ngompa@fedoraproject.org> - 6.8.2-2
+- Add RPM macros for kwin versioning to devel package
 
-* Sun Oct 18 2026 vitrine <noreply@anthropic.com> - 6.7.5-1.27.1
-- a high-rate mouse, from the research (its 1.24-1.27, on vitrine's 1.23 with the nested
-  desktop's patches, without its kwin-output-mode-ids-kept):
-  - kwin-move-once-per-frame v2: a dragged window moves at most twice per frame, the
-    first position after a frame started at once (KWIN_MOVE_COALESCE=0: the old way)
-  - kwin-plasma-window-geometry-coalesce: a plasma window's geometry goes to the clients
-    once per pass of the event loop (KWIN_PLASMA_WINDOW_GEOMETRY_COALESCE=0)
-  - kwin-pointer-motion-interval: pointer motion to the client under the pointer at most
-    once per 750 us, a held motion sent before any other pointer event; warps, locked and
-    confined pointers get every motion (KWIN_POINTER_MOTION_INTERVAL_US=0)
-  - kwin-cursor-async-test-once: a cursor move that only moves the plane reuses the last
-    successful atomic test (KWIN_CURSOR_TEST_EVERY_MOVE=1)
-  The guest plasmashell froze after fast drags with a 4000 Hz mouse, and the mouse cost
-  plasmashell and KWin 2-3 times their 1000 Hz CPU
+* Tue Oct 27 2026 Steve Cossette <steve@ninjasinpajamas.com> - 6.8.2-1
+- 6.8.2
 
-* Wed Oct 14 2026 vitrine <noreply@anthropic.com> - 6.7.5-1.23
-- the nested desktop's Wayland backend fixes, from the research (its group A, ported to
-  6.7.5): presentation feedback matched to its frame, no new mode for a same-size
-  configure, the host's refresh rate at start, the pointer grab on Ctrl+Alt+G and
-  committed at once, the host's preferred scale applied when it arrives
+* Fri Oct 23 2026 Jan Grulich <jgrulich@redhat.com> - 6.8.1-3
+- Rebuild (qt6)
 
-* Sun Oct 04 2026 tomtomnet <tompere8000@proton.me> - 6.7.5-1.22
-- kwin-late-frame-scheduling: read the commit's scheduledLate() before the commit ioctl (after it, the main thread may handle the page flip and clear the commit's frames: a data race, found by static review)
+* Thu Oct 22 2026 Neal Gompa <ngompa@fedoraproject.org> - 6.8.1-2
+- Obsolete kwin-x11
 
-* Fri Oct 02 2026 tomtomnet <tompere8000@proton.me> - 6.7.5-1.21
-- KWIN_FRAME_SLACK_US: the slack before a frame's estimate and margin, and a timerfd composite timer that keeps the planned time
+* Tue Oct 20 2026 Steve Cossette <steve@ninjasinpajamas.com> - 6.8.1-1
+- 6.8.1
 
-* Fri Oct 02 2026 tomtomnet <tompere8000@proton.me> - 6.7.5-1.20
-- KWIN_SWAPCHAIN_WAIT_READERS also delays the release of client dma-bufs with readers
+* Fri Oct 09 2026 Steve Cossette <farchord@gmail.com> - 6.8.0-1
+- 6.8.0
 
-* Fri Oct 02 2026 tomtomnet <tompere8000@proton.me> - 6.7.5-1.19
-- KWIN_SWAPCHAIN_WAIT_READERS: a swapchain slot is busy while its dma-buf has readers
+* Thu Sep 24 2026 Steve Cossette <farchord@gmail.com> - 6.7.91-1
+- 6.7.91
 
-* Fri Oct 02 2026 tomtomnet <tompere8000@proton.me> - 6.7.5-1.18
-- KWIN_SWAPCHAIN_MIN_SLOTS: swapchains of at least N buffers, reused oldest first
+* Wed Sep 16 2026 Steve Cossette <farchord@gmail.com> - 6.7.90-2
+- Fix for kwin crashing on user switching
 
-* Thu Oct 01 2026 tomtomnet <tompere8000@proton.me> - 6.7.5-1.17
-- FB_DAMAGE_CLIPS clipped to the framebuffer: the kernel failed every commit whose damage was a full repaint (an infinite region) or reached past the screen (overview, desktop switch) with EINVAL, and the commit thread's merged retry flipped those frames a refresh early - half rate in both animations
-
-* Thu Oct 01 2026 tomtomnet <tompere8000@proton.me> - 6.7.5-1.16
-- FB_DAMAGE_CLIPS relative to the buffer of the last queued presentation (the commit thread prepares ahead), full damage when the commit thread merges two buffers for a plane and every 240th commit
-
-* Thu Oct 01 2026 tomtomnet <tompere8000@proton.me> - 6.7.5-1.15
-- FB_DAMAGE_CLIPS set to the frame's damage when the plane shows the buffer rendered before (KWIN_DRM_DAMAGE_CLIPS=0 for the old 0)
-
-* Wed Sep 30 2026 tomtomnet <tompere8000@proton.me> - 6.7.5-1.14
-- KWIN_DRM_COMMIT_EARLY=1 now only for a frame after an idle stretch (2: every frame): the frames of an animation keep their phase, which the host's vblank pacing regulates on
-
-* Wed Sep 30 2026 tomtomnet <tompere8000@proton.me> - 6.7.5-1.13
-- KWIN_DRM_COMMIT_EARLY=1 commits as soon as the GPU is done, KWIN_IDLE_FRAME_EARLY=1 renders an idle-loop frame at once (lone frames in a VM guest)
-
-* Tue Sep 29 2026 tomtomnet <tompere8000@proton.me> - 6.7.5-1.6
-- A frame for which only the cursor was rendered does not count for the render time estimate (KWIN_RENDER_ESTIMATE_UPSTREAM=1 restores the upstream estimate)
-
-* Tue Sep 29 2026 tomtomnet <tompere8000@proton.me> - 6.7.5-1.5
-- The late flip compensation is off unless KWIN_LATE_FLIP_COMPENSATION=1: no gain on the panel, up to a refresh of latency long after a loaded phase
-
-* Tue Sep 29 2026 tomtomnet <tompere8000@proton.me> - 6.7.5-1.4
-- Planned frames that reach the screen a refresh late make the following frames start earlier (KWIN_LATE_FLIP_COMPENSATION, KWIN_LATE_FLIP_STEP_US)
-
-* Tue Sep 29 2026 tomtomnet <tompere8000@proton.me> - 6.7.5-1.3
-- Frames requested too late for their vblank no longer grow the commit safety margin; KWIN_RENDER_JOURNAL_VARIANCE_TIME_MS; no extra VM safety margin
+* Thu Sep 10 2026 Steve Cossette <farchord@gmail.com> - 6.7.90-1
+- 6.7.90
 
 * Tue Sep 08 2026 Steve Cossette <farchord@gmail.com> - 6.7.5-1
 - 6.7.5

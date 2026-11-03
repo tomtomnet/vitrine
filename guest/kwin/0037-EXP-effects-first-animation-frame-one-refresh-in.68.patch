@@ -1,0 +1,56 @@
+From: Local <local@localhost>
+Subject: [PATCH] EXP: effects: an animation's first frame one refresh in (KWIN_ANIMATION_START_STEP=1)
+
+AnimationClock::tick() returns 0 on its first call, so every effect animation (sliding popups,
+fade, scale, glide, maximize...) renders its first frame at progress 0 - the state before the
+animation, the same image again (measured on the host, 2026-10-09: the launcher's slide-in frame at
+0 repeats the previous refresh). With KWIN_ANIMATION_START_STEP=1 the first tick returns one
+refresh interval (the steady clock: starts one period back), so the first frame already moves.
+
+6.8.1 version (2026-10-20): the plain clock's first-tick branch follows 6.8.1's c7bb0b5d (no ticks under 1 ms), same change.
+---
+ src/effect/timeline.cpp | 17 ++++++++++++++---
+ 1 file changed, 14 insertions(+), 3 deletions(-)
+
+diff --git a/src/effect/timeline.cpp b/src/effect/timeline.cpp
+index b86dd79..5c6ad4c 100644
+--- a/src/effect/timeline.cpp
++++ b/src/effect/timeline.cpp
+@@ -52,6 +52,15 @@ std::chrono::nanoseconds SteadyAnimationTime::advance(std::chrono::nanoseconds p
+     return m_time;
+ }
+ 
++// KWIN_ANIMATION_START_STEP=1: an animation's first frame is already one refresh into it. At
++// zero it shows the state before the animation - a sliding popup still hidden, a window still
++// where it was - so the screen repeats an image and every animation starts a refresh late.
++static bool startOneRefreshIn()
++{
++    static const bool on = qEnvironmentVariableIntValue("KWIN_ANIMATION_START_STEP") == 1;
++    return on;
++}
++
+ AnimationClock::AnimationClock()
+ {
+ }
+@@ -70,9 +79,9 @@ std::chrono::milliseconds AnimationClock::tick(std::chrono::nanoseconds timestam
+         const bool first = !m_steady.started();
+         const std::chrono::nanoseconds time = m_steady.advance(timestamp, period);
+         if (first) {
+-            m_steadyStart = time;
+-            m_steadyReported = std::chrono::milliseconds::zero();
+-            return std::chrono::milliseconds::zero();
++            m_steadyStart = startOneRefreshIn() ? time - period : time;
++            m_steadyReported = std::chrono::duration_cast<std::chrono::milliseconds>(time - m_steadyStart);
++            return m_steadyReported;
+         }
+         // the whole milliseconds since the start, minus those already handed out: no fraction lost
+         const auto total = std::chrono::duration_cast<std::chrono::milliseconds>(time - m_steadyStart);
+@@ -91,6 +100,8 @@ std::chrono::milliseconds AnimationClock::tick(std::chrono::nanoseconds timestam
+             // don't progress with a difference of 0ms, or it'll round away everything
+             return 0ms;
+         }
++    } else if (refreshRate && startOneRefreshIn()) {
++        delta = std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::nanoseconds(1'000'000'000'000 / refreshRate));
+     }
+ 
+     // Prevent the delta time from getting too big to minimize stuttering. If we have missed a frame,

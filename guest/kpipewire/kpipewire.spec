@@ -1,7 +1,7 @@
 Name:    kpipewire
 Summary: Set of convenient classes to use PipeWire in Qt projects
-Version: 6.7.5
-Release: 1.1%{?dist}
+Version: 6.8.2
+Release: 1.1.k2%{?dist}
 
 License: BSD-3-Clause AND CC0-1.0 AND LGPL-2.1-only AND LGPL-3.0-only
 URL:     https://invent.kde.org/plasma/%{name}
@@ -9,10 +9,10 @@ Source0: https://download.kde.org/%{stable_kf6}/plasma/%{version}/%{name}-%{vers
 Source1: https://download.kde.org/%{stable_kf6}/plasma/%{version}/%{name}-%{version}.tar.xz.sig
 Patch0:  %{name}-ffmpeg8.patch
 
-## proposed patches
+## the research's set k2 (virtio-gpu-desktop 9535bf2, patches/kpipewire/sets/k2.series)
 # The thumbnail item imports its own copies of a frame's dma-buf fds, at the frame's size:
 # plasmashell crashed after importing fds a renegotiation had closed (a window that keeps resizing)
-Patch100: kpipewire-dmabuf-frame-fds-and-size.patch
+Patch1001: kpipewire-dmabuf-frame-fds-and-size.patch
 
 # Compile Tools
 BuildRequires:  cmake
@@ -96,6 +96,8 @@ developing applications that use %{name}.
 %{_libdir}/libKPipeWireRecord.so.%{version}
 %{_libdir}/libKPipeWireDmaBuf.so.6
 %{_libdir}/libKPipeWireDmaBuf.so.%{version}
+%{_libdir}/libKPipeWireMonitor.so.6
+%{_libdir}/libKPipeWireMonitor.so.%{version}
 %{_qt6_qmldir}/org/kde/pipewire/*
 %{_kf6_datadir}/qlogging-categories6/*.categories
 
@@ -103,16 +105,37 @@ developing applications that use %{name}.
 %{_libdir}/libKPipeWire.so
 %{_libdir}/libKPipeWireRecord.so
 %{_libdir}/libKPipeWireDmaBuf.so
+%{_libdir}/libKPipeWireMonitor.so
 %dir %{_includedir}/KPipeWire
 %{_includedir}/KPipeWire/*
 %dir %{_libdir}/cmake/KPipeWire
 %{_libdir}/cmake/KPipeWire/*.cmake
 
 %changelog
-* Wed Oct 14 2026 vitrine <noreply@anthropic.com> - 6.7.5-1.1
-- the thumbnail item imports its own copies of a frame's dma-buf fds, at the
-  frame's size (the research's k2): plasmashell crashed after importing fds a
-  renegotiation had closed, when a window kept resizing
+* Tue Nov 03 2026 vitrine <noreply@anthropic.com> - 6.8.2-1.1.k2
+- the research's set k2 on Fedora's 6.8.2-1: plasmashell's window thumbnails import
+  their own copies of a frame's dma-buf fds, at the frame's size
+
+* Tue Oct 27 2026 Steve Cossette <steve@ninjasinpajamas.com> - 6.8.2-1
+- 6.8.2
+
+* Fri Oct 23 2026 Jan Grulich <jgrulich@redhat.com> - 6.8.1-2
+- Rebuild (qt6)
+
+* Tue Oct 20 2026 Steve Cossette <steve@ninjasinpajamas.com> - 6.8.1-1
+- 6.8.1
+
+* Fri Oct 09 2026 Steve Cossette <farchord@gmail.com> - 6.8.0-1
+- 6.8.0
+
+* Thu Sep 24 2026 Steve Cossette <farchord@gmail.com> - 6.7.91-1
+- 6.7.91
+
+* Thu Sep 17 2026 Dominik Mierzejewski <dominik@greysector.net> - 6.7.5-2
+- Rebuilt for FFmpeg 9
+
+* Thu Sep 10 2026 Steve Cossette <farchord@gmail.com> - 6.7.90-1
+- 6.7.90
 
 * Tue Sep 08 2026 Steve Cossette <farchord@gmail.com> - 6.7.5-1
 - 6.7.5

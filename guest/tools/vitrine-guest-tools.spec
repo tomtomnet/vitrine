@@ -2,7 +2,7 @@
 # exact version, and dnf takes an installed one of the same version as done.
 Name:           vitrine-guest-tools
 Version:        0.1.0
-Release:        30%{?dist}
+Release:        31%{?dist}
 Summary:        vitrine guest tools: patched virtio-gpu driver, settings and agent
 
 # the driver's sources (dkms/vendor, dkms/patches) are the kernel's: MIT
@@ -181,6 +181,17 @@ fi
 %dir %{_sharedstatedir}/%{name}
 
 %changelog
+* Tue Nov 03 2026 vitrine <noreply@anthropic.com> - 0.1.0-31
+- vitrine's KWin and KPipeWire for Fedora 44's Plasma 6.8.2 (the research's
+  sets g24 and k2), in place of 6.7.5's
+- a guest with Fedora's older Plasma (6.7.5, which tools 0.1.0-30 held)
+  moves to Fedora's Plasma 6.8.2 in the transaction that installs them, where
+  Fedora's repositories still have it: Plasma with a KWin of another version
+  has no session at all; else the installed KWin stays, as before
+- on a guest whose update already brought Plasma 6.8.2 around vitrine's KWin
+  6.7.5, what it left at 6.7.5 (xdg-desktop-portal-kde, which waits for
+  KPipeWire 6.8.2) comes in the same transaction as KWin and KPipeWire
+
 * Sun Nov 01 2026 vitrine <noreply@anthropic.com> - 0.1.0-30
 - with vitrine's KWin, the installer keeps Fedora's Plasma at the version
   that KWin is built for (dnf versionlock on the packages installed at that

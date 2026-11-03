@@ -1,0 +1,35 @@
+From b8d598d423502e57641ed16d9893f43de10a5580 Mon Sep 17 00:00:00 2001
+From: tomtomnet <tompere8000@proton.me>
+Date: Sat, 3 Oct 2026 14:29:16 +0200
+Subject: [PATCH 07/22] Patch106 kwin-cursor-layer-scene-repaints (applies with
+ offset)
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ src/scene/scene.cpp | 10 ++++++++++
+ 1 file changed, 10 insertions(+)
+
+diff --git a/src/scene/scene.cpp b/src/scene/scene.cpp
+index 0ad82bf630..90e319a778 100644
+--- a/src/scene/scene.cpp
++++ b/src/scene/scene.cpp
+@@ -684,6 +684,16 @@ void Scene::addLogicalRepaint(int x, int y, int width, int height)
+ void Scene::addLogicalRepaint(const Region &logicalRegion)
+ {
+     for (const auto &view : std::as_const(m_views)) {
++        // The view of the cursor plane shows the cursor item alone, and that
++        // item schedules its own repaints. A repaint of the scene, as an effect
++        // asks for at every frame of its animation, has nothing for it: rendering
++        // the cursor layer again costs a synchronous readback where the cursor
++        // plane takes a dumb buffer (virtual machines)
++        if (const auto itemView = dynamic_cast<ItemView *>(view)) {
++            if (qobject_cast<CursorItem *>(itemView->item())) {
++                continue;
++            }
++        }
+         addLogicalRepaint(view, logicalRegion);
+     }
+ }
+-- 
+2.55.0
+

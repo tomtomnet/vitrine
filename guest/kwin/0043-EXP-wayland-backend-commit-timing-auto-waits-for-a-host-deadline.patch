@@ -1,0 +1,75 @@
+From 14c47f50d618106d0d4439744a4c3d622014a4cc Mon Sep 17 00:00:00 2001
+From: research <research@localhost>
+Date: Sat, 10 Oct 2026 16:35:58 +0200
+Subject: [PATCH] EXP wayland backend: KWIN_WAYLAND_COMMIT_TIMING=1 stamps only
+ once the host sent a deadline
+
+KWIN_WAYLAND_COMMIT_TIMING=1 (or auto) now waits for the host's first commit deadline
+(wp_presentation v3 with KWIN_WAYLAND_DEADLINE=1 - the research host KWin builds) before it stamps
+frames; =always stamps from the first frame as before. On a stock KWin 6.8 host the stamps could hold
+the nested desktop at half its rate (2026-10-10, ca1: frames on target but planned two refreshes
+apart), and such a host does not show frames a refresh early the way the research host's late-frame
+scheduling does - which is what the stamps are for. research/commit-timing-holes-2026-10-10.md.
+---
+ src/backends/wayland/wayland_output.cpp | 14 ++++++++++++--
+ src/backends/wayland/wayland_output.h   |  3 +++
+ 2 files changed, 15 insertions(+), 2 deletions(-)
+
+diff --git a/src/backends/wayland/wayland_output.cpp b/src/backends/wayland/wayland_output.cpp
+index 8d86cac..7bb7b65 100644
+--- a/src/backends/wayland/wayland_output.cpp
++++ b/src/backends/wayland/wayland_output.cpp
+@@ -160,9 +160,18 @@ WaylandOutput::WaylandOutput(const QString &name, Capabilities capabilities, Way
+         m_fractionalScale = wp_fractional_scale_manager_v1_get_fractional_scale(manager, *m_surface);
+         wp_fractional_scale_v1_add_listener(m_fractionalScale, &s_fractionalScaleListener, this);
+     }
+-    static const bool s_commitTiming = environmentVariableBoolValue("KWIN_WAYLAND_COMMIT_TIMING").value_or(false);
++    // KWIN_WAYLAND_COMMIT_TIMING: 1 (or auto) = stamp the frames once the host has sent a commit
++    // deadline (wp_presentation v3, KWIN_WAYLAND_DEADLINE=1: the research host KWin builds, whose
++    // commit timing shows a stamped frame at its target); always = from the first frame, on any
++    // host; 0 or unset = never. A stock KWin 6.8 host has neither the deadline nor a commit timing
++    // this desktop can rely on: there the stamps could hold it at half its rate (2026-10-10, ca1),
++    // and it does not show frames early as the research host's late-frame scheduling does, which
++    // is what the stamps are for (research/commit-timing-holes-2026-10-10.md)
++    static const QString s_commitTimingMode = qEnvironmentVariable("KWIN_WAYLAND_COMMIT_TIMING").toLower();
++    static const bool s_commitTiming = s_commitTimingMode == QLatin1String("1") || s_commitTimingMode == QLatin1String("auto") || s_commitTimingMode == QLatin1String("always");
+     if (auto manager = backend->display()->commitTiming(); manager && s_commitTiming) {
+         m_commitTimer = wp_commit_timing_manager_v1_get_timer(manager, *m_surface);
++        m_commitTimingNeedsDeadline = s_commitTimingMode != QLatin1String("always");
+     }
+     m_viewport = backend->display()->viewporter()->createViewport(*m_surface);
+     setInformation(Information{
+@@ -399,7 +408,7 @@ std::expected<void, OutputError> WaylandOutput::present(const QList<OutputLayer
+     wp_presentation_feedback_add_listener(frameData.presentationFeedback, &s_presentationListener, this);
+     wl_callback_add_listener(frameData.frameCallback, &s_frameCallbackListener, this);
+     frameData.commitTime = std::chrono::steady_clock::now();
+-    if (m_commitTimer) {
++    if (m_commitTimer && (!m_commitTimingNeedsDeadline || m_hostSentDeadline)) {
+         // not before half a refresh ahead of the target: the host's first vblank at or
+         // after that is the target itself (the timestamp is in this guest's clock; the
+         // cross-domain proxy translates it to the host's). A refresh earlier still against a
+@@ -441,6 +450,7 @@ void WaylandOutput::frameDeadline(struct wp_presentation_feedback *feedback, std
+     if (it != m_frames.end()) {
+         it->contentUpdateDeadline = deadline;
+     }
++    m_hostSentDeadline = true;
+ }
+ 
+ void WaylandOutput::frameReady(struct wp_presentation_feedback *feedback, std::chrono::nanoseconds ready)
+diff --git a/src/backends/wayland/wayland_output.h b/src/backends/wayland/wayland_output.h
+index b343b11..b94a31a 100644
+--- a/src/backends/wayland/wayland_output.h
++++ b/src/backends/wayland/wayland_output.h
+@@ -181,6 +181,9 @@ private:
+     // frames that showed it so far
+     int m_commitTimingShift = 0;
+     int m_commitTimingLateRun = 0;
++    // KWIN_WAYLAND_COMMIT_TIMING=1/auto: the stamps wait for the host's first commit deadline
++    bool m_commitTimingNeedsDeadline = false;
++    bool m_hostSentDeadline = false;
+     std::unique_ptr<WaylandClient::Viewport> m_viewport;
+     zwp_keyboard_shortcuts_inhibitor_v1 *m_shortcutInhibition = nullptr;
+     uint32_t m_refreshRate = 60'000;
+-- 
+2.56.0
+

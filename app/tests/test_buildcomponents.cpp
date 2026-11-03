@@ -418,14 +418,15 @@ private slots:
         QCOMPARE(ffiPatches[0].origin, "Research");
         QVERIFY(subject(ffi, ffiPatches[0]).startsWith("rutabaga_gfx: native contexts through the FFI"));
 
-        /* a spec's Patch lines, a diff without a description: the comment over its line */
+        /* a spec's Patch lines: the research's guest set g24 on Fedora's spec, from Patch1001,
+           each patch with its own subject */
         const Component kwin = find(all, "kwin");
         const QList<Patch> kwinPatches = patches(kwin);
-        QVERIFY(kwinPatches.size() >= 10);
-        QCOMPARE(kwinPatches.first().path, "kwin/kwin-vm-frame-timing.patch");
-        QCOMPARE(kwinPatches.first().number, "100");
-        QCOMPARE(subject(kwin, kwinPatches.first()),
-                 "In virtual machines: CPU-only render timing and a 2.5 ms commit safety margin");
+        QCOMPARE(kwinPatches.size(), 56);
+        QCOMPARE(kwinPatches.first().path, "kwin/0001-Patch100-kwin-vm-frame-timing-ported-to-6.8.v2.patch");
+        QCOMPARE(kwinPatches.first().number, "1001");
+        QCOMPARE(kwinPatches.first().origin, "Research");
+        QCOMPARE(subject(kwin, kwinPatches.first()), "Patch100 kwin-vm-frame-timing (ported to 6.8)");
         for (const Patch &p : kwinPatches) {
             QVERIFY2(QFileInfo::exists(kwin.dir + '/' + p.path), qPrintable(p.path));
         }
@@ -450,6 +451,11 @@ private slots:
         QCOMPARE(proxyPatches[0].path, "proxy/wl-cross-domain-proxy-research.patch");
         const QList<Patch> kpipewirePatches = patches(find(all, "kpipewire"));
         QCOMPARE(kpipewirePatches.size(), 2);
+        /* Fedora's own, without a description nor a comment over its line: its name */
+        QCOMPARE(kpipewirePatches.first().origin, "Fedora");
+        QCOMPARE(subject(find(all, "kpipewire"), kpipewirePatches.first()), "kpipewire-ffmpeg8");
+        QCOMPARE(kpipewirePatches.last().origin, "Research");
+        QCOMPARE(kpipewirePatches.last().number, "1001");
         QCOMPARE(kpipewirePatches.last().path, "kpipewire/kpipewire-dmabuf-frame-fds-and-size.patch");
         /* Fedora's spec with the research's set after its own patches: Fedora's, by their
            numbers below 1000, apart from the research's */

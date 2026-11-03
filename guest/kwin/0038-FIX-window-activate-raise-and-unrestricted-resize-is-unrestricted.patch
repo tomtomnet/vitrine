@@ -1,0 +1,23 @@
+From: Local <local@localhost>
+Subject: [PATCH] FIX: window: Activate, raise and unrestricted resize is unrestricted
+
+performMouseCommand() made a resize unrestricted only for MouseUnrestrictedResize, not for
+MouseActivateRaiseAndUnrestrictedResize - the default of Meta + right drag - unlike the move
+branch, which checks both. With 6.8's confinement of xdg-toplevel geometry changes (18b044c)
+the default Meta + right resize of a window partly above the screen pulled it back down
+(2026-10-09, the user's report; research/kwin-resize-jump-2026-10-09.md).
+---
+diff --git a/src/window.cpp b/src/window.cpp
+index e01ccbe..d9c82e1 100644
+--- a/src/window.cpp
++++ b/src/window.cpp
+@@ -2201,7 +2201,8 @@ bool Window::performMousePressCommand(Options::MouseCommand cmd, const QPointF &
+             gravity = (x < width() / 2) ? Gravity::Left : Gravity::Right;
+         }
+         setInteractiveMoveResizeGravity(gravity);
+-        setUnrestrictedInteractiveMoveResize((cmd == Options::MouseUnrestrictedResize));
++        setUnrestrictedInteractiveMoveResize((cmd == Options::MouseActivateRaiseAndUnrestrictedResize
++                                              || cmd == Options::MouseUnrestrictedResize));
+         if (!startInteractiveMoveResize()) {
+             setInteractiveMoveResizePointerButtonDown(false);
+         }

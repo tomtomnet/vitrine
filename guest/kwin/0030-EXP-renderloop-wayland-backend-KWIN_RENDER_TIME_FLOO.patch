@@ -1,0 +1,62 @@
+From a69913d13195f2704e560ccf71f6b0adf0ec7411 Mon Sep 17 00:00:00 2001
+From: research <local@localhost>
+Date: Thu, 8 Oct 2026 01:12:18 +0200
+Subject: [PATCH] EXP renderloop, wayland backend: KWIN_RENDER_TIME_FLOOR_US
+ and KWIN_WAYLAND_DEADLINE_MARGIN_US
+
+The render-time floor of composited frames (2 ms) and the margin after the host's commit deadline
+(1 ms) as environment knobs, defaults unchanged. A VM's nested KWin renders in ~0.3 ms and its
+proxy forwards a frame in ~0.01 ms (2026-10-08), but floor + deadline + 1 ms + the timer slack
+planned every composited frame two refreshes ahead at 240 Hz.
+---
+ src/backends/wayland/wayland_output.cpp | 7 +++++--
+ src/core/renderloop.cpp                 | 8 +++++++-
+ 2 files changed, 12 insertions(+), 3 deletions(-)
+
+diff --git a/src/backends/wayland/wayland_output.cpp b/src/backends/wayland/wayland_output.cpp
+index a82984f..4db7bfa 100644
+--- a/src/backends/wayland/wayland_output.cpp
++++ b/src/backends/wayland/wayland_output.cpp
+@@ -461,8 +461,11 @@ void WaylandOutput::framePresented(struct wp_presentation_feedback *feedback, st
+         m_renderLoop->setPresentationSafetyMargin(std::chrono::microseconds(*s_safetyMarginUs));
+     } else if (auto deadline = frame.contentUpdateDeadline) {
+         // the host's own word (wp_presentation v3, proposed in wayland-protocols merge request
+-        // 454): its latching deadline for this frame, plus a millisecond for our way to it
+-        m_renderLoop->setPresentationSafetyMargin(*deadline + std::chrono::milliseconds(1));
++        // 454): its latching deadline for this frame, plus our way to it -
++        // KWIN_WAYLAND_DEADLINE_MARGIN_US [1000] (a VM's proxy and virtio-gpu: ~0.1 ms since the
++        // proxy sends a frame's messages in one go, 2026-10-08)
++        static const std::chrono::nanoseconds s_deadlineMargin = std::chrono::microseconds(environmentVariableIntValue("KWIN_WAYLAND_DEADLINE_MARGIN_US").value_or(1000));
++        m_renderLoop->setPresentationSafetyMargin(*deadline + s_deadlineMargin);
+     } else if (auto t = frame.frameCallbackTime) {
+         // NOTE that the frame callback gets signaled *after* the host compositor
+         // is done compositing the frame on the CPU side, not before!
+diff --git a/src/core/renderloop.cpp b/src/core/renderloop.cpp
+index d4f3209..5012fb4 100644
+--- a/src/core/renderloop.cpp
++++ b/src/core/renderloop.cpp
+@@ -45,6 +45,12 @@ static const bool s_upstreamEstimate = qEnvironmentVariableIntValue("KWIN_RENDER
+ static const std::optional<std::chrono::nanoseconds> s_frameSlack = qEnvironmentVariableIsEmpty("KWIN_FRAME_SLACK_US")
+     ? std::nullopt
+     : std::optional<std::chrono::nanoseconds>(std::chrono::microseconds(std::max(0, qEnvironmentVariableIntValue("KWIN_FRAME_SLACK_US"))));
++// KWIN_RENDER_TIME_FLOOR_US [2000]: the least render time a frame the compositor renders counts as.
++// A nested compositor's renders are short (~0.3 ms in a VM's nested KWin) but count as 2 ms, which
++// with the host's commit deadline and the timer slack plans every composited frame two refreshes
++// ahead at 240 Hz (2026-10-08: a window drag in the VM's nested desktop showed its move ~0.8 ms
++// after bare metal's, one refresh after the cursor in a quarter more of the steps).
++static const std::chrono::nanoseconds s_renderTimeFloor = std::chrono::microseconds(qEnvironmentVariableIsEmpty("KWIN_RENDER_TIME_FLOOR_US") ? 2000 : std::max(0, qEnvironmentVariableIntValue("KWIN_RENDER_TIME_FLOOR_US")));
+ static const std::chrono::nanoseconds s_lateFlipStep = std::chrono::microseconds(qEnvironmentVariableIsEmpty("KWIN_LATE_FLIP_STEP_US") ? 500 : std::max(10, qEnvironmentVariableIntValue("KWIN_LATE_FLIP_STEP_US")));
+ 
+ RenderLoopPrivate::RenderLoopPrivate(RenderLoop *q, BackendOutput *output)
+@@ -234,7 +240,7 @@ void RenderLoopPrivate::notifyFrameCompleted(std::chrono::nanoseconds timestamp,
+         // part of the OpenGL render time query: 5338c2e9a7 made such frames count as
+         // 2 ms, so the compositor wakes up ~1.8 ms earlier for a fullscreen client
+         // (a game, a virtual machine's zero-copy window) and shows its frames later
+-        const std::chrono::nanoseconds minimumTime = (frame && !frame->renderedByCompositor()) ? std::chrono::nanoseconds::zero() : std::chrono::milliseconds(2);
++        const std::chrono::nanoseconds minimumTime = (frame && !frame->renderedByCompositor()) ? std::chrono::nanoseconds::zero() : s_renderTimeFloor;
+         renderJournal.add(std::max(minimumTime, renderTime->end - renderTime->start), timestamp);
+     }
+     if (s_lateFlipCompensation && mode == PresentationMode::VSync && frame) {
+-- 
+2.55.0
+

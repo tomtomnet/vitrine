@@ -328,7 +328,7 @@ private slots:
                  QString(QCryptographicHash::hash(read(GUEST_SOURCE_DIR "/build-medium.sh"),
                                                   QCryptographicHash::Sha256)
                              .toHex()));
-        QCOMPARE(GuestToolsBuilder::version(GUEST_SOURCE_DIR, "kwin"), "6.7.5");
+        QCOMPARE(GuestToolsBuilder::version(GUEST_SOURCE_DIR, "kwin"), "6.8.2");
         QCOMPARE(GuestToolsBuilder::packages(GUEST_SOURCE_DIR),
                  QStringList({"tools", "mesa", "kwin", "proxy", "kpipewire", "qtbase", "ksvg",
                               "kirigami"}));

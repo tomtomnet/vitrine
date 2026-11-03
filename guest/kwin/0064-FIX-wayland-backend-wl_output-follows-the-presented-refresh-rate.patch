@@ -1,0 +1,30 @@
+From: Local build <local@localhost>
+Subject: [PATCH] FIX wayland backend: wl_output follows the refresh rate learned from presentation feedback
+
+WaylandOutput::framePresented takes the host's refresh rate from the presentation feedback and puts it
+in the output's mode (setState), but the logical output, which wl_output reports to clients, only
+copies its backend output's mode in Workspace::updateOutputs(), on OutputBackend::outputsQueried. The
+backend's other mode changes (a host resize, a scale change) emit it; this one did not. So clients
+kept the rate the nested output started at for the whole session, while the output device
+(kscreen-doctor) showed the real one: 60 Hz upstream, or with 0034 the highest rate among the host's
+outputs. On a host with a 5K 165 Hz and a 4K 240 Hz monitor, a guest full screen on the 165 Hz one
+told its clients 240 Hz; mpv's --video-sync=display-resample then held 60 fps frames 4 refreshes
+(48 images a second, 34 % on cadence) while measuring 164 Hz itself, and Qt Quick's vsync animation
+driver advanced by 4.2 ms per 6.1 ms frame. The refresh change now emits outputsQueried like the
+others (2026-10-18, findings/two-monitors-brief-2026-10-17.md).
+---
+
+diff --git a/src/backends/wayland/wayland_output.cpp b/src/backends/wayland/wayland_output.cpp
+index 6bc612a..253c900 100644
+--- a/src/backends/wayland/wayland_output.cpp
++++ b/src/backends/wayland/wayland_output.cpp
+@@ -486,6 +486,9 @@ void WaylandOutput::framePresented(struct wp_presentation_feedback *feedback, st
+         next.currentMode = mode;
+         setState(next);
+         m_renderLoop->setRefreshRate(m_refreshRate);
++        // the logical output, and with it wl_output, follows only through the workspace's output
++        // update: without it clients kept the rate the output started at (60 Hz, or the guess)
++        Q_EMIT m_backend->outputsQueried();
+     }
+     const auto &frame = m_frames.front();
+     // (not with a host that sends commit deadlines: those are the research host KWin builds, whose

@@ -1,0 +1,51 @@
+From: Local build <local@localhost>
+Subject: [PATCH] EXP: renderloop: lone frames aimed at the next vblank (KWIN_LONE_FRAME_LEAD_US)
+
+---
+diff --git a/src/core/renderloop.cpp b/src/core/renderloop.cpp
+index 5012fb4..e9493de 100644
+--- a/src/core/renderloop.cpp
++++ b/src/core/renderloop.cpp
+@@ -52,6 +52,19 @@ static const std::optional<std::chrono::nanoseconds> s_frameSlack = qEnvironment
+ // after bare metal's, one refresh after the cursor in a quarter more of the steps).
+ static const std::chrono::nanoseconds s_renderTimeFloor = std::chrono::microseconds(qEnvironmentVariableIsEmpty("KWIN_RENDER_TIME_FLOOR_US") ? 2000 : std::max(0, qEnvironmentVariableIntValue("KWIN_RENDER_TIME_FLOOR_US")));
+ static const std::chrono::nanoseconds s_lateFlipStep = std::chrono::microseconds(qEnvironmentVariableIsEmpty("KWIN_LATE_FLIP_STEP_US") ? 500 : std::max(10, qEnvironmentVariableIntValue("KWIN_LATE_FLIP_STEP_US")));
++// KWIN_LONE_FRAME_LEAD_US (EXP): how close to the next vblank a lone frame - the first after an
++// idle stretch (no frame in flight, none presented for two refreshes or more) - may still be
++// aimed at it: at least this far off, the next vblank, else the one after; rendered at once,
++// without the render estimate + safety margin + slack and the triple-buffering hysteresis. A
++// nested compositor's margin covers a busy host (its reported deadline + 1 ms) and the estimate
++// counts a composited frame as 2 ms: ~4.1-6 ms before the vblank at 240 Hz, so every lone frame -
++// a key's - went two refreshes ahead. The host takes a lone commit ~2.2 ms before its vblank
++// (2026-10-09, research/guest-client-overhead-2026-10-09.md); a frame that misses is shown a
++// refresh later through commit timing, where it lands anyway, and with nothing in flight there is
++// no frame cadence for the hysteresis to protect. Unset: off.
++static const std::optional<std::chrono::nanoseconds> s_loneFrameLead = qEnvironmentVariableIsEmpty("KWIN_LONE_FRAME_LEAD_US")
++    ? std::nullopt
++    : std::optional<std::chrono::nanoseconds>(std::chrono::microseconds(std::max(0, qEnvironmentVariableIntValue("KWIN_LONE_FRAME_LEAD_US"))));
+ 
+ RenderLoopPrivate::RenderLoopPrivate(RenderLoop *q, BackendOutput *output)
+     : q(q)
+@@ -119,9 +132,21 @@ void RenderLoopPrivate::scheduleRepaint(std::chrono::nanoseconds lastTargetTimes
+         const uint64_t pageflipsSinceLastToTarget = std::max<int64_t>(std::round((lastTargetTimestamp - lastPresentationTimestamp).count() / double(vblankInterval.count())), 0);
+         uint64_t pageflipsInAdvance = std::min<int64_t>(expectedCompositingTime / vblankInterval + 1, maxPendingFrameCount);
+ 
++        // KWIN_LONE_FRAME_LEAD_US: a lone frame is aimed at the next vblank if that is at least the
++        // lead away, else at the one after, and rendered at once (nothing waits for it to be late)
++        const bool loneFrame = s_loneFrameLead && pageflipsSince >= 2 && pendingFrameCount == 0 && !compositeTimer.isActive();
++        if (loneFrame) {
++            const std::chrono::nanoseconds lead = std::min(*s_loneFrameLead, vblankInterval - 1us);
++            const std::chrono::nanoseconds nextVblank = lastPresentationTimestamp + (pageflipsSinceNow + 1) * vblankInterval;
++            pageflipsInAdvance = currentTime + lead <= nextVblank ? 1 : 2;
++            expectedCompositingTime = pageflipsInAdvance * vblankInterval - 1us;
++        }
++
+         // switching from double to triple buffering causes a frame drop
+         // -> apply some amount of hysteresis to avoid switching back and forth constantly
+-        if (pageflipsInAdvance > 1) {
++        if (loneFrame) {
++            // nothing in flight: no cadence to keep, and the hysteresis state is left as it was
++        } else if (pageflipsInAdvance > 1) {
+             // immediately switch to triple buffering when needed
+             wasTripleBuffering = true;
+             doubleBufferingCounter = 0;

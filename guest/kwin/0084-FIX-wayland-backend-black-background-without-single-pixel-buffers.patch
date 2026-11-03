@@ -1,0 +1,116 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: Local build <local@localhost>
+Date: Sat, 31 Oct 2026 02:39:11 +0100
+Subject: [PATCH] FIX wayland backend: a wl_shm black background without wp_single_pixel_buffer_manager_v1
+
+The nested backend refused to start on a host compositor without single
+pixel buffers (niri 26.04 and main build them only for their tests), and
+it needs one buffer only: the black background of each output's main
+surface. Without the manager that background is now a 1x1 XRGB8888
+wl_shm buffer of zeroes; the backend fails only without wl_shm too.
+---
+ src/backends/wayland/wayland_display.cpp | 33 ++++++++++++++++++++++--
+ src/backends/wayland/wayland_display.h   |  6 +++++
+ src/backends/wayland/wayland_output.cpp  |  3 +--
+ 3 files changed, 38 insertions(+), 4 deletions(-)
+
+diff --git a/src/backends/wayland/wayland_display.cpp b/src/backends/wayland/wayland_display.cpp
+index 83bd56d..da99d45 100644
+--- a/src/backends/wayland/wayland_display.cpp
++++ b/src/backends/wayland/wayland_display.cpp
+@@ -25,10 +25,13 @@
+ #include <QThread>
+ #include <QWaitCondition>
+ 
++#include <cerrno>
++#include <cstring>
+ #include <drm_fourcc.h>
+ #include <fcntl.h>
+ #include <poll.h>
+ #include <span>
++#include <sys/mman.h>
+ #include <unistd.h>
+ #include <wayland-client.h>
+ #include <xf86drm.h>
+@@ -259,8 +262,11 @@ bool WaylandDisplay::initialize(const QString &socketName)
+         return false;
+     }
+     if (!m_singlePixelManager) {
+-        qCWarning(KWIN_WAYLAND_BACKEND, "wp_single_pixel_buffer_manager_v1 isn't supported by the host compositor");
+-        return false;
++        if (!m_shm) {
++            qCWarning(KWIN_WAYLAND_BACKEND, "neither wp_single_pixel_buffer_manager_v1 nor wl_shm is supported by the host compositor");
++            return false;
++        }
++        qCWarning(KWIN_WAYLAND_BACKEND, "wp_single_pixel_buffer_manager_v1 isn't supported by the host compositor, using wl_shm");
+     }
+     if (!m_viewporter) {
+         qCWarning(KWIN_WAYLAND_BACKEND, "wp_viewporter isn't supported by the host compositor");
+@@ -379,6 +385,29 @@ wp_single_pixel_buffer_manager_v1 *WaylandDisplay::singlePixelManager() const
+     return m_singlePixelManager;
+ }
+ 
++wl_buffer *WaylandDisplay::createBlackBuffer() const
++{
++    if (m_singlePixelManager) {
++        return wp_single_pixel_buffer_manager_v1_create_u32_rgba_buffer(m_singlePixelManager, 0, 0, 0, 0xFFFFFFFF);
++    }
++    // one pixel of zeroes: black in XRGB8888, a format every wl_shm supports
++    const int fd = memfd_create("kwin-black-pixel", MFD_CLOEXEC);
++    if (fd < 0) {
++        qCWarning(KWIN_WAYLAND_BACKEND) << "Failed to create a black buffer:" << strerror(errno);
++        return nullptr;
++    }
++    wl_buffer *buffer = nullptr;
++    if (ftruncate(fd, 4) == 0) {
++        wl_shm_pool *pool = wl_shm_create_pool(m_shm, fd, 4);
++        buffer = wl_shm_pool_create_buffer(pool, 0, 1, 1, 4, WL_SHM_FORMAT_XRGB8888);
++        wl_shm_pool_destroy(pool);
++    } else {
++        qCWarning(KWIN_WAYLAND_BACKEND) << "Failed to create a black buffer:" << strerror(errno);
++    }
++    close(fd);
++    return buffer;
++}
++
+ xdg_toplevel_icon_manager_v1 *WaylandDisplay::toplevelIconManager() const
+ {
+     return m_toplevelIconManager;
+diff --git a/src/backends/wayland/wayland_display.h b/src/backends/wayland/wayland_display.h
+index ee2b0dc..5be2240 100644
+--- a/src/backends/wayland/wayland_display.h
++++ b/src/backends/wayland/wayland_display.h
+@@ -15,6 +15,7 @@
+ struct wl_display;
+ struct wl_output;
+ struct wl_registry;
++struct wl_buffer;
+ struct wl_shm;
+ struct zwp_linux_dmabuf_v1;
+ struct wp_presentation;
+@@ -89,6 +90,11 @@ public:
+     wp_fractional_scale_manager_v1 *fractionalScale() const;
+     WaylandClient::Viewporter *viewporter() const;
+     wp_single_pixel_buffer_manager_v1 *singlePixelManager() const;
++    /**
++     * A new 1x1 opaque black buffer: a single pixel buffer, or one in shared memory if the host
++     * compositor has no wp_single_pixel_buffer_manager_v1.
++     */
++    wl_buffer *createBlackBuffer() const;
+     xdg_toplevel_icon_manager_v1 *toplevelIconManager() const;
+     zwp_keyboard_shortcuts_inhibit_manager_v1 *keyboardShortcutsInhibitManager() const;
+ 
+diff --git a/src/backends/wayland/wayland_output.cpp b/src/backends/wayland/wayland_output.cpp
+index 253c900..f6ad251 100644
+--- a/src/backends/wayland/wayland_output.cpp
++++ b/src/backends/wayland/wayland_output.cpp
+@@ -386,8 +386,7 @@ std::expected<void, OutputError> WaylandOutput::present(const QList<OutputLayer
+     }
+     if (!m_mapped) {
+         // we only ever want a black background
+-        auto buffer = wp_single_pixel_buffer_manager_v1_create_u32_rgba_buffer(m_backend->display()->singlePixelManager(), 0, 0, 0, 0xFFFFFFFF);
+-        m_surface->attachBuffer(buffer);
++        m_surface->attachBuffer(m_backend->display()->createBlackBuffer());
+         m_mapped = true;
+     }
+     const Rect rect(QPoint(), QSize(std::round(modeSize().width() / scale()), std::round(modeSize().height() / scale())));

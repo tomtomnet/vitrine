@@ -1,0 +1,31 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: Local build <local@localhost>
+Date: Sat, 31 Oct 2026 05:24:08 +0100
+Subject: [PATCH] FIX wayland backend: set the layer's image description only
+ when its color changes
+
+The layer compared its color description with the previous one as
+shared_ptrs, by pointer: the compositor gives the primary layer a new
+description object every frame (layerBlendingColor()->withHdrMetadata()),
+so the nested KWin created and set a new image description on the host
+every frame (seen in Hyprland's trace: a parametric creator, six setters,
+create, set_image_description per frame, all with the same values).
+---
+ src/backends/wayland/wayland_layer.cpp | 4 +++-
+ 1 file changed, 3 insertions(+), 1 deletion(-)
+
+diff --git a/src/backends/wayland/wayland_layer.cpp b/src/backends/wayland/wayland_layer.cpp
+index 311be7f..87c1abe 100644
+--- a/src/backends/wayland/wayland_layer.cpp
++++ b/src/backends/wayland/wayland_layer.cpp
+@@ -101,7 +101,9 @@ void WaylandLayer::commit(PresentationMode presentationMode)
+         m_viewport->setDestination(logicalTarget.size());
+     }
+     m_subSurface->setPosition(logicalTarget.topLeft());
+-    if (m_colorSurface && m_color != m_previousColor) {
++    // by value: the compositor gives the layer a new description object every frame (withHdrMetadata), and the
++    // shared_ptr comparison found here compares pointers - a new image description went to the host every frame
++    if (m_colorSurface && (!m_color || !m_previousColor || *m_color != *m_previousColor)) {
+         const auto imageDescription = output->backend()->display()->colorManager()->createImageDescription(*m_color);
+         wp_color_management_surface_v1_set_image_description(m_colorSurface, imageDescription, WP_COLOR_MANAGER_V1_RENDER_INTENT_PERCEPTUAL);
+         wp_image_description_v1_destroy(imageDescription);

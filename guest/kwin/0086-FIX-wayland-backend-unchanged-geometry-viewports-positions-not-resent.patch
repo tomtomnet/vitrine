@@ -1,0 +1,120 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: Local build <local@localhost>
+Date: Sat, 31 Oct 2026 05:48:09 +0100
+Subject: [PATCH] FIX wayland backend: the window geometry, viewports and
+ subsurface positions only when they change
+
+Every frame the nested output sent its window geometry, its viewport
+destination and its buffer scale, and each layer its viewport source and
+destination and its subsurface position, with the same values: six
+requests a frame that the host keeps anyway (Hyprland's trace showed
+the geometry request per frame). The last values sent are kept and only
+a change is sent; the buffer scale goes with the background buffer.
+---
+ src/backends/wayland/wayland_layer.cpp  | 16 +++++++++++++---
+ src/backends/wayland/wayland_layer.h    |  6 ++++++
+ src/backends/wayland/wayland_output.cpp | 12 +++++++++---
+ src/backends/wayland/wayland_output.h   |  5 +++++
+ 4 files changed, 33 insertions(+), 6 deletions(-)
+
+diff --git a/src/backends/wayland/wayland_layer.cpp b/src/backends/wayland/wayland_layer.cpp
+index 87c1abe..cb3cbc0 100644
+--- a/src/backends/wayland/wayland_layer.cpp
++++ b/src/backends/wayland/wayland_layer.cpp
+@@ -97,10 +97,20 @@ void WaylandLayer::commit(PresentationMode presentationMode)
+     // have that, it may cause blurriness in some cases!
+     const Rect logicalTarget = targetRect().scaled(1.0 / m_output->scale()).rounded();
+     if (m_viewport) {
+-        m_viewport->setSource(sourceRect());
+-        m_viewport->setDestination(logicalTarget.size());
++        const RectF source = sourceRect();
++        if (m_sentSource != source) {
++            m_viewport->setSource(source);
++            m_sentSource = source;
++        }
++        if (m_sentDestination != logicalTarget.size()) {
++            m_viewport->setDestination(logicalTarget.size());
++            m_sentDestination = logicalTarget.size();
++        }
++    }
++    if (m_sentPosition != logicalTarget.topLeft()) {
++        m_subSurface->setPosition(logicalTarget.topLeft());
++        m_sentPosition = logicalTarget.topLeft();
+     }
+-    m_subSurface->setPosition(logicalTarget.topLeft());
+     // by value: the compositor gives the layer a new description object every frame (withHdrMetadata), and the
+     // shared_ptr comparison found here compares pointers - a new image description went to the host every frame
+     if (m_colorSurface && (!m_color || !m_previousColor || *m_color != *m_previousColor)) {
+diff --git a/src/backends/wayland/wayland_layer.h b/src/backends/wayland/wayland_layer.h
+index 132a0bc..547d356 100644
+--- a/src/backends/wayland/wayland_layer.h
++++ b/src/backends/wayland/wayland_layer.h
+@@ -10,6 +10,8 @@
+ #include "core/graphicsbuffer.h"
+ #include "core/outputlayer.h"
+ 
++#include <optional>
++
+ namespace KWayland
+ {
+ namespace Client
+@@ -64,6 +66,10 @@ protected:
+     wp_fractional_scale_v1 *m_fractionalScale = nullptr;
+     std::unique_ptr<WaylandClient::Viewport> m_viewport;
+     std::shared_ptr<ColorDescription> m_previousColor;
++    // the last viewport and position sent: the host keeps them, resending them every frame was only work
++    std::optional<RectF> m_sentSource;
++    std::optional<QSize> m_sentDestination;
++    std::optional<QPoint> m_sentPosition;
+     GraphicsBufferRef m_pendingBuffer;
+     Region m_pendingDamage;
+ };
+diff --git a/src/backends/wayland/wayland_output.cpp b/src/backends/wayland/wayland_output.cpp
+index f6ad251..1733253 100644
+--- a/src/backends/wayland/wayland_output.cpp
++++ b/src/backends/wayland/wayland_output.cpp
+@@ -387,12 +387,18 @@ std::expected<void, OutputError> WaylandOutput::present(const QList<OutputLayer
+     if (!m_mapped) {
+         // we only ever want a black background
+         m_surface->attachBuffer(m_backend->display()->createBlackBuffer());
++        m_surface->setScale(1);
+         m_mapped = true;
+     }
+     const Rect rect(QPoint(), QSize(std::round(modeSize().width() / scale()), std::round(modeSize().height() / scale())));
+-    m_xdgShellSurface->setWindowGeometry(rect);
+-    m_viewport->setDestination(rect.size());
+-    m_surface->setScale(1);
++    if (m_sentGeometry != rect) {
++        m_xdgShellSurface->setWindowGeometry(rect);
++        m_sentGeometry = rect;
++    }
++    if (m_sentDestination != rect.size()) {
++        m_viewport->setDestination(rect.size());
++        m_sentDestination = rect.size();
++    }
+     // commit the subsurfaces before the main surface
+     for (OutputLayer *layer : layersToUpdate) {
+         // TODO maybe also make the cursor a WaylandLayer?
+diff --git a/src/backends/wayland/wayland_output.h b/src/backends/wayland/wayland_output.h
+index a504788..f0eb05d 100644
+--- a/src/backends/wayland/wayland_output.h
++++ b/src/backends/wayland/wayland_output.h
+@@ -15,6 +15,7 @@
+ #include <QSize>
+ #include <QTimer>
+ #include <deque>
++#include <optional>
+ 
+ namespace KWayland
+ {
+@@ -140,6 +141,10 @@ private:
+     bool m_hasPointerLock = false;
+     bool m_ready = false;
+     bool m_mapped = false;
++    // the last window geometry and viewport destination sent: the host keeps them, resending them every frame was
++    // only work (the buffer scale is set once, with the background)
++    std::optional<Rect> m_sentGeometry;
++    std::optional<QSize> m_sentDestination;
+     struct FrameData
+     {
+         explicit FrameData(const std::shared_ptr<OutputFrame> &frame, struct wp_presentation_feedback *presentationFeedback, struct wl_callback *frameCallback);
