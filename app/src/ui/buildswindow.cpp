@@ -1049,6 +1049,10 @@ void BuildsWindow::showSource()
         QStringList origins;
         QHash<QString, int> count;
         for (const Builds::Patch &patch : patches) {
+            /* not built: the Patches tab shows them apart */
+            if (patch.left) {
+                continue;
+            }
             if (!count.contains(patch.origin)) {
                 origins << patch.origin;
             }
@@ -1528,7 +1532,7 @@ QString BuildsWindow::systemSource(const Component &c)
     if (!host.series.isEmpty()) {
         int count = 0;
         for (const Builds::Patch &patch : Builds::patches(c)) {
-            count += patch.origin.startsWith(host.series + ',');
+            count += !patch.left && patch.origin.startsWith(host.series + ',');
         }
         rows += row(tr("Set:"), (count == 1 ? tr("%1, 1 patch (the Patches tab)").arg(host.series)
                                             : tr("%1, %2 patches (the Patches tab)")

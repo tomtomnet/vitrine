@@ -71,13 +71,14 @@ here=$(cd -- "$(dirname -- "$(readlink -f "${BASH_SOURCE[0]}")")" && pwd)
 recipe=$here/research
 versions=$recipe/setup/versions.sh
 # The research's overrides of its sets (VGD_HOST_KWIN_SET=hl39 and the
-# like, which versions.sh reads, and lib.sh passes into the container), and
-# its switches of the host's packages (HOST_QT_Q4=0 and the like), are its
-# own experiments: Vitrine builds the sets the copy names, for the package
-# it is asked
+# like, which versions.sh reads, and lib.sh passes into the container), its
+# patches built in again (VGD_HOST_KWIN_0082=1: KWin's 0082, which the copy
+# leaves out), and its switches of the host's packages (HOST_QT_Q4=0 and the
+# like), are its own experiments: Vitrine builds the sets the copy names, for
+# the package it is asked
 while read -r v; do
 	unset "$v"
-done < <(compgen -e | grep -E '^VGD_[A-Z0-9_]+_SET')
+done < <(compgen -e | grep -E '^VGD_[A-Z0-9_]+_(SET|0082)')
 while read -r v; do
 	unset "$v"
 done < <(grep -oE '\$\{HOST_[A-Z0-9_]+:-' "$versions" | sed 's/^\${//; s/:-$//' | sort -u)

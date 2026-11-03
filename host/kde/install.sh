@@ -34,8 +34,10 @@
 # /etc/user-tmpfiles.d/vitrine-host-kwin.conf, which makes the files at each
 # user's login, and are made at once for the user who installs (pkexec's
 # PKEXEC_UID): a login soon after a logout may find their session manager
-# still running, and its tmpfiles not read again.  Another KWin ignores the
-# files.
+# still running, and its tmpfiles not read again.  Those of
+# kwin_switches_off go there too, off (switches/kwin-*.conf, Vitrine's own:
+# the research's host session has no file for them), for each user to turn
+# on.  Another KWin ignores the files.
 #
 # KWin's commit timing: from Plasma 6.8.2, KWin offers commit timing to
 # programs (wp_commit_timing_manager_v1) only with
@@ -79,6 +81,11 @@ kwin_switches=(
 	animation-start-step
 	empty-render-not-content
 	scanout-variance-cap
+)
+# Those written off (0), by their file in switches/: night-light-after-blending
+# (0089) changes saturated colours under Night Light, which each user decides
+kwin_switches_off=(
+	night-light-after-blending
 )
 
 say() { echo "vitrine-kde: $*"; }
@@ -153,8 +160,13 @@ switches_on() {
 			{ say "warning: no switch kwin-$name in research/src/host-config"; continue; }
 		entries+=("$here/research/src/host-config/kwin-$name.conf")
 	done
+	for name in "${kwin_switches_off[@]}"; do
+		[ -f "$here/switches/kwin-$name.conf" ] ||
+			{ say "warning: no switch kwin-$name in switches"; continue; }
+		entries+=("$here/switches/kwin-$name.conf")
+	done
 	[ ${#entries[@]} -gt 0 ] || return 0
-	say "step: turning the set's run-time switches on ($switches)"
+	say "step: writing the set's run-time switches ($switches)"
 	mkdir -p "${switches%/*}"
 	{
 		echo "# Vitrine's host KWin (host/kde/install.sh): the run-time switches of the research's"

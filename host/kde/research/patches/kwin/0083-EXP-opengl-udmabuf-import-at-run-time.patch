@@ -1,0 +1,72 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: Local build <local@localhost>
+Date: Tue, 27 Oct 2026 16:00:00 +0100
+Subject: [PATCH] EXP opengl: the udmabuf import of wl_shm buffers at run time
+ ($XDG_RUNTIME_DIR/kwin-udmabuf-import)
+
+KWIN_DISABLE_UDMABUF_IMPORT is read once, and the host KWin's environment is the one of its login: the wrapper
+restarts KWin with its own, so `systemctl --user set-environment` + a KWin restart changes nothing. To A/B the import
+in a running session (the user's daily install, Arc Pro B50 at 4K 240: Konsole drags missed 47 % of the refreshes with
+the import, ~1 % without; 2026-10-26), $XDG_RUNTIME_DIR/kwin-udmabuf-import holding 1 (sample wl_shm buffers through
+their udmabuf) or 0 (upload them into textures) decides for the buffers imported while it exists, ahead of the
+variable and the vendor default (0075: not on NVIDIA, i915 or xe); read at most once a second. Buffers already
+imported keep their way until the client replaces them (new windows, resizes). No file = as before.
+---
+diff --git a/src/opengl/egldisplay.cpp b/src/opengl/egldisplay.cpp
+index b3b5a0e..164e326 100644
+--- a/src/opengl/egldisplay.cpp
++++ b/src/opengl/egldisplay.cpp
+@@ -16,7 +16,9 @@
+ #include "utils/common.h"
+ #include "utils/envvar.h"
+ 
++#include <QFile>
+ #include <QOpenGLContext>
++#include <chrono>
+ #include <drm_fourcc.h>
+ 
+ #ifndef EGL_DRM_RENDER_NODE_FILE_EXT
+@@ -423,6 +425,34 @@ void EglDisplay::destroyImage(EGLImageKHR image) const
+ 
+ static const auto s_disableUdmabuf = environmentVariableBoolValue("KWIN_DISABLE_UDMABUF_IMPORT");
+ 
++/**
++ * EXP (2026-10-27): $XDG_RUNTIME_DIR/kwin-udmabuf-import holding 1 (sample wl_shm buffers through their udmabuf) or 0
++ * (upload them into textures) decides for the buffers imported while it exists, ahead of KWIN_DISABLE_UDMABUF_IMPORT
++ * and the vendor default; read at most once a second. KWin's environment is the one of its login (the wrapper restarts
++ * it with its own), so this is how a running session A/Bs the import: on a discrete GPU each frame reads the windows'
++ * pixels over PCIe through the udmabuf (the Arc Pro B50: Konsole drags missed half the refreshes at 240 Hz).
++ */
++static std::optional<bool> udmabufImportSwitch()
++{
++    static const QString s_path = qEnvironmentVariable("XDG_RUNTIME_DIR") + QStringLiteral("/kwin-udmabuf-import");
++    static std::optional<bool> s_value;
++    static std::chrono::steady_clock::time_point s_lastRead;
++    const auto now = std::chrono::steady_clock::now();
++    if (now - s_lastRead >= std::chrono::seconds(1)) {
++        s_lastRead = now;
++        s_value.reset();
++        QFile file(s_path);
++        if (file.open(QIODevice::ReadOnly)) {
++            bool ok = false;
++            const int value = file.readAll().trimmed().toInt(&ok);
++            if (ok) {
++                s_value = value != 0;
++            }
++        }
++    }
++    return s_value;
++}
++
+ EGLImageKHR EglDisplay::importBufferAsImage(GraphicsBuffer *buffer,
+                                             YUVMatrixCoefficients coefficients,
+                                             EncodingRange range)
+@@ -441,7 +471,7 @@ EGLImageKHR EglDisplay::importBufferAsImage(GraphicsBuffer *buffer,
+         // On Nvidia, sampling from udmabuf just results in black,
+         // and on i915 there are glitches on some systems. On xe (Battlemage)
+         // a CPU-drawn 4K window's frames cost the compositor 4-15 ms instead of 1
+-    } else if (buffer->udmabufAttributes() && (!m_drmDevice || !s_disableUdmabuf.value_or(m_drmDevice->isNvidia() || m_drmDevice->isI915() || m_drmDevice->isIntelXE()))) {
++    } else if (buffer->udmabufAttributes() && udmabufImportSwitch().value_or(!m_drmDevice || !s_disableUdmabuf.value_or(m_drmDevice->isNvidia() || m_drmDevice->isI915() || m_drmDevice->isIntelXE()))) {
+         image = importDmaBufAsImage(*buffer->udmabufAttributes(), coefficients, range);
+     }
+     m_importCache[key] = image;

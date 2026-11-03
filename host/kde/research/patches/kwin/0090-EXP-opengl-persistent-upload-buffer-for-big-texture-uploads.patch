@@ -1,0 +1,254 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: Local build <local@localhost>
+Date: Mon, 2 Nov 2026 15:20:00 +0100
+Subject: [PATCH] EXP opengl: a persistent upload buffer for big texture uploads
+ (KWIN_UPLOAD_BUFFER=0 turns it off)
+
+GLTexture::update() hands glTexSubImage2D() the client's memory, and the driver copies it into a staging buffer of
+its own - a new one whenever its buffer cache let the last go (iris: a second). The CPU's first write to each page of
+a new buffer faults. A big wl_shm window re-uploaded after a pause - GTK3 repaints Firefox's whole frame when its
+focus changes - then costs KWin's main thread far more than the copy:
+- Arc Pro B50 (xe), 3840x2072: ~36 ms, the launcher opened after typing in Firefox stutters nine refreshes at 240 Hz.
+  memcpy() runs backwards for a page-aligned source and destination, and TTM maps only the pages after a fault, so
+  every page faults (findings/launcher-stutter-firefox-shm-upload-2026-11-02.md; the kernel side:
+  patches/kernel/ttm-prefault-around, ~6.7 ms then).
+- The same upload through a pixel-unpack buffer mapped once, persistently (bench/tools/upload_bench.c pbo-pers):
+  1.5 ms, whatever the pause - its pages stay mapped. In a VM each first touch is a KVM exit as well.
+
+So big uploads (1 MiB or more, 4-byte pixels) go through one such buffer per context: the damaged rectangles are
+copied into it, packed, and uploaded from it; a fence makes the next upload wait for the GPU to have read it (big
+uploads come seconds apart: it has). It grows in 4 MiB steps to the biggest upload seen and stays (32 MiB for a 4K
+window), its pages faulted in from the first to the last when it is made. Without buffer storage and sync fences, or
+with KWIN_UPLOAD_BUFFER=0, uploads go straight from the image as before.
+---
+diff --git a/src/opengl/eglcontext.cpp b/src/opengl/eglcontext.cpp
+index 37cf62f..8bd3703 100644
+--- a/src/opengl/eglcontext.cpp
++++ b/src/opengl/eglcontext.cpp
+@@ -118,6 +118,7 @@ EglContext::~EglContext()
+     m_shaderManager.reset();
+     m_streamingBuffer.reset();
+     m_indexBuffer.reset();
++    m_uploadBuffer.reset();
+     doneCurrent();
+     eglDestroyContext(m_display->handle(), m_handle);
+ }
+@@ -406,6 +407,86 @@ IndexBuffer *EglContext::indexBuffer() const
+     return m_indexBuffer.get();
+ }
+ 
++GLUploadBuffer *EglContext::uploadBuffer()
++{
++    if (!m_uploadBuffer && haveBufferStorage() && haveSyncFences()
++        && qgetenv("KWIN_UPLOAD_BUFFER") != QByteArrayLiteral("0")) {
++        m_uploadBuffer = std::make_unique<GLUploadBuffer>();
++    }
++    return m_uploadBuffer.get();
++}
++
++GLUploadBuffer::GLUploadBuffer() = default;
++
++GLUploadBuffer::~GLUploadBuffer()
++{
++    if (m_fence) {
++        glDeleteSync(m_fence);
++    }
++    if (m_buffer) {
++        glBindBuffer(GL_PIXEL_UNPACK_BUFFER, m_buffer);
++        glUnmapBuffer(GL_PIXEL_UNPACK_BUFFER);
++        glBindBuffer(GL_PIXEL_UNPACK_BUFFER, 0);
++        glDeleteBuffers(1, &m_buffer);
++    }
++}
++
++uint8_t *GLUploadBuffer::map(size_t size)
++{
++    if (m_fence) {
++        // the GPU still reading the last upload: rare, big uploads come seconds apart
++        const GLenum ret = glClientWaitSync(m_fence, GL_SYNC_FLUSH_COMMANDS_BIT, 1000000000);
++        glDeleteSync(m_fence);
++        m_fence = nullptr;
++        if (ret == GL_TIMEOUT_EXPIRED || ret == GL_WAIT_FAILED) {
++            return nullptr;
++        }
++    }
++    if (size <= m_size) {
++        return m_data;
++    }
++    if (m_buffer) {
++        glBindBuffer(GL_PIXEL_UNPACK_BUFFER, m_buffer);
++        glUnmapBuffer(GL_PIXEL_UNPACK_BUFFER);
++        glBindBuffer(GL_PIXEL_UNPACK_BUFFER, 0);
++        glDeleteBuffers(1, &m_buffer);
++        m_buffer = 0;
++        m_data = nullptr;
++        m_size = 0;
++    }
++    const size_t step = 4 << 20;
++    const size_t newSize = (size + step - 1) / step * step;
++    const GLbitfield access = GL_MAP_WRITE_BIT | GL_MAP_PERSISTENT_BIT | GL_MAP_COHERENT_BIT;
++    glGenBuffers(1, &m_buffer);
++    glBindBuffer(GL_PIXEL_UNPACK_BUFFER, m_buffer);
++    glBufferStorage(GL_PIXEL_UNPACK_BUFFER, newSize, nullptr, access);
++    m_data = static_cast<uint8_t *>(glMapBufferRange(GL_PIXEL_UNPACK_BUFFER, 0, newSize, access));
++    glBindBuffer(GL_PIXEL_UNPACK_BUFFER, 0);
++    if (!m_data) {
++        glDeleteBuffers(1, &m_buffer);
++        m_buffer = 0;
++        return nullptr;
++    }
++    // fault the new pages in from the first to the last: the driver maps a few pages
++    // ahead of a fault, not behind it, and memcpy() of a page-aligned window into a
++    // page-aligned buffer runs backwards
++    for (size_t at = 0; at < newSize; at += 4096) {
++        m_data[at] = 0;
++    }
++    m_size = newSize;
++    return m_data;
++}
++
++void GLUploadBuffer::unmap()
++{
++    m_fence = glFenceSync(GL_SYNC_GPU_COMMANDS_COMPLETE, 0);
++}
++
++GLuint GLUploadBuffer::handle() const
++{
++    return m_buffer;
++}
++
+ GLPlatform *EglContext::glPlatform() const
+ {
+     return m_glPlatform.get();
+diff --git a/src/opengl/eglcontext.h b/src/opengl/eglcontext.h
+index b4797dd..179ce19 100644
+--- a/src/opengl/eglcontext.h
++++ b/src/opengl/eglcontext.h
+@@ -35,6 +35,40 @@ using glGetnTexImage_func = void (*)(GLenum target, GLint level, GLenum format,
+                                      GLsizei bufSize, void *pixels);
+ using glGetnUniformfv_func = void (*)(GLuint program, GLint location, GLsizei bufSize, GLfloat *params);
+ 
++/**
++ * A pixel-unpack buffer mapped once, persistently, for big texture uploads.
++ *
++ * glTexSubImage2D() from client memory makes the driver copy the pixels into a
++ * staging buffer of its own, a new one whenever its cache let the last go - a
++ * pause of a second does it. The CPU's first write to every page of a new buffer
++ * faults: on an Arc Pro B50 a 3840x2072 wl_shm window took ~36 ms on KWin's main
++ * thread, nine refreshes at 240 Hz, against 1.5 ms through this buffer, whose
++ * pages stay mapped (in a VM each first touch is a KVM exit too).
++ */
++class KWIN_EXPORT GLUploadBuffer
++{
++public:
++    GLUploadBuffer();
++    ~GLUploadBuffer();
++
++    /**
++     * Returns @p size writable bytes, the GPU done reading what they held, or
++     * nullptr: then upload directly.
++     */
++    uint8_t *map(size_t size);
++    /**
++     * Call once the uploads that read the mapped bytes are queued.
++     */
++    void unmap();
++    GLuint handle() const;
++
++private:
++    GLuint m_buffer = 0;
++    uint8_t *m_data = nullptr;
++    size_t m_size = 0;
++    GLsync m_fence = nullptr;
++};
++
+ class KWIN_EXPORT EglContext : public std::enable_shared_from_this<EglContext>
+ {
+ public:
+@@ -75,6 +109,11 @@ public:
+     ShaderManager *shaderManager() const;
+     GLVertexBuffer *streamingVbo() const;
+     IndexBuffer *indexBuffer() const;
++    /**
++     * The context's buffer for big texture uploads, or nullptr without buffer
++     * storage and sync fences (or with KWIN_UPLOAD_BUFFER=0).
++     */
++    GLUploadBuffer *uploadBuffer();
+     GLPlatform *glPlatform() const;
+     QSet<QByteArray> openglExtensions() const;
+ 
+@@ -159,6 +198,7 @@ private:
+     std::unique_ptr<ShaderManager> m_shaderManager;
+     std::unique_ptr<GLVertexBuffer> m_streamingBuffer;
+     std::unique_ptr<IndexBuffer> m_indexBuffer;
++    std::unique_ptr<GLUploadBuffer> m_uploadBuffer;
+     QStack<GLFramebuffer *> m_fbos;
+     uint32_t m_vao = 0;
+     bool m_failed = false;
+diff --git a/src/opengl/gltexture.cpp b/src/opengl/gltexture.cpp
+index e6ffc80..8ca481e 100644
+--- a/src/opengl/gltexture.cpp
++++ b/src/opengl/gltexture.cpp
+@@ -16,6 +16,7 @@
+ #include "utils/common.h"
+ 
+ #include <QImage>
++#include <cstring>
+ #include <QPixmap>
+ #include <QVector2D>
+ #include <QVector3D>
+@@ -205,13 +206,48 @@ void GLTexture::update(const QImage &image, const Region &region, const QPoint &
+ 
+     bind();
+ 
+-    for (const Rect &rect : region.rects()) {
+-        Q_ASSERT(im.depth() % 8 == 0);
+-        glPixelStorei(GL_UNPACK_ROW_LENGTH, im.bytesPerLine() / (im.depth() / 8));
+-        glPixelStorei(GL_UNPACK_SKIP_PIXELS, rect.x());
+-        glPixelStorei(GL_UNPACK_SKIP_ROWS, rect.y());
++    // a big upload of 4-byte pixels goes through the context's persistent upload
++    // buffer (see GLUploadBuffer), smaller ones straight from the image
++    const auto rects = region.rects();
++    const int bpp = im.depth() / 8;
++    size_t total = 0;
++    for (const Rect &rect : rects) {
++        total += size_t(rect.width()) * rect.height() * bpp;
++    }
++    GLUploadBuffer *upload = (bpp == 4 && total >= 1024 * 1024) ? context->uploadBuffer() : nullptr;
++    uint8_t *staging = upload ? upload->map(total) : nullptr;
++
++    if (staging) {
++        glBindBuffer(GL_PIXEL_UNPACK_BUFFER, upload->handle());
++        glPixelStorei(GL_UNPACK_SKIP_PIXELS, 0);
++        glPixelStorei(GL_UNPACK_SKIP_ROWS, 0);
++        size_t at = 0;
++        for (const Rect &rect : rects) {
++            const size_t rowBytes = size_t(rect.width()) * bpp;
++            const uchar *src = im.constScanLine(rect.y()) + size_t(rect.x()) * bpp;
++            if (rowBytes == size_t(im.bytesPerLine())) {
++                std::memcpy(staging + at, src, rowBytes * rect.height());
++            } else {
++                for (int y = 0; y < rect.height(); ++y) {
++                    std::memcpy(staging + at + y * rowBytes, src + size_t(y) * im.bytesPerLine(), rowBytes);
++                }
++            }
++            glPixelStorei(GL_UNPACK_ROW_LENGTH, rect.width());
++            glTexSubImage2D(d->m_target, 0, offset.x() + rect.x(), offset.y() + rect.y(), rect.width(), rect.height(), glFormat, type,
++                            reinterpret_cast<const void *>(at));
++            at += rowBytes * rect.height();
++        }
++        glBindBuffer(GL_PIXEL_UNPACK_BUFFER, 0);
++        upload->unmap();
++    } else {
++        for (const Rect &rect : rects) {
++            Q_ASSERT(im.depth() % 8 == 0);
++            glPixelStorei(GL_UNPACK_ROW_LENGTH, im.bytesPerLine() / (im.depth() / 8));
++            glPixelStorei(GL_UNPACK_SKIP_PIXELS, rect.x());
++            glPixelStorei(GL_UNPACK_SKIP_ROWS, rect.y());
+ 
+-        glTexSubImage2D(d->m_target, 0, offset.x() + rect.x(), offset.y() + rect.y(), rect.width(), rect.height(), glFormat, type, im.constBits());
++            glTexSubImage2D(d->m_target, 0, offset.x() + rect.x(), offset.y() + rect.y(), rect.width(), rect.height(), glFormat, type, im.constBits());
++        }
+     }
+ 
+     glPixelStorei(GL_UNPACK_ROW_LENGTH, 0);

@@ -356,13 +356,17 @@ private slots:
         QCOMPARE(sets.size(), 3);
         /* "${VGD_HOST_KWIN_SET:-hl39y}": the research's override left out */
         QCOMPARE(sets[0].series, "hl39y");
-        QCOMPARE(sets[0].tag, "hl39y");
+        /* host_kwin_set: 0082 left out of the host builds since 2026-11-01 */
+        QCOMPARE(sets[0].tag, "hl39y_no82");
+        QCOMPARE(sets[0].excluded, QStringList{"0082"});
         QCOMPARE(sets[0].versions, QStringList{"6.7.91"});
         QCOMPARE(sets[1].series, "hl39-68");
         QCOMPARE(sets[1].tag, "h18");
         QCOMPARE(sets[1].versions, QStringList{"6.8.0"});
-        QCOMPARE(sets[2].series, "h681a");
-        QCOMPARE(sets[2].tag, "h681a");
+        QCOMPARE(sets[1].excluded, QStringList());
+        QCOMPARE(sets[2].series, "h681zu");
+        QCOMPARE(sets[2].tag, "h681zu_no82");
+        QCOMPARE(sets[2].excluded, QStringList{"0082"});
         QCOMPARE(sets[2].versions, QStringList{"6.8.*"});
         /* the libraries' */
         for (const auto &[package, series, version] :
@@ -395,7 +399,7 @@ private slots:
         QCOMPARE(r.fedora, "44");
         QCOMPARE(r.copr, kCopr);
         QCOMPARE(r.series("kwin"), "hl39y");
-        QCOMPARE(r.tag("kwin"), "hl39y");
+        QCOMPARE(r.tag("kwin"), "hl39y_no82");
         QCOMPARE(r.series("kf6-ksvg"), "k2");
         QCOMPARE(r.series("kf6-kirigami"), "f1");
         QCOMPARE(r.series("qt6-qtbase"), "q4");
@@ -403,17 +407,21 @@ private slots:
         QCOMPARE(r.keys.size(), 4);
         QCOMPARE(Recipe::read(hostKdeDir(), "44", {{"kwin", "6.8.0"}}).series("kwin"), "hl39-68");
         QCOMPARE(Recipe::read(hostKdeDir(), "44", {{"kwin", "6.8.0"}}).tag("kwin"), "h18");
-        QCOMPARE(Recipe::read(hostKdeDir(), "44", {{"kwin", "6.8.3"}}).series("kwin"), "h681a");
+        QCOMPARE(Recipe::read(hostKdeDir(), "44", {{"kwin", "6.8.3"}}).series("kwin"), "h681zu");
         /* the research's overrides of its sets, and its switches, stay its own */
         qputenv("VGD_HOST_KWIN_SET", "hl39");
         qputenv("VGD_HOST_KWIN_SET_68", "hl39-681");
         qputenv("VGD_HOST_QT_SET", "q7");
         qputenv("HOST_QT_Q4", "0");
+        qputenv("VGD_HOST_KWIN_0082", "1");
         const Recipe overridden = Recipe::read(hostKdeDir(), "44", {{"kwin", "6.7.91"}, {"qt6-qtbase", "6.11.2"}});
         QCOMPARE(overridden.series("kwin"), "hl39y");
         QCOMPARE(overridden.series("qt6-qtbase"), "q4");
-        QCOMPARE(Recipe::read(hostKdeDir(), "44", {{"kwin", "6.8.3"}}).series("kwin"), "h681a");
-        for (const char *v : {"VGD_HOST_KWIN_SET", "VGD_HOST_KWIN_SET_68", "VGD_HOST_QT_SET", "HOST_QT_Q4"}) {
+        QCOMPARE(Recipe::read(hostKdeDir(), "44", {{"kwin", "6.8.3"}}).series("kwin"), "h681zu");
+        QCOMPARE(Recipe::read(hostKdeDir(), "44", {{"kwin", "6.8.3"}}).tag("kwin"), "h681zu_no82");
+        QCOMPARE(HostKde::sets(hostKdeDir(), "kwin").last().excluded, QStringList{"0082"});
+        for (const char *v : {"VGD_HOST_KWIN_SET", "VGD_HOST_KWIN_SET_68", "VGD_HOST_QT_SET", "HOST_QT_Q4",
+                              "VGD_HOST_KWIN_0082"}) {
             qunsetenv(v);
         }
         /* Fedora 44's own Plasma, one after the sets, the next frameworks and Qt */
@@ -469,9 +477,17 @@ private slots:
         const QList<Builds::Component> all = Builds::load(places);
         const Builds::Component c = Builds::find(all, "host-kwin");
         const QList<Builds::Patch> patches = Builds::patches(c);
-        QCOMPARE(patches.size(), 29 + 14 + 28);
+        QCOMPARE(patches.size(), 29 + 14 + 31);
         QCOMPARE(patches.first().origin, "hl39y, for KWin 6.7.91");
-        QCOMPARE(patches.last().origin, "h681a, for KWin 6.8.x");
+        /* each set's patch the builds leave out (0082) after its own, apart */
+        QCOMPARE(patches[28].origin, "hl39y: left out of the build");
+        QVERIFY(patches[28].left);
+        QVERIFY(!patches[27].left);
+        QCOMPARE(patches[patches.size() - 2].origin, "h681zu, for KWin 6.8.x");
+        QCOMPARE(patches[patches.size() - 2].name(),
+                 "0090-EXP-opengl-persistent-upload-buffer-for-big-texture-uploads.patch");
+        QCOMPARE(patches.last().origin, "h681zu: left out of the build");
+        QVERIFY(patches.last().left);
         QCOMPARE(patches.last().name(),
                  "0082-EXP-compositor-a-layer-with-no-damage-keeps-its-buffer-at-run-time.patch");
         QCOMPARE(Builds::subject(c, patches.first()), "Patch100 kwin-vm-frame-timing (ported to 6.8)");
@@ -487,7 +503,7 @@ private slots:
         QCOMPARE(q4.size(), 1);
         QCOMPARE(q4.first().name(), "qtbase-wayland-shm-reuse-pools-v3.patch");
         QVERIFY(Builds::subject(Builds::find(all, "host-qtbase"), q4.first()).startsWith("Qt Wayland: a resized window"));
-        QCOMPARE(Builds::source(svg).revision, "f659cb4d8fcbcb64d9ff5467ca0ba4891d13a28d");
+        QCOMPARE(Builds::source(svg).revision, "9535bf283a086d7f4a963f92e83b0c9fa23645f9");
     }
 
     void parsing()
@@ -1197,17 +1213,20 @@ private slots:
            installing */
         const QByteArray switches = read(m_state + "/tmpfiles/vitrine-host-kwin.conf");
         QVERIFY2(switches.startsWith("# Vitrine's host KWin (host/kde/install.sh)"), switches.constData());
-        QCOMPARE(switches.count("\nf %t/kwin-"), 4);
+        QCOMPARE(switches.count("\nf %t/kwin-"), 5);
         QVERIFY(switches.contains("\nf %t/kwin-scanout-variance-cap 0644 - - - 500\n"));
         /* 0082's stays off: Firefox froze in a VM under a host window */
         QVERIFY(!switches.contains("kwin-skip-empty-layer-render"));
-        QVERIFY(out.contains("vitrine-kde: step: turning the set's run-time switches on"));
+        /* 0089's written off: it changes saturated colours under Night Light, each user decides */
+        QVERIFY(switches.contains("\nf %t/kwin-night-light-after-blending 0644 - - - 0\n"));
+        QVERIFY(out.contains("vitrine-kde: step: writing the set's run-time switches"));
         QVERIFY2(read(m_state + "/runuser").contains(" -- env XDG_RUNTIME_DIR=" + runDir().toUtf8() +
                                                      " systemd-tmpfiles --user --create "),
                  read(m_state + "/runuser").constData());
         QCOMPARE(read(runDir() + "/kwin-scanout-variance-cap"), "500");
         QVERIFY(!QFileInfo::exists(runDir() + "/kwin-skip-empty-layer-render"));
-        QCOMPARE(QDir(runDir()).entryList(QDir::Files).size(), 4);
+        QCOMPARE(read(runDir() + "/kwin-night-light-after-blending"), "0");
+        QCOMPARE(QDir(runDir()).entryList(QDir::Files).size(), 5);
         /* commit timing for every user, a value of their own first; the installing user's
            session manager reads it now */
         const QByteArray environment = read(m_state + "/environment/vitrine-host-kwin.conf");

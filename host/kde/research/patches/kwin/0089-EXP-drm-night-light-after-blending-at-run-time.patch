@@ -1,0 +1,112 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: Local build <local@localhost>
+Date: Sun, 1 Nov 2026 00:45:00 +0100
+Subject: [PATCH] EXP drm: Night Light after blending, so sRGB windows keep their planes
+ (KWIN_NIGHT_LIGHT_AFTER_BLENDING, $XDG_RUNTIME_DIR/kwin-night-light-after-blending)
+
+Night Light gives the blending space a warm white point (applyNightLight). Every sRGB window then needs a chromatic
+adaptation, a full 3x3 matrix, to reach that space. So under Night Light a window on its own plane is converted by
+the plane's colour pipeline, or it is composited:
+- On the Arc Pro B50, the plane pipeline (1D LUT 128, 3x4 matrix, 1D LUT 32) gave visibly wrong colours (white
+  contrast, black flashes; KDE bug 525839 has the same with games on AMD and NVIDIA).
+- Composited, a maximized window or a VM costs 2-4 ms more per key.
+
+With the switch, in SDR with the built-in sRGB profile, the scene blends in the output's own colour description, and
+the CRTC applies Night Light as a per-channel scale in linear light (TF, multiplier, inverse TF), as KWin 5 and
+GNOME did. Every factor is at most 1, so nothing clips and the scene needs no dimming:
+- sRGB windows need no conversion: their planes stay under Night Light without plane colour pipelines, and a window
+  looks the same on a plane and composited.
+- The blending colours stay constant across Night Light steps, so the new pipeline is presented with a repaint of its
+  own, and colour-managed clients no longer get a new preferred description at each step.
+
+White and the greys come out the same as before (checked against KWin's colour code at 5500, 4500, 3500 and 2700 K).
+Saturated colours are scaled per channel instead of adapted: at 4500 K, pure green (0, 255, 0) becomes (0, 221, 0)
+instead of (101, 221, 0), and (230, 153, 115) becomes (230, 133, 85) instead of (220, 132, 81).
+
+HDR, ICC profiles, "prefer color accuracy" and a CRTC that refuses the pipeline keep the previous path. Unset = as
+before. $XDG_RUNTIME_DIR/kwin-night-light-after-blending holding 0 or 1 decides instead while it exists. It is read
+at each colour change (a Night Light step, a brightness change, an output change), so an A/B in a running session
+writes the file, then turns Night Light off and on.
+---
+diff --git a/src/backends/drm/drm_output.cpp b/src/backends/drm/drm_output.cpp
+index 207654f..60df906 100644
+--- a/src/backends/drm/drm_output.cpp
++++ b/src/backends/drm/drm_output.cpp
+@@ -27,6 +27,7 @@
+ #include "utils/kernel.h"
+ // Qt
+ #include <QCryptographicHash>
++#include <QFile>
+ #include <QMatrix4x4>
+ // c++
+ #include <cerrno>
+@@ -741,6 +742,35 @@ void DrmOutput::setChannelFactors(const QVector3D &rgb)
+     setState(next);
+ }
+ 
++/**
++ * KWIN_NIGHT_LIGHT_AFTER_BLENDING (EXP, 2026-11-01; unset or 0 = as before): in SDR with the built-in sRGB profile,
++ * Night Light is applied only after blending, as a per-channel scale in linear light in the CRTC's colour pipeline
++ * (the classic Night Light of KWin 5 and GNOME), and the scene blends in the output's own colour description. As
++ * before, Night Light gives the blending space a warm white point, so every sRGB window needs a chromatic adaptation
++ * (a full 3x3 matrix) to reach it: a window can then only keep its own plane through the plane's colour pipeline (on
++ * the Arc Pro B50, a 1D LUT of 128 entries, a 3x4 matrix and a 1D LUT of 32 entries, with visibly wrong colours) or is
++ * composited (2-4 ms more per key for a maximized window or a VM). With the switch, sRGB windows need no conversion,
++ * so they keep their planes under Night Light, and a window looks the same on a plane and composited. White and the
++ * greys come out the same as before; saturated colours are scaled per channel instead of adapted (at 4500 K, pure green
++ * (0, 255, 0) becomes (0, 221, 0) instead of (101, 221, 0)). HDR, ICC profiles and "prefer color accuracy" keep the
++ * previous path, and so does a CRTC that can't take the pipeline. $XDG_RUNTIME_DIR/kwin-night-light-after-blending
++ * holding 0 or 1 decides instead while it exists. It is read at each colour change (a Night Light step, a brightness
++ * change, an output change), so an A/B in a running session writes the file, then turns Night Light off and on
++ */
++static bool nightLightAfterBlending()
++{
++    bool value = qEnvironmentVariableIntValue("KWIN_NIGHT_LIGHT_AFTER_BLENDING") != 0;
++    QFile file(qEnvironmentVariable("XDG_RUNTIME_DIR") + QStringLiteral("/kwin-night-light-after-blending"));
++    if (file.open(QIODevice::ReadOnly)) {
++        bool ok = false;
++        const int fileValue = file.readAll().trimmed().toInt(&ok);
++        if (ok) {
++            value = fileValue != 0;
++        }
++    }
++    return value;
++}
++
+ void DrmOutput::tryKmsColorOffloading(State &next)
+ {
+     if (!m_pipeline->activePending() || m_pipeline->layers().empty() || m_lease) {
+@@ -786,6 +816,33 @@ void DrmOutput::tryKmsColorOffloading(State &next)
+             || !colorPipeline.isIdentity();
+         return;
+     }
++    if (!usesICC && !hdr && profileSource == ColorProfileSource::sRGB
++        && next.originalColorDescription->transferFunction().type == blendingSpace
++        && m_sRgbChannelFactors != QVector3D(1, 1, 1) && nightLightAfterBlending()) {
++        // EXP (KWIN_NIGHT_LIGHT_AFTER_BLENDING): blend in the output's own colour description and let the CRTC scale
++        // each channel in linear light. The factors are at most 1, so nothing clips and no dimming is needed
++        const auto &neutral = next.originalColorDescription;
++        ColorPipeline tint(ValueRange{0, 1}, ColorspaceType::NonLinearRGB);
++        tint.addTransferFunction(neutral->transferFunction(), ColorspaceType::LinearRGB);
++        tint.addMultiplier(adaptChannelFactors(neutral, m_sRgbChannelFactors));
++        tint.addInverseTransferFunction(neutral->transferFunction(), ColorspaceType::NonLinearRGB);
++        m_pipeline->setCrtcColorPipeline(tint);
++        if (DrmPipeline::commitPipelines({m_pipeline}, m_gpu, DrmPipeline::CommitMode::Test)) {
++            m_pipeline->applyPendingChanges();
++            if (!(tint == m_baseCrtcColorPipeline)) {
++                // the blending colours stay the output's own across Night Light steps, so maybeScheduleRepaints
++                // sees no change: present the new pipeline anyway
++                for (const auto &layer : m_pipeline->layers()) {
++                    layer->addDeviceRepaint(Region::infinite());
++                }
++            }
++            next.blendingColor = neutral;
++            next.layerBlendingColor = neutral;
++            m_needsShadowBuffer = false;
++            return;
++        }
++        // the CRTC can't take it: as before
++    }
+     if (usesICC) {
+         colorPipeline.addTransferFunction(encoding->transferFunction(), ColorspaceType::LinearRGB);
+         if (iccProfile->hasMHC2Tag()) {

@@ -79,6 +79,7 @@ struct Set {
     QString series;             // hl39
     QString tag;                // what the RPMs' release gets
     QStringList versions;       // the versions it is for, as shell patterns: 6.7.91, 6.8.*
+    QStringList excluded;       // its patches a build leaves out, by the start of their names: 0082
 };
 /* The host sets of @package in host/kde @sourceDir, in versions.sh's order */
 QList<Set> sets(const QString &sourceDir, const QString &package);

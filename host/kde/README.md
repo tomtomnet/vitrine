@@ -9,9 +9,11 @@ pinned copy of the research's recipe, `research/`.
 
 What the sets change (the research's measurements):
 
-- KWin, sets `hl39y` for Plasma 6.7.91, `hl39-68` for 6.8.0, `h681a` for
-  6.8.1 and later (built once by the research, not run yet); none for
-  Fedora 44's own Plasma 6.7.5. Keys in a VM take 8.5-9.3 ms against 12.5
+- KWin, sets `hl39y` for Plasma 6.7.91, `hl39-68` for 6.8.0, `h681zu` for
+  6.8.1 and later (Fedora 44's Plasma 6.8.2); none for Fedora 44's earlier
+  Plasma 6.7.5. Patch 0082 (damage-free layers) is left out of the builds
+  of the sets that have it (`h681zu_no82`): with a host window over a VM,
+  Firefox in the guest froze. Keys in a VM take 8.5-9.3 ms against 12.5
   ms with Fedora's KWin; drags and the launcher under load are smoother;
   the guest's frames are paced to the host's deadlines (presentation-time
   v3); the pointer grab (Ctrl+Alt+G) works inside Vitrine's Desktop view
@@ -22,6 +24,22 @@ What the sets change (the research's measurements):
   research's set of 2026-10-08, without 0075 and the patches after it:
   with an Intel xe GPU on Plasma 6.8.0, set `KWIN_DISABLE_UDMABUF_IMPORT=1`
   (in `~/.config/environment.d`).
+- `h681zu` adds three patches to the research's earlier `h681a`:
+  - 0090, on: big texture uploads go through one buffer that stays mapped.
+    On the Arc Pro B50 at 4K and 240 Hz, the launcher opened after typing in
+    Firefox repeated 16 refreshes in ten openings instead of 95, and no
+    longer stutters for nine refreshes. `KWIN_UPLOAD_BUFFER=0` turns it off.
+  - 0089, off: Night Light after blending (the switches, below).
+  - 0083: a file `$XDG_RUNTIME_DIR/kwin-udmabuf-import` holding 0 or 1
+    decides the udmabuf import of shared-memory windows in a running
+    session; with no file, nothing changes.
+
+  On the research's desktop (Arc Pro B50, Plasma 6.8.2), the bare desktop
+  is level with the 6.7.91 sets and VMs drag about 2 ms sooner. On an AMD
+  laptop GPU (Radeon 780M), an existing KWin hiccup in minimize and restore
+  animations came about 10 times as often after maximizing and tiling
+  windows (6 in 36 animations against 1 in 72 with Fedora's KWin). It was
+  not seen on the B50, and the research is narrowing it down.
 - KSvg 6.31.0, set `k2`: Plasma's popups stop uploading their themed frames
   again at each opening.
 - Kirigami 6.31.0, set `f1`: its items react to the frame contrast only
@@ -66,6 +84,27 @@ How:
   the user installing, at once). To turn one off, remove its line there.
   Reverting KWin removes the file. Damage-free layers (patch 0082) stay off
   since 2026-11-01: with a host window over a VM, Firefox in the guest froze.
+- Night Light after blending (patch 0089) is written there off
+  (`switches/kwin-night-light-after-blending.conf`). Plasma 6.8's Night
+  Light composites every window, which costs 3.3-3.9 ms per key on the Arc
+  Pro B50. With the switch on, windows keep their planes at night and keys
+  are as fast as by day; white and greys stay exactly the same, but
+  saturated colours get the classic per-channel tint instead of 6.8's
+  colour adaptation (pure green stays green, darker; KWin 5 and GNOME
+  looked like that). To try it in a session, write 1 and turn Night Light
+  off and on (KWin reads the file at each colour change):
+
+  ```sh
+  echo 1 > "$XDG_RUNTIME_DIR/kwin-night-light-after-blending"
+  ```
+
+  To keep it on at every login, a file of your own whose name sorts before
+  `vitrine-host-kwin.conf` wins over that line:
+
+  ```sh
+  mkdir -p ~/.config/user-tmpfiles.d
+  echo 'f %t/kwin-night-light-after-blending 0644 - - - 1' > ~/.config/user-tmpfiles.d/kwin-night-light.conf
+  ```
 - From Plasma 6.8.2, KWin offers commit timing to programs only with
   `KWIN_WAYLAND_SUPPORT_COMMIT_TIMING_V1=1`. Upstream turned it off by
   default because of frame-time spikes in some games and an NVIDIA driver
@@ -125,8 +164,8 @@ sudo rm -f /etc/user-tmpfiles.d/vitrine-host-kwin.conf /etc/environment.d/vitrin
 ## `research/`: the research's recipe, pinned
 
 A copy of what `kde-rpms.sh` reads in the research's repository
-(virtio-gpu-desktop) at commit `f659cb4d8fcbcb64d9ff5467ca0ba4891d13a28d`
-(2026-10-31), in its layout (the container mounts the folder as `/repo`),
+(virtio-gpu-desktop) at commit `9535bf283a086d7f4a963f92e83b0c9fa23645f9`
+(2026-11-03), in its layout (the container mounts the folder as `/repo`),
 byte for byte and with its files' modes: the scripts, the host sets of the
 four packages (`kde_set_for host ...` in `setup/versions.sh`) and the
 patches they name, and the run-time switches of KWin's patches
@@ -180,16 +219,19 @@ installing.
 | `31673bd7249b7eb8609e2fb97820f9dc29f5d07636203a32ee6f8bd95f3059af` | `patches/kwin/0080-EXP-scene-the-active-window-a-layer-candidate-at-run-time.patch` |
 | `9a8b47ba2feab7753103975e1e8d8cc9a40762146a5efd0972400489bd0edea1` | `patches/kwin/0081-EXP-compositor-an-empty-render-is-not-content-at-run-time.patch` |
 | `5ca98067b01dba5dc8c9b9c7804d1726d937f19c3fc73ed3b77d89c4636f8642` | `patches/kwin/0082-EXP-compositor-a-layer-with-no-damage-keeps-its-buffer-at-run-time.patch` |
-| `882402feebe54b1a640b542368afd0c2caf9ff3b20b351266f2d14cf2798ac2c` | `patches/kwin/sets/h681a.series` |
+| `318443465694ad35a85d1f5686e8a34837abadeb9ef2eb96bd3b2b31394d0f18` | `patches/kwin/0083-EXP-opengl-udmabuf-import-at-run-time.patch` |
+| `a2cafc576a9bcce8b7064daba66578b71f7a71f3fd9350cc7c90e3ebae933c2a` | `patches/kwin/0089-EXP-drm-night-light-after-blending-at-run-time.patch` |
+| `bc91ee813206b23353a848555ee9fc62a5c7b71b837291b98a215408f42b3c6c` | `patches/kwin/0090-EXP-opengl-persistent-upload-buffer-for-big-texture-uploads.patch` |
+| `aecb99f3dc3e99ef45a1de3ad1041b13964d16e9ea6d8e0fa5caca551aa93145` | `patches/kwin/sets/h681zu.series` |
 | `c18c004fe7319f2d4509deeadf37df8434088affde845d0eb96b11bb6642367d` | `patches/kwin/sets/hl39-68.series` |
 | `45da20f38c96aeb3d44540c0567de26c293e6aba799b1e64e01eebb79ee7ad11` | `patches/kwin/sets/hl39y.series` |
 | `bdfcd81c8c252a31ffad2f62bd99e793a0c6d0d0300c5704d74ee0ccba454b25` | `patches/qtbase/qtbase-wayland-shm-reuse-pools-v3.patch` |
 | `e1c33999e3ea401a4a5d4017023d34d85962c318c993e3bf5804799baa2ab3b3` | `patches/qtbase/sets/q4.series` |
-| `67830e2765b11774b880c097b0eab79e700e2cdb7c4aaa2e6ac7bcd2514d05f0` | `setup/lib.sh` |
+| `7a897bedc00932a2a04068746278082ac32317e28bb120884d7f371cf4ba39c0` | `setup/lib.sh` |
 | `761707846b55e70bac195d24e30520ca5c7b96164c0ce45b113317fc13150deb` | `setup/paths.sh` |
 | `4b4a82cd31efff9ea7ff2572db175bf2d28ce9811513a764e358144b15dc3310` | `setup/tools/build-patched-rpm.sh` |
-| `d49ee93d128f6fab553691631f0a451d19e7bc2b686a226ec5ba3dac0eb65070` | `setup/tools/kde-rpms.sh` |
-| `6c2ee30a56cd367edbc35f38c9aa684a7e276d3d396ee59d53fb5cb9e6114740` | `setup/versions.sh` |
+| `044bf5dc522dc2ae268ae734bf0389569eff2ef095f2ddd48ddd270488656bdb` | `setup/tools/kde-rpms.sh` |
+| `6b1822c3dacfe0c142d5681ff28a82cfb756d40ac2e6d02b807905c80850317e` | `setup/versions.sh` |
 | `19cf4324887903cc1185fc8dc83d38bb9e97176a36ef8ed9506611be4f6e1ddf` | `src/host-config/kwin-active-window-candidate.conf` |
 | `cf647e7f955d60ec6cae1ee58196b94d939996df44697f9e479023921bbe1f91` | `src/host-config/kwin-animation-start-step.conf` |
 | `ebb40936ea5b94c0970194727a29954e954780bc5b7817421e79fc5ee9d04911` | `src/host-config/kwin-empty-render-not-content.conf` |
@@ -202,7 +244,7 @@ When the research's recipe moves (`r` its repository, `c` the commit, `v`
 this folder), take it again as it is, the sets' patches with it:
 
 ```sh
-r=~/Documents/virtio-gpu-desktop c=f659cb4 v=~/Documents/vitrine/host/kde/research
+r=~/Documents/virtio-gpu-desktop c=9535bf2 v=~/Documents/vitrine/host/kde/research
 rm -rf "$v" && mkdir -p "$v/setup/tools" "$v/src/host-config"
 for f in setup/lib.sh setup/paths.sh setup/versions.sh setup/tools/kde-rpms.sh \
 	setup/tools/build-patched-rpm.sh \
@@ -210,7 +252,7 @@ for f in setup/lib.sh setup/paths.sh setup/versions.sh setup/tools/kde-rpms.sh \
 	git -C "$r" show "$c:$f" > "$v/$f"
 done
 # patches/DIR (kde_patch_dir) and the host sets kde_set_for names for each package
-for d in kwin:hl39y,hl39-68,h681a ksvg:k2 kirigami:f1 qtbase:q4; do
+for d in kwin:hl39y,hl39-68,h681zu ksvg:k2 kirigami:f1 qtbase:q4; do
 	dir=${d%%:*} sets=${d#*:}
 	mkdir -p "$v/patches/$dir/sets"
 	for s in ${sets//,/ }; do

@@ -1,16 +1,19 @@
 #!/bin/bash
 # SPDX-License-Identifier: GPL-2.0-or-later
-# Our KDE builds for one machine, in a fedora container with that machine's repositories (the KDE SIG's
-# beta COPR for PLASMA=beta): for each package of the role (setup/versions.sh), the source RPM of its
+# Our KDE builds for one machine, in a fedora container with that machine's repositories (Fedora's, or the KDE
+# SIG's beta COPR for PLASMA=beta): for each package of the role (setup/versions.sh), the source RPM of its
 # newest version there + our patch set for that version (kde_set_for), built with build-patched-rpm.sh.
 # RPMs in OUTROOT/PACKAGE/; a package built already is kept (VGD_REBUILD=1 builds it again).
 # The build's logs and its buildroot's package list (builddep-TAG.log, build-TAG.log, buildroot-TAG.txt) go
 # next to the RPMs; while it runs they grow in $VGD_BUILD/kde-ROLE-build/out/PACKAGE/.
-#   kde-rpms.sh host|guest OUTROOT        PLASMA=beta|testing|fedora (default beta; testing: Fedora's
-#                                         updates-testing), VGD_KDE_PACKAGES: some of the role's packages only
+#   kde-rpms.sh host|guest OUTROOT        PLASMA=fedora|testing|beta (default fedora since 2026-11-01, when
+#                                         Fedora 44's updates got Plasma 6.8.2; testing: Fedora's updates-testing;
+#                                         beta: the KDE SIG's COPR), VGD_KDE_PACKAGES: some of the role's packages only
+# A package counts as built when OUTROOT/PACKAGE has an RPM, of any version: a new version needs a new OUTROOT
+# or VGD_REBUILD=1.
 . "$(dirname -- "${BASH_SOURCE[0]}")/../lib.sh"
 role=${1:?host or guest} outroot=${2:?output folder}
-plasma=${PLASMA:-beta}
+plasma=${PLASMA:-fedora}
 case $role in host) all=$HOST_KDE_PACKAGES ;; guest) all=$GUEST_KDE_PACKAGES ;; *) die "host or guest" ;; esac
 if [ -n "${VGD_KDE_PACKAGES:-}" ]; then
 	for p in $VGD_KDE_PACKAGES; do case " $all " in *" $p "*) ;; *) die "$p is not a $role package ($all)" ;; esac; done

@@ -71,8 +71,9 @@ fedora_container() {
 	local name=$1 script=$2 extra=() v; shift 2
 	read -r -a extra <<< "${VGD_PODMAN_ARGS:-}"
 	# the patch set overrides kde_set_for reads (VGD_GUEST_KWIN_SET, VGD_GUEST_KSVG_SET, VGD_GUEST_PW_SET...) go in too:
-	# before 2026-10-17 they stayed outside unless passed through VGD_PODMAN_ARGS
-	for v in $(compgen -e | grep -E '^VGD_(GUEST|HOST)_[A-Z0-9]+_SET$'); do extra+=(-e "$v"); done
+	# before 2026-10-17 they stayed outside unless passed through VGD_PODMAN_ARGS; since 2026-11-01 also
+	# VGD_HOST_KWIN_SET_68 and VGD_HOST_KWIN_0082 (versions.sh's host_kwin_set)
+	for v in $(compgen -e | grep -E '^VGD_(GUEST|HOST)_[A-Z0-9]+_(SET(_[0-9]+)?|0082)$'); do extra+=(-e "$v"); done
 	mkdir -p "$VGD_BUILD/dnf-cache/$name"
 	low podman run --rm --security-opt label=disable \
 		-v "$VGD_BUILD/dnf-cache/$name:/var/cache/libdnf5" -e JOBS="$(jobs_n)" -e VGD_VERBOSE="${VGD_VERBOSE:-0}" \

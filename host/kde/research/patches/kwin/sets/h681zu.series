@@ -26,3 +26,6 @@
 0080-EXP-scene-the-active-window-a-layer-candidate-at-run-time.patch
 0081-EXP-compositor-an-empty-render-is-not-content-at-run-time.patch
 0082-EXP-compositor-a-layer-with-no-damage-keeps-its-buffer-at-run-time.patch
+0083-EXP-opengl-udmabuf-import-at-run-time.patch
+0089-EXP-drm-night-light-after-blending-at-run-time.patch
+0090-EXP-opengl-persistent-upload-buffer-for-big-texture-uploads.patch

@@ -54,6 +54,7 @@ struct Patch {
     QString origin;                 // where it comes from: "Research"
     QString note;                   // a spec's comment over its Patch line
     QString number;                 // a spec's: "100" for Patch100
+    bool left = false;              // a host set's patch that its builds leave out (KWin's 0082)
 
     QString name() const { return path.section('/', -1); }
 };

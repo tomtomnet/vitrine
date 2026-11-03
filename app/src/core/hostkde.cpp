@@ -329,23 +329,53 @@ QString versionText(const QString &pattern)
     return QString(pattern).replace('*', 'x');
 }
 
+/* What versions.sh's host_kwin_set makes of KWin's @series: "SERIES TAG [EXCLUDED...]" (since
+   2026-11-01 the research leaves 0082 out of host builds there), with none of the research's
+   overrides, as build.sh runs it */
+static QString hostKwinSet(const QString &versionsSh, const QString &series)
+{
+    QProcess p;
+    QProcessEnvironment env = QProcessEnvironment::systemEnvironment();
+
+    for (const QString &name : env.keys()) {
+        if (name.startsWith("VGD_")) {
+            env.remove(name);
+        }
+    }
+    p.setProcessEnvironment(env);
+    p.setProcessChannelMode(QProcess::SeparateChannels);
+    p.start("/bin/bash", {"-c", "set -eu; . \"$1\"; host_kwin_set \"$2\"", "_", versionsSh, series});
+    if (!p.waitForStarted() || !p.waitForFinished(kQueryMs) || p.exitStatus() != QProcess::NormalExit ||
+        p.exitCode() != 0) {
+        p.kill();
+        p.waitForFinished(1000);
+        return series + ' ' + series;
+    }
+    return QString::fromUtf8(p.readAllStandardOutput()).trimmed();
+}
+
 QList<Set> sets(const QString &sourceDir, const QString &package)
 {
-    /* host/kwin/6.7.91) echo "hl39 hl39" ;;   # a comment */
+    /* host/kwin/6.8.0) echo "hl39-68 h18" ;;   # a comment
+       host/kwin/6.8.*) host_kwin_set "${VGD_HOST_KWIN_SET_68:-h681zu}" ;;   # KWin's, 0082 out */
     const QString prefix = "host/" + package + '/';
     const QRegularExpression line("^\\s*(host/" + QRegularExpression::escape(package) +
-                                  "/[^)]*)\\)\\s*echo\\s+\"([^\"]*)\"");
+                                  "/[^)]*)\\)\\s*(echo|host_kwin_set)\\s+\"([^\"]*)\"");
     /* ${VGD_HOST_KWIN_SET:-hl39y}: the research's override, which build.sh leaves unset */
     static const QRegularExpression fallback("\\$\\{[A-Za-z_][A-Za-z0-9_]*:-([^}]*)\\}");
+    const QString versionsSh = sourceDir + "/research/setup/versions.sh";
     QList<Set> list;
 
-    for (const QByteArray &raw : readFile(sourceDir + "/research/setup/versions.sh").split('\n')) {
+    for (const QByteArray &raw : readFile(versionsSh).split('\n')) {
         const QRegularExpressionMatch m = line.match(QString::fromUtf8(raw));
         if (!m.hasMatch()) {
             continue;
         }
-        const QStringList set =
-            m.captured(2).replace(fallback, "\\1").split(' ', Qt::SkipEmptyParts);
+        QString value = m.captured(3).replace(fallback, "\\1");
+        if (m.captured(2) == "host_kwin_set") {
+            value = hostKwinSet(versionsSh, value.trimmed());
+        }
+        const QStringList set = value.split(' ', Qt::SkipEmptyParts);
         QStringList versions;
         for (const QString &pattern : m.captured(1).split('|')) {
             if (pattern.trimmed().startsWith(prefix)) {
@@ -357,7 +387,7 @@ QList<Set> sets(const QString &sourceDir, const QString &package)
         if (it != list.end()) {
             it->versions << versions;
         } else if (!set.isEmpty()) {
-            list << Set{set.value(0), set.value(1), versions};
+            list << Set{set.value(0), set.value(1), versions, set.mid(2)};
         }
     }
     return list;

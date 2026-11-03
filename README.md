@@ -236,15 +236,18 @@ KWin, KSvg, Kirigami and Qt base with the research's host sets. KWin's
 gives steadier frames and quicker input in VMs, and the pointer grab
 inside the Desktop view; KSvg's and Kirigami's make Plasma's popups cheaper
 to open; Qt base's makes windows cheaper to resize. The research has KWin
-sets for Plasma 6.7.91 (the KDE SIG's beta COPR) and 6.8, none for Fedora
-44's own 6.7.5, and sets for KSvg and Kirigami 6.31.0 and Qt 6.11.2: the
-window says which apply. Build builds one in a Fedora container
+sets for Plasma 6.7.91 (the KDE SIG's beta COPR) and 6.8 (`h681zu` for
+Fedora 44's 6.8.2), none for Fedora 44's earlier 6.7.5, and sets for KSvg
+and Kirigami 6.31.0 and Qt 6.11.2: the window says which apply. Build builds one in a Fedora container
 (`host/kde/build.sh`, up to 10 GiB of memory). Install… says what it does
 first, then, with the administrator's password, replaces all the installed
 packages of that one (Qt base's: all from the same build) and version-locks
 them (`dnf versionlock`). With KWin it also turns the set's run-time
 switches on, and has KWin offer commit timing again (Plasma 6.8.2 turned it
-off by default): VMs in the Desktop view pace their frames with it. It must
+off by default): VMs in the Desktop view pace their frames with it. Night
+Light after blending (keys as fast at night as by day, saturated colours
+tinted the classic way) is written off, for each user to turn on
+(`host/kde/README.md`). It must
 match the system: KWin the installed
 Plasma and Qt, KSvg and Kirigami the KDE Frameworks' release, Kirigami Qt
 too; and while Qt base is locked, Qt updates wait. After an update, build

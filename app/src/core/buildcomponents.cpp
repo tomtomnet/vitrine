@@ -476,19 +476,31 @@ QList<Patch> patches(const Component &c)
            6.8 are mostly 6.7.91's */
         for (const HostKde::Set &set : HostKde::sets(c.dir, c.values.value("package"))) {
             const QByteArray series = readFile(c.dir + '/' + where + "/sets/" + set.series + ".series");
+            QStringList versions;
+            QList<Patch> left;
+            for (const QString &pattern : set.versions) {
+                versions << HostKde::versionText(pattern);
+            }
             for (const QByteArray &raw : series.split('\n')) {
                 const QString name = QString::fromUtf8(raw).section('#', 0, 0).trimmed();
-                if (!name.isEmpty()) {
-                    Patch p;
-                    p.path = where + '/' + name;
-                    QStringList versions;
-                    for (const QString &pattern : set.versions) {
-                        versions << HostKde::versionText(pattern);
-                    }
+                if (name.isEmpty()) {
+                    continue;
+                }
+                Patch p;
+                p.path = where + '/' + name;
+                /* kde-rpms.sh leaves out those whose name starts as one excluded: after the
+                   set's own, apart */
+                p.left = std::any_of(set.excluded.begin(), set.excluded.end(),
+                                     [&name](const QString &x) { return name.startsWith(x); });
+                if (p.left) {
+                    p.origin = tr("%1: left out of the build").arg(set.series);
+                    left << p;
+                } else {
                     p.origin = tr("%1, for %2 %3").arg(set.series, c.title, versions.join(", "));
                     list << p;
                 }
             }
+            list << left;
         }
         return list;
     }
