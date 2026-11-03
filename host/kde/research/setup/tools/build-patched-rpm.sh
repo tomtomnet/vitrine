@@ -9,7 +9,11 @@ srpm=$(realpath "$1") set=$(realpath "$2") tag=$3 out=$4
 top=/tmp/rpmbuild-$tag
 rm -rf "$top"
 mkdir -p "$top"/{SOURCES,SPECS,BUILD,RPMS,SRPMS}
-(cd "$top/SOURCES" && rpm2cpio "$srpm" | cpio -idm --quiet)
+# through a file: piped, cpio stops at the archive's trailer while rpm2cpio still writes, and with pipefail the
+# SIGPIPE (141) ended the script without a word (2026-11-03: Fedora 45's kf6-kirigami source RPM)
+rpm2cpio "$srpm" > "$top/srpm.cpio"
+(cd "$top/SOURCES" && cpio -idm --quiet < "$top/srpm.cpio")
+rm -f "$top/srpm.cpio"
 specs=("$top"/SOURCES/*.spec)
 [ ${#specs[@]} = 1 ] || { echo "not one spec in $srpm" >&2; exit 1; }
 spec=$top/SPECS/$(basename "${specs[0]}")

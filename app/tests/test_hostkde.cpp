@@ -503,7 +503,7 @@ private slots:
         QCOMPARE(q4.size(), 1);
         QCOMPARE(q4.first().name(), "qtbase-wayland-shm-reuse-pools-v3.patch");
         QVERIFY(Builds::subject(Builds::find(all, "host-qtbase"), q4.first()).startsWith("Qt Wayland: a resized window"));
-        QCOMPARE(Builds::source(svg).revision, "9535bf283a086d7f4a963f92e83b0c9fa23645f9");
+        QCOMPARE(Builds::source(svg).revision, "5dbcc81fd81629eb505a610718db06e1fa26572b");
     }
 
     void parsing()

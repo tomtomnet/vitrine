@@ -84,8 +84,8 @@ How:
   the user installing, at once). To turn one off, remove its line there.
   Reverting KWin removes the file. Damage-free layers (patch 0082) stay off
   since 2026-11-01: with a host window over a VM, Firefox in the guest froze.
-- Night Light after blending (patch 0089) is written there off
-  (`switches/kwin-night-light-after-blending.conf`). Plasma 6.8's Night
+- Night Light after blending (patch 0089) is written there off (the
+  research's `kwin-night-light-after-blending.conf`, 0). Plasma 6.8's Night
   Light composites every window, which costs 3.3-3.9 ms per key on the Arc
   Pro B50. With the switch on, windows keep their planes at night and keys
   are as fast as by day; white and greys stay exactly the same, but
@@ -164,7 +164,7 @@ sudo rm -f /etc/user-tmpfiles.d/vitrine-host-kwin.conf /etc/environment.d/vitrin
 ## `research/`: the research's recipe, pinned
 
 A copy of what `kde-rpms.sh` reads in the research's repository
-(virtio-gpu-desktop) at commit `9535bf283a086d7f4a963f92e83b0c9fa23645f9`
+(virtio-gpu-desktop) at commit `5dbcc81fd81629eb505a610718db06e1fa26572b`
 (2026-11-03), in its layout (the container mounts the folder as `/repo`),
 byte for byte and with its files' modes: the scripts, the host sets of the
 four packages (`kde_set_for host ...` in `setup/versions.sh`) and the
@@ -229,12 +229,13 @@ installing.
 | `e1c33999e3ea401a4a5d4017023d34d85962c318c993e3bf5804799baa2ab3b3` | `patches/qtbase/sets/q4.series` |
 | `7a897bedc00932a2a04068746278082ac32317e28bb120884d7f371cf4ba39c0` | `setup/lib.sh` |
 | `761707846b55e70bac195d24e30520ca5c7b96164c0ce45b113317fc13150deb` | `setup/paths.sh` |
-| `4b4a82cd31efff9ea7ff2572db175bf2d28ce9811513a764e358144b15dc3310` | `setup/tools/build-patched-rpm.sh` |
+| `fa2026f1f4b365859cf919667685f23bb7d6988ec8906dbdf2c8831428750182` | `setup/tools/build-patched-rpm.sh` |
 | `044bf5dc522dc2ae268ae734bf0389569eff2ef095f2ddd48ddd270488656bdb` | `setup/tools/kde-rpms.sh` |
 | `6b1822c3dacfe0c142d5681ff28a82cfb756d40ac2e6d02b807905c80850317e` | `setup/versions.sh` |
 | `19cf4324887903cc1185fc8dc83d38bb9e97176a36ef8ed9506611be4f6e1ddf` | `src/host-config/kwin-active-window-candidate.conf` |
 | `cf647e7f955d60ec6cae1ee58196b94d939996df44697f9e479023921bbe1f91` | `src/host-config/kwin-animation-start-step.conf` |
 | `ebb40936ea5b94c0970194727a29954e954780bc5b7817421e79fc5ee9d04911` | `src/host-config/kwin-empty-render-not-content.conf` |
+| `4d95be9e131077102159769046807e96d2d0c0625ced3b7813dd1d023f5b51fc` | `src/host-config/kwin-night-light-after-blending.conf` |
 | `c28ab03912079127f981603c228443ecfcdf030e7fc0170728f3e400735d2d93` | `src/host-config/kwin-scanout-variance-cap.conf` |
 | `ac0cb19c913e350f76be6c0f5c129dfc77eb7c25b3a717205efaa57aaca46541` | `src/host-config/kwin-skip-empty-layer-render.conf` |
 
@@ -244,11 +245,11 @@ When the research's recipe moves (`r` its repository, `c` the commit, `v`
 this folder), take it again as it is, the sets' patches with it:
 
 ```sh
-r=~/Documents/virtio-gpu-desktop c=9535bf2 v=~/Documents/vitrine/host/kde/research
+r=~/Documents/virtio-gpu-desktop c=5dbcc81 v=~/Documents/vitrine/host/kde/research
 rm -rf "$v" && mkdir -p "$v/setup/tools" "$v/src/host-config"
 for f in setup/lib.sh setup/paths.sh setup/versions.sh setup/tools/kde-rpms.sh \
 	setup/tools/build-patched-rpm.sh \
-	src/host-config/kwin-{active-window-candidate,animation-start-step,empty-render-not-content,scanout-variance-cap,skip-empty-layer-render}.conf; do
+	src/host-config/kwin-{active-window-candidate,animation-start-step,empty-render-not-content,night-light-after-blending,scanout-variance-cap,skip-empty-layer-render}.conf; do
 	git -C "$r" show "$c:$f" > "$v/$f"
 done
 # patches/DIR (kde_patch_dir) and the host sets kde_set_for names for each package

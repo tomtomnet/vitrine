@@ -34,10 +34,9 @@
 # /etc/user-tmpfiles.d/vitrine-host-kwin.conf, which makes the files at each
 # user's login, and are made at once for the user who installs (pkexec's
 # PKEXEC_UID): a login soon after a logout may find their session manager
-# still running, and its tmpfiles not read again.  Those of
-# kwin_switches_off go there too, off (switches/kwin-*.conf, Vitrine's own:
-# the research's host session has no file for them), for each user to turn
-# on.  Another KWin ignores the files.
+# still running, and its tmpfiles not read again.  Each file's value is the
+# research's: night-light-after-blending's 0 leaves it off, for each user to
+# turn on.  Another KWin ignores the files.
 #
 # KWin's commit timing: from Plasma 6.8.2, KWin offers commit timing to
 # programs (wp_commit_timing_manager_v1) only with
@@ -69,23 +68,21 @@ here=$(cd -- "$(dirname -- "$(readlink -f "${BASH_SOURCE[0]}")")" && pwd)
 switches=${VITRINE_TMPFILES_DIR:-/etc/user-tmpfiles.d}/vitrine-host-kwin.conf
 environment=${VITRINE_ENVIRONMENT_DIR:-/etc/environment.d}/vitrine-host-kwin.conf
 commit_timing=KWIN_WAYLAND_SUPPORT_COMMIT_TIMING_V1
-# KWin's run-time switches that an install turns on, by their file in
+# KWin's run-time switches that an install writes, by their file in
 # research/src/host-config (kwin-NAME.conf, the patch it is for in its
-# comment): remove a line to leave one off.  skip-empty-layer-render (0082)
-# is off since 2026-11-01, as in the research's host session: with a host
+# comment): remove a line to leave one out.  skip-empty-layer-render (0082)
+# is out since 2026-11-01, as in the research's host session: with a host
 # window over a VM, the host reported the guest's frames discarded and
 # Firefox in the guest froze (the research's findings/
 # firefox-webgl-freeze-composited-vm-2026-11-01.md).
+# night-light-after-blending (0089) is written 0, off: it changes saturated
+# colours under Night Light, which each user decides.
 kwin_switches=(
 	active-window-candidate
 	animation-start-step
 	empty-render-not-content
-	scanout-variance-cap
-)
-# Those written off (0), by their file in switches/: night-light-after-blending
-# (0089) changes saturated colours under Night Light, which each user decides
-kwin_switches_off=(
 	night-light-after-blending
+	scanout-variance-cap
 )
 
 say() { echo "vitrine-kde: $*"; }
@@ -159,11 +156,6 @@ switches_on() {
 		[ -f "$here/research/src/host-config/kwin-$name.conf" ] ||
 			{ say "warning: no switch kwin-$name in research/src/host-config"; continue; }
 		entries+=("$here/research/src/host-config/kwin-$name.conf")
-	done
-	for name in "${kwin_switches_off[@]}"; do
-		[ -f "$here/switches/kwin-$name.conf" ] ||
-			{ say "warning: no switch kwin-$name in switches"; continue; }
-		entries+=("$here/switches/kwin-$name.conf")
 	done
 	[ ${#entries[@]} -gt 0 ] || return 0
 	say "step: writing the set's run-time switches ($switches)"
