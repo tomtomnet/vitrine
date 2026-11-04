@@ -612,9 +612,12 @@ void VmDisplay::sendFirstUiInfo(bool guestWaits)
             scale = gdk_surface_get_scale(surface);
         }
     }
-    m_dbus->applyUiInfo(uint32_t(std::lround(size.width() * scale)),
-                        uint32_t(std::lround(size.height() * scale)),
-                        m_opts.sendRefreshRate ? m_widget->refreshMilliHz() : 0, 0, 0);
+    const QSize device(int(std::lround(size.width() * scale)), int(std::lround(size.height() * scale)));
+    /* the window's share of its monitor's physical size, as the widget tells it */
+    const QSize mm = DisplayWidget::physicalMm(GTK_WIDGET(m_host->gobj()), device);
+    m_dbus->applyUiInfo(uint32_t(device.width()), uint32_t(device.height()),
+                        m_opts.sendRefreshRate ? m_widget->refreshMilliHz() : 0,
+                        uint16_t(mm.width()), uint16_t(mm.height()));
 }
 
 /* The window's scale, monitor or refresh rate changed: one UI info for

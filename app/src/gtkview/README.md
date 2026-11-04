@@ -102,3 +102,8 @@ How it fits GTK:
   the clipboard as its own and says nothing: the guest's text is set once
   more at vitrine's next input, unless the host copied something since.
 - Full screen moves the widget to a window of its own, as the Qt view does.
+- The guest is told its screen's physical size with each size (UIInfo's
+  `width_mm` and `height_mm`): the view's share of its monitor's, from
+  GdkMonitor's width_mm and height_mm, through `core/physicalsize.h` as the Qt
+  view does; none where the monitor does not say. QEMU puts it in the EDID,
+  and a GNOME guest picks its scale from it (QEMU's 100 DPI without).

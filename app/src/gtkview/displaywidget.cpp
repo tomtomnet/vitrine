@@ -3,6 +3,7 @@
 
 #include "displaysurface.h"
 #include "pointerconstraints.h"
+#include "core/physicalsize.h"
 #include "vmview/dbusdisplay.h"
 #include "vmview/renderer.h"
 
@@ -363,6 +364,26 @@ uint32_t DisplayWidget::refreshMilliHz() const
     return mhz > 0 ? uint32_t(mhz) : 60000;
 }
 
+QSize DisplayWidget::physicalMm(GtkWidget *widget, const QSize &view)
+{
+    GtkNative *native = widget ? gtk_widget_get_native(widget) : nullptr;
+    GdkSurface *surface = native ? gtk_native_get_surface(native) : nullptr;
+    GdkMonitor *monitor =
+        surface ? gdk_display_get_monitor_at_surface(gtk_widget_get_display(widget), surface)
+                : nullptr;
+    if (!monitor) {
+        return {};
+    }
+    GdkRectangle geometry;
+    gdk_monitor_get_geometry(monitor, &geometry);
+    const double scale = gdk_monitor_get_scale(monitor);
+    return PhysicalSize::ofView(view,
+                                QSize(int(std::lround(geometry.width * scale)),
+                                      int(std::lround(geometry.height * scale))),
+                                QSizeF(gdk_monitor_get_width_mm(monitor),
+                                       gdk_monitor_get_height_mm(monitor)));
+}
+
 void DisplayWidget::sendUiInfo()
 {
     const QSize size = m_opts.guestWidth ? QSize(m_opts.guestWidth, m_opts.guestHeight)
@@ -370,8 +391,12 @@ void DisplayWidget::sendUiInfo()
     if (size.isEmpty()) {
         return;
     }
+    /* the view's share of its monitor's physical size: the guest's EDID
+       says it, and the guest picks its scale from it (not QEMU's 100 DPI) */
+    const QSize mm = physicalMm(gobj(), physicalSize());
     m_display->applyUiInfo(uint32_t(size.width()), uint32_t(size.height()),
-                           m_opts.sendRefreshRate ? refreshMilliHz() : 0, 0, 0);
+                           m_opts.sendRefreshRate ? refreshMilliHz() : 0, uint16_t(mm.width()),
+                           uint16_t(mm.height()));
 }
 
 void DisplayWidget::setGuestSize(uint32_t width, uint32_t height)
