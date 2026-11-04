@@ -59,6 +59,7 @@
 %global with_libunwind 1
 %global with_lmsensors 1
 %global with_virtio    1
+%global with_vulkan_layers_anti_lag 1
 %endif
 
 %ifarch %{valgrind_arches}
@@ -80,8 +81,8 @@
 
 Name:           mesa
 Summary:        Mesa graphics libraries
-Version:        26.2.3
-Release:        2.xe%{?dist}
+Version:        26.2.6
+Release:        1.xe%{?dist}
 License:        MIT AND BSD-3-Clause AND SGI-B-2.0
 URL:            https://mesa3d.org
 
@@ -96,27 +97,35 @@ Source0:        https://archive.mesa3d.org/mesa-%{ver}.tar.xz
 # Fedora opts to ignore the optional part of clause 2 and treat that code as 2 clause BSD.
 Source1:        Mesa-MLAA-License-Clarification-Email.txt
 
-# Xe native context (cmspam/xe-native-context-enablement a7b12b1, context refreshed for 26.2.3): includes
-# the iris upload WC fix and the double VMA free fix.  2.xe: the research's version of 2026-10-24 (its
-# 44f47f1): xe blobs are created with DRM_VIRTGPU_BLOB_FLAG_HINT_DEFER_MAPPING, mapped into the VMM's
-# host-memory window at their first mmap instead of at creation.  Mapped at creation, every buffer took a
-# mapping and a prefault, even render targets the CPU never touches (a new 4K buffer ~3 ms in the guest
-# instead of 0.63), and the window capped a guest app at ~3.3 GB of GPU memory.
+# vitrine's patches (the research's patches/mesa), on Fedora 45's 26.2.6 spec; the same spec builds for
+# Fedora 44 (the libclc requirement below is its one difference there that matters).
+# Xe native context (cmspam/xe-native-context-enablement a7b12b1, context refreshed for 26.2.3; it
+# applies to 26.2.6 as it is): includes the iris upload WC fix and the double VMA free fix.  xe blobs
+# are created with DRM_VIRTGPU_BLOB_FLAG_HINT_DEFER_MAPPING (the research's 44f47f1, 2026-10-24), mapped
+# into the VMM's host-memory window at their first mmap instead of at creation.  Mapped at creation,
+# every buffer took a mapping and a prefault, even render targets the CPU never touches (a new 4K
+# buffer ~3 ms in the guest instead of 0.63), and the window capped a guest app at ~3.3 GB of GPU memory.
 Patch100:	mesa-01-xe-native-context-plus-iris-upload-fix-26.2.3.patch
 Patch103:	mesa-radv-virtio-skip-non-amdgpu-contexts.patch
 Patch104:	mesa-iris-virtio-longer-bo-cache.patch
 Patch105:	mesa-radeonsi-virtio-longer-bo-cache.patch
+# Under virtio-gpu, iris keeps the two newest CPU-mapped buffers of each bucket of 1 MiB or more past the
+# cache's timeout, up to 128 MiB in all (the research's intel/0003 of 2026-11-02, on Patch104): a
+# compositor's re-upload of a big window after a pause takes a cached staging buffer instead of
+# faulting a new one in page by page (a GNOME guest at 4K lost frames leaving Firefox through the
+# overview).  IRIS_BO_CACHE_KEEP_MB sets the floor, 0 turns it off.
+Patch106:	mesa-iris-virtio-bo-cache-floor.patch
 
 # In CentOS/RHEL, Rust crates required to build NVK are vendored.
 # The minimum target versions are obtained from the .wrap files
 # https://gitlab.freedesktop.org/mesa/mesa/-/tree/main/subprojects
 # but we generally want the latest compatible versions
 %global rust_paste_ver 1.0.15
-%global rust_proc_macro2_ver 1.0.106
-%global rust_quote_ver 1.0.44
-%global rust_syn_ver 2.0.115
-%global rust_unicode_ident_ver 1.0.23
-%global rustc_hash_ver 2.1.1
+%global rust_proc_macro2_ver 1.0.107
+%global rust_quote_ver 1.0.47
+%global rust_syn_ver 2.0.119
+%global rust_unicode_ident_ver 1.0.26
+%global rustc_hash_ver 2.1.3
 Source10:       https://crates.io/api/v1/crates/paste/%{rust_paste_ver}/download#/paste-%{rust_paste_ver}.tar.gz
 Source11:       https://crates.io/api/v1/crates/proc-macro2/%{rust_proc_macro2_ver}/download#/proc-macro2-%{rust_proc_macro2_ver}.tar.gz
 Source12:       https://crates.io/api/v1/crates/quote/%{rust_quote_ver}/download#/quote-%{rust_quote_ver}.tar.gz
@@ -127,7 +136,6 @@ Source15:       https://crates.io/api/v1/crates/rustc-hash/%{rustc_hash_ver}/dow
 BuildRequires:  meson >= 1.3.0
 BuildRequires:  gcc
 BuildRequires:  gcc-c++
-BuildRequires:  libstdc++-static
 BuildRequires:  gettext
 %if 0%{?with_hardware}
 BuildRequires:  kernel-headers
@@ -313,7 +321,13 @@ Provides:       libgbm-devel%{?_isa} = %{?epoch:%{epoch}:}%{version}-%{release}
 %package libOpenCL
 Summary:        Mesa OpenCL runtime library
 Requires:       (ocl-icd%{?_isa} or OpenCL-ICD-Loader%{?_isa})
+# Fedora 45's spec requires libclc22 ("Switch runtime libclc dependency to libclc22"); Fedora 44
+# has no libclc22, its libclc is LLVM 22's
+%if 0%{?fedora} >= 45
+Requires:       libclc22%{?_isa}
+%else
 Requires:       libclc%{?_isa}
+%endif
 Requires:       %{name}-libgbm%{?_isa} = %{?epoch:%{epoch}:}%{version}-%{release}
 Requires:       opencl-filesystem
 
@@ -456,7 +470,7 @@ rewrite_wrap_file rustc-hash
   -Dgallium-rusticl=true \
 %endif
   -Dvulkan-drivers=%{?vulkan_drivers} \
-  -Dvulkan-layers=device-select,anti-lag \
+  -Dvulkan-layers=device-select%{?with_vulkan_layers_anti_lag:,anti-lag} \
   -Dgles1=enabled \
   -Dgles2=enabled \
   -Dopengl=true \
@@ -706,8 +720,10 @@ ln -s libGLX_mesa.so.0 %{buildroot}%{_libdir}/libGLX_system.so.0
 %{_datadir}/drirc.d/00-lavapipe-defaults.conf
 %{_libdir}/libVkLayer_MESA_device_select.so
 %{_datadir}/vulkan/implicit_layer.d/VkLayer_MESA_device_select.json
+%if 0%{?with_vulkan_layers_anti_lag}
 %{_libdir}/libVkLayer_MESA_anti_lag.so
 %{_datadir}/vulkan/implicit_layer.d/VkLayer_MESA_anti_lag.json
+%endif
 %if 0%{?with_virtio}
 %{_libdir}/libvulkan_virtio.so
 %{_datadir}/vulkan/icd.d/virtio_icd.*.json

@@ -2,7 +2,7 @@
 # exact version, and dnf takes an installed one of the same version as done.
 Name:           vitrine-guest-tools
 Version:        0.1.0
-Release:        31%{?dist}
+Release:        32%{?dist}
 Summary:        vitrine guest tools: patched virtio-gpu driver, settings and agent
 
 # the driver's sources (dkms/vendor, dkms/patches) are the kernel's: MIT
@@ -181,6 +181,18 @@ fi
 %dir %{_sharedstatedir}/%{name}
 
 %changelog
+* Wed Nov 04 2026 vitrine <noreply@anthropic.com> - 0.1.0-32
+- built for each Fedora release the tools are made for, 44 and 45, on a
+  medium of its own; Fedora 45's has the tools and Mesa, no KDE packages yet
+- the installer read rpm -q's "package ... is not installed", which it prints
+  on its standard output, as a version (since 0.1.0-29): a guest without Qt
+  Base, KSvg or Kirigami was told "the installed one stays", or "vitrine's
+  ..., 0 packages" by a medium that has them (nothing went in wrongly); and
+  as the Plasma version of a guest without Plasma
+- on a guest without Plasma (GNOME), no word of the nested desktop's proxy;
+  "Mesa: none on this medium" for a medium without Mesa, not "none
+  installed (no desktop?)"
+
 * Tue Nov 03 2026 vitrine <noreply@anthropic.com> - 0.1.0-31
 - vitrine's KWin and KPipeWire for Fedora 44's Plasma 6.8.2 (the research's
   sets g24 and k2), in place of 6.7.5's

@@ -98,7 +98,7 @@ static QHash<QString, QString> plainValues(const QByteArray &conf)
     return values;
 }
 
-Places Places::defaults()
+Places Places::defaults(const QString &guestRelease)
 {
     const HostKdeMonitor *monitor = HostKdeMonitor::instance();
     Places places;
@@ -106,8 +106,9 @@ Places Places::defaults()
     places.hostDir = StackBuilder::hostDir();
     places.guestDir = GuestToolsBuilder::guestDir();
     places.stackDir = Paths::stackDir();
-    places.rpmsDir = GuestToolsBuilder::rpmsDir();
-    places.mediumImage = GuestToolsBuilder::mediumImage();
+    places.guestRelease = guestRelease.isEmpty() ? GuestTools::newestRelease() : guestRelease;
+    places.rpmsDir = GuestToolsBuilder::rpmsDir(places.guestRelease);
+    places.mediumImage = GuestToolsBuilder::mediumImage(places.guestRelease);
 
     /* the builds as they are now, the system as last read */
     for (const HostKde::Status &s : monitor->statuses()) {
@@ -156,7 +157,17 @@ QList<Component> load(const Places &places)
         if (conf.isEmpty() && defaults) {
             conf = defaults;
         }
-        for (const auto &[id, values] : parseConf(conf)) {
+        const QList<std::pair<QString, QHash<QString, QString>>> sections = parseConf(conf);
+        /* guest/'s packages of other releases than places.guestRelease: not on its medium */
+        QStringList otherReleases;
+        for (const auto &[id, values] : sections) {
+            Component c;
+            c.values = values;
+            if (!host && !places.guestRelease.isEmpty() && !builtFor(c, places.guestRelease)) {
+                otherReleases << id;
+            }
+        }
+        for (const auto &[id, values] : sections) {
             Component c;
 
             c.id = id;
@@ -174,6 +185,14 @@ QList<Component> load(const Places &places)
             if (c.kind == Kind::Package && !QFileInfo(dir + '/' + values.value("spec")).isFile()) {
                 continue;
             }
+            /* the guest tools of one release: its packages, its medium of them */
+            if (otherReleases.contains(c.id)) {
+                continue;
+            }
+            if (c.kind == Kind::Medium) {
+                c.deps.removeIf(
+                    [&otherReleases](const QString &id) { return otherReleases.contains(id); });
+            }
             /* a host package where this computer has it (HostKde) */
             if (c.kind == Kind::System &&
                 places.system.value(c.id).offer == HostKde::Status::Offer::Hidden) {
@@ -188,6 +207,14 @@ QList<Component> load(const Places &places)
     /* the host's packages, last: optional, and installed by hand */
     add(places.systemDir, true, nullptr);
     return list;
+}
+
+bool builtFor(const Component &component, const QString &release)
+{
+    const QStringList releases =
+        component.values.value("releases").split(' ', Qt::SkipEmptyParts);
+
+    return releases.isEmpty() || releases.contains(release);
 }
 
 Component find(const QList<Component> &list, const QString &id)

@@ -431,9 +431,13 @@ private slots:
             QVERIFY2(QFileInfo::exists(kwin.dir + '/' + p.path), qPrintable(p.path));
         }
         const QList<Patch> mesaPatches = patches(find(all, "mesa"));
-        QCOMPARE(mesaPatches.size(), 4);
+        QCOMPARE(mesaPatches.size(), 5);
         QCOMPARE(subject(find(all, "mesa"), mesaPatches[2]),
                  "iris: keep buffers in the reuse cache longer under virtio-gpu");
+        /* the floor of big buffers, on the longer cache (the research's intel/0003) */
+        QCOMPARE(mesaPatches[4].number, "106");
+        QCOMPARE(subject(find(all, "mesa"), mesaPatches[4]),
+                 "iris: under virtio-gpu, keep the newest big cached buffers past the timeout");
 
         /* the driver's patches, in the order prepare.sh applies them ("apply NAME"), a
            version rebased for a later kernel right after its patch */

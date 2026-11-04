@@ -64,8 +64,11 @@ struct Places {
     QString hostDir;                // StackBuilder::hostDir()
     QString guestDir;               // GuestToolsBuilder::guestDir()
     QString stackDir;               // Paths::stackDir()
-    QString rpmsDir;                // GuestToolsBuilder::rpmsDir()
-    QString mediumImage;            // GuestToolsBuilder::mediumImage()
+    /* The Fedora release of the guest tools' packages and medium: those of
+       guest/ built for it (components.conf's releases=), all when empty */
+    QString guestRelease;
+    QString rpmsDir;                // GuestToolsBuilder::rpmsDir(guestRelease)
+    QString mediumImage;            // GuestToolsBuilder::mediumImage(guestRelease)
     /* The host's KDE packages: their folder (HostKde::sourceDir()), empty
        where none is offered; by component id, what HostKde makes of each
        package and of the system (HostKdeMonitor's, with the builds read
@@ -75,7 +78,8 @@ struct Places {
     QHash<QString, HostKde::Status> system;
     QHash<QString, QString> systemOut;
 
-    static Places defaults();
+    /* Of the app, with the guest tools of @guestRelease (empty: the newest) */
+    static Places defaults(const QString &guestRelease = {});
 };
 
 /* Where a component comes from, for the window */
@@ -110,8 +114,11 @@ struct Status {
 /* The [sections] of a components.conf, in order, with their NAME=value lines */
 QList<std::pair<QString, QHash<QString, QString>>> parseConf(const QByteArray &conf);
 
-/* The components of @places' host/, guest/ and host/kde/, in build order, host/'s first */
+/* The components of @places' host/, guest/ and host/kde/, in build order, host/'s
+   first; of guest/, those built for places.guestRelease */
 QList<Component> load(const Places &places);
+/* A guest component is built for Fedora @release: its releases= names it, or it has none */
+bool builtFor(const Component &component, const QString &release);
 /* Of @list: the one called @id, or none */
 Component find(const QList<Component> &list, const QString &id);
 
