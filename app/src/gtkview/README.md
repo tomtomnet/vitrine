@@ -97,5 +97,8 @@ How it fits GTK:
   focus from a text field, no text input request while keys go to the view.
 - The clipboard (`gtkclipboard`) is VmClipboard's D-Bus side with
   GdkClipboard, which reads only asynchronously: the host's text is read as
-  it changes, and QEMU's Request answered from that.
+  it changes, and QEMU's Request answered from that. When KWin refuses the
+  guest's text (another client copied after vitrine's last input), GTK keeps
+  the clipboard as its own and says nothing: the guest's text is set once
+  more at vitrine's next input, unless the host copied something since.
 - Full screen moves the widget to a window of its own, as the Qt view does.
