@@ -3,6 +3,8 @@
 
 #include "displaysurface.h"
 #include "pointerconstraints.h"
+#include "shortcutsinhibit.h"
+#include "viewkeys.h"
 #include "core/physicalsize.h"
 #include "vmview/dbusdisplay.h"
 #include "vmview/renderer.h"
@@ -518,6 +520,12 @@ void DisplayWidget::setFullScreenWindow(bool on)
 bool DisplayWidget::onKeyPressed(guint keyval, guint keycode, Gdk::ModifierType state)
 {
     inputSeen.emit();
+    /* the app's own keys (the console's views), its release and repeats with it */
+    if (!m_hotkeys.count(keycode) &&
+        ViewKeys::take(keyval, keycode, static_cast<GdkModifierType>(state))) {
+        m_hotkeys.insert(keycode);
+        return true;
+    }
     /* the hotkeys of QEMU's SDL and GTK displays: Ctrl+Alt+G grab, Ctrl+Alt+F
        full screen.  Ctrl and Alt still reach the guest, the letter does not */
     const auto mods = static_cast<GdkModifierType>(state);
@@ -637,11 +645,8 @@ void DisplayWidget::setShortcutsInhibited(bool on)
         return;
     }
     m_inhibited = on;
-    if (on) {
-        gdk_toplevel_inhibit_system_shortcuts(GDK_TOPLEVEL(surface), nullptr);
-    } else {
-        gdk_toplevel_restore_system_shortcuts(GDK_TOPLEVEL(surface));
-    }
+    /* the window's one inhibitor, which the nested desktop's view may hold too */
+    ShortcutsInhibit::set(surface, this, on);
     /* the state line says so until the compositor grants it */
     grabChanged.emit();
 }
