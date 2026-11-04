@@ -423,6 +423,34 @@ private slots:
             "Some display backends support suboptions, which can be set with\n");
         QCOMPARE(list.size(), 2);
         QCOMPARE(list[1].name, "sdl");
+
+        /* a library's warning before the header (Xlib's, with a stale
+           XAUTHORITY): not part of the list */
+        list = QemuInfo::parseListHelp(
+            "Authorization required, but no authorization protocol specified\n"
+            "\n"
+            "Available netdev backend types:\n"
+            "socket\n"
+            "user\n");
+        QCOMPARE(list.size(), 2);
+        QCOMPARE(list[0].name, "socket");
+    }
+
+    /* A load missing a list every system emulator has is not complete: it is
+       not cached */
+    void complete()
+    {
+        QemuInfo info;
+        QVERIFY(!info.complete());
+        info.options << QemuOptionDoc{"machine", "", "", "", "", true};
+        info.devices << QemuDeviceDoc{};
+        for (QList<QemuNamedDoc> *list : {&info.machines, &info.netdevs, &info.chardevs,
+                                          &info.displays, &info.accels}) {
+            *list << QemuNamedDoc{"x", ""};
+        }
+        QVERIFY(info.complete());
+        info.netdevs.clear();
+        QVERIFY(!info.complete());
     }
 
     void rstToHtml()

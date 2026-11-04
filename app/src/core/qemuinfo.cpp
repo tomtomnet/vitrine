@@ -367,13 +367,29 @@ QList<QemuPropertyDoc> QemuInfo::parsePropertyHelp(const QString &text)
     return out;
 }
 
+bool QemuInfo::complete() const
+{
+    return !options.isEmpty() && !devices.isEmpty() && !machines.isEmpty() &&
+           !netdevs.isEmpty() && !chardevs.isEmpty() && !displays.isEmpty() &&
+           !accels.isEmpty();
+}
+
 QList<QemuNamedDoc> QemuInfo::parseListHelp(const QString &text)
 {
     QList<QemuNamedDoc> out;
     const QStringList lines = text.split('\n');
+    qsizetype start = 1;
 
-    /* after the header, until the first blank line */
-    for (qsizetype i = 1; i < lines.size(); i++) {
+    /* after the header ("Supported machines are:", "Available CPUs:"...),
+       until the first blank line: a line printed before the header (a
+       library's warning) is not part of the list */
+    for (qsizetype i = 0; i < lines.size(); i++) {
+        if (lines[i].trimmed().endsWith(':')) {
+            start = i + 1;
+            break;
+        }
+    }
+    for (qsizetype i = start; i < lines.size(); i++) {
         const QString t = lines[i].trimmed();
         if (t.isEmpty()) {
             break;
@@ -453,6 +469,18 @@ static QString inlineRst(const QString &text)
 }
 
 /* What @binary prints for @args, kept for clean answers only */
+/* QEMU's environment for a help query, which needs no display: without the
+   session's display, no display library of QEMU's reaches for it */
+static QProcessEnvironment helpEnvironment()
+{
+    QProcessEnvironment env = QProcessEnvironment::systemEnvironment();
+
+    for (const char *name : {"DISPLAY", "XAUTHORITY", "WAYLAND_DISPLAY", "WAYLAND_SOCKET"}) {
+        env.remove(QString::fromLatin1(name));
+    }
+    return env;
+}
+
 static QString probe(const QString &binary, const QStringList &args, QString *error)
 {
     static QHash<QString, QString> cache;
@@ -471,6 +499,7 @@ static QString probe(const QString &binary, const QStringList &args, QString *er
         }
         return {};
     }
+    p.setProcessEnvironment(helpEnvironment());
     p.start(binary, args);
     if (!p.waitForFinished(5000)) {
         const QString why = p.error() == QProcess::FailedToStart
@@ -708,7 +737,11 @@ QString QemuInfoLoader::run(const QStringList &args, QString *error) const
 {
     QProcess p;
 
-    p.setProcessChannelMode(QProcess::MergedChannels);
+    /* what QEMU prints on stdout only: Xlib's "Authorization required, but no
+       authorization protocol specified" on stderr (a GNOME session's DISPLAY
+       with a stale XAUTHORITY, 2026-11-04) came before the lists and hid them */
+    p.setProcessEnvironment(helpEnvironment());
+    p.setStandardErrorFile(QProcess::nullDevice());
     p.start(m_binary, args);
     if (!p.waitForFinished(15000)) {
         if (error) {
@@ -717,7 +750,7 @@ QString QemuInfoLoader::run(const QStringList &args, QString *error) const
         p.kill();
         return {};
     }
-    return QString::fromUtf8(p.readAll());
+    return QString::fromUtf8(p.readAllStandardOutput());
 }
 
 /*
@@ -921,6 +954,11 @@ bool QemuInfoLoader::loadCache()
     info.audiodevs = namedFromJson(root["audiodevs"]);
     info.displays = namedFromJson(root["displays"]);
     info.accels = namedFromJson(root["accels"]);
+    /* a cache from before 2026-11-04 may have kept empty lists (QEMU's stderr
+       read with them) */
+    if (!info.complete()) {
+        return false;
+    }
     m_info = info;
     return true;
 }
@@ -952,7 +990,11 @@ void QemuInfoLoader::load()
         }
         m_info = info;
         m_loaded = true;
-        saveCache();
+        /* a list missing (one query that went wrong) is asked again at the next
+           start, not kept */
+        if (info.complete()) {
+            saveCache();
+        }
         emit loaded();
     });
     watcher->setFuture(QtConcurrent::run([this]() {
