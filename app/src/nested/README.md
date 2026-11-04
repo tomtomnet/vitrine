@@ -72,7 +72,29 @@ do to vitrine:
 
 ## Local changes
 
-None: the files are the research's at edd07c4.
+The files are the research's at edd07c4 but for this change, which
+`sha256sum -c UPSTREAM.sha256` shows (`vmview.cpp`):
+
+- No user data on the library's host objects (2026-11-05, for the GTK app):
+  `View::watch` gives `wl_proxy_add_dispatcher` a null user data instead of
+  the guest's `Object`, which the library never read back (it finds its
+  objects through `byProxy`). The library's objects live on the app's
+  connection, so the app's seat gets the compositor's events for the
+  guest's surfaces too. GDK 4.24 checks the user data of every surface a
+  pointer, keyboard, tablet or drag event names (`GDK_IS_SURFACE
+  (wl_surface_get_user_data (surface))` in gdkseat-wayland.c) and leaves out
+  the surfaces that are not its own. With an `Object` there, whose first
+  field is an object id, that check read the id as a class pointer: the GTK
+  app would have crashed as the pointer entered the guest's window. With
+  none, GDK passes over the guest's surfaces. Qt was never affected: it
+  recognises its surfaces by their listener.
+  - One gap stays on GTK's side: its touch handler (`touch_handle_down`)
+    checks the surface for NULL only, not its user data, so a touch on the
+    guest's window makes GDK deliver a touch event without a surface (and
+    clear its pointer's focus). Whether GTK then only warns or crashes is
+    not known (not tried: no touchscreen here). That is GTK's to fix;
+    vitrine does not work around it. Before this change such a touch took
+    the guest's `Object` for a GdkSurface.
 
 The research side took vitrine's earlier ones: a `pressed` callback for
 button presses on the guest's window and a NULL object where the protocol
