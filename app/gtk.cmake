@@ -32,11 +32,16 @@ configure_file(data/vitrine.svg ${CMAKE_CURRENT_BINARY_DIR}/gtk-icons/org.vitrin
 # of its own: Qt's connections go to context objects (no moc over GTK's
 # headers, which use Qt's keywords as names: src/gtk/gtkbase.h)
 add_library(vitrine_gtk STATIC
+    src/gtk/desktopgpu.cpp
+    src/gtk/desktopgpu.h
     src/gtk/gtkbase.h
     src/gtk/gtkloop.cpp
     src/gtk/gtkloop.h
     src/gtk/mainwindow.cpp
     src/gtk/mainwindow.h
+    src/gtk/mainwindowconsole.cpp
+    src/gtk/vmconsole.cpp
+    src/gtk/vmconsole.h
     src/gtk/vmpage.cpp
     src/gtk/vmpage.h
     src/gtk/vmsummary.cpp
@@ -45,8 +50,11 @@ add_library(vitrine_gtk STATIC
     src/gtk/widgets.h
 )
 target_include_directories(vitrine_gtk PUBLIC src)
+# the VM's screen and the nested desktop (vitrine_gtkview), the desktop's GPU
+# from linux-dmabuf over GDK's connection (vitrine_wlprotocols)
 target_link_libraries(vitrine_gtk
-    PUBLIC vitrine_core vitrine_uishared PkgConfig::VITRINE_GTKMM PkgConfig::VITRINE_ADW)
+    PUBLIC vitrine_core vitrine_uishared vitrine_gtkview PkgConfig::VITRINE_GTKMM PkgConfig::VITRINE_ADW
+    PRIVATE vitrine_wlprotocols PkgConfig::WAYLAND)
 target_compile_definitions(vitrine_gtk PRIVATE
     VITRINE_VERSION="${PROJECT_VERSION}"
     VITRINE_GTK_BUILD_ICONS="${CMAKE_CURRENT_BINARY_DIR}/gtk-icons")

@@ -17,6 +17,7 @@
 
 class GtkLoop;
 class Vm;
+class VmConsole;
 class VmPage;
 class VmStore;
 
@@ -35,6 +36,12 @@ class VmStore;
  * what closing asks while VMs show in the window or tasks run.  The
  * actions whose dialogs are not in the GTK app yet are there, inactive:
  * New VM, Import VM, Settings, Clone, Builds, Preferences.
+ *
+ * The VMs' screens (mainwindowconsole.cpp): one console per VM
+ * (VmConsole), the selected one's in the page, with its views, full
+ * screen, the keys sent and the input released; the keys to the screen
+ * as it comes; the nested desktop served before its QEMU starts; the VM
+ * whose screen has the keyboard in front for the host's tuning.
  *
  * It outlives its GtkWindow (main() keeps it until the loop ends): once
  * the window is gone it does nothing.
@@ -66,8 +73,19 @@ public:
     /*
      * @dialog in the window.  The VM's screen is covered meanwhile
      * (VmPage::setCovered()): what GTK draws over the screen is under it.
+     * No screen stays in full screen or grabbed: it would hide the dialog.
      */
     void present(AdwDialog *dialog);
+    /* The console of the VM @id, if it has one (tests) */
+    VmConsole *console(const QString &id) const;
+    /*
+     * Ctrl+Alt+1/2 from anywhere in the window, the VMs' screens included,
+     * their full-screen windows too: the view of the selected VM's console
+     * (a VM with the nested desktop in this window), whatever character the
+     * layout gives the key.  True when the key was one of them and went
+     * there.  The window's key controller's (and the tests').
+     */
+    bool switchViewByKey(guint keyval, guint keycode, GdkModifierType state);
 
 private:
     struct Item {
@@ -106,6 +124,30 @@ private:
     void showLog();
     void openFolder();
     void about();
+
+    /* The VMs' screens: mainwindowconsole.cpp */
+    void createConsoleActions();
+    /* The console of @vm, made the first time; null once the window is gone */
+    VmConsole *consoleOf(Vm *vm);
+    /* That of the selected VM, if made */
+    VmConsole *currentConsole() const;
+    void dropConsole(const QString &id);
+    void consoleChanged(VmConsole *console);
+    void updateConsoleActions();
+    /* Why the screen of the VM shown may take the keys (focusScreen()) */
+    enum class FocusCause {
+        Activated,  // the window came to the front
+        Shown,      // the screen appeared, its VM runs again, the Console view was chosen
+        Switched,   // another VM was selected, or the one shown again
+    };
+    /* The keys to the screen of the VM shown, without a click on it */
+    void focusScreen(FocusCause cause);
+    /* No screen in full screen, none grabbing: before a dialog */
+    void leaveScreens();
+    void toggleFullScreen();
+    /* @keys, QEMU's names apart by spaces, pressed in the VM (Send Key) */
+    void sendKeys(const QString &keys);
+    void releaseInput();
 
     /* Before a start: damaged firmware copies of @vm, new ones if the user wants; then @go */
     void checkFirmware(Vm *vm, std::function<void()> go);
@@ -163,4 +205,10 @@ private:
     QSet<QString> m_shutDownOnceUp;
     /* The questions whether to kill a QEMU that does not end, by VM */
     QHash<QString, AdwDialog *> m_killPrompts;
+
+    /* The consoles, by VM id, in the page's place of the screen */
+    QHash<QString, VmConsole *> m_consoles;
+    /* When the last button went down in the window, and a key in the sidebar */
+    gint64 m_lastPress = 0;
+    gint64 m_lastSidebarKey = 0;
 };
