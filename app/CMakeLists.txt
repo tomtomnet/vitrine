@@ -562,3 +562,6 @@ if(BUILD_TESTING)
     set_tests_properties(vmclipboard PROPERTIES ENVIRONMENT
         "GLIBC_TUNABLES=glibc.malloc.tcache_count=0:glibc.malloc.perturb=165")
 endif()
+
+# The VM display in GTK4, for the GTK app (src/gtkview)
+include(src/gtkview/gtkview.cmake)
