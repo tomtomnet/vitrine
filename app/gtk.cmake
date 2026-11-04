@@ -32,11 +32,31 @@ configure_file(data/vitrine.svg ${CMAKE_CURRENT_BINARY_DIR}/gtk-icons/org.vitrin
 # of its own: Qt's connections go to context objects (no moc over GTK's
 # headers, which use Qt's keywords as names: src/gtk/gtkbase.h)
 add_library(vitrine_gtk STATIC
+    src/gtk/argspage.cpp
+    src/gtk/argspage.h
+    src/gtk/dialog.cpp
+    src/gtk/dialog.h
+    src/gtk/displaypage.cpp
+    src/gtk/displaypage.h
     src/gtk/gtkbase.h
     src/gtk/gtkloop.cpp
     src/gtk/gtkloop.h
+    src/gtk/guarded.h
     src/gtk/mainwindow.cpp
     src/gtk/mainwindow.h
+    src/gtk/mainwindowdialogs.cpp
+    src/gtk/newvmdialog.cpp
+    src/gtk/newvmdialog.h
+    src/gtk/rows.cpp
+    src/gtk/rows.h
+    src/gtk/settingsdialog.cpp
+    src/gtk/settingsdialog.h
+    src/gtk/settingspage.cpp
+    src/gtk/settingspage.h
+    src/gtk/settingspages.cpp
+    src/gtk/settingspages.h
+    src/gtk/textdialog.cpp
+    src/gtk/textdialog.h
     src/gtk/vmpage.cpp
     src/gtk/vmpage.h
     src/gtk/vmsummary.cpp
@@ -86,6 +106,8 @@ if(BUILD_TESTING)
     # what the windows say of a VM: words alone, no display needed
     vitrine_gtk_test(vmsummary)
     vitrine_gtk_test(gtkmainwindow)
+    vitrine_gtk_test(gtkdialogs)
     target_sources(test_gtkloop PRIVATE tests/gtkdisplay.h)
     target_sources(test_gtkmainwindow PRIVATE tests/gtkdisplay.h)
+    target_sources(test_gtkdialogs PRIVATE tests/gtkdisplay.h)
 endif()

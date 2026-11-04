@@ -17,6 +17,7 @@
 #include "core/vmhardware.h"
 #include "core/vmstore.h"
 #include "gtk/gtkloop.h"
+#include "gtk/settingsdialog.h"
 #include "gtk/vmpage.h"
 #include "gtk/vmsummary.h"
 #include "gtk/widgets.h"
@@ -320,15 +321,15 @@ void MainWindow::createActions()
     /* their windows are not in the GTK app yet */
     addAction(app, "builds", [] {}, "<Control>b");
     addAction(app, "preferences", [] {}, "<Control>comma");
-    addAction(win, "new-vm", [] {}, "<Control>n");
     addAction(win, "import-vm", [] {}, "<Control>i");
-    addAction(win, "settings", [] {}, "<Control>s");
     addAction(win, "clone", [] {});
-    addAction(win, "command-line", [] {});
-    for (const char *name :
-         {"builds", "preferences", "new-vm", "import-vm", "settings", "clone", "command-line"}) {
+    for (const char *name : {"builds", "preferences", "import-vm", "clone"}) {
         setEnabled(name, false);
     }
+    /* the dialogs (mainwindowdialogs.cpp) */
+    addAction(win, "new-vm", [this]() { newVm(); }, "<Control>n");
+    addAction(win, "settings", [this]() { settingsShortcut(); }, "<Control>s");
+    addAction(win, "command-line", [this]() { showCommandLine(); });
 
     /* the sidebar shown or hidden: the split view's own state */
     GPropertyAction *sidebar = g_property_action_new("show-sidebar", m_split, "show-sidebar");
@@ -758,6 +759,8 @@ void MainWindow::updateActions()
     setEnabled("remove", vm && state == VmRunner::State::Stopped);
     setEnabled("show-log", vm);
     setEnabled("open-folder", vm);
+    setEnabled("command-line", vm);
+    setEnabled("settings", vm);
 }
 
 void MainWindow::updateWaiting()
@@ -1113,6 +1116,15 @@ bool MainWindow::closeRequested()
 {
     if (m_closing) {
         return false;
+    }
+    /* the settings shown have changes: applied or discarded first */
+    if (m_settings && m_settings->isModified()) {
+        m_settings->confirmChanges("Apply them before closing?", [this](bool go) {
+            if (go && m_window) {
+                gtk_window_close(GTK_WINDOW(m_window));
+            }
+        });
+        return true;
     }
     /* asked again: what the user answers now goes */
     m_closeAfter.clear();

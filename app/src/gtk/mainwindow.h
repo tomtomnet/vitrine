@@ -16,6 +16,7 @@
 #include "core/vmrunner.h"
 
 class GtkLoop;
+class SettingsDialog;
 class Vm;
 class VmPage;
 class VmStore;
@@ -107,6 +108,15 @@ private:
     void openFolder();
     void about();
 
+    /* The dialogs, in mainwindowdialogs.cpp: what they present goes through present() */
+    std::function<void(AdwDialog *)> presenter();
+    void newVm();
+    void showCommandLine();
+    /* The settings of @vm, on @page (SettingsDialog::Page), else the one shown last */
+    void openSettings(Vm *vm, int page = -1);
+    /* Ctrl+S: Apply, while the settings show; else they show */
+    void settingsShortcut();
+
     /* Before a start: damaged firmware copies of @vm, new ones if the user wants; then @go */
     void checkFirmware(Vm *vm, std::function<void()> go);
     /* New copies of @files in their place, if the user wants; @done(true) when done */
@@ -163,4 +173,6 @@ private:
     QSet<QString> m_shutDownOnceUp;
     /* The questions whether to kill a QEMU that does not end, by VM */
     QHash<QString, AdwDialog *> m_killPrompts;
+    /* The settings, while they show */
+    SettingsDialog *m_settings = nullptr;
 };
