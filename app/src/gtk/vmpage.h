@@ -63,6 +63,8 @@ public:
     void notify(const QString &text, int timeoutMs);
     /* The notice goes, if it is @text */
     void clearNotice(const QString &text);
+    /* What the closing window waits for, over the notices until it closes; empty: none */
+    void setClosing(const QString &text);
 
     /*
      * Where the VM's screen goes, gtk-vmview's VmDisplay: shown while the
@@ -97,6 +99,7 @@ private:
     AdwWindowTitle *m_title;
     AdwViewSwitcherBar *m_switcherBar;
     AdwBanner *m_notice;
+    AdwBanner *m_closing;
     /* Start while off, Pause or Resume and Shut Down while on */
     GtkWidget *m_start;
     GtkWidget *m_pause;

@@ -55,13 +55,15 @@ VmPage::VmPage()
       m_header(ADW_HEADER_BAR(adw_header_bar_new())), m_views(ADW_VIEW_STACK(adw_view_stack_new())),
       m_title(ADW_WINDOW_TITLE(adw_window_title_new("", ""))),
       m_switcherBar(ADW_VIEW_SWITCHER_BAR(adw_view_switcher_bar_new())),
-      m_notice(ADW_BANNER(adw_banner_new(""))), m_details(ADW_PREFERENCES_PAGE(adw_preferences_page_new()))
+      m_notice(ADW_BANNER(adw_banner_new(""))), m_closing(ADW_BANNER(adw_banner_new(""))),
+      m_details(ADW_PREFERENCES_PAGE(adw_preferences_page_new()))
 {
-    /* the page outlives no widget of it: kept while the window lives */
+    /* its widgets live as long as the page, in the window or out of it once closed */
     g_object_ref_sink(m_root);
     buildHeader();
     adw_toolbar_view_add_top_bar(ADW_TOOLBAR_VIEW(m_root), GTK_WIDGET(m_header));
-    /* notices over the views, not over the screen */
+    /* notices over the views, not over the screen; what a closing window waits for first */
+    adw_toolbar_view_add_top_bar(ADW_TOOLBAR_VIEW(m_root), GTK_WIDGET(m_closing));
     adw_toolbar_view_add_top_bar(ADW_TOOLBAR_VIEW(m_root), GTK_WIDGET(m_notice));
     adw_toolbar_view_set_content(ADW_TOOLBAR_VIEW(m_root), GTK_WIDGET(m_views));
     adw_view_switcher_bar_set_stack(m_switcherBar, m_views);
@@ -290,6 +292,14 @@ void VmPage::clearNotice(const QString &text)
         m_noticeTimer->stop();
         adw_banner_set_revealed(m_notice, false);
     }
+}
+
+void VmPage::setClosing(const QString &text)
+{
+    if (!text.isEmpty()) {
+        adw_banner_set_title(m_closing, utf8(text.toHtmlEscaped()).constData());
+    }
+    adw_banner_set_revealed(m_closing, !text.isEmpty());
 }
 
 void VmPage::setCovered(bool covered)

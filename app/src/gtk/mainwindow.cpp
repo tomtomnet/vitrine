@@ -6,7 +6,6 @@
 #include <QFileInfo>
 #include <QPointer>
 #include <QSettings>
-#include <QTimer>
 
 #include <algorithm>
 
@@ -618,13 +617,18 @@ void MainWindow::stateChanged(Vm *vm, VmRunner::State state)
         /* for failed(), which follows */
         m_endedFrom[id] = m_states.value(id);
         m_shutDownOnceUp.remove(id);
-        /* the last of those the closing window waited for */
+        /*
+         * The last of those the closing window waited for: it closes, from
+         * GLib's loop rather than Qt's event to m_qt, which goes with the
+         * window (closed()) - not while Qt delivers to it
+         */
         if (m_closeAfter.remove(id) && m_closeAfter.isEmpty()) {
-            QTimer::singleShot(0, m_qt.get(), [this]() {
-                if (m_window) {
-                    gtk_window_close(GTK_WINDOW(m_window));
+            g_idle_add_once([](gpointer self) {
+                auto *window = static_cast<MainWindow *>(self);
+                if (window->m_window) {
+                    gtk_window_close(GTK_WINDOW(window->m_window));
                 }
-            });
+            }, this);
         }
     } else {
         /* a new run, started here or found running (attach) */
@@ -760,16 +764,16 @@ void MainWindow::updateWaiting()
 {
     QStringList names;
 
-    if (m_closeAfter.isEmpty()) {
-        return;
-    }
     for (const QString &id : std::as_const(m_closeAfter)) {
         if (const Vm *vm = m_store->find(id)) {
             names << vm->name();
         }
     }
     names.sort();
-    notify(QString("Waiting for %1 to shut down, then closing").arg(names.join(", ")), 600000);
+    m_page->setClosing(names.isEmpty()
+                           ? QString()
+                           : QString("Waiting for %1 to shut down, then closing")
+                                 .arg(names.join(", ")));
 }
 
 void MainWindow::start()
@@ -1113,6 +1117,7 @@ bool MainWindow::closeRequested()
     /* asked again: what the user answers now goes */
     m_closeAfter.clear();
     m_shutDownOnceUp.clear();
+    updateWaiting();
 
     /*
      * VMs outlive the window, but those shown in it go on without a
