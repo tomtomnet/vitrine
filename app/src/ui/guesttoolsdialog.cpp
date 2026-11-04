@@ -241,12 +241,25 @@ static QString what(Vm *vm, const GuestTools::Medium &medium)
     }
     what += GuestToolsDialog::tr("<li>the vitrine agent, which tells vitrine how the guest is "
                                  "doing</li></ul>");
-    what += GuestToolsDialog::tr("<p>Mesa, KWin and KPipeWire then stay at these versions until "
-                                 "the next guest tools, and so do Qt Base and the guest's Plasma "
-                                 "with vitrine's KWin. "
-                                 "KSvg, Kirigami and Qt Base otherwise give way to Fedora's next "
-                                 "build of them. The guest needs the network: dkms, the kernel "
-                                 "headers and a newer Plasma come from Fedora.</p>");
+    /* what stays at its version: of what the medium has (Fedora 45's has no KDE packages) */
+    const bool kdePackages = !medium.kwin.isEmpty() || !medium.kpipewire.isEmpty() ||
+                             !medium.qtbase.isEmpty() || !medium.ksvg.isEmpty() ||
+                             !medium.kirigami.isEmpty();
+    if (kdePackages) {
+        what += GuestToolsDialog::tr("<p>Mesa, KWin and KPipeWire then stay at these versions "
+                                     "until the next guest tools, and so do Qt Base and the "
+                                     "guest's Plasma with vitrine's KWin. "
+                                     "KSvg, Kirigami and Qt Base otherwise give way to Fedora's "
+                                     "next build of them. The guest needs the network: dkms, the "
+                                     "kernel headers and a newer Plasma come from Fedora.</p>");
+    } else if (!medium.mesa.isEmpty()) {
+        what += GuestToolsDialog::tr("<p>Mesa then stays at this version until the next guest "
+                                     "tools. The guest needs the network: dkms and the kernel "
+                                     "headers come from Fedora.</p>");
+    } else {
+        what += GuestToolsDialog::tr("<p>The guest needs the network: dkms and the kernel headers "
+                                     "come from Fedora.</p>");
+    }
     what += running ? GuestToolsDialog::tr("<p><b>vitrine shuts the VM down and starts it again"
                                            "</b> with the tools medium. The guest installs them "
                                            "before its desktop starts, which takes a few "

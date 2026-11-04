@@ -569,6 +569,29 @@ private slots:
         QVERIFY2(text.contains("give way to Fedora's next build"), qPrintable(text));
     }
 
+    /* A medium without KDE's packages (Fedora 45's): Mesa alone stays at its version */
+    void namesWhatAMediumWithoutKdeKeeps()
+    {
+        const QString manifest = dataDir() + "/vitrine-guest-tools-fc44.json";
+        const auto restore = qScopeGuard([this]() {
+            writeMedium();
+            GuestToolsBuilder::instance()->checkMedium();
+        });
+        QVERIFY(writeFile(manifest, R"({"label": "VITRINETOOL", "mediumId": "a1b2c3d4e5f60719",
+                                        "fedora": "44", "tools": "0.1.0-32.fc44",
+                                        "mesa": "26.2.6-1.xe.fc44", "packages": []})"));
+        GuestToolsBuilder::instance()->checkMedium();
+        GuestToolsDialog::run(m_window, vm());
+        GuestToolsDialog *dialog = GuestToolsDialog::of(vm());
+        QVERIFY(dialog);
+        const QString text = textOf(dialog);
+        QVERIFY2(text.contains("Mesa 26.2.6-1.xe.fc44 with native context") &&
+                     text.contains("Mesa then stays at this version"),
+                 qPrintable(text));
+        /* (the guest's name says Plasma: what it runs) */
+        QVERIFY2(!text.contains("KWin") && !text.contains("newer Plasma"), qPrintable(text));
+    }
+
     /* What the buttons say follows the VM, which may start or stop meanwhile */
     void followsTheVm()
     {
