@@ -17,6 +17,7 @@ typedef struct _GDBusMethodInvocation GDBusMethodInvocation;
 typedef struct _GVariant GVariant;
 typedef struct _GVariantType GVariantType;
 typedef struct _GdkClipboard GdkClipboard;
+typedef struct _GdkContentProvider GdkContentProvider;
 typedef struct _GdkDisplay GdkDisplay;
 
 /*
@@ -32,8 +33,11 @@ typedef struct _GdkDisplay GdkDisplay;
  * loop stopped.  The guest's text is fetched as soon as it copies, and put
  * in the host clipboard.  On Wayland a client sets the clipboard with the
  * serial of its last input, which KWin refuses when the clipboard was set
- * after that input: the host's text back within kRefusalMs means refused,
- * and the guest's text goes again at vitrine's next input (inputSeen()).
+ * after that input (another client's copy since).  GTK does not tell: it
+ * keeps the clipboard as its own.  So the guest's text is set once more at
+ * vitrine's next input (inputSeen()), whose serial KWin takes, unless the
+ * host copied something since; and, as in VmClipboard, the host's text back
+ * within kRefusalMs means refused.
  *
  * On the GUI thread; the object may go at any time.
  */
@@ -52,7 +56,7 @@ public:
     bool start(QString *error);
     bool isRegistered() const { return m_registered; }
     const ClipboardState &state() const { return m_state; }
-    /* The guest's text the compositor refused waits for vitrine's next input */
+    /* The guest's text waits for vitrine's next input, to be set again */
     bool waitsForInput() const { return m_pending.has_value(); }
     /* vitrine's input: a key or button pressed, the pointer in */
     void inputSeen();
@@ -71,7 +75,8 @@ private:
     void announce(bool again);
     void fetch();
     void fetched(uint32_t serial, GVariant *reply);
-    void setHostClipboard(const QString &text);
+    /* @again: the second time, at vitrine's next input */
+    void setHostClipboard(const QString &text, bool again = false);
     void call(const char *method, GVariant *args, const GVariantType *replyType, Done done,
               uintptr_t tag = 0);
 
@@ -84,6 +89,7 @@ private:
     GDBusConnection *m_conn = nullptr;
     GdkClipboard *m_clipboard = nullptr;
     GCancellable *m_cancel = nullptr;   // the host clipboard's reads
+    GdkContentProvider *m_ownContent = nullptr; // the guest's text as we put it there
     unsigned long m_changedId = 0;
     unsigned m_objectId = 0;
     bool m_registered = false;
@@ -95,7 +101,7 @@ private:
     std::optional<QString> m_attempt;
     QString m_hostBefore;
     QElapsedTimer m_attemptTime;
-    /* the guest's text the compositor refused, for vitrine's next input */
+    /* the guest's text, to set again at vitrine's next input */
     std::optional<QString> m_pending;
     /* for the completions that come after the object went */
     std::shared_ptr<bool> m_alive;

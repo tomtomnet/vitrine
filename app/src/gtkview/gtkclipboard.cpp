@@ -104,6 +104,9 @@ GtkVmClipboard::~GtkVmClipboard()
     if (m_changedId) {
         g_signal_handler_disconnect(m_clipboard, m_changedId);
     }
+    if (m_ownContent) {
+        g_object_unref(m_ownContent);
+    }
     g_object_unref(m_clipboard);
     if (m_objectId) {
         /* QEMU's calls in flight are refused from here on */
@@ -170,8 +173,9 @@ void GtkVmClipboard::callRegister(bool retry)
 
 void GtkVmClipboard::hostClipboardChanged()
 {
-    /* ours: the guest's text, put there by setHostClipboard() */
-    if (gdk_clipboard_is_local(m_clipboard)) {
+    /* ours: the guest's text, put there by setHostClipboard() - not what
+       another part of vitrine copied, which is the host's text as well */
+    if (m_ownContent && gdk_clipboard_get_content(m_clipboard) == m_ownContent) {
         return;
     }
     readHost();
@@ -298,16 +302,29 @@ void GtkVmClipboard::fetched(uint32_t serial, GVariant *reply)
     setHostClipboard(*text);
 }
 
-void GtkVmClipboard::setHostClipboard(const QString &text)
+void GtkVmClipboard::setHostClipboard(const QString &text, bool again)
 {
-    m_pending.reset();
+    /* once more at vitrine's next input, which KWin takes when it refused
+       this one: GTK does not tell (it keeps the clipboard as its own) */
+    if (again) {
+        m_pending.reset();
+    } else {
+        m_pending = text;
+    }
     m_attempt = text;
     m_hostBefore = m_state.hostText();
     m_attemptTime.start();
     m_state.hostSeen(text);
     qCDebug(lcGtkClipboard) << "guest text in the host clipboard, length" << text.size();
     /* ours from here: its own change is not read back (hostClipboardChanged()) */
-    gdk_clipboard_set_text(m_clipboard, text.toUtf8().constData());
+    if (m_ownContent) {
+        g_object_unref(std::exchange(m_ownContent, nullptr));
+    }
+    GdkContentProvider *content = gdk_content_provider_new_typed(
+        G_TYPE_STRING, text.toUtf8().constData());
+    m_ownContent = GDK_CONTENT_PROVIDER(g_object_ref(content));
+    gdk_clipboard_set_content(m_clipboard, content);
+    g_object_unref(content);
     if (hostClipboardSet) {
         hostClipboardSet(text);
     }
@@ -324,7 +341,7 @@ void GtkVmClipboard::inputSeen()
     g_idle_add_full(G_PRIORITY_DEFAULT, [](gpointer data) -> gboolean {
         auto *p = static_cast<Pending *>(data);
         if (!p->alive.expired() && p->self->m_pending) {
-            p->self->setHostClipboard(*p->self->m_pending);
+            p->self->setHostClipboard(*p->self->m_pending, true);
         }
         return G_SOURCE_REMOVE;
     }, pending, [](gpointer data) { delete static_cast<Pending *>(data); });
