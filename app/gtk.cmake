@@ -55,6 +55,10 @@ add_library(vitrine_gtk STATIC
     src/gtk/settingspage.h
     src/gtk/settingspages.cpp
     src/gtk/settingspages.h
+    src/gtk/sharespage.cpp
+    src/gtk/sharespage.h
+    src/gtk/storagepage.cpp
+    src/gtk/storagepage.h
     src/gtk/textdialog.cpp
     src/gtk/textdialog.h
     src/gtk/vmpage.cpp

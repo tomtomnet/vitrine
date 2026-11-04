@@ -12,6 +12,8 @@
 #include "gtk/argspage.h"
 #include "gtk/displaypage.h"
 #include "gtk/settingspages.h"
+#include "gtk/sharespage.h"
+#include "gtk/storagepage.h"
 #include "gtk/widgets.h"
 
 using Gtk4::utf8;
@@ -97,7 +99,9 @@ SettingsDialog::SettingsDialog(Vm *vm, VmStore *store, Presenter presenter,
     addPage(General, std::make_unique<GeneralPage>(vm));
     addPage(Hardware, std::make_unique<HardwarePage>());
     addPage(Display, std::make_unique<DisplayPage>());
+    addPage(Storage, std::make_unique<StoragePage>(vm->dir()));
     addPage(Network, std::make_unique<NetworkPage>(vm));
+    addPage(SharedFolders, std::make_unique<SharesPage>());
     addPage(Arguments, std::make_unique<ArgumentsPage>(vm->dir()));
 
     on<void()>(switcher, "activated",

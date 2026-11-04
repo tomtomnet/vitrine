@@ -18,10 +18,13 @@
 #include "core/vmrunner.h"
 #include "core/vmstore.h"
 #include "gtk/argspage.h"
+#include "gtk/displaypage.h"
 #include "gtk/gtkloop.h"
 #include "gtk/newvmdialog.h"
 #include "gtk/settingsdialog.h"
 #include "gtk/settingspages.h"
+#include "gtk/sharespage.h"
+#include "gtk/storagepage.h"
 #include "gtk/textdialog.h"
 #include "ui/uiconfig.h"
 #endif
@@ -246,6 +249,96 @@ private slots:
         }
         QVERIFY(settings->apply());
         QCOMPARE(vm->args().toText(), ArgsFile::parse(text).toText());
+        delete settings;
+    }
+
+    /* A new disk: created on Apply, in the VM folder, and in the boot order */
+    void storagePage()
+    {
+        QTemporaryDir dir;
+        QVERIFY(addVm(dir.path(), "s", "-name S\n-m 1G\n"));
+        VmStore store(dir.path());
+        Vm *vm = store.find("s");
+        auto *settings = new SettingsDialog(vm, &store, presenter());
+
+        settings->setPage(SettingsDialog::Storage);
+        auto *storage = static_cast<StoragePage *>(settings->pageWidget(SettingsDialog::Storage));
+        QVERIFY(storage->bootOrder().isEmpty());
+        storage->addDisk({}, 1, VmConfig::Disk::Virtio);
+        QCOMPARE(storage->bootOrder(), QStringList({"[x] Hard disk: disk.qcow2"}));
+        QVERIFY(settings->isModified());
+        /* nothing in the folder until applied */
+        QVERIFY(!QFileInfo::exists(QDir(vm->dir()).filePath("disk.qcow2")));
+        QVERIFY(settings->apply());
+        QVERIFY(QFileInfo::exists(QDir(vm->dir()).filePath("disk.qcow2")));
+        QCOMPARE(VmConfig::disks(vm->args()).value(0).file, "disk.qcow2");
+
+        /* a drive with a disc, in the firmware's order with the others, then an order: the disc
+           first */
+        storage->addCdrom("/nonexistent/install.iso");
+        QCOMPARE(storage->bootOrder(), QStringList({"[x] Hard disk: disk.qcow2",
+                                                    "[x] CD/DVD: install.iso"}));
+        storage->moveBoot(1, -1);
+        QCOMPARE(storage->bootOrder(), QStringList({"[x] CD/DVD: install.iso",
+                                                    "[x] Hard disk: disk.qcow2"}));
+        QVERIFY(settings->apply());
+        QCOMPARE(VmConfig::disks(vm->args()).size(), 2);
+        QVERIFY(VmConfig::hasBootOrder(vm->args()));
+        delete settings;
+    }
+
+    /* A share, and the shared memory virtiofs needs */
+    void sharesPage()
+    {
+        QTemporaryDir dir, folder;
+        QVERIFY(addVm(dir.path(), "f", "-name F\n-m 1G\n"));
+        VmStore store(dir.path());
+        Vm *vm = store.find("f");
+        auto *settings = new SettingsDialog(vm, &store, presenter());
+
+        QVERIFY(!VmConfig::hasSharedMemory(vm->args()));
+        settings->setPage(SettingsDialog::SharedFolders);
+        auto *shares = static_cast<SharesPage *>(settings->pageWidget(SettingsDialog::SharedFolders));
+        VmConfig::Share share;
+        share.tag = "docs";
+        share.path = folder.path();
+        share.readonly = true;
+        share.mount = "/mnt/docs";
+        shares->setShare(-1, share);
+        QVERIFY(settings->isModified());
+        QVERIFY(settings->apply());
+        const QList<VmConfig::Share> saved = VmConfig::shares(vm->args());
+        QCOMPARE(saved.size(), 1);
+        QCOMPARE(saved.first().tag, "docs");
+        QCOMPARE(saved.first().mount, "/mnt/docs");
+        QVERIFY(saved.first().readonly);
+        QVERIFY(VmConfig::hasSharedMemory(vm->args()));
+        QCOMPARE(VmConfig::memoryMiB(vm->args()), 1024);
+
+        shares->removeShare(0);
+        QVERIFY(settings->apply());
+        QVERIFY(VmConfig::shares(vm->args()).isEmpty());
+        delete settings;
+    }
+
+    /* The screen in Vitrine's window, from QEMU's SDL window */
+    void displayPage()
+    {
+        QTemporaryDir dir;
+        QVERIFY(addVm(dir.path(), "d", "-name D\n-m 1G\n-vga std\n-display sdl\n"));
+        VmStore store(dir.path());
+        Vm *vm = store.find("d");
+        auto *settings = new SettingsDialog(vm, &store, presenter());
+
+        settings->setPage(SettingsDialog::Display);
+        auto *display = static_cast<DisplayPage *>(settings->pageWidget(SettingsDialog::Display));
+        QVERIFY(display->displays().contains("dbus"));
+        QVERIFY(display->cards().contains("VGA"));
+        QVERIFY(!settings->isModified());
+        display->chooseDisplay("dbus");
+        QVERIFY(settings->isModified());
+        QVERIFY(settings->apply());
+        QCOMPARE(VmConfig::screen(vm->args()), VmConfig::Screen::Embedded);
         delete settings;
     }
 
