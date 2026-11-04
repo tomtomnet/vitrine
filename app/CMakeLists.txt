@@ -164,6 +164,8 @@ foreach(xml ${VMVIEW_PROTOCOLS})
 endforeach()
 
 qt_add_library(vitrine_vmview STATIC
+    src/vmview/clipboardstate.cpp
+    src/vmview/clipboardstate.h
     src/vmview/common.h
     src/vmview/dbusdisplay.cpp
     src/vmview/dbusdisplay.h
@@ -205,6 +207,7 @@ target_link_libraries(vitrine_vmview
 target_compile_definitions(vitrine_vmview PRIVATE QT_NO_KEYWORDS)
 # vitrine's own files there; the research side's build as they come
 set_source_files_properties(src/vmview/vmview.cpp src/vmview/vmclipboard.cpp
+    src/vmview/clipboardstate.cpp
     src/vmview/viewsurface.cpp src/nested/nestedview.cpp PROPERTIES COMPILE_OPTIONS "-Wall;-Wextra")
 
 # The nested desktop in the window: the research side's vmview library in

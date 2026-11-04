@@ -19,7 +19,9 @@ window, and VmView hands them to it); `viewsurface.{h,cpp}`: the Wayland
 surface the frames go to, vitrine's own, a subsurface of the display's
 window that Qt never touches; and `vmclipboard.{h,cpp}`: the host
 clipboard shared with the guest through the display's
-org.qemu.Display1.Clipboard.
+org.qemu.Display1.Clipboard, with what goes where in
+`clipboardstate.{h,cpp}` (Qt Core only: the GTK view's clipboard,
+`src/gtkview`, shares it).
 
 | file | what it does |
 |---|---|
