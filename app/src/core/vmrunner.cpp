@@ -1432,9 +1432,13 @@ QStringList VmRunner::Private::commandLine(const ArgsFile &args, const QString &
     if (guestAgent && !guestAgentFirst) {
         command += guestAgentPortArgs("vitrine-ga-serial");
     }
-    /* the guest tools asked for: the medium, and the unit that installs them at boot */
+    /* the guest tools asked for: the medium of the guest's Fedora release (as
+       it said, else of what the VM was made from), and the unit that
+       installs them at boot */
     const GuestTools::Pending tools = GuestTools::pending(id);
-    const GuestTools::Medium medium = GuestTools::medium();
+    const QString release = GuestTools::releaseOf(GuestTools::system(id), args, dir);
+    const GuestTools::Medium medium =
+        release.isEmpty() ? GuestTools::Medium() : GuestTools::medium(release);
     if (tools != GuestTools::Pending::None && medium.isValid() &&
         GuestTools::canBootstrap(args, qemu)) {
         command += GuestTools::mediumArgs(medium.image);

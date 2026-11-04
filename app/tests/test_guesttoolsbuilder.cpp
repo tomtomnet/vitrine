@@ -151,6 +151,8 @@ class TestGuestToolsBuilder : public QObject
     /* A builder of @guest into folders of @name */
     void setUp(GuestToolsBuilder &b, const QString &guest, const QString &name)
     {
+        /* Fedora 44's tools, as the medium's name says */
+        b.setRelease("44");
         b.setGuestDir(guest);
         b.setRpmsDir(m_tmp.filePath(name + "/rpms"));
         b.setCacheDir(m_tmp.filePath(name + "/cache"));
@@ -401,11 +403,15 @@ private slots:
                                     .arg(GuestToolsBuilder::inputsHash(guest, "tools"), medium)
                                     .toUtf8()));
         QCOMPARE(GuestToolsBuilder::state(guest, image), State::Outdated);
-        /* the app's own: in its data folder */
-        QCOMPARE(GuestToolsBuilder::mediumImage(), GuestTools::dataDir() +
-                                                       "/vitrine-guest-tools-fc44.img");
-        QVERIFY(GuestToolsBuilder::rpmsDir().startsWith(m_tmp.filePath("data/vitrine/")));
-        QVERIFY(GuestToolsBuilder::cacheDir().startsWith(m_tmp.filePath("cache/vitrine/")));
+        /* the app's own: in its data folder, one of each per Fedora release */
+        QCOMPARE(GuestToolsBuilder::mediumImage("44"), GuestTools::dataDir() +
+                                                           "/vitrine-guest-tools-fc44.img");
+        QCOMPARE(GuestToolsBuilder::mediumImage("45"), GuestTools::dataDir() +
+                                                           "/vitrine-guest-tools-fc45.img");
+        QCOMPARE(GuestToolsBuilder::rpmsDir("45"), GuestTools::dataDir() + "/rpms/fc45");
+        QVERIFY(GuestToolsBuilder::rpmsDir("44").startsWith(m_tmp.filePath("data/vitrine/")));
+        QVERIFY(GuestToolsBuilder::cacheDir("44").startsWith(m_tmp.filePath("cache/vitrine/")));
+        QVERIFY(GuestToolsBuilder::cacheDir("45").endsWith("/guest-build/fc45"));
     }
 
     /* The packages not built from these sources, then the medium */
@@ -436,6 +442,74 @@ private slots:
         QVERIFY(write(rpms + "/mesa/.inputs", GuestToolsBuilder::inputsHash(guest, "mesa").toUtf8()));
         QVERIFY(write(rpms + "/kwin/.inputs", GuestToolsBuilder::inputsHash(guest, "kwin").toUtf8()));
         QCOMPARE(names(), QStringList({"medium"}));
+    }
+
+    /*
+     * One Fedora release's tools: its packages (components.conf's releases=),
+     * its plan and its medium's state; the real build-rpms.sh's packages for
+     * each release, as the app's
+     */
+    void perRelease()
+    {
+        const QString guest = guestDir("release-guest", true);
+        QVERIFY(!guest.isEmpty());
+        QVERIFY(write(guest + "/components.conf",
+                      "[tools]\nspec=tools/vitrine-guest-tools.spec\n"
+                      "[mesa]\nspec=mesa/mesa.spec\nheavy=1\n"
+                      "[kwin]\nspec=kwin/kwin.spec\nheavy=1\nreleases=44\n"
+                      "[medium]\nkind=medium\ndeps=tools mesa kwin\n"));
+        QCOMPARE(GuestToolsBuilder::packages(guest), QStringList({"tools", "mesa", "kwin"}));
+        QCOMPARE(GuestToolsBuilder::packages(guest, "44"), QStringList({"tools", "mesa", "kwin"}));
+        QCOMPARE(GuestToolsBuilder::packages(guest, "45"), QStringList({"tools", "mesa"}));
+        QStringList names;
+        for (const GuestToolsBuilder::Step &s :
+             GuestToolsBuilder::plan(guest, m_tmp.filePath("release-rpms"), "45")) {
+            names << s.name;
+        }
+        QCOMPARE(names, QStringList({"tools", "mesa", "medium"}));
+
+        /* the medium of 45: up to date without KWin, which is not built for it */
+        const QString image = m_tmp.filePath("release/vitrine-guest-tools-fc45.img");
+        QVERIFY(write(image, "image\n"));
+        QVERIFY(write(GuestToolsBuilder::manifestOf(image),
+                      QString(R"({"mediumId": "b", "fedora": "45", "tools": "0.1.0-14.fc45",
+                                  "inputs": {"tools": "%1", "mesa": "%2", "medium": "%3"}})")
+                          .arg(GuestToolsBuilder::inputsHash(guest, "tools"),
+                               GuestToolsBuilder::inputsHash(guest, "mesa"),
+                               GuestToolsBuilder::mediumHash(guest))
+                          .toUtf8()));
+        QCOMPARE(GuestToolsBuilder::state(guest, image, "45"), State::UpToDate);
+        /* as 44's, it lacks KWin */
+        QCOMPARE(GuestToolsBuilder::state(guest, image, "44"), State::Outdated);
+
+        /* the script's packages for each release, as the app's */
+        for (const QString &release : {QString("44"), QString("45")}) {
+            QProcessEnvironment env = QProcessEnvironment::systemEnvironment();
+            env.insert("FEDORA_RELEASE", release);
+            int status = -1;
+            const QString printed = run("bash", {guest + "/build-rpms.sh", "--print-inputs"},
+                                        &status, env);
+            QCOMPARE(status, 0);
+            QStringList listed;
+            for (const QString &line : printed.split('\n', Qt::SkipEmptyParts)) {
+                listed << line.section(' ', 0, 0);
+            }
+            QCOMPARE(listed, GuestToolsBuilder::packages(guest, release));
+        }
+        /* a package not built for the release, asked for: refused */
+        QProcessEnvironment env = QProcessEnvironment::systemEnvironment();
+        env.insert("FEDORA_RELEASE", "45");
+        int status = -1;
+        const QString refused = run("bash", {guest + "/build-rpms.sh", "--print-inputs", "kwin"},
+                                    &status, env);
+        QCOMPARE(status, 2);
+        QVERIFY2(refused.contains("kwin is not built for Fedora 45"), qPrintable(refused));
+
+        /* a builder builds the newest release's until told another */
+        GuestToolsBuilder b;
+        QCOMPARE(b.release(), GuestTools::newestRelease());
+        b.setRelease("44");
+        QCOMPARE(b.release(), "44");
     }
 
     /* The steps, their phases and progress from the scripts' lines, and the medium */
@@ -945,6 +1019,7 @@ int main(int argc, char **argv)
     /* stopsWhenVitrineDies()'s vitrine: it builds until killed */
     if (const QString guest = qEnvironmentVariable("BUILDER_CHILD"); !guest.isEmpty()) {
         GuestToolsBuilder builder;
+        builder.setRelease("44");
         builder.setGuestDir(guest);
         builder.setRpmsDir(qEnvironmentVariable("BUILDER_RPMS"));
         builder.setCacheDir(qEnvironmentVariable("BUILDER_RPMS") + "/../cache");

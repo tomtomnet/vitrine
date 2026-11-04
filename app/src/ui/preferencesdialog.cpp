@@ -17,6 +17,7 @@
 #include <QUrl>
 #include <QVBoxLayout>
 
+#include "core/buildmanager.h"
 #include "core/guesttoolsbuilder.h"
 #include "core/paths.h"
 #include "core/stackbuilder.h"
@@ -137,6 +138,8 @@ PreferencesDialog::PreferencesDialog(QWidget *parent)
     connect(tools, &GuestToolsBuilder::stepStarted, this, &PreferencesDialog::updateTools);
     connect(tools, &GuestToolsBuilder::waitingChanged, this, &PreferencesDialog::updateTools);
     connect(tools, &GuestToolsBuilder::finished, this, &PreferencesDialog::updateTools);
+    connect(BuildManager::instance(), &BuildManager::guestReleaseChanged, this,
+            &PreferencesDialog::updateTools);
     connect(vmsChange, &QPushButton::clicked, this, [this]() {
         const QString dir = QFileDialog::getExistingDirectory(this, tr("Folder of the VMs"),
                                                               m_vmsDir);
@@ -181,11 +184,13 @@ void PreferencesDialog::updateStack()
 void PreferencesDialog::updateTools()
 {
     const GuestToolsBuilder *builder = GuestToolsBuilder::instance();
-    const GuestToolsBuilder::State state = GuestToolsBuilder::state();
+    /* the release the Builds window shows: the newest, unless another was chosen */
+    const QString release = BuildManager::instance()->guestRelease();
+    const GuestToolsBuilder::State state = GuestToolsBuilder::releaseState(release);
     const bool running = builder->isRunning();
 
-    m_tools->setText(BuildsWindow::describeGuestTools().toHtmlEscaped());
-    m_tools->setToolTip(GuestToolsBuilder::mediumImage());
+    m_tools->setText(BuildsWindow::describeGuestTools(release).toHtmlEscaped());
+    m_tools->setToolTip(GuestToolsBuilder::mediumImage(release));
     m_toolsState->setText(
         running ? tr("Building: %1.").arg(builder->progressText(false))
                       .toHtmlEscaped()

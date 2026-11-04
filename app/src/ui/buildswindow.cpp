@@ -3,6 +3,7 @@
 
 #include <QApplication>
 #include <QClipboard>
+#include <QComboBox>
 #include <QDesktopServices>
 #include <QDialogButtonBox>
 #include <QDirIterator>
@@ -73,11 +74,13 @@ QString groupOf(Kind kind)
     }
 }
 
-QString groupTitle(const QString &group)
+/* The guest tools' with their Fedora release */
+QString groupTitle(const QString &group, const QString &guestRelease)
 {
-    return group == "host"     ? BuildsWindow::tr("Vitrine's QEMU")
-           : group == "system" ? BuildsWindow::tr("Host desktop")
-                               : BuildsWindow::tr("Guest tools");
+    return group == "host"       ? BuildsWindow::tr("Vitrine's QEMU")
+           : group == "system"   ? BuildsWindow::tr("Host desktop")
+           : guestRelease.isEmpty() ? BuildsWindow::tr("Guest tools")
+                                 : BuildsWindow::tr("Guest tools for Fedora %1").arg(guestRelease);
 }
 
 /* A host package's icon: what it is to the user, rather than to a build */
@@ -247,11 +250,11 @@ QString BuildsWindow::explain(StackBuilder::State state, const StackBuilder::Bui
     return {};
 }
 
-QString BuildsWindow::describeGuestTools()
+QString BuildsWindow::describeGuestTools(const QString &fedora)
 {
-    const GuestTools::Medium medium = GuestTools::medium();
-    const QString release = ".fc" + QString(GuestTools::kFedoraRelease);
-    const QDateTime built = GuestToolsBuilder::made(GuestToolsBuilder::mediumImage()).built;
+    const GuestTools::Medium medium = GuestTools::medium(fedora);
+    const QString release = ".fc" + fedora;
+    const QDateTime built = GuestToolsBuilder::made(GuestToolsBuilder::mediumImage(fedora)).built;
     QString tools = medium.tools;
     QStringList parts;
 
@@ -306,7 +309,8 @@ QString BuildsWindow::duration(qint64 ms)
     return tr("%1 h %2 min").arg(minutes / 60).arg(minutes % 60);
 }
 
-BuildsWindow *BuildsWindow::present(QWidget *from, const QString &component)
+BuildsWindow *BuildsWindow::present(QWidget *from, const QString &component,
+                                    const QString &guestRelease)
 {
     static QPointer<BuildsWindow> open;
     QWidget *parent = from ? from->window() : nullptr;
@@ -320,6 +324,10 @@ BuildsWindow *BuildsWindow::present(QWidget *from, const QString &component)
         open = new BuildsWindow(parent);
         open->setAttribute(Qt::WA_DeleteOnClose);
     }
+    /* a VM's: its release's medium (a run keeps its own) */
+    if (!guestRelease.isEmpty()) {
+        BuildManager::instance()->setGuestRelease(guestRelease);
+    }
     if (!component.isEmpty()) {
         open->select(component);
     }
@@ -331,7 +339,8 @@ BuildsWindow *BuildsWindow::present(QWidget *from, const QString &component)
 
 BuildsWindow::BuildsWindow(QWidget *parent)
     : QDialog(parent), m_manager(BuildManager::instance()), m_memory(new Banner(Banner::Warning)),
-      m_header(Widgets::note()), m_missing(Widgets::note()), m_tree(new QTreeWidget),
+      m_header(Widgets::note()), m_missing(Widgets::note()), m_release(new QComboBox),
+      m_tree(new QTreeWidget),
       m_tabs(new QTabWidget), m_source(Widgets::note()), m_patches(new QTreeWidget),
       m_patchText(new QPlainTextEdit), m_log(new QPlainTextEdit), m_background(Widgets::hint()),
       m_cache(new QLabel), m_clear(new QPushButton(tr("C&lear…"))), m_build(new QPushButton),
@@ -360,6 +369,20 @@ BuildsWindow::BuildsWindow(QWidget *parent)
     m_missing->setTextInteractionFlags(Qt::TextBrowserInteraction);
     m_missing->hide();
     layout->addWidget(m_missing);
+
+    /* the guest tools of one Fedora release at a time: each has its medium */
+    auto *releaseRow = new QHBoxLayout;
+    auto *releaseLabel = new QLabel(tr("&Guest tools for:"));
+    m_release->setObjectName("guestRelease");
+    for (const QString &r : GuestTools::releases()) {
+        m_release->addItem(tr("Fedora %1").arg(r), r);
+    }
+    m_release->setCurrentIndex(m_release->findData(m_manager->guestRelease()));
+    releaseLabel->setBuddy(m_release);
+    releaseRow->addWidget(releaseLabel);
+    releaseRow->addWidget(m_release);
+    releaseRow->addStretch(1);
+    layout->addLayout(releaseRow);
 
     /* the components, by what they make */
     m_tree->setObjectName("components");
@@ -470,6 +493,19 @@ BuildsWindow::BuildsWindow(QWidget *parent)
     connect(m_revert, &QPushButton::clicked, this,
             [this]() { HostKdeDialog::revert(this, {selected()}); });
     connect(m_clear, &QPushButton::clicked, this, &BuildsWindow::clearCache);
+    connect(m_release, &QComboBox::activated, this, [this]() {
+        /* refused during a run: back to the release it builds */
+        if (!m_manager->setGuestRelease(m_release->currentData().toString())) {
+            m_release->setCurrentIndex(m_release->findData(m_manager->guestRelease()));
+        }
+    });
+    connect(m_manager, &BuildManager::guestReleaseChanged, this, [this]() {
+        m_release->setCurrentIndex(m_release->findData(m_manager->guestRelease()));
+        fill();
+        showDetails();
+        updateButtons();
+        updateHeader();
+    });
     connect(m_memory->button(), &QPushButton::clicked, m_manager, &BuildManager::proceed);
     connect(m_tree, &QTreeWidget::currentItemChanged, this, &BuildsWindow::showDetails);
     connect(m_tree, &QTreeWidget::customContextMenuRequested, this, &BuildsWindow::contextMenu);
@@ -625,7 +661,7 @@ void BuildsWindow::fill()
         QTreeWidgetItem *parent = m_groups.value(group);
         if (!parent) {
             parent = new QTreeWidgetItem(m_tree);
-            parent->setText(NameColumn, groupTitle(group));
+            parent->setText(NameColumn, groupTitle(group, m_manager->guestRelease()));
             parent->setData(NameColumn, IdRole, group);
             QFont bold = parent->font(NameColumn);
             bold.setBold(true);
@@ -948,10 +984,10 @@ void BuildsWindow::showSource()
                         "pointer grab inside Vitrine's Desktop view, popups and resizes that cost "
                         "less. Vitrine builds each only when asked, and installs it only with the "
                         "administrator's password.</p>")
-                   : tr("<p><b>The guest tools</b>: the packages Fedora guests install from the "
-                        "medium, built in a Fedora %1 container with podman, and the medium "
-                        "itself.</p>")
-                         .arg(GuestTools::kFedoraRelease);
+                   : tr("<p><b>The guest tools for Fedora %1</b>: the packages Fedora %1 guests "
+                        "install from the medium, built in a Fedora %1 container with podman, "
+                        "and the medium itself. Each Fedora release has its own: %2.</p>")
+                         .arg(m_manager->guestRelease(), GuestTools::supportedSystems());
         html += "<ul><li>" + parts.join("</li><li>") + "</li></ul>";
         m_source->setText(html);
         return;
@@ -1271,6 +1307,7 @@ void BuildsWindow::updateButtons()
                      : built && !todo.isEmpty() ? tr("&Update %1").arg(title)
                                                 : tr("&Build %1").arg(title));
     m_build->setEnabled(!running && !todo.isEmpty());
+    m_release->setEnabled(!running);
     const QStringList plan = todo.isEmpty() ? QStringList() : m_manager->plan(todo);
     QStringList titles;
     for (const QString &c : plan) {

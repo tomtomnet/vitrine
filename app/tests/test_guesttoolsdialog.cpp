@@ -157,6 +157,8 @@ class TestGuestToolsDialog : public QObject
         }
         qputenv("GATE", ("tools:" + dir + "/go").toUtf8());
         GuestToolsBuilder *b = GuestToolsBuilder::instance();
+        /* the medium of the VMs' release (Fedora 44 guests) */
+        b->setRelease("44");
         b->setGuestDir(dir + "/guest");
         b->setRpmsDir(dir + "/rpms");
         b->setCacheDir(dir + "/cache");
@@ -209,7 +211,7 @@ private slots:
         Paths::setQemuBinary(testQemu());
         QDir(dataDir()).removeRecursively();
         writeMedium();
-        QVERIFY(medium().isValid());
+        QVERIFY(medium("44").isValid());
         QDir().mkpath(m_tmp.filePath("vms/tools"));
         QFile args(m_tmp.filePath("vms/tools/vm.args"));
         QVERIFY(args.open(QIODevice::WriteOnly));
@@ -243,6 +245,10 @@ private slots:
                               QByteArray(kVm).replace("Tools Test", "Slow Test") +
                               "-drive file=disk.qcow2,format=qcow2,if=virtio\n"));
         QVERIFY(writeFile(m_tmp.filePath("vms/slow/disk.qcow2"), {}));
+        /* Fedora 44 guests, as their agents said: the medium of 44 is theirs */
+        for (const char *id : {"tools", "disk", "slow"}) {
+            setSystem(id, System{"fedora", "44", "Fedora Linux 44 (KDE Plasma Desktop Edition)"});
+        }
         m_store = new VmStore(m_tmp.filePath("vms"), this);
         QVERIFY(vm());
         QVERIFY(diskVm());
@@ -260,6 +266,7 @@ private slots:
             const bool off = QTest::qWaitFor([v]() { return !v->runner()->isActive(); }, 15000);
             Q_UNUSED(off);
             setPending(v->id(), Pending::None);
+            setSystem(v->id(), {});
         }
         delete m_window;
         QDir(dataDir()).removeRecursively();

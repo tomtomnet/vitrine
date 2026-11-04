@@ -94,14 +94,27 @@ void GuestToolsDialog::run(QWidget *parent, Vm *vm)
  * replaces, and offer an update a few minutes later (the user saw Install
  * open during one)
  */
-static bool mediumBeingBuilt()
+static bool mediumBeingBuilt(const QString &release)
 {
     const BuildManager *builds = BuildManager::instance();
     const GuestToolsBuilder *builder = GuestToolsBuilder::instance();
 
-    return (builds && builds->isRunning() &&
+    /* of the guest's release: another release's medium is not the one it gets */
+    return (builds && builds->isRunning() && builds->guestRelease() == release &&
             (builds->current() == "medium" || builds->queue().contains("medium"))) ||
-           (builder && builder->isRunning());
+           (builder && builder->isRunning() && builder->runRelease() == release);
+}
+
+/* The release whose tools @vm gets, and its medium if built */
+static QString toolsRelease(Vm *vm)
+{
+    return GuestToolsMonitor::of(vm)->release();
+}
+
+static GuestTools::Medium mediumOf(Vm *vm)
+{
+    const QString release = toolsRelease(vm);
+    return release.isEmpty() ? GuestTools::Medium() : GuestTools::medium(release);
 }
 
 static QString notBuilt()
@@ -154,13 +167,13 @@ static QString obstacle(Vm *vm, const GuestTools::Medium &medium)
 }
 
 /* Whom the tools are for, and what @vm's guest runs, as far as it said */
-static QString forWhom(Vm *vm, const GuestTools::Medium &medium)
+static QString forWhom(Vm *vm)
 {
     const GuestToolsMonitor *monitor = GuestToolsMonitor::of(vm);
     const QString text =
         GuestToolsDialog::tr("The guest tools are for %1 guests: they make them run well in "
                              "vitrine.")
-            .arg(GuestTools::supportedSystems(medium).toHtmlEscaped());
+            .arg(GuestTools::supportedSystems().toHtmlEscaped());
 
     /* another system: the warning under it says so */
     if (monitor->unsupported()) {
@@ -182,7 +195,7 @@ static QString what(Vm *vm, const GuestTools::Medium &medium)
     const bool running = vm->runner()->isActive();
     QString what;
 
-    what = "<p>" + forWhom(vm, medium) + "</p>";
+    what = "<p>" + forWhom(vm) + "</p>";
     what += GuestToolsDialog::tr("<p>They install:</p><ul>");
     what += GuestToolsDialog::tr("<li>vitrine's virtio-gpu driver, built again for each new "
                                  "kernel (DKMS), with its settings</li>");
@@ -245,7 +258,8 @@ static QString what(Vm *vm, const GuestTools::Medium &medium)
 }
 
 GuestToolsDialog::GuestToolsDialog(Vm *vm, QWidget *parent)
-    : QDialog(parent), m_vm(vm), m_what(Widgets::note()), m_warning(new Banner(Banner::Warning)),
+    : QDialog(parent), m_vm(vm), m_what(Widgets::note()), m_build(new GuestToolsBuildBanner),
+      m_warning(new Banner(Banner::Warning)),
       m_progress(Widgets::note()),
       m_snapshot(new QCheckBox(tr("Take a snapshot of the disks first"))),
       m_buttons(new QDialogButtonBox(QDialogButtonBox::Cancel)), m_wait(new QTimer(this))
@@ -253,7 +267,7 @@ GuestToolsDialog::GuestToolsDialog(Vm *vm, QWidget *parent)
     const GuestToolsMonitor *monitor = GuestToolsMonitor::of(vm);
     const bool update = !monitor->report().tools.isEmpty();
     auto *layout = new QVBoxLayout(this);
-    auto *build = new GuestToolsBuildBanner;
+    auto *build = m_build;
 
     setWindowTitle(update ? tr("Update Guest Tools") : tr("Install Guest Tools"));
     layout->addWidget(m_what);
@@ -338,14 +352,18 @@ void GuestToolsDialog::refresh()
         return;
     }
     const bool running = m_vm->runner()->isActive();
-    const GuestTools::Medium medium = GuestTools::medium();
+    const QString release = toolsRelease(m_vm);
+    const GuestTools::Medium medium = mediumOf(m_vm);
     const QString problem = obstacle(m_vm, medium);
+
+    /* what the guest said it runs may have changed it */
+    m_build->setRelease(release.isEmpty() ? GuestTools::newestRelease() : release);
 
     m_what->setText(what(m_vm, medium));
     /* the medium missing: the build banner tells it */
     m_warning->setText(problem.toHtmlEscaped());
     m_warning->setVisible(!problem.isEmpty() && problem != notBuilt());
-    const bool building = mediumBeingBuilt();
+    const bool building = mediumBeingBuilt(release);
 
     if (building) {
         m_install->setText(running ? tr("&Restart and Install When Built")
@@ -375,11 +393,11 @@ void GuestToolsDialog::buildDone(const QString &error)
         return;
     }
     /* a run of the host only, or a part of the run: the medium is still to come */
-    if (mediumBeingBuilt()) {
+    if (mediumBeingBuilt(toolsRelease(m_vm))) {
         return;
     }
     m_step = Step::Idle;
-    if (const QString problem = obstacle(m_vm, GuestTools::medium()); !problem.isEmpty()) {
+    if (const QString problem = obstacle(m_vm, mediumOf(m_vm)); !problem.isEmpty()) {
         stopWaiting(problem);
         return;
     }
@@ -457,7 +475,7 @@ void GuestToolsDialog::go(bool medium)
     m_install->setEnabled(false);
     m_mediumButton->setEnabled(false);
     m_snapshot->setEnabled(false);
-    if (mediumBeingBuilt()) {
+    if (mediumBeingBuilt(toolsRelease(m_vm))) {
         m_step = Step::WaitingForBuild;
         setProgress(tr("The guest tools install as soon as the build under way is done."));
         return;

@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: GPL-2.0-or-later
 #include "guesttools.h"
 
+#include <QDir>
 #include <QFile>
 #include <QFileInfo>
 #include <QJsonArray>
@@ -25,8 +26,19 @@ namespace GuestTools {
 const char kLabel[] = "VITRINETOOL";
 const char kPortName[] = "org.vitrine.agent.0";
 const char kPortId[] = "vitrine-agent-port";
-const char kFedoraRelease[] = "44";
 const int kStatsProtocol = 2;
+
+QStringList releases()
+{
+    /* Fedora 45's medium has the tools and Mesa; the KDE packages are Fedora
+       44's for now (guest/components.conf's releases=) */
+    return {QStringLiteral("44"), QStringLiteral("45")};
+}
+
+QString newestRelease()
+{
+    return releases().constLast();
+}
 
 /* No hello this long after the guest started: no agent */
 static const int kGraceMs = 90000;
@@ -122,17 +134,88 @@ bool supports(const System &system, const Medium &medium)
 {
     /* the installer refuses another release: the medium's dnf repository
        has its packages, built for that one */
-    if (system.id == "fedora") {
-        return !medium.isValid() || medium.fedora.isEmpty() || system.version == medium.fedora;
+    if (system.id != "fedora" || !releases().contains(system.version)) {
+        return false;
     }
-    return false;
+    return !medium.isValid() || medium.fedora.isEmpty() || system.version == medium.fedora;
 }
 
-QString supportedSystems(const Medium &medium)
+QString supportedSystems()
 {
-    return QObject::tr("Fedora %1")
-        .arg(medium.isValid() && !medium.fedora.isEmpty() ? medium.fedora
-                                                          : QString(kFedoraRelease));
+    const QStringList list = releases();
+
+    if (list.size() == 1) {
+        return QObject::tr("Fedora %1").arg(list.first());
+    }
+    return QObject::tr("Fedora %1 and %2").arg(list.mid(0, list.size() - 1).join(", "), list.last());
+}
+
+QString releaseFor(const System &system)
+{
+    return system.id == "fedora" && releases().contains(system.version) ? system.version
+                                                                        : QString();
+}
+
+QString imageRelease(const QString &name)
+{
+    /*
+     * Fedora's image names and volume labels: Fedora-Workstation-Live-45-1.6
+     * .x86_64.iso, Fedora-KDE-Desktop-Live-44-1.7.x86_64.iso, Fedora-Server-
+     * dvd-x86_64-45-1.4.iso; Fedora-WS-Live-45-1-6, Fedora-E-dvd-x86_64-45.
+     * The release is the first number of its own after "Fedora": not the
+     * 64 of x86_64, nor a rawhide's date
+     */
+    static const QRegularExpression release("fedora.*?[- ](\\d{2,3})(?=[-_. ]|$)",
+                                            QRegularExpression::CaseInsensitiveOption);
+    const QRegularExpressionMatch m = release.match(name);
+
+    return m.hasMatch() ? m.captured(1) : QString();
+}
+
+QString isoLabel(const QString &path)
+{
+    /* ISO 9660's primary volume descriptor, at sector 16: type 1, "CD001",
+       and the volume identifier at bytes 40 to 71, padded with spaces */
+    QFile f(path);
+    QByteArray pvd;
+
+    if (path.isEmpty() || !f.open(QIODevice::ReadOnly) || !f.seek(16 * 2048)) {
+        return {};
+    }
+    pvd = f.read(72);
+    if (pvd.size() < 72 || pvd.at(0) != 1 || pvd.mid(1, 5) != "CD001") {
+        return {};
+    }
+    return QString::fromLatin1(pvd.mid(40, 32)).trimmed();
+}
+
+QString releaseOf(const System &system, const ArgsFile &args, const QString &vmDir)
+{
+    QStringList images;
+
+    /* what the guest said, which tells another system too */
+    if (system.isKnown()) {
+        return releaseFor(system);
+    }
+    /* what it was made from: the installation image in its drives */
+    for (const VmConfig::Disk &disk : VmConfig::disks(args)) {
+        if (!disk.file.isEmpty() &&
+            (disk.cdrom || disk.file.endsWith(".iso", Qt::CaseInsensitive))) {
+            images << (vmDir.isEmpty() ? disk.file : QDir(vmDir).absoluteFilePath(disk.file));
+        }
+    }
+    /* by their names, then by what they say they are: renamed, or another name */
+    for (const QString &image : std::as_const(images)) {
+        if (const QString r = imageRelease(QFileInfo(image).fileName()); releases().contains(r)) {
+            return r;
+        }
+    }
+    for (const QString &image : std::as_const(images)) {
+        if (const QString r = imageRelease(isoLabel(image)); releases().contains(r)) {
+            return r;
+        }
+    }
+    return newestRelease();
 }
 
 /* The target of @qemu, qemu-system-TARGET; another name is the host's */
@@ -539,8 +622,8 @@ GuestToolsMonitor::GuestToolsMonitor(Vm *vm)
                       : last.startsWith("installed ") ? State::Installed
                                                       : State::Unknown;
     m_in.rememberedTools = last.section(' ', 1);
-    m_in.medium = GuestTools::medium();
     m_system = GuestTools::system(vm->id());
+    updateMedium();
 
     m_retry->setSingleShot(true);
     m_retry->setInterval(kRetryMs);
@@ -594,7 +677,7 @@ GuestToolsMonitor::GuestToolsMonitor(Vm *vm)
     connect(this, &GuestToolsMonitor::changed, this, &GuestToolsMonitor::remember);
     /* a new medium, built from the app or by hand: the VMs with older tools offer it */
     connect(GuestToolsBuilder::instance(), &GuestToolsBuilder::mediumChanged, this, [this]() {
-        m_in.medium = GuestTools::medium();
+        updateMedium();
         emit changed();
     });
     m_bootstrapTimer->setSingleShot(true);
@@ -674,7 +757,21 @@ bool GuestToolsMonitor::setSystem(const System &system)
     }
     m_system = system;
     GuestTools::setSystem(m_vm->id(), system);
+    /* another release's tools, or none */
+    updateMedium();
     return true;
+}
+
+QString GuestToolsMonitor::release() const
+{
+    return GuestTools::releaseOf(m_system, m_vm->args(), m_vm->dir());
+}
+
+void GuestToolsMonitor::updateMedium()
+{
+    const QString r = release();
+
+    m_in.medium = r.isEmpty() ? GuestTools::Medium() : GuestTools::medium(r);
 }
 
 bool GuestToolsMonitor::supported() const
@@ -726,7 +823,7 @@ void GuestToolsMonitor::runnerChanged()
             GuestTools::setPending(m_vm->id(), Pending::None);
         }
         m_in.pending = GuestTools::pending(m_vm->id());
-        m_in.medium = GuestTools::medium();
+        updateMedium();
         m_step.clear();
         m_error.clear();
         m_contexts->reset();
@@ -746,7 +843,7 @@ void GuestToolsMonitor::runnerChanged()
         m_in.agentSeen = false;
         m_in.installing = false;
         m_in.pending = GuestTools::pending(m_vm->id());
-        m_in.medium = GuestTools::medium();
+        updateMedium();
         m_retry->stop();
         m_grace->stop();
         m_poll->stop();
@@ -802,7 +899,7 @@ void GuestToolsMonitor::handle(const Message &m)
         m_in.agentSeen = true;
         m_in.report = m.report;
         m_in.installing = m.report.installing;
-        m_in.medium = GuestTools::medium();
+        updateMedium();
         setSystem(m.report.os);
         m_grace->stop();
         if (!m.report.tools.isEmpty() && !m.report.installing) {
@@ -972,13 +1069,13 @@ QString GuestToolsMonitor::text() const
             if (unsupported()) {
                 return tr("The guest did not install the guest tools at its start: they are "
                           "for %1, and this guest runs %2.")
-                    .arg(supportedSystems(m_in.medium).toHtmlEscaped(),
+                    .arg(supportedSystems().toHtmlEscaped(),
                          m_system.displayName().toHtmlEscaped());
             }
             return tr("The guest did not install the guest tools at its start: that needs "
                       "%1 with systemd 256 or later. To install them by hand, attach "
                       "the tools medium and run %2 in the guest.")
-                .arg(supportedSystems(m_in.medium).toHtmlEscaped(),
+                .arg(supportedSystems().toHtmlEscaped(),
                      code("sudo bash /run/media/$USER/" + QString(kLabel) + "/install"));
         }
         return tr("The guest tools are not installed in this VM: vitrine's graphics driver, "
@@ -1030,7 +1127,7 @@ QString GuestToolsMonitor::text() const
             .arg(m_in.medium.tools.toHtmlEscaped(), r.tools.toHtmlEscaped());
     case State::Unsupported:
         return tr("The guest tools are for %1; this guest runs %2.")
-            .arg(supportedSystems(m_in.medium).toHtmlEscaped(),
+            .arg(supportedSystems().toHtmlEscaped(),
                  r.os.displayName().toHtmlEscaped());
     }
     return {};

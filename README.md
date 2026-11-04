@@ -169,10 +169,12 @@ files it changes, and the guest packages compile through ccache.
    vitrine's back. `--uninstall` puts Fedora's builds of all of them back.
 
    A VM's Console and Details tabs offer them only once its guest has said
-   it runs Fedora 44: QEMU's guest agent tells at each boot (Fedora installs
-   qemu-guest-agent in VMs), the tools' agent once they are in. Other guests,
-   and guests that never said, get no offer; Install Guest Tools… shows what
-   the guest was found to run.
+   it runs Fedora 44 or 45: QEMU's guest agent tells at each boot (Fedora
+   installs qemu-guest-agent in VMs), the tools' agent once they are in.
+   Other guests, and guests that never said, get no offer; Install Guest
+   Tools… shows what the guest was found to run. A guest gets the medium of
+   its release; one that never said, that of the Fedora image the VM was
+   made from (its name or volume label), else Fedora 45's.
 
    After an update of vitrine, the guest tools medium may be out of date:
    Update… rebuilds only the packages whose sources changed, and VMs with

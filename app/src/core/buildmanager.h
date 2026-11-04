@@ -74,6 +74,15 @@ public:
     void setHistoryFile(const QString &path);
     void setLogDir(const QString &path);
 
+    /*
+     * The Fedora release whose guest tools (packages, medium) the
+     * components are and a run builds: GuestTools::newestRelease() until
+     * set (setPlaces(): its guestRelease).  Not while a run goes on, nor
+     * one the tools are not made for: false then.
+     */
+    QString guestRelease() const;
+    bool setGuestRelease(const QString &release);
+
     QList<Builds::Component> components() const;
     /* What HostKde makes of the host package of component @id now (Builds::Places::system) */
     HostKde::Status systemStatus(const QString &id) const { return places().system.value(id); }
@@ -135,6 +144,8 @@ signals:
     void progressChanged(const QString &id);
     /* The statuses were worked out again */
     void statusChanged();
+    /* Another guest release (setGuestRelease()): other components, statusChanged() follows */
+    void guestReleaseChanged();
     void output(const QString &id, const QString &text);
 
 private:
@@ -162,6 +173,7 @@ private:
 
     Builds::Places m_places;
     bool m_placesSet = false;
+    QString m_guestRelease;
     QPointer<StackBuilder> m_stack;
     QPointer<GuestToolsBuilder> m_tools;
     QPointer<HostKdeBuilder> m_hostKde;

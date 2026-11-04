@@ -15,6 +15,8 @@ class QTimer;
  * QEMU: the packages of guest/ in a Fedora container (guest/build-rpms.sh,
  * rootless podman), one after the other, then the medium the VMs install
  * them from (guest/build-medium.sh), where GuestTools::medium() finds it.
+ * Each Fedora release (GuestTools::releases()) has its packages and medium,
+ * built in a container of that release: a run builds one release's.
  *
  * Only the packages whose sources changed since their last build are built
  * again, by the scripts' notion: the hash of their inputs (inputsHash()),
@@ -90,18 +92,19 @@ public:
      * tree's app, else in the data folders; empty if none
      */
     static QString guestDir();
-    /* build-rpms.sh's output: <data>/guest-tools/rpms/fcRELEASE */
-    static QString rpmsDir();
+    /* build-rpms.sh's output for Fedora @release: <data>/guest-tools/rpms/fcRELEASE */
+    static QString rpmsDir(const QString &release);
     /* Its downloads, kept for the next build: <cache>/guest-build/fcRELEASE */
-    static QString cacheDir();
-    /* The medium build-medium.sh makes, where GuestTools::medium() reads it */
-    static QString mediumImage();
+    static QString cacheDir(const QString &release);
+    /* The medium build-medium.sh makes for @release, where GuestTools::medium() reads it */
+    static QString mediumImage(const QString &release);
     /* The manifest beside @image */
     static QString manifestOf(const QString &image);
 
     /* The packages @guestDir builds, those of its components.conf that it
-       has a spec for: tools, mesa, kwin */
-    static QStringList packages(const QString &guestDir);
+       has a spec for: tools, mesa, kwin; for @release, those built for it
+       (components.conf's releases=; all for none) */
+    static QStringList packages(const QString &guestDir, const QString &release = {});
     /* The Version of @package's spec, "" if none */
     static QString version(const QString &guestDir, const QString &package);
     /* What build-rpms.sh's inputs_hash() prints: @package's folder and the
@@ -115,11 +118,14 @@ public:
     /* The inputs @package's last build in @rpmsDir was made from; empty if none */
     static QString builtInputs(const QString &rpmsDir, const QString &package);
     static Made made(const QString &image);
-    static State state(const QString &guestDir, const QString &image);
-    static State state();
-    /* The steps a build takes now: the packages not built from @guestDir's
-       sources in @rpmsDir, then the medium */
-    static QList<Step> plan(const QString &guestDir, const QString &rpmsDir);
+    /* Of the medium @image of @release, made of the packages built for it */
+    static State state(const QString &guestDir, const QString &image, const QString &release = {});
+    /* Of guestDir()'s tools for Fedora @release */
+    static State releaseState(const QString &release);
+    /* The steps a build takes now: the packages for @release not built from
+       @guestDir's sources in @rpmsDir, then the medium */
+    static QList<Step> plan(const QString &guestDir, const QString &rpmsDir,
+                            const QString &release = {});
     /* The step that builds @name, a package or "medium" */
     static Step step(const QString &guestDir, const QString &name);
 
@@ -136,7 +142,15 @@ public:
     explicit GuestToolsBuilder(QObject *parent = nullptr);
     ~GuestToolsBuilder() override;
 
-    /* Defaults: guestDir(), rpmsDir(), cacheDir(), mediumImage(), /proc/meminfo */
+    /* The Fedora release the next run builds for: GuestTools::newestRelease()
+       unless set; a run that started keeps its own */
+    QString release() const { return m_release; }
+    void setRelease(const QString &release);
+    /* Of the run going on, or of the last one */
+    QString runRelease() const { return m_runRelease; }
+
+    /* Defaults: guestDir(), and rpmsDir(), cacheDir(), mediumImage() of the
+       run's release; /proc/meminfo */
     void setGuestDir(const QString &dir) { m_guestDir = dir; }
     void setRpmsDir(const QString &dir) { m_rpmsDir = dir; }
     void setCacheDir(const QString &dir) { m_cacheDir = dir; }
@@ -155,10 +169,10 @@ public:
        script removes its container), or the wait */
     void cancel();
     /*
-     * The medium the VMs install from (GuestTools::medium()) looked at
-     * again: mediumChanged() if it is another than the one seen last.  A
-     * build of its own does it; the app, when it comes back in front, for
-     * a medium made by hand meanwhile (guest/build-medium.sh).
+     * The media the VMs install from (GuestTools::medium() of each release)
+     * looked at again: mediumChanged() if one is another than the one seen
+     * last.  A build of its own does it; the app, when it comes back in
+     * front, for a medium made by hand meanwhile (guest/build-medium.sh).
      */
     void checkMedium();
 
@@ -210,7 +224,7 @@ signals:
     void finished(const QString &error);
     /* After a build that ended well: a new medium */
     void built();
-    /* The medium is another than the one seen last (checkMedium()), or gone */
+    /* A medium is another than the one seen last (checkMedium()), or gone */
     void mediumChanged();
     /* A package of a step is there: built, or the build before it brought
        back (@restored) */
@@ -232,6 +246,8 @@ private:
     void append(const QString &text);
 
     QString m_guestDir;
+    QString m_release;
+    QString m_runRelease;
     QString m_rpmsDir;
     QString m_cacheDir;
     QString m_image;
@@ -246,8 +262,8 @@ private:
     bool m_cancelled = false;
     bool m_stopped = false;
     QTimer *m_memoryTimer;
-    /* The id of the medium seen last (checkMedium()), empty for none */
-    QString m_medium;
+    /* The ids of the media seen last (checkMedium()), by release; empty for none */
+    QHash<QString, QString> m_media;
     qint64 m_available = 0;
     qint64 m_needed = 0;
     QString m_partial;          // a line not ended yet

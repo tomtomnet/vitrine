@@ -14,18 +14,18 @@
 
 using State = GuestToolsBuilder::State;
 
-/* The date of the medium, "5 October 2026"; empty if unknown */
-static QString builtOn()
+/* The date of the medium of @release, "5 October 2026"; empty if unknown */
+static QString builtOn(const QString &release)
 {
-    const QDateTime built = GuestToolsBuilder::made(GuestToolsBuilder::mediumImage()).built;
+    const QDateTime built = GuestToolsBuilder::made(GuestToolsBuilder::mediumImage(release)).built;
 
     return built.isValid() ? QLocale().toString(built.toLocalTime().date(), "d MMMM yyyy")
                            : QString();
 }
 
 GuestToolsBuildBanner::GuestToolsBuildBanner(QWidget *parent)
-    : QWidget(parent), m_warning(new Banner(Banner::Warning)),
-      m_note(new Banner(Banner::Information))
+    : QWidget(parent), m_release(GuestTools::newestRelease()),
+      m_warning(new Banner(Banner::Warning)), m_note(new Banner(Banner::Information))
 {
     auto *layout = new QVBoxLayout(this);
     GuestToolsBuilder *builder = GuestToolsBuilder::instance();
@@ -36,7 +36,7 @@ GuestToolsBuildBanner::GuestToolsBuildBanner(QWidget *parent)
     layout->addWidget(m_note);
     for (Banner *banner : {m_warning, m_note}) {
         connect(banner->button(), &QPushButton::clicked, this,
-                [this]() { BuildsWindow::present(this, "medium"); });
+                [this]() { BuildsWindow::present(this, "medium", m_release); });
     }
     connect(builder, &GuestToolsBuilder::started, this, &GuestToolsBuildBanner::refresh);
     connect(builder, &GuestToolsBuilder::waitingChanged, this, &GuestToolsBuildBanner::refresh);
@@ -68,6 +68,14 @@ GuestToolsBuildBanner::GuestToolsBuildBanner(QWidget *parent)
     refresh();
 }
 
+void GuestToolsBuildBanner::setRelease(const QString &release)
+{
+    if (release != m_release) {
+        m_release = release;
+        refresh();
+    }
+}
+
 void GuestToolsBuildBanner::refresh()
 {
     const GuestToolsBuilder *builder = GuestToolsBuilder::instance();
@@ -77,29 +85,36 @@ void GuestToolsBuildBanner::refresh()
 
     if (builder->isRunning()) {
         shown = m_note;
-        text = tr("The guest tools are being built: %1.")
-                   .arg(builder->progressText().toHtmlEscaped());
+        text = tr("The guest tools for Fedora %1 are being built: %2.")
+                   .arg(builder->runRelease(), builder->progressText().toHtmlEscaped());
         button = tr("Show");
     } else {
-        const State state = GuestToolsBuilder::state();
+        const State state = GuestToolsBuilder::releaseState(m_release);
+        const QString date = builtOn(m_release);
 
         if (!builder->error().isEmpty() && (state == State::NotBuilt || state == State::Outdated)) {
             text = tr("The guest tools could not be built: %1.").arg(builder->error().toHtmlEscaped());
             button = tr("Show…");
         } else if (state == State::NotBuilt) {
-            text = tr("<b>The guest tools are not built yet.</b> Vitrine builds them in a Fedora "
-                      "container, which takes 40 to 70 minutes.");
+            /* KWin, Qt base and the rest of KDE's take longer than Mesa itself */
+            const bool kde = GuestToolsBuilder::packages(GuestToolsBuilder::guestDir(), m_release)
+                                 .contains("kwin");
+            text = tr("<b>The guest tools for Fedora %1 are not built yet.</b> Vitrine builds "
+                      "them in a Fedora %1 container, which takes %2.")
+                       .arg(m_release, kde ? tr("40 to 70 minutes") : tr("15 to 30 minutes"));
             button = tr("Build…");
         } else if (state == State::Outdated) {
             shown = m_note;
-            text = builtOn().isEmpty()
-                       ? tr("<b>The guest tools medium is out of date:</b> this version of "
-                            "Vitrine has other guest tools sources.")
-                       : tr("<b>The guest tools medium is out of date:</b> this version of "
-                            "Vitrine has other guest tools sources than the medium made on %1.")
-                             .arg(builtOn());
+            text = date.isEmpty()
+                       ? tr("<b>The guest tools medium for Fedora %1 is out of date:</b> this "
+                            "version of Vitrine has other guest tools sources.")
+                             .arg(m_release)
+                       : tr("<b>The guest tools medium for Fedora %1 is out of date:</b> this "
+                            "version of Vitrine has other guest tools sources than the medium "
+                            "made on %2.")
+                             .arg(m_release, date);
             button = tr("Update…");
-        } else if (state == State::NoSources && !GuestTools::medium().isValid()) {
+        } else if (state == State::NoSources && !GuestTools::medium(m_release).isValid()) {
             text = tr("The guest tools are not built, and this installation of Vitrine has no "
                       "guest/ folder to build them from.");
         }

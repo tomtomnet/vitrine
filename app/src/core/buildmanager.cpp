@@ -16,6 +16,7 @@
 #include <sys/file.h>
 #include <unistd.h>
 
+#include "core/guesttools.h"
 #include "core/guesttoolsbuilder.h"
 #include "core/hostkde.h"
 #include "core/hostkdebuilder.h"
@@ -84,7 +85,31 @@ void BuildManager::setBuilders(StackBuilder *stack, GuestToolsBuilder *tools,
 
 Builds::Places BuildManager::places() const
 {
-    return m_placesSet ? m_places : Builds::Places::defaults();
+    return m_placesSet ? m_places : Builds::Places::defaults(guestRelease());
+}
+
+QString BuildManager::guestRelease() const
+{
+    if (m_placesSet) {
+        return m_places.guestRelease;
+    }
+    return m_guestRelease.isEmpty() ? GuestTools::newestRelease() : m_guestRelease;
+}
+
+bool BuildManager::setGuestRelease(const QString &release)
+{
+    if (release == guestRelease()) {
+        return true;
+    }
+    if (m_running || !GuestTools::releases().contains(release)) {
+        return false;
+    }
+    m_guestRelease = release;
+    /* the tests' places: the same folders, the components of the release */
+    m_places.guestRelease = release;
+    emit guestReleaseChanged();
+    refresh();
+    return true;
 }
 
 int BuildManager::partOf(const QString &id) const
@@ -467,6 +492,10 @@ void BuildManager::startHost(const QStringList &ids)
 
 void BuildManager::startGuest(const QStringList &ids)
 {
+    /* in a container of the release, into its folders */
+    if (const QString release = guestRelease(); !release.isEmpty()) {
+        m_tools->setRelease(release);
+    }
     m_tools->start(ids);
 }
 
@@ -760,6 +789,12 @@ bool BuildManager::clearCache(QString *error)
         lockFiles << dir + "/.lock";
     }
     lockFiles << places.rpmsDir + "/.lock";
+    /* and those of the other Fedora releases' guest tools */
+    if (!m_placesSet) {
+        for (const QString &r : GuestTools::releases()) {
+            lockFiles << GuestToolsBuilder::rpmsDir(r) + "/.lock";
+        }
+    }
     /* host/kde/build.sh's, in each package's output (and its work folder's, above) */
     for (const QString &out : places.systemOut) {
         lockFiles << out + "/.lock";

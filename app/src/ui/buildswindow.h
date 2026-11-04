@@ -11,6 +11,7 @@
 
 class Banner;
 class BuildManager;
+class QComboBox;
 namespace Builds {
 struct Component;
 }
@@ -41,9 +42,11 @@ public:
     explicit BuildsWindow(QWidget *parent = nullptr);
     ~BuildsWindow() override;
 
-    /* The window over @from's window, on @component if given: the one open
+    /* The window over @from's window, on @component if given, with the guest
+       tools of Fedora @guestRelease if given (not during a run): the one open
        already if it is over that one, else a new one */
-    static BuildsWindow *present(QWidget *from, const QString &component = {});
+    static BuildsWindow *present(QWidget *from, const QString &component = {},
+                                 const QString &guestRelease = {});
 
     /* The component shown: "qemu", or a group: "host", "guest", "system" */
     void select(const QString &component);
@@ -53,8 +56,9 @@ public:
     static QString describe(const StackBuilder::Build &build);
     /* What the state of Vitrine's QEMU means for the user, in a sentence or two */
     static QString explain(StackBuilder::State state, const StackBuilder::Build &build);
-    /* "Built on 5 October 2026: vitrine-guest-tools 0.1.0-14, Mesa 26.2.3, KWin 6.7.5" */
-    static QString describeGuestTools();
+    /* "Built on 5 October 2026: vitrine-guest-tools 0.1.0-14, Mesa 26.2.3, KWin 6.7.5",
+       of the medium for Fedora @release */
+    static QString describeGuestTools(const QString &release);
     static QString explain(GuestToolsBuilder::State state);
     /* "40 s", "18 min", "1 h 20 min": how long a build took */
     static QString duration(qint64 ms);
@@ -106,6 +110,8 @@ private:
     Banner *m_memory;
     QLabel *m_header;
     QLabel *m_missing;
+    /* the Fedora release of the guest tools shown (BuildManager::guestRelease()) */
+    QComboBox *m_release;
     QTreeWidget *m_tree;
     QTabWidget *m_tabs;
     QLabel *m_source;

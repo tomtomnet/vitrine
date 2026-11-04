@@ -119,15 +119,19 @@ private:
         if (img.open(QIODevice::WriteOnly)) {
             img.write(QByteArray(1 << 20, '\0'));
         }
+        /* each release's medium its own, as build-medium.sh makes them */
         if (json.open(QIODevice::WriteOnly)) {
-            json.write(R"({"label": "VITRINETOOL", "mediumId": "32fe6c83b34e87e8", "fedora": "44",
-                          "tools": "0.1.0-1.fc44", "mesa": "26.2.3-1.xe.fc44",
-                          "kwin": "6.7.5-1.21.fc44", "kpipewire": "6.7.5-1.1.fc44",
-                          "proxy": "0.1.0^gitc6ce1ca.r5799347-1.fc44",
-                          "qtbase": "6.11.2-3.1.q4.fc44", "ksvg": "6.31.0-1.1.k2.fc44",
-                          "kirigami": "6.31.0-1.1.f1.fc44", "packages": [
-                          {"name": "kwin", "evr": "6.7.5-1.21.fc44", "arch": "x86_64"},
-                          {"name": "vitrine-guest-tools", "evr": "0.1.0-1.fc44", "arch": "noarch"}]})");
+            json.write(QString(R"({"label": "VITRINETOOL", "mediumId": "%2", "fedora": "%1",
+                          "tools": "0.1.0-1.fc%1", "mesa": "26.2.3-1.xe.fc%1",
+                          "kwin": "6.7.5-1.21.fc%1", "kpipewire": "6.7.5-1.1.fc%1",
+                          "proxy": "0.1.0^gitc6ce1ca.r5799347-1.fc%1",
+                          "qtbase": "6.11.2-3.1.q4.fc%1", "ksvg": "6.31.0-1.1.k2.fc%1",
+                          "kirigami": "6.31.0-1.1.f1.fc%1", "packages": [
+                          {"name": "kwin", "evr": "6.7.5-1.21.fc%1", "arch": "x86_64"},
+                          {"name": "vitrine-guest-tools", "evr": "0.1.0-1.fc%1", "arch": "noarch"}]})")
+                           .arg(release, release == "44" ? QString("32fe6c83b34e87e8")
+                                                         : release + "fe6c83b34e87e8")
+                           .toUtf8());
         }
         return image;
     }
@@ -175,10 +179,13 @@ private slots:
                               "file=/home/me/tools,,1.img",
                               "-device", "virtio-blk-pci,drive=vitrine-tools,id=vitrine-tools-disk"}));
 
-        QVERIFY(!GuestTools::medium().isValid());
+        QVERIFY(!GuestTools::medium("44").isValid());
         const QString image = writeMedium();
-        const Medium m = GuestTools::medium();
+        const Medium m = GuestTools::medium("44");
         QVERIFY(m.isValid());
+        /* one medium per Fedora release */
+        QVERIFY(!GuestTools::medium("45").isValid());
+        QVERIFY(!GuestTools::medium("").isValid());
         QCOMPARE(m.image, image);
         QCOMPARE(m.mediumId, "32fe6c83b34e87e8");
         QCOMPARE(m.fedora, "44");
@@ -193,6 +200,12 @@ private slots:
                                           "vitrine-guest-tools-0.1.0-1.fc44.noarch"}));
         QVERIFY(!parseManifest("{}", image).isValid());
         QVERIFY(!parseManifest("not json", image).isValid());
+        const QString image45 = writeMedium("45");
+        QCOMPARE(GuestTools::medium("45").image, image45);
+        QCOMPARE(GuestTools::medium("45").fedora, "45");
+        QCOMPARE(GuestTools::medium("44").image, image);
+        QFile::remove(image45);
+        QFile::remove(QString(image45).replace(".img", ".json"));
     }
 
     /* the unit the guest's systemd gets through SMBIOS, and how it is started */
@@ -283,6 +296,9 @@ private slots:
         QCOMPARE(valuesOf(c, "-device").filter("bus=vitrine-serial.0").size(), 1);
         QCOMPARE(valuesOf(c, "-device").filter("vitrine-serial").size(), 2);
 
+        /* a Fedora 44 guest, as it said: the medium of 44 */
+        setSystem(id, System{"fedora", "44", "Fedora Linux 44"});
+        const auto forget = qScopeGuard([&id]() { setSystem(id, {}); });
         /* pending, but no medium built: nothing to attach */
         setPending(id, Pending::Bootstrap);
         QVERIFY(valuesOf(command("-machine q35\n"), "-smbios").isEmpty());
@@ -603,9 +619,10 @@ private slots:
     }
 
     /*
-     * The systems the tools are for, in one place: Fedora at the release of
-     * the medium, any while none is built; what a guest's agents said, and
-     * how vitrine keeps it per VM
+     * The systems the tools are for, in one place: Fedora at a release they
+     * are made for, and at the release of the medium given when it is built
+     * (each release's guest gets its own: GuestTools::releaseOf()); what a
+     * guest's agents said, and how vitrine keeps it per VM
      */
     void systems_data()
     {
@@ -616,8 +633,11 @@ private slots:
 
         QTest::newRow("fedora 44") << "fedora" << "44" << true << true;
         QTest::newRow("fedora 43") << "fedora" << "43" << true << false;
-        QTest::newRow("fedora 45") << "fedora" << "45" << true << false;
-        QTest::newRow("fedora 43, no medium") << "fedora" << "43" << false << true;
+        QTest::newRow("fedora 45, 44's medium") << "fedora" << "45" << true << false;
+        QTest::newRow("fedora 45, no medium") << "fedora" << "45" << false << true;
+        QTest::newRow("fedora 44, no medium") << "fedora" << "44" << false << true;
+        QTest::newRow("fedora 43, no medium") << "fedora" << "43" << false << false;
+        QTest::newRow("fedora rawhide") << "fedora" << "46" << false << false;
         QTest::newRow("arch") << "arch" << "" << true << false;
         QTest::newRow("arch, no medium") << "arch" << "" << false << false;
         QTest::newRow("kde linux") << "kde-linux" << "" << true << false;
@@ -637,13 +657,167 @@ private slots:
         if (withMedium) {
             writeMedium();
         }
-        const Medium m = GuestTools::medium();
+        const Medium m = GuestTools::medium("44");
         QCOMPARE(m.isValid(), withMedium);
 
         QCOMPARE(supports(System{id, version, ""}, m), supported);
-        /* the medium's release, or the one a build makes */
-        QCOMPARE(supportedSystems(m), "Fedora 44");
+        /* all the releases, whatever is built */
+        QCOMPARE(supportedSystems(), "Fedora 44 and 45");
         QDir(dataDir()).removeRecursively();
+    }
+
+    /* The releases the tools are made for, each with its medium */
+    void releasesOfTools()
+    {
+        QCOMPARE(releases(), QStringList({"44", "45"}));
+        QCOMPARE(newestRelease(), "45");
+        QCOMPARE(releaseFor(System{"fedora", "44", ""}), "44");
+        QCOMPARE(releaseFor(System{"fedora", "45", "Fedora Linux 45 (Workstation Edition)"}), "45");
+        QCOMPARE(releaseFor(System{"fedora", "43", ""}), QString());
+        QCOMPARE(releaseFor(System{"ubuntu", "24.04", ""}), QString());
+        QCOMPARE(releaseFor(System{}), QString());
+    }
+
+    /* The Fedora release an installation image is of, by its name or its label */
+    void imageRelease_data()
+    {
+        QTest::addColumn<QString>("name");
+        QTest::addColumn<QString>("release");
+
+        QTest::newRow("workstation") << "Fedora-Workstation-Live-45-1.6.x86_64.iso" << "45";
+        QTest::newRow("kde") << "Fedora-KDE-Desktop-Live-44-1.7.x86_64.iso" << "44";
+        QTest::newRow("arch first") << "Fedora-Workstation-Live-x86_64-40-1.14.iso" << "40";
+        QTest::newRow("server") << "Fedora-Server-dvd-x86_64-45-1.4.iso" << "45";
+        QTest::newRow("everything") << "Fedora-Everything-netinst-x86_64-44-1.7.iso" << "44";
+        QTest::newRow("label ws") << "Fedora-WS-Live-45-1-6" << "45";
+        QTest::newRow("label kde") << "Fedora-KDE-Live-44-1-7" << "44";
+        QTest::newRow("label dvd") << "Fedora-E-dvd-x86_64-45" << "45";
+        QTest::newRow("renamed") << "my-fedora-45.iso" << "45";
+        QTest::newRow("rawhide") << "Fedora-Workstation-Live-Rawhide-20261104.n.0.x86_64.iso" << "";
+        QTest::newRow("ubuntu") << "ubuntu-24.04.1-desktop-amd64.iso" << "";
+        QTest::newRow("other") << "archlinux-2026.11.01-x86_64.iso" << "";
+        QTest::newRow("empty") << "" << "";
+    }
+
+    void imageRelease()
+    {
+        QFETCH(QString, name);
+        QFETCH(QString, release);
+        QCOMPARE(GuestTools::imageRelease(name), release);
+    }
+
+    /* ISO 9660's volume identifier, from the primary volume descriptor */
+    void isoLabels()
+    {
+        QTemporaryDir tmp;
+        auto iso = [&tmp](const QString &name, const QByteArray &label, char type = 1) {
+            QByteArray data(16 * 2048 + 2048, '\0');
+            QByteArray pvd = QByteArray(1, type) + "CD001" + QByteArray(34, ' ');
+            pvd += label.leftJustified(32, ' ');
+            data.replace(16 * 2048, pvd.size(), pvd);
+            QFile f(tmp.filePath(name));
+            return f.open(QIODevice::WriteOnly) && f.write(data) == data.size() ? f.fileName()
+                                                                               : QString();
+        };
+        QCOMPARE(isoLabel(iso("a.iso", "Fedora-WS-Live-45-1-6")), "Fedora-WS-Live-45-1-6");
+        QCOMPARE(isoLabel(iso("b.iso", "Fedora-KDE-Live-44-1-7")), "Fedora-KDE-Live-44-1-7");
+        /* not a primary volume descriptor, not an ISO, none */
+        QCOMPARE(isoLabel(iso("c.iso", "Fedora-WS-Live-45-1-6", 2)), QString());
+        QFile small(tmp.filePath("small.iso"));
+        QVERIFY(small.open(QIODevice::WriteOnly) && small.write("not an image") > 0);
+        small.close();
+        QCOMPARE(isoLabel(small.fileName()), QString());
+        QCOMPARE(isoLabel(tmp.filePath("none.iso")), QString());
+        QCOMPARE(isoLabel(QString()), QString());
+    }
+
+    /*
+     * The release whose medium a VM gets: its guest's, as it said; else the
+     * release of the installation image it has, by name, then by label;
+     * else the newest
+     */
+    void releaseOfVm()
+    {
+        QTemporaryDir tmp;
+        const System f44{"fedora", "44", "Fedora Linux 44 (KDE Plasma Desktop Edition)"};
+        const System f45{"fedora", "45", "Fedora Linux 45 (Workstation Edition)"};
+        const ArgsFile none = ArgsFile::parse("-machine q35\n");
+        const ArgsFile ws45 = ArgsFile::parse(
+            "-machine q35\n-drive file=/isos/Fedora-Workstation-Live-45-1.6.x86_64.iso,"
+            "media=cdrom,readonly=on\n");
+        const ArgsFile kde44 = ArgsFile::parse(
+            "-machine q35\n-cdrom /isos/Fedora-KDE-Desktop-Live-44-1.7.x86_64.iso\n");
+
+        QCOMPARE(releaseOf(f44, none), "44");
+        QCOMPARE(releaseOf(f45, none), "45");
+        /* the guest's word over the image's */
+        QCOMPARE(releaseOf(f44, ws45), "44");
+        /* another system: none, whatever the image */
+        QCOMPARE(releaseOf(System{"ubuntu", "24.04", ""}, ws45), QString());
+        QCOMPARE(releaseOf(System{"fedora", "43", ""}, ws45), QString());
+        /* not said yet: the image's, by name */
+        QCOMPARE(releaseOf(System{}, ws45), "45");
+        QCOMPARE(releaseOf(System{}, kde44), "44");
+        /* renamed: by its label, relative to the VM's folder */
+        QByteArray data(16 * 2048 + 2048, '\0');
+        QByteArray pvd = QByteArray(1, 1) + "CD001" + QByteArray(34, ' ') +
+                         QByteArray("Fedora-KDE-Live-44-1-7").leftJustified(32, ' ');
+        data.replace(16 * 2048, pvd.size(), pvd);
+        QFile renamed(tmp.filePath("install.iso"));
+        QVERIFY(renamed.open(QIODevice::WriteOnly) && renamed.write(data) == data.size());
+        renamed.close();
+        const ArgsFile relative =
+            ArgsFile::parse("-machine q35\n-drive file=install.iso,media=cdrom,readonly=on\n");
+        QCOMPARE(releaseOf(System{}, relative, tmp.path()), "44");
+        /* an image of a release the tools are not for, or none: the newest */
+        QCOMPARE(releaseOf(System{}, ArgsFile::parse("-cdrom /i/Fedora-Workstation-Live-43-1.6"
+                                                     ".x86_64.iso\n")),
+                 newestRelease());
+        QCOMPARE(releaseOf(System{}, none), newestRelease());
+        /* a disk is no installation image */
+        QCOMPARE(releaseOf(System{}, ArgsFile::parse("-drive file=fedora-44.qcow2,if=virtio\n")),
+                 newestRelease());
+    }
+
+    /* The runner attaches the medium of the guest's release, and none of another's */
+    void runnerMediumOfRelease()
+    {
+        QTemporaryDir tmp;
+        const QString id = "vitrine-test-release-vm";
+        const VmRunner runner(id, tmp.path());
+        const QString qemu = "#qemu /opt/q/bin/qemu-system-x86_64\n";
+        auto mediumIn = [&](const QString &text) {
+            return valuesOf(runner.commandLine(ArgsFile::parse(qemu + text)), "-drive");
+        };
+        const auto forget = qScopeGuard([&id]() {
+            setSystem(id, {});
+            setPending(id, Pending::None);
+            QDir(dataDir()).removeRecursively();
+        });
+        QDir(dataDir()).removeRecursively();
+        setPending(id, Pending::Bootstrap);
+        const QString image44 = writeMedium("44");
+
+        /* a Fedora 45 guest: not 44's medium */
+        setSystem(id, System{"fedora", "45", "Fedora Linux 45 (Workstation Edition)"});
+        QVERIFY(mediumIn("-machine q35\n").isEmpty());
+        const QString image45 = writeMedium("45");
+        QCOMPARE(mediumIn("-machine q35\n"),
+                 QStringList({"if=none,id=vitrine-tools,format=raw,readonly=on,file=" + image45}));
+        /* a Fedora 44 guest: 44's */
+        setSystem(id, System{"fedora", "44", "Fedora Linux 44"});
+        QCOMPARE(mediumIn("-machine q35\n"),
+                 QStringList({"if=none,id=vitrine-tools,format=raw,readonly=on,file=" + image44}));
+        /* one that never said, made from a Fedora 44 image: 44's; from none: the newest */
+        setSystem(id, {});
+        QCOMPARE(mediumIn("-machine q35\n-cdrom /i/Fedora-KDE-Desktop-Live-44-1.7.x86_64.iso\n")
+                     .last(),
+                 "if=none,id=vitrine-tools,format=raw,readonly=on,file=" + image44);
+        QCOMPARE(mediumIn("-machine q35\n"),
+                 QStringList({"if=none,id=vitrine-tools,format=raw,readonly=on,file=" + image45}));
+        /* another system: none */
+        setSystem(id, System{"ubuntu", "24.04", "Ubuntu 24.04"});
+        QVERIFY(mediumIn("-machine q35\n").isEmpty());
     }
 
     /* qemu-ga's guest-get-osinfo, as it answers for Linux and Windows */
@@ -743,7 +917,8 @@ private slots:
         QTemporaryDir tmp;
         const QString id = QString("vitrine-gt-test-%1").arg(QCoreApplication::applicationPid());
         Paths::setQemuBinary(testQemu());
-        writeMedium();
+        /* a guest that never said what it runs: the newest release's */
+        writeMedium(newestRelease());
         setPending(id, Pending::Bootstrap);
         VmRunner runner(id, tmp.path());
         QSignalSpy failed(&runner, &VmRunner::failed);
@@ -1085,8 +1260,11 @@ private slots:
         builder->checkMedium();
         QSettings(Paths::settingsPath(), QSettings::IniFormat)
             .setValue("guesttools/last/" + id, "installed 0.1.0-1.fc44");
+        /* a Fedora 44 guest: the medium of 44 */
+        setSystem(id, System{"fedora", "44", "Fedora Linux 44"});
         const auto end = qScopeGuard([&id]() {
             QSettings(Paths::settingsPath(), QSettings::IniFormat).remove("guesttools/last/" + id);
+            setSystem(id, {});
         });
         VmStore store(tmp.path());
         Vm *vm = store.find(id);
@@ -1141,13 +1319,21 @@ private slots:
         }
         Vm vm(dir);
         if (!image.isEmpty()) {
+            /* in the place of its release's medium; the guest runs that release */
+            QFile manifest(QString(image).replace(".img", ".json"));
+            QVERIFY(manifest.open(QIODevice::ReadOnly));
+            const QString release = parseManifest(manifest.readAll(), image).fedora;
+            QVERIFY(!release.isEmpty());
             QDir().mkpath(dataDir());
-            const QString to = dataDir() + "/vitrine-guest-tools-fc44";
+            const QString to = dataDir() + "/vitrine-guest-tools-fc" + release;
             QFile::remove(to + ".img");
             QFile::remove(to + ".json");
             QVERIFY(QFile::link(image, to + ".img"));
             QVERIFY(QFile::copy(QString(image).replace(".img", ".json"), to + ".json"));
-            QVERIFY(GuestTools::medium().isValid());
+            QVERIFY(GuestTools::medium(release).isValid());
+            if (!system(vm.id()).isKnown()) {
+                setSystem(vm.id(), System{"fedora", release, ""});
+            }
             setPending(vm.id(), Pending::Bootstrap);
         }
         GuestToolsMonitor *monitor = GuestToolsMonitor::of(&vm);

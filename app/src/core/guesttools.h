@@ -40,8 +40,15 @@ extern const char kLabel[];
 extern const char kPortName[];
 /* Its QEMU id: VSERPORT_CHANGE tells when the guest opens and closes it */
 extern const char kPortId[];
-/* The Fedora release the tools are built for */
-extern const char kFedoraRelease[];
+
+/*
+ * The Fedora releases the tools are made for, the oldest first: "44", "45".
+ * Each has a medium of its own (guest/build-rpms.sh and build-medium.sh
+ * with FEDORA_RELEASE), which the installer checks against the guest.
+ */
+QStringList releases();
+/* The newest of them: the tools of a guest that has not said what it runs */
+QString newestRelease();
 
 /* A medium build-medium.sh made, as its manifest describes it */
 struct Medium {
@@ -64,8 +71,8 @@ struct Medium {
 
 /* ~/.local/share/vitrine/guest-tools: build-medium.sh's output */
 QString dataDir();
-/* The medium for @release in dataDir(), if built */
-Medium medium(const QString &release = kFedoraRelease);
+/* The medium for the Fedora release @release in dataDir(), if built */
+Medium medium(const QString &release);
 /* The manifest (the .json beside the image), for the image @image */
 Medium parseManifest(const QByteArray &json, const QString &image);
 
@@ -92,12 +99,31 @@ System system(const QString &vmId);
 void setSystem(const QString &vmId, const System &system);
 /*
  * The tools are for @system: the one place that says which systems they
- * are for, as their installer checks.  Fedora, at the release of @medium,
- * or any release while no medium is built.  (Arch may follow.)
+ * are for, as their installer checks.  Fedora, at one of releases(), and
+ * at the release of @medium when it is built.  (Arch may follow.)
  */
 bool supports(const System &system, const Medium &medium);
-/* Those systems, as the user reads them: "Fedora 44" */
-QString supportedSystems(const Medium &medium);
+/* Those systems, as the user reads them: "Fedora 44 and 45" */
+QString supportedSystems();
+/* The release of the tools for @system: its Fedora release when it is one
+   of releases(); empty for another system, or one not known */
+QString releaseFor(const System &system);
+/*
+ * The Fedora release an installation image names, by its file name or its
+ * volume label: "45" of Fedora-Workstation-Live-45-1.6.x86_64.iso or of
+ * Fedora-WS-Live-45-1-6; empty if it names none
+ */
+QString imageRelease(const QString &name);
+/* The volume label of the ISO 9660 image @path; empty if it is none */
+QString isoLabel(const QString &path);
+/*
+ * The release whose medium the VM of @args (in folder @vmDir) gets: what
+ * its guest said it runs (@system: none for another system than those the
+ * tools are for), else the Fedora release named by an installation image
+ * it has (its CD/DVD drives' discs, by file name, then volume label: what
+ * the VM was made from), else newestRelease()
+ */
+QString releaseOf(const System &system, const ArgsFile &args, const QString &vmDir = {});
 
 /* What the runner adds to a VM's command line */
 /* Its virtio-serial controller, for the agents' ports: on x86-64 and ARM
@@ -270,6 +296,12 @@ public:
     /* What the guest runs, as its agents said last, at this run or an
        earlier one (GuestTools::system()) */
     GuestTools::System system() const { return m_system; }
+    /* The Fedora release whose tools the VM gets (GuestTools::releaseOf()):
+       its guest's, else that of what the VM was made from, else the newest;
+       empty for a guest the tools are not for */
+    QString release() const;
+    /* That release's medium, if built */
+    GuestTools::Medium medium() const { return m_in.medium; }
     /*
      * The guest is known to run a system the tools are for
      * (GuestTools::supports()), or known to run another: neither while
@@ -336,6 +368,8 @@ private:
     void remember();
     /* What an agent said the guest runs, kept for the VM: true if it changed */
     bool setSystem(const GuestTools::System &system);
+    /* The medium of release() in m_in, as it is now */
+    void updateMedium();
 
     Vm *m_vm;
     GuestTools::System m_system;

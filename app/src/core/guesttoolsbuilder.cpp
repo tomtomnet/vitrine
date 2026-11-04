@@ -55,11 +55,6 @@ static QString gib(qint64 mib)
     return QString::number(double(mib) / 1024, 'f', mib % 1024 == 0 ? 0 : 1);
 }
 
-static QString release()
-{
-    return QString::fromLatin1(GuestTools::kFedoraRelease);
-}
-
 /* The component of @package in @guestDir's components.conf */
 static Builds::Component componentOf(const QString &guestDir, const QString &package)
 {
@@ -156,20 +151,20 @@ QString GuestToolsBuilder::guestDir()
     return {};
 }
 
-QString GuestToolsBuilder::rpmsDir()
+QString GuestToolsBuilder::rpmsDir(const QString &release)
 {
-    return GuestTools::dataDir() + "/rpms/fc" + release();
+    return GuestTools::dataDir() + "/rpms/fc" + release;
 }
 
-QString GuestToolsBuilder::cacheDir()
+QString GuestToolsBuilder::cacheDir(const QString &release)
 {
-    return Paths::cacheDir() + "/guest-build/fc" + release();
+    return Paths::cacheDir() + "/guest-build/fc" + release;
 }
 
-QString GuestToolsBuilder::mediumImage()
+QString GuestToolsBuilder::mediumImage(const QString &release)
 {
     /* as GuestTools::medium() */
-    return QString("%1/vitrine-guest-tools-fc%2.img").arg(GuestTools::dataDir(), release());
+    return QString("%1/vitrine-guest-tools-fc%2.img").arg(GuestTools::dataDir(), release);
 }
 
 QString GuestToolsBuilder::manifestOf(const QString &image)
@@ -178,7 +173,7 @@ QString GuestToolsBuilder::manifestOf(const QString &image)
     return (image.endsWith(".img") ? image.chopped(4) : image) + ".json";
 }
 
-QStringList GuestToolsBuilder::packages(const QString &guestDir)
+QStringList GuestToolsBuilder::packages(const QString &guestDir, const QString &release)
 {
     Builds::Places places;
     QStringList list;
@@ -187,6 +182,7 @@ QStringList GuestToolsBuilder::packages(const QString &guestDir)
         return {};
     }
     places.guestDir = guestDir;
+    places.guestRelease = release;
     for (const Builds::Component &c : Builds::load(places)) {
         if (c.kind == Builds::Kind::Package) {
             list << c.id;
@@ -295,7 +291,8 @@ GuestToolsBuilder::Made GuestToolsBuilder::made(const QString &image)
     return Made::parse(readFile(manifestOf(image)));
 }
 
-GuestToolsBuilder::State GuestToolsBuilder::state(const QString &guestDir, const QString &image)
+GuestToolsBuilder::State GuestToolsBuilder::state(const QString &guestDir, const QString &image,
+                                                  const QString &release)
 {
     if (!isGuestDir(guestDir)) {
         return State::NoSources;
@@ -304,10 +301,10 @@ GuestToolsBuilder::State GuestToolsBuilder::state(const QString &guestDir, const
     if (!QFileInfo::exists(image) || !GuestTools::parseManifest(manifest, image).isValid()) {
         return State::NotBuilt;
     }
-    /* each package of guest/ on it, from its sources; a manifest of an older
-       Vitrine, without inputs, is out of date */
+    /* each package of guest/ for its release on it, from its sources; a
+       manifest of an older Vitrine, without inputs, is out of date */
     const Made made = Made::parse(manifest);
-    for (const QString &package : packages(guestDir)) {
+    for (const QString &package : packages(guestDir, release)) {
         if (made.inputs.value(package) != inputsHash(guestDir, package)) {
             return State::Outdated;
         }
@@ -316,9 +313,9 @@ GuestToolsBuilder::State GuestToolsBuilder::state(const QString &guestDir, const
                                                                 : State::Outdated;
 }
 
-GuestToolsBuilder::State GuestToolsBuilder::state()
+GuestToolsBuilder::State GuestToolsBuilder::releaseState(const QString &release)
 {
-    return state(guestDir(), mediumImage());
+    return state(guestDir(), mediumImage(release), release);
 }
 
 GuestToolsBuilder::Step GuestToolsBuilder::step(const QString &guestDir, const QString &name)
@@ -336,11 +333,12 @@ GuestToolsBuilder::Step GuestToolsBuilder::step(const QString &guestDir, const Q
 }
 
 QList<GuestToolsBuilder::Step> GuestToolsBuilder::plan(const QString &guestDir,
-                                                       const QString &rpmsDir)
+                                                       const QString &rpmsDir,
+                                                       const QString &release)
 {
     QList<Step> steps;
 
-    for (const QString &package : packages(guestDir)) {
+    for (const QString &package : packages(guestDir, release)) {
         const QString built = builtInputs(rpmsDir, package);
         if (built.isEmpty() || built != inputsHash(guestDir, package)) {
             steps << step(guestDir, package);
@@ -406,17 +404,32 @@ GuestToolsBuilder *GuestToolsBuilder::instance()
 }
 
 GuestToolsBuilder::GuestToolsBuilder(QObject *parent)
-    : QObject(parent), m_meminfo("/proc/meminfo"), m_memoryTimer(new QTimer(this)),
-      m_medium(GuestTools::medium().mediumId)
+    : QObject(parent), m_release(GuestTools::newestRelease()), m_runRelease(m_release),
+      m_meminfo("/proc/meminfo"), m_memoryTimer(new QTimer(this))
 {
+    for (const QString &release : GuestTools::releases()) {
+        m_media.insert(release, GuestTools::medium(release).mediumId);
+    }
     m_memoryTimer->setInterval(2000);
     connect(m_memoryTimer, &QTimer::timeout, this, &GuestToolsBuilder::checkMemory);
 }
 
+void GuestToolsBuilder::setRelease(const QString &release)
+{
+    m_release = release;
+}
+
 void GuestToolsBuilder::checkMedium()
 {
-    if (const QString id = GuestTools::medium().mediumId; id != m_medium) {
-        m_medium = id;
+    bool changed = false;
+
+    for (const QString &release : GuestTools::releases()) {
+        if (const QString id = GuestTools::medium(release).mediumId; id != m_media.value(release)) {
+            m_media.insert(release, id);
+            changed = true;
+        }
+    }
+    if (changed) {
         emit mediumChanged();
     }
 }
@@ -445,7 +458,7 @@ void GuestToolsBuilder::start()
     const QString guest = m_guestDir.isEmpty() ? guestDir() : m_guestDir;
 
     if (!m_running) {
-        begin(plan(guest, m_rpmsDir.isEmpty() ? rpmsDir() : m_rpmsDir));
+        begin(plan(guest, m_rpmsDir.isEmpty() ? rpmsDir(m_release) : m_rpmsDir, m_release));
     }
 }
 
@@ -471,6 +484,7 @@ void GuestToolsBuilder::begin(const QList<Step> &steps)
     m_plan.clear();
     m_index = -1;
     m_guest = guest;
+    m_runRelease = m_release;
     m_cancelled = m_stopped = false;
     m_partial.clear();
     m_log.clear();
@@ -603,9 +617,9 @@ void GuestToolsBuilder::proceed()
 void GuestToolsBuilder::run()
 {
     const Step &step = m_plan.at(m_index);
-    const QString rpms = m_rpmsDir.isEmpty() ? rpmsDir() : m_rpmsDir;
-    const QString cache = m_cacheDir.isEmpty() ? cacheDir() : m_cacheDir;
-    const QString image = m_image.isEmpty() ? mediumImage() : m_image;
+    const QString rpms = m_rpmsDir.isEmpty() ? rpmsDir(m_runRelease) : m_rpmsDir;
+    const QString cache = m_cacheDir.isEmpty() ? cacheDir(m_runRelease) : m_cacheDir;
+    const QString image = m_image.isEmpty() ? mediumImage(m_runRelease) : m_image;
     const QString bash = QStandardPaths::findExecutable("bash");
     QProcessEnvironment env = QProcessEnvironment::systemEnvironment();
     QStringList args;
@@ -619,7 +633,7 @@ void GuestToolsBuilder::run()
     env.insert("RPMS_DIR", rpms);
     env.insert("CACHE_DIR", cache);
     env.insert("OUT", image);
-    env.insert("FEDORA_RELEASE", release());
+    env.insert("FEDORA_RELEASE", m_runRelease);
 
     m_process = new QProcess(this);
     m_process->setProcessEnvironment(env);
@@ -650,8 +664,8 @@ void GuestToolsBuilder::run()
         stepDone(code, status == QProcess::CrashExit);
     });
 
-    append(QString("$ RPMS_DIR=%1 CACHE_DIR=%2 OUT=%3 bash %4\n")
-               .arg(rpms, cache, image, args.join(' ')));
+    append(QString("$ FEDORA_RELEASE=%1 RPMS_DIR=%2 CACHE_DIR=%3 OUT=%4 bash %5\n")
+               .arg(m_runRelease, rpms, cache, image, args.join(' ')));
     m_process->start(bash.isEmpty() ? QStringLiteral("/bin/bash") : bash, args);
     /* gone already if bash could not start */
     if (m_process) {
@@ -814,7 +828,7 @@ void GuestToolsBuilder::stepDone(int code, bool crashed)
         return;
     }
     if (medium) {
-        const QString image = m_image.isEmpty() ? mediumImage() : m_image;
+        const QString image = m_image.isEmpty() ? mediumImage(m_runRelease) : m_image;
         if (!QFileInfo::exists(image) ||
             !GuestTools::parseManifest(readFile(manifestOf(image)), image).isValid()) {
             finish(tr("build-medium.sh ended without a medium"));

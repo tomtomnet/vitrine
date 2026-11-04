@@ -1160,8 +1160,8 @@ private slots:
         QVERIFY(QFile::setPermissions(prefix + "/bin/qemu-system-x86_64",
                                       QFileDevice::ReadOwner | QFileDevice::ExeOwner));
         QVERIFY(QFile::link(stamp.left(16), Paths::stackDir() + "/current"));
-        /* and guest/build-medium.sh, the medium and its manifest */
-        const QString image = GuestToolsBuilder::mediumImage();
+        /* and guest/build-medium.sh, the medium of a release and its manifest */
+        const QString image = GuestToolsBuilder::mediumImage("44");
         QVERIFY(write(image, QByteArray(1024, '\0')));
         QVERIFY(write(GuestToolsBuilder::manifestOf(image),
                       R"({"mediumId": "feedfacecafe0001", "fedora": "44",
