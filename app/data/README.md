@@ -2,7 +2,10 @@
 
 `vitrine.svg` is the app's icon: installed as the hicolor `vitrine` icon,
 which the app loads at run time for its windows and About box
-(`Icons::app()`); it is not built into the program.
+(`Icons::app()`); it is not built into the program.  The GTK app,
+`vitrine-gtk`, has the same file as the `org.vitrine.Vitrine` icon, named
+after its application ID and its desktop file (`org.vitrine.Vitrine.desktop`)
+as GNOME expects.
 
 It shows QEMU's emu, Kew, on his Q behind a glass pane. It is derived from
 "Kew the Angry Emu" by Benoît Canet, published by the QEMU Community

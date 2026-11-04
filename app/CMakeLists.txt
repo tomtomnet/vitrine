@@ -574,3 +574,6 @@ if(BUILD_TESTING)
     set_tests_properties(vmclipboard PROPERTIES ENVIRONMENT
         "GLIBC_TUNABLES=glibc.malloc.tcache_count=0:glibc.malloc.perturb=165")
 endif()
+
+# The GTK4 + libadwaita app, vitrine-gtk, and its tests
+include(gtk.cmake)
