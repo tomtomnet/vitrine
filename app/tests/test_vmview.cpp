@@ -41,6 +41,7 @@
 #include <sys/un.h>
 #include <unistd.h>
 
+#include "core/physicalsize.h"
 #include "vmview/dbusdisplay.h"
 #include "vmview/qmp.h"
 #include "vmview/vmview.h"
@@ -886,6 +887,32 @@ private Q_SLOTS:
         delete view;
     }
 
+    /*
+     * The physical size the guest is told: the view's share of its monitor's
+     * millimetres; none where the monitor does not say, or says its aspect
+     * ratio as some EDIDs do, or makes no sense
+     */
+    void physicalSizeOfView()
+    {
+        using PhysicalSize::ofView;
+        /* a 15.6" 4K panel: all of it, half of it */
+        QCOMPARE(ofView({3840, 2160}, {3840, 2160}, {345, 194}), QSize(345, 194));
+        QCOMPARE(ofView({1920, 1080}, {3840, 2160}, {345, 194}), QSize(173, 97));
+        /* a 27" 4K monitor at 150 %: the device pixels count */
+        QCOMPARE(ofView({2560, 1440}, {3840, 2160}, {597, 336}), QSize(398, 224));
+        QCOMPARE(ofView({0, 0}, {3840, 2160}, {345, 194}), QSize());
+        QCOMPARE(ofView({1920, 1080}, {}, {345, 194}), QSize());
+        for (const QSizeF &unknown : {QSizeF(0, 0), QSizeF(160, 90), QSizeF(160, 100),
+                                      QSizeF(1600, 900), QSizeF(16, 9), QSizeF(16, 10)}) {
+            QCOMPARE(ofView({1920, 1080}, {1920, 1080}, unknown), QSize());
+        }
+        /* 10 DPI, 2000 DPI: no monitor */
+        QCOMPARE(ofView({1920, 1080}, {1920, 1080}, {4877, 2743}), QSize());
+        QCOMPARE(ofView({1920, 1080}, {1920, 1080}, {24, 14}), QSize());
+        /* at most what an EDID holds */
+        QCOMPARE(ofView({60000, 1080}, {1920, 1080}, {527, 296}), QSize(4095, 296));
+    }
+
     /* A guest that runs keeps its mode while the view has no size (a
        console not shown, after vitrine started again) */
     void noScreenInfoUnshown()
@@ -916,6 +943,9 @@ private Q_SLOTS:
         const QString call = qemu.callsTo("UIInfo.Apply").first();
         QVERIFY2(call.contains("'width': <uint32") && call.contains("'refresh_rate': <uint32"),
                  qPrintable(call));
+        /* the physical size, of the screen's (the offscreen screens': 100 DPI) */
+        QVERIFY2(call.contains("'width_mm': <uint16") && call.contains("'height_mm': <uint16"),
+                 qPrintable(call));
         QTest::qWait(50);
         QCOMPARE(applied.size(), 0);
         qemu.letGo();
@@ -929,6 +959,8 @@ private Q_SLOTS:
         top.resize(640, 480);
         top.show();
         QTRY_COMPARE(qemu.callsTo("UIInfo.Apply").size(), 2);
+        QVERIFY2(qemu.callsTo("UIInfo.Apply")[1].contains("'width_mm': <uint16"),
+                 qPrintable(qemu.callsTo("UIInfo.Apply")[1]));
         QTest::qWait(50);
         QCOMPARE(applied.size(), 1);
 

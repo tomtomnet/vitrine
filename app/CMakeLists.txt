@@ -76,6 +76,7 @@ qt_add_library(vitrine_core STATIC
     src/core/paths.h
     src/core/perfstats.cpp
     src/core/perfstats.h
+    src/core/physicalsize.h
     src/core/qemuinfo.cpp
     src/core/qemuinfo.h
     src/core/qmpclient.cpp
