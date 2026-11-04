@@ -5,8 +5,9 @@
 #   tools  vitrine-guest-tools (noarch): the patched virtio-gpu driver as a
 #          DKMS module, its options, the compositor's settings, the boot-time
 #          fix-ups and the vitrine agent (guest/tools/)
-#   mesa   Mesa 26.2.3 + the Xe native context, the iris upload fix, longer BO
-#          caches for radeonsi/iris over virtio, RADV's virtio probe fix
+#   mesa   Mesa 26.2.6 + the Xe native context, the iris upload fix, longer BO
+#          caches for radeonsi/iris over virtio and a floor of big buffers
+#          for iris's, RADV's virtio probe fix
 #   kwin   KWin 6.8.2 + the research's guest set g24 (VM frame pacing, the nested
 #          desktop): for Plasma 6.8.2 guests (guest/kwin/kwin.spec)
 #   qtbase, ksvg, kirigami  Qt 6.11.2's qtbase, KSvg and Kirigami 6.31.0 with

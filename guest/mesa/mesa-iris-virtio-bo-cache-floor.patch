@@ -1,0 +1,122 @@
+Subject: [PATCH] iris: under virtio-gpu, keep the newest big cached buffers past the timeout
+
+0002 keeps freed buffers 8 s instead of 1 s under virtio-gpu, because a new
+buffer's CPU mapping faults into the host page by page (~4 us per 4 KiB page
+in a guest).  Any timeout still misses after a longer pause, and a desktop's
+biggest uploads come exactly then: a compositor re-uploads a whole window when
+it repaints after a focus change, through a staging buffer of the window's
+size.  In a GNOME guest at 4K, leaving Firefox through the overview faulted
+~4,500 pages of a fresh 17 MB staging buffer and lost the animation two or
+three refreshes (8 lost in 6 switches) with the 8 s timeout; 60 s removed it.
+
+Instead of a longer timeout, keep a floor: past the timeout, the two newest
+CPU-mapped buffers of each bucket of at least 1 MiB stay cached, the biggest
+buckets first, while those kept buffers add up to no more than 128 MiB.
+- Only CPU-mapped ones: faulting the mapping in is what a new buffer costs;
+  the biggest buffers (render targets, textures the GPU fills) are never
+  mapped.
+- Two per bucket: a cached buffer is reused only when idle, and an upload
+  frees its staging buffer while the GPU still copies from it, so a window
+  re-specified and then updated takes two of one size (keeping one per
+  bucket, even with a 256 MiB floor, still faulted a fresh 18 MB buffer in 5
+  of 6 switches out of Firefox).  What that
+costs is fixed per process rather than tied to how long the program was
+idle.  The cap of 0002 still bounds the whole cache.  IRIS_BO_CACHE_KEEP_MB
+overrides the floor (0 turns it off); bare metal keeps none.
+---
+diff --git a/src/gallium/drivers/iris/iris_bufmgr.c b/src/gallium/drivers/iris/iris_bufmgr.c
+index fc8ccee..2ea7209 100644
+--- a/src/gallium/drivers/iris/iris_bufmgr.c
++++ b/src/gallium/drivers/iris/iris_bufmgr.c
+@@ -196,6 +196,33 @@ struct iris_slab {
+  */
+ #define BO_CACHE_MAX_SIZE_DIVISOR 8
+ 
++/**
++ * Megabytes of big cached buffers that outlive the timeout under virtio.
++ *
++ * Past the timeout the newest CPU-mapped buffers of each bucket of at least
++ * BO_CACHE_KEEP_MIN_SIZE stay cached (BO_CACHE_KEEP_PER_BUCKET of them), the biggest buckets first, while those
++ * kept buffers add up to no more than this.  Only CPU-mapped ones: what a new
++ * buffer costs under virtio is faulting its mapping in, and the biggest
++ * buffers - render targets, textures the GPU fills - are never mapped.  A compositor re-uploads a big
++ * window after any pause - a focus change repaints a GTK3 window's whole frame
++ * - and each upload takes a staging buffer of the window's size: without a
++ * cached one, a 4K window's upload in a guest faults in ~4,500 pages and loses
++ * an animation two or three refreshes, however long the timeout, as soon as the
++ * pause is longer.  The floor bounds what that costs instead: a fixed amount
++ * per process, not an amount that depends on how long the program has been
++ * idle.
++ */
++#define BO_CACHE_KEEP_MB_VIRTIO 128
++#define BO_CACHE_KEEP_MIN_SIZE (1024 * 1024)
++
++/**
++ * How many of the newest buffers of a bucket the floor keeps.  Reusing a cached
++ * buffer needs an idle one, and an upload frees its staging buffer while the
++ * GPU still copies from it: two uploads of one size back to back (a window
++ * re-specified, then updated) need two.
++ */
++#define BO_CACHE_KEEP_PER_BUCKET 2
++
+ struct iris_bucket_cache {
+    struct bo_cache_bucket bucket[BUCKET_ARRAY_SIZE];
+    int num_buckets;
+@@ -226,6 +253,9 @@ struct iris_bufmgr {
+    /** Free the oldest cached buffers once bo_cache_size passes this. */
+    uint64_t bo_cache_max_size;
+ 
++   /** Big cached buffers kept past the timeout, at most this much in all. */
++   uint64_t bo_cache_keep_size;
++
+    time_t time;
+ 
+    struct hash_table *name_table;
+@@ -1712,19 +1742,35 @@ cleanup_bo_cache(struct iris_bufmgr *bufmgr, time_t time)
+    if (bufmgr->time == time)
+       return;
+ 
++   uint64_t kept = 0;
++
+    for (int h = 0; h < iris_get_heap_max(bufmgr); h++) {
+       struct iris_bucket_cache *cache = &bufmgr->bucket_cache[h];
+ 
+-      for (int i = 0; i < cache->num_buckets; i++) {
++      /* the biggest buckets first: they are the costliest to fault in again */
++      for (int i = cache->num_buckets - 1; i >= 0; i--) {
+          struct bo_cache_bucket *bucket = &cache->bucket[i];
++         unsigned left = list_length(&bucket->head);
+ 
+          list_for_each_entry_safe(struct iris_bo, bo, &bucket->head, head) {
+             if (time - bo->real.free_time <= bufmgr->bo_cache_seconds)
+                break;
+ 
++            /* the newest CPU-mapped buffers of a big bucket stay, within the
++             * floor: a buffer the CPU never mapped costs nothing to replace
++             */
++            if (left <= BO_CACHE_KEEP_PER_BUCKET && bo->real.map &&
++                bo->size >= BO_CACHE_KEEP_MIN_SIZE &&
++                kept + bo->size <= bufmgr->bo_cache_keep_size) {
++               kept += bo->size;
++               left--;
++               continue;
++            }
++
+             bo_cache_remove(bufmgr, bo);
+ 
+             bo_free(bo);
++            left--;
+          }
+       }
+    }
+@@ -2527,6 +2573,10 @@ iris_bufmgr_create(struct intel_device_info *devinfo, int fd, bool bo_reuse)
+                            (bufmgr->vram.size + bufmgr->sys.size) /
+                            (BO_CACHE_MAX_SIZE_DIVISOR * 1024 * 1024)) *
+       (1024 * 1024);
++   bufmgr->bo_cache_keep_size =
++      debug_get_num_option("IRIS_BO_CACHE_KEEP_MB",
++                           devinfo->is_virtio ? BO_CACHE_KEEP_MB_VIRTIO : 0) *
++      (1024 * 1024);
+ 
+    bufmgr->kmd_backend = iris_kmd_backend_get(devinfo->kmd_type);
+ 
