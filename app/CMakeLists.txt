@@ -68,6 +68,8 @@ qt_add_library(vitrine_core STATIC
     src/core/hostsettings.h
     src/core/importer.cpp
     src/core/importer.h
+    src/core/managerinstance.cpp
+    src/core/managerinstance.h
     src/core/nesteddesktop.cpp
     src/core/nesteddesktop.h
     src/core/optionvalue.cpp
@@ -124,8 +126,9 @@ target_compile_definitions(vitrine_core PRIVATE
 qt_add_resources(vitrine_core guestbootstrap PREFIX /guest BASE ../guest
     FILES ../guest/bootstrap/vitrine-tools-bootstrap.service
           ../guest/bootstrap/multi-user.target.conf)
+# no Qt GUI: the GTK app (gtk.cmake) runs the core without it
 target_link_libraries(vitrine_core
-    PUBLIC Qt6::Core Qt6::Concurrent Qt6::Gui Qt6::Network
+    PUBLIC Qt6::Core Qt6::Concurrent Qt6::Network
     PRIVATE PkgConfig::WAYLAND)
 target_compile_options(vitrine_core PRIVATE -Wall -Wextra)
 
@@ -258,6 +261,19 @@ add_custom_command(OUTPUT ${UI_PROTOCOL_DIR}/linux-dmabuf-v1-client-protocol.h
             ${UI_PROTOCOL_DIR}/linux-dmabuf-v1-client-protocol.h
     DEPENDS ${UI_DMABUF_XML})
 
+# What both apps' windows use and needs only Qt Core: the summaries of a
+# VM's settings, the QEMU documentation, the access to USB devices
+qt_add_library(vitrine_uishared STATIC
+    src/ui/qemudocs.cpp
+    src/ui/qemudocs.h
+    src/ui/uiconfig.cpp
+    src/ui/uiconfig.h
+    src/ui/usbaccess.cpp
+    src/ui/usbaccess.h
+)
+target_link_libraries(vitrine_uishared PUBLIC vitrine_core)
+target_compile_options(vitrine_uishared PRIVATE -Wall -Wextra)
+
 # The windows, a library of their own so that tests can use them
 qt_add_library(vitrine_ui STATIC
     src/ui/argseditor.cpp
@@ -302,8 +318,6 @@ qt_add_library(vitrine_ui STATIC
     src/ui/newvmdialog.h
     src/ui/preferencesdialog.cpp
     src/ui/preferencesdialog.h
-    src/ui/qemudocs.cpp
-    src/ui/qemudocs.h
     src/ui/referencepanel.cpp
     src/ui/referencepanel.h
     src/ui/shutdownnotice.cpp
@@ -324,12 +338,8 @@ qt_add_library(vitrine_ui STATIC
     src/ui/textdialog.h
     src/ui/udmabufnotifier.cpp
     src/ui/udmabufnotifier.h
-    src/ui/uiconfig.cpp
-    src/ui/uiconfig.h
     src/ui/updatenotifier.cpp
     src/ui/updatenotifier.h
-    src/ui/usbaccess.cpp
-    src/ui/usbaccess.h
     src/ui/usbmenu.cpp
     src/ui/usbmenu.h
     src/ui/vmconsole.cpp
@@ -347,7 +357,8 @@ qt_add_library(vitrine_ui STATIC
     ${UI_PROTOCOL_DIR}/linux-dmabuf-v1-client-protocol.h
 )
 target_include_directories(vitrine_ui PRIVATE ${UI_PROTOCOL_DIR})
-target_link_libraries(vitrine_ui PUBLIC vitrine_core vitrine_vmview Qt6::DBus Qt6::Widgets
+target_link_libraries(vitrine_ui PUBLIC vitrine_core vitrine_uishared vitrine_vmview Qt6::DBus
+                                        Qt6::Widgets
                                  PRIVATE PkgConfig::WAYLAND)
 target_compile_options(vitrine_ui PRIVATE -Wall -Wextra)
 # the logo of a build tree's app (Icons::app): it is CC BY 3.0, a file
@@ -433,6 +444,7 @@ if(BUILD_TESTING)
             hostmemory
             hostsettings
             importer
+            managerinstance
             nesteddesktop
             optionvalue
             perfstats

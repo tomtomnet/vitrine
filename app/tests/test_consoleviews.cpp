@@ -113,8 +113,9 @@ static constexpr quint32 kKey1 = 10, kKey2 = 11, kKey3 = 12, kKeyA = 38, kKeyF =
 static std::optional<View> viewOf(int key, Qt::KeyboardModifiers mods, quint32 scanCode,
                                   const QString &text = {})
 {
+    /* as the window passes on Qt's event */
     const QKeyEvent event(QEvent::KeyPress, key, mods, scanCode, 0, 0, text);
-    return ConsoleViews::viewForKey(&event);
+    return ConsoleViews::viewForKey(event.modifiers(), event.nativeScanCode(), event.key());
 }
 
 class TestConsoleViews : public QObject

@@ -5,8 +5,6 @@
 
 #include <optional>
 
-class QKeyEvent;
-
 /*
  * Which view of a VM the console shows, for a VM whose nested desktop
  * shows in vitrine's window (NestedDesktop::Mode::Integrated):
@@ -42,10 +40,14 @@ public:
     /*
      * Ctrl+Alt and the key of 1 or 2 above the letters, or on the keypad:
      * its view.  By the key's place, not its character, which the layout
-     * gives (AZERTY's are & and é): XKB's keycode, as Wayland and X11 give
-     * it, else Qt's key when the platform gives none.
+     * gives (AZERTY's are & and é): XKB's keycode @nativeScanCode, as
+     * Wayland and X11 give it, else Qt's @key when the platform gives none
+     * (0).  @modifiers: those held.  The key's values rather than Qt's
+     * event, so that the core needs no Qt GUI: the GTK app gives them from
+     * GDK's.
      */
-    static std::optional<View> viewForKey(const QKeyEvent *event);
+    static std::optional<View> viewForKey(Qt::KeyboardModifiers modifiers, quint32 nativeScanCode,
+                                          int key);
 
     /* The user's choice */
     void choose(View view);
