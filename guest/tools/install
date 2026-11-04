@@ -371,8 +371,13 @@ plasma_moves() {
 # Fedora Plasma moves to.  With the Plasma it is for, what an update to that
 # Plasma left at the version of the KWin it kept (vitrine's of earlier tools)
 # comes along: xdg-desktop-portal-kde waits for KPipeWire of its version.
-plasma=$(rpm -q --qf '%{VERSION}' plasma-workspace 2> /dev/null || true)
-[ -n "$plasma" ] || plasma=$(rpm -q --qf '%{VERSION}' kwin 2> /dev/null || true)
+# (none on another desktop: rpm -q says "not installed" on its standard output)
+plasma=
+if installed plasma-workspace; then
+	plasma=$(rpm -q --qf '%{VERSION}' plasma-workspace 2> /dev/null)
+elif installed kwin; then
+	plasma=$(rpm -q --qf '%{VERSION}' kwin 2> /dev/null)
+fi
 use_kwin=0 plasma_move=() move_why='' move_from=$plasma
 if [ "$kwin" = 0 ]; then
 	say "KWin: kept (--no-kwin)"
@@ -414,8 +419,13 @@ else
 	for name in $(medium_names '^mesa-'); do
 		installed "$name" x86_64 && mesa+=("$(medium_nevra "$name")")
 	done
-	[ ${#mesa[@]} -gt 0 ] && say "Mesa: vitrine's build of ${#mesa[@]} packages" ||
+	if [ ${#mesa[@]} -gt 0 ]; then
+		say "Mesa: vitrine's build of ${#mesa[@]} packages"
+	elif [ -z "$(medium_names '^mesa-')" ]; then
+		say "Mesa: none on this medium, the installed one stays"
+	else
 		say "Mesa: none installed (no desktop?), nothing to replace"
+	fi
 fi
 kwin_pkgs=()
 if [ "$use_kwin" = 1 ]; then
@@ -467,11 +477,13 @@ for again in kwin kpipewire; do
 		fedora_again+=("$name")
 	done < <(from_source "$again" | cut -d' ' -f1 | sort -u)
 done
-# the nested desktop's proxy, whatever the desktop: the session needs it
+# the nested desktop's proxy, whatever the desktop: the session needs it.
+# Without it, a Plasma guest is told what that means; another desktop (GNOME)
+# has no nested session to lose
 proxy_pkgs=()
 if [ -n "$(medium_nevra wl-cross-domain-proxy)" ]; then
 	proxy_pkgs+=("$(medium_nevra wl-cross-domain-proxy)")
-else
+elif [ -n "$plasma" ]; then
 	say "the nested desktop: no proxy on this medium, the session falls back to Plasma on the VM's screen"
 fi
 
@@ -493,6 +505,9 @@ medium_evr() {  # medium_evr NAME: EPOCH:VERSION-RELEASE of the medium's build, 
 take_source() {  # take_source SOURCE MAIN TITLE: vitrine's build of SOURCE in source_pkgs, or none
 	local src=$1 main=$2 title=$3 have ours set name arch p whose missing=()
 	source_pkgs=()
+	# not installed: nothing to replace (rpm -q says so on its standard
+	# output, which would read as a version)
+	rpm -q "$main.x86_64" > /dev/null 2>&1 || return 0
 	have=$(rpm -q --qf '%{EPOCHNUM}:%{VERSION}-%{RELEASE}\n' "$main.x86_64" 2> /dev/null | sort -V | tail -n 1)
 	[ -n "$have" ] || return 0
 	ours=$(medium_evr "$main")
