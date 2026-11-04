@@ -13,7 +13,7 @@
  *     desktop OpenGL as Fedora's Qt has it (its GL_BGRA uploads need it);
  *   - QOpenGLFunctions, QOpenGLExtraFunctions: the GL calls they make,
  *     resolved through eglGetProcAddress;
- *   - QSurfaceFormat: the sizes and the swap interval the renderer passes on;
+ *   - QSurfaceFormat: the alpha size and the swap interval the context takes;
  *   - QWindow: the format and the window state the renderer reads, set by
  *     the GTK view (thread-safe: the render thread reads them);
  *   - QImage: the guest's cursor the listener hands over (ARGB32).
@@ -29,7 +29,6 @@
 #include <QtGlobal>
 #include <QtCore/qnamespace.h>
 #include <QFlags>
-#include <QSize>
 
 #include <EGL/egl.h>
 #include <EGL/eglext.h>
@@ -51,22 +50,13 @@ EGLDisplay eglDisplay();
 class QSurfaceFormat
 {
 public:
-    enum SwapBehavior { DefaultSwapBehavior, SingleBuffer, DoubleBuffer, TripleBuffer };
-
     void setAlphaBufferSize(int size) { m_alpha = size; }
     int alphaBufferSize() const { return m_alpha; }
-    void setDepthBufferSize(int size) { m_depth = size; }
-    int depthBufferSize() const { return m_depth; }
-    void setStencilBufferSize(int size) { m_stencil = size; }
-    int stencilBufferSize() const { return m_stencil; }
-    void setSwapBehavior(SwapBehavior behavior) { m_swap = behavior; }
-    SwapBehavior swapBehavior() const { return m_swap; }
     void setSwapInterval(int interval) { m_interval = interval; }
     int swapInterval() const { return m_interval; }
 
 private:
-    int m_alpha = -1, m_depth = -1, m_stencil = -1;
-    SwapBehavior m_swap = DefaultSwapBehavior;
+    int m_alpha = -1;
     int m_interval = 1;
 };
 
@@ -131,12 +121,6 @@ public:
         m_texSubImage2D(target, level, xoffset, yoffset, width, height, format, type, pixels);
     }
     void glViewport(GLint x, GLint y, GLsizei width, GLsizei height) { m_viewport(x, y, width, height); }
-
-    /* every entry point found (eglGetProcAddress) */
-    bool isValid() const { return m_valid; }
-
-protected:
-    bool m_valid = true;
 
 private:
     void (*m_bindFramebuffer)(GLenum, GLuint) = nullptr;
@@ -237,9 +221,7 @@ public:
     int width() const { return m_width; }
     int height() const { return m_height; }
     qsizetype bytesPerLine() const { return m_stride; }
-    Format format() const { return m_format; }
     const uchar *constBits() const { return m_data; }
-    QSize size() const { return QSize(m_width, m_height); }
 
 private:
     std::shared_ptr<const std::vector<uchar>> m_owned;

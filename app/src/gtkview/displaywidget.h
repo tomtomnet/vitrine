@@ -12,6 +12,7 @@
 #include <cstdint>
 #include <memory>
 #include <set>
+#include <vector>
 
 #include "displayinput.h"
 #include "vmview/common.h"
@@ -24,6 +25,7 @@ class QWindow;
 class Renderer;
 typedef struct _GdkFrameClock GdkFrameClock;
 typedef struct _GdkTexture GdkTexture;
+typedef struct _GtkEventController GtkEventController;
 
 /*
  * The VM's screen in a GTK window: the GTK counterpart of src/vmview's
@@ -57,7 +59,10 @@ public:
     void sendUiInfo();
 
     bool grabbed() const { return m_input.grabbed(); }
-    QString grabState() const { return m_input.grabState(); }
+    /* DisplayInput's, and whether the desktop keeps its shortcuts though
+       the grab asked for them: the compositor may not grant it (GNOME asks
+       the user, per application ID, and may never) */
+    QString grabState() const;
     void setGrab(bool on);
     /* The keyboard is the guest's: the widget has the focus in the active
        window, and input is on (the controller tells) */
@@ -67,6 +72,11 @@ public:
     bool isExposed() const { return m_exposed; }
     /* The window's own full-screen state, for the renderer */
     void setFullScreenWindow(bool on);
+    /* Something GTK draws covers the widget (an in-window dialog): the
+       frames' surface leaves the window, and the widget draws @still (its
+       own, null: black) until uncovered */
+    void setCovered(bool covered, GdkTexture *still = nullptr);
+    bool isCovered() const { return m_covered; }
 
     /* grabbed() or grabState() changed */
     sigc::signal<void()> grabChanged;
@@ -78,6 +88,8 @@ public:
     sigc::signal<void(bool)> exposedChanged;
     /* The window's scale, monitor or refresh rate changed */
     sigc::signal<void()> screenChanged;
+    /* An input of the user's: a key or button pressed, the pointer in */
+    sigc::signal<void()> inputSeen;
 
 protected:
     Gtk::SizeRequestMode get_request_mode_vfunc() const override;
@@ -115,6 +127,8 @@ private:
     void scheduleUiInfo();
     GdkSurface *toplevelSurface() const;
     void setExposed(bool exposed);
+    void updateExposed();
+    void holdWindowShortcuts(bool hold);
 
     DBusDisplay *m_display;
     DisplaySurface *m_surface;
@@ -126,16 +140,22 @@ private:
     Glib::RefPtr<Gtk::EventControllerScroll> m_scroll;
     bool m_inputEnabled = true;
     bool m_exposed = false;
-    bool m_inhibited = false;
+    bool m_mapped = false;
+    bool m_covered = false;
+    GdkTexture *m_still = nullptr;
+    bool m_inhibited = false;       // the window's shortcuts inhibition asked for
+    bool m_inhibitActive = false;   // and granted by the compositor
     /* the hotkeys' keys down: their repeats and releases are not the guest's */
     std::set<guint> m_hotkeys;
+    /* the window's shortcut controllers off while the widget has the keyboard */
+    std::vector<GtkEventController *> m_heldShortcuts;
     GdkTexture *m_cursorTexture = nullptr;
     int m_cursorHotX = 0, m_cursorHotY = 0;
     /* realized */
     GdkFrameClock *m_clock = nullptr;
     gulong m_layoutId = 0;
     GdkSurface *m_watched = nullptr;    // the window's surface: its scale, its monitor
-    gulong m_scaleId = 0, m_enterMonitorId = 0;
+    gulong m_scaleId = 0, m_enterMonitorId = 0, m_inhibitId = 0;
     Gtk::Window *m_root = nullptr;
     sigc::connection m_activeWatch;
     sigc::connection m_uiInfoTimer;

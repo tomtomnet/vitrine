@@ -8,12 +8,11 @@ namespace {
 std::atomic<EGLDisplay> g_display{EGL_NO_DISPLAY};
 
 template <typename F>
-void resolve(F &fn, const char *name, bool *valid)
+void resolve(F &fn, const char *name)
 {
     fn = reinterpret_cast<F>(eglGetProcAddress(name));
     if (!fn) {
         fprintf(stderr, "vitrine: display: OpenGL lacks %s\n", name);
-        *valid = false;
     }
 }
 
@@ -57,28 +56,28 @@ EGLDisplay QtGuiCompat::eglDisplay()
 
 QOpenGLFunctions::QOpenGLFunctions()
 {
-    resolve(m_bindFramebuffer, "glBindFramebuffer", &m_valid);
-    resolve(m_bindTexture, "glBindTexture", &m_valid);
-    resolve(m_checkFramebufferStatus, "glCheckFramebufferStatus", &m_valid);
-    resolve(m_clear, "glClear", &m_valid);
-    resolve(m_clearColor, "glClearColor", &m_valid);
-    resolve(m_deleteFramebuffers, "glDeleteFramebuffers", &m_valid);
-    resolve(m_deleteTextures, "glDeleteTextures", &m_valid);
-    resolve(m_finish, "glFinish", &m_valid);
-    resolve(m_flush, "glFlush", &m_valid);
-    resolve(m_framebufferTexture2D, "glFramebufferTexture2D", &m_valid);
-    resolve(m_genFramebuffers, "glGenFramebuffers", &m_valid);
-    resolve(m_genTextures, "glGenTextures", &m_valid);
-    resolve(m_pixelStorei, "glPixelStorei", &m_valid);
-    resolve(m_texImage2D, "glTexImage2D", &m_valid);
-    resolve(m_texParameteri, "glTexParameteri", &m_valid);
-    resolve(m_texSubImage2D, "glTexSubImage2D", &m_valid);
-    resolve(m_viewport, "glViewport", &m_valid);
+    resolve(m_bindFramebuffer, "glBindFramebuffer");
+    resolve(m_bindTexture, "glBindTexture");
+    resolve(m_checkFramebufferStatus, "glCheckFramebufferStatus");
+    resolve(m_clear, "glClear");
+    resolve(m_clearColor, "glClearColor");
+    resolve(m_deleteFramebuffers, "glDeleteFramebuffers");
+    resolve(m_deleteTextures, "glDeleteTextures");
+    resolve(m_finish, "glFinish");
+    resolve(m_flush, "glFlush");
+    resolve(m_framebufferTexture2D, "glFramebufferTexture2D");
+    resolve(m_genFramebuffers, "glGenFramebuffers");
+    resolve(m_genTextures, "glGenTextures");
+    resolve(m_pixelStorei, "glPixelStorei");
+    resolve(m_texImage2D, "glTexImage2D");
+    resolve(m_texParameteri, "glTexParameteri");
+    resolve(m_texSubImage2D, "glTexSubImage2D");
+    resolve(m_viewport, "glViewport");
 }
 
 QOpenGLExtraFunctions::QOpenGLExtraFunctions()
 {
-    resolve(m_blitFramebuffer, "glBlitFramebuffer", &m_valid);
+    resolve(m_blitFramebuffer, "glBlitFramebuffer");
 }
 
 QOpenGLContext::~QOpenGLContext()

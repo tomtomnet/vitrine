@@ -7,6 +7,7 @@
 #include "vmview/renderer.h"
 
 #include <QImage>
+#include <QRect>
 #include <QWindow>
 
 #include <gtkmm/eventcontrollerfocus.h>
@@ -70,9 +71,6 @@ DisplayWidget::DisplayWidget(DBusDisplay *display, DisplaySurface *surface, cons
 
     QSurfaceFormat format;
     format.setAlphaBufferSize(0); // opaque: the compositor needs no blending
-    format.setDepthBufferSize(0);
-    format.setStencilBufferSize(0);
-    format.setSwapBehavior(QSurfaceFormat::DoubleBuffer);
     /* 0 = present each guest frame at once, like QEMU's SDL display */
     format.setSwapInterval(opts.vsync ? 1 : 0);
     m_window->setFormat(format);
@@ -94,7 +92,10 @@ DisplayWidget::DisplayWidget(DBusDisplay *display, DisplaySurface *surface, cons
     add_controller(focus);
 
     auto motion = Gtk::EventControllerMotion::create();
-    motion->signal_enter().connect([this](double x, double y) { m_input.pointerEnter(x, y); });
+    motion->signal_enter().connect([this](double x, double y) {
+        m_input.pointerEnter(x, y);
+        inputSeen.emit();
+    });
     motion->signal_leave().connect([this]() { m_input.pointerLeave(); });
     motion->signal_motion().connect([this](double x, double y) { m_input.motion(x, y); });
     add_controller(motion);
@@ -116,6 +117,9 @@ DisplayWidget::~DisplayWidget()
     m_uiInfoTimer.disconnect();
     if (m_cursorTexture) {
         g_object_unref(m_cursorTexture);
+    }
+    if (m_still) {
+        g_object_unref(m_still);
     }
 }
 
@@ -144,6 +148,18 @@ void DisplayWidget::snapshot_vfunc(const Glib::RefPtr<Gtk::Snapshot> &snapshot)
     const GdkRGBA black = {0, 0, 0, 1};
     const graphene_rect_t r = GRAPHENE_RECT_INIT(0, 0, float(get_width()), float(get_height()));
     gtk_snapshot_append_color(snapshot->gobj(), &black, &r);
+    /* covered: the guest's last frame, letterboxed as the renderer draws it */
+    if (m_covered && m_still) {
+        const QRect fit = fitRect(QSize(get_width(), get_height()),
+                                  QSize(gdk_texture_get_width(m_still),
+                                        gdk_texture_get_height(m_still)));
+        if (!fit.isEmpty()) {
+            const graphene_rect_t at = GRAPHENE_RECT_INIT(float(fit.x()), float(fit.y()),
+                                                          float(fit.width()), float(fit.height()));
+            gtk_snapshot_append_scaled_texture(snapshot->gobj(), m_still,
+                                               GSK_SCALING_FILTER_LINEAR, &at);
+        }
+    }
 }
 
 GdkSurface *DisplayWidget::toplevelSurface() const
@@ -175,6 +191,16 @@ void DisplayWidget::on_realize()
         m_enterMonitorId = g_signal_connect_swapped(m_watched, "enter-monitor", G_CALLBACK(+[](gpointer self) {
             static_cast<DisplayWidget *>(self)->screenChanged.emit();
         }), this);
+        if (GDK_IS_TOPLEVEL(m_watched)) {
+            m_inhibitId = g_signal_connect_swapped(m_watched, "notify::shortcuts-inhibited",
+                                                   G_CALLBACK(+[](gpointer self) {
+                auto *w = static_cast<DisplayWidget *>(self);
+                gboolean active = FALSE;
+                g_object_get(w->m_watched, "shortcuts-inhibited", &active, nullptr);
+                w->m_inhibitActive = active;
+                w->grabChanged.emit();
+            }), this);
+        }
     }
     if ((m_root = dynamic_cast<Gtk::Window *>(get_root()))) {
         m_activeWatch = m_root->property_is_active().signal_changed().connect(
@@ -185,8 +211,10 @@ void DisplayWidget::on_realize()
 
 void DisplayWidget::on_unrealize()
 {
-    /* the keys held up, the grab gone, while the window is still there */
+    /* the keys held up, the grab gone, the window's shortcuts back, while
+       the window is still there */
     m_input.setHostActive(false);
+    holdWindowShortcuts(false);
     setShortcutsInhibited(false);
     if (m_constraints) {
         m_constraints->setLocked(nullptr, false);
@@ -198,6 +226,10 @@ void DisplayWidget::on_unrealize()
     if (m_watched) {
         g_signal_handler_disconnect(m_watched, m_scaleId);
         g_signal_handler_disconnect(m_watched, m_enterMonitorId);
+        if (m_inhibitId) {
+            g_signal_handler_disconnect(m_watched, std::exchange(m_inhibitId, 0));
+        }
+        m_inhibitActive = false;
         g_object_unref(std::exchange(m_watched, nullptr));
     }
     if (m_clock) {
@@ -210,13 +242,35 @@ void DisplayWidget::on_unrealize()
 void DisplayWidget::on_map()
 {
     Gtk::Widget::on_map();
-    setExposed(true);
+    m_mapped = true;
+    updateExposed();
 }
 
 void DisplayWidget::on_unmap()
 {
-    setExposed(false);
+    m_mapped = false;
+    updateExposed();
     Gtk::Widget::on_unmap();
+}
+
+void DisplayWidget::setCovered(bool covered, GdkTexture *still)
+{
+    if (m_still) {
+        g_object_unref(m_still);
+    }
+    m_still = covered ? still : nullptr;
+    if (!covered && still) {
+        g_object_unref(still);
+    }
+    m_covered = covered;
+    updateExposed();
+    queue_draw();
+}
+
+/* The frames show while the widget is mapped and nothing covers it */
+void DisplayWidget::updateExposed()
+{
+    setExposed(m_mapped && !m_covered);
 }
 
 void DisplayWidget::setExposed(bool exposed)
@@ -372,6 +426,15 @@ void DisplayWidget::updateCursor()
     g_object_unref(cursor);
 }
 
+QString DisplayWidget::grabState() const
+{
+    QString state = m_input.grabState();
+    if (m_inhibited && !m_inhibitActive) {
+        state += QStringLiteral(", but the desktop keeps its shortcuts");
+    }
+    return state;
+}
+
 void DisplayWidget::setGrab(bool on)
 {
     m_input.setGrab(on);
@@ -380,6 +443,46 @@ void DisplayWidget::setGrab(bool on)
 void DisplayWidget::setHostActive(bool active)
 {
     m_input.setHostActive(active);
+    holdWindowShortcuts(active);
+}
+
+/*
+ * Every key to the guest while it has the keyboard, as the Qt view takes
+ * them before the window's shortcuts (ShortcutOverride): GTK runs a
+ * window's capture-phase shortcut controllers - the application's
+ * accelerators, F10 for its primary menu, the shortcuts its widgets hand to
+ * the window - before the focused widget sees the key.  Those of the
+ * widget's window are off meanwhile, and back as it loses the keyboard
+ * (input off, the focus elsewhere, the window not active); the bubble
+ * phase's never get the keys the widget takes.
+ */
+void DisplayWidget::holdWindowShortcuts(bool hold)
+{
+    if (!hold) {
+        for (GtkEventController *controller : std::exchange(m_heldShortcuts, {})) {
+            gtk_event_controller_set_propagation_phase(controller, GTK_PHASE_CAPTURE);
+            g_object_unref(controller);
+        }
+        return;
+    }
+    if (!m_heldShortcuts.empty() || !m_root) {
+        return;
+    }
+    GListModel *controllers = gtk_widget_observe_controllers(GTK_WIDGET(m_root->gobj()));
+    const guint n = g_list_model_get_n_items(controllers);
+    for (guint i = 0; i < n; i++) {
+        auto *controller = GTK_EVENT_CONTROLLER(g_list_model_get_item(controllers, i));
+        if (GTK_IS_SHORTCUT_CONTROLLER(controller) &&
+            gtk_event_controller_get_propagation_phase(controller) == GTK_PHASE_CAPTURE) {
+            m_heldShortcuts.push_back(controller);  // the item's reference
+        } else {
+            g_object_unref(controller);
+        }
+    }
+    g_object_unref(controllers);
+    for (GtkEventController *controller : m_heldShortcuts) {
+        gtk_event_controller_set_propagation_phase(controller, GTK_PHASE_NONE);
+    }
 }
 
 void DisplayWidget::setFullScreenWindow(bool on)
@@ -389,15 +492,22 @@ void DisplayWidget::setFullScreenWindow(bool on)
 
 bool DisplayWidget::onKeyPressed(guint keyval, guint keycode, Gdk::ModifierType state)
 {
-    if (!m_inputEnabled) {
-        return false;   // the window's shortcuts
-    }
+    inputSeen.emit();
     /* the hotkeys of QEMU's SDL and GTK displays: Ctrl+Alt+G grab, Ctrl+Alt+F
        full screen.  Ctrl and Alt still reach the guest, the letter does not */
     const auto mods = static_cast<GdkModifierType>(state);
     const DisplayInput::Hotkey hotkey = DisplayInput::hotkey(
         gdk_keyval_to_lower(keyval), mods & GDK_CONTROL_MASK, mods & GDK_ALT_MASK,
         mods & GDK_SHIFT_MASK, mods & GDK_SUPER_MASK);
+    if (!m_inputEnabled) {
+        /* the window's shortcuts (Resume among them), but full screen's way
+           back: the full-screen window has none */
+        if (hotkey == DisplayInput::Hotkey::FullScreen && m_hotkeys.insert(keycode).second) {
+            fullScreenToggled.emit();
+            return true;
+        }
+        return false;
+    }
     if (hotkey != DisplayInput::Hotkey::None || m_hotkeys.count(keycode)) {
         if (m_hotkeys.insert(keycode).second) {   // not its repeat
             if (hotkey == DisplayInput::Hotkey::Grab) {
@@ -447,6 +557,7 @@ bool DisplayWidget::onEvent(const Glib::RefPtr<const Gdk::Event> &event)
     }
     /* a click: the keys are the guest's */
     grab_focus();
+    inputSeen.emit();
     m_input.press(button, out.x, out.y);
     return true;
 }
@@ -506,6 +617,8 @@ void DisplayWidget::setShortcutsInhibited(bool on)
     } else {
         gdk_toplevel_restore_system_shortcuts(GDK_TOPLEVEL(surface));
     }
+    /* the state line says so until the compositor grants it */
+    grabChanged.emit();
 }
 
 void DisplayWidget::setPointerLocked(bool on)

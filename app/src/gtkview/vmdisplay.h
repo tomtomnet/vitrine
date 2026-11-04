@@ -85,6 +85,15 @@ public:
        Ctrl+Alt+F hotkey, the others go to the window's shortcuts */
     void setInputEnabled(bool on);
     bool inputEnabled() const { return m_inputEnabled; }
+    /*
+     * Something GTK draws in the window covers the screen, as an in-window
+     * dialog (AdwDialog) or a toast over the VM page: the frames' surface,
+     * over anything GTK draws, leaves the window, and the widget shows a
+     * still of the guest's last frame until uncovered.  The guest runs on.
+     * Full screen, the screen is in a window of its own: nothing to do.
+     */
+    void setCovered(bool on);
+    bool isCovered() const { return m_covered; }
     /* Gives the keyboard to the guest */
     void focus();
     /* Frame statistics since the last call */
@@ -127,6 +136,7 @@ private:
     GtkWidget *m_placeholder = nullptr;  // in m_host while full screen
     std::shared_ptr<bool> m_alive;       // for what the other threads queue for this one
     bool m_fullScreen = false;
+    bool m_covered = false;
     bool m_hasKeyboard = false;
     bool m_inputEnabled = true;
     sigc::connection m_undrawn;

@@ -3,6 +3,8 @@
 
 #include "displaysurface.h"
 #include "displaywidget.h"
+#include "framestill.h"
+#include "gtkclipboard.h"
 #include "vmview/dbusdisplay.h"
 #include "vmview/listener.h"
 #include "vmview/qmp.h"
@@ -10,6 +12,7 @@
 
 #include <QImage>
 #include <QJsonObject>
+#include <QLoggingCategory>
 #include <QWindow>
 
 #include <adwaita.h>
@@ -28,6 +31,9 @@
 #include <sys/socket.h>
 #include <sys/un.h>
 #include <unistd.h>
+
+/* QT_LOGGING_RULES=vitrine.view.debug=true: what the guest says of its screen */
+Q_LOGGING_CATEGORY(lcView, "vitrine.view", QtWarningMsg)
 
 namespace {
 
@@ -183,6 +189,8 @@ bool VmDisplay::attach(const QString &monitorSocket, QString *error, bool guestW
             if (alive.expired()) {
                 return;
             }
+            qCDebug(lcView) << "guest cursor" << image.width() << "x" << image.height() << "hot spot"
+                            << hotX << hotY;
             m_cursor = std::make_unique<QImage>(image);
             m_cursorHotX = hotX;
             m_cursorHotY = hotY;
@@ -196,6 +204,9 @@ bool VmDisplay::attach(const QString &monitorSocket, QString *error, bool guestW
             if (alive.expired()) {
                 return;
             }
+            if (visible != m_cursorVisible) {
+                qCDebug(lcView) << "guest cursor" << (visible ? "shown" : "hidden");
+            }
             m_cursorVisible = visible;
             if (m_widget) {
                 m_widget->setGuestCursorVisible(visible);
@@ -206,6 +217,9 @@ bool VmDisplay::attach(const QString &monitorSocket, QString *error, bool guestW
         onGuiThread([this, alive, w, h]() {
             if (alive.expired()) {
                 return;
+            }
+            if (QSize(int(w), int(h)) != m_guestSize) {
+                qCDebug(lcView) << "guest screen" << w << "x" << h;
             }
             m_guestSize = QSize(int(w), int(h));
             if (m_widget) {
@@ -232,6 +246,17 @@ bool VmDisplay::attach(const QString &monitorSocket, QString *error, bool guestW
         }
     });
     sendFirstUiInfo(guestWaits);
+    /*
+     * Last: QEMU reads the clipboard object's properties as it takes the
+     * Register, with its main loop stopped until this thread answers them,
+     * so no synchronous call to QEMU may follow on this thread before it
+     * gets back to its event loop.  Without it, the screen still works.
+     */
+    m_clipboard = new GtkVmClipboard(m_dbus->connection(), gdk_display_get_default());
+    if (QString message; !m_clipboard->start(&message)) {
+        fprintf(stderr, "vitrine: %s\n", qPrintable(message));
+        delete std::exchange(m_clipboard, nullptr);
+    }
     return true;
 }
 
@@ -242,6 +267,8 @@ void VmDisplay::detach()
         m_listener->stop();
         m_listener.reset();
     }
+    /* before the connection closes: QEMU's calls to it end here */
+    delete std::exchange(m_clipboard, nullptr);
     if (m_dbus) {
         /* the answers of its calls still to come are not the view's */
         QObject::disconnect(m_dbus, nullptr, nullptr, nullptr);
@@ -294,6 +321,12 @@ void VmDisplay::createWindow(bool fullScreen)
     m_widget->grabChanged.connect([this]() { checkGrab(); });
     m_widget->focusChanged.connect([this]() { updateHostActive(); });
     m_widget->screenChanged.connect([this]() { screenChanged(); });
+    /* the guest's text the compositor refused goes again at the next input */
+    m_widget->inputSeen.connect([this]() {
+        if (m_clipboard && m_clipboard->waitsForInput()) {
+            m_clipboard->inputSeen();
+        }
+    });
     m_widget->exposedChanged.connect([this](bool exposed) {
         /* the render thread takes it from here */
         if (exposed) {
@@ -340,6 +373,9 @@ void VmDisplay::createWindow(bool fullScreen)
         gtk_widget_set_visible(m_placeholder, true);
     } else {
         gtk_widget_set_visible(m_placeholder, false);
+        if (m_covered) {
+            m_widget->setCovered(true, takeFrameStill(&m_mailbox, gdk_display_get_default()));
+        }
         m_host->append(*m_widget);
     }
 
@@ -429,11 +465,27 @@ void VmDisplay::setFullScreen(bool on)
                                G_DBUS_CALL_FLAGS_NO_AUTO_START, -1, nullptr, nullptr, nullptr);
     }
     m_fullScreen = on;
+    qCDebug(lcView) << (on ? "full screen" : "back in the window");
     createWindow(on);
     focus();
     updateHostActive();
     fullScreenChanged.emit(on);
     checkGrab();
+}
+
+void VmDisplay::setCovered(bool on)
+{
+    if (on == m_covered) {
+        return;
+    }
+    m_covered = on;
+    if (m_widget && !m_fullScreen) {
+        /* the still first: the guest may render into its buffer again once
+           the render thread lets it go */
+        GdkTexture *still = on ? takeFrameStill(&m_mailbox, gtk_widget_get_display(m_widget->gobj()))
+                               : nullptr;
+        m_widget->setCovered(on, still);
+    }
 }
 
 bool VmDisplay::grabbed() const
