@@ -108,6 +108,9 @@ QString supportedSystems();
 /* The release of the tools for @system: its Fedora release when it is one
    of releases(); empty for another system, or one not known */
 QString releaseFor(const System &system);
+/* The release to build first: the newest of those @systems (the VMs' guests,
+   as they said) run, else newestRelease() */
+QString defaultRelease(const QList<System> &systems);
 /*
  * The Fedora release an installation image names, by its file name or its
  * volume label: "45" of Fedora-Workstation-Live-45-1.6.x86_64.iso or of

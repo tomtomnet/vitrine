@@ -676,6 +676,12 @@ private slots:
         QCOMPARE(releaseFor(System{"fedora", "43", ""}), QString());
         QCOMPARE(releaseFor(System{"ubuntu", "24.04", ""}), QString());
         QCOMPARE(releaseFor(System{}), QString());
+        /* what the Builds window starts with: the newest the VMs run, else the newest */
+        QCOMPARE(defaultRelease({}), "45");
+        QCOMPARE(defaultRelease({System{"fedora", "44", ""}, System{}}), "44");
+        QCOMPARE(defaultRelease({System{"fedora", "44", ""}, System{"fedora", "45", ""}}), "45");
+        QCOMPARE(defaultRelease({System{"fedora", "43", ""}, System{"fedora", "44", ""}}), "44");
+        QCOMPARE(defaultRelease({System{"ubuntu", "24.04", ""}}), "45");
     }
 
     /* The Fedora release an installation image is of, by its name or its label */

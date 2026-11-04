@@ -131,7 +131,8 @@ files it changes, and the guest packages compile through ccache.
    and the agent, no KDE packages yet: a Plasma guest keeps Fedora's KWin.
    The Builds window (also Build… in Machine > Install Guest Tools… and in
    Preferences) builds those of one release at a time, its "Guest tools for"
-   choice, in a Fedora container of that release with rootless podman, then
+   choice (at first the newest one the VMs run; a VM's Install Guest Tools…
+   its own), in a Fedora container of that release with rootless podman, then
    makes the medium VMs install them from: 40 to 70 minutes the first time
    for Fedora 44 (Mesa ~15-25 min, Qt Base ~15, KWin ~10, Kirigami ~3, the
    proxy, KPipeWire and KSvg ~2 each, tools ~1), 15 to 30 for Fedora 45, up

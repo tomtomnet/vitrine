@@ -38,6 +38,7 @@
 
 #include "core/buildmanager.h"
 #include "core/consoleviews.h"
+#include "core/guesttools.h"
 #include "core/guesttoolsbuilder.h"
 #include "core/hostsettings.h"
 #include "core/nesteddesktop.h"
@@ -206,6 +207,16 @@ MainWindow::MainWindow(VmStore *store, QWidget *parent)
             qemuBuilt();
         }
     });
+    /* the Builds window's guest tools: the newest release the VMs' guests run,
+       which the user may change there */
+    QList<GuestTools::System> systems;
+    for (const Vm *vm : m_store->vms()) {
+        systems << GuestTools::system(vm->id());
+    }
+    if (const QString release = GuestTools::defaultRelease(systems);
+        release != GuestTools::newestRelease()) {
+        BuildManager::instance()->setGuestRelease(release);
+    }
     m_input->setObjectName("input");
     m_input->setContentsMargins(0, 0, fontMetrics().averageCharWidth() * 3, 0);
     m_input->hide();

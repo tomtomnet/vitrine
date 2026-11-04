@@ -40,6 +40,17 @@ QString newestRelease()
     return releases().constLast();
 }
 
+QString defaultRelease(const QList<System> &systems)
+{
+    const QStringList all = releases();
+    qsizetype newest = -1;
+
+    for (const System &system : systems) {
+        newest = qMax(newest, all.indexOf(releaseFor(system)));
+    }
+    return newest < 0 ? newestRelease() : all.at(newest);
+}
+
 /* No hello this long after the guest started: no agent */
 static const int kGraceMs = 90000;
 /* Connecting again to the agent's socket */
