@@ -1,0 +1,3 @@
+// SPDX-License-Identifier: GPL-2.0-or-later
+// The GTK build's stand-in for Qt GUI's QImage: qtguicompat.h
+#include "qtguicompat.h"

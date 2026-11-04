@@ -165,8 +165,17 @@ foreach(xml ${VMVIEW_PROTOCOLS})
         DEPENDS ${WAYLAND_PROTOCOLS_DIR}/${xml})
     list(APPEND VMVIEW_PROTOCOL_SOURCES ${hdr} ${src})
 endforeach()
+# Their code in one library, for every target that speaks them: the Qt
+# view, the GTK view (src/gtkview) and the GTK app's windows (gtk.cmake);
+# two copies in one program would be two definitions of each interface
+add_library(vitrine_wlprotocols STATIC ${VMVIEW_PROTOCOL_SOURCES})
+target_include_directories(vitrine_wlprotocols PUBLIC ${VMVIEW_PROTOCOL_DIR})
+target_link_libraries(vitrine_wlprotocols PUBLIC PkgConfig::WAYLAND)
+set_target_properties(vitrine_wlprotocols PROPERTIES AUTOMOC OFF AUTOUIC OFF AUTORCC OFF)
 
 qt_add_library(vitrine_vmview STATIC
+    src/vmview/clipboardstate.cpp
+    src/vmview/clipboardstate.h
     src/vmview/common.h
     src/vmview/dbusdisplay.cpp
     src/vmview/dbusdisplay.h
@@ -196,18 +205,18 @@ qt_add_library(vitrine_vmview STATIC
     src/nested/desktopview.h
     src/nested/nestedview.cpp
     src/nested/nestedview.h
-    ${VMVIEW_PROTOCOL_SOURCES}
 )
-target_include_directories(vitrine_vmview PUBLIC src PRIVATE src/vmview ${VMVIEW_PROTOCOL_DIR})
+target_include_directories(vitrine_vmview PUBLIC src PRIVATE src/vmview)
 target_link_libraries(vitrine_vmview
     PUBLIC Qt6::Gui Qt6::Widgets
     PRIVATE Qt6::GuiPrivate PkgConfig::GIO PkgConfig::EGL PkgConfig::WAYLAND PkgConfig::GBM
-            nestedvmview)
+            nestedvmview vitrine_wlprotocols)
 # GLib's headers use the names of Qt's signals/slots keywords; Qt's GL headers
 # come with Qt6::Gui and GL entry points are resolved at run time
 target_compile_definitions(vitrine_vmview PRIVATE QT_NO_KEYWORDS)
 # vitrine's own files there; the research side's build as they come
 set_source_files_properties(src/vmview/vmview.cpp src/vmview/vmclipboard.cpp
+    src/vmview/clipboardstate.cpp
     src/vmview/viewsurface.cpp src/nested/nestedview.cpp PROPERTIES COMPILE_OPTIONS "-Wall;-Wextra")
 
 # The nested desktop in the window: the research side's vmview library in
@@ -252,7 +261,7 @@ target_compile_options(nestedvmview PRIVATE
 
 # The windows' own Wayland: the compositor's main device (ui/desktopgpu.h)
 # from linux-dmabuf's default feedback, the header only: its interfaces are
-# in vitrine_vmview's protocol code, which every user of vitrine_ui links
+# in vitrine_wlprotocols, which every user of vitrine_ui links (vitrine_vmview)
 set(UI_PROTOCOL_DIR ${CMAKE_CURRENT_BINARY_DIR}/ui-protocols)
 set(UI_DMABUF_XML ${WAYLAND_PROTOCOLS_DIR}/stable/linux-dmabuf/linux-dmabuf-v1.xml)
 add_custom_command(OUTPUT ${UI_PROTOCOL_DIR}/linux-dmabuf-v1-client-protocol.h
@@ -575,5 +584,5 @@ if(BUILD_TESTING)
         "GLIBC_TUNABLES=glibc.malloc.tcache_count=0:glibc.malloc.perturb=165")
 endif()
 
-# The GTK4 + libadwaita app, vitrine-gtk, and its tests
+# The GTK4 + libadwaita app, vitrine-gtk, its VM display and their tests
 include(gtk.cmake)

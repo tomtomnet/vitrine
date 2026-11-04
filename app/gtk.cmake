@@ -19,6 +19,10 @@ if(NOT VITRINE_GTK_FOUND)
             "not find: install their development files, or configure with -DVITRINE_GTK=OFF")
 endif()
 
+# The VM display (src/gtkview): its library, vitrine_gtkview, and its test
+# program, vitrine-gtk-view
+include(src/gtkview/gtkview.cmake)
+
 # The icon of a build tree's app, which is not installed: by the name GNOME
 # knows it by, for the icon theme to find beside the program
 configure_file(data/vitrine.svg ${CMAKE_CURRENT_BINARY_DIR}/gtk-icons/org.vitrine.Vitrine.svg
