@@ -60,12 +60,28 @@ fi
 [ "$action" = print-deps ] && exit 0
 ls "$rpms"/tools/vitrine-guest-tools-*.noarch.rpm > /dev/null 2>&1 ||
 	die "no vitrine-guest-tools package in $rpms/tools: run guest/build-rpms.sh tools first"
+# The package @1 is built for Fedora $release: its section of components.conf
+# has no releases= line, or one that names it (as build-rpms.sh's)
+for_release() {
+	[ -f "$here/components.conf" ] || return 0
+	awk -v p="$1" -v r="$release" '
+		/^[[:space:]]*\[/ { s = $0; gsub(/^[[:space:]]*\[|\][[:space:]]*$/, "", s); next }
+		s == p && /^releases=/ {
+			found = 1; sub(/^releases=/, ""); n = split($0, a, /[[:space:]]+/)
+			for (i = 1; i <= n; i++) if (a[i] == r) ok = 1
+		}
+		END { exit found && !ok }' "$here/components.conf"
+}
 # the packages on the medium: its deps in components.conf (those of an older
-# guest/ without the file)
-medium_packages=()
-read -r -a medium_packages < <(awk '/^[[:space:]]*\[/ { s = $0 }
+# guest/ without the file) that are built for this release
+deps=()
+read -r -a deps < <(awk '/^[[:space:]]*\[/ { s = $0 }
 	s ~ /^[[:space:]]*\[medium\]/ && /^deps=/ { sub(/^deps=/, ""); print; exit }' "$here/components.conf" 2> /dev/null) || true
-[ ${#medium_packages[@]} -gt 0 ] || medium_packages=(tools mesa kwin)
+[ ${#deps[@]} -gt 0 ] || deps=(tools mesa kwin)
+medium_packages=()
+for t in "${deps[@]}"; do
+	! for_release "$t" || medium_packages+=("$t")
+done
 # not while build-rpms.sh replaces the packages
 exec 9> "$rpms/.lock"
 flock -n 9 || die "a build of the guest tools is running into $rpms"
@@ -119,7 +135,22 @@ for f in install bootstrap; do
 done
 sed "s/@VERSION@/$tools_version/" "$here/tools/agent/vitrine-agent" > "$stage/vitrine-agent"
 # what it changes and why, for whoever opens the medium
-cat > "$stage/README.txt" <<EOF
+# (the packages this medium has: those of another release or not built are
+# left out)
+join() {  # join WORD...: "a", "a and b", "a, b and c"
+	local out=$1
+	[ $# -lt 2 ] || { out=$(printf '%s, ' "${@:1:$#-1}"); out="${out%, } and ${!#}"; }
+	printf '%s' "$out"
+}
+locked=() unlocked=()
+[ -z "$mesa_evr" ] || locked+=(Mesa)
+[ -z "$kwin_evr" ] || locked+=(KWin)
+[ -z "$kpipewire_evr" ] || locked+=(KPipeWire)
+[ -z "$proxy_evr" ] || locked+=("the proxy")
+[ -z "$ksvg_evr" ] || unlocked+=(KSvg)
+[ -z "$kirigami_evr" ] || unlocked+=(Kirigami)
+{
+	cat <<EOF
 vitrine guest tools $tools_evr for Fedora $release (x86_64)
 
 vitrine installs them by itself at the guest's next start when you ask for
@@ -138,22 +169,43 @@ What they install:
   /usr/lib/environment.d/60-vitrine-kwin.conf, boot-time settings (cacheable
   GPU memory, full preemption, vblank interrupts kept on, a check of the
   driver) and the vitrine agent
-- Mesa ${mesa_evr:-(none on this medium)} with native context, in place of the Mesa installed
-- KWin ${kwin_evr:-(none on this medium)}, only on Plasma ${kwin_evr%%-*} guests
-- KPipeWire ${kpipewire_evr:-(none on this medium)}, only on Plasma ${kpipewire_evr%%-*} guests
-- the nested desktop: its session, offered in the boots of a VM with the
-  Nested desktop box, and its proxy, wl-cross-domain-proxy ${proxy_evr:-(none on this medium)}
-- Qt Base ${qtbase_evr:-(none on this medium)}: Wayland windows being resized reuse their
-  shared memory; KSvg ${ksvg_evr:-(none on this medium)} and Kirigami ${kirigami_evr:-(none on this medium)}:
-  Plasma's popups no longer upload their frames again at each opening. Each
-  in place of the guest's, all its packages, when the guest has the version
-  it is built from
-Mesa, KWin, KPipeWire and the proxy are kept at those versions (dnf
-versionlock, 64-bit only), and so is Qt Base with vitrine's KWin, which is
-built against it. KSvg, Kirigami, and Qt Base without vitrine's KWin, give
-way to Fedora's next build of them: the next guest tools bring theirs back.
-Secure Boot must be off: the driver is not signed.
 EOF
+	[ -z "$mesa_evr" ] || echo "- Mesa $mesa_evr with native context, in place of the Mesa installed"
+	[ -z "$kwin_evr" ] || echo "- KWin $kwin_evr, only on Plasma ${kwin_evr%%-*} guests"
+	[ -z "$kpipewire_evr" ] || echo "- KPipeWire $kpipewire_evr, only on Plasma ${kpipewire_evr%%-*} guests"
+	if [ -n "$proxy_evr" ]; then
+		echo "- the nested desktop: its session, offered in the boots of a VM with the"
+		echo "  Nested desktop box, and its proxy, wl-cross-domain-proxy $proxy_evr"
+	fi
+	if [ -n "$qtbase_evr" ]; then
+		echo "- Qt Base $qtbase_evr: Wayland windows being resized reuse their shared"
+		echo "  memory"
+	fi
+	[ -z "$ksvg_evr" ] || echo "- KSvg $ksvg_evr: Plasma's popups no longer upload their frames again at each opening"
+	[ -z "$kirigami_evr" ] || echo "- Kirigami $kirigami_evr: the same for the popups of Kirigami's apps and Plasma"
+	if [ -n "$qtbase_evr$ksvg_evr$kirigami_evr" ]; then
+		echo "  Each of these in place of the guest's, all its packages, when the guest"
+		echo "  has the version it is built from"
+	fi
+	if [ ${#locked[@]} -gt 0 ]; then
+		kept="are kept at those versions"
+		[ ${#locked[@]} -gt 1 ] || kept="is kept at that version"
+		if [ -n "$kwin_evr" ] && [ -n "$qtbase_evr" ]; then
+			echo "$(join "${locked[@]}") $kept (dnf versionlock, 64-bit only), and"
+			echo "so is Qt Base with vitrine's KWin, which is built against it."
+		else
+			echo "$(join "${locked[@]}") $kept (dnf versionlock, 64-bit only)."
+		fi
+	fi
+	[ -z "$qtbase_evr" ] || unlocked+=("Qt Base without vitrine's KWin")
+	if [ ${#unlocked[@]} -gt 0 ]; then
+		way="give way to Fedora's next build of them"
+		[ ${#unlocked[@]} -gt 1 ] || way="gives way to Fedora's next build of it"
+		echo "$(join "${unlocked[@]}") $way: the next guest tools"
+		echo "bring vitrine's back."
+	fi
+	echo "Secure Boot must be off: the driver is not signed."
+} > "$stage/README.txt"
 
 # the medium's identity: what it would install, and how
 medium_id=$(cat "$stage/packages.txt" "$stage/install" "$stage/bootstrap" "$stage/vitrine-agent" |

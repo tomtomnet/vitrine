@@ -1,6 +1,8 @@
 // SPDX-License-Identifier: GPL-2.0-or-later
 #include "vmview.h"
 
+#include "core/physicalsize.h"
+
 #include "dbusdisplay.h"
 #include "displaywindow.h"
 #include "listener.h"
@@ -754,8 +756,12 @@ void VmView::sendFirstUiInfo(bool guestWaits)
         m_window->sendUiInfo();
         return;
     }
+    /* the window's share of its monitor's physical size, as DisplayWindow tells it */
+    const QSize monitor = screen ? screen->geometry().size() * screen->devicePixelRatio() : QSize();
+    const QSize mm = screen ? PhysicalSize::ofView(size, monitor, screen->physicalSize()) : QSize();
     m_dbus->applyUiInfo(uint32_t(size.width()), uint32_t(size.height()),
-                        uint32_t(qRound((screen ? screen->refreshRate() : 60.0) * 1000)), 0, 0);
+                        uint32_t(qRound((screen ? screen->refreshRate() : 60.0) * 1000)),
+                        uint16_t(mm.width()), uint16_t(mm.height()));
 }
 
 /*

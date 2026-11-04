@@ -4,6 +4,8 @@
 #include "renderer.h"
 #include "waylandextras.h"
 
+#include "core/physicalsize.h"
+
 #include <QGuiApplication>
 #include <QKeyEvent>
 #include <QPixmap>
@@ -103,7 +105,15 @@ void DisplayWindow::sendUiInfo()
         return;
     }
     uint32_t mhz = m_opts.sendRefreshRate ? uint32_t(qRound(refreshRateHz() * 1000)) : 0;
-    m_display->applyUiInfo(size.width(), size.height(), mhz, 0, 0);
+    /* the window's share of its monitor's physical size: the guest's EDID
+       says it, and the guest picks its scale from it (not QEMU's 100 DPI) */
+    const QScreen *s = screen();
+    const QSize mm = s ? PhysicalSize::ofView(physicalSize(),
+                                              s->geometry().size() * s->devicePixelRatio(),
+                                              s->physicalSize())
+                       : QSize();
+    m_display->applyUiInfo(size.width(), size.height(), mhz, uint16_t(mm.width()),
+                           uint16_t(mm.height()));
 }
 
 void DisplayWindow::setGuestSize(uint32_t w, uint32_t h)

@@ -157,6 +157,8 @@ class TestGuestToolsDialog : public QObject
         }
         qputenv("GATE", ("tools:" + dir + "/go").toUtf8());
         GuestToolsBuilder *b = GuestToolsBuilder::instance();
+        /* the medium of the VMs' release (Fedora 44 guests) */
+        b->setRelease("44");
         b->setGuestDir(dir + "/guest");
         b->setRpmsDir(dir + "/rpms");
         b->setCacheDir(dir + "/cache");
@@ -209,7 +211,7 @@ private slots:
         Paths::setQemuBinary(testQemu());
         QDir(dataDir()).removeRecursively();
         writeMedium();
-        QVERIFY(medium().isValid());
+        QVERIFY(medium("44").isValid());
         QDir().mkpath(m_tmp.filePath("vms/tools"));
         QFile args(m_tmp.filePath("vms/tools/vm.args"));
         QVERIFY(args.open(QIODevice::WriteOnly));
@@ -243,6 +245,10 @@ private slots:
                               QByteArray(kVm).replace("Tools Test", "Slow Test") +
                               "-drive file=disk.qcow2,format=qcow2,if=virtio\n"));
         QVERIFY(writeFile(m_tmp.filePath("vms/slow/disk.qcow2"), {}));
+        /* Fedora 44 guests, as their agents said: the medium of 44 is theirs */
+        for (const char *id : {"tools", "disk", "slow"}) {
+            setSystem(id, System{"fedora", "44", "Fedora Linux 44 (KDE Plasma Desktop Edition)"});
+        }
         m_store = new VmStore(m_tmp.filePath("vms"), this);
         QVERIFY(vm());
         QVERIFY(diskVm());
@@ -260,6 +266,7 @@ private slots:
             const bool off = QTest::qWaitFor([v]() { return !v->runner()->isActive(); }, 15000);
             Q_UNUSED(off);
             setPending(v->id(), Pending::None);
+            setSystem(v->id(), {});
         }
         delete m_window;
         QDir(dataDir()).removeRecursively();
@@ -560,6 +567,29 @@ private slots:
         QVERIFY2(text.contains("KSvg 6.31.0-1.1.k2.fc44 and Kirigami 6.31.0-1.1.f1.fc44"),
                  qPrintable(text));
         QVERIFY2(text.contains("give way to Fedora's next build"), qPrintable(text));
+    }
+
+    /* A medium without KDE's packages (Fedora 45's): Mesa alone stays at its version */
+    void namesWhatAMediumWithoutKdeKeeps()
+    {
+        const QString manifest = dataDir() + "/vitrine-guest-tools-fc44.json";
+        const auto restore = qScopeGuard([this]() {
+            writeMedium();
+            GuestToolsBuilder::instance()->checkMedium();
+        });
+        QVERIFY(writeFile(manifest, R"({"label": "VITRINETOOL", "mediumId": "a1b2c3d4e5f60719",
+                                        "fedora": "44", "tools": "0.1.0-32.fc44",
+                                        "mesa": "26.2.6-1.xe.fc44", "packages": []})"));
+        GuestToolsBuilder::instance()->checkMedium();
+        GuestToolsDialog::run(m_window, vm());
+        GuestToolsDialog *dialog = GuestToolsDialog::of(vm());
+        QVERIFY(dialog);
+        const QString text = textOf(dialog);
+        QVERIFY2(text.contains("Mesa 26.2.6-1.xe.fc44 with native context") &&
+                     text.contains("Mesa then stays at this version"),
+                 qPrintable(text));
+        /* (the guest's name says Plasma: what it runs) */
+        QVERIFY2(!text.contains("KWin") && !text.contains("newer Plasma"), qPrintable(text));
     }
 
     /* What the buttons say follows the VM, which may start or stop meanwhile */

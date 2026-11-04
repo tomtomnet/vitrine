@@ -99,17 +99,23 @@ private slots:
         qputenv("XDG_DATA_HOME", m_tmp.filePath("data").toUtf8());
         qputenv("XDG_CONFIG_HOME", m_tmp.filePath("config").toUtf8());
         qputenv("XDG_CACHE_HOME", m_tmp.filePath("cache").toUtf8());
-        /* a medium for Fedora 44, so that the dialog says what else keeps the tools out */
+        /* the media for Fedora 44 and 45, so that the dialog says what else keeps the tools
+           out; a guest that never said gets the newest release's */
         QVERIFY(QDir().mkpath(GuestTools::dataDir()));
-        QFile image(GuestTools::dataDir() + "/vitrine-guest-tools-fc44.img");
-        QFile json(GuestTools::dataDir() + "/vitrine-guest-tools-fc44.json");
-        QVERIFY(image.open(QIODevice::WriteOnly) && image.write(QByteArray(4096, '\0')) > 0);
-        QVERIFY(json.open(QIODevice::WriteOnly) &&
-                json.write(R"({"label": "VITRINETOOL", "mediumId": "32fe6c83b34e87e8",
-                               "fedora": "44", "tools": "0.1.0-1.fc44", "packages": []})") > 0);
-        image.close();
-        json.close();
-        QVERIFY(GuestTools::medium().isValid());
+        for (const QString &release : GuestTools::releases()) {
+            QFile image(GuestTools::dataDir() + "/vitrine-guest-tools-fc" + release + ".img");
+            QFile json(GuestTools::dataDir() + "/vitrine-guest-tools-fc" + release + ".json");
+            QVERIFY(image.open(QIODevice::WriteOnly) && image.write(QByteArray(4096, '\0')) > 0);
+            QVERIFY(json.open(QIODevice::WriteOnly) &&
+                    json.write(QString(R"({"label": "VITRINETOOL", "mediumId": "%1fe6c83b34e87e8",
+                                           "fedora": "%1", "tools": "0.1.0-1.fc%1",
+                                           "packages": []})")
+                                   .arg(release)
+                                   .toUtf8()) > 0);
+            image.close();
+            json.close();
+            QVERIFY(GuestTools::medium(release).isValid());
+        }
 
         const QString vms = m_tmp.filePath("vms");
         const System fedora44{"fedora", "44", "Fedora Linux 44 (KDE Plasma Desktop Edition)"};
@@ -167,9 +173,10 @@ private slots:
         QTest::newRow("fedora without 3D")
             << "vga" << "" << true << "This guest runs Fedora Linux 44";
         QTest::newRow("older tools") << "older" << "Update…" << true << "This guest runs";
+        /* upgraded to another release: the tools of that one */
         QTest::newRow("older tools, upgraded since")
-            << "upgraded" << "" << false << "This guest runs Fedora Linux 45 (KDE Plasma "
-                                            "Desktop Edition), which the guest tools are not for.";
+            << "upgraded" << "Update…" << true << "This guest runs Fedora Linux 45 (KDE Plasma "
+                                                  "Desktop Edition).";
     }
 
     void offer()
@@ -203,33 +210,42 @@ private slots:
         QVERIFY(install);
         QCOMPARE(install->isEnabled(), installable);
         const QString text = shownText(dialog);
-        QVERIFY2(text.contains("The guest tools are for Fedora 44 guests"), qPrintable(text));
+        QVERIFY2(text.contains("The guest tools are for Fedora 44 and 45 guests"), qPrintable(text));
         QVERIFY2(text.contains(said), qPrintable(text));
         delete dialog;
     }
 
     /*
-     * No medium built yet: any Fedora is offered (the build makes the one
-     * for 44), and a guest known to run another system hears so before a
-     * build, beside the build's banner
+     * No medium built yet: a Fedora of a release the tools are made for is
+     * offered (the build makes its medium), another release or system is
+     * not, and hears so before a build, beside the build's banner
      */
     void noMedium()
     {
-        const QString image = GuestTools::dataDir() + "/vitrine-guest-tools-fc44.img";
-        QVERIFY(QFile::rename(image, image + ".away"));
-        const auto back = qScopeGuard([image]() { QFile::rename(image + ".away", image); });
-        QVERIFY(!GuestTools::medium().isValid());
+        QStringList away;
+        for (const QString &release : GuestTools::releases()) {
+            away << GuestTools::dataDir() + "/vitrine-guest-tools-fc" + release + ".img";
+            QVERIFY(QFile::rename(away.last(), away.last() + ".away"));
+        }
+        const auto back = qScopeGuard([away]() {
+            for (const QString &image : away) {
+                QFile::rename(image + ".away", image);
+            }
+        });
+        QVERIFY(!GuestTools::medium("44").isValid());
         /* the VMs as the app finds them then */
         VmStore store(m_tmp.filePath("vms"));
 
         GuestToolsBanner banner;
-        banner.setVm(store.find("fedora43"));
+        banner.setVm(store.find("fedora"));
         QVERIFY(!banner.isHidden());
         QCOMPARE(button(banner), "Install Guest Tools…");
+        banner.setVm(store.find("fedora43"));
+        QVERIFY(banner.isHidden());
         banner.setVm(store.find("kde"));
         QVERIFY(banner.isHidden());
 
-        for (const QString &id : {QString("kde"), QString("fedora43")}) {
+        for (const QString &id : {QString("kde"), QString("fedora43"), QString("fedora")}) {
             GuestToolsDialog::run(nullptr, store.find(id));
             GuestToolsDialog *dialog = opened();
             QVERIFY(dialog);
@@ -239,10 +255,18 @@ private slots:
                 QVERIFY2(text.contains("This guest runs KDE Linux, which the guest tools are not "
                                        "for."),
                          qPrintable(text));
+            } else if (id == "fedora43") {
+                QVERIFY2(text.contains("This guest runs Fedora Linux 43 (Workstation Edition), "
+                                       "which the guest tools are not for."),
+                         qPrintable(text));
             } else {
-                QVERIFY2(text.contains("This guest runs Fedora Linux 43 (Workstation Edition)."),
+                /* its release's medium, which the build banner offers to build */
+                QVERIFY2(text.contains("This guest runs Fedora Linux 44 (KDE Plasma Desktop "
+                                       "Edition)."),
                          qPrintable(text));
                 QVERIFY2(!text.contains("not for"), qPrintable(text));
+                QVERIFY2(text.contains("The guest tools for Fedora 44 are not built yet"),
+                         qPrintable(text));
             }
             for (QAbstractButton *b : dialog->findChild<QDialogButtonBox *>()->buttons()) {
                 if (b->text() == "&Install") {

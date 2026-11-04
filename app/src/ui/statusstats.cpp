@@ -468,7 +468,8 @@ void StatusStats::relayout()
 static bool toolsAreFor(const Vm *vm)
 {
     const GuestTools::System system = GuestTools::system(vm->id());
-    return !system.isKnown() || GuestTools::supports(system, GuestTools::medium());
+    return !system.isKnown() ||
+           GuestTools::supports(system, GuestTools::medium(GuestTools::releaseFor(system)));
 }
 
 /* The notes of what the selected VM cannot show */

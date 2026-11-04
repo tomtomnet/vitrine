@@ -263,6 +263,42 @@ private slots:
         TaskList::instance()->clearFinished();
     }
 
+    /* The guest tools of one Fedora release: its packages and its medium of them */
+    void guestReleases()
+    {
+        BuildManager m;
+        Builds::Places places = setUp(m, "release");
+        QVERIFY(!places.guestDir.isEmpty());
+        const auto guestIds = [&m]() {
+            QStringList ids;
+            for (const Builds::Component &c : m.components()) {
+                if (c.kind == Builds::Kind::Package || c.kind == Builds::Kind::Medium) {
+                    ids << c.id;
+                }
+            }
+            return ids;
+        };
+        /* the KDE packages are Fedora 44's (guest/components.conf) */
+        places.guestRelease = "45";
+        m.setPlaces(places);
+        QCOMPARE(m.guestRelease(), "45");
+        QCOMPARE(guestIds(), QStringList({"tools", "mesa", "medium"}));
+        QCOMPARE(m.component("medium").deps, QStringList({"tools", "mesa"}));
+        QCOMPARE(m.plan({"medium"}), QStringList({"tools", "mesa", "medium"}));
+
+        QSignalSpy changed(&m, &BuildManager::guestReleaseChanged);
+        QVERIFY(m.setGuestRelease("44"));
+        QCOMPARE(changed.size(), 1);
+        QCOMPARE(m.guestRelease(), "44");
+        QCOMPARE(guestIds(), QStringList({"tools", "mesa", "kwin", "proxy", "kpipewire", "qtbase",
+                                          "ksvg", "kirigami", "medium"}));
+        /* the same again: nothing; one the tools are not made for: refused */
+        QVERIFY(m.setGuestRelease("44"));
+        QVERIFY(!m.setGuestRelease("43"));
+        QCOMPARE(m.guestRelease(), "44");
+        QCOMPARE(changed.size(), 1);
+    }
+
     /* What a build of some takes: what they need that is not built, the
        medium after a package, in build order */
     void plans()

@@ -5,15 +5,18 @@
 #   tools  vitrine-guest-tools (noarch): the patched virtio-gpu driver as a
 #          DKMS module, its options, the compositor's settings, the boot-time
 #          fix-ups and the vitrine agent (guest/tools/)
-#   mesa   Mesa 26.2.3 + the Xe native context, the iris upload fix, longer BO
-#          caches for radeonsi/iris over virtio, RADV's virtio probe fix
+#   mesa   Mesa 26.2.6 + the Xe native context, the iris upload fix, longer BO
+#          caches for radeonsi/iris over virtio and a floor of big buffers
+#          for iris's, RADV's virtio probe fix
 #   kwin   KWin 6.8.2 + the research's guest set g24 (VM frame pacing, the nested
 #          desktop): for Plasma 6.8.2 guests (guest/kwin/kwin.spec)
 #   qtbase, ksvg, kirigami  Qt 6.11.2's qtbase, KSvg and Kirigami 6.31.0 with
 #          the research's sets (q4, k2, f1): Fedora's specs, as the others
 # A package is a folder of guest/ with its spec; components.conf gives
-# their order (the app's Builds window shows them from there).  Two files
-# of the folder are this script's too:
+# their order (the app's Builds window shows them from there), and with a
+# releases= line the Fedora releases a package is built for (every one
+# without it): the KDE packages are Fedora 44's for now.  Two files of the
+# folder are this script's too:
 #   sources             the files the spec downloads, as Fedora's dist-git
 #                       pins them ("SHA512 (FILE) = HASH"): they come from
 #                       Fedora's lookaside cache by that hash (the very files
@@ -25,7 +28,8 @@
 #                       rpm-build-inside.sh: what the build needs besides the
 #                       spec's build requirements
 #
-#   guest/build-rpms.sh [--force] [--verbose] [PACKAGE...]  (default: all of them)
+#   guest/build-rpms.sh [--force] [--verbose] [PACKAGE...]  (default: all of
+#                       them that are built for FEDORA_RELEASE)
 #   guest/build-rpms.sh --print-inputs [PACKAGE...]
 #   guest/build-rpms.sh --print-deps
 #
@@ -88,8 +92,20 @@ all_packages() {
 		sed -n 's/^[[:space:]]*\[\([^]]*\)\][[:space:]]*$/\1/p' "$here/components.conf" 2> /dev/null
 		find "$here" -mindepth 1 -maxdepth 1 -type d -printf '%f\n' | LC_ALL=C sort
 	} | awk '!seen[$0]++' | while read -r p; do
-		! is_package "$p" || echo "$p"
+		! is_package "$p" || ! for_release "$p" || echo "$p"
 	done
+}
+# The package @1 is built for Fedora $release: its section of components.conf
+# has no releases= line, or one that names it (build-medium.sh has the same)
+for_release() {
+	[ -f "$here/components.conf" ] || return 0
+	awk -v p="$1" -v r="$release" '
+		/^[[:space:]]*\[/ { s = $0; gsub(/^[[:space:]]*\[|\][[:space:]]*$/, "", s); next }
+		s == p && /^releases=/ {
+			found = 1; sub(/^releases=/, ""); n = split($0, a, /[[:space:]]+/)
+			for (i = 1; i <= n; i++) if (a[i] == r) ok = 1
+		}
+		END { exit found && !ok }' "$here/components.conf"
 }
 
 action=build
@@ -106,6 +122,8 @@ for a in "$@"; do
 	-*) echo "unknown argument $a (see --help)" >&2; exit 2 ;;
 	*)
 		is_package "$a" || { echo "no package $a: no folder $a with its spec in $here" >&2; exit 2; }
+		for_release "$a" ||
+			{ echo "$a is not built for Fedora $release (its releases= in $here/components.conf)" >&2; exit 2; }
 		targets+=("$a")
 		;;
 	esac

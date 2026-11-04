@@ -7,6 +7,7 @@
 #include <functional>
 
 class Banner;
+class GuestToolsBuildBanner;
 class QCheckBox;
 class QDialogButtonBox;
 class QLabel;
@@ -78,6 +79,8 @@ private:
     bool m_mediumOnly = false;
     bool m_cancelled = false;   // during the snapshot: no start after it
     QLabel *m_what;
+    /* the medium of the guest's Fedora release: not built yet, being built, out of date */
+    GuestToolsBuildBanner *m_build;
     Banner *m_warning;
     QLabel *m_progress;
     QCheckBox *m_snapshot;
