@@ -259,7 +259,7 @@ void VmClipboard::fetched(uint32_t serial, GVariant *reply)
     setHostClipboard(*text);
 }
 
-void VmClipboard::setHostClipboard(const QString &text)
+void VmClipboard::setHostClipboard(QString text)
 {
     auto *data = new QMimeData;
 

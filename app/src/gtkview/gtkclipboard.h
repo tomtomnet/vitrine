@@ -75,8 +75,9 @@ private:
     void announce(bool again);
     void fetch();
     void fetched(uint32_t serial, GVariant *reply);
-    /* @again: the second time, at vitrine's next input */
-    void setHostClipboard(const QString &text, bool again = false);
+    /* @again: the second time, at vitrine's next input.  @text by value:
+       it may be m_pending's, which this resets */
+    void setHostClipboard(QString text, bool again = false);
     void call(const char *method, GVariant *args, const GVariantType *replyType, Done done,
               uintptr_t tag = 0);
 

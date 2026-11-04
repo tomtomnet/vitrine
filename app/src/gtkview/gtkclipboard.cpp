@@ -302,7 +302,7 @@ void GtkVmClipboard::fetched(uint32_t serial, GVariant *reply)
     setHostClipboard(*text);
 }
 
-void GtkVmClipboard::setHostClipboard(const QString &text, bool again)
+void GtkVmClipboard::setHostClipboard(QString text, bool again)
 {
     /* once more at vitrine's next input, which KWin takes when it refused
        this one: GTK does not tell (it keeps the clipboard as its own) */

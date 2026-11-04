@@ -86,7 +86,8 @@ private:
     void announce(bool again);
     void fetch();
     void fetched(uint32_t serial, GVariant *reply);
-    void setHostClipboard(const QString &text);
+    /* @text by value: it may be m_pending's, which this resets */
+    void setHostClipboard(QString text);
     void retryPending();
     bool eventFilter(QObject *watched, QEvent *event) override;
     void call(const char *method, GVariant *args, const struct _GVariantType *replyType,
