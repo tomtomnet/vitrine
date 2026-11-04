@@ -6,21 +6,13 @@
 #include <QSyntaxHighlighter>
 #include <QTextCharFormat>
 
+#include "ui/argscheck.h"
 #include "ui/qemudocs.h"
 
 class QCompleter;
 class QListWidget;
 class QStandardItemModel;
 class QTimer;
-
-/* What is wrong with the arguments, per line (0-based) */
-struct ArgsProblem {
-    int line;
-    QString message;
-};
-/* With @vmDir, the files the arguments read must exist (relative to it) */
-QList<ArgsProblem> checkArgs(const QString &text, const QemuInfo *info,
-                             const QString &vmDir = {});
 
 class ArgsHighlighter : public QSyntaxHighlighter
 {
