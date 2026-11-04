@@ -24,7 +24,7 @@ with an AMD Radeon 780M, with Fedora 44 KDE guests. It is not packaged.
 - For 3D through DRM native context: on the host, an AMD GPU (amdgpu) or an
   Intel GPU on the i915 or xe driver (only AMD is tried); in the guest, Linux
   6.14 or later and a Mesa with native context, which the guest tools install in
-  Fedora 44 guests ([docs/guest-mesa.md](docs/guest-mesa.md) covers others).
+  Fedora 44 and 45 guests ([docs/guest-mesa.md](docs/guest-mesa.md) covers others).
   Otherwise the guest falls back to virgl.
 - For native context, the host's udmabuf limits raised: the kernel's defaults
   (1024 entries, 64 MB per buffer) refuse the windows a 4K guest draws with
@@ -124,17 +124,21 @@ files it changes, and the guest packages compile through ccache.
    starts it. Each VM is its QEMU command line, which Machine > Settings
    (Ctrl+S) edits. A Linux VM whose 3D card lacks what new VMs get (native
    context, the host vblank timing) offers Update… on its Details tab.
-3. **Guest tools** for Fedora 44 x86-64 guests (virtio-gpu driver, Mesa, KWin
-   and KPipeWire for Plasma 6.8.2, Qt Base 6.11.2, KSvg and Kirigami 6.31.0,
-   the nested desktop's session and proxy, an agent). The Builds window (also
-   Build… in Machine > Install Guest Tools… and in Preferences) builds them
-   in a Fedora container with rootless podman, then makes the medium VMs
-   install them from: 40 to 70 minutes the first time (Mesa ~15-25 min, Qt
-   Base ~15, KWin ~10, Kirigami ~3, the proxy, KPipeWire and KSvg ~2 each,
-   tools ~1), up to 10 GiB of memory. Mesa, Qt Base and KWin wait until that
-   much is free, unless told to build anyway. `guest/build-rpms.sh` then
-   `guest/build-medium.sh` do the same by hand, which vitrine takes in the
-   same way.
+3. **Guest tools** for Fedora 44 and 45 x86-64 guests, a medium for each
+   release. Fedora 44's: virtio-gpu driver, Mesa 26.2.6, KWin and KPipeWire
+   for Plasma 6.8.2, Qt Base 6.11.2, KSvg and Kirigami 6.31.0, the nested
+   desktop's session and proxy, an agent. Fedora 45's has the driver, Mesa
+   and the agent, no KDE packages yet: a Plasma guest keeps Fedora's KWin.
+   The Builds window (also Build… in Machine > Install Guest Tools… and in
+   Preferences) builds those of one release at a time, its "Guest tools for"
+   choice, in a Fedora container of that release with rootless podman, then
+   makes the medium VMs install them from: 40 to 70 minutes the first time
+   for Fedora 44 (Mesa ~15-25 min, Qt Base ~15, KWin ~10, Kirigami ~3, the
+   proxy, KPipeWire and KSvg ~2 each, tools ~1), 15 to 30 for Fedora 45, up
+   to 10 GiB of memory. Mesa, Qt Base and KWin wait until that much is free,
+   unless told to build anyway. `guest/build-rpms.sh` then
+   `guest/build-medium.sh`, with `FEDORA_RELEASE=45` for Fedora 45, do the
+   same by hand, which vitrine takes in the same way.
 
    Then Machine > Install Guest Tools… > Install starts the VM with the tools
    medium (Restart and Install restarts a running one); the guest installs
