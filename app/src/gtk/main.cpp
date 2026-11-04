@@ -5,6 +5,7 @@
 #include <QTimer>
 
 #include <cstdio>
+#include <memory>
 
 #include "core/managerinstance.h"
 #include "core/paths.h"
@@ -14,28 +15,10 @@
 #include "core/vmrunner.h"
 #include "core/vmstore.h"
 #include "gtk/gtkloop.h"
+#include "gtk/mainwindow.h"
 #include "ui/qemudocs.h"
 
 static constexpr char kAppId[] = "org.vitrine.Vitrine";
-
-/* The first window, bare: what the loop shows until the main window comes */
-static GtkWidget *bareWindow(AdwApplication *app)
-{
-    GtkWidget *window = adw_application_window_new(GTK_APPLICATION(app));
-    GtkWidget *view = adw_toolbar_view_new();
-    GtkWidget *page = adw_status_page_new();
-
-    gtk_window_set_title(GTK_WINDOW(window), "Vitrine");
-    gtk_window_set_default_size(GTK_WINDOW(window), 1060, 680);
-    adw_toolbar_view_add_top_bar(ADW_TOOLBAR_VIEW(view), adw_header_bar_new());
-    adw_status_page_set_icon_name(ADW_STATUS_PAGE(page), kAppId);
-    adw_status_page_set_title(ADW_STATUS_PAGE(page), "Vitrine");
-    adw_status_page_set_description(ADW_STATUS_PAGE(page),
-                                    "GTK 4 and libadwaita, on the core of vitrine");
-    adw_toolbar_view_set_content(ADW_TOOLBAR_VIEW(view), page);
-    adw_application_window_set_content(ADW_APPLICATION_WINDOW(window), view);
-    return window;
-}
 
 int main(int argc, char **argv)
 {
@@ -115,37 +98,37 @@ int main(int argc, char **argv)
     QObject::connect(StackBuilder::instance(), &StackBuilder::built, &store,
                      [&store, prune]() { QTimer::singleShot(60000, &store, prune); });
 
-    GtkWidget *window = nullptr;
+    /* the window, at the first activation: GTK is set up by then */
+    std::unique_ptr<MainWindow> window;
     loop.setActivated([&]() {
         if (!window) {
-            window = bareWindow(loop.adw());
-            /* null once closed */
-            g_object_add_weak_pointer(G_OBJECT(window), reinterpret_cast<gpointer *>(&window));
+            window = std::make_unique<MainWindow>(&loop, &store);
         }
-        gtk_window_present(GTK_WINDOW(window));
+        window->present();
     });
     QString listenError;
     if (!instance.listen(&listenError)) {
         qWarning("Cannot listen on %s: %s", qPrintable(instance.socketPath()),
                  qPrintable(listenError));
     }
-    /* the Qt app started meanwhile: this window, with its token to take the focus */
+    /* the Qt app or another vitrine-gtk started meanwhile: this window, with its token */
     QObject::connect(&instance, &ManagerInstance::activationRequested, &store,
                      [&](const QByteArray &token) {
         if (window) {
-            if (!token.isEmpty()) {
-                gtk_window_set_startup_id(GTK_WINDOW(window), token.constData());
-            }
-            gtk_window_present(GTK_WINDOW(window));
+            window->present(token);
         }
     });
-    /* SIGTERM, SIGINT and SIGHUP end it as closing the window does, without its questions */
+    /*
+     * SIGTERM (the session ending, kill), SIGINT (Ctrl+C) and SIGHUP (the
+     * terminal closed) end vitrine as Close does, without its questions
+     */
     QuitSignals quit;
     QObject::connect(&quit, &QuitSignals::received, &store, [&]() {
         if (window) {
-            gtk_window_destroy(GTK_WINDOW(window));
+            window->quitWithoutQuestions();
+        } else {
+            loop.quit(0);
         }
-        loop.quit(0);
     });
     return loop.exec();
 }
