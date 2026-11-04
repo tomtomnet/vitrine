@@ -1102,7 +1102,8 @@ void MainWindow::toggleFullScreen()
 
 bool MainWindow::switchViewByKey(const QKeyEvent *event)
 {
-    const std::optional<ConsoleViews::View> view = ConsoleViews::viewForKey(event);
+    const std::optional<ConsoleViews::View> view =
+        ConsoleViews::viewForKey(event->modifiers(), event->nativeScanCode(), event->key());
     VmConsole *console = currentConsole();
 
     if (!view || !console || !console->hasViews()) {

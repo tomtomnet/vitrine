@@ -1,0 +1,11 @@
+[Desktop Entry]
+Type=Application
+Name=Vitrine (GTK)
+GenericName=Virtual Machine Manager
+Comment=Create and run QEMU virtual machines
+Exec=vitrine-gtk
+Icon=org.vitrine.Vitrine
+Terminal=false
+Categories=System;Emulator;GTK;
+Keywords=VM;virtual machine;QEMU;KVM;emulator;virtualization;
+StartupNotify=true
