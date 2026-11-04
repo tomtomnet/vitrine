@@ -57,6 +57,9 @@ struct QemuInfo {
 
     const QemuOptionDoc *option(const QString &name) const;
     const QemuDeviceDoc *device(const QString &name) const;
+    /* Whether every list a system emulator always has came back: a load
+       missing one is not kept in the cache */
+    bool complete() const;
 
     static QList<QemuOptionDoc> parseHelp(const QString &text);
     /* Merge the full descriptions and the argument flags of the options */
