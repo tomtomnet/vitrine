@@ -86,6 +86,8 @@ private:
     void insertItem(Vm *vm);
     void removeItem(const QString &id);
     int indexOf(const QString &id) const;
+    /* The id of the VM selected in the sidebar, which the store may have removed already */
+    QString selectedId() const;
     void updateItem(Vm *vm);
     void stateChanged(Vm *vm, VmRunner::State state);
     void failed(Vm *vm, const QString &error);

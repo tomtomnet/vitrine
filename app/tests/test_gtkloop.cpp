@@ -16,10 +16,7 @@
 #include <cstdio>
 #include <cstring>
 
-#include <csignal>
-
-#include <sys/prctl.h>
-#include <sys/stat.h>
+#include "gtkdisplay.h"
 
 #ifndef Q_MOC_RUN
 #include "gtk/gtkloop.h"
@@ -52,44 +49,17 @@ class TestGtkLoop : public QObject
 private slots:
     void initTestCase()
     {
-        const QString broadwayd = QStandardPaths::findExecutable("gtk4-broadwayd");
-        const QString runtime = qEnvironmentVariable("XDG_RUNTIME_DIR");
-
-        if (broadwayd.isEmpty()) {
+        m_bus = GtkDisplay::up(m_broadway);
+        if (!m_bus) {
             QSKIP("gtk4-broadwayd is not installed: no display to test on but the desktop's");
         }
-        /*
-         * Its web side on a socket, no port; GTK's side in the runtime
-         * folder.  It ends with the test, however the test ends: GTK ends
-         * a process whose display does not open, and a daemon left would
-         * hold ctest's output open.
-         */
-        m_broadway.setChildProcessModifier([]() { prctl(PR_SET_PDEATHSIG, SIGTERM); });
-        m_broadway.start(broadwayd, {"--unixsocket", runtime + "/broadway-web", ":7"});
-        QVERIFY(m_broadway.waitForStarted());
-        QTRY_VERIFY(!QDir(runtime).entryList({"broadway*.socket"}, QDir::System).isEmpty());
-
-        /* no services to start on it, the desktop's portals or dconf */
-        m_bus = g_test_dbus_new(G_TEST_DBUS_NONE);
-        g_test_dbus_up(m_bus);
         QVERIFY(qEnvironmentVariable("DBUS_SESSION_BUS_ADDRESS") ==
                 QString::fromUtf8(g_test_dbus_get_bus_address(m_bus)));
-        /* which it unsets, against XDG_RUNTIME_DIR/bus: GTK finds broadway's socket there */
-        qputenv("XDG_RUNTIME_DIR", QFile::encodeName(runtime));
     }
 
     void cleanupTestCase()
     {
-        if (m_bus) {
-            /*
-             * The daemon ends; the object stays, as its dispose would wait
-             * for the session connection to go, which the app keeps (it
-             * stays registered until the process ends: GtkLoop)
-             */
-            g_test_dbus_stop(m_bus);
-        }
-        m_broadway.kill();
-        m_broadway.waitForFinished();
+        GtkDisplay::down(m_broadway, m_bus);
     }
 
     void supported()
@@ -236,26 +206,11 @@ int main(int argc, char **argv)
     if (argc > 1 && strcmp(argv[1], kSecond) == 0) {
         return secondInstance(argc, argv);
     }
-    /*
-     * Nothing on the desktop's screen or bus, whoever runs it: a runtime
-     * folder of its own for broadway's socket, set before GLib reads it
-     * (it keeps the first value), GTK on broadway alone
-     */
+    /* nothing on the desktop's screen or bus, whoever runs it (gtkdisplay.h) */
     QTemporaryDir runtime(QDir::tempPath() + "/vitrine-gtkloop-XXXXXX");
-    if (!runtime.isValid() || chmod(QFile::encodeName(runtime.path()).constData(), 0700) != 0) {
-        fprintf(stderr, "no runtime folder\n");
+    if (!GtkDisplay::prepare(runtime)) {
         return 1;
     }
-    qputenv("XDG_RUNTIME_DIR", QFile::encodeName(runtime.path()));
-    qunsetenv("DISPLAY");
-    qunsetenv("WAYLAND_DISPLAY");
-    qputenv("GDK_BACKEND", "broadway");
-    qputenv("BROADWAY_DISPLAY", ":7");
-    qputenv("GTK_A11Y", "none");
-    qputenv("GSETTINGS_BACKEND", "memory");
-    qputenv("GIO_USE_VFS", "local");
-    qputenv("ADW_DISABLE_PORTAL", "1");
-    qputenv("GDK_DEBUG", "no-portals");
 
     QCoreApplication app(argc, argv);
     TestGtkLoop test;

@@ -401,6 +401,12 @@ Vm *MainWindow::current() const
     return index < guint(m_items.size()) ? m_store->find(m_items[index].id) : nullptr;
 }
 
+QString MainWindow::selectedId() const
+{
+    const guint index = m_sidebar ? adw_sidebar_get_selected(m_sidebar) : GTK_INVALID_LIST_POSITION;
+    return index < guint(m_items.size()) ? m_items[index].id : QString();
+}
+
 int MainWindow::indexOf(const QString &id) const
 {
     for (int i = 0; i < m_items.size(); i++) {
@@ -420,8 +426,7 @@ void MainWindow::select(const QString &id)
 
 void MainWindow::insertItem(Vm *vm)
 {
-    const Vm *selected = current();
-    const QString selectedId = selected ? selected->id() : QString();
+    const QString selected = selectedId();
     AdwSidebarItem *item = adw_sidebar_item_new(utf8(vm->name()).constData());
     int at = 0;
 
@@ -439,7 +444,7 @@ void MainWindow::insertItem(Vm *vm)
     /* the section takes the item */
     adw_sidebar_section_insert(m_section, item, at);
     m_syncing = false;
-    select(selectedId);
+    select(selected);
 }
 
 void MainWindow::addVm(Vm *vm)
@@ -517,8 +522,8 @@ void MainWindow::addVm(Vm *vm)
 void MainWindow::removeItem(const QString &id)
 {
     const int index = indexOf(id);
-    const Vm *selected = current();
-    const QString selectedId = selected ? selected->id() : QString();
+    /* by the list: the store no longer has the VM it removes */
+    const QString selected = selectedId();
 
     m_errors.remove(id);
     m_states.remove(id);
@@ -538,8 +543,8 @@ void MainWindow::removeItem(const QString &id)
     adw_sidebar_section_remove(m_section, m_items[index].item);
     m_items.removeAt(index);
     m_syncing = false;
-    if (selectedId != id) {
-        select(selectedId);
+    if (selected != id) {
+        select(selected);
     } else if (!m_items.isEmpty()) {
         select(m_items[std::min<int>(index, int(m_items.size()) - 1)].id);
     }

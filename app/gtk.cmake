@@ -81,4 +81,7 @@ if(BUILD_TESTING)
     vitrine_gtk_test(gtkloop Qt6::Concurrent)
     # what the windows say of a VM: words alone, no display needed
     vitrine_gtk_test(vmsummary)
+    vitrine_gtk_test(gtkmainwindow)
+    target_sources(test_gtkloop PRIVATE tests/gtkdisplay.h)
+    target_sources(test_gtkmainwindow PRIVATE tests/gtkdisplay.h)
 endif()
