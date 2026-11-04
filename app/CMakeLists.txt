@@ -68,6 +68,8 @@ qt_add_library(vitrine_core STATIC
     src/core/hostsettings.h
     src/core/importer.cpp
     src/core/importer.h
+    src/core/managerinstance.cpp
+    src/core/managerinstance.h
     src/core/nesteddesktop.cpp
     src/core/nesteddesktop.h
     src/core/optionvalue.cpp
@@ -124,8 +126,9 @@ target_compile_definitions(vitrine_core PRIVATE
 qt_add_resources(vitrine_core guestbootstrap PREFIX /guest BASE ../guest
     FILES ../guest/bootstrap/vitrine-tools-bootstrap.service
           ../guest/bootstrap/multi-user.target.conf)
+# no Qt GUI: the GTK app (gtk.cmake) runs the core without it
 target_link_libraries(vitrine_core
-    PUBLIC Qt6::Core Qt6::Concurrent Qt6::Gui Qt6::Network
+    PUBLIC Qt6::Core Qt6::Concurrent Qt6::Network
     PRIVATE PkgConfig::WAYLAND)
 target_compile_options(vitrine_core PRIVATE -Wall -Wextra)
 
@@ -162,6 +165,13 @@ foreach(xml ${VMVIEW_PROTOCOLS})
         DEPENDS ${WAYLAND_PROTOCOLS_DIR}/${xml})
     list(APPEND VMVIEW_PROTOCOL_SOURCES ${hdr} ${src})
 endforeach()
+# Their code in one library, for every target that speaks them: the Qt
+# view, the GTK view (src/gtkview) and the GTK app's windows (gtk.cmake);
+# two copies in one program would be two definitions of each interface
+add_library(vitrine_wlprotocols STATIC ${VMVIEW_PROTOCOL_SOURCES})
+target_include_directories(vitrine_wlprotocols PUBLIC ${VMVIEW_PROTOCOL_DIR})
+target_link_libraries(vitrine_wlprotocols PUBLIC PkgConfig::WAYLAND)
+set_target_properties(vitrine_wlprotocols PROPERTIES AUTOMOC OFF AUTOUIC OFF AUTORCC OFF)
 
 qt_add_library(vitrine_vmview STATIC
     src/vmview/clipboardstate.cpp
@@ -195,13 +205,12 @@ qt_add_library(vitrine_vmview STATIC
     src/nested/desktopview.h
     src/nested/nestedview.cpp
     src/nested/nestedview.h
-    ${VMVIEW_PROTOCOL_SOURCES}
 )
-target_include_directories(vitrine_vmview PUBLIC src PRIVATE src/vmview ${VMVIEW_PROTOCOL_DIR})
+target_include_directories(vitrine_vmview PUBLIC src PRIVATE src/vmview)
 target_link_libraries(vitrine_vmview
     PUBLIC Qt6::Gui Qt6::Widgets
     PRIVATE Qt6::GuiPrivate PkgConfig::GIO PkgConfig::EGL PkgConfig::WAYLAND PkgConfig::GBM
-            nestedvmview)
+            nestedvmview vitrine_wlprotocols)
 # GLib's headers use the names of Qt's signals/slots keywords; Qt's GL headers
 # come with Qt6::Gui and GL entry points are resolved at run time
 target_compile_definitions(vitrine_vmview PRIVATE QT_NO_KEYWORDS)
@@ -252,7 +261,7 @@ target_compile_options(nestedvmview PRIVATE
 
 # The windows' own Wayland: the compositor's main device (ui/desktopgpu.h)
 # from linux-dmabuf's default feedback, the header only: its interfaces are
-# in vitrine_vmview's protocol code, which every user of vitrine_ui links
+# in vitrine_wlprotocols, which every user of vitrine_ui links (vitrine_vmview)
 set(UI_PROTOCOL_DIR ${CMAKE_CURRENT_BINARY_DIR}/ui-protocols)
 set(UI_DMABUF_XML ${WAYLAND_PROTOCOLS_DIR}/stable/linux-dmabuf/linux-dmabuf-v1.xml)
 add_custom_command(OUTPUT ${UI_PROTOCOL_DIR}/linux-dmabuf-v1-client-protocol.h
@@ -260,6 +269,19 @@ add_custom_command(OUTPUT ${UI_PROTOCOL_DIR}/linux-dmabuf-v1-client-protocol.h
     COMMAND ${WAYLAND_SCANNER} client-header ${UI_DMABUF_XML}
             ${UI_PROTOCOL_DIR}/linux-dmabuf-v1-client-protocol.h
     DEPENDS ${UI_DMABUF_XML})
+
+# What both apps' windows use and needs only Qt Core: the summaries of a
+# VM's settings, the QEMU documentation, the access to USB devices
+qt_add_library(vitrine_uishared STATIC
+    src/ui/qemudocs.cpp
+    src/ui/qemudocs.h
+    src/ui/uiconfig.cpp
+    src/ui/uiconfig.h
+    src/ui/usbaccess.cpp
+    src/ui/usbaccess.h
+)
+target_link_libraries(vitrine_uishared PUBLIC vitrine_core)
+target_compile_options(vitrine_uishared PRIVATE -Wall -Wextra)
 
 # The windows, a library of their own so that tests can use them
 qt_add_library(vitrine_ui STATIC
@@ -305,8 +327,6 @@ qt_add_library(vitrine_ui STATIC
     src/ui/newvmdialog.h
     src/ui/preferencesdialog.cpp
     src/ui/preferencesdialog.h
-    src/ui/qemudocs.cpp
-    src/ui/qemudocs.h
     src/ui/referencepanel.cpp
     src/ui/referencepanel.h
     src/ui/shutdownnotice.cpp
@@ -327,12 +347,8 @@ qt_add_library(vitrine_ui STATIC
     src/ui/textdialog.h
     src/ui/udmabufnotifier.cpp
     src/ui/udmabufnotifier.h
-    src/ui/uiconfig.cpp
-    src/ui/uiconfig.h
     src/ui/updatenotifier.cpp
     src/ui/updatenotifier.h
-    src/ui/usbaccess.cpp
-    src/ui/usbaccess.h
     src/ui/usbmenu.cpp
     src/ui/usbmenu.h
     src/ui/vmconsole.cpp
@@ -350,7 +366,8 @@ qt_add_library(vitrine_ui STATIC
     ${UI_PROTOCOL_DIR}/linux-dmabuf-v1-client-protocol.h
 )
 target_include_directories(vitrine_ui PRIVATE ${UI_PROTOCOL_DIR})
-target_link_libraries(vitrine_ui PUBLIC vitrine_core vitrine_vmview Qt6::DBus Qt6::Widgets
+target_link_libraries(vitrine_ui PUBLIC vitrine_core vitrine_uishared vitrine_vmview Qt6::DBus
+                                        Qt6::Widgets
                                  PRIVATE PkgConfig::WAYLAND)
 target_compile_options(vitrine_ui PRIVATE -Wall -Wextra)
 # the logo of a build tree's app (Icons::app): it is CC BY 3.0, a file
@@ -436,6 +453,7 @@ if(BUILD_TESTING)
             hostmemory
             hostsettings
             importer
+            managerinstance
             nesteddesktop
             optionvalue
             perfstats
@@ -566,5 +584,5 @@ if(BUILD_TESTING)
         "GLIBC_TUNABLES=glibc.malloc.tcache_count=0:glibc.malloc.perturb=165")
 endif()
 
-# The VM display in GTK4, for the GTK app (src/gtkview)
-include(src/gtkview/gtkview.cmake)
+# The GTK4 + libadwaita app, vitrine-gtk, its VM display and their tests
+include(gtk.cmake)

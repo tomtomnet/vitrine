@@ -1,11 +1,13 @@
 // SPDX-License-Identifier: GPL-2.0-or-later
 #pragma once
 
+/* GTK's first: Qt's keywords are macros, which sigc++'s names would meet
+   (src/gtk/gtkbase.h) */
+#include <sigc++/connection.h>
+#include <sigc++/signal.h>
+
 #include <QSize>
 #include <QString>
-
-#include <sigc++/signal.h>
-#include <sigc++/connection.h>
 
 #include <cstdint>
 #include <memory>

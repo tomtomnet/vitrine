@@ -1,14 +1,15 @@
-# The VM display in GTK4 (src/gtkview/README.md), included by app/CMakeLists.txt
-# after the Qt app: the research side's display client of src/vmview as it is,
-# built without Qt GUI (src/gtkview/qtgui stands in for the few Qt GUI classes
-# it uses), with the GTK glue; and vitrine-gtk-view, its test program.  Built
-# when pkg-config finds gtkmm-4.0, GDK's Wayland part and libadwaita-1.  A
-# target using it must never link Qt6::Gui (src/gtkview/qtgui/qtguicompat.h).
+# The VM display in GTK4 (src/gtkview/README.md), included by gtk.cmake under
+# its switch, VITRINE_GTK: the research side's display client of src/vmview as
+# it is, built without Qt GUI (src/gtkview/qtgui stands in for the few Qt GUI
+# classes it uses), with the GTK glue; and vitrine-gtk-view, its test program.
+# A target using it must never link Qt6::Gui (src/gtkview/qtgui/qtguicompat.h).
 
-pkg_check_modules(GTKVIEW IMPORTED_TARGET gtkmm-4.0 gtk4-wayland libadwaita-1)
-if(NOT GTKVIEW_FOUND)
-    message(STATUS "gtkmm-4.0, gtk4-wayland or libadwaita-1 not found: no GTK view")
-    return()
+# GDK's Wayland part: gdk/wayland/gdkwayland.h
+pkg_check_modules(VITRINE_GDK_WAYLAND QUIET IMPORTED_TARGET gtk4-wayland)
+if(NOT VITRINE_GDK_WAYLAND_FOUND)
+    message(FATAL_ERROR "VITRINE_GTK needs GDK's Wayland part (gtk4-wayland), which "
+            "pkg-config does not find: install GTK 4's development files, or configure "
+            "with -DVITRINE_GTK=OFF")
 endif()
 
 set(GTKVIEW_OWN_SOURCES
@@ -49,14 +50,13 @@ add_library(vitrine_gtkview STATIC
     src/gtkview/gtkclipboard.h
     src/gtkview/pointerconstraints.h
     src/gtkview/qtgui/qtguicompat.h
-    src/gtkview/vmdisplay.h
-    ${VMVIEW_PROTOCOL_SOURCES})
+    src/gtkview/vmdisplay.h)
 # <QOpenGLContext>, <QImage>...: src/gtkview/qtgui's, before anything else
 target_include_directories(vitrine_gtkview BEFORE PUBLIC src/gtkview/qtgui)
-target_include_directories(vitrine_gtkview PUBLIC src PRIVATE src/vmview ${VMVIEW_PROTOCOL_DIR})
+target_include_directories(vitrine_gtkview PUBLIC src PRIVATE src/vmview)
 target_link_libraries(vitrine_gtkview
-    PUBLIC Qt6::Core PkgConfig::GTKVIEW
-    PRIVATE PkgConfig::GIO PkgConfig::EGL PkgConfig::WAYLAND PkgConfig::GBM)
+    PUBLIC Qt6::Core PkgConfig::VITRINE_GTKMM PkgConfig::VITRINE_ADW PkgConfig::VITRINE_GDK_WAYLAND
+    PRIVATE PkgConfig::GIO PkgConfig::EGL PkgConfig::WAYLAND PkgConfig::GBM vitrine_wlprotocols)
 # GLib's headers use the names of Qt's signals/slots keywords
 target_compile_definitions(vitrine_gtkview PRIVATE QT_NO_KEYWORDS)
 set_source_files_properties(${GTKVIEW_OWN_SOURCES} src/vmview/clipboardstate.cpp

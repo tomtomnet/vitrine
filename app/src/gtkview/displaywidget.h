@@ -1,13 +1,15 @@
 // SPDX-License-Identifier: GPL-2.0-or-later
 #pragma once
 
-#include <QSize>
-#include <QMetaObject>
-#include <QString>
-
+/* GTK's first: Qt's keywords are macros, which GTK's names would meet
+   (src/gtk/gtkbase.h) */
 #include <gtkmm/eventcontrollerscroll.h>
 #include <gtkmm/widget.h>
 #include <sigc++/signal.h>
+
+#include <QMetaObject>
+#include <QSize>
+#include <QString>
 
 #include <cstdint>
 #include <memory>

@@ -1,8 +1,6 @@
 // SPDX-License-Identifier: GPL-2.0-or-later
 #include "consoleviews.h"
 
-#include <QKeyEvent>
-
 #include <iterator>
 
 /* XKB's keycodes, evdev's + 8: KEY_1, KEY_2 and KEY_KP1, KEY_KP2 */
@@ -19,12 +17,12 @@ ConsoleViews::View ConsoleViews::view() const
     return m_view;
 }
 
-std::optional<ConsoleViews::View> ConsoleViews::viewForKey(const QKeyEvent *event)
+std::optional<ConsoleViews::View> ConsoleViews::viewForKey(Qt::KeyboardModifiers modifiers,
+                                                           quint32 nativeScanCode, int key)
 {
     const Qt::KeyboardModifiers mods =
-        event->modifiers() &
-        (Qt::ShiftModifier | Qt::ControlModifier | Qt::AltModifier | Qt::MetaModifier);
-    const quint32 code = event->nativeScanCode();
+        modifiers & (Qt::ShiftModifier | Qt::ControlModifier | Qt::AltModifier | Qt::MetaModifier);
+    const quint32 code = nativeScanCode;
 
     if (mods != (Qt::ControlModifier | Qt::AltModifier)) {
         return std::nullopt;
@@ -35,8 +33,8 @@ std::optional<ConsoleViews::View> ConsoleViews::viewForKey(const QKeyEvent *even
     if (code >= kKeypad1 && code < kKeypad1 + kViewCount) {
         return kViews[code - kKeypad1];
     }
-    if (code == 0 && event->key() >= Qt::Key_1 && event->key() < Qt::Key_1 + int(kViewCount)) {
-        return kViews[event->key() - Qt::Key_1];
+    if (code == 0 && key >= Qt::Key_1 && key < Qt::Key_1 + int(kViewCount)) {
+        return kViews[key - Qt::Key_1];
     }
     return std::nullopt;
 }
