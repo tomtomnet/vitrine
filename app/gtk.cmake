@@ -31,6 +31,14 @@ add_library(vitrine_gtk STATIC
     src/gtk/gtkbase.h
     src/gtk/gtkloop.cpp
     src/gtk/gtkloop.h
+    src/gtk/mainwindow.cpp
+    src/gtk/mainwindow.h
+    src/gtk/vmpage.cpp
+    src/gtk/vmpage.h
+    src/gtk/vmsummary.cpp
+    src/gtk/vmsummary.h
+    src/gtk/widgets.cpp
+    src/gtk/widgets.h
 )
 target_include_directories(vitrine_gtk PUBLIC src)
 target_link_libraries(vitrine_gtk
@@ -71,4 +79,6 @@ if(BUILD_TESTING)
                      DISPLAY=unset: WAYLAND_DISPLAY=unset: DBUS_SESSION_BUS_ADDRESS=unset:)
     endfunction()
     vitrine_gtk_test(gtkloop Qt6::Concurrent)
+    # what the windows say of a VM: words alone, no display needed
+    vitrine_gtk_test(vmsummary)
 endif()
