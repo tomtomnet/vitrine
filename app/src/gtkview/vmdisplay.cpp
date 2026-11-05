@@ -110,6 +110,14 @@ void retire(DBusDisplay *dbus, std::unique_ptr<Stats> stats)
 
 VmDisplay::VmDisplay() : m_alive(std::make_shared<bool>(true))
 {
+    /* VITRINE_VIEW_ZERO_COPY=0: the view copies the guest's frames into its own
+       buffers (Listener.Unix.ZeroCopy not advertised) instead of showing them as
+       they are: for an A/B of Mutter guests at high refresh rates, where the
+       held flip event of zero copy cost GNOME 51 a refresh (the research,
+       2026-11-05: 75 % of its animation frames late at 240 Hz) */
+    if (qgetenv("VITRINE_VIEW_ZERO_COPY") == "0") {
+        m_opts.zeroCopy = false;
+    }
     m_host = new Gtk::Box(Gtk::Orientation::VERTICAL);
     m_host->set_size_request(160, 100);
     m_host->set_hexpand(true);
