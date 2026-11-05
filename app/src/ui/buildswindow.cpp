@@ -909,24 +909,7 @@ void BuildsWindow::showSource()
             parts << group->child(i)->text(NameColumn).toHtmlEscaped() + ": " +
                          group->child(i)->text(StatusColumn).toHtmlEscaped();
         }
-        html = id == "host"
-                   ? tr("<p><b>Vitrine's QEMU</b>: upstream QEMU, virglrenderer, rutabaga_gfx "
-                        "and passt at pinned commits, with Vitrine's patches, for the display in "
-                        "Vitrine's window, 3D acceleration by the host GPU's own driver "
-                        "(rutabaga_gfx: QEMU's virtio-gpu-rutabaga device) and the VMs' NAT "
-                        "network (passt). Built into %1.</p>")
-                         .arg(Paths::stackDir().toHtmlEscaped())
-                   : id == "system"
-                   ? tr("<p><b>Host desktop</b>, optional: this computer's own compositor, KWin, "
-                        "and libraries the desktop draws with, KSvg, Kirigami and Qt base, with "
-                        "the research's host sets: steadier frames and quicker input in VMs, the "
-                        "pointer grab inside Vitrine's Desktop view, popups and resizes that cost "
-                        "less. Vitrine builds each only when asked, and installs it only with the "
-                        "administrator's password.</p>")
-                   : tr("<p><b>The guest tools for Fedora %1</b>: the packages Fedora %1 guests "
-                        "install from the medium, built in a Fedora %1 container with podman, "
-                        "and the medium itself. Each Fedora release has its own: %2.</p>")
-                         .arg(m_manager->guestRelease(), GuestTools::supportedSystems());
+        html = BuildTexts::groupAbout(id, m_manager->guestRelease());
         html += "<ul><li>" + parts.join("</li><li>") + "</li></ul>";
         m_source->setText(html);
         return;
@@ -1348,40 +1331,6 @@ void BuildsWindow::updateHeader()
     m_header->setText(text.toHtmlEscaped());
 }
 
-/* What a host package is, and what the research's set changes and measured */
-static QString systemAbout(const HostKde::Target &target)
-{
-    if (target.package == "kwin") {
-        return BuildsWindow::tr("This computer's own compositor with the research's host set: "
-                                "steadier frames and quicker input in VMs, and the pointer grab "
-                                "(Ctrl+Alt+G) inside Vitrine's Desktop view.");
-    }
-    if (target.package == "kf6-ksvg") {
-        return BuildsWindow::tr("The KDE framework that draws Plasma's themed frames, with the "
-                                "research's host set: Plasma's popups stop uploading their frames "
-                                "again each time they open. Measured by the research with "
-                                "Kirigami's set, on an Arc Pro B50 at 4K and 120 Hz: the launcher "
-                                "opens in 61-69 ms instead of 72-78, and Super pressed 8 times a "
-                                "second repeats 0.2 frames a second instead of 6-9.");
-    }
-    if (target.package == "kf6-kirigami") {
-        return BuildsWindow::tr("The KDE framework of the controls Plasma and many programs are made "
-                                "of, with the research's host set: their items react to a change of "
-                                "the frame contrast only when it changes (a popup's items reacted "
-                                "some 1,600 times per opening and closing). Measured by the research "
-                                "with KSvg's set, on an Arc Pro B50 at 4K and 120 Hz: the launcher "
-                                "opens in 61-69 ms instead of 72-78.");
-    }
-    if (target.package == "qt6-qtbase") {
-        return BuildsWindow::tr("Qt's base libraries, which every Qt program uses, with the "
-                                "research's host set: a window being resized reuses its shared "
-                                "memory for the next sizes instead of new memory for each. Measured "
-                                "by the research, bare 4K resizes: Konsole shows 111-114 sizes a "
-                                "second instead of 85-88, Dolphin 99-102 instead of 62.");
-    }
-    return BuildsWindow::tr("A package of this computer's with the research's host set.");
-}
-
 QString BuildsWindow::systemSource(const Component &c)
 {
     using Offer = HostKde::Status::Offer;
@@ -1405,7 +1354,7 @@ QString BuildsWindow::systemSource(const Component &c)
     QString rows;
     QString why;
 
-    html += para(systemAbout(target) + ' ' +
+    html += para(BuildTexts::systemAbout(target) + ' ' +
                  tr("Optional: Vitrine builds it only when asked, and installs it only with the "
                     "administrator's password."));
     if (p.state == State::Failed) {

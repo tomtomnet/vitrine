@@ -6,10 +6,9 @@
 #include <QPushButton>
 #include <QVBoxLayout>
 
-#include "core/paths.h"
 #include "core/stackbuilder.h"
 #include "ui/banner.h"
-#include "ui/buildswindow.h"
+#include "ui/buildtexts.h"
 #include "ui/qemudocs.h"
 
 StackBanner::StackBanner(QWidget *parent)
@@ -84,42 +83,11 @@ StackBanner *StackBanner::addTo(QMainWindow *window)
 
 void StackBanner::refresh()
 {
-    const StackBuilder *builder = StackBuilder::instance();
-    const StackBuilder::State state = StackBuilder::state();
-    Banner *shown = m_warning;
-    QString text;
     QString button;
-
-    if (builder->isRunning()) {
-        shown = m_note;
-        text = tr("Building Vitrine's QEMU");
-        if (builder->step() > 0) {
-            text += tr(": step %1 of %2, %3").arg(builder->step()).arg(builder->steps())
-                        .arg(builder->stepText().toHtmlEscaped());
-            if (m_percent >= 0) {
-                text += tr(" (%1%)").arg(m_percent);
-            }
-        }
-        text += '.';
-        button = tr("Show");
-    } else if (!Paths::customQemuBinary().isEmpty() ||
-               state == StackBuilder::State::UpToDate) {
-        /* the user's QEMU, or nothing to do */
-    } else if (!m_error.isEmpty()) {
-        text = tr("Vitrine's QEMU could not be built. %1.").arg(m_error.toHtmlEscaped());
-        button = tr("Show…");
-    } else if (state == StackBuilder::State::NotBuilt) {
-        text = tr("<b>Vitrine's QEMU is not built yet.</b> VMs need it for their display in "
-                  "this window and for 3D acceleration, and new Linux VMs need it to start. "
-                  "Building it takes a few minutes.");
-        button = tr("Build…");
-    } else if (state == StackBuilder::State::Outdated) {
-        text = tr("<b>Vitrine's QEMU is out of date:</b> this version of Vitrine builds it from "
-                  "other sources or patches. VMs running keep the QEMU they started with.");
-        button = tr("Update…");
-    } else {
-        text = BuildsWindow::explain(state, {}).toHtmlEscaped();
-    }
+    bool note = false;
+    const QString text =
+        BuildTexts::stackNote(StackBuilder::instance(), m_percent, m_error, &button, &note);
+    Banner *shown = note ? m_note : m_warning;
 
     for (Banner *banner : {m_warning, m_note}) {
         banner->setVisible(banner == shown && !text.isEmpty());

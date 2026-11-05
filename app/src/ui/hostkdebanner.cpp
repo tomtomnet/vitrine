@@ -8,13 +8,7 @@
 
 #include "core/hostkde.h"
 #include "ui/banner.h"
-
-/* "Plasma 6.8.0" of "plasma-workspace 6.7.91 6.8.0", "Qt 6.11.3" of qt6-qtbase's */
-static QString now(const QString &line)
-{
-    const QStringList f = line.split(' ');
-    return HostKde::packageTitle(f.value(0)) + ' ' + f.value(2);
-}
+#include "ui/hostkdetext.h"
 
 HostKdeBanner::HostKdeBanner(QWidget *parent)
     : QWidget(parent), m_banner(new Banner(Banner::Warning))
@@ -69,63 +63,17 @@ HostKdeBanner *HostKdeBanner::addTo(QMainWindow *window)
 
 QStringList HostKdeBanner::outdated() const
 {
-    QStringList ids;
-
-    for (const HostKde::Status &s : HostKdeMonitor::instance()->statuses()) {
-        if (s.isOutdated()) {
-            ids << s.target.id;
-        }
-    }
-    return ids;
+    return HostKdeNotice::outdated(HostKdeMonitor::instance()->statuses());
 }
 
 QString HostKdeBanner::rebuildable() const
 {
-    for (const HostKde::Status &s : HostKdeMonitor::instance()->statuses()) {
-        if (s.isOutdated() && s.canBuild()) {
-            return s.target.id;
-        }
-    }
-    return {};
+    return HostKdeNotice::rebuildable(HostKdeMonitor::instance()->statuses());
 }
 
 QString HostKdeBanner::text() const
 {
-    QStringList sentences;
-    bool kwin = false;
-
-    for (const HostKde::Status &s : HostKdeMonitor::instance()->statuses()) {
-        QStringList moved;
-        if (!s.isOutdated()) {
-            continue;
-        }
-        for (const QString &line : s.outdated) {
-            moved << now(line).toHtmlEscaped();
-        }
-        const QString title = s.target.title.toHtmlEscaped();
-        if (s.target.package == "kwin") {
-            kwin = true;
-            sentences << tr("<b>Vitrine's KWin no longer matches this computer's %1.</b> At your next "
-                            "login the desktop would run KWin %2 with the new libraries, and might not "
-                            "start.")
-                             .arg(moved.join(tr(" and ")), s.installed.version.toHtmlEscaped());
-        } else {
-            sentences << tr("<b>Vitrine's %1 no longer matches this computer's %2.</b> Programs use "
-                            "%1 %3 with the newer libraries, which upstream does not support: some "
-                            "may not work as they should.")
-                             .arg(title, moved.join(tr(" and ")), s.installed.version.toHtmlEscaped());
-        }
-    }
-    if (sentences.isEmpty()) {
-        return {};
-    }
-    const QString what = rebuildable().isEmpty()
-                             ? tr("The research has no set for the new version yet: put the "
-                                  "distribution's packages back")
-                             : tr("Build and install the matching packages, or put the distribution's "
-                                  "back");
-    return sentences.join(' ') + ' ' +
-           (kwin ? tr("%1 before you log out.").arg(what) : tr("%1.").arg(what));
+    return HostKdeNotice::text(HostKdeMonitor::instance()->statuses());
 }
 
 void HostKdeBanner::refresh()

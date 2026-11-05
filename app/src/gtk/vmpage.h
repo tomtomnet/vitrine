@@ -93,6 +93,13 @@ public:
     /* An in-window dialog is over the screen, or no longer (VmConsole::setCovered()) */
     void setCovered(bool covered);
     bool isCovered() const { return m_covered; }
+    /* The screen came in sight, or went out of it (screenShown()) */
+    std::function<void(bool shown)> screenShownChanged;
+
+    /* More on the Console's home page, under the error, over Start: the guest tools' state */
+    void addHomeWidget(GtkWidget *widget);
+    /* A group of the Details, before the VM's own: the guest tools' */
+    void addDetailsGroup(AdwPreferencesGroup *group);
 
 private:
     void buildHeader();
@@ -117,6 +124,8 @@ private:
     /* the notice shown, if any: in the banner, or over the screen (m_toast) */
     QString m_noticeText;
     bool m_noticeShown = false;
+    /* the screen in sight, as screenShownChanged last said */
+    bool m_screenWasShown = false;
 
     GtkWidget *m_root;
     AdwHeaderBar *m_header;
