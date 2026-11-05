@@ -849,7 +849,11 @@ void GuestDesktop::updateKeyboard()
  */
 void GuestDesktop::updateShortcuts()
 {
-    GdkSurface *top = m_keyboard && m_guestShortcuts ? host()->toplevelSurface() : nullptr;
+    /* not on GNOME for an app it does not know: it would ask the user at every
+       new window (ShortcutsInhibit::automatic()) */
+    GdkSurface *top = m_keyboard && m_guestShortcuts && ShortcutsInhibit::automatic()
+                          ? host()->toplevelSurface()
+                          : nullptr;
 
     if (top == m_inhibited) {
         return;

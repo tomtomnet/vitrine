@@ -11,6 +11,7 @@
 #include <utility>
 
 #include "gtkview/displayinput.h"
+#include "gtkview/shortcutsinhibit.h"
 
 namespace {
 
@@ -50,6 +51,10 @@ public:
     void setShortcutsInhibited(bool on) override { m_log->calls << QString("inhibit %1").arg(on); }
     void setPointerLocked(bool on) override { m_log->calls << QString("lock %1").arg(on); }
     void setPointerConfined(bool on) override { m_log->calls << QString("confine %1").arg(on); }
+    bool shortcutsInhibitPending() const override { return pending; }
+
+    /* the compositor still asks the user (GNOME's dialog) */
+    bool pending = false;
 
 private:
     Log *m_log;
@@ -234,6 +239,154 @@ private Q_SLOTS:
         QCOMPARE(f.log.take(), QStringList({"inhibit 0", "lock 0", "confine 0"}));
         f.input.setGrab(true);
         QCOMPARE(f.input.grabState(), QString("grabbed (Ctrl+Alt+G releases)"));
+    }
+
+    /* On GNOME for an app it does not know: no grab of its own (GNOME would ask
+       at every new window), Ctrl+Alt+G asks */
+    void noAutoGrab()
+    {
+        Fixture f;
+        f.input.setAutoGrab(false);
+        f.input.setHostActive(true);
+        f.input.pointerEnter(1, 1);
+        QVERIFY(!f.input.grabbed());
+        QCOMPARE(f.log.take(), QStringList({"abs 1 1"}));
+        QCOMPARE(f.input.grabState(), QString("not grabbed (Ctrl+Alt+G grabs; GNOME asks first)"));
+        f.input.setGrab(true);
+        QCOMPARE(f.log.take(), QStringList({"inhibit 1", "lock 0", "confine 0"}));
+        QCOMPARE(f.input.grabState(), QString("grabbed (Ctrl+Alt+G releases)"));
+        f.input.setGrab(false);
+        QCOMPARE(f.log.take(), QStringList({"inhibit 0", "lock 0", "confine 0"}));
+        QVERIFY(!f.input.grabbed());
+        /* the pointer back over it: still nothing of its own */
+        f.input.pointerLeave();
+        f.input.pointerEnter(2, 2);
+        QVERIFY(!f.input.grabbed());
+        QCOMPARE(f.log.take(), QStringList({"abs 2 2"}));
+        /* allowed again (the app installed meanwhile, in a test): as before */
+        f.input.setAutoGrab(true);
+        QVERIFY(f.input.grabbed());
+        QCOMPARE(f.log.take(), QStringList({"inhibit 1", "lock 0", "confine 0"}));
+    }
+
+    /* GNOME's dialog takes the window's keyboard as it asks about the user's
+       grab: the grab stays through that loss, for the answer; once Allow
+       granted it, the keyboard's loss releases it as before */
+    void grabWhileAsked()
+    {
+        Fixture f;
+        int64_t now = 1000;
+        f.input.setClock([&]() { return now; });
+        f.input.setAutoGrab(false);
+        f.input.setHostActive(true);
+        f.input.pointerEnter(1, 1);
+        f.input.setGrab(true);              // the request
+        f.log.take();
+        f.compositor.pending = true;        // the dialog up
+        now += 100;
+        f.input.setHostActive(false);       // it takes the keyboard: kept
+        QVERIFY(f.input.grabbed());
+        QCOMPARE(f.log.take(), QStringList());
+        now += 5000;                        // Allow
+        f.compositor.pending = false;
+        f.input.setHostActive(true);
+        QVERIFY(f.input.grabbed());
+        QCOMPARE(f.input.grabState(), QString("grabbed (Ctrl+Alt+G releases)"));
+        now += 1000;
+        f.input.setHostActive(false);
+        QVERIFY(!f.input.grabbed());
+        QCOMPARE(f.log.take(), QStringList({"inhibit 0", "lock 0", "confine 0"}));
+        /* the automatic grab is not the user's: it goes with the keyboard */
+        f.input.setAutoGrab(true);
+        f.input.setHostActive(true);
+        f.log.take();
+        f.compositor.pending = true;
+        now += 100;
+        f.input.setHostActive(false);
+        QVERIFY(!f.input.grabbed());
+        QCOMPARE(f.log.take(), QStringList({"inhibit 0", "lock 0", "confine 0"}));
+    }
+
+    /* Deny leaves the request ungranted for good: the grab stays through the
+       dialog's loss of the keyboard only, and a later loss (Alt+Tab away)
+       releases it; a new request starts over */
+    void grabAfterDeny()
+    {
+        Fixture f;
+        int64_t now = 1000;
+        f.input.setClock([&]() { return now; });
+        f.input.setAutoGrab(false);
+        f.input.setHostActive(true);
+        f.input.pointerEnter(1, 1);
+        f.input.setGrab(true);
+        f.compositor.pending = true;
+        f.log.take();
+        now += 100;
+        f.input.setHostActive(false);       // the dialog: kept
+        QVERIFY(f.input.grabbed());
+        now += 5000;                        // Deny: the keyboard back, still not granted
+        f.input.setHostActive(true);
+        QVERIFY(f.input.grabbed());
+        QCOMPARE(f.log.take(), QStringList());
+        now += 1000;
+        f.input.setHostActive(false);       // away: released
+        QVERIFY(!f.input.grabbed());
+        QCOMPARE(f.log.take(), QStringList({"inhibit 0", "lock 0", "confine 0"}));
+        /* grabbed again: a new request, whose dialog's loss is kept again */
+        f.input.setHostActive(true);
+        f.input.setGrab(true);
+        QCOMPARE(f.log.take(), QStringList({"inhibit 1", "lock 0", "confine 0"}));
+        now += 100;
+        f.input.setHostActive(false);
+        QVERIFY(f.input.grabbed());
+    }
+
+    /* No dialog (a Deny GNOME remembered for the window, a compositor that
+       never answers): a loss long after the request releases the grab */
+    void grabLossLongAfterRequest()
+    {
+        Fixture f;
+        int64_t now = 1000;
+        f.input.setClock([&]() { return now; });
+        f.input.setAutoGrab(false);
+        f.input.setHostActive(true);
+        f.input.pointerEnter(1, 1);
+        f.input.setGrab(true);
+        f.compositor.pending = true;
+        f.log.take();
+        now += DisplayInput::kAskedLossMs + 1;
+        f.input.setHostActive(false);
+        QVERIFY(!f.input.grabbed());
+        QCOMPARE(f.log.take(), QStringList({"inhibit 0", "lock 0", "confine 0"}));
+    }
+
+    /* Who asks on their own: everywhere but on GNOME for an app it does not know
+       by its desktop file (XDG_CURRENT_DESKTOP is a list split by ':') */
+    void automaticRequests_data()
+    {
+        QTest::addColumn<QString>("desktop");
+        QTest::addColumn<bool>("known");
+        QTest::addColumn<bool>("automatic");
+        QTest::newRow("GNOME, window-backed") << "GNOME" << false << false;
+        QTest::newRow("GNOME, known") << "GNOME" << true << true;
+        QTest::newRow("Ubuntu's GNOME") << "ubuntu:GNOME" << false << false;
+        QTest::newRow("GNOME Classic") << "GNOME-Classic:GNOME" << false << false;
+        QTest::newRow("GNOME Classic, known") << "GNOME-Classic:GNOME" << true << true;
+        QTest::newRow("KDE") << "KDE" << false << true;
+        QTest::newRow("not GNOME by its name alone") << "GNOME-Flashback" << false << true;
+        QTest::newRow("Cinnamon") << "X-Cinnamon" << false << true;
+        QTest::newRow("empty") << "" << false << true;
+        QTest::newRow("unset") << QString() << false << true;
+    }
+
+    void automaticRequests()
+    {
+        QFETCH(QString, desktop);
+        QFETCH(bool, known);
+        QFETCH(bool, automatic);
+        const QByteArray d = desktop.toUtf8();
+        QCOMPARE(ShortcutsInhibit::automaticFor(desktop.isNull() ? nullptr : d.constData(), known),
+                 automatic);
     }
 
     /* KWin's Meta + drag: with the grab, the pointer is confined before the

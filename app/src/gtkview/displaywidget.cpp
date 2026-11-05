@@ -79,6 +79,9 @@ DisplayWidget::DisplayWidget(DBusDisplay *display, DisplaySurface *surface, cons
     format.setSwapInterval(opts.vsync ? 1 : 0);
     m_window->setFormat(format);
 
+    /* on GNOME for an app it does not know, Ctrl+Alt+G alone asks for the
+       desktop's shortcuts (src/gtkview/README.md) */
+    m_input.setAutoGrab(ShortcutsInhibit::automatic());
     m_input.grabChanged = [this]() { grabChanged.emit(); };
     /* the guest's tablet driver switches the mouse to absolute after boot */
     m_modeWatch = QObject::connect(m_display, &DBusDisplay::mouseModeChanged,
@@ -660,6 +663,14 @@ void DisplayWidget::setShortcutsInhibited(bool on)
     ShortcutsInhibit::set(surface, this, on);
     /* the state line says so until the compositor grants it */
     grabChanged.emit();
+}
+
+bool DisplayWidget::shortcutsInhibitPending() const
+{
+    /* asked, not granted: GNOME's dialog up, or its Deny, or never an answer -
+       DisplayInput keeps a grab only through the loss of the keyboard that
+       comes right after the request (the dialog's) */
+    return m_inhibited && !m_inhibitActive && ShortcutsInhibit::asks();
 }
 
 void DisplayWidget::setPointerLocked(bool on)

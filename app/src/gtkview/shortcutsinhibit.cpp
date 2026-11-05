@@ -2,7 +2,9 @@
 #include "shortcutsinhibit.h"
 
 #include <gdk/gdk.h>
+#include <gio/gdesktopappinfo.h>
 
+#include <cstring>
 #include <set>
 
 namespace {
@@ -10,6 +12,13 @@ namespace {
 const char kOwners[] = "vitrine-shortcuts-inhibit";
 
 using Owners = std::set<const void *>;
+
+/* VITRINE_VIEW_INHIBIT=0: never ask (scripted runs on GNOME) */
+bool never()
+{
+    static const bool never = g_strcmp0(g_getenv("VITRINE_VIEW_INHIBIT"), "0") == 0;
+    return never;
+}
 
 }
 
@@ -22,8 +31,7 @@ void set(GdkSurface *toplevel, const void *owner, bool on)
        "allow" dialog at every request, and that dialog takes the keyboard.  The
        keys still go to the guest while its view has the focus; the grab's state
        says the desktop keeps its shortcuts. */
-    static const bool never = g_strcmp0(g_getenv("VITRINE_VIEW_INHIBIT"), "0") == 0;
-    if (never || !toplevel || !GDK_IS_TOPLEVEL(toplevel)) {
+    if (never() || !toplevel || !GDK_IS_TOPLEVEL(toplevel)) {
         return;
     }
     auto *owners = static_cast<Owners *>(g_object_get_data(G_OBJECT(toplevel), kOwners));
@@ -47,6 +55,40 @@ void set(GdkSurface *toplevel, const void *owner, bool on)
     } else if (before && !after) {
         gdk_toplevel_restore_system_shortcuts(GDK_TOPLEVEL(toplevel));
     }
+}
+
+bool asks()
+{
+    return !never();
+}
+
+bool automaticFor(const char *desktop, bool known)
+{
+    if (known || !desktop) {
+        return true;
+    }
+    /* GNOME, GNOME Classic ("GNOME-Classic:GNOME"), Ubuntu's ("ubuntu:GNOME") */
+    gchar **names = g_strsplit(desktop, ":", -1);
+    const bool gnome = g_strv_contains(names, "GNOME");
+    g_strfreev(names);
+    return !gnome;
+}
+
+bool automatic()
+{
+    /* never asking (VITRINE_VIEW_INHIBIT=0), the grab behaves as before: it asks nothing */
+    static const bool automatic = [] {
+        if (never()) {
+            return true;
+        }
+        GDesktopAppInfo *info = g_desktop_app_info_new("org.vitrine.Vitrine.desktop");
+        const bool known = info;
+        if (info) {
+            g_object_unref(info);
+        }
+        return automaticFor(g_getenv("XDG_CURRENT_DESKTOP"), known);
+    }();
+    return automatic;
 }
 
 }

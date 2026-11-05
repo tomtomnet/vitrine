@@ -1,5 +1,6 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <!-- SPDX-License-Identifier: CC-BY-3.0 -->
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 32 32" width="32" height="32">
 <!--
   vitrine's logo: QEMU's emu, Kew, on his Q behind a glass pane. Derived
   from "Kew the Angry Emu" by Benoît Canet, published by the QEMU Community
@@ -10,7 +11,6 @@
   a glass pane drawn for vitrine. This file is under CC BY 3.0 as well.
   vitrine is not affiliated with or endorsed by the QEMU project.
 -->
-<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 32 32" width="32" height="32">
   <metadata>
     <rdf:RDF xmlns:rdf="http://www.w3.org/1999/02/22-rdf-syntax-ns#"
              xmlns:cc="http://creativecommons.org/ns#"
