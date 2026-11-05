@@ -80,6 +80,16 @@ void HostSettings::setGpuFloor(const QString &floor)
     settings().setValue("host/gpuFloor", floor);
 }
 
+bool HostSettings::cpuLatency()
+{
+    return settings().value("host/cpuLatency", true).toBool();
+}
+
+void HostSettings::setCpuLatency(bool on)
+{
+    settings().setValue("host/cpuLatency", on);
+}
+
 QString HostSettings::helperPath()
 {
     const QString env = qEnvironmentVariable("VITRINE_HELPER");
@@ -488,6 +498,9 @@ void HostSettings::queue(qint64 pid)
     m_expected.insert(pid);
     /* huge pages for its memfd RAM, as for every VM's */
     m_out += ("watch " + n + "\nfair-server on\nthp on\n").toLatin1();
+    /* the CPU ready to wake up; off lets go of what the helper holds (the
+       preference turned off while VMs run) */
+    m_out += cpuLatency() ? "cpu-latency on\nepp on\n" : "cpu-latency off\nepp off\n";
     /* auto: on APUs only (measured on a Radeon 780M), none on the other
        cards, where a fixed one chosen before goes; off: let a floor go */
     const QStringList apus = amdCards(m_sysRoot, true);
@@ -866,6 +879,21 @@ void HostSettings::handleLine(const QString &line)
     } else if (line.startsWith("skip thp: ") || line.startsWith("error thp: ")) {
         /* "skip thp: this kernel has no transparent huge pages" */
         say(tr("Host tuning: no huge pages for VM memory: %1.").arg(line.section(':', 1).trimmed()));
+    } else if (line == "error cpu-latency: unknown request" || line == "error epp: unknown request") {
+        /* a helper installed before vitrine kept the CPU ready to wake up:
+           worth saying only when asked for (off is sent too) */
+        if (cpuLatency()) {
+            say(tr("Host tuning: the installed vitrine-helper is older than Vitrine and cannot "
+                   "keep the CPU ready to wake up while VMs run: install it again."));
+        }
+    } else if (line.startsWith("skip cpu-latency: ") || line.startsWith("error cpu-latency: ")) {
+        /* "skip cpu-latency: this kernel has no /dev/cpu_dma_latency" */
+        say(tr("Host tuning: the CPU is not kept out of its deeper idle states: %1.")
+                .arg(line.section(':', 1).trimmed()));
+    } else if (line.startsWith("skip epp: ") || line.startsWith("error epp: ")) {
+        /* "skip epp: acpi-cpufreq has no energy performance preference (...)" */
+        say(tr("Host tuning: the CPU's energy performance preference stays as it is: %1.")
+                .arg(line.section(':', 1).trimmed()));
     } else if (word == "skip" || word == "error") {
         /* "skip gpu-floor card1: no overdrive clock table (pp_od_clk_voltage)" */
         say(tr("Host tuning: %1").arg(line.section(' ', 1)));

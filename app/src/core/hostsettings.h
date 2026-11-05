@@ -19,9 +19,10 @@ class VmStore;
 /*
  * The host settings that keep VMs smooth, for as long as they run: the
  * kernel's fair server at 10 ms / 1 ms, a GPU clock floor on AMD APUs,
- * transparent huge pages for shared memory (the guests' memfd RAM),
- * real-time QEMU threads for the VM in front (with the fair server only),
- * and for VMs whose GPU has native context higher udmabuf limits.  They
+ * transparent huge pages for shared memory (the guests' memfd RAM), the
+ * CPU ready to wake up (cpuLatency()), real-time QEMU threads for the VM
+ * in front (with the fair server only), and for VMs whose GPU has native
+ * context higher udmabuf limits.  They
  * need root: vitrine-helper applies them, started with pkexec when a VM
  * starts; QEMU itself gets no privilege.  Members of the vitrine group need
  * no password; polkit is asked first, without interaction, each time the
@@ -90,6 +91,16 @@ public:
     /* "auto" (the default: 1800 MHz on AMD APUs), "off" or a clock in MHz */
     static QString gpuFloor();
     static void setGpuFloor(const QString &floor);
+    /*
+     * The CPU ready to wake up while VMs run, on by default: its cores rest
+     * in their first idle state (C1) only, at their energy performance
+     * preference "performance" - the helper's cpu-latency and epp.  A VM's
+     * keys then reach its screen as fast as the bare desktop's (11.3-11.9
+     * ms instead of 15.1-16.3 on a Ryzen 7 260 laptop), for about 1.6 W at
+     * idle.  Off: both let go, at once for the VMs running too.
+     */
+    static bool cpuLatency();
+    static void setCpuLatency(bool on);
 
     /* The installed helper, the one polkit's action names and the only one
        pkexec runs; $VITRINE_HELPER names another for helperInstalled() (tests) */

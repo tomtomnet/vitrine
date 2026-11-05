@@ -4,7 +4,9 @@
 # vitrine-helper end to end on this host, as root through sudo (pkexec would
 # need the polkit files installed): a test VM boots, the helper watches its
 # QEMU and applies the fair server, the GPU clock floor (an AMD APU), the
-# udmabuf limits, shared memory's huge pages and real-time threads; the VM
+# udmabuf limits, shared memory's huge pages, the CPU kept ready to wake up
+# (a latency request on /dev/cpu_dma_latency, each CPU's energy performance
+# preference) and real-time threads; the VM
 # powers off and everything must be back as it was.  Then: a helper killed while holding the settings
 # (the next one restores them), vitrine gone while the VM runs (stdin
 # closed), two helpers, a udmabuf limit changed by hand meanwhile (left as
@@ -49,6 +51,7 @@ dev=$repo/.dev/helper-e2e
 fs=/sys/kernel/debug/sched/fair_server
 udma=/sys/module/udmabuf/parameters
 thp=/sys/kernel/mm/transparent_hugepage/shmem_enabled
+qos=/dev/cpu_dma_latency
 
 fails=0
 ok() { echo "  ok   $*"; }
@@ -74,6 +77,18 @@ gpu_now() { [ -n "$card" ] && { cat "/sys/class/drm/$card/device/power_dpm_force
 udma_now() { [ -d $udma ] && echo "$(cat $udma/list_limit) $(cat $udma/size_limit_mb)"; }
 # the choice in brackets: "always within_size advise [never] deny force"
 thp_now() { [ -e $thp ] && sed -n 's/.*\[\(.*\)\].*/\1/p' $thp; }
+# "FILE VALUE" per cpu with a preference (an offline one's value is empty: EBUSY)
+epp_now() {
+	local f
+	for f in /sys/devices/system/cpu/cpu[0-9]*/cpufreq/energy_performance_preference; do
+		[ -e "$f" ] && echo "$f $(cat "$f" 2> /dev/null)"
+	done
+}
+epp_line() { epp_now | tr '\n' ' '; }
+epp_all() { [ -z "$(epp_now | awk -v v="$1" '$2 != "" && $2 != v')" ]; }
+# what the kernel applies: the lowest request (od's own open adds one of no
+# constraint, gone with it); empty without the device
+latency_now() { [ -e $qos ] && sudo -n od -An -td4 -N4 $qos | tr -d ' '; }
 set_udma() {  # LIST SIZE_MB
 	echo "$1" | sudo tee $udma/list_limit > /dev/null
 	echo "$2" | sudo tee $udma/size_limit_mb > /dev/null
@@ -102,6 +117,11 @@ fair_before=$(fair_now)
 gpu_before=$(gpu_now)
 udma_before=$(udma_now)
 thp_before=$(thp_now)
+epp_found=$(epp_now)
+epp_before=$(epp_line)
+latency_before=$(latency_now)
+# the helper writes the preference only where a cpu is not at performance
+epp_todo=$(echo "$epp_found" | awk '$2 != "" && $2 != "performance"' | wc -l)
 ncpu=$(echo "$fair_before" | wc -l)
 # the cpus the helper changes, and puts back: those not at 10 ms / 1 ms (a
 # tool may have left some there)
@@ -119,6 +139,8 @@ fi
 echo "host: $ncpu cpus, fair server $(echo "$fair_before" | head -1 | cut -d' ' -f2-), gpu ${card:-none} level $(echo "$gpu_before" | head -1)"
 echo "udmabuf before: ${udma_before:-no parameters} (list_limit size_limit_mb)"
 echo "shmem huge pages before: ${thp_before:-none in this kernel}"
+echo "cpu preference before: $(echo "$epp_found" | awk '{print $2}' | sort | uniq -c | tr -s ' \n' ' ')"
+echo "cpu latency before: ${latency_before:-no $qos} us"
 # what the helper raises from in this test, both below host tuning's values
 udma_low=
 if [ -n "$udma_before" ]; then
@@ -155,9 +177,14 @@ restore_by_hand() {
 	if [ -n "$thp_before" ] && [ "$(thp_now)" != "$thp_before" ]; then
 		echo "$thp_before" | sudo tee $thp > /dev/null
 	fi
+	# each cpu's preference as found (the latency request ends with its helper)
+	local f v
+	while read -r f v; do
+		[ -n "$v" ] && [ "$(cat "$f" 2> /dev/null)" != "$v" ] && echo "$v" | sudo tee "$f" > /dev/null
+	done <<< "$epp_found"
 }
-host_now() { fair_now; gpu_now; echo "udmabuf $(udma_now)"; echo "thp $(thp_now)"; }
-host_before() { echo "$fair_after"; echo "$gpu_before"; echo "udmabuf $udma_before"; echo "thp $thp_before"; }
+host_now() { fair_now; gpu_now; echo "udmabuf $(udma_now)"; echo "thp $(thp_now)"; echo "epp $(epp_line)"; echo "latency $(latency_now)"; }
+host_before() { echo "$fair_after"; echo "$gpu_before"; echo "udmabuf $udma_before"; echo "thp $thp_before"; echo "epp $epp_before"; echo "latency $latency_before"; }
 cleanup() {
 	local p c
 	for p in "${helpers[@]}"; do
@@ -293,6 +320,25 @@ deny) expect "huge pages" "skip thp: .*" ;;
 "") expect "huge pages" "skip thp: this kernel has no transparent huge pages" ;;
 *) expect "huge pages" "ok thp on: already $thp_before, left as it is" ;;
 esac
+say "cpu-latency on"
+req_us=
+if [ -e $qos ]; then
+	expect "cpu latency" "ok cpu-latency on: ([0-9]+) us \(.*\)"
+	req_us=${BASH_REMATCH[1]:-0}
+	check "the kernel's latency at most $req_us us: $(latency_now)" '[ "$(latency_now)" -le "$req_us" ]'
+else
+	expect "cpu latency" "skip cpu-latency: .*"
+fi
+say "epp on"
+if [ "$epp_todo" -gt 0 ]; then
+	expect "cpu preference" "ok epp on: performance on $epp_todo cpus \(was .*\).*"
+	check "every online cpu's preference performance" 'epp_all performance'
+	check "the preference's state recorded" 'sudo test -e /run/vitrine-helper/epp.state'
+elif [ -n "$epp_found" ]; then
+	expect "cpu preference" "ok epp on: already performance on [0-9]+ cpus, left as it is"
+else
+	expect "cpu preference" "skip epp: .*"
+fi
 say "rt $vm"; expect "rt" "ok rt $vm: ([0-9]+) of ([0-9]+) threads real-time"
 check "rt: every thread" '[ "${BASH_REMATCH[1]:-x}" = "${BASH_REMATCH[2]:-y}" ]'
 if [ -n "$udma_before" ]; then
@@ -344,6 +390,8 @@ wait_for "QEMU exit seen" "exited $vm"
 [ -n "$udma_before" ] && wait_for "udmabuf restored" "restored udmabuf: list_limit ${udma_low% *}, size_limit_mb ${udma_low#* }"
 [ "$fair_todo" -gt 0 ] && wait_for "fair server restored" "restored fair-server: [0-9]+ cpus back to [0-9]+ ms / [0-9]+ ms"
 [ -n "$card" ] && wait_for "gpu restored" "restored gpu-floor $card: level auto"
+[ "$epp_todo" -gt 0 ] && wait_for "cpu preference restored" "restored epp: $epp_todo cpus back to .*"
+[ -n "$req_us" ] && wait_for "cpu latency request ended" "restored cpu-latency: request of $req_us us ended"
 wait_for "helper ends" "bye"
 if ! wait_gone "$H_PID" 15; then
 	# SIGTERM: it puts everything back before it ends
@@ -356,6 +404,8 @@ gone "$H_PID" && wait "$H_PID" 2> /dev/null
 check "fair server as found" '[ "$(fair_now)" = "$fair_after" ]'
 check "gpu as found" '[ "$(gpu_now)" = "$gpu_before" ]'
 [ -n "$udma_before" ] && check "udmabuf back to $udma_low" '[ "$(udma_now)" = "$udma_low" ]'
+check "cpu preferences as found" '[ "$(epp_line)" = "$epp_before" ]'
+check "the kernel's latency as found: $(latency_now)" '[ "$(latency_now)" = "$latency_before" ]'
 check "nothing left in /run/vitrine-helper but its lock" '[ "$(sudo ls /run/vitrine-helper)" = lock ]'
 gone $vm && wait $vm 2> /dev/null
 
@@ -371,6 +421,8 @@ say "watch $q2"; expect "watch" "ok watch $q2"
 say "fair-server on"; expect "fair server" "ok fair-server on: .*"
 [ -n "$card" ] && { say "gpu-floor $card auto"; expect "gpu floor" "ok gpu-floor $card .*"; }
 [ -n "$udma_before" ] && { say "udmabuf $q2"; expect "udmabuf" "ok udmabuf $q2: .*"; }
+[ -n "$req_us" ] && { say "cpu-latency on"; expect "cpu latency" "ok cpu-latency on: .*"; }
+[ "$epp_todo" -gt 0 ] && { say "epp on"; expect "cpu preference" "ok epp on: performance .*"; }
 exec {H_IN}>&-
 sleep 1
 check "stdin closed, the VM runs: helper still there" 'kill -0 $H_PID 2> /dev/null'
@@ -380,6 +432,8 @@ wait "$H_PID" 2> /dev/null
 check "helper killed: settings still applied" 'fair_all "10000000 1000000"'
 [ "$fair_todo" -gt 0 ] && check "helper killed: its state is there" 'sudo test -e /run/vitrine-helper/fair-server.state'
 [ -n "$udma_before" ] && check "helper killed: udmabuf still raised: $(udma_now)" udma_raised
+[ -n "$req_us" ] && check "helper killed: its latency request gone with it" '[ "$(latency_now)" = "$latency_before" ]'
+[ "$epp_todo" -gt 0 ] && check "helper killed: the cpu preference still performance" 'epp_all performance'
 out=$(sudo -n "$helper" session < /dev/null)
 echo "$out" | sed 's/^/       /'
 [ "$fair_todo" -gt 0 ] && check "the next helper restores them at its start" 'echo "$out" | grep -q "^restored fair-server"'
@@ -389,6 +443,8 @@ if [ -n "$udma_before" ]; then
 	check "the next helper restores udmabuf too" 'echo "$out" | grep -q "^restored udmabuf"'
 	check "udmabuf back to $udma_low" '[ "$(udma_now)" = "$udma_low" ]'
 fi
+[ "$epp_todo" -gt 0 ] && check "the next helper restores the cpu preference" 'echo "$out" | grep -q "^restored epp"'
+check "cpu preferences as found" '[ "$(epp_line)" = "$epp_before" ]'
 kill $q2; wait $q2 2> /dev/null
 
 # ======================================================================
@@ -403,21 +459,32 @@ start_helper "helper A"; A_IN=$H_IN A_OUT=$H_OUT A_PID=$H_PID
 say "watch $qa"; expect "A watch" "ok watch $qa"
 say "fair-server on"; expect "A fair server" "ok fair-server on: .*"
 [ -n "$udma_before" ] && { say "udmabuf $qa"; expect "A udmabuf" "ok udmabuf $qa: .*"; }
+[ -n "$req_us" ] && { say "cpu-latency on"; expect "A cpu latency" "ok cpu-latency on: $req_us us .*"; }
+[ "$epp_todo" -gt 0 ] && { say "epp on"; expect "A cpu preference" "ok epp on: performance .*"; }
 start_helper "helper B"; B_IN=$H_IN B_OUT=$H_OUT B_PID=$H_PID
 say "watch $qb"; expect "B watch" "ok watch $qb"
 say "fair-server on"; expect "B fair server" "ok fair-server on: set by another vitrine session"
 [ -n "$udma_before" ] && { say "udmabuf $qb"; expect "B udmabuf" "ok udmabuf $qb: set by another vitrine session"; }
+# a request each (the kernel applies the lowest); the preference held once
+[ -n "$req_us" ] && { say "cpu-latency on"; expect "B cpu latency" "ok cpu-latency on: $req_us us .*"; }
+[ "$epp_todo" -gt 0 ] && { say "epp on"; expect "B cpu preference" "ok epp on: set by another vitrine session"; }
 kill $qa; wait $qa 2> /dev/null
 H_IN=$A_IN H_OUT=$A_OUT H_PID=$A_PID
 wait_for "A ends" "bye"
 check "A gone, B holds: still applied" 'fair_all "10000000 1000000"'
 [ -n "$udma_before" ] && check "A gone, B holds: udmabuf still raised" udma_raised
+[ -n "$req_us" ] && check "A gone, B holds: its latency request" '[ "$(latency_now)" -le "$req_us" ]'
+[ "$epp_todo" -gt 0 ] && check "A gone, B holds: the cpu preference still performance" 'epp_all performance'
 kill $qb; wait $qb 2> /dev/null
 H_IN=$B_IN H_OUT=$B_OUT H_PID=$B_PID
 [ -n "$udma_before" ] && wait_for "B restores udmabuf" "restored udmabuf: .*"
 [ "$fair_todo" -gt 0 ] && wait_for "B restores" "restored fair-server: .*"
+[ "$epp_todo" -gt 0 ] && wait_for "B restores the cpu preference" "restored epp: .*"
+[ -n "$req_us" ] && wait_for "B's latency request ends" "restored cpu-latency: .*"
 wait_for "B ends" "bye"
 check "fair server as found" '[ "$(fair_now)" = "$fair_after" ]'
+check "cpu preferences as found" '[ "$(epp_line)" = "$epp_before" ]'
+check "the kernel's latency as found" '[ "$(latency_now)" = "$latency_before" ]'
 [ -n "$udma_before" ] && check "udmabuf back to $udma_low" '[ "$(udma_now)" = "$udma_low" ]'
 
 # ======================================================================
@@ -561,6 +628,8 @@ if [ -x "$build/app/test_hostsettings" ]; then
 	check "fair server as found" '[ "$(fair_now)" = "$fair_after" ]'
 	check "gpu as found" '[ "$(gpu_now)" = "$gpu_before" ]'
 	[ -n "$udma_before" ] && check "udmabuf back to $udma_low" '[ "$(udma_now)" = "$udma_low" ]'
+	check "cpu preferences as found" '[ "$(epp_line)" = "$epp_before" ]'
+	check "the kernel's latency as found" '[ "$(latency_now)" = "$latency_before" ]'
 else
 	echo "  (no $build/app/test_hostsettings: skipped)"
 fi
