@@ -183,12 +183,14 @@ fi
 %changelog
 * Thu Nov 05 2026 vitrine <noreply@anthropic.com> - 0.1.0-37
 - on an Intel host the VM's screen can show the guest's own buffers
-  instead of copying each frame (the research's 4ba00a2, 7.2 and 7.3
-  versions): the driver tells the host each scanout's layout, its format
-  modifier in SET_SCANOUT_BLOB's padding word (scanout_modifier, on by
-  default), as an Intel GPU keeps none in the buffer, and the primary
-  planes offer Intel's Tile4 besides linear (intel_scanout=1, set by
-  modprobe.d).  Both only when the host offers
+  instead of copying each frame (the research's 4ba00a2 and 420b32d, 7.2
+  and 7.3 versions): the driver tells the host each scanout's layout, its
+  format modifier in SET_SCANOUT_BLOB's padding word (scanout_modifier, on
+  by default), as an Intel GPU keeps none in the buffer, and the primary
+  planes' tiled_scanout list offers Intel's Tile4 too, before linear
+  (intel_scanout=1, set by modprobe.d; with tiled_scanout=0 it changes
+  nothing: alone it made an AMD guest's buffers linear, where planes
+  without a list leave them AMD-tiled).  Both only when the host offers
   VIRTIO_GPU_F_SCANOUT_MODIFIER_VGD (bit 23: vitrine's QEMU with
   virtio-gpu-scanout-modifier; the probe line says "+scanout_modifier"):
   under another QEMU nothing changes.  AMD's tiled layouts do not fit the

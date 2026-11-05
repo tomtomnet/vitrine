@@ -254,12 +254,13 @@ else
 	say "deferred-map-error patch applied"
 fi
 
-# The scanout's layout for the host (the research's 4ba00a2): an Intel GPU
-# keeps none in the buffer, so the host copied every frame of an Intel guest.
-# When the host offers VIRTIO_GPU_F_SCANOUT_MODIFIER_VGD (bit 23: vitrine's
-# QEMU, with its virtio-gpu-scanout-modifier patch), SET_SCANOUT_BLOB's
-# padding word carries the framebuffer's modifier (scanout_modifier, on by
-# default), and intel_scanout=1 adds Intel's Tile4 to the primary planes;
+# The scanout's layout for the host (the research's 4ba00a2 and 420b32d): an
+# Intel GPU keeps none in the buffer, so the host copied every frame of an
+# Intel guest.  When the host offers VIRTIO_GPU_F_SCANOUT_MODIFIER_VGD (bit
+# 23: vitrine's QEMU, with its virtio-gpu-scanout-modifier patch),
+# SET_SCANOUT_BLOB's padding word carries the framebuffer's modifier
+# (scanout_modifier, on by default), and intel_scanout=1 adds Intel's Tile4
+# to tiled_scanout's list on the primary planes (alone it changes nothing);
 # a host that does not offer it gets neither (the probe line's
 # "-scanout_modifier"), as it would take Tile4 buffers for linear ones
 if grep -q 'scanout_modifier' virtgpu_vq.c; then
