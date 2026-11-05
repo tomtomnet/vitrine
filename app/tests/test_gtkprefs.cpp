@@ -284,10 +284,8 @@ private slots:
         QDir().mkpath(m_root);
         qputenv("STATE", m_state.toLocal8Bit());
         qputenv("VITRINE_AWAKE_ROOT", m_root.toLocal8Bit());
-        /* a host without GPUs, unless the test gives it some; a laptop, so
-           that the CPU is kept ready to wake up by default */
+        /* a host without GPUs, unless the test gives it some */
         m_gpus = std::make_unique<FakeGpus>(m_tmp.filePath("gpus-" + name));
-        FakeGpus::write(m_gpus->sys + "/class/dmi/id/chassis_type", "10\n");
         m_gpus->use();
         settings().remove("host");
         settings().remove("qemu");

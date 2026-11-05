@@ -37,13 +37,12 @@ A desktop VM stays smooth under host load when the host gives it a hand:
   first touch of guest memory is one fault per 2 MiB instead of 512. A
   guest's first app start after its boot took 0.79 s instead of 1.38 s.
   Any other value is the host owner's choice, and is left as it is.
-- **The CPU ready to wake up** (laptops): its cores rest in their first
-  idle state only, at the energy performance preference `performance`. A
-  VM's keys then reach its screen as fast as on the bare desktop: 11.3-11.9
-  ms instead of 15.1-16.3 ms on a Ryzen 7 260 laptop, for about 2 W at
-  idle. On by default on laptops and tablets only: a desktop gained nothing
-  measurable for 3.5 W. Preferences > Host turns it on or off
-  ([below](#the-cpu-ready-to-wake-up)).
+- **The CPU ready to wake up**: its cores rest in their first idle state
+  only, at the energy performance preference `performance`. A VM's keys
+  then reach its screen as fast as on the bare desktop: 11.3-11.9 ms
+  instead of 15.1-16.3 ms on a Ryzen 7 260 laptop, for about 2 W at
+  idle; 7.49 ms instead of 10.09 ms on a desktop under GNOME, for 3.5 W.
+  Preferences > Host turns it off ([below](#the-cpu-ready-to-wake-up)).
 - **Higher udmabuf limits** (VMs whose GPU has native context): QEMU
   hands the host GPU each guest buffer in guest memory as a udmabuf, one
   entry per contiguous piece of guest RAM. A maximized 4K window drawn by
@@ -225,13 +224,18 @@ The bare desktop shows keys in 10.6-11.7 ms there. Both together cost about
   passive mode) the helper skips it and says so.
 
 Preferences > Host > Keep the CPU ready to wake up while VMs run turns both
-on or off, at once for the VMs running too. It is on by default on laptops
-and tablets, as the firmware tells them (DMI chassis types 8, 9, 10, 14, 30,
-31 and 32 in `/sys/class/dmi/id/chassis_type`), and off elsewhere. On a
-desktop with a Ryzen 7 7800X3D the research measured no gain: a nested
-desktop's keys reached the screen in 9.20 ms against 9.37 ms on average,
-while two runs of the same setting came 0.55 ms apart, for 3.5 W more with
-a VM idle (2026-11-05).
+off, at once for the VMs running too. It is on by default, on laptops and
+desktops alike. On a desktop with a Ryzen 7 7800X3D (an Arc Pro B50, 4K at
+240 Hz) the research measured a nested desktop's keys, from a key to the
+screen (2026-11-05):
+
+| Host's desktop | With the hold | Without | Cost at idle |
+| --- | --- | --- | --- |
+| GNOME 51 | 7.49 ms on average, 84 % of keys at the first refresh | 10.09 ms, 16 % (15 % only at the third), the launcher ~3.5 ms later | 3.5 W |
+| KDE Plasma 6.8 | 9.20 ms | 9.37 ms (two runs of one setting were 0.55 ms apart) | 3.5 W |
+
+A host's desktop can change at each login, so the hold does not depend on
+it.
 
 What comes back after the last VM, and what does not:
 

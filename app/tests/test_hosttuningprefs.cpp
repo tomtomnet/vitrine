@@ -14,7 +14,6 @@
 #include <QLabel>
 #include <QMessageBox>
 #include <QPushButton>
-#include <QSettings>
 #include <QStandardPaths>
 #include <QTemporaryDir>
 #include <QTest>
@@ -25,7 +24,6 @@
 #include "core/gpuinputawake.h"
 #include "core/hostgpus.h"
 #include "core/hostsettings.h"
-#include "core/paths.h"
 #include "fakegpus.h"
 #include "ui/hosttuningprefs.h"
 #include "ui/widgets.h"
@@ -214,19 +212,11 @@ private slots:
         QCOMPARE(GpuInputAwake::installed(source(), m_root), GpuInputAwake::Installed::No);
     }
 
-    /* The CPU kept ready to wake up: on by default on a laptop, off on a
-       desktop; said what it does and costs; only with tuning on; saved */
+    /* The CPU kept ready to wake up: on by default, said what it does and
+       costs; only with tuning on; saved */
     void cpuLatency()
     {
         m_gpus->use();
-        /* the default, not an earlier run's choice */
-        QSettings(Paths::settingsPath(), QSettings::IniFormat).remove("host/cpuLatency");
-        FakeGpus::write(m_gpus->sys + "/class/dmi/id/chassis_type", "3\n");
-        {
-            Prefs desktop;
-            QVERIFY(!desktop.window->findChild<QCheckBox *>("cpuLatency")->isChecked());
-        }
-        FakeGpus::write(m_gpus->sys + "/class/dmi/id/chassis_type", "10\n");
         Prefs p;
         auto *box = p.window->findChild<QCheckBox *>("cpuLatency");
         auto *tune = p.window->findChild<QCheckBox *>("tuneHost");
@@ -242,7 +232,6 @@ private slots:
         }
         QVERIFY(hint.contains("lightest idle state"));
         QVERIFY(hint.contains("about 2 W at idle"));
-        QVERIFY(hint.contains("off by default"));
         QVERIFY(hint.contains("ends when the last VM stops"));
         tune->setChecked(false);
         QVERIFY(!box->isEnabled());
