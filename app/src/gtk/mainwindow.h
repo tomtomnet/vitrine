@@ -6,6 +6,7 @@
 #include <QHash>
 #include <QList>
 #include <QObject>
+#include <QPointer>
 #include <QSet>
 #include <QString>
 
@@ -15,8 +16,11 @@
 #include "core/firmwarefiles.h"
 #include "core/vmrunner.h"
 
+class CloneDialog;
 class GtkLoop;
+class SettingsDialog;
 class Vm;
+class VmCloner;
 class VmPage;
 class VmStore;
 
@@ -95,9 +99,10 @@ private:
     void updateActions();
     void updateWaiting();
 
-    void start();
+    /* Start, from the running state of @snapshot if given (Start From It) */
+    void start(const QString &snapshot = {});
     /* Start, past the questions that may call it off */
-    void startChecked(const QString &id);
+    void startChecked(const QString &id, const QString &snapshot = {});
     void togglePause();
     void shutDown();
     void reset();
@@ -106,6 +111,22 @@ private:
     void showLog();
     void openFolder();
     void about();
+
+    /* The dialogs, in mainwindowdialogs.cpp: what they present goes through present() */
+    std::function<void(AdwDialog *)> presenter();
+    void newVm();
+    void importVm();
+    void showCommandLine();
+    /* The settings of @vm, on @page (SettingsDialog::Page), else the one shown last */
+    void openSettings(Vm *vm, int page = -1);
+    /* Ctrl+S: Apply, while the settings show; else they show */
+    void settingsShortcut();
+    void cloneVm();
+    void showSnapshots();
+    /* The log of @vm, as QEMU writes it */
+    void showLogOf(Vm *vm);
+    /* The copy of @source as @name, the window's: it goes on with the dialog closed */
+    VmCloner *startClone(Vm *source, const QString &name);
 
     /* Before a start: damaged firmware copies of @vm, new ones if the user wants; then @go */
     void checkFirmware(Vm *vm, std::function<void()> go);
@@ -163,4 +184,9 @@ private:
     QSet<QString> m_shutDownOnceUp;
     /* The questions whether to kill a QEMU that does not end, by VM */
     QHash<QString, AdwDialog *> m_killPrompts;
+    /* The settings, while they show */
+    SettingsDialog *m_settings = nullptr;
+    /* The copies of clones going on, by the VM copied; the dialog showing one */
+    QHash<QString, QPointer<VmCloner>> m_clones;
+    CloneDialog *m_cloneDialog = nullptr;
 };
