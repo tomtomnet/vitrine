@@ -191,3 +191,18 @@ first)" (`ShortcutsInhibit::automatic()`). KWin grants without asking, and
 other desktops and a known app keep the automatic grab.
 `VITRINE_VIEW_INHIBIT=0` never asks at all, Ctrl+Alt+G included (scripted
 runs).
+
+## Switches for A/B runs
+
+Environment variables of the views, for measurements only; the defaults are
+what vitrine ships:
+
+- `VITRINE_VIEW_ZERO_COPY=0`: the view copies the guest's frames into its
+  own buffers instead of showing them as they are.
+- `VITRINE_VIEW_INHIBIT=0`: never asks for the desktop's shortcuts (above).
+- `VITRINE_VIEW_COMPOSITE=1`: a nearly transparent pixel without input
+  above the frames' top left corner (`DisplaySurface`), so that the
+  compositor composites a full-screen view instead of scanning its frames
+  out directly: GNOME's Mutter scans out only a topmost surface that covers
+  the screen. `vitrine-gtk-view --stats` counts the frames scanned out
+  ("direct"): with the switch, none should be.

@@ -10,7 +10,9 @@
 
 struct wl_compositor;
 struct wl_display;
+struct wl_buffer;
 struct wl_egl_window;
+struct wl_shm;
 struct wl_subcompositor;
 struct wl_subsurface;
 struct wl_surface;
@@ -35,6 +37,12 @@ typedef struct _GdkSurface GdkSurface;
  * dialog, a toast - is under it.  Hidden, it has no subsurface: a surface
  * without a role is not shown, and the render thread may go on committing
  * to it.
+ *
+ * VITRINE_VIEW_COMPOSITE=1 (A/B runs only): a nearly transparent pixel of
+ * its own, without input, above the frames' top left corner, so that the
+ * compositor composites a full-screen view rather than scanning its frames
+ * out directly (GNOME's Mutter scans out only a topmost surface that covers
+ * the screen).
  */
 class DisplaySurface : public RenderTarget
 {
@@ -69,14 +77,20 @@ public:
 private:
     DisplaySurface() = default;
     bool init(GdkDisplay *display);
+    void initOverlay(wl_compositor *compositor);
 
     wl_display *m_display = nullptr;
     wl_subcompositor *m_subcompositor = nullptr;
     wp_viewporter *m_viewporter = nullptr;
     wl_surface *m_surface = nullptr;
     wp_viewport *m_viewport = nullptr;
+    /* VITRINE_VIEW_COMPOSITE=1: the pixel above the frames */
+    wl_shm *m_shm = nullptr;
+    wl_surface *m_overlay = nullptr;
+    wl_buffer *m_overlayPixel = nullptr;
     /* GUI thread */
     wl_subsurface *m_subsurface = nullptr;
+    wl_subsurface *m_overlaySub = nullptr;
     GdkSurface *m_parent = nullptr;
     int m_x = 0, m_y = 0;
     bool m_placed = false;
