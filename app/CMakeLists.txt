@@ -273,10 +273,15 @@ add_custom_command(OUTPUT ${UI_PROTOCOL_DIR}/linux-dmabuf-v1-client-protocol.h
 
 # What both apps' windows use and needs only Qt Core: the summaries of a
 # VM's settings, the QEMU documentation and the check of a VM's arguments
-# against it, the access to USB devices
+# against it, the access to USB devices, what the host packages' questions and
+# Install Guest Tools say
 qt_add_library(vitrine_uishared STATIC
     src/ui/argscheck.cpp
     src/ui/argscheck.h
+    src/ui/guesttoolstext.cpp
+    src/ui/guesttoolstext.h
+    src/ui/hostkdetext.cpp
+    src/ui/hostkdetext.h
     src/ui/qemudocs.cpp
     src/ui/qemudocs.h
     src/ui/uiconfig.cpp
