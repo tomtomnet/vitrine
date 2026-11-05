@@ -147,6 +147,8 @@ MainWindow::MainWindow(GtkLoop *loop, VmStore *store)
     auto *host = new HostSettings(store, m_qt.get());
     QObject::connect(host, &HostSettings::notice, m_qt.get(),
                      [this](const QString &text) { notify(text, 15000); });
+    /* Preferences, the notices of the running VMs, the tasks: mainwindowparts.cpp */
+    createParts();
 
     QObject::connect(store, &VmStore::added, m_qt.get(), [this](Vm *vm) { addVm(vm); });
     QObject::connect(store, &VmStore::removed, m_qt.get(),
@@ -1336,6 +1338,7 @@ void MainWindow::closed()
     for (const QString &id : m_consoles.keys()) {
         dropConsole(id);
     }
+    dropParts();
     /* nothing to show any more: the core's signals go nowhere */
     m_qt.reset();
     m_window = nullptr;

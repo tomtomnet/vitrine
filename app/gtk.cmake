@@ -46,6 +46,8 @@ add_library(vitrine_gtk STATIC
     src/gtk/gtkloop.cpp
     src/gtk/gtkloop.h
     src/gtk/guarded.h
+    src/gtk/hostprefs.cpp
+    src/gtk/hostprefs.h
     src/gtk/importdialog.cpp
     src/gtk/importdialog.h
     src/gtk/logdialog.cpp
@@ -56,12 +58,19 @@ add_library(vitrine_gtk STATIC
     src/gtk/mainwindow.h
     src/gtk/mainwindowconsole.cpp
     src/gtk/mainwindowdialogs.cpp
+    src/gtk/mainwindowparts.cpp
     src/gtk/newvmdialog.cpp
     src/gtk/newvmdialog.h
+    src/gtk/notices.cpp
+    src/gtk/notices.h
+    src/gtk/preferencesdialog.cpp
+    src/gtk/preferencesdialog.h
     src/gtk/qemureference.cpp
     src/gtk/qemureference.h
     src/gtk/referencepanel.cpp
     src/gtk/referencepanel.h
+    src/gtk/richtext.cpp
+    src/gtk/richtext.h
     src/gtk/rows.cpp
     src/gtk/rows.h
     src/gtk/settingsdialog.cpp
@@ -141,4 +150,12 @@ if(BUILD_TESTING)
     target_sources(test_gtkmainwindow PRIVATE tests/gtkdisplay.h)
     target_sources(test_gtkdialogs PRIVATE tests/gtkdisplay.h)
     target_sources(test_gtkconsole PRIVATE tests/gtkdisplay.h)
+    # Preferences and the notices: a fake host (GPUs, gpu-input-awake's root, pkexec and
+    # systemctl stand-ins), the stand-in QEMU for a VM found running
+    vitrine_gtk_test(gtkprefs)
+    target_sources(test_gtkprefs PRIVATE tests/gtkdisplay.h tests/fakegpus.h)
+    target_compile_definitions(test_gtkprefs PRIVATE
+        FAKE_QEMU="$<TARGET_FILE:fake-qemu>"
+        GPU_AWAKE_SOURCE_DIR="${PROJECT_SOURCE_DIR}/host/gpu-input-awake")
+    add_dependencies(test_gtkprefs fake-qemu)
 endif()

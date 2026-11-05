@@ -18,6 +18,8 @@
 
 class CloneDialog;
 class GtkLoop;
+class Notices;
+class PreferencesDialog;
 class SettingsDialog;
 class Vm;
 class VmConsole;
@@ -90,6 +92,12 @@ public:
      * there.  The window's key controller's (and the tests').
      */
     bool switchViewByKey(guint keyval, guint keycode, GdkModifierType state);
+
+    /* Preferences and the notices (mainwindowparts.cpp): the dialog shown */
+    PreferencesDialog *showPreferences();
+    Notices *notices() const;
+    /* The Builds window, on "qemu", "medium" (with a Fedora release) or a host package's id */
+    void showBuilds(const QString &component = {}, const QString &guestRelease = {});
 
 private:
     struct Item {
@@ -241,4 +249,12 @@ private:
     /* The copies of clones going on, by the VM copied; the dialog showing one */
     QHash<QString, QPointer<VmCloner>> m_clones;
     CloneDialog *m_cloneDialog = nullptr;
+
+    /* Preferences and the notices of the running VMs: mainwindowparts.cpp */
+    void createParts();
+    void dropParts();
+    /* made by createParts(), gone with the window (dropParts()) */
+    Notices *m_notices = nullptr;
+    /* The Preferences, while they show */
+    PreferencesDialog *m_preferences = nullptr;
 };
