@@ -96,6 +96,8 @@ add_library(vitrine_gtk STATIC
     src/gtk/storagepage.h
     src/gtk/textdialog.cpp
     src/gtk/textdialog.h
+    src/gtk/updatenotifier.cpp
+    src/gtk/updatenotifier.h
     src/gtk/vmconsole.cpp
     src/gtk/vmconsole.h
     src/gtk/vmpage.cpp
@@ -106,6 +108,8 @@ add_library(vitrine_gtk STATIC
     src/gtk/widgets.h
 )
 target_include_directories(vitrine_gtk PUBLIC src)
+# buildinfo.h: the commit this build is of, for the check for updates
+target_include_directories(vitrine_gtk PRIVATE "${CMAKE_CURRENT_BINARY_DIR}")
 # the VM's screen and the nested desktop (vitrine_gtkview), the desktop's GPU
 # from linux-dmabuf over GDK's connection (vitrine_wlprotocols)
 target_link_libraries(vitrine_gtk

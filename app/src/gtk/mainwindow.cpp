@@ -44,6 +44,7 @@ static GMenuModel *primaryMenu()
     g_menu_append(vms, "_Import VM…", "win.import-vm");
     g_menu_append(app, "_Builds", "app.builds");
     g_menu_append(app, "_Preferences", "app.preferences");
+    g_menu_append(about, "Check for _Updates…", "app.check-updates");
     g_menu_append(about, "_About Vitrine", "app.about");
     g_menu_append_section(menu, nullptr, G_MENU_MODEL(vms));
     g_menu_append_section(menu, nullptr, G_MENU_MODEL(app));

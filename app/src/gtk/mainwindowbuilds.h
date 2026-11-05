@@ -84,6 +84,7 @@ private:
     std::unique_ptr<AppBanners> m_banners;
     std::unique_ptr<GuestToolsStatus> m_toolsStatus;
     std::unique_ptr<BuildsWindow> m_buildsWindow;
+    std::unique_ptr<UpdateNotifier> m_updates;
     /* the guest tools' installs under way, or over and shown, by VM id */
     QHash<QString, std::shared_ptr<GuestToolsInstall>> m_installs;
     GuestToolsDialog *m_toolsDialog = nullptr;

@@ -15,11 +15,13 @@
 #include "core/vmstore.h"
 #include "gtk/appbanners.h"
 #include "gtk/buildswindow.h"
+#include "gtk/gtkloop.h"
 #include "gtk/guesttoolsdialog.h"
 #include "gtk/guesttoolsinstall.h"
 #include "gtk/guesttoolsstatus.h"
 #include "gtk/hostkdealerts.h"
 #include "gtk/mainwindow.h"
+#include "gtk/updatenotifier.h"
 #include "gtk/vmpage.h"
 #include "gtk/widgets.h"
 #include "ui/hostkdetext.h"
@@ -41,6 +43,25 @@ MainWindowBuilds::MainWindowBuilds(MainWindow *window)
     auto *win = G_ACTION_MAP(window->m_window);
 
     window->addAction(win, "install-guest-tools", [this]() { installGuestTools(m_window->current()); });
+
+    /* new commits of Vitrine: the primary menu's buttons say so, Check for Updates… tells */
+    m_updates = std::make_unique<UpdateNotifier>();
+    m_updates->present = [this](AdwDialog *dialog) { m_window->present(dialog); };
+    m_updates->notify = [this](const QString &text) { m_window->notify(text, 15000); };
+    window->addAction(G_ACTION_MAP(window->m_loop->adw()), "check-updates",
+                      [this]() { m_updates->checkNow(); });
+    std::function<void(GtkWidget *)> findMenus = [&](GtkWidget *widget) {
+        if (GTK_IS_MENU_BUTTON(widget) &&
+            g_strcmp0(gtk_menu_button_get_icon_name(GTK_MENU_BUTTON(widget)), "open-menu-symbolic") == 0) {
+            m_updates->addMenuButton(widget);
+            return;
+        }
+        for (GtkWidget *child = gtk_widget_get_first_child(widget); child;
+             child = gtk_widget_get_next_sibling(child)) {
+            findMenus(child);
+        }
+    };
+    findMenus(window->m_window);
 
     /* the banners over the views, and over the empty state; not over a VM's screen */
     m_banners->showBuilds = [this](const QString &component) { showBuilds(component, {}); };
@@ -111,6 +132,7 @@ void MainWindowBuilds::closed()
     m_toolsDialog = nullptr;
     m_installs.clear();
     m_buildsWindow.reset();
+    m_updates.reset();
 }
 
 std::shared_ptr<GuestToolsInstall> MainWindowBuilds::toolsInstall(const QString &vmId) const
@@ -303,6 +325,10 @@ void MainWindowBuilds::presentOverBuilds(AdwDialog *dialog)
 
 void MainWindowBuilds::qemuBuilt()
 {
+    /* what runs changed: the answers of the check for updates follow */
+    if (m_updates) {
+        m_updates->revalidate();
+    }
     if (Paths::qemuBinary() != m_qemuBefore) {
         m_qemuBefore = Paths::qemuBinary();
         QemuDocs::reloadPreferred();
