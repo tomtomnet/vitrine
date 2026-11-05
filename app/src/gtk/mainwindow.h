@@ -18,6 +18,7 @@
 
 class CloneDialog;
 class GtkLoop;
+class MainWindowBuilds;
 class SettingsDialog;
 class Vm;
 class VmConsole;
@@ -83,6 +84,13 @@ public:
     /* The console of the VM @id, made the first time (tests); null once the window is gone */
     VmConsole *console(const QString &id);
     /*
+     * The Builds window, in front: on @component if given ("qemu",
+     * "medium", a host package's id, or a group: "host", "guest",
+     * "system"), with the guest tools of Fedora @guestRelease if given
+     * (not during a run); empty, as it is (mainwindowbuilds.cpp)
+     */
+    void showBuilds(const QString &component = {}, const QString &guestRelease = {});
+    /*
      * Ctrl+Alt+1/2 from anywhere in the window, the VMs' screens included,
      * their full-screen windows too: the view of the selected VM's console
      * (a VM with the nested desktop in this window), whatever character the
@@ -92,6 +100,9 @@ public:
     bool switchViewByKey(guint keyval, guint keycode, GdkModifierType state);
 
 private:
+    /* the builds and the guest tools: mainwindowbuilds.cpp */
+    friend class MainWindowBuilds;
+
     struct Item {
         QString id;
         AdwSidebarItem *item;
@@ -241,4 +252,6 @@ private:
     /* The copies of clones going on, by the VM copied; the dialog showing one */
     QHash<QString, QPointer<VmCloner>> m_clones;
     CloneDialog *m_cloneDialog = nullptr;
+    /* The builds and the guest tools */
+    std::unique_ptr<MainWindowBuilds> m_builds;
 };

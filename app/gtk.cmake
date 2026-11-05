@@ -32,10 +32,14 @@ configure_file(data/vitrine.svg ${CMAKE_CURRENT_BINARY_DIR}/gtk-icons/org.vitrin
 # of its own: Qt's connections go to context objects (no moc over GTK's
 # headers, which use Qt's keywords as names: src/gtk/gtkbase.h)
 add_library(vitrine_gtk STATIC
+    src/gtk/appbanners.cpp
+    src/gtk/appbanners.h
     src/gtk/argspage.cpp
     src/gtk/argspage.h
     src/gtk/buildsmodel.cpp
     src/gtk/buildsmodel.h
+    src/gtk/buildswindow.cpp
+    src/gtk/buildswindow.h
     src/gtk/clonedialog.cpp
     src/gtk/clonedialog.h
     src/gtk/desktopgpu.cpp
@@ -48,6 +52,14 @@ add_library(vitrine_gtk STATIC
     src/gtk/gtkloop.cpp
     src/gtk/gtkloop.h
     src/gtk/guarded.h
+    src/gtk/guesttoolsdialog.cpp
+    src/gtk/guesttoolsdialog.h
+    src/gtk/guesttoolsinstall.cpp
+    src/gtk/guesttoolsinstall.h
+    src/gtk/guesttoolsstatus.cpp
+    src/gtk/guesttoolsstatus.h
+    src/gtk/hostkdealerts.cpp
+    src/gtk/hostkdealerts.h
     src/gtk/importdialog.cpp
     src/gtk/importdialog.h
     src/gtk/logdialog.cpp
@@ -56,6 +68,8 @@ add_library(vitrine_gtk STATIC
     src/gtk/machinepage.h
     src/gtk/mainwindow.cpp
     src/gtk/mainwindow.h
+    src/gtk/mainwindowbuilds.cpp
+    src/gtk/mainwindowbuilds.h
     src/gtk/mainwindowconsole.cpp
     src/gtk/mainwindowdialogs.cpp
     src/gtk/markup.cpp

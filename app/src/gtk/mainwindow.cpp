@@ -18,6 +18,7 @@
 #include "core/vmhardware.h"
 #include "core/vmstore.h"
 #include "gtk/gtkloop.h"
+#include "gtk/mainwindowbuilds.h"
 #include "gtk/settingsdialog.h"
 #include "gtk/vmconsole.h"
 #include "gtk/vmpage.h"
@@ -70,6 +71,7 @@ static GMenuModel *itemMenu()
     g_menu_append(files, "Show _Log", "win.show-log");
     g_menu_append(files, "_Open Folder", "win.open-folder");
     g_menu_append(files, "Show Comma_nd Line", "win.command-line");
+    g_menu_append(vm, "Install _Guest Tools…", "win.install-guest-tools");
     g_menu_append(vm, "S_napshots", "win.snapshots");
     g_menu_append(vm, "_Clone…", "win.clone");
     g_menu_append(vm, "Re_move…", "win.remove");
@@ -142,6 +144,8 @@ MainWindow::MainWindow(GtkLoop *loop, VmStore *store)
     buildWindow();
     createActions();
     createConsoleActions();
+    /* before the VMs: its groups come first in their Details */
+    m_builds = std::make_unique<MainWindowBuilds>(this);
 
     /* the host's settings while VMs run (vitrine-helper), what it could not apply said */
     auto *host = new HostSettings(store, m_qt.get());
@@ -323,12 +327,10 @@ void MainWindow::createActions()
             gtk_window_close(GTK_WINDOW(m_window));
         }
     }, "<Control>q");
-    /* their windows are not in the GTK app yet */
-    addAction(app, "builds", [] {}, "<Control>b");
+    addAction(app, "builds", [this]() { showBuilds(); }, "<Control>b");
+    /* its window is not in the GTK app yet */
     addAction(app, "preferences", [] {}, "<Control>comma");
-    for (const char *name : {"builds", "preferences"}) {
-        setEnabled(name, false);
-    }
+    setEnabled("preferences", false);
     /* the dialogs (mainwindowdialogs.cpp) */
     addAction(win, "new-vm", [this]() { newVm(); }, "<Control>n");
     addAction(win, "import-vm", [this]() { importVm(); }, "<Control>i");
@@ -752,6 +754,9 @@ void MainWindow::currentChanged()
     gtk_stack_set_visible_child_name(m_main, m_items.isEmpty() ? "empty" : "vms");
     m_page->setConsole(vm ? m_consoles.value(vm->id()) : nullptr);
     m_page->setVm(vm, vm ? m_errors.value(vm->id()) : QString());
+    if (m_builds) {
+        m_builds->setVm(vm);
+    }
     updateActions();
     /* once the page shows the console: an unmapped widget takes no focus */
     focusScreenLater(FocusCause::Switched);
@@ -1232,6 +1237,10 @@ bool MainWindow::closeRequested()
                 break;
             }
             m_closeAfter.insert(each->id());
+            /* off for good, not started again for its guest tools */
+            if (m_builds) {
+                m_builds->stayOff(each);
+            }
             if (first.isEmpty()) {
                 first = each->id();
             }
@@ -1335,6 +1344,9 @@ void MainWindow::closed()
     }
     for (const QString &id : m_consoles.keys()) {
         dropConsole(id);
+    }
+    if (m_builds) {
+        m_builds->closed();
     }
     /* nothing to show any more: the core's signals go nowhere */
     m_qt.reset();
