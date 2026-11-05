@@ -667,7 +667,9 @@ void DisplayWidget::setShortcutsInhibited(bool on)
 
 bool DisplayWidget::shortcutsInhibitPending() const
 {
-    /* asked, not granted (yet): GNOME's dialog, or its Deny */
+    /* asked, not granted: GNOME's dialog up, or its Deny, or never an answer -
+       DisplayInput keeps a grab only through the loss of the keyboard that
+       comes right after the request (the dialog's) */
     return m_inhibited && !m_inhibitActive && ShortcutsInhibit::asks();
 }
 

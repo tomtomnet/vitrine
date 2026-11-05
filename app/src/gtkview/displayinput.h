@@ -7,6 +7,7 @@
 #include <cstdint>
 #include <functional>
 #include <set>
+#include <utility>
 
 /*
  * What src/vmview's DisplayWindow does with the keyboard and the pointer,
@@ -50,8 +51,9 @@ public:
         virtual void setShortcutsInhibited(bool on) = 0;
         virtual void setPointerLocked(bool on) = 0;
         virtual void setPointerConfined(bool on) = 0;
-        /* Asked for the shortcuts, and no answer yet: GNOME asks the user
-           in a dialog of its own, which takes the window's keyboard */
+        /* Asked for the shortcuts and not granted: GNOME's dialog may be up
+           (it takes the window's keyboard), or the answer was Deny, or no
+           answer ever comes */
         virtual bool shortcutsInhibitPending() const { return false; }
     };
 
@@ -98,6 +100,11 @@ public:
     void setAutoGrab(bool allowed);
     /* The window around the view has the keyboard on it */
     void setHostActive(bool active);
+    /* The clock the grab's request is timed with, in milliseconds (tests) */
+    void setClock(std::function<int64_t()> msNow) { m_clock = std::move(msNow); }
+    /* A loss of the keyboard this soon after a request of the shortcuts may be
+       the one the compositor's question causes (GNOME shows its dialog at once) */
+    static constexpr int64_t kAskedLossMs = 2000;
     bool hostActive() const { return m_hostActive; }
     void setGrab(bool on);
     bool grabbed() const { return m_grab || m_autoGrab; }
@@ -122,6 +129,7 @@ public:
 
 private:
     void updateGrab();
+    int64_t now() const;
     bool windowActionModifierHeld() const;
 
     Sink *m_sink;
@@ -141,6 +149,11 @@ private:
     bool m_pointerInside = false;
     bool m_hostActive = false;
     bool m_inhibited = false, m_locked = false, m_confined = false; // what the compositor was asked
+    /* the last request of the shortcuts, and whether the loss of the keyboard its
+       question may cause can still come (once, soon after it) */
+    int64_t m_askedMs = 0;
+    bool m_askOpen = false;
+    std::function<int64_t()> m_clock;
     double m_relX = 0, m_relY = 0;
     double m_wheelAccum = 0, m_wheelAccumX = 0;
 };

@@ -269,26 +269,30 @@ private Q_SLOTS:
         QCOMPARE(f.log.take(), QStringList({"inhibit 1", "lock 0", "confine 0"}));
     }
 
-    /* GNOME's dialog takes the window's keyboard while it asks about the
-       user's grab: the grab stays for its answer; once answered, the
-       keyboard's loss releases the grab as before */
+    /* GNOME's dialog takes the window's keyboard as it asks about the user's
+       grab: the grab stays through that loss, for the answer; once Allow
+       granted it, the keyboard's loss releases it as before */
     void grabWhileAsked()
     {
         Fixture f;
+        int64_t now = 1000;
+        f.input.setClock([&]() { return now; });
         f.input.setAutoGrab(false);
         f.input.setHostActive(true);
         f.input.pointerEnter(1, 1);
-        f.input.setGrab(true);
+        f.input.setGrab(true);              // the request
         f.log.take();
-        f.compositor.pending = true;
-        f.input.setHostActive(false);
+        f.compositor.pending = true;        // the dialog up
+        now += 100;
+        f.input.setHostActive(false);       // it takes the keyboard: kept
         QVERIFY(f.input.grabbed());
         QCOMPARE(f.log.take(), QStringList());
+        now += 5000;                        // Allow
+        f.compositor.pending = false;
         f.input.setHostActive(true);
         QVERIFY(f.input.grabbed());
         QCOMPARE(f.input.grabState(), QString("grabbed (Ctrl+Alt+G releases)"));
-        /* granted: the keyboard gone, the grab goes */
-        f.compositor.pending = false;
+        now += 1000;
         f.input.setHostActive(false);
         QVERIFY(!f.input.grabbed());
         QCOMPARE(f.log.take(), QStringList({"inhibit 0", "lock 0", "confine 0"}));
@@ -297,6 +301,60 @@ private Q_SLOTS:
         f.input.setHostActive(true);
         f.log.take();
         f.compositor.pending = true;
+        now += 100;
+        f.input.setHostActive(false);
+        QVERIFY(!f.input.grabbed());
+        QCOMPARE(f.log.take(), QStringList({"inhibit 0", "lock 0", "confine 0"}));
+    }
+
+    /* Deny leaves the request ungranted for good: the grab stays through the
+       dialog's loss of the keyboard only, and a later loss (Alt+Tab away)
+       releases it; a new request starts over */
+    void grabAfterDeny()
+    {
+        Fixture f;
+        int64_t now = 1000;
+        f.input.setClock([&]() { return now; });
+        f.input.setAutoGrab(false);
+        f.input.setHostActive(true);
+        f.input.pointerEnter(1, 1);
+        f.input.setGrab(true);
+        f.compositor.pending = true;
+        f.log.take();
+        now += 100;
+        f.input.setHostActive(false);       // the dialog: kept
+        QVERIFY(f.input.grabbed());
+        now += 5000;                        // Deny: the keyboard back, still not granted
+        f.input.setHostActive(true);
+        QVERIFY(f.input.grabbed());
+        QCOMPARE(f.log.take(), QStringList());
+        now += 1000;
+        f.input.setHostActive(false);       // away: released
+        QVERIFY(!f.input.grabbed());
+        QCOMPARE(f.log.take(), QStringList({"inhibit 0", "lock 0", "confine 0"}));
+        /* grabbed again: a new request, whose dialog's loss is kept again */
+        f.input.setHostActive(true);
+        f.input.setGrab(true);
+        QCOMPARE(f.log.take(), QStringList({"inhibit 1", "lock 0", "confine 0"}));
+        now += 100;
+        f.input.setHostActive(false);
+        QVERIFY(f.input.grabbed());
+    }
+
+    /* No dialog (a Deny GNOME remembered for the window, a compositor that
+       never answers): a loss long after the request releases the grab */
+    void grabLossLongAfterRequest()
+    {
+        Fixture f;
+        int64_t now = 1000;
+        f.input.setClock([&]() { return now; });
+        f.input.setAutoGrab(false);
+        f.input.setHostActive(true);
+        f.input.pointerEnter(1, 1);
+        f.input.setGrab(true);
+        f.compositor.pending = true;
+        f.log.take();
+        now += DisplayInput::kAskedLossMs + 1;
         f.input.setHostActive(false);
         QVERIFY(!f.input.grabbed());
         QCOMPARE(f.log.take(), QStringList({"inhibit 0", "lock 0", "confine 0"}));

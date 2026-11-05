@@ -7,6 +7,7 @@
 #include <QRect>
 
 #include <algorithm>
+#include <chrono>
 #include <utility>
 
 namespace {
@@ -203,6 +204,16 @@ void DisplayInput::setAutoGrab(bool allowed)
     updateGrab();
 }
 
+int64_t DisplayInput::now() const
+{
+    if (m_clock) {
+        return m_clock();
+    }
+    return std::chrono::duration_cast<std::chrono::milliseconds>(
+               std::chrono::steady_clock::now().time_since_epoch())
+        .count();
+}
+
 void DisplayInput::setHostActive(bool active)
 {
     if (active == m_hostActive) {
@@ -212,12 +223,21 @@ void DisplayInput::setHostActive(bool active)
     if (!active) {
         releaseAllKeys();
         releaseAllButtons();
-        /* the user's grab, unless the compositor is still asking the user
-           about it: GNOME's dialog takes the keyboard, and its Allow must
-           find the grab there (else the VM was left not grabbed) */
-        if (!(m_grab && m_inhibited && m_compositor && m_compositor->shortcutsInhibitPending())) {
+        /* the user's grab, unless this is the loss of the keyboard that the
+           compositor's question about it causes: GNOME shows its "allow"
+           dialog at once, the dialog takes the keyboard, and its Allow must
+           find the grab there (else the VM was left not grabbed).  Only a loss
+           soon after the request, and once: the keyboard is back when the
+           user answered, Allow or Deny, and after a Deny - or with a
+           compositor that never answers - the request stays ungranted for
+           good, while later losses (Alt+Tab away) release the grab */
+        const bool askedLoss = m_grab && m_inhibited && m_askOpen &&
+                               now() - m_askedMs <= kAskedLossMs && m_compositor &&
+                               m_compositor->shortcutsInhibitPending();
+        if (!askedLoss) {
             m_grab = false;
         }
+        m_askOpen = false;
         m_suppressAuto = false;
     }
     updateGrab();
@@ -275,6 +295,11 @@ void DisplayInput::updateGrab()
        QEMU's SDL display, whose grab confines the pointer. */
     const bool confine = inhibit && absolute && windowActionModifierHeld();
     if (inhibit != m_inhibited || lock != m_locked || confine != m_confined) {
+        /* a new request: its question's loss of the keyboard may come */
+        if (inhibit != m_inhibited) {
+            m_askOpen = inhibit;
+            m_askedMs = inhibit ? now() : 0;
+        }
         m_inhibited = inhibit;
         m_locked = lock;
         m_confined = confine;
