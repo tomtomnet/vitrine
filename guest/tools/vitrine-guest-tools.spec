@@ -2,7 +2,7 @@
 # exact version, and dnf takes an installed one of the same version as done.
 Name:           vitrine-guest-tools
 Version:        0.1.0
-Release:        33%{?dist}
+Release:        34%{?dist}
 Summary:        vitrine guest tools: patched virtio-gpu driver, settings and agent
 
 # the driver's sources (dkms/vendor, dkms/patches) are the kernel's: MIT
@@ -181,6 +181,14 @@ fi
 %dir %{_sharedstatedir}/%{name}
 
 %changelog
+* Thu Nov 05 2026 vitrine <noreply@anthropic.com> - 0.1.0-34
+- with KWin 6.8.2-3.1.g26 on Fedora 44's medium (the research's guest set g26
+  on Fedora's 6.8.2-3): the nested desktop's cursor reaches the host as shared
+  memory, which a GNOME host puts on its cursor plane, keeping the full-screen
+  VM scanned out; the Overview keeps its views between openings; the GPU's
+  clock is read once a second. The tools' new version lets vitrine see the
+  update for a guest that is not running, and name it
+
 * Thu Nov 05 2026 vitrine <noreply@anthropic.com> - 0.1.0-33
 - the nested desktop's KWin runs without an input method (the research's
   97e4f0d): Fedora's kde-settings make plasma-keyboard every KDE session's

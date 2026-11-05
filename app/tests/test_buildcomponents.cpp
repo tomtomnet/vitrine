@@ -418,15 +418,24 @@ private slots:
         QCOMPARE(ffiPatches[0].origin, "Research");
         QVERIFY(subject(ffi, ffiPatches[0]).startsWith("rutabaga_gfx: native contexts through the FFI"));
 
-        /* a spec's Patch lines: the research's guest set g24 on Fedora's spec, from Patch1001,
-           each patch with its own subject */
+        /* a spec's Patch lines: Fedora's own fix (6.8.2-3's Patch0), then the research's guest
+           set g26 from Patch1001, each patch with its own subject */
         const Component kwin = find(all, "kwin");
         const QList<Patch> kwinPatches = patches(kwin);
-        QCOMPARE(kwinPatches.size(), 56);
-        QCOMPARE(kwinPatches.first().path, "kwin/0001-Patch100-kwin-vm-frame-timing-ported-to-6.8.v2.patch");
-        QCOMPARE(kwinPatches.first().number, "1001");
-        QCOMPARE(kwinPatches.first().origin, "Research");
-        QCOMPARE(subject(kwin, kwinPatches.first()), "Patch100 kwin-vm-frame-timing (ported to 6.8)");
+        QCOMPARE(kwinPatches.size(), 60);
+        QCOMPARE(kwinPatches.first().number, "0");
+        QCOMPARE(kwinPatches.first().origin, "Fedora");
+        QCOMPARE(subject(kwin, kwinPatches.first()), "compositor: handle possibly missing render device");
+        QCOMPARE(kwinPatches[1].path, "kwin/0001-Patch100-kwin-vm-frame-timing-ported-to-6.8.v2.patch");
+        QCOMPARE(kwinPatches[1].number, "1001");
+        QCOMPARE(kwinPatches[1].origin, "Research");
+        QCOMPARE(subject(kwin, kwinPatches[1]), "Patch100 kwin-vm-frame-timing (ported to 6.8)");
+        QCOMPARE(kwinPatches[57].number, "1057");
+        QCOMPARE(subject(kwin, kwinPatches[57]),
+                 "EXP wayland backend: the cursor handed to the host as wl_shm (KWIN_WAYLAND_SHM_CURSOR)");
+        QCOMPARE(kwinPatches.last().path,
+                 "kwin/0096-EXP-opengl-the-GPU-s-clock-read-once-a-second-for-render-time-queries.patch");
+        QCOMPARE(kwinPatches.last().origin, "Research");
         for (const Patch &p : kwinPatches) {
             QVERIFY2(QFileInfo::exists(kwin.dir + '/' + p.path), qPrintable(p.path));
         }
