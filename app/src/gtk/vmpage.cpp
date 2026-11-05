@@ -107,6 +107,7 @@ static GMenuModel *machineMenu()
     g_menu_append(files, "Show _Log", "win.show-log");
     g_menu_append(files, "_Open Folder", "win.open-folder");
     g_menu_append(files, "Show Comma_nd Line", "win.command-line");
+    g_menu_append(vm, "S_napshots", "win.snapshots");
     g_menu_append(vm, "_Clone…", "win.clone");
     g_menu_append(vm, "Re_move…", "win.remove");
     g_menu_append_section(menu, nullptr, G_MENU_MODEL(power));

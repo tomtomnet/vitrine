@@ -18,6 +18,7 @@
 #include "core/vmhardware.h"
 #include "core/vmstore.h"
 #include "gtk/gtkloop.h"
+#include "gtk/settingsdialog.h"
 #include "gtk/vmconsole.h"
 #include "gtk/vmpage.h"
 #include "gtk/vmsummary.h"
@@ -69,6 +70,7 @@ static GMenuModel *itemMenu()
     g_menu_append(files, "Show _Log", "win.show-log");
     g_menu_append(files, "_Open Folder", "win.open-folder");
     g_menu_append(files, "Show Comma_nd Line", "win.command-line");
+    g_menu_append(vm, "S_napshots", "win.snapshots");
     g_menu_append(vm, "_Clone…", "win.clone");
     g_menu_append(vm, "Re_move…", "win.remove");
     g_menu_append_section(menu, nullptr, G_MENU_MODEL(power));
@@ -324,15 +326,16 @@ void MainWindow::createActions()
     /* their windows are not in the GTK app yet */
     addAction(app, "builds", [] {}, "<Control>b");
     addAction(app, "preferences", [] {}, "<Control>comma");
-    addAction(win, "new-vm", [] {}, "<Control>n");
-    addAction(win, "import-vm", [] {}, "<Control>i");
-    addAction(win, "settings", [] {}, "<Control>s");
-    addAction(win, "clone", [] {});
-    addAction(win, "command-line", [] {});
-    for (const char *name :
-         {"builds", "preferences", "new-vm", "import-vm", "settings", "clone", "command-line"}) {
+    for (const char *name : {"builds", "preferences"}) {
         setEnabled(name, false);
     }
+    /* the dialogs (mainwindowdialogs.cpp) */
+    addAction(win, "new-vm", [this]() { newVm(); }, "<Control>n");
+    addAction(win, "import-vm", [this]() { importVm(); }, "<Control>i");
+    addAction(win, "settings", [this]() { settingsShortcut(); }, "<Control>s");
+    addAction(win, "command-line", [this]() { showCommandLine(); });
+    addAction(win, "clone", [this]() { cloneVm(); });
+    addAction(win, "snapshots", [this]() { showSnapshots(); });
 
     /* the sidebar shown or hidden: the split view's own state */
     GPropertyAction *sidebar = g_property_action_new("show-sidebar", m_split, "show-sidebar");
@@ -721,7 +724,7 @@ void MainWindow::failed(Vm *vm, const QString &error)
             return;
         }
         if (response == "log") {
-            Gtk4::openPath(m_window, vm->runner()->logPath());
+            showLogOf(vm);
         } else if (response == "firmware") {
             bool vars = true;
             for (const File &f : firmware) {
@@ -768,6 +771,10 @@ void MainWindow::updateActions()
     setEnabled("remove", vm && state == VmRunner::State::Stopped);
     setEnabled("show-log", vm);
     setEnabled("open-folder", vm);
+    setEnabled("command-line", vm);
+    setEnabled("settings", vm);
+    setEnabled("clone", vm && state == VmRunner::State::Stopped);
+    setEnabled("snapshots", vm);
     updateConsoleActions();
 }
 
@@ -787,7 +794,7 @@ void MainWindow::updateWaiting()
                                  .arg(names.join(", ")));
 }
 
-void MainWindow::start()
+void MainWindow::start(const QString &snapshot)
 {
     Vm *vm = current();
 
@@ -815,10 +822,10 @@ void MainWindow::start()
     }
     /* firmware copies a power cut damaged, say: new ones, if the user wants */
     const QString id = vm->id();
-    checkFirmware(vm, [this, id]() { startChecked(id); });
+    checkFirmware(vm, [this, id, snapshot]() { startChecked(id, snapshot); });
 }
 
-void MainWindow::startChecked(const QString &id)
+void MainWindow::startChecked(const QString &id, const QString &snapshot)
 {
     Vm *vm = m_store->find(id);
 
@@ -832,7 +839,7 @@ void MainWindow::startChecked(const QString &id)
     /* the VM gets its USB devices only if it can open them from the start */
     const QString asking = QString("Checking the access to the USB devices of %1…").arg(vm->name());
     m_askingUsb.insert(id);
-    UsbAccess::request(vm, m_qt.get(), [this, id, asking](const QString &warning) {
+    UsbAccess::request(vm, m_qt.get(), [this, id, asking, snapshot](const QString &warning) {
         Vm *vm = m_store->find(id);
 
         m_askingUsb.remove(id);
@@ -841,7 +848,12 @@ void MainWindow::startChecked(const QString &id)
             return;
         }
         m_starting.insert(id);
-        vm->runner()->start(vm->args());
+        /* Start From It of a snapshot: its running state, for this start only */
+        ArgsFile args = vm->args();
+        if (!snapshot.isEmpty()) {
+            args.add("loadvm", snapshot);
+        }
+        vm->runner()->start(args);
         /* its screen comes up on the Console */
         if (vm == current() && VmConfig::screen(vm->args()) == VmConfig::Screen::Embedded) {
             m_page->setView(VmPage::View::Console);
@@ -944,13 +956,8 @@ void MainWindow::remove()
 
 void MainWindow::showLog()
 {
-    /* in the desktop's text editor, until the GTK app has the Logs view */
     if (Vm *vm = current()) {
-        if (QFileInfo::exists(vm->runner()->logPath())) {
-            Gtk4::openPath(m_window, vm->runner()->logPath());
-        } else {
-            notify(QString("%1 has no log yet: QEMU writes it as the VM runs.").arg(vm->name()));
-        }
+        showLogOf(vm);
     }
 }
 
@@ -1124,6 +1131,15 @@ bool MainWindow::closeRequested()
 {
     if (m_closing) {
         return false;
+    }
+    /* the settings shown have changes: applied or discarded first */
+    if (m_settings && m_settings->isModified()) {
+        m_settings->confirmChanges("Apply them before closing?", [this](bool go) {
+            if (go && m_window) {
+                gtk_window_close(GTK_WINDOW(m_window));
+            }
+        });
+        return true;
     }
     /* asked again: what the user answers now goes */
     m_closeAfter.clear();

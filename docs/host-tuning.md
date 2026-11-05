@@ -37,6 +37,11 @@ A desktop VM stays smooth under host load when the host gives it a hand:
   first touch of guest memory is one fault per 2 MiB instead of 512. A
   guest's first app start after its boot took 0.79 s instead of 1.38 s.
   Any other value is the host owner's choice, and is left as it is.
+- **The CPU ready to wake up**: its cores rest in their first idle state
+  only, at the energy performance preference `performance`. A VM's keys
+  then reach its screen as fast as on the bare desktop: 11.3-11.9 ms
+  instead of 15.1-16.3 ms on a Ryzen 7 260 laptop, for about 1.6 W at
+  idle. Preferences > Host turns it off ([below](#the-cpu-ready-to-wake-up)).
 - **Higher udmabuf limits** (VMs whose GPU has native context): QEMU
   hands the host GPU each guest buffer in guest memory as a udmabuf, one
   entry per contiguous piece of guest RAM. A maximized 4K window drawn by
@@ -85,8 +90,8 @@ explanation open. A new membership, or the helper installed meanwhile,
 counts then, for the VMs running too, without logging in again or
 restarting vitrine (`id` in a terminal lists it only after a new login).
 Preferences > Tune the host while VMs run turns tuning off for you, at
-once for the VMs running too (and on again, or another GPU clock floor,
-the same way).
+once for the VMs running too (and on again, another GPU clock floor, or
+the CPU's switch, the same way).
 
 To take it back: `sudo gpasswd -d "$USER" vitrine` (and
 `sudo groupdel vitrine` when nobody is left in it), and untick
@@ -109,11 +114,14 @@ for them. It does only this, for the user who started it:
 | `behind PID` | The threads `rt` made real-time back to SCHED_OTHER, its vCPU threads (`CPU n/KVM`) at nice -5 (a VM behind the one in front) | The same checks as `rt`; nice -5 only while the fair server holds, and only for vCPUs at nice 0 |
 | `udmabuf PID` | The udmabuf module's `list_limit` at 65536 and `size_limit_mb` at 2048, while that watched QEMU runs | A watched QEMU (its GPU is not checked: vitrine asks only for native-context ones); fixed values; raised only, a higher value stays; skipped when the module is not loaded; put back after the last QEMU that asked for it |
 | `thp on` | `/sys/kernel/mm/transparent_hugepage/shmem_enabled` at `advise` | A watched QEMU; a fixed value, written only over `never`; read back |
+| `cpu-latency on` | A request on `/dev/cpu_dma_latency` for the wake-up time of the CPUs' first usable idle state (C1), held by the helper's open file | A watched QEMU; the value from cpuidle, at least 1 µs; nothing recorded: the kernel drops the request with the file |
+| `epp on` | Each online CPU's `cpufreq/energy_performance_preference` at `performance` | A watched QEMU; a fixed value; read back; all or nothing |
 | `setup-group` | The caller in the `vitrine` group, the group created (`groupadd --system`) if there is none | See below |
 
 The settings need a watched QEMU, and each value is put back only if it
 still holds what the helper wrote: another tool that changed it since keeps
-its change.
+its change. The CPU latency request is the helper's own: no one else can
+change it, and it ends with the helper.
 
 What this amounts to:
 
@@ -123,7 +131,10 @@ What this amounts to:
   as `rtprio 1` in `limits.conf`. The shorter fair-server period keeps
   ordinary tasks running beside them, and without it there is no
   real-time priority.
-- Four host-wide settings changed while your VMs run, and put back after.
+- Host-wide settings changed while your VMs run, and put back after: the
+  fair server, a GPU clock floor, shared memory's huge pages and the CPUs'
+  energy performance preference; and a request that keeps the CPUs out of
+  their deeper idle states while the helper runs.
 - Bigger udmabufs. `/dev/udmabuf` is open to the user at the desktop
   already (systemd's `uaccess` rule), and to the `kvm` group: they can turn
   their own memory into a udmabuf. The limits only set how many pieces and bytes
@@ -178,6 +189,58 @@ action names its argument, so exactly one matches, and the helper refuses
 to run without one, which pkexec would put under its generic action.)
 
 Give the group to the people you would give real-time priority to.
+
+## The CPU ready to wake up
+
+A core with nothing to do drops into an idle state, and the deeper the
+state, the longer it takes to wake up: on a Ryzen 7 260, C1 takes 1 µs, C2
+18 µs and C3 350 µs. Its energy performance preference (amd-pstate and
+intel_pstate in active mode) sets how fast it clocks up once awake. The
+research measured a GNOME 51 VM on such a laptop (a GNOME 51 host, QEMU
+grabbing the keyboard), from a key to the VM's screen, on 2026-11-04 and
+05:
+
+| Host | Key to screen | QEMU reads the key after (p50 / p90) |
+| --- | --- | --- |
+| tuned's balanced profile with a 20 µs request (cores reach C2) | 15.1-16.3 ms | 2-3 ms |
+| C1 only (a 1 µs request) | 13.7 ms | 1 ms |
+| Energy performance preference `performance` only | 14.7 ms | |
+| Both, as tuned's latency-performance profile | 11.3-11.9 ms | 1 / 1 ms |
+| No idle state at all (a 0 µs request) | 11.7 ms, for 26 W more | |
+
+The bare desktop shows keys in 10.6-11.7 ms there. Both together cost about
+1.6 W at idle (one 20 s sample). While VMs run, host tuning holds both:
+
+- A PM QoS request on `/dev/cpu_dma_latency` for the wake-up time of the
+  CPUs' first usable idle state - not POLL, not disabled; the slowest
+  CPU's - so that each core may rest there and nowhere deeper: 1 µs on that
+  laptop, 2 µs on Intel CPUs whose C1 takes 2. Never 0, which leaves the
+  cores nothing but polling. `journalctl -t vitrine-helper` shows the value
+  and the state ("1 us (C1 on every cpu; C2, C3 unused)").
+- `performance` as each online CPU's energy performance preference, where
+  the cpufreq driver has one; elsewhere (acpi-cpufreq, intel_pstate in
+  passive mode) the helper skips it and says so.
+
+Preferences > Host > Keep the CPU ready to wake up while VMs run turns both
+off, at once for the VMs running too. It is on by default.
+
+What comes back after the last VM, and what does not:
+
+- The request is no setting the helper changes: the kernel applies the
+  lowest of every program's requests, and drops the helper's when the
+  helper ends, crash included. So nothing about it is recorded in
+  `/run/vitrine-helper`, nothing is put back, and two helpers (vitrine
+  restarted while VMs run, another user's) each hold their own. Another
+  program's request (tuned's latency-performance profile holds one) stays
+  its own, and the lowest one counts.
+- Each CPU's preference goes back to its own value if it still reads
+  `performance`. A value chosen meanwhile (a power profile switched in the
+  desktop, say) is left as it is. A profile switched to `performance`
+  meanwhile reads like the helper's change, and goes back too.
+- A CPU offline at the first VM's start keeps its value; the next VM start
+  gives it `performance` once it is online. One offline at the end keeps
+  `performance` (the driver holds a CPU's value while it is offline) and
+  stays recorded: the next helper puts it back once the CPU is online.
 
 ## gpu-input-awake, for dedicated GPUs
 
@@ -303,6 +366,10 @@ configuring: `cmake --install --prefix` with another prefix is refused.
 - `cat /sys/kernel/mm/transparent_hugepage/shmem_enabled` shows the huge
   pages' setting, in brackets; `grep ShmemPmdMapped /proc/PID/smaps_rollup`
   how much of a QEMU's memory has them.
+- `grep . /sys/devices/system/cpu/cpu*/cpufreq/energy_performance_preference`
+  shows the CPUs' preference. While VMs run with the CPU kept ready, the
+  deeper idle states' counts stay still: `grep .
+  /sys/devices/system/cpu/cpu0/cpuidle/state*/usage`, twice.
 - `cat /sys/module/udmabuf/parameters/list_limit /sys/module/udmabuf/parameters/size_limit_mb`
   shows the udmabuf limits. Where udmabuf is a module that is not loaded
   yet, the helper cannot raise them (it does not load modules).

@@ -155,7 +155,7 @@ private slots:
         QVERIFY(enabled(window, "start"));
     }
 
-    /* What a VM that is off allows; the dialogs to come inactive */
+    /* What a VM that is off allows */
     void actions()
     {
         QTemporaryDir dir;
@@ -164,11 +164,11 @@ private slots:
         MainWindow window(m_loop, &store);
 
         QCOMPARE(window.current()->runner()->state(), VmRunner::State::Stopped);
-        for (const char *on : {"start", "remove", "show-log", "open-folder"}) {
+        for (const char *on : {"start", "remove", "show-log", "open-folder", "new-vm", "settings",
+                               "command-line", "clone", "import-vm"}) {
             QVERIFY2(enabled(window, on), on);
         }
-        for (const char *off : {"pause", "shut-down", "reset", "force-off", "new-vm",
-                                "import-vm", "settings", "clone", "command-line"}) {
+        for (const char *off : {"pause", "shut-down", "reset", "force-off"}) {
             QVERIFY2(!enabled(window, off), off);
         }
     }
