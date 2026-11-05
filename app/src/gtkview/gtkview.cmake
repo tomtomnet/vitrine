@@ -18,6 +18,7 @@ set(GTKVIEW_OWN_SOURCES
     src/gtkview/displaysurface.cpp
     src/gtkview/displaywidget.cpp
     src/gtkview/framestill.cpp
+    src/gtkview/fullscreenorder.cpp
     src/gtkview/gtkclipboard.cpp
     src/gtkview/nesteddisplay.cpp
     src/gtkview/pointerconstraints.cpp
@@ -50,6 +51,7 @@ add_library(vitrine_gtkview STATIC
     src/gtkview/displaysurface.h
     src/gtkview/displaywidget.h
     src/gtkview/framestill.h
+    src/gtkview/fullscreenorder.h
     src/gtkview/gtkclipboard.h
     src/gtkview/nesteddisplay.h
     src/gtkview/pointerconstraints.h
@@ -87,4 +89,15 @@ if(BUILD_TESTING)
         vitrine_test_env(${name})
     endforeach()
     target_link_libraries(test_qtguicompat PRIVATE PkgConfig::EGL PkgConfig::GBM)
+    # the full-screen window's turn, on broadway (a display no one sees) and a
+    # session bus of its own, as the app's GTK tests
+    add_executable(test_fullscreenorder tests/test_fullscreenorder.cpp tests/gtkdisplay.h)
+    target_link_libraries(test_fullscreenorder PRIVATE vitrine_gtkview Qt6::Test)
+    target_compile_definitions(test_fullscreenorder PRIVATE QT_NO_KEYWORDS)
+    target_compile_options(test_fullscreenorder PRIVATE -Wall -Wextra)
+    add_test(NAME fullscreenorder COMMAND test_fullscreenorder)
+    vitrine_test_env(fullscreenorder GDK_BACKEND=broadway GTK_A11Y=none GSETTINGS_BACKEND=memory
+                     ADW_DISABLE_PORTAL=1 GDK_DEBUG=no-portals)
+    set_property(TEST fullscreenorder PROPERTY ENVIRONMENT_MODIFICATION
+                 DISPLAY=unset: WAYLAND_DISPLAY=unset: DBUS_SESSION_BUS_ADDRESS=unset:)
 endif()

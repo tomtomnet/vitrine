@@ -271,6 +271,7 @@ bool VmDisplay::attach(const QString &monitorSocket, QString *error, bool guestW
 
 void VmDisplay::detach()
 {
+    m_fullScreenOrder.cancel();
     destroyWindow();
     if (m_listener) {
         m_listener->stop();
@@ -461,7 +462,17 @@ void VmDisplay::destroyWindow()
 
 void VmDisplay::setFullScreen(bool on)
 {
+    if (!on) {
+        /* a full screen still waiting for its turn does not come */
+        m_fullScreenOrder.cancel();
+    }
     if (!m_dbus || on == m_fullScreen) {
+        return;
+    }
+    /* the full-screen window maps after the window the view leaves, or that
+       window, mapped after it, takes the focus and covers it */
+    if (on && !m_fullScreenOrder.ready(dynamic_cast<Gtk::Window *>(m_host->get_root()),
+                                       [this]() { setFullScreen(true); })) {
         return;
     }
     destroyWindow();

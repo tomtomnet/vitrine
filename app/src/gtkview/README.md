@@ -54,6 +54,7 @@ The rules:
 | `displaysurface` | the frames' own wl_surface, a desync subsurface of GTK's window that the render thread draws and commits |
 | `displayinput` | DisplayWindow's handling of keys, buttons, wheel and grab, without a toolkit |
 | `framestill` | the guest's frame as a GTK texture, for the widget while it is covered |
+| `fullscreenorder` | a full-screen window maps after the window the view leaves: the switch waits while that window is shown but not yet active |
 | `gtkclipboard` | the host clipboard shared with the guest, with GdkClipboard |
 | `nesteddisplay` | the nested desktop: the guest's KDE session through src/nested's library on GDK's connection, in the console's Desktop view or full screen (src/nested's NestedView, in GTK) |
 | `pointerconstraints` | pointer lock with relative motion, and confinement, on GTK's Wayland connection |
@@ -106,6 +107,18 @@ How it fits GTK:
   the clipboard as its own and says nothing: the guest's text is set once
   more at vitrine's next input, unless the host copied something since.
 - Full screen moves the widget to a window of its own, as the Qt view does.
+  That window maps after the one the view leaves (`fullscreenorder`): a
+  compositor focuses and raises the window it maps last - GNOME's Mutter
+  does so with every new window that comes without startup information,
+  which GTK sends none of for a second window - so a program started in
+  full screen, whose two windows came up at once, had its full-screen
+  window covered by the main window, mapped 180 ms later, which kept the
+  keys (vitrine-gtk-view --full-screen on GNOME Shell 51).  The switch
+  waits while the window the view is in is shown but not yet active, for
+  two seconds at most.  In full screen, the window's surface (GTK's,
+  black, opaque) has the frames' subsurface over all of it, opaque, with
+  the guest's buffer attached as it is when zero copy holds: the topmost
+  surface, which a compositor can put on the screen directly.
 - The guest is told its screen's physical size with each size (UIInfo's
   `width_mm` and `height_mm`): the view's share of its monitor's, from
   GdkMonitor's width_mm and height_mm, through `core/physicalsize.h` as the Qt

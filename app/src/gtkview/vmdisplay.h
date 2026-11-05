@@ -12,6 +12,7 @@
 #include <cstdint>
 #include <memory>
 
+#include "fullscreenorder.h"
 #include "vmview/common.h"
 #include "vmview/framemailbox.h"
 #include "vmview/stats.h"
@@ -74,6 +75,8 @@ public:
     /* Where the screen shows, but in full screen; owned by the view */
     Gtk::Widget *widget() const;
     bool isFullScreen() const { return m_fullScreen; }
+    /* On: once the window the view is in is shown and active, if it is
+       shown and not yet active (FullScreenOrder) */
     void setFullScreen(bool on);
 
     /* Whether the guest gets the keys the desktop would take, as Alt+Tab */
@@ -134,6 +137,7 @@ private:
     std::unique_ptr<DisplaySurface> m_surface;
     DisplayWidget *m_widget = nullptr;
     Gtk::Window *m_fullScreenWindow = nullptr;
+    FullScreenOrder m_fullScreenOrder;
     Gtk::Box *m_host = nullptr;          // what widget() returns
     GtkWidget *m_placeholder = nullptr;  // in m_host while full screen
     std::shared_ptr<bool> m_alive;       // for what the other threads queue for this one
