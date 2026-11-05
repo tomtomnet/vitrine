@@ -1,5 +1,5 @@
 The research's work on wl-cross-domain-proxy (virtio-gpu-desktop,
-src/wl-cross-domain-proxy at its commit a56b97b), as one diff against
+src/wl-cross-domain-proxy at its commit fe4eacc), as one diff against
 upstream c6ce1ca89fb4, the commit it started from
 (patches/wl-cross-domain-proxy/BASE.md there).  What the nested desktop
 needs of the proxy beyond upstream: the presentation clock translated into
@@ -61,6 +61,14 @@ an array longer than the message, left the next message on the
 connection with the wrong ones), and a complete message too short for
 its signature is malformed (the client's connection waited for more of
 it, and hung).
+
+The statistics (the window title's numbers, the overlay, the journal's
+summaries and the per-frame log) count the presentation feedback that a
+client asks for on a subsurface with the toplevel's next commit, which
+applies that synchronized subsurface's state.  The nested KWin asks on its
+content layer's subsurface since its 0097 (a GNOME host culls the black
+main surface under it and discarded every feedback asked there): counted
+on the toplevel alone, its frames read 0 fps presented.
 
 Licence: these changes are GPL-2.0-or-later (the research's, the user's
 choice of 2026-10-14); Victoria Brekenfeld's proxy stays MIT, with her
@@ -7951,7 +7959,7 @@ diff -ruN a/src/session/shortcuts.rs b/src/session/shortcuts.rs
 diff -ruN a/src/session/stats.rs b/src/session/stats.rs
 --- a/src/session/stats.rs
 +++ b/src/session/stats.rs
-@@ -0,0 +1,885 @@
+@@ -0,0 +1,912 @@
 +//! Live performance numbers of the forwarded window, like a VM viewer's:
 +//! frames per second and latencies, over a rolling window (1 s), shown in the
 +//! window title and optionally logged per frame to a CSV file.
@@ -8191,6 +8199,10 @@ diff -ruN a/src/session/stats.rs b/src/session/stats.rs
 +    conn: u32,
 +    /// wp_presentation_feedback -> surface, requested but not yet committed
 +    requested: HashMap<u32, u32>,
++    /// feedback committed with a subsurface, counted with the next toplevel commit: the nested KWin asks on its
++    /// content layer's subsurface since its 0097 (a GNOME host culls its black main surface and discarded every
++    /// feedback asked there), and a synchronized subsurface's state applies with its parent's commit
++    carried: Vec<u32>,
 +    /// wp_presentation_feedback of committed frames, awaiting presented/discarded
 +    frames: HashMap<u32, Frame>,
 +    pending_inputs: Vec<i64>,
@@ -8232,6 +8244,7 @@ diff -ruN a/src/session/stats.rs b/src/session/stats.rs
 +            cfg,
 +            conn,
 +            requested: HashMap::new(),
++            carried: Vec::new(),
 +            frames: HashMap::new(),
 +            pending_inputs: Vec::new(),
 +            commits: VecDeque::new(),
@@ -8312,8 +8325,16 @@ diff -ruN a/src/session/stats.rs b/src/session/stats.rs
 +                    self.requested.remove(feedback);
 +                }
 +                if !toplevel_surface {
++                    if !feedbacks.is_empty() {
++                        if self.carried.len() >= MAX_TRACKED {
++                            self.carried.clear();
++                        }
++                        self.carried.extend(feedbacks);
++                    }
 +                    return;
 +                }
++                let mut feedbacks = feedbacks;
++                feedbacks.append(&mut self.carried);
 +                self.commits.push_back(now);
 +                self.j_commits += 1;
 +                if self.overlay {
@@ -8835,6 +8856,20 @@ diff -ruN a/src/session/stats.rs b/src/session/stats.rs
 +        let sum = s.summary(t + 3);
 +        assert_eq!((sum.commits, sum.presented), (0, 0));
 +        assert!(s.requested.is_empty() && s.frames.is_empty());
++    }
++
++    /// The nested KWin's 0097: the feedback asked on the content subsurface (4), committed before the toplevel (3).
++    #[test]
++    fn subsurface_feedback_counts_with_the_toplevel_commit() {
++        let mut s = Stats::new(cfg(), 0);
++        let t = 1_000_000_000i64;
++        s.on_request("wp_presentation", "feedback", &feedback(4, 8), t, t, false);
++        s.on_request("wl_surface", "commit", &commit(4), t, t, false);
++        s.on_request("wl_surface", "commit", &commit(3), t, t + 100_000, true);
++        s.on_event("wp_presentation_feedback", "presented", &presented(8, t + 4_000_000), t + 4_100_000);
++        let sum = s.summary(t + 5_000_000);
++        assert_eq!((sum.commits, sum.presented), (1, 1));
++        assert!(s.carried.is_empty() && s.frames.is_empty());
 +    }
 +}
 diff -ruN a/src/source/channel/mod.rs b/src/source/channel/mod.rs
