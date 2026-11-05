@@ -17,7 +17,13 @@ namespace ShortcutsInhibit {
 
 void set(GdkSurface *toplevel, const void *owner, bool on)
 {
-    if (!toplevel || !GDK_IS_TOPLEVEL(toplevel)) {
+    /* VITRINE_VIEW_INHIBIT=0: never ask for the inhibitor, for scripted runs on
+       GNOME, which answers a window it knows no .desktop file for with its
+       "allow" dialog at every request, and that dialog takes the keyboard.  The
+       keys still go to the guest while its view has the focus; the grab's state
+       says the desktop keeps its shortcuts. */
+    static const bool never = g_strcmp0(g_getenv("VITRINE_VIEW_INHIBIT"), "0") == 0;
+    if (never || !toplevel || !GDK_IS_TOPLEVEL(toplevel)) {
         return;
     }
     auto *owners = static_cast<Owners *>(g_object_get_data(G_OBJECT(toplevel), kOwners));
