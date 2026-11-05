@@ -15,7 +15,8 @@ public:
     void scanoutReceived();
     // Render thread.
     void frameDrawn(int64_t recvNs, int64_t swapEndNs, bool imported);
-    void framePresented(int64_t recvNs, int64_t presentNs);
+    // direct: the compositor scanned the frame out as it was (the feedback's ZERO_COPY)
+    void framePresented(int64_t recvNs, int64_t presentNs, bool direct);
     void frameDiscarded();
     // GUI thread: round trip of an input call to QEMU.
     void inputRoundTrip(int64_t ns);
@@ -27,6 +28,8 @@ public:
     struct Summary {
         double seconds = 0;
         int updates = 0, scanouts = 0, drawn = 0, imports = 0, presented = 0, discarded = 0;
+        // of the presented: those the compositor scanned out directly, not composited
+        int direct = 0;
         double replyUsP50 = 0, replyUsMax = 0;       // receive -> reply (listener thread)
         double drawMsP50 = 0, drawMsP99 = 0;         // receive -> swap done
         double presentMsP50 = 0, presentMsP99 = 0;   // receive -> on screen (wp_presentation)
@@ -47,6 +50,7 @@ private:
     std::mutex m_lock;
     int64_t m_windowStart = 0;
     int m_updates = 0, m_scanouts = 0, m_drawn = 0, m_imports = 0, m_presented = 0, m_discarded = 0;
+    int m_direct = 0;
     std::vector<int64_t> m_reply, m_draw, m_present, m_interval, m_arrival, m_input, m_late,
         m_hopIn, m_hopOut;
     int64_t m_lastPresent = 0, m_lastArrival = 0;

@@ -220,11 +220,14 @@ const wl_callback_listener kFrameListener = {
 const wp_presentation_feedback_listener kFeedbackListener = {
     [](void *, struct wp_presentation_feedback *, wl_output *) {},
     [](void *data, struct wp_presentation_feedback *fb, uint32_t sec_hi, uint32_t sec_lo,
-       uint32_t nsec, uint32_t refresh, uint32_t, uint32_t, uint32_t) {
+       uint32_t nsec, uint32_t refresh, uint32_t, uint32_t, uint32_t flags) {
         auto *d = static_cast<Feedback *>(data);
         int64_t t = int64_t((uint64_t(sec_hi) << 32) | sec_lo) * 1000000000 + nsec;
-        d->state->stats->framePresented(d->recvNs, t);
-        d->state->stats->trace('P', d->serial, t);
+        // ZERO_COPY: the compositor put the frame on the screen as it was (direct
+        // scanout), not composited
+        d->state->stats->framePresented(d->recvNs, t,
+                                        flags & WP_PRESENTATION_FEEDBACK_KIND_ZERO_COPY);
+        d->state->stats->trace('P', d->serial, t, flags);
         d->state->presented(d, t, refresh);
         replyAll(d->state->stats, d->replies);
         d->state->forget(d);
