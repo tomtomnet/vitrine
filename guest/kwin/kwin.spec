@@ -385,7 +385,10 @@ sed -i \
   discarded every feedback (855 of 857), so the nested KWin never learned
   when the host showed its frames and aimed them from a stale vblank phase.
   With 0097 a GNOME host presents them (80 of 80 key frames on the
-  research's Arc Pro B50, none missing its target); a KDE host as before.
+  research's Arc Pro B50, none missing its target), and its keys reach the
+  screen sooner: 7.73 ms mean against 8.72, 75 % at the first refresh
+  against 48 %, with fewer refreshes shown twice in the launcher's
+  animations; a KDE host as before.
   KWIN_WAYLAND_FEEDBACK_ON_CONTENT=0 asks on the main surface again
 
 * Thu Nov 05 2026 vitrine <noreply@anthropic.com> - 6.8.2-3.1.g26
