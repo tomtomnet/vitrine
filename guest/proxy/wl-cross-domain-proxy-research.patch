@@ -1,5 +1,5 @@
 The research's work on wl-cross-domain-proxy (virtio-gpu-desktop,
-src/wl-cross-domain-proxy at its commit fe4eacc), as one diff against
+src/wl-cross-domain-proxy at its commit fd4db41), as one diff against
 upstream c6ce1ca89fb4, the commit it started from
 (patches/wl-cross-domain-proxy/BASE.md there).  What the nested desktop
 needs of the proxy beyond upstream: the presentation clock translated into
@@ -69,6 +69,13 @@ applies that synchronized subsurface's state.  The nested KWin asks on its
 content layer's subsurface since its 0097 (a GNOME host culls the black
 main surface under it and discarded every feedback asked there): counted
 on the toplevel alone, its frames read 0 fps presented.
+
+A journal-only mode of the statistics (--stats journal): the frames are
+tracked for the per-minute summary in the log ("N fps presented, M
+dropped" and the latencies) and nothing goes to the window title.  The
+rolling window's numbers are pruned at every tick without a title too:
+in that mode, and with the statistics off but a per-frame log, they kept
+every frame for the session.
 
 Licence: these changes are GPL-2.0-or-later (the research's, the user's
 choice of 2026-10-14); Victoria Brekenfeld's proxy stays MIT, with her
@@ -147,7 +154,7 @@ diff -ruN a/src/args.rs b/src/args.rs
          }
      }
  }
-@@ -56,6 +65,168 @@
+@@ -56,6 +65,169 @@
                                  via socket-activation. (Conflicts with '--listen' and '--listen-fd'.)
    -f, --filter-global <NAME>    Hides the specified global name from proxied applications.
  
@@ -243,7 +250,8 @@ diff -ruN a/src/args.rs b/src/args.rs
 +LIVE NUMBERS:
 +  --stats <MODE>                Numbers in the title of forwarded toplevels, over
 +                                a rolling second: off (default), title
-+                                (240 fps · 5.1 ms · input 9.8 ms), or detail
++                                (240 fps · 5.1 ms · input 9.8 ms), journal (no
++                                title, only the per-minute summary in the log), or detail
 +                                (medians/p99, commits, drops, the proxy's hold:
 +                                commit read -> sent to the host: the fence gate's
 +                                wait, an shm copy, the sends before it).
@@ -316,7 +324,7 @@ diff -ruN a/src/args.rs b/src/args.rs
  ARGS:
    <PROGRAM> <ARGS..>            Spawns the specified program and sets `$WAYLAND_SOCKET` to the proxy.
                                  (Conflicts with '--listen', '--listen-fd' and '--accept-fd'.)
-@@ -118,9 +289,171 @@
+@@ -118,9 +290,171 @@
          .and_then(|fds| fds.into_iter().next())
          .map(|(_name, fd)| fd.into_std());
  
@@ -489,7 +497,7 @@ diff -ruN a/src/args.rs b/src/args.rs
  
      if args.contains(["-h", "--help"]) {
          Ok(Mode::Help.into())
-@@ -132,40 +465,40 @@
+@@ -132,40 +466,40 @@
              bail!("`--accept-fd` without socket-activation");
          }
  
@@ -539,7 +547,7 @@ diff -ruN a/src/args.rs b/src/args.rs
          }
          check_flag("--listen", args)?;
  
-@@ -173,13 +506,13 @@
+@@ -173,13 +507,13 @@
              bail!("`--socket-name` and `--socket-path` are mutually exclusive");
          }
  
@@ -1027,7 +1035,7 @@ diff -ruN a/src/main.rs b/src/main.rs
      args::{Args, Mode},
 -    source::channel::ClientChannel,
 +    clock::{ClockTranslator, SharedClock},
-+    session::SessionConfig,
++    session::{SessionConfig, StatsMode},
 +    source::{
 +        channel::ClientChannel,
 +        local::{LocalChannel, resolve_display},
@@ -1042,7 +1050,7 @@ diff -ruN a/src/main.rs b/src/main.rs
  mod sigbus;
  mod source;
  #[allow(unused)]
-@@ -80,35 +88,107 @@
+@@ -80,35 +88,111 @@
      res: ExitCode,
  }
  
@@ -1112,8 +1120,12 @@ diff -ruN a/src/main.rs b/src/main.rs
 +    } = self::args::parse_args()?;
 +    if session.stats.active() {
 +        log::info!(
-+            "stats: {:?} in the window title{}",
-+            session.stats.mode,
++            "stats: {}{}",
++            match session.stats.mode {
++                StatsMode::Off => "none in the window title".to_string(),
++                StatsMode::Journal => "the per-minute summary in this log only".to_string(),
++                mode => format!("{mode:?} in the window title"),
++            },
 +            if session.stats.log.is_some() { ", per-frame CSV log" } else { "" }
 +        );
 +    }
@@ -1170,7 +1182,7 @@ diff -ruN a/src/main.rs b/src/main.rs
              let client_stream = if let Some(fd) = fd {
                  UnixStream::from(fd)
              } else if let Some(args) = launch_args {
-@@ -170,20 +250,12 @@
+@@ -170,20 +254,12 @@
              client_stream
                  .set_nonblocking(true)
                  .context("Failed to set stream non-blocking")?;
@@ -1196,7 +1208,7 @@ diff -ruN a/src/main.rs b/src/main.rs
          } => {
              let source = if let Some(fd) = fd {
                  self::source::listen::ListeningSocketSource::try_from(fd)
-@@ -201,15 +273,13 @@
+@@ -201,15 +277,13 @@
                  }
              };
  
@@ -1218,7 +1230,7 @@ diff -ruN a/src/main.rs b/src/main.rs
              })?;
          }
      }
-@@ -218,7 +288,7 @@
+@@ -218,7 +292,7 @@
      {
          use calloop::signals::{Signal, Signals};
  
@@ -7959,7 +7971,7 @@ diff -ruN a/src/session/shortcuts.rs b/src/session/shortcuts.rs
 diff -ruN a/src/session/stats.rs b/src/session/stats.rs
 --- a/src/session/stats.rs
 +++ b/src/session/stats.rs
-@@ -0,0 +1,912 @@
+@@ -0,0 +1,962 @@
 +//! Live performance numbers of the forwarded window, like a VM viewer's:
 +//! frames per second and latencies, over a rolling window (1 s), shown in the
 +//! window title and optionally logged per frame to a CSV file.
@@ -8019,6 +8031,10 @@ diff -ruN a/src/session/stats.rs b/src/session/stats.rs
 +    Title,
 +    /// medians and p99 of every number, commits and the proxy's hold
 +    Detail,
++    /// no title: frames tracked for the per-minute journal summary only ("N fps presented, M dropped") - cheap enough
++    /// to leave on where the title stays clean (2026-11-05: with the stats off nothing showed that a GNOME host
++    /// discarded every frame's feedback of the nested KWin, for weeks)
++    Journal,
 +}
 +
 +impl std::str::FromStr for StatsMode {
@@ -8028,7 +8044,8 @@ diff -ruN a/src/session/stats.rs b/src/session/stats.rs
 +            "off" | "none" | "0" => Ok(StatsMode::Off),
 +            "title" | "on" | "1" => Ok(StatsMode::Title),
 +            "detail" | "title-detail" => Ok(StatsMode::Detail),
-+            _ => Err(format!("{s:?}: expected off, title or detail")),
++            "journal" | "log" => Ok(StatsMode::Journal),
++            _ => Err(format!("{s:?}: expected off, title, detail or journal")),
 +        }
 +    }
 +}
@@ -8160,7 +8177,7 @@ diff -ruN a/src/session/stats.rs b/src/session/stats.rs
 +            s = format!("{:.0} fps", self.per_second(self.presented));
 +        }
 +        match mode {
-+            StatsMode::Off => String::new(),
++            StatsMode::Off | StatsMode::Journal => String::new(),
 +            StatsMode::Title => {
 +                if let Some((p50, _)) = self.frame {
 +                    s += &format!(" \u{b7} {:.1} ms", ms(p50));
@@ -8537,7 +8554,8 @@ diff -ruN a/src/session/stats.rs b/src/session/stats.rs
 +    }
 +
 +    /// The numbers of the current window.
-+    pub(super) fn summary(&mut self, now: i64) -> Summary {
++    /// The rolling window's queues keep the last `window_ns` only.
++    fn prune_window(&mut self, now: i64) {
 +        let since = now - self.cfg.window_ns;
 +        prune(&mut self.commits, since);
 +        prune(&mut self.presented, since);
@@ -8545,6 +8563,10 @@ diff -ruN a/src/session/stats.rs b/src/session/stats.rs
 +        prune_pairs(&mut self.frame_lat, since);
 +        prune_pairs(&mut self.input_lat, since);
 +        prune_pairs(&mut self.hold, since);
++    }
++
++    pub(super) fn summary(&mut self, now: i64) -> Summary {
++        self.prune_window(now);
 +        Summary {
 +            presented: self.presented.len(),
 +            commits: self.commits.len(),
@@ -8619,7 +8641,10 @@ diff -ruN a/src/session/stats.rs b/src/session/stats.rs
 +            log.borrow_mut().flush();
 +        }
 +        self.journal(now);
-+        if self.cfg.mode == StatsMode::Off {
++        if matches!(self.cfg.mode, StatsMode::Off | StatsMode::Journal) {
++            // no title: nothing else keeps the rolling window's queues to the window (vitrine found them growing
++            // by every frame for the session in journal mode, and with "off" and a CSV log)
++            self.prune_window(now);
 +            return None;
 +        }
 +        let text = self.summary(now).text(self.cfg.mode);
@@ -8856,6 +8881,43 @@ diff -ruN a/src/session/stats.rs b/src/session/stats.rs
 +        let sum = s.summary(t + 3);
 +        assert_eq!((sum.commits, sum.presented), (0, 0));
 +        assert!(s.requested.is_empty() && s.frames.is_empty());
++    }
++
++    #[test]
++    fn journal_mode_keeps_its_queues_to_the_window() {
++        let mut c = cfg();
++        c.mode = StatsMode::Journal;
++        let mut s = Stats::new(c, 0);
++        let t0 = 10_000_000_000i64;
++        let period = 4_166_667i64;
++        // 10 s at 240 Hz, the proxy's periodic tick every 500 ms
++        for i in 0..2400i64 {
++            let t = t0 + i * period;
++            let id = 5000 + i as u32;
++            s.on_request("wp_presentation", "feedback", &feedback(3, id), t, t, true);
++            s.on_request("wl_surface", "commit", &commit(3), t, t, true);
++            s.on_event("wp_presentation_feedback", "presented", &presented(id, t + 4_000_000), t + 4_100_000);
++            if i % 120 == 0 {
++                s.tick(t);
++            }
++        }
++        // a one-second window at 240 Hz, plus the half second since the last tick
++        assert!(s.presented.len() <= 400 && s.commits.len() <= 400, "{} {}", s.presented.len(), s.commits.len());
++    }
++
++    #[test]
++    fn journal_mode_tracks_without_a_title() {
++        assert_eq!("journal".parse::<StatsMode>(), Ok(StatsMode::Journal));
++        let mut c = cfg();
++        c.mode = StatsMode::Journal;
++        assert!(c.active());
++        let mut s = Stats::new(c, 0);
++        let t = 1_000_000_000i64;
++        s.on_request("wp_presentation", "feedback", &feedback(3, 9), t, t, true);
++        s.on_request("wl_surface", "commit", &commit(3), t, t, true);
++        s.on_event("wp_presentation_feedback", "presented", &presented(9, t + 4_000_000), t + 4_100_000);
++        assert_eq!(s.summary(t + 5_000_000).presented, 1);
++        assert_eq!(s.tick(t + 5_000_000), None);
 +    }
 +
 +    /// The nested KWin's 0097: the feedback asked on the content subsurface (4), committed before the toplevel (3).
