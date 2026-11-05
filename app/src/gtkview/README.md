@@ -59,6 +59,7 @@ The rules:
 | `pointerconstraints` | pointer lock with relative motion, and confinement, on GTK's Wayland connection |
 | `shortcutsinhibit` | the window's one shortcuts inhibitor, shared by the screen's grab and the nested desktop |
 | `viewkeys` | the app's own keys on the views (the console's Ctrl+Alt+1/2), full screen too |
+| `widgetrelease` | a view's widget out of focus before it leaves the window, its controllers off as its C++ side goes (GTK may keep the widget, and emit its controllers' signals, after that) |
 | `qtgui/` | the Qt GUI classes the research files use, on EGL |
 | `main.cpp` | `vitrine-gtk-view SOCKET`: a running VM's screen in a window of its own, to try the view |
 
