@@ -2103,7 +2103,8 @@ static void epp_restore(void)
     if (!text) {
         return;
     }
-    if (!(keep = malloc(strlen(text) + 1))) {
+    /* each line kept with its newline, the last one's too */
+    if (!(keep = malloc(strlen(text) + 2))) {
         /* nothing lost: the next helper tries again */
         free(text);
         return;
