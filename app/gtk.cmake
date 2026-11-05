@@ -34,6 +34,8 @@ configure_file(data/vitrine.svg ${CMAKE_CURRENT_BINARY_DIR}/gtk-icons/org.vitrin
 add_library(vitrine_gtk STATIC
     src/gtk/argspage.cpp
     src/gtk/argspage.h
+    src/gtk/buildsmodel.cpp
+    src/gtk/buildsmodel.h
     src/gtk/clonedialog.cpp
     src/gtk/clonedialog.h
     src/gtk/desktopgpu.cpp
@@ -56,6 +58,8 @@ add_library(vitrine_gtk STATIC
     src/gtk/mainwindow.h
     src/gtk/mainwindowconsole.cpp
     src/gtk/mainwindowdialogs.cpp
+    src/gtk/markup.cpp
+    src/gtk/markup.h
     src/gtk/newvmdialog.cpp
     src/gtk/newvmdialog.h
     src/gtk/qemureference.cpp
@@ -131,6 +135,8 @@ if(BUILD_TESTING)
     vitrine_gtk_test(gtkloop Qt6::Concurrent)
     # what the windows say of a VM: words alone, no display needed
     vitrine_gtk_test(vmsummary)
+    # what the Builds window says, on stand-ins for the build scripts: words alone
+    vitrine_gtk_test(buildsmodel)
     vitrine_gtk_test(qemureference)
     vitrine_gtk_test(gtkmainwindow)
     vitrine_gtk_test(gtkdialogs)
