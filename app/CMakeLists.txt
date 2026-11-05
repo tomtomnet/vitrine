@@ -274,7 +274,8 @@ add_custom_command(OUTPUT ${UI_PROTOCOL_DIR}/linux-dmabuf-v1-client-protocol.h
 # What both apps' windows use and needs only Qt Core: the summaries of a
 # VM's settings, the QEMU documentation and the check of a VM's arguments
 # against it, the access to USB devices, what the builds' states mean, what the
-# host packages' questions, Install Guest Tools and the check for updates say
+# host packages' questions, Install Guest Tools, the check for updates, the
+# Preferences, the notices, the statistics and the USB devices' menu say
 qt_add_library(vitrine_uishared STATIC
     src/ui/argscheck.cpp
     src/ui/argscheck.h
@@ -284,14 +285,26 @@ qt_add_library(vitrine_uishared STATIC
     src/ui/guesttoolstext.h
     src/ui/hostkdetext.cpp
     src/ui/hostkdetext.h
+    src/ui/hosttuningtext.cpp
+    src/ui/hosttuningtext.h
+    src/ui/memorytext.cpp
+    src/ui/memorytext.h
+    src/ui/preferencestext.cpp
+    src/ui/preferencestext.h
     src/ui/qemudocs.cpp
     src/ui/qemudocs.h
+    src/ui/statstext.cpp
+    src/ui/statstext.h
+    src/ui/udmabuftext.cpp
+    src/ui/udmabuftext.h
     src/ui/uiconfig.cpp
     src/ui/uiconfig.h
     src/ui/updatetext.cpp
     src/ui/updatetext.h
     src/ui/usbaccess.cpp
     src/ui/usbaccess.h
+    src/ui/usbchoices.cpp
+    src/ui/usbchoices.h
 )
 target_link_libraries(vitrine_uishared PUBLIC vitrine_core)
 target_compile_options(vitrine_uishared PRIVATE -Wall -Wextra)

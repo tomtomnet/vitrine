@@ -7,30 +7,9 @@
 #include <QPushButton>
 #include <QToolButton>
 
+#include "ui/hosttuningtext.h"
 #include "ui/icons.h"
 #include "ui/widgets.h"
-
-static const char kDocs[] = "https://github.com/tomtomnet/vitrine/blob/main/docs/host-tuning.md";
-
-/* The commands that install the helper where polkit reads its files */
-static QString installCommands()
-{
-    return "<pre>cmake -B build -DCMAKE_INSTALL_PREFIX=/usr\ncmake --build build\n"
-           "sudo cmake --install build</pre>";
-}
-
-static QString docsLink()
-{
-    return HostTuningNotifier::tr("See <a href=\"%1\">docs/host-tuning.md</a>.").arg(kDocs);
-}
-
-/* "A running VM is not tuned: why." */
-static QString untunedText(int count, const QString &why)
-{
-    return count == 1 ? HostTuningNotifier::tr("A running VM is not tuned: %1.").arg(why)
-                      : HostTuningNotifier::tr("%1 running VMs are not tuned: %2.")
-                            .arg(QString::number(count), why);
-}
 
 HostTuningNotifier::HostTuningNotifier(HostSettings *host, QWidget *window)
     : QObject(window), m_host(host), m_window(window),
@@ -57,45 +36,12 @@ bool HostTuningNotifier::eventFilter(QObject *watched, QEvent *event)
 
 QString HostTuningNotifier::summary()
 {
-    return tr("Real-time QEMU threads for the VM in front, a shorter kernel fair-server period, "
-              "a GPU clock floor, huge pages for VM memory, the CPU kept ready to wake up and, "
-              "for native-context VMs, higher udmabuf limits while VMs run, put back after the "
-              "last one.");
+    return HostTuningText::summary();
 }
 
 QString HostTuningNotifier::fix(const HostSettings::Status &status)
 {
-    using Problem = HostSettings::Problem;
-
-    switch (status.problem) {
-    case Problem::None:
-        return QString();
-    case Problem::NotInstalled:
-        return tr("Install it with Vitrine, from Vitrine's source folder, configured for the "
-                  "prefix <nobr>/usr</nobr>:") + installCommands() +
-               tr("Then, unless you are in the vitrine group, Vitrine offers to set it up "
-                  "(an administrator's password, once).") + ' ' + docsLink();
-    case Problem::NoPolicy:
-        return tr("polkit reads actions from /usr/share/polkit-1 only: configure Vitrine for "
-                  "the prefix <nobr>/usr</nobr> and install it again, from its source folder:") +
-               installCommands() + docsLink();
-    case Problem::NoPolkit:
-        return tr("Install polkit.");
-    case Problem::NoGroup:
-        return tr("Members of the vitrine group may tune the host without a password. Set Up "
-                  "creates the group and adds you to it: it asks for an administrator's "
-                  "password once.");
-    case Problem::NotMember:
-        return tr("Members of the vitrine group may tune the host without a password. Set Up "
-                  "adds you to it: it asks for an administrator's password once.");
-    case Problem::NotLocal:
-        return tr("Start Vitrine from the desktop in front of you, not over ssh or a remote "
-                  "desktop. The group's rule, 49-vitrine.rules, must be in "
-                  "/usr/share/polkit-1/rules.d or /etc/polkit-1/rules.d.") + ' ' + docsLink();
-    case Problem::Failed:
-        break;
-    }
-    return docsLink();
+    return HostTuningText::fix(status);
 }
 
 void HostTuningNotifier::update()
@@ -103,7 +49,8 @@ void HostTuningNotifier::update()
     const bool show = m_host->untuned();
 
     if (show) {
-        m_button->setToolTip(untunedText(m_host->untunedCount(), m_host->untunedStatus().why()) +
+        m_button->setToolTip(HostTuningText::untuned(m_host->untunedCount(),
+                                                     m_host->untunedStatus().why()) +
                              '\n' + tr("Click for what to do."));
     }
     m_button->setVisible(show);
@@ -123,10 +70,9 @@ void HostTuningNotifier::explain()
         if (now.active() || !m_host->untuned()) {
             /* the running VMs are being tuned: the warning goes with that */
             if (m_host->untuned()) {
-                auto *box = Widgets::messageBox(
-                    QMessageBox::Information, tr("Host Tuning Active"),
-                    tr("Vitrine may tune the host now: it tunes the running VMs."),
-                    QMessageBox::Close, m_window);
+                const HostTuningText::Box active = HostTuningText::active();
+                auto *box = Widgets::messageBox(QMessageBox::Information, active.title, active.text,
+                                                QMessageBox::Close, m_window);
                 box->setAttribute(Qt::WA_DeleteOnClose);
                 box->open();
             }
@@ -138,11 +84,9 @@ void HostTuningNotifier::explain()
 
 void HostTuningNotifier::explainNow(const HostSettings::Status &status)
 {
-    auto *box = Widgets::messageBox(
-        QMessageBox::Warning, tr("Host Tuning Inactive"),
-        "<p>" + untunedText(m_host->untunedCount(), status.why().toHtmlEscaped()) + "</p><p>" +
-            summary() + "</p><p>" + fix(status) + "</p>",
-        QMessageBox::Close, m_window);
+    const HostTuningText::Box inactive = HostTuningText::inactive(m_host->untunedCount(), status);
+    auto *box = Widgets::messageBox(QMessageBox::Warning, inactive.title, inactive.text,
+                                    QMessageBox::Close, m_window);
     QPushButton *setUp = status.needsGroup() ? box->addButton(tr("&Set Up…"), QMessageBox::AcceptRole)
                                              : nullptr;
     QPushButton *off = box->addButton(tr("&Turn Off Tuning"), QMessageBox::DestructiveRole);
@@ -167,22 +111,9 @@ void HostTuningNotifier::explainNow(const HostSettings::Status &status)
 
 void HostTuningNotifier::ask(const HostSettings::Status &status)
 {
-    const QString group =
-        status.problem == HostSettings::Problem::NoGroup
-            ? tr("There is no vitrine group yet: Set Up creates it and adds you to it.")
-            : tr("You are not in it: Set Up adds you to it.");
-    auto *box = Widgets::messageBox(
-        QMessageBox::Question, tr("Tune the Host for VMs?"),
-        "<p>" + tr("Vitrine can tune the host while VMs run: real-time QEMU threads, a shorter "
-                   "kernel fair-server period, a GPU clock floor, huge pages for VM memory, the "
-                   "CPU kept ready to wake up and higher udmabuf limits, without which "
-                   "native-context VMs copy the windows of Qt Widgets and GTK apps. All of it is "
-                   "put back after the last VM.") + "</p><p>" +
-            tr("vitrine-helper does it as root, without a password for members of the vitrine "
-               "group.") + ' ' + group + ' ' +
-            tr("It asks for an administrator's password once.") + "</p><p>" +
-            tr("Until then, the VMs run untuned.") + "</p>",
-        QMessageBox::NoButton, m_window);
+    const HostTuningText::Box offer = HostTuningText::offer(status);
+    auto *box = Widgets::messageBox(QMessageBox::Question, offer.title, offer.text,
+                                    QMessageBox::NoButton, m_window);
     QPushButton *setUp = box->addButton(tr("&Set Up…"), QMessageBox::AcceptRole);
     QPushButton *notNow = box->addButton(tr("&Not Now"), QMessageBox::RejectRole);
     QPushButton *off = box->addButton(tr("&Turn Off Tuning"), QMessageBox::DestructiveRole);
@@ -221,35 +152,20 @@ void HostTuningNotifier::setUp(QWidget *parent, const std::function<void()> &don
         switch (result) {
         case HostSettings::Setup::Cancelled:
             break;
-        case HostSettings::Setup::Failed:
-            box = Widgets::messageBox(QMessageBox::Warning, tr("Host Tuning Not Set Up"),
-                                      tr("The vitrine group could not be set up: %1.").arg(error),
+        case HostSettings::Setup::Failed: {
+            const HostTuningText::Box failed = HostTuningText::setUpFailed(error);
+            box = Widgets::messageBox(QMessageBox::Warning, failed.title, failed.text,
                                       QMessageBox::Close, guard);
             break;
-        case HostSettings::Setup::Done:
-            if (now.active()) {
-                box = Widgets::messageBox(
-                    QMessageBox::Information, tr("Host Tuning On"),
-                    tr("You are in the vitrine group: Vitrine tunes the host while VMs run, "
-                       "from now on and for those running now."),
-                    QMessageBox::Close, guard);
-            } else if (now.needsGroup()) {
-                /* polkit and vitrine read the user database: a cache in the
-                   way (nscd, sssd) lets go at the next login */
-                box = Widgets::messageBox(
-                    QMessageBox::Information, tr("Log Out and Back In"),
-                    tr("You are in the vitrine group now, but the system does not show it yet. "
-                       "Log out and back in, then start the VMs again."),
-                    QMessageBox::Close, guard);
-            } else {
-                box = Widgets::messageBox(
-                    QMessageBox::Warning, tr("Host Tuning Still Inactive"),
-                    "<p>" + tr("You are in the vitrine group now, but host tuning is still "
-                               "inactive: %1.").arg(now.why().toHtmlEscaped()) +
-                        "</p><p>" + fix(now) + "</p>",
-                    QMessageBox::Close, guard);
-            }
+        }
+        case HostSettings::Setup::Done: {
+            const HostTuningText::Box done = HostTuningText::setUpDone(now);
+            /* not active, and not for want of the group: still inactive, a warning */
+            box = Widgets::messageBox(now.active() || now.needsGroup() ? QMessageBox::Information
+                                                                       : QMessageBox::Warning,
+                                      done.title, done.text, QMessageBox::Close, guard);
             break;
+        }
         }
         if (box) {
             box->setAttribute(Qt::WA_DeleteOnClose);

@@ -42,10 +42,11 @@ void Stats::frameDrawn(int64_t recvNs, int64_t swapEndNs, bool imported)
     }
 }
 
-void Stats::framePresented(int64_t recvNs, int64_t presentNs)
+void Stats::framePresented(int64_t recvNs, int64_t presentNs, bool direct)
 {
     std::lock_guard g(m_lock);
     m_presented++;
+    m_direct += direct;
     if (recvNs && presentNs > recvNs) {
         m_present.push_back(presentNs - recvNs);
     }
@@ -99,6 +100,7 @@ Stats::Summary Stats::take()
     s.imports = m_imports;
     s.presented = m_presented;
     s.discarded = m_discarded;
+    s.direct = m_direct;
     s.replyUsP50 = pct(m_reply, 0.5, 1e3);
     s.replyUsMax = m_reply.empty() ? 0 : m_reply.back() / 1e3;
     s.drawMsP50 = pct(m_draw, 0.5, 1e6);
@@ -118,6 +120,7 @@ Stats::Summary Stats::take()
 
     m_windowStart = now;
     m_updates = m_scanouts = m_drawn = m_imports = m_presented = m_discarded = 0;
+    m_direct = 0;
     for (auto *v : {&m_reply, &m_draw, &m_present, &m_interval, &m_arrival, &m_input, &m_late,
                     &m_hopIn, &m_hopOut}) {
         v->clear();

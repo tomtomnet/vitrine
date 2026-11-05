@@ -25,6 +25,7 @@
 #include "core/vmrunner.h"
 #include "core/vmstore.h"
 #include "ui/icons.h"
+#include "ui/statstext.h"
 #include "ui/vmconsole.h"
 #include "ui/widgets.h"
 #include "vmview/vmview.h"
@@ -64,24 +65,10 @@ StatusStats::StatusStats(QWidget *parent)
                         QStyle::SP_FileDialogDetailedView))),
       m_menu(new QMenu(this))
 {
-    const QString tips[kStats] = {
-        tr("How busy the guest keeps its vCPUs; the rest of QEMU in the details"),
-        tr("The host's memory QEMU holds: the guest's RAM it touched, and its own"),
-        tr("What the guest reads from its disks and writes to them"),
-        tr("What the guest receives and sends, by its own counters: needs the guest tools"),
-        tr("How busy QEMU keeps the host's GPU, and the GPU memory it holds"),
-        tr("The frames the screen shows each second, their latency and the input's"),
-        tr("How long QEMU's main loop waits for a CPU: a starved main loop stutters"),
-    };
-
     setObjectName("statusStats");
-    m_names[Cpu] = tr("CPU");
-    m_names[Memory] = tr("Memory");
-    m_names[Disk] = tr("Disk");
-    m_names[Network] = tr("Network");
-    m_names[Gpu] = tr("GPU");
-    m_names[Frames] = tr("Frame Rate and Latency");
-    m_names[MainLoop] = tr("Main Loop Wait");
+    for (int i = 0; i < kStats; i++) {
+        m_names[i] = StatsText::name(StatsText::Stat(i));
+    }
     for (int i = 0; i < kStats; i++) {
         m_labels[i] = new QLabel(this);
         m_labels[i]->setObjectName(QString("stat-") + kKeys[i]);
@@ -91,7 +78,7 @@ StatusStats::StatusStats(QWidget *parent)
         m_actions[i] = m_menu->addAction(m_names[i]);
         m_actions[i]->setCheckable(true);
         m_actions[i]->setChecked(setting(kKeys[i], kDefaults[i]));
-        m_actions[i]->setToolTip(tips[i]);
+        m_actions[i]->setToolTip(StatsText::tip(StatsText::Stat(i)));
         connect(m_actions[i], &QAction::toggled, this, [this, i](bool on) {
             setSetting(kKeys[i], on);
             updateSources();
@@ -247,17 +234,6 @@ void StatusStats::updateSources()
     m_sampler->setSources(sources);
 }
 
-static PerfStats::Latency latency(int samples, double median, double p99)
-{
-    PerfStats::Latency l;
-
-    l.samples = samples;
-    l.median = median;
-    l.p99 = p99;
-    l.max = p99;
-    return l;
-}
-
 VmStats::Snapshot StatusStats::snapshot() const
 {
     VmStats::Snapshot s = m_sampler->snapshot();
@@ -266,65 +242,15 @@ VmStats::Snapshot StatusStats::snapshot() const
     if (!view) {
         return s;
     }
-    /* the screen counts what it puts on the screen; QEMU's numbers are the SDL display's */
-    const Stats::Summary &v = m_console->stats();
-    const double seconds = v.seconds > 0 ? v.seconds : 1;
-    /* without presentation feedback (X11), frames end at the swap */
-    const bool presented = v.presented > 0;
-    PerfStats::Screen &d = s.perf.screen;
-
-    d = PerfStats::Screen();
-    d.width = view->guestSize().width();
-    d.height = view->guestSize().height();
-    if (const QScreen *screen = m_console->screen()) {
-        d.refreshHz = screen->refreshRate();
-    }
-    d.method = presented || !v.drawn ? "presentation" : "swap";
-    d.flushes = v.updates / seconds;
-    d.presented = (presented ? v.presented : v.drawn) / seconds;
-    d.dropped = v.discarded / seconds;
-    d.frame = presented ? latency(v.presented, v.presentMsP50, v.presentMsP99)
-                        : latency(v.drawn, v.drawMsP50, v.drawMsP99);
-    if (presented) {
-        d.interval = latency(v.presented, v.intervalMsP50, v.intervalMsP99);
-    }
-    s.perf.display = v.seconds > 0;
-    s.perf.displayType = "dbus";
+    const QScreen *screen = m_console->screen();
+    StatsText::mergeScreen(&s, m_console->stats(), view->guestSize().width(),
+                           view->guestSize().height(), screen ? screen->refreshRate() : 0);
     return s;
 }
 
 QString StatusStats::text(Stat stat, const VmStats::Snapshot &s) const
 {
-    using namespace VmStats;
-
-    switch (stat) {
-    case Cpu:
-        /* the guest's view: 100 % when all its vCPUs run all the time */
-        if (!s.perf.threads || !s.perf.vcpus.threads) {
-            return {};
-        }
-        return tr("CPU %1").arg(formatWholePercent(s.perf.vcpus.cpu / s.perf.vcpus.threads));
-    case Memory:
-        return s.memory ? tr("RAM %1").arg(formatBytes(s.qemuMemory.resident)) : QString();
-    case Disk:
-        return s.disk ? tr("Disk R %1 · W %2")
-                            .arg(formatRate(s.diskUse.read), formatRate(s.diskUse.written))
-                      : QString();
-    case Network:
-        return s.network ? tr("Net ↓ %1 · ↑ %2").arg(formatRate(s.net.rx), formatRate(s.net.tx))
-                         : QString();
-    case Gpu:
-        if (!s.gpu || s.gpus.isEmpty()) {
-            return {};
-        }
-        return tr("GPU %1 · %2")
-            .arg(formatWholePercent(s.gpus.first().busy), formatBytes(s.gpus.first().memory));
-    case Frames:
-        return PerfStats::displaySummary(s.perf);
-    case MainLoop:
-        return PerfStats::mainLoopSummary(s.perf);
-    }
-    return {};
+    return StatsText::label(StatsText::Stat(stat), s);
 }
 
 QList<int> StatusStats::candidates() const
@@ -463,310 +389,33 @@ void StatusStats::relayout()
     }
 }
 
-/* The guest tools are for this VM's guest: its system is one they are for,
-   or not known yet (GuestTools::supports()) */
-static bool toolsAreFor(const Vm *vm)
-{
-    const GuestTools::System system = GuestTools::system(vm->id());
-    return !system.isKnown() ||
-           GuestTools::supports(system, GuestTools::medium(GuestTools::releaseFor(system)));
-}
-
 /* The notes of what the selected VM cannot show */
 void StatusStats::updateMenu()
 {
-    const bool runs = m_vm && m_vm->runner()->isActive();
     const VmStats::Snapshot &s = m_sampler->snapshot();
-    QString notes[kStats];
 
-    if (runs) {
-        switch (m_sampler->guestSource()) {
-        case VmStats::GuestSource::NoAgent:
-            notes[Network] = toolsAreFor(m_vm) ? tr("needs the guest tools")
-                                               : tr("not reported by this guest");
-            break;
-        case VmStats::GuestSource::OldAgent:
-            notes[Network] = tr("needs newer guest tools");
-            break;
-        default:
-            break;
-        }
-        if (!s.gpuError.isEmpty()) {
-            notes[Gpu] = tr("cannot be read");
-        } else if (s.drmClients == 0) {
-            notes[Gpu] = tr("QEMU does not use it");
-        }
-    }
     for (int i = 0; i < kStats; i++) {
-        m_actions[i]->setText(notes[i].isEmpty() ? m_names[i]
-                                                 : tr("%1 (%2)").arg(m_names[i], notes[i]));
+        const QString note =
+            StatsText::note(StatsText::Stat(i), m_vm, m_sampler->guestSource(), s);
+        m_actions[i]->setText(note.isEmpty() ? m_names[i] : tr("%1 (%2)").arg(m_names[i], note));
     }
-}
-
-/* --- tooltips --- */
-
-using PerfStats::tableRow;
-
-/* % of one CPU, as host CPUs: "1.7 CPUs" */
-static QString cpus(double percent)
-{
-    return StatusStats::tr("%1 CPUs").arg(percent / 100, 0, 'f', percent < 995 ? 2 : 1);
-}
-
-static QString cpuDetails(const VmStats::Snapshot &s)
-{
-    const PerfStats::Snapshot &p = s.perf;
-    const double besides = p.mainLoop.cpu + p.others.cpu;
-    const double total = p.vcpus.cpu + besides;
-    QString html = StatusStats::tr("<b>CPU</b>, over the last second") + "<table>";
-
-    if (p.vcpus.threads) {
-        html += tableRow(StatusStats::tr("Guest"),
-                         PerfStats::formatPercent(p.vcpus.cpu / p.vcpus.threads),
-                         StatusStats::tr("of its %n vCPU(s): %1 of the host's", nullptr,
-                                         p.vcpus.threads)
-                             .arg(cpus(p.vcpus.cpu)));
-    }
-    html += tableRow(StatusStats::tr("QEMU besides"), cpus(besides),
-                     StatusStats::tr("main loop %1, %n other thread(s) %2", nullptr,
-                                     p.others.threads)
-                         .arg(PerfStats::formatPercent(p.mainLoop.cpu),
-                              PerfStats::formatPercent(p.others.cpu)));
-    if (s.hostCpus > 0) {
-        html += tableRow(StatusStats::tr("In all"), cpus(total),
-                         StatusStats::tr("%1 of the host's %n CPU(s)", nullptr, s.hostCpus)
-                             .arg(PerfStats::formatPercent(total / s.hostCpus)));
-    }
-    html += "</table>";
-    if (!s.busiest.isEmpty()) {
-        html += StatusStats::tr("<b>Busiest threads</b>") + "<table>";
-        for (const VmStats::ThreadUse &t : s.busiest) {
-            html += tableRow(t.name.isEmpty() ? StatusStats::tr("thread %1").arg(t.tid) : t.name,
-                             PerfStats::formatPercent(t.cpu));
-        }
-        html += "</table>";
-    }
-    /* KVM's counters, read while this shows */
-    PerfStats::Snapshot kvm = p;
-    kvm.threads = false;
-    return html + PerfStats::hostDetails(kvm);
-}
-
-static QString memoryDetails(const VmStats::Snapshot &s, qint64 ramMiB,
-                             VmStats::GuestSource guest, bool toolsFor)
-{
-    using VmStats::formatBytes;
-    const VmStats::Memory &m = s.qemuMemory;
-    QString html = StatusStats::tr("<b>Memory</b> of the host that QEMU holds") + "<table>";
-
-    html += tableRow(StatusStats::tr("Resident"), formatBytes(m.resident),
-                     ramMiB > 0 ? StatusStats::tr("the guest has %1 of RAM")
-                                      .arg(formatBytes(ramMiB * 1024 * 1024))
-                                : QString());
-    if (m.shmem > 0) {
-        html += tableRow(StatusStats::tr("Shared"), formatBytes(m.shmem),
-                         StatusStats::tr("the guest's RAM, as far as it has used it"));
-    }
-    html += tableRow(StatusStats::tr("Private"), formatBytes(m.anon),
-                     m.shmem > 0 ? StatusStats::tr("QEMU's own: its heap and buffers")
-                                 : StatusStats::tr("the guest's RAM and QEMU's own"));
-    html += tableRow(StatusStats::tr("Files"), formatBytes(m.file),
-                     StatusStats::tr("QEMU's program and libraries"));
-    if (m.swap > 0) {
-        html += tableRow(StatusStats::tr("Swapped out"), formatBytes(m.swap));
-    }
-    if (m.proportional >= 0) {
-        html += tableRow(StatusStats::tr("Proportional"), formatBytes(m.proportional),
-                         StatusStats::tr("PSS: pages shared with passt or virtiofsd "
-                                         "counted in part"));
-    }
-    html += "</table>";
-    if (s.guestMemory) {
-        html += StatusStats::tr("<b>The guest</b>, by the guest tools") + "<table>" +
-                tableRow(StatusStats::tr("In use"), formatBytes(s.guestTotal - s.guestAvailable),
-                         StatusStats::tr("of %1, its caches left out")
-                             .arg(formatBytes(s.guestTotal))) +
-                "</table>";
-    } else if (guest == VmStats::GuestSource::NoAgent && toolsFor) {
-        html += StatusStats::tr("<i>What the guest itself uses needs the guest tools.</i>");
-    } else if (guest == VmStats::GuestSource::OldAgent) {
-        html += StatusStats::tr("<i>What the guest itself uses needs newer guest tools.</i>");
-    }
-    return html;
-}
-
-static QString diskDetails(const VmStats::Snapshot &s)
-{
-    using VmStats::formatBytes;
-    using VmStats::formatRate;
-    QString html = StatusStats::tr("<b>Disks</b>, over the last second; in all since QEMU "
-                                   "started") +
-                   "<table>";
-
-    for (const VmStats::DeviceRate &d : s.diskUse.devices) {
-        /* not the empty drive the firmware and the guest looked at once */
-        if (d.read == 0 && d.written == 0 && d.readTotal + d.writtenTotal < (1 << 20)) {
-            continue;
-        }
-        html += tableRow(d.name,
-                         StatusStats::tr("R %1 · W %2")
-                             .arg(formatRate(d.read), formatRate(d.written)),
-                         StatusStats::tr("in all %1 read, %2 written")
-                             .arg(formatBytes(d.readTotal), formatBytes(d.writtenTotal)));
-    }
-    return html + "</table>";
-}
-
-static QString networkDetails(const VmStats::Snapshot &s)
-{
-    using VmStats::formatBytes;
-    using VmStats::formatRate;
-    QString html = StatusStats::tr("<b>Network</b>, by the guest's own counters (guest tools); "
-                                   "in all since the guest started") +
-                   "<table>";
-
-    for (const VmStats::InterfaceRate &i : s.net.interfaces) {
-        html += tableRow(i.name,
-                         StatusStats::tr("↓ %1 · ↑ %2").arg(formatRate(i.rx), formatRate(i.tx)),
-                         StatusStats::tr("in all %1 received, %2 sent")
-                             .arg(formatBytes(i.rxTotal), formatBytes(i.txTotal)));
-    }
-    if (s.net.interfaces.isEmpty()) {
-        html += tableRow(StatusStats::tr("No network card"), QString());
-    }
-    return html + "</table>";
-}
-
-/* The drivers' names of their memory regions, said plainly */
-static QString regionNote(const QString &region)
-{
-    if (region.startsWith("vram") || region.startsWith("local")) {
-        return StatusStats::tr("the GPU's own memory");
-    }
-    if (region == "gtt") {
-        return StatusStats::tr("host memory the GPU maps");
-    }
-    if (region == "cpu" || region.startsWith("system")) {
-        return StatusStats::tr("host memory");
-    }
-    return {};
-}
-
-static QString gpuDetails(const VmStats::Snapshot &s)
-{
-    QString html;
-
-    for (const VmStats::GpuUse &g : s.gpus) {
-        html += StatusStats::tr("<b>GPU</b> %1 (%2), over the last second")
-                    .arg(g.pdev.toHtmlEscaped(), g.driver.toHtmlEscaped()) +
-                "<table>";
-        for (const VmStats::EngineUse &e : g.engines) {
-            html += tableRow(e.name, PerfStats::formatPercent(e.busy));
-        }
-        for (const VmStats::RegionUse &r : g.regions) {
-            QString note = regionNote(r.name);
-            if (r.total > r.resident) {
-                note += (note.isEmpty() ? QString() : StatusStats::tr(", ")) +
-                        StatusStats::tr("%1 allocated").arg(VmStats::formatBytes(r.total));
-            }
-            html += tableRow(r.name, VmStats::formatBytes(r.resident), note);
-        }
-        html += "</table>";
-        html += StatusStats::tr("<i>QEMU is %n client(s) of it: its display and the guest's 3D "
-                                "contexts.</i><br>",
-                                nullptr, g.clients);
-        if (g.shared) {
-            html += StatusStats::tr("<i>The buffers they share are counted once.</i><br>");
-        }
-    }
-    return html;
-}
-
-/* The screen's own numbers: QEMU's updates as the view received them */
-static QString screenDetails(const PerfStats::Snapshot &s, const Stats::Summary &v)
-{
-    const PerfStats::Screen &d = s.screen;
-    const bool swap = d.method == "swap";
-    QString html = StatusStats::tr("<b>Screen</b>, over the last second");
-    QStringList about;
-
-    if (d.width && d.height) {
-        about << StatusStats::tr("%1×%2").arg(d.width).arg(d.height);
-    }
-    if (d.refreshHz > 0) {
-        about << StatusStats::tr("monitor at %1 Hz").arg(d.refreshHz, 0, 'f',
-                                                         d.refreshHz < 100 ? 1 : 0);
-    }
-    if (!about.isEmpty()) {
-        html += StatusStats::tr(" (%1)").arg(about.join(StatusStats::tr(", ")));
-    }
-    html += "<table>";
-    html += tableRow(StatusStats::tr("Frames on screen"),
-                     StatusStats::tr("%1/s").arg(qRound(d.presented)),
-                     StatusStats::tr("of %1 updates from QEMU").arg(qRound(d.flushes)));
-    if (d.frame.samples) {
-        html += tableRow(StatusStats::tr("Frame latency"), PerfStats::formatMs(d.frame.median),
-                         StatusStats::tr("p99 %1: %2")
-                             .arg(PerfStats::formatMs(d.frame.p99),
-                                  swap ? StatusStats::tr("update to buffer swap, without the "
-                                                         "compositor")
-                                       : StatusStats::tr("update to on screen")));
-    }
-    if (d.interval.samples) {
-        html += tableRow(StatusStats::tr("Frame interval"), PerfStats::formatMs(d.interval.median),
-                         StatusStats::tr("p99 %1").arg(PerfStats::formatMs(d.interval.p99)));
-    }
-    if (v.inputs) {
-        html += tableRow(StatusStats::tr("Input"), PerfStats::formatMs(v.inputUsP50 / 1000),
-                         StatusStats::tr("p99 %1: a key or the mouse to QEMU and back")
-                             .arg(PerfStats::formatMs(v.inputUsP99 / 1000)));
-    }
-    html += "</table>";
-    if (swap) {
-        html += StatusStats::tr("<i>No presentation feedback from the compositor (X11): "
-                                "latencies end at the buffer swap.</i><br>");
-    }
-    return html;
 }
 
 QString StatusStats::tooltip(Stat stat) const
 {
     const VmStats::Snapshot s = snapshot();
     const QString name = m_vm ? m_vm->name().toHtmlEscaped() : QString();
-    QString body;
+    StatsText::Context context;
 
-    switch (stat) {
-    case Cpu:
-        body = cpuDetails(s);
-        break;
-    case Memory:
-        body = memoryDetails(s, m_vm ? VmConfig::memoryMiB(m_vm->runner()->runArgs()) : 0,
-                             m_sampler->guestSource(), m_vm && toolsAreFor(m_vm));
-        break;
-    case Disk:
-        body = diskDetails(s);
-        break;
-    case Network:
-        body = networkDetails(s);
-        break;
-    case Gpu:
-        body = gpuDetails(s);
-        break;
-    case Frames:
-        if (m_console && m_console->view()) {
-            body = screenDetails(s.perf, m_console->stats());
-        } else {
-            /* the display's part: QEMU's threads have an entry of their own */
-            PerfStats::Snapshot display = s.perf;
-            display.threads = false;
-            display.kvm = false;
-            body = PerfStats::details(display);
-        }
-        break;
-    case MainLoop:
-        body = PerfStats::hostDetails(s.perf);
-        break;
+    context.toolsFor = m_vm && StatsText::toolsAreFor(m_vm);
+    if (m_vm) {
+        context.ramMiB = VmConfig::memoryMiB(m_vm->runner()->runArgs());
     }
+    context.guest = m_sampler->guestSource();
+    if (m_console && m_console->view()) {
+        context.screen = &m_console->stats();
+    }
+    const QString body = StatsText::details(StatsText::Stat(stat), s, context);
     /* on lines of their own, titles too: QToolTip's label narrows a
        word-wrapped text of a few lines */
     return QString("<div style=\"white-space:nowrap\"><p style=\"white-space:pre\"><b>%1</b>"

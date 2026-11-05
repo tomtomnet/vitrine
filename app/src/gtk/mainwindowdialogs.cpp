@@ -160,6 +160,8 @@ VmCloner *MainWindow::startClone(Vm *source, const QString &name)
         updateActions();
     });
     cloner->start(source, name);
+    /* its task's details: this window's (mainwindowparts.cpp) */
+    followClone(cloner, id);
     return cloner;
 }
 

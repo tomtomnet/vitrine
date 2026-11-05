@@ -6,8 +6,11 @@
  *
  *   vitrine-gtk-view [--console N] [--full-screen] [--stats] SOCKET
  *
- * --stats prints the frame statistics every second.  Qt Core runs on GLib's
- * default context, which GTK's loop runs, as in the GTK app.
+ * --stats prints the frame statistics every second: of the frames presented,
+ * "direct" ones the compositor scanned out as they were (the presentation
+ * feedback's ZERO_COPY flag), "composited" ones it drew into its own frame;
+ * the totals since the start end the line.  Qt Core runs on GLib's default
+ * context, which GTK's loop runs, as in the GTK app.
  */
 #include <QAbstractEventDispatcher>
 #include <QCoreApplication>
@@ -41,13 +44,18 @@ void usage()
 
 void printStats(VmDisplay *view)
 {
+    /* the presented frames since the start: scanned out directly, composited */
+    static long long totalDirect = 0, totalComposited = 0;
     const Stats::Summary s = view->takeStats();
+    totalDirect += s.direct;
+    totalComposited += s.presented - s.direct;
     fprintf(stderr,
             "stats: %.1fs updates %d drawn %d imports %d presented %d discarded %d "
-            "present p50 %.2f ms p99 %.2f ms interval p50 %.2f ms inputs %d grab \"%s\" keyboard %d\n",
+            "present p50 %.2f ms p99 %.2f ms interval p50 %.2f ms inputs %d grab \"%s\" keyboard %d "
+            "direct %d composited %d total-direct %lld total-composited %lld\n",
             s.seconds, s.updates, s.drawn, s.imports, s.presented, s.discarded, s.presentMsP50,
             s.presentMsP99, s.intervalMsP50, s.inputs, qPrintable(view->grabState()),
-            view->hasKeyboard());
+            view->hasKeyboard(), s.direct, s.presented - s.direct, totalDirect, totalComposited);
 }
 
 } // namespace
