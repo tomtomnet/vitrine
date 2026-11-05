@@ -11,10 +11,12 @@
 #include <sched.h>
 #include <spawn.h>
 #include <stdarg.h>
+#include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #include <sys/resource.h>
+#include <sys/stat.h>
 #include <sys/wait.h>
 #include <syslog.h>
 #include <unistd.h>
@@ -131,6 +133,38 @@ int sys_setrttime(pid_t pid, rlim_t soft, rlim_t hard)
     const struct rlimit limit = {.rlim_cur = soft, .rlim_max = hard};
 
     return prlimit(pid, RLIMIT_RTTIME, &limit, NULL) < 0 ? -errno : 0;
+}
+
+int sys_latency_request(const char *path, int us)
+{
+    const int32_t value = us;
+    int fd = open(path, O_WRONLY | O_CLOEXEC | O_NOFOLLOW | O_NOCTTY);
+    struct stat st;
+    ssize_t n;
+
+    if (fd < 0) {
+        return -errno;
+    }
+    /* the kernel's device, never a file in its place: a write there would
+       request nothing */
+    if (fstat(fd, &st) < 0 || !S_ISCHR(st.st_mode)) {
+        close(fd);
+        return -ENODEV;
+    }
+    /* four bytes, the kernel's s32 (another length is read as hex text) */
+    n = write(fd, &value, sizeof(value));
+    if (n != (ssize_t)sizeof(value)) {
+        const int err = n < 0 ? -errno : -EIO;
+
+        close(fd);
+        return err;
+    }
+    return fd;
+}
+
+void sys_latency_release(int fd)
+{
+    close(fd);
 }
 
 void sys_log(const char *fmt, ...)

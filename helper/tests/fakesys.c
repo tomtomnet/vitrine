@@ -11,8 +11,13 @@
  * pp_od_clk_voltage, its commits), for the read back; a server's file with
  * <file>.writes N takes N more writes, then refuses them.  transparent_
  * hugepage/shmem_enabled takes one of its words and shows it in brackets
- * among them, as the kernel does.  Other files (the udmabuf module's
- * parameters) take any value, as the kernel's int parameters do.  Every write, scheduler and nice
+ * among them, as the kernel does.  A CPU's cpufreq/energy_performance_
+ * preference takes the drivers' words or a number up to 255, and a CPU
+ * that the online list leaves out answers -EBUSY for its cpufreq files, as
+ * an inactive policy does.  /dev/cpu_dma_latency's requests are files
+ * locked by their process (see sys_latency_request).  Other files (the
+ * udmabuf module's parameters) take any value, as the kernel's int
+ * parameters do.  Every write, request, scheduler and nice
  * change and log line is appended to <root>/journal.  Schedulers and nice
  * values are kept in <root>/sched (an unprivileged test cannot make threads
  * real-time nor lower their nice), where the next helper finds them, and
@@ -22,7 +27,8 @@
  * refuses to run as root, and the installed helper has no test root at all.
  *
  * VITRINE_HELPER_TEST_KILL_AT=N kills it (SIGKILL) right after its Nth
- * write, as a crash or a kill in the middle of a change would.
+ * write (a latency request counts as one), as a crash or a kill in the
+ * middle of a change would.
  */
 #define _GNU_SOURCE
 #include <errno.h>
@@ -83,11 +89,19 @@ static void journal(const char *fmt, ...)
     close(fd);
 }
 
+static bool cpu_offline(const char *path);
+
 int sys_read(const char *path, char *buf, size_t size)
 {
-    int fd = open(path, O_RDONLY | O_CLOEXEC);
+    int fd;
     ssize_t n;
 
+    /* an offline CPU's cpufreq policy is inactive: its files answer -EBUSY */
+    if (strncmp(path, root, strlen(root)) == 0 && strstr(path + strlen(root), "/cpufreq/") &&
+        cpu_offline(path)) {
+        return -EBUSY;
+    }
+    fd = open(path, O_RDONLY | O_CLOEXEC);
     if (fd < 0) {
         return -errno;
     }
@@ -133,27 +147,61 @@ static bool get_u64(const char *path, unsigned long long *v)
     return parse_uint(buf, ~0ULL, v);
 }
 
-/* The CPU of a server file's path ".../cpuN/period" is offline: the
-   fake tree's /sys/devices/system/cpu/online leaves it out */
+/* The CPU of a path ".../cpuN/..." under the root, or -1 */
+static int path_cpu(const char *path)
+{
+    const char *rel = strncmp(path, root, strlen(root)) == 0 ? path + strlen(root) : path;
+
+    for (const char *c = strstr(rel, "/cpu"); c; c = strstr(c + 1, "/cpu")) {
+        unsigned cpu;
+        char slash;
+
+        if (sscanf(c, "/cpu%u%c", &cpu, &slash) == 2 && slash == '/') {
+            return (int)cpu;
+        }
+    }
+    return -1;
+}
+
+/* The CPU of a path ".../cpuN/..." (a server's period, a cpufreq file) is
+   offline: the fake tree's /sys/devices/system/cpu/online leaves it out */
 static bool cpu_offline(const char *path)
 {
     char online[PATH_MAX], text[256], *save = NULL;
-    const char *c = strstr(path, "/cpu");
-    unsigned cpu;
+    const int cpu = path_cpu(path);
 
     snprintf(online, sizeof(online), "%s" CPUS_ONLINE, root);
-    if (!c || sscanf(c, "/cpu%u/", &cpu) != 1 || sys_read(online, text, sizeof(text)) <= 0) {
+    if (cpu < 0 || sys_read(online, text, sizeof(text)) <= 0) {
         return false;
     }
     for (char *t = strtok_r(text, ",\n", &save); t; t = strtok_r(NULL, ",\n", &save)) {
         unsigned a, b;
         int got = sscanf(t, "%u-%u", &a, &b);
 
-        if (got >= 1 && cpu >= a && cpu <= (got == 2 ? b : a)) {
+        if (got >= 1 && (unsigned)cpu >= a && (unsigned)cpu <= (got == 2 ? b : a)) {
             return false;
         }
     }
     return true;
+}
+
+/* <path>.writes N: N more writes taken, then refused with @refusal; 0 when
+   this one is taken */
+static int take_write(const char *path, int refusal)
+{
+    char file[PATH_MAX], text[32];
+    unsigned long long left;
+
+    snprintf(file, sizeof(file), "%s.writes", path);
+    if (access(file, F_OK) != 0) {
+        return 0;
+    }
+    if (!get_u64(file, &left) || left == 0) {
+        return refusal;
+    }
+    snprintf(text, sizeof(text), "%llu\n", left - 1);
+    put(file, text);
+    return 0;
 }
 
 /* debugfs sched/{fair,ext}_server/cpuN/{period,runtime}: sched_server_write_common() */
@@ -181,15 +229,8 @@ static int fair_write(const char *path, const char *value, bool is_period)
         return -EBUSY;
     }
     /* <file>.writes N: N more writes taken, then refused */
-    snprintf(stuck, sizeof(stuck), "%s.writes", path);
-    if (access(stuck, F_OK) == 0) {
-        unsigned long long left;
-
-        if (!get_u64(stuck, &left) || left == 0) {
-            return -EACCES;
-        }
-        snprintf(text, sizeof(text), "%llu\n", left - 1);
-        put(stuck, text);
+    if (take_write(path, -EACCES) < 0) {
+        return -EACCES;
     }
     snprintf(stuck, sizeof(stuck), "%s.stuck", path);
     if (access(stuck, F_OK) == 0) {
@@ -348,6 +389,50 @@ static int thp_write(const char *path, const char *value)
     return put(path, text);
 }
 
+/*
+ * cpufreq's energy_performance_preference: one of the drivers' words, or a
+ * number up to 255 (shown as written); "default" gives the firmware's,
+ * balance_performance here.  -EBUSY for an offline CPU, whose policy is
+ * inactive, and once <file>.writes N has run out (a driver that sets the
+ * preference itself: amd-pstate's dynamic EPP).
+ */
+static int epp_write(const char *path, const char *value)
+{
+    static const char *const words[] = {"default", "performance", "balance_performance",
+                                        "balance_power", "power", NULL};
+    char stuck[PATH_MAX], text[48];
+    unsigned long long n;
+    bool known = parse_uint(value, 255, &n);
+
+    for (int i = 0; words[i]; i++) {
+        known |= strcmp(value, words[i]) == 0;
+    }
+    if (!known) {
+        return -EINVAL;
+    }
+    if (cpu_offline(path) || take_write(path, -EBUSY) < 0) {
+        return -EBUSY;
+    }
+    snprintf(stuck, sizeof(stuck), "%s.stuck", path);
+    if (access(stuck, F_OK) == 0) {
+        /* taken, not kept */
+        return 0;
+    }
+    snprintf(text, sizeof(text), "%s\n", strcmp(value, "default") == 0 ? "balance_performance" : value);
+    return put(path, text);
+}
+
+/* VITRINE_HELPER_TEST_KILL_AT=N: killed right after the Nth write */
+static void count_write(void)
+{
+    const char *at = getenv("VITRINE_HELPER_TEST_KILL_AT");
+
+    if (at && ++writes == atoi(at)) {
+        journal("killed");
+        raise(SIGKILL);
+    }
+}
+
 int sys_write(const char *path, const char *value)
 {
     const char *rel = path + strlen(root);
@@ -367,6 +452,8 @@ int sys_write(const char *path, const char *value)
         err = od_write(path, v);
     } else if (strcmp(rel, THP_SHMEM) == 0) {
         err = thp_write(path, v);
+    } else if (strcmp(base, "energy_performance_preference") == 0) {
+        err = epp_write(path, v);
     } else {
         char stuck[PATH_MAX];
 
@@ -375,12 +462,52 @@ int sys_write(const char *path, const char *value)
         err = access(stuck, F_OK) == 0 ? 0 : put(path, value);
     }
     journal("write %s %s%s", rel, v, err ? " FAILED" : "");
-    if (getenv("VITRINE_HELPER_TEST_KILL_AT") &&
-        ++writes == atoi(getenv("VITRINE_HELPER_TEST_KILL_AT"))) {
-        journal("killed");
-        raise(SIGKILL);
-    }
+    count_write();
     return err;
+}
+
+/*
+ * /dev/cpu_dma_latency: a request is a process's open file of it, which
+ * the kernel drops when that file closes.  Here <path>.<pid> holds its
+ * value, locked (LOCK_EX) through the file returned: the lock goes when it
+ * closes or the process dies, whatever the way, and a request file nobody
+ * locks is no request.  The device is <path>, there or not; with
+ * <path>.refuse beside it, opening it fails with EACCES.
+ */
+int sys_latency_request(const char *path, int us)
+{
+    char file[PATH_MAX], text[32];
+    size_t len;
+    int fd;
+
+    if (access(path, F_OK) < 0) {
+        return -errno;
+    }
+    snprintf(file, sizeof(file), "%s.refuse", path);
+    if (access(file, F_OK) == 0) {
+        journal("request %s %d FAILED", path + strlen(root), us);
+        return -EACCES;
+    }
+    snprintf(file, sizeof(file), "%s.%d", path, (int)getpid());
+    fd = open(file, O_RDWR | O_CREAT | O_TRUNC | O_CLOEXEC, 0600);
+    if (fd < 0) {
+        return -errno;
+    }
+    snprintf(text, sizeof(text), "%d\n", us);
+    len = strlen(text);
+    if (flock(fd, LOCK_EX | LOCK_NB) < 0 || write(fd, text, len) != (ssize_t)len) {
+        close(fd);
+        return -EIO;
+    }
+    journal("request %s %d", path + strlen(root), us);
+    count_write();
+    return fd;
+}
+
+void sys_latency_release(int fd)
+{
+    journal("release " CPU_LATENCY_DEV);
+    close(fd);
 }
 
 /* --- schedulers and nice values, in <root>/sched --- */

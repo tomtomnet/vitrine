@@ -1,9 +1,10 @@
 /* SPDX-License-Identifier: GPL-2.0-or-later */
 /*
  * The global settings: the kernel's fair server (and ext server), an AMD
- * GPU's clock floor, the udmabuf limits and shared memory's transparent huge
- * pages; and the record of each QEMU
- * whose threads a helper made real-time or ordinary (sched-<pid>).  The
+ * GPU's clock floor, the udmabuf limits, shared memory's transparent huge
+ * pages and the CPUs' energy performance preference; and the record of
+ * each QEMU whose threads a helper made real-time or ordinary
+ * (sched-<pid>).  The
  * settings belong to the whole machine, so several helpers (vitrine
  * restarted while its VMs run, other users' sessions) coordinate through
  * /run/vitrine-helper, a root-only tmpfs folder whose lifetime is the
@@ -22,6 +23,10 @@
  * - another tool (the research side's vm-host-session) may have changed it
  * since, and then it is left alone.  A state file nobody holds is what a
  * crashed helper left: the next helper restores it.
+ *
+ * The CPU latency request is no hold: it is this helper's open file of
+ * /dev/cpu_dma_latency, and the kernel itself takes the lowest of every
+ * program's requests and drops each one with its file.
  */
 #define _GNU_SOURCE
 #include <dirent.h>
@@ -44,14 +49,14 @@ static int lock_fd = -1;
 
 struct hold {
     char key[32];       /* fair-server, ext-server, gpu-floor-cardN, udmabuf,
-                           thp, sched-<pid>; empty when free */
+                           thp, epp, sched-<pid>; empty when free */
     int fd;             /* <key>.hold */
     char value[16];     /* what was asked: on, auto or MHz */
 };
-/* the fair and ext servers, the udmabuf limits, huge pages and eight cards;
-   then the records of the QEMUs watched */
+/* the fair and ext servers, the udmabuf limits, huge pages, the CPUs'
+   preference and eight cards; then the records of the QEMUs watched */
 #define MAX_CARDS 8
-#define MAX_SETTINGS (4 + MAX_CARDS)
+#define MAX_SETTINGS (5 + MAX_CARDS)
 #define MAX_HOLDS (MAX_SETTINGS + MAX_WATCHED)
 static struct hold holds[MAX_HOLDS];
 
@@ -397,8 +402,8 @@ static int server_set(const struct server *srv, unsigned cpu, u64 period, u64 ru
     return 0;
 }
 
-/* The CPUs of @srv, sorted; their count, or -errno */
-static int server_cpus(const struct server *srv, unsigned **out)
+/* The numbers of the cpuN folders of @dir, sorted: their count, or -errno */
+static int cpu_dirs(const char *folder, unsigned **out)
 {
     char dir[PATH_MAX];
     struct dirent *e;
@@ -406,8 +411,9 @@ static int server_cpus(const struct server *srv, unsigned **out)
     int n = 0, cap = 0;
     DIR *d;
 
-    if (!rooted(dir, sizeof(dir), srv->dir) || !(d = opendir(dir))) {
-        return -errno;
+    *out = NULL;
+    if (!rooted(dir, sizeof(dir), folder) || !(d = opendir(dir))) {
+        return errno ? -errno : -ENAMETOOLONG;
     }
     while ((e = readdir(d))) {
         u64 id;
@@ -438,6 +444,12 @@ static int server_cpus(const struct server *srv, unsigned **out)
     }
     *out = ids;
     return n;
+}
+
+/* The CPUs of @srv, sorted; their count, or -errno */
+static int server_cpus(const struct server *srv, unsigned **out)
+{
+    return cpu_dirs(srv->dir, out);
 }
 
 /*
@@ -1684,6 +1696,569 @@ void thp_off(void)
     reply("ok thp off");
 }
 
+/* --- the CPU ready to wake up: the idle latency request --- */
+
+/*
+ * Not a hold: the request is this helper's open file, and the kernel takes
+ * the lowest of every program's requests (other helpers', tuned's, the
+ * research side's), dropping each one with its file - nothing to share,
+ * record or recover, and nobody else can change it.
+ */
+static int latency_fd = -1;
+static unsigned latency_us;
+
+/* The online CPUs, read again by each pass that needs them (one at a time) */
+static struct online online_now;
+
+/*
+ * CPU @cpu's idle state @state, from cpuidle: false when it has no such
+ * state.  @usable: not POLL (the busy loop that is all a CPU has left with
+ * no idle state allowed), not disabled (by the user, or by the driver's
+ * default), its wake-up time known; @us that time (its exit latency, which
+ * the kernel compares with the requests).
+ */
+static bool idle_state(unsigned cpu, unsigned state, char *name, size_t size, bool *usable,
+                       u64 *us)
+{
+    char path[PATH_MAX];
+    u64 disabled = 0;
+
+    snprintf(path, sizeof(path), CPU_DIR "/cpu%u/cpuidle/state%u/name", cpu, state);
+    if (!read_word(path, name, size)) {
+        return false;
+    }
+    snprintf(path, sizeof(path), CPU_DIR "/cpu%u/cpuidle/state%u/disable", cpu, state);
+    read_u64(path, &disabled);
+    snprintf(path, sizeof(path), CPU_DIR "/cpu%u/cpuidle/state%u/latency", cpu, state);
+    *usable = read_u64(path, us) && strcmp(name, "POLL") != 0 && !disabled;
+    return true;
+}
+
+/* CPU @cpu's first usable idle state (C1, mostly): its wake-up time in @us,
+   its name in @name; false when it has none */
+static bool first_idle(unsigned cpu, u64 *us, char *name, size_t size)
+{
+    bool usable;
+
+    for (unsigned s = 0; s < 64 && idle_state(cpu, s, name, size, &usable, us); s++) {
+        if (usable) {
+            return true;
+        }
+    }
+    return false;
+}
+
+/* The usable idle states of CPU @cpu slower to wake than @us, by name:
+   "C2, C3" */
+static void idle_deeper(unsigned cpu, u64 us, char *out, size_t size)
+{
+    char name[32];
+    bool usable;
+    u64 lat;
+
+    out[0] = '\0';
+    for (unsigned s = 0; s < 64 && idle_state(cpu, s, name, sizeof(name), &usable, &lat); s++) {
+        if (usable && lat > us) {
+            append(out, size, name);
+        }
+    }
+}
+
+void cpu_latency_on(void)
+{
+    char path[PATH_MAX], name[32], slowest[32] = "", deeper[128], what[200], driver[32];
+    unsigned *ids = NULL, slow_cpu = 0;
+    int n, found = 0, without = 0, fd;
+    bool same = true;
+    u64 us = 0, lat;
+    struct stat st;
+
+    if (latency_fd >= 0) {
+        reply("ok cpu-latency on: already %u us", latency_us);
+        return;
+    }
+    if (!rooted(path, sizeof(path), CPU_LATENCY_DEV) || stat(path, &st) < 0) {
+        reply("skip cpu-latency: this kernel has no " CPU_LATENCY_DEV);
+        return;
+    }
+    /*
+     * The largest of the online CPUs' first wake-up times: each of them may
+     * rest in its first idle state.  A request below a CPU's would leave it
+     * only POLL - a fixed 1 us, on Intel CPUs whose C1 takes 2 - which keeps
+     * keys no faster for some 26 W more.
+     */
+    online_read(&online_now);
+    n = cpu_dirs(CPU_DIR, &ids);
+    for (int i = 0; i < n; i++) {
+        if (!online_has(&online_now, ids[i])) {
+            continue;
+        }
+        if (!first_idle(ids[i], &lat, name, sizeof(name))) {
+            without++;
+            continue;
+        }
+        same &= !found || (lat == us && strcmp(name, slowest) == 0);
+        if (!found || lat > us) {
+            us = lat;
+            slow_cpu = ids[i];
+            snprintf(slowest, sizeof(slowest), "%s", name);
+        }
+        found++;
+    }
+    free(ids);
+    if (!found) {
+        if (read_word(CPUIDLE_DRIVER, driver, sizeof(driver)) && strcmp(driver, "none") != 0) {
+            reply("skip cpu-latency: the cpus have no idle state but polling (cpuidle driver %s)",
+                  driver);
+        } else {
+            reply("skip cpu-latency: the cpus have no idle states (no cpuidle driver)");
+        }
+        return;
+    }
+    idle_deeper(slow_cpu, us, deeper, sizeof(deeper));
+    /* never 0: with a request of 0 the idle governors only poll */
+    us = us < 1 ? 1 : us > 2000000000ULL ? 2000000000ULL : us;
+    fd = sys_latency_request(path, (int)us);
+    if (fd < 0) {
+        reply("error cpu-latency: " CPU_LATENCY_DEV ": %s", strerror(-fd));
+        return;
+    }
+    latency_fd = fd;
+    latency_us = (unsigned)us;
+    if (same && !without) {
+        snprintf(what, sizeof(what), "%s on every cpu", slowest);
+    } else {
+        snprintf(what, sizeof(what), "%s of cpu%u, the slowest first idle state", slowest, slow_cpu);
+    }
+    if (without) {
+        snprintf(what + strlen(what), sizeof(what) - strlen(what), "; %d cpus have none", without);
+    }
+    if (deeper[0]) {
+        snprintf(what + strlen(what), sizeof(what) - strlen(what), "; %s unused", deeper);
+    }
+    sys_log("uid %u: cpu latency request %u us (%s)", (unsigned)caller_uid, latency_us, what);
+    reply("ok cpu-latency on: %u us (%s)", latency_us, what);
+}
+
+/* The request let go, if this helper holds one */
+static void latency_release(void)
+{
+    if (latency_fd < 0) {
+        return;
+    }
+    sys_latency_release(latency_fd);
+    latency_fd = -1;
+    reply("restored cpu-latency: request of %u us ended", latency_us);
+    sys_log("cpu latency request of %u us ended", latency_us);
+}
+
+void cpu_latency_off(void)
+{
+    latency_release();
+    reply("ok cpu-latency off");
+}
+
+/* --- the CPUs' energy performance preference --- */
+
+/*
+ * cpufreq/energy_performance_preference of each CPU, in amd-pstate's and
+ * intel_pstate's active modes: one of the drivers' words (performance,
+ * balance_performance, balance_power, power) or, where the driver takes
+ * raw values, a number up to 255, which it then shows.  An offline CPU
+ * answers -EBUSY (its policy is inactive); the drivers keep its value
+ * meanwhile and give it back when it comes online.  The record, epp.state,
+ * has a line per CPU: "cpuN WAS performance", or "cpuN WAS -" for one found
+ * at performance already.
+ */
+static void epp_path(char *out, size_t size, unsigned cpu)
+{
+    snprintf(out, size, CPU_DIR "/cpu%u/cpufreq/energy_performance_preference", cpu);
+}
+
+/* A value as the drivers show and take it: a word, or a number to 255 */
+static bool epp_value(const char *v)
+{
+    const size_t len = strlen(v);
+    bool word = len > 0 && len < 32, number = word;
+    u64 n;
+
+    for (const char *c = v; *c; c++) {
+        word &= (*c >= 'a' && *c <= 'z') || *c == '_';
+        number &= *c >= '0' && *c <= '9';
+    }
+    return word || (number && parse_uint(v, 255, &n));
+}
+
+/* CPU @cpu's preference in @buf: 0, or -errno - -ENOENT: it has none,
+   -EBUSY: offline, -EINVAL: not a value of the drivers */
+static int epp_get(unsigned cpu, char *buf, size_t size)
+{
+    char path[PATH_MAX];
+    int n;
+
+    epp_path(path, sizeof(path), cpu);
+    if ((n = read_attr(path, buf, size)) < 0) {
+        return n;
+    }
+    buf[strcspn(buf, "\n")] = '\0';
+    return epp_value(buf) ? 0 : -EINVAL;
+}
+
+static int epp_put(unsigned cpu, const char *value)
+{
+    char path[PATH_MAX], cmd[40];
+
+    epp_path(path, sizeof(path), cpu);
+    snprintf(cmd, sizeof(cmd), "%s\n", value);
+    return write_attr(path, cmd);
+}
+
+/* The record @rec has a line for CPU @cpu */
+static bool epp_listed(const char *rec, unsigned cpu)
+{
+    for (const char *l = rec; l && *l; l = strchr(l, '\n') ? strchr(l, '\n') + 1 : NULL) {
+        unsigned id;
+
+        if (sscanf(l, "cpu%u ", &id) == 1 && id == cpu) {
+            return true;
+        }
+    }
+    return false;
+}
+
+/* @value added to @list ("a, b") unless it is there already */
+static void note_value(char *list, size_t size, const char *value)
+{
+    const size_t vlen = strlen(value);
+
+    for (const char *v = list; *v;) {
+        const size_t len = strcspn(v, ",");
+
+        if (len == vlen && strncmp(v, value, vlen) == 0) {
+            return;
+        }
+        v += len;
+        v += strspn(v, ", ");
+    }
+    append(list, size, value);
+}
+
+/* What a pass of epp_apply() found and did */
+struct epp_pass {
+    int written;    /* CPUs set to EPP_TARGET */
+    int already;    /* found at EPP_TARGET */
+    int offline;    /* offline: taken by a later pass, once online */
+    int none;       /* online, without a preference */
+    char was[96];   /* the values of those written */
+};
+
+/*
+ * Under the lock, by a holder: each online CPU with a preference that the
+ * record @rec (NULL: none yet) does not list - every one at first, then
+ * those come online since - at EPP_TARGET.  Recorded before anything is
+ * written, a CPU found there already too, so that a later pass leaves it
+ * to whoever changes it next.  All of them or none: after a refusal those
+ * written are put back, and those that could not be stay recorded for a
+ * helper to put back.  Nothing recorded when there was no record and
+ * nothing to write.  0, or -1 with why in @why.
+ */
+static int epp_apply(const char *rec, struct epp_pass *p, char *why, size_t size)
+{
+    struct todo {
+        unsigned id;
+        char was[64];
+        bool back;
+    } *todo = NULL;
+    const size_t reclen = rec ? strlen(rec) : 0;
+    unsigned *ids = NULL;
+    char *text = NULL;
+    int n, ntodo = 0, rc = -1;
+    size_t len;
+
+    memset(p, 0, sizeof(*p));
+    online_read(&online_now);
+    if ((n = cpu_dirs(CPU_DIR, &ids)) < 0) {
+        snprintf(why, size, CPU_DIR ": %s", strerror(-n));
+        return -1;
+    }
+    todo = calloc((size_t)n + 1, sizeof(*todo));
+    text = malloc(reclen + (size_t)n * 64 + 1);
+    if (!todo || !text) {
+        snprintf(why, size, "%s", strerror(ENOMEM));
+        goto out;
+    }
+    len = (size_t)sprintf(text, "%s", rec ? rec : "");
+    for (int i = 0; i < n; i++) {
+        char now[64];
+        int err;
+
+        if (epp_listed(rec, ids[i])) {
+            continue;
+        }
+        if (!online_has(&online_now, ids[i])) {
+            p->offline++;
+            continue;
+        }
+        err = epp_get(ids[i], now, sizeof(now));
+        if (err == -ENOENT) {
+            p->none++;
+            continue;
+        }
+        if (err == -EBUSY) {
+            /* going offline */
+            p->offline++;
+            continue;
+        }
+        if (err < 0) {
+            snprintf(why, size, "cpu%u's preference %s", ids[i],
+                     err == -EINVAL ? "is not a value it takes back" : "cannot be read");
+            goto out;
+        }
+        if (strcmp(now, EPP_TARGET) == 0) {
+            p->already++;
+            len += (size_t)sprintf(text + len, "cpu%u %s -\n", ids[i], now);
+            continue;
+        }
+        todo[ntodo].id = ids[i];
+        snprintf(todo[ntodo].was, sizeof(todo[ntodo].was), "%s", now);
+        ntodo++;
+        len += (size_t)sprintf(text + len, "cpu%u %s " EPP_TARGET "\n", ids[i], now);
+    }
+    if (!ntodo && !rec) {
+        rc = 0;
+        goto out;
+    }
+    /* recorded before anything is written */
+    if (len > reclen && !state_write("epp", text)) {
+        snprintf(why, size, "%s", strerror(errno));
+        goto out;
+    }
+    for (int i = 0; i < ntodo; i++) {
+        char now[64];
+        int err = epp_put(todo[i].id, EPP_TARGET);
+
+        /* read back: a driver may take a value and keep another */
+        if (!err && (epp_get(todo[i].id, now, sizeof(now)) < 0 || strcmp(now, EPP_TARGET) != 0)) {
+            err = -EIO;
+        }
+        if (!err) {
+            note_value(p->was, sizeof(p->was), todo[i].was);
+            p->written++;
+            continue;
+        }
+        if (err == -EIO) {
+            snprintf(why, size, "cpu%u does not keep what was written", todo[i].id);
+        } else if (err == -EBUSY) {
+            snprintf(why, size, "cpu%u refuses it (busy: offline, or its driver sets it itself)",
+                     todo[i].id);
+        } else {
+            snprintf(why, size, "cpu%u: %s", todo[i].id, strerror(-err));
+        }
+        /* all or nothing: this pass's CPUs back, this one too (a refused
+           write may have taken); those not written are as they were */
+        for (int j = 0; j < ntodo; j++) {
+            char cur[64];
+
+            todo[j].back = j > i || (epp_get(todo[j].id, cur, sizeof(cur)) == 0 &&
+                                     (strcmp(cur, todo[j].was) == 0 ||
+                                      (strcmp(cur, EPP_TARGET) == 0 &&
+                                       epp_put(todo[j].id, todo[j].was) == 0)));
+        }
+        /* the record: what it had, and the CPUs not back */
+        len = (size_t)sprintf(text, "%s", rec ? rec : "");
+        for (int j = 0; j < ntodo; j++) {
+            if (!todo[j].back) {
+                len += (size_t)sprintf(text + len, "cpu%u %s " EPP_TARGET "\n", todo[j].id,
+                                       todo[j].was);
+            }
+        }
+        if (len) {
+            state_write("epp", text);
+        } else {
+            state_remove("epp");
+        }
+        p->written = p->already = 0;
+        p->was[0] = '\0';
+        goto out;
+    }
+    rc = 0;
+out:
+    free(ids);
+    free(todo);
+    free(text);
+    return rc;
+}
+
+/*
+ * Under the lock, as the last holder or for a dead one: each CPU that
+ * still reads EPP_TARGET back to the value it had.  One that cannot be put
+ * back now (offline, say) stays recorded, for the next helper.
+ */
+static void epp_restore(void)
+{
+    char *text = state_read("epp"), *line, *save = NULL, *keep, back[96] = "";
+    int restored = 0, left = 0, kept = 0;
+    size_t klen = 0;
+
+    if (!text) {
+        return;
+    }
+    if (!(keep = malloc(strlen(text) + 1))) {
+        /* nothing lost: the next helper tries again */
+        free(text);
+        return;
+    }
+    keep[0] = '\0';
+    for (line = strtok_r(text, "\n", &save); line; line = strtok_r(NULL, "\n", &save)) {
+        char was[64], wrote[64], now[64];
+        unsigned id;
+        int err;
+
+        /* "cpuN WAS -": found at EPP_TARGET, nothing to put back */
+        if (sscanf(line, "cpu%u %63s %63s", &id, was, wrote) != 3 || !epp_value(was) ||
+            strcmp(wrote, EPP_TARGET) != 0) {
+            continue;
+        }
+        err = epp_get(id, now, sizeof(now));
+        if (err == 0 && (strcmp(now, was) == 0 ||
+                         (strcmp(now, EPP_TARGET) == 0 && epp_put(id, was) == 0))) {
+            /* put back - or as it was: a helper killed before writing it,
+               or after putting it back */
+            restored++;
+            note_value(back, sizeof(back), was);
+        } else if ((err == 0 && strcmp(now, EPP_TARGET) != 0) || err == -ENOENT) {
+            /* another value since (a power profile chosen meanwhile), or no
+               preference any more (the driver's mode changed) */
+            left++;
+        } else {
+            /* offline now, not readable, or not taken back */
+            kept++;
+            klen += (size_t)sprintf(keep + klen, "%s\n", line);
+        }
+    }
+    free(text);
+    if (klen) {
+        state_write("epp", keep);
+    } else {
+        state_remove("epp");
+    }
+    free(keep);
+    if (restored && kept) {
+        reply("restored epp: %d cpus back to %s; %d kept for later (offline or refused)", restored,
+              back, kept);
+    } else if (restored) {
+        reply("restored epp: %d cpus back to %s", restored, back);
+    } else if (kept) {
+        reply("restored epp: %d cpus kept for later (offline or refused)", kept);
+    }
+    if (left) {
+        reply("left epp: %d cpus changed by someone else since", left);
+    }
+    sys_log("energy performance preference: %d cpus back to %s, %d left as changed since, %d kept "
+            "for later", restored, back[0] ? back : "-", left, kept);
+}
+
+/* Why no online CPU has a preference: its cpufreq driver, if it has one */
+static void epp_none(char *why, size_t size)
+{
+    char path[PATH_MAX], driver[32];
+    unsigned *ids = NULL;
+    int n = cpu_dirs(CPU_DIR, &ids);
+    bool found = false;
+
+    for (int i = 0; i < n && !found; i++) {
+        snprintf(path, sizeof(path), CPU_DIR "/cpu%u/cpufreq/scaling_driver", ids[i]);
+        found = online_has(&online_now, ids[i]) && read_word(path, driver, sizeof(driver));
+    }
+    free(ids);
+    if (found) {
+        snprintf(why, size, "%s has no energy performance preference (amd-pstate and "
+                 "intel_pstate have one, in active mode)", driver);
+    } else {
+        snprintf(why, size, "no cpufreq driver, so no energy performance preference");
+    }
+}
+
+void epp_on(void)
+{
+    struct hold *h = hold_find("epp");
+    const bool had = h != NULL;
+    char why[200], extra[160] = "", *rec;
+    struct epp_pass p;
+    bool first = false;
+    int err, rc;
+
+    lock_all();
+    if (!h && !(h = hold_take("epp", "on", &first))) {
+        err = errno;
+        unlock_all();
+        reply("error epp: cannot take the hold: %s", strerror(err));
+        return;
+    }
+    /* the record: of the first holder, or one a restore kept for CPUs offline then */
+    rec = state_read("epp");
+    rc = epp_apply(rec, &p, why, sizeof(why));
+    free(rec);
+    if (first && (rc < 0 || !p.written)) {
+        /* nothing of this helper's to hold: the hold goes, and a record
+           kept (CPUs offline, an undo refused) stays for the next helper */
+        hold_close(h, true);
+        unlock_all();
+        if (rc < 0) {
+            reply("error epp: %s", why);
+        } else if (p.already) {
+            reply("ok epp on: already " EPP_TARGET " on %d cpus, left as it is", p.already);
+        } else if (!p.none && p.offline) {
+            reply("skip epp: no online cpu answers for its preference now (busy)");
+        } else {
+            epp_none(why, sizeof(why));
+            reply("skip epp: %s", why);
+        }
+        return;
+    }
+    if (first) {
+        hold_share(h);
+    }
+    unlock_all();
+    if (rc < 0) {
+        /* a later pass: what was set before holds on */
+        reply("error epp: %s", why);
+        return;
+    }
+    if (p.already && first) {
+        snprintf(extra + strlen(extra), sizeof(extra) - strlen(extra), "; %d at " EPP_TARGET
+                 " already", p.already);
+    }
+    if (p.offline) {
+        snprintf(extra + strlen(extra), sizeof(extra) - strlen(extra), "; %d offline", p.offline);
+    }
+    if (p.none) {
+        snprintf(extra + strlen(extra), sizeof(extra) - strlen(extra), "; %d without one", p.none);
+    }
+    if (p.written) {
+        sys_log("uid %u: energy performance preference " EPP_TARGET " on %d cpus (was %s)",
+                (unsigned)caller_uid, p.written, p.was);
+    }
+    if (first) {
+        reply("ok epp on: " EPP_TARGET " on %d cpus (was %s)%s", p.written, p.was, extra);
+    } else if (p.written) {
+        reply("ok epp on: %s; %d cpus online since at " EPP_TARGET " (was %s)",
+              had ? "already" : "set by another vitrine session", p.written, p.was);
+    } else {
+        reply("ok epp on: %s", had ? "already" : "set by another vitrine session");
+    }
+}
+
+void epp_off(void)
+{
+    struct hold *h = hold_find("epp");
+
+    if (h) {
+        hold_drop(h);
+    }
+    reply("ok epp off");
+}
+
 /* --- all of them --- */
 
 /* The threads of a record's "kept T,T...", into @keep: their count (an
@@ -1816,6 +2391,8 @@ static void restore_key(const char *key)
         udmabuf_restore();
     } else if (strcmp(key, "thp") == 0) {
         thp_restore();
+    } else if (strcmp(key, "epp") == 0) {
+        epp_restore();
     } else {
         state_remove(key);
     }
@@ -1916,5 +2493,6 @@ void settings_release(void)
             hold_drop(h);
         }
     }
+    latency_release();
     snprintf(bound_why, sizeof(bound_why), "the settings were let go");
 }
