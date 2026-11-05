@@ -19,7 +19,13 @@
 class CloneDialog;
 class GtkLoop;
 class MainWindowBuilds;
+class Notices;
+class PreferencesDialog;
 class SettingsDialog;
+class StatsButton;
+class Task;
+class TaskButton;
+class UsbDialog;
 class Vm;
 class VmConsole;
 class VmCloner;
@@ -39,8 +45,9 @@ class VmStore;
  * access), Shut Down and how it reached the guest, Pause and Resume, Reset,
  * Force Off and a QEMU that does not end, why a run failed, Remove; and
  * what closing asks while VMs show in the window or tasks run.  The
- * actions whose dialogs are not in the GTK app yet are there, inactive:
- * New VM, Import VM, Settings, Clone, Builds, Preferences.
+ * dialogs are in mainwindowdialogs.cpp; the Builds window and the guest
+ * tools in mainwindowbuilds.cpp; Preferences, the notices, the tasks, the
+ * statistics and USB Devices… in mainwindowparts.cpp.
  *
  * The VMs' screens (mainwindowconsole.cpp): one console per VM
  * (VmConsole), the selected one's in the page, with its views, full
@@ -98,6 +105,14 @@ public:
      * there.  The window's key controller's (and the tests').
      */
     bool switchViewByKey(guint keyval, guint keycode, GdkModifierType state);
+
+    /* Preferences, the notices and the tasks (mainwindowparts.cpp): the dialog shown */
+    PreferencesDialog *showPreferences();
+    Notices *notices() const;
+    TaskButton *tasks() const;
+    StatsButton *stats() const;
+    /* USB Devices… of the selected VM, while it runs: the dialog shown */
+    UsbDialog *showUsbDevices();
 
 private:
     /* the builds and the guest tools: mainwindowbuilds.cpp */
@@ -252,6 +267,24 @@ private:
     /* The copies of clones going on, by the VM copied; the dialog showing one */
     QHash<QString, QPointer<VmCloner>> m_clones;
     CloneDialog *m_cloneDialog = nullptr;
+
+    /* Preferences, the notices of the running VMs, the tasks: mainwindowparts.cpp */
+    void createParts();
+    void dropParts();
+    /* The copy of @cloner, of the VM @sourceId: its task's details are the window's */
+    void followClone(VmCloner *cloner, const QString &sourceId);
+    /* A clone's details: the dialog of the copy, the clone, or why it failed */
+    void showCloneTask(Task *task);
+    /* The statistics and USB Devices… follow the VM selected and its state */
+    void updateParts();
+    /* made by createParts(), gone with the window (dropParts()) */
+    Notices *m_notices = nullptr;
+    TaskButton *m_tasks = nullptr;
+    StatsButton *m_stats = nullptr;
+    /* The Preferences, while they show */
+    PreferencesDialog *m_preferences = nullptr;
+    /* The clones' tasks: the VM copied, and once made, the clone */
+    QHash<const Task *, std::pair<QString, QString>> m_cloneTasks;
     /* The builds and the guest tools */
     std::unique_ptr<MainWindowBuilds> m_builds;
 };

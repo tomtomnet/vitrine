@@ -85,6 +85,7 @@ static void appendConsoleSections(GMenu *menu)
     g_menu_append_submenu(screen, "Send _Key", keys);
     g_object_unref(keys);
     g_menu_append(screen, "Release _Input", "win.release-input");
+    g_menu_append(screen, "_USB Devices…", "win.usb-devices");
     g_menu_append_section(menu, nullptr, G_MENU_MODEL(views));
     g_menu_append_section(menu, nullptr, G_MENU_MODEL(screen));
     g_object_unref(views);

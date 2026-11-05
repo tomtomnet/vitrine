@@ -71,11 +71,6 @@ private:
     void attach(Vm *vm, const UsbDevice &dev);
     void detach(Vm *vm, const UsbDevice &dev);
     void keep(Vm *vm);
-    /* The VM other than @vm that has @dev, if any */
-    Vm *holder(const UsbDevice &dev, const Vm *vm) const;
-    /* The device IDs @vm would get at its next starts if kept now; @changes if not those it gets */
-    QList<std::pair<quint16, quint16>> keptIds(Vm *vm, bool *changes) const;
-    QString key(const Vm *vm, const UsbDevice &dev) const;
     void warn(const QString &text, const QString &why);
     QWidget *dialogParent() const;
 

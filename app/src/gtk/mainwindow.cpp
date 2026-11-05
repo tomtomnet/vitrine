@@ -68,6 +68,7 @@ static GMenuModel *itemMenu()
     g_menu_append(power, "Shut _Down", "win.shut-down");
     g_menu_append(power, "_Reset…", "win.reset");
     g_menu_append(power, "_Force Off…", "win.force-off");
+    g_menu_append(power, "_USB Devices…", "win.usb-devices");
     g_menu_append(files, "_Settings", "win.settings");
     g_menu_append(files, "Show _Log", "win.show-log");
     g_menu_append(files, "_Open Folder", "win.open-folder");
@@ -152,6 +153,8 @@ MainWindow::MainWindow(GtkLoop *loop, VmStore *store)
     auto *host = new HostSettings(store, m_qt.get());
     QObject::connect(host, &HostSettings::notice, m_qt.get(),
                      [this](const QString &text) { notify(text, 15000); });
+    /* Preferences, the notices of the running VMs, the tasks: mainwindowparts.cpp */
+    createParts();
 
     QObject::connect(store, &VmStore::added, m_qt.get(), [this](Vm *vm) { addVm(vm); });
     QObject::connect(store, &VmStore::removed, m_qt.get(),
@@ -329,9 +332,7 @@ void MainWindow::createActions()
         }
     }, "<Control>q");
     addAction(app, "builds", [this]() { showBuilds(); }, "<Control>b");
-    /* its window is not in the GTK app yet */
-    addAction(app, "preferences", [] {}, "<Control>comma");
-    setEnabled("preferences", false);
+    /* Preferences: createParts() (mainwindowparts.cpp) */
     /* the dialogs (mainwindowdialogs.cpp) */
     addAction(win, "new-vm", [this]() { newVm(); }, "<Control>n");
     addAction(win, "import-vm", [this]() { importVm(); }, "<Control>i");
@@ -1346,6 +1347,7 @@ void MainWindow::closed()
     for (const QString &id : m_consoles.keys()) {
         dropConsole(id);
     }
+    dropParts();
     if (m_builds) {
         m_builds->closed();
     }
