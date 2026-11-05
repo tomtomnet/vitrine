@@ -11,6 +11,7 @@
 #include "core/vmrunner.h"
 #include "core/vmstore.h"
 #include "gtkview/vmdisplay.h"
+#include "gtkview/widgetrelease.h"
 
 /* QEMU opens the display's socket with the others, before QMP answers:
    a few tries cover a slow start */
@@ -82,6 +83,7 @@ VmConsole::~VmConsole()
        the guest's window hangs from it */
     detach();
     if (NestedDisplay *nested = std::exchange(m_nested, nullptr)) {
+        WidgetRelease::unfocus(nested->widget());
         gtk_box_remove(GTK_BOX(m_desktopBox), nested->widget());
         delete nested;
     }
@@ -340,8 +342,10 @@ void VmConsole::dropNested()
     if (!m_nested) {
         return;
     }
-    /* nestedView() is null while it goes */
+    /* nestedView() is null while it goes; the focus off its view first, which GTK
+       would move at its next frame, its C++ side gone by then */
     NestedDisplay *nested = std::exchange(m_nested, nullptr);
+    WidgetRelease::unfocus(nested->widget());
     gtk_box_remove(GTK_BOX(m_desktopBox), nested->widget());
     delete nested;
     m_views->powerOn();
@@ -521,6 +525,7 @@ void VmConsole::detach()
     /* display() is null while it goes: what it signals on its way out must
        not lead back to it */
     VmDisplay *display = std::exchange(m_display, nullptr);
+    WidgetRelease::unfocus(GTK_WIDGET(display->widget()->gobj()));
     gtk_box_remove(GTK_BOX(m_screenBox), GTK_WIDGET(display->widget()->gobj()));
     delete display;
     notifyChanged();

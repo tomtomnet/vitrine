@@ -56,7 +56,8 @@ add_library(vitrine_gtkview STATIC
     src/gtkview/qtgui/qtguicompat.h
     src/gtkview/shortcutsinhibit.h
     src/gtkview/viewkeys.h
-    src/gtkview/vmdisplay.h)
+    src/gtkview/vmdisplay.h
+    src/gtkview/widgetrelease.h)
 # <QOpenGLContext>, <QImage>...: src/gtkview/qtgui's, before anything else
 target_include_directories(vitrine_gtkview BEFORE PUBLIC src/gtkview/qtgui)
 target_include_directories(vitrine_gtkview PUBLIC src PRIVATE src/vmview)

@@ -5,6 +5,7 @@
 #include "displaywidget.h"
 #include "framestill.h"
 #include "gtkclipboard.h"
+#include "widgetrelease.h"
 #include "vmview/dbusdisplay.h"
 #include "vmview/listener.h"
 #include "vmview/qmp.h"
@@ -435,6 +436,8 @@ void VmDisplay::destroyWindow()
         m_renderer = nullptr;
     }
     if (DisplayWidget *widget = std::exchange(m_widget, nullptr)) {
+        /* the focus off it while it can still take the focus-out (src/gtkview/widgetrelease.h) */
+        WidgetRelease::unfocus(GTK_WIDGET(widget->gobj()));
         if (m_fullScreenWindow) {
             m_fullScreenWindow->unset_child();
         } else {

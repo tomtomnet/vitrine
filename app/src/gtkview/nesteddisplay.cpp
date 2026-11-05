@@ -4,6 +4,7 @@
 #include "nested/vmview.h"
 #include "shortcutsinhibit.h"
 #include "viewkeys.h"
+#include "widgetrelease.h"
 
 #include <QFile>
 
@@ -218,6 +219,8 @@ DesktopWidget::DesktopWidget(GuestDesktop *owner)
 DesktopWidget::~DesktopWidget()
 {
     holdWindowShortcuts(false);
+    /* GTK may keep the widget past this (the window's focus): no event to this object any more */
+    WidgetRelease::dropControllers(GTK_WIDGET(gobj()));
 }
 
 void DesktopWidget::setMessage(const QString &message)
