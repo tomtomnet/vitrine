@@ -24,11 +24,13 @@
 #include "gtk/displaypage.h"
 #include "gtk/gtkloop.h"
 #include "gtk/importdialog.h"
+#include "gtk/logdialog.h"
 #include "gtk/machinepage.h"
 #include "gtk/newvmdialog.h"
 #include "gtk/settingsdialog.h"
 #include "gtk/settingspages.h"
 #include "gtk/sharespage.h"
+#include "gtk/snapshotsdialog.h"
 #include "gtk/storagepage.h"
 #include "gtk/textdialog.h"
 #include "ui/uiconfig.h"
@@ -472,6 +474,55 @@ private slots:
         QCOMPARE(VmConfig::memoryMiB(vm->args()), 2048);
         QCOMPARE(VmConfig::cpus(vm->args()).count, 2);
         QTest::qWait(50);
+    }
+
+    /* The log as QEMU writes it: whole lines, followed; Clear empties the file */
+    void logDialog()
+    {
+        QTemporaryDir dir;
+        const QString path = dir.filePath("qemu.log");
+        QFile log(path);
+        QVERIFY(log.open(QIODevice::WriteOnly));
+        log.write("first\nsecond\n");
+        log.flush();
+        auto *dialog = new LogDialog("Alpha", path, presenter());
+
+        QCOMPARE(dialog->text(), "first\nsecond\n");
+        log.write("third\npart");
+        log.flush();
+        dialog->poll();
+        QCOMPARE(dialog->text(), "first\nsecond\nthird\n");
+        log.write("ial\n");
+        log.flush();
+        dialog->poll();
+        QVERIFY(dialog->text().endsWith("third\npartial\n"));
+        dialog->clear();
+        QCOMPARE(QFileInfo(path).size(), 0);
+        QCOMPARE(dialog->text(), "");
+        delete dialog;
+    }
+
+    /* A snapshot of a stopped VM's qcow2 disk, by qemu-img */
+    void snapshotsDialog()
+    {
+        QTemporaryDir dir;
+        QVERIFY(addVm(dir.path(), "s", "-name S\n-m 1G\n"
+                                       "-drive file=disk.qcow2,format=qcow2,if=virtio\n"));
+        QVERIFY(createDiskImage(dir.filePath("s/disk.qcow2"), qint64(1) << 20));
+        VmStore store(dir.path());
+        Vm *vm = store.find("s");
+        QString started = "none";
+        auto *dialog = new SnapshotsDialog(vm, presenter(),
+                                           [&](const QString &snapshot) { started = snapshot; });
+
+        QTRY_VERIFY(!dialog->isBusy());
+        QVERIFY(dialog->names().isEmpty());
+        dialog->take("before update");
+        QVERIFY(dialog->isBusy());
+        QTRY_COMPARE_WITH_TIMEOUT(dialog->names(), QStringList({"before update"}), 10000);
+        QTRY_VERIFY(!dialog->isBusy());
+        QCOMPARE(started, "none");
+        delete dialog;
     }
 
     /* The page names of the settings file, the Qt app's */

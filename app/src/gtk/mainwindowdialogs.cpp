@@ -12,8 +12,10 @@
 #include "core/vmstore.h"
 #include "gtk/clonedialog.h"
 #include "gtk/importdialog.h"
+#include "gtk/logdialog.h"
 #include "gtk/newvmdialog.h"
 #include "gtk/settingsdialog.h"
+#include "gtk/snapshotsdialog.h"
 #include "gtk/textdialog.h"
 #include "gtk/widgets.h"
 #include "ui/qemudocs.h"
@@ -159,4 +161,28 @@ VmCloner *MainWindow::startClone(Vm *source, const QString &name)
     });
     cloner->start(source, name);
     return cloner;
+}
+
+void MainWindow::showSnapshots()
+{
+    Vm *vm = current();
+
+    if (!vm || !m_window) {
+        return;
+    }
+    const QString id = vm->id();
+    auto *dialog = new SnapshotsDialog(vm, presenter(), [this, id](const QString &snapshot) {
+        select(id);
+        start(snapshot);
+    });
+    present(dialog->dialog());
+}
+
+void MainWindow::showLogOf(Vm *vm)
+{
+    if (!vm || !m_window) {
+        return;
+    }
+    auto *dialog = new LogDialog(vm->name(), vm->runner()->logPath(), presenter());
+    present(dialog->dialog());
 }

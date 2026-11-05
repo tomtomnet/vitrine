@@ -99,9 +99,10 @@ private:
     void updateActions();
     void updateWaiting();
 
-    void start();
+    /* Start, from the running state of @snapshot if given (Start From It) */
+    void start(const QString &snapshot = {});
     /* Start, past the questions that may call it off */
-    void startChecked(const QString &id);
+    void startChecked(const QString &id, const QString &snapshot = {});
     void togglePause();
     void shutDown();
     void reset();
@@ -121,6 +122,9 @@ private:
     /* Ctrl+S: Apply, while the settings show; else they show */
     void settingsShortcut();
     void cloneVm();
+    void showSnapshots();
+    /* The log of @vm, as QEMU writes it */
+    void showLogOf(Vm *vm);
     /* The copy of @source as @name, the window's: it goes on with the dialog closed */
     VmCloner *startClone(Vm *source, const QString &name);
 

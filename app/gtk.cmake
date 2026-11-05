@@ -46,6 +46,8 @@ add_library(vitrine_gtk STATIC
     src/gtk/guarded.h
     src/gtk/importdialog.cpp
     src/gtk/importdialog.h
+    src/gtk/logdialog.cpp
+    src/gtk/logdialog.h
     src/gtk/machinepage.cpp
     src/gtk/machinepage.h
     src/gtk/mainwindow.cpp
@@ -67,6 +69,8 @@ add_library(vitrine_gtk STATIC
     src/gtk/settingspages.h
     src/gtk/sharespage.cpp
     src/gtk/sharespage.h
+    src/gtk/snapshotsdialog.cpp
+    src/gtk/snapshotsdialog.h
     src/gtk/storagepage.cpp
     src/gtk/storagepage.h
     src/gtk/textdialog.cpp
