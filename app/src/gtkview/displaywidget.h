@@ -59,6 +59,12 @@ public:
     QSize physicalSize() const;
     uint32_t refreshMilliHz() const;
     void sendUiInfo();
+    /*
+     * The millimetres @view device pixels cover on the monitor of
+     * @widget's window (core/physicalsize.h): empty where the monitor does
+     * not say, for QEMU's default
+     */
+    static QSize physicalMm(GtkWidget *widget, const QSize &view);
 
     bool grabbed() const { return m_input.grabbed(); }
     /* DisplayInput's, and whether the desktop keeps its shortcuts though

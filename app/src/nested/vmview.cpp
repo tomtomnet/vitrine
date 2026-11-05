@@ -618,7 +618,10 @@ struct View {
     }
     void watch(wl_proxy *p, Object *o)
     {
-        wl_proxy_add_dispatcher(p, &View::dispatch, this, o);
+        // no user data: the objects are found through byProxy. The app's toolkit reads the user data of
+        // every surface its seat's events name (GDK 4.24: GDK_IS_SURFACE on it), the guest's too (vitrine,
+        // 2026-11-05)
+        wl_proxy_add_dispatcher(p, &View::dispatch, this, nullptr);
         byProxy[p] = o;
     }
 };

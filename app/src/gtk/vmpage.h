@@ -7,12 +7,15 @@
 #include <QPointer>
 #include <QString>
 
+#include <functional>
+
 #include "gtk/vmsummary.h"
 
 class GpuContexts;
 class QemuDocs;
 class QTimer;
 class Vm;
+class VmConsole;
 
 /*
  * The page of the VM selected in the sidebar, the content of the window:
@@ -25,9 +28,13 @@ class Vm;
  *    what shows it (its own window, none);
  *  - Details: what it is, in groups of property rows.
  *
- * The screen is gtk-vmview's VmDisplay, which goes into screenArea(): a
- * placeholder until then.  Notices are a banner over the views, not
- * toasts: what GTK draws over the screen is hidden under its subsurface.
+ * The screen is the VM's console's (VmConsole: its VmDisplay, or the
+ * guest's nested desktop), which MainWindow keeps for the VM's life: each
+ * console's widget is added once (addConsole()), and the selected VM's
+ * shows (setConsole()).  Notices are a banner over the views, not toasts:
+ * what GTK draws over the screen is hidden under its surface.  While the
+ * screen shows they float over it instead (a popover, a window of its own
+ * above the screen), as a banner would resize the guest's screen twice.
  */
 class VmPage
 {
@@ -67,11 +74,23 @@ public:
     void setClosing(const QString &text);
 
     /*
-     * Where the VM's screen goes, gtk-vmview's VmDisplay: shown while the
-     * VM runs in vitrine's window (VmRunner::displaySocket())
+     * Where the VM's screen goes: the consoles, shown while the VM runs in
+     * vitrine's window (VmRunner::displaySocket())
      */
     GtkWidget *screenArea() const { return m_screen; }
-    /* An in-window dialog is over the screen, or no longer (VmDisplay::setCovered()) */
+    /* A console's widget, in the place of the screen, for as long as its VM exists */
+    void addConsole(VmConsole *console);
+    void removeConsole(VmConsole *console);
+    /* The selected VM's console, null for none: its page and its screen */
+    void setConsole(VmConsole *console);
+    VmConsole *console() const { return m_consoleShown; }
+    /* The VM's screen is in sight: the Console view, on its screen */
+    bool screenShown() const;
+    /* The console's page, its screen, its keys or its views changed */
+    void refreshConsole() { updateConsole(); }
+    /* The Console view came in sight, chosen or set */
+    std::function<void()> consoleShown;
+    /* An in-window dialog is over the screen, or no longer (VmConsole::setCovered()) */
     void setCovered(bool covered);
     bool isCovered() const { return m_covered; }
 
@@ -82,6 +101,8 @@ private:
     void updateDetails();
     void updateButtons();
     void showConsolePage(const char *name);
+    /* The notice in the banner, or over the screen while it shows */
+    void placeNotice();
 
     QObject m_qt;
     QPointer<Vm> m_vm;
@@ -91,6 +112,11 @@ private:
     QTimer *m_noticeTimer;
     QString m_error;
     bool m_covered = false;
+    /* the selected VM's console */
+    VmConsole *m_consoleShown = nullptr;
+    /* the notice shown, if any: in the banner, or over the screen (m_toast) */
+    QString m_noticeText;
+    bool m_noticeShown = false;
 
     GtkWidget *m_root;
     AdwHeaderBar *m_header;
@@ -104,12 +130,22 @@ private:
     GtkWidget *m_start;
     GtkWidget *m_pause;
     GtkWidget *m_shutDown;
+    /* while the screen shows: Full Screen, and the Send Key menu */
+    GtkWidget *m_fullScreen;
+    GtkWidget *m_sendKey;
     /* Console */
     GtkStack *m_console;
     AdwStatusPage *m_home;
     GtkWidget *m_homeError;
     AdwStatusPage *m_message;
+    GtkWidget *m_retry;
     GtkWidget *m_screen;
+    /* the consoles' widgets, the selected VM's shown; m_noConsole without */
+    GtkStack *m_consoles;
+    GtkWidget *m_noConsole;
+    /* the notice over the screen */
+    GtkWidget *m_toast;
+    GtkWidget *m_toastLabel;
     /* Details: rebuilt when its rows change, else their values updated */
     AdwPreferencesPage *m_details;
     /* its header: the VM's name and state beside its icon */

@@ -36,6 +36,8 @@ add_library(vitrine_gtk STATIC
     src/gtk/argspage.h
     src/gtk/clonedialog.cpp
     src/gtk/clonedialog.h
+    src/gtk/desktopgpu.cpp
+    src/gtk/desktopgpu.h
     src/gtk/dialog.cpp
     src/gtk/dialog.h
     src/gtk/displaypage.cpp
@@ -52,6 +54,7 @@ add_library(vitrine_gtk STATIC
     src/gtk/machinepage.h
     src/gtk/mainwindow.cpp
     src/gtk/mainwindow.h
+    src/gtk/mainwindowconsole.cpp
     src/gtk/mainwindowdialogs.cpp
     src/gtk/newvmdialog.cpp
     src/gtk/newvmdialog.h
@@ -75,6 +78,8 @@ add_library(vitrine_gtk STATIC
     src/gtk/storagepage.h
     src/gtk/textdialog.cpp
     src/gtk/textdialog.h
+    src/gtk/vmconsole.cpp
+    src/gtk/vmconsole.h
     src/gtk/vmpage.cpp
     src/gtk/vmpage.h
     src/gtk/vmsummary.cpp
@@ -83,8 +88,11 @@ add_library(vitrine_gtk STATIC
     src/gtk/widgets.h
 )
 target_include_directories(vitrine_gtk PUBLIC src)
+# the VM's screen and the nested desktop (vitrine_gtkview), the desktop's GPU
+# from linux-dmabuf over GDK's connection (vitrine_wlprotocols)
 target_link_libraries(vitrine_gtk
-    PUBLIC vitrine_core vitrine_uishared PkgConfig::VITRINE_GTKMM PkgConfig::VITRINE_ADW)
+    PUBLIC vitrine_core vitrine_uishared vitrine_gtkview PkgConfig::VITRINE_GTKMM PkgConfig::VITRINE_ADW
+    PRIVATE vitrine_wlprotocols PkgConfig::WAYLAND)
 target_compile_definitions(vitrine_gtk PRIVATE
     VITRINE_VERSION="${PROJECT_VERSION}"
     VITRINE_GTK_BUILD_ICONS="${CMAKE_CURRENT_BINARY_DIR}/gtk-icons")
@@ -126,7 +134,11 @@ if(BUILD_TESTING)
     vitrine_gtk_test(qemureference)
     vitrine_gtk_test(gtkmainwindow)
     vitrine_gtk_test(gtkdialogs)
+    # the consoles: views, keys, a dialog over them, what closing says (a stand-in
+    # for the nested desktop)
+    vitrine_gtk_test(gtkconsole)
     target_sources(test_gtkloop PRIVATE tests/gtkdisplay.h)
     target_sources(test_gtkmainwindow PRIVATE tests/gtkdisplay.h)
     target_sources(test_gtkdialogs PRIVATE tests/gtkdisplay.h)
+    target_sources(test_gtkconsole PRIVATE tests/gtkdisplay.h)
 endif()

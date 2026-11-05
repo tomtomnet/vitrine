@@ -26,6 +26,21 @@ if [ "${CROSVM_DESKTOP_SESSION:-0}" = 1 ] && [ -n "${CROSVM_DESKTOP_HOST_DISPLAY
     if [ "${CROSVM_DESKTOP_NESTED_OVERLAYS:-0}" != 1 ]; then
         export KWIN_USE_OVERLAYS=0
     fi
+    # No input method for this KWin unless you chose one (2026-11-05: Shift was lost when Shift and the letter came
+    # in one batch, "Ab!" typed as "ab1" in Konsole; found by vitrine). Fedora's kde-settings make plasma-keyboard,
+    # an on-screen keyboard, every KDE session's input method (/usr/share/kde-settings/kde-profile/default/xdg/
+    # kwinrc). This KWin's input devices (its Wayland backend's) have no name, and KWin's list of devices whose keys
+    # skip the input method holds an empty name while KWIN_DEVICE_SKIPS_INPUT_METHOD is unset: the keys went straight
+    # to the app while KWin left the modifiers to the input method, which sent them back a round trip later, after
+    # the letter. An empty InputMethod in a config directory ahead of the system's gives none; an input method set in
+    # your own ~/.config/kwinrc still wins. Only this KWin (and its Xwayland) sees the directory.
+    # CROSVM_DESKTOP_INPUT_METHOD=1 keeps the system's.
+    if [ "${CROSVM_DESKTOP_INPUT_METHOD:-0}" != 1 ] && [ -n "${XDG_RUNTIME_DIR:-}" ]; then
+        im_dir=$XDG_RUNTIME_DIR/crosvm-desktop-xdg
+        if mkdir -p "$im_dir" && printf '[Wayland]\nInputMethod=\n' > "$im_dir/kwinrc"; then
+            export XDG_CONFIG_DIRS="$im_dir:${XDG_CONFIG_DIRS:-/etc/xdg}"
+        fi
+    fi
     # KWin settings this session's KWin gets on top (VAR=VALUE ...): CROSVM_DESKTOP_KWIN_ENV - KWin's own
     # and Mesa's (GALLIUM_*, MESA_*, AMD_*, RADV_*: driver knobs for this KWin only, 2026-10-13)
     for kv in ${CROSVM_DESKTOP_KWIN_ENV:-}; do

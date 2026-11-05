@@ -2,7 +2,7 @@
 # exact version, and dnf takes an installed one of the same version as done.
 Name:           vitrine-guest-tools
 Version:        0.1.0
-Release:        32%{?dist}
+Release:        33%{?dist}
 Summary:        vitrine guest tools: patched virtio-gpu driver, settings and agent
 
 # the driver's sources (dkms/vendor, dkms/patches) are the kernel's: MIT
@@ -181,6 +181,15 @@ fi
 %dir %{_sharedstatedir}/%{name}
 
 %changelog
+* Thu Nov 05 2026 vitrine <noreply@anthropic.com> - 0.1.0-33
+- the nested desktop's KWin runs without an input method (the research's
+  97e4f0d): Fedora's kde-settings make plasma-keyboard every KDE session's
+  input method, and with it the nested KWin passed a batch's keys to the
+  app before their modifiers, which came back from the input method a round
+  trip later: Shift and a letter sent together came out unshifted ("Ab!"
+  typed as "ab1"). An input method set in ~/.config/kwinrc is kept;
+  CROSVM_DESKTOP_INPUT_METHOD=1 in nested.conf keeps the system's
+
 * Wed Nov 04 2026 vitrine <noreply@anthropic.com> - 0.1.0-32
 - built for each Fedora release the tools are made for, 44 and 45, on a
   medium of its own; Fedora 45's has the tools and Mesa, no KDE packages yet

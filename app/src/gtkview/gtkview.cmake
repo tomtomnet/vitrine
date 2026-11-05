@@ -1,7 +1,8 @@
 # The VM display in GTK4 (src/gtkview/README.md), included by gtk.cmake under
 # its switch, VITRINE_GTK: the research side's display client of src/vmview as
 # it is, built without Qt GUI (src/gtkview/qtgui stands in for the few Qt GUI
-# classes it uses), with the GTK glue; and vitrine-gtk-view, its test program.
+# classes it uses), with the GTK glue; the nested desktop on GDK's connection
+# (src/nested's library, nestedvmview); and vitrine-gtk-view, its test program.
 # A target using it must never link Qt6::Gui (src/gtkview/qtgui/qtguicompat.h).
 
 # GDK's Wayland part: gdk/wayland/gdkwayland.h
@@ -18,8 +19,10 @@ set(GTKVIEW_OWN_SOURCES
     src/gtkview/displaywidget.cpp
     src/gtkview/framestill.cpp
     src/gtkview/gtkclipboard.cpp
+    src/gtkview/nesteddisplay.cpp
     src/gtkview/pointerconstraints.cpp
     src/gtkview/qtgui/qtguicompat.cpp
+    src/gtkview/shortcutsinhibit.cpp
     src/gtkview/vmdisplay.cpp)
 add_library(vitrine_gtkview STATIC
     # the research side's files, as in vitrine_vmview, and what goes where
@@ -48,15 +51,20 @@ add_library(vitrine_gtkview STATIC
     src/gtkview/displaywidget.h
     src/gtkview/framestill.h
     src/gtkview/gtkclipboard.h
+    src/gtkview/nesteddisplay.h
     src/gtkview/pointerconstraints.h
     src/gtkview/qtgui/qtguicompat.h
-    src/gtkview/vmdisplay.h)
+    src/gtkview/shortcutsinhibit.h
+    src/gtkview/viewkeys.h
+    src/gtkview/vmdisplay.h
+    src/gtkview/widgetrelease.h)
 # <QOpenGLContext>, <QImage>...: src/gtkview/qtgui's, before anything else
 target_include_directories(vitrine_gtkview BEFORE PUBLIC src/gtkview/qtgui)
 target_include_directories(vitrine_gtkview PUBLIC src PRIVATE src/vmview)
 target_link_libraries(vitrine_gtkview
     PUBLIC Qt6::Core PkgConfig::VITRINE_GTKMM PkgConfig::VITRINE_ADW PkgConfig::VITRINE_GDK_WAYLAND
-    PRIVATE PkgConfig::GIO PkgConfig::EGL PkgConfig::WAYLAND PkgConfig::GBM vitrine_wlprotocols)
+    PRIVATE PkgConfig::GIO PkgConfig::EGL PkgConfig::WAYLAND PkgConfig::GBM vitrine_wlprotocols
+            nestedvmview)
 # GLib's headers use the names of Qt's signals/slots keywords
 target_compile_definitions(vitrine_gtkview PRIVATE QT_NO_KEYWORDS)
 set_source_files_properties(${GTKVIEW_OWN_SOURCES} src/vmview/clipboardstate.cpp

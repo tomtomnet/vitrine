@@ -6,8 +6,13 @@ wl-cross-domain-proxy (guest/proxy) over virtio-gpu cross-domain.
 
 These files are the research's crosvm-desktop session
 (`~/Documents/virtio-gpu-desktop`, `src/crosvm-desktop/host-package/guest/files`
-at commit b973b6b). `UPSTREAM.sha256` has their hashes there:
-`sha256sum -c UPSTREAM.sha256` fails only for the files changed below.
+at commit 97e4f0d: no input method for the nested KWin, guest tools 0.1.0-33).
+`UPSTREAM.sha256` has their hashes there: `sha256sum -c UPSTREAM.sha256` fails
+only for the files changed below. The research's commits between b973b6b (the
+version taken first) and 97e4f0d took vitrine's changes to `session` below in
+their own words (the session's end when the host does not answer, the VT left
+to the kernel); vitrine keeps its own, so 97e4f0d's input method change is
+the only one taken from them.
 
 | file | installed as |
 |---|---|

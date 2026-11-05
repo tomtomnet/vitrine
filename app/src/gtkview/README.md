@@ -55,7 +55,11 @@ The rules:
 | `displayinput` | DisplayWindow's handling of keys, buttons, wheel and grab, without a toolkit |
 | `framestill` | the guest's frame as a GTK texture, for the widget while it is covered |
 | `gtkclipboard` | the host clipboard shared with the guest, with GdkClipboard |
+| `nesteddisplay` | the nested desktop: the guest's KDE session through src/nested's library on GDK's connection, in the console's Desktop view or full screen (src/nested's NestedView, in GTK) |
 | `pointerconstraints` | pointer lock with relative motion, and confinement, on GTK's Wayland connection |
+| `shortcutsinhibit` | the window's one shortcuts inhibitor, shared by the screen's grab and the nested desktop |
+| `viewkeys` | the app's own keys on the views (the console's Ctrl+Alt+1/2), full screen too |
+| `widgetrelease` | a view's widget out of focus before it leaves the window, its controllers off as its C++ side goes (GTK may keep the widget, and emit its controllers' signals, after that) |
 | `qtgui/` | the Qt GUI classes the research files use, on EGL |
 | `main.cpp` | `vitrine-gtk-view SOCKET`: a running VM's screen in a window of its own, to try the view |
 
@@ -102,3 +106,44 @@ How it fits GTK:
   the clipboard as its own and says nothing: the guest's text is set once
   more at vitrine's next input, unless the host copied something since.
 - Full screen moves the widget to a window of its own, as the Qt view does.
+- The guest is told its screen's physical size with each size (UIInfo's
+  `width_mm` and `height_mm`): the view's share of its monitor's, from
+  GdkMonitor's width_mm and height_mm, through `core/physicalsize.h` as the Qt
+  view does; none where the monitor does not say. QEMU puts it in the EDID,
+  and a GNOME guest picks its scale from it (QEMU's 100 DPI without).
+
+## The nested desktop (`nesteddisplay`)
+
+The guest's session (NestedDesktop::Mode::Integrated) goes through
+src/nested's library as in the Qt app: it serves the socket QEMU's
+cross-domain connects to, and passes the guest's Wayland protocol on to the
+compositor over GDK's own connection, on a queue and a thread of its own
+(GDK reads the same connection; libwayland's prepare/read protocol lets
+both). The guest's window hangs from a surface of vitrine's - one
+transparent pixel, no input - a desync subsurface of the window's, placed
+in the frame clock's layout phase where GTK laid the view out, as the
+screen's own surface is (`displaysurface`).
+
+- The pointer over the guest's window goes to the guest; beside it, to the
+  view, whose click gives the guest the keys, as a click on the guest's
+  window does (the library's `pressed`). GDK gets the compositor's events
+  for the guest's surfaces too, and passes over them: they carry no user
+  data (src/nested/README.md, Local changes).
+- The keys reach the guest through the library, which reads the window's
+  keyboard, while the view has the focus in the active window and input is
+  on (`vmview_set_keyboard_focus`). GTK gets them too: the view takes them
+  before the window's shortcuts and widgets, holding the window's capture
+  shortcut controllers meanwhile, as DisplayWidget does, with no input
+  method. Ctrl+Alt+F is the guest's own once its window is there.
+- The guest's shortcuts capture (its session asks: the library's
+  `shortcuts`) goes to the window that has the keys, through GDK's
+  inhibitor (`shortcutsinhibit`): the library puts the guest's on its
+  parent surface, which never has the keyboard focus.
+- Full screen: a window of its own, the parent surface moved there.
+- Covered by an in-window dialog: the parent surface leaves the window
+  (the guest's window with it, over anything GTK draws) and the view is
+  black until uncovered; the session runs on. No still: the guest's
+  buffers are the compositor's to see, not vitrine's.
+- Its geometry goes to the library only once GTK gave the view a size: a
+  full-screen window just made has none yet, and the guest's desktop would
+  follow a 1x1 view.

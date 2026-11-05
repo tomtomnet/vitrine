@@ -5,6 +5,7 @@
 #include "displaywidget.h"
 #include "framestill.h"
 #include "gtkclipboard.h"
+#include "widgetrelease.h"
 #include "vmview/dbusdisplay.h"
 #include "vmview/listener.h"
 #include "vmview/qmp.h"
@@ -435,6 +436,8 @@ void VmDisplay::destroyWindow()
         m_renderer = nullptr;
     }
     if (DisplayWidget *widget = std::exchange(m_widget, nullptr)) {
+        /* the focus off it while it can still take the focus-out (src/gtkview/widgetrelease.h) */
+        WidgetRelease::unfocus(GTK_WIDGET(widget->gobj()));
         if (m_fullScreenWindow) {
             m_fullScreenWindow->unset_child();
         } else {
@@ -612,9 +615,12 @@ void VmDisplay::sendFirstUiInfo(bool guestWaits)
             scale = gdk_surface_get_scale(surface);
         }
     }
-    m_dbus->applyUiInfo(uint32_t(std::lround(size.width() * scale)),
-                        uint32_t(std::lround(size.height() * scale)),
-                        m_opts.sendRefreshRate ? m_widget->refreshMilliHz() : 0, 0, 0);
+    const QSize device(int(std::lround(size.width() * scale)), int(std::lround(size.height() * scale)));
+    /* the window's share of its monitor's physical size, as the widget tells it */
+    const QSize mm = DisplayWidget::physicalMm(GTK_WIDGET(m_host->gobj()), device);
+    m_dbus->applyUiInfo(uint32_t(device.width()), uint32_t(device.height()),
+                        m_opts.sendRefreshRate ? m_widget->refreshMilliHz() : 0,
+                        uint16_t(mm.width()), uint16_t(mm.height()));
 }
 
 /* The window's scale, monitor or refresh rate changed: one UI info for

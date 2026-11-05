@@ -8,6 +8,7 @@
 #include <QSettings>
 
 #include <algorithm>
+#include <utility>
 
 #include "core/hostsettings.h"
 #include "core/nesteddesktop.h"
@@ -18,9 +19,11 @@
 #include "core/vmstore.h"
 #include "gtk/gtkloop.h"
 #include "gtk/settingsdialog.h"
+#include "gtk/vmconsole.h"
 #include "gtk/vmpage.h"
 #include "gtk/vmsummary.h"
 #include "gtk/widgets.h"
+#include "gtkview/viewkeys.h"
 #include "ui/usbaccess.h"
 
 using FirmwareFiles::File;
@@ -138,6 +141,7 @@ MainWindow::MainWindow(GtkLoop *loop, VmStore *store)
 {
     buildWindow();
     createActions();
+    createConsoleActions();
 
     /* the host's settings while VMs run (vitrine-helper), what it could not apply said */
     auto *host = new HostSettings(store, m_qt.get());
@@ -376,6 +380,8 @@ void MainWindow::present(AdwDialog *dialog)
         g_object_unref(dialog);
         return;
     }
+    /* a dialog behind a full-screen VM, or under a grab, would wait unseen */
+    leaveScreens();
     if (m_covering++ == 0) {
         m_page->setCovered(true);
     }
@@ -493,27 +499,23 @@ void MainWindow::addVm(Vm *vm)
             m_page->clearNotice(VmSummary::shutdownText(vm->name(), said));
         }
     });
-    /*
-     * No screen in this build of the GTK app (gtk-vmview's VmDisplay is
-     * to come): a VM shown in vitrine's window runs at once instead of
-     * waiting a few seconds for a screen, as the Qt app's console has it
-     * when it cannot show the screen
-     */
-    QObject::connect(vm->runner(), &VmRunner::waitsForDisplayChanged, m_qt.get(),
-                     [vm](bool waiting) {
-        if (waiting) {
-            vm->runner()->displayReady();
+    /* its nested desktop in this window: the console listens before QEMU starts */
+    vm->runner()->setNestedHost([this, id](const QString &socket, QString *error) {
+        Vm *vm = m_store->find(id);
+        VmConsole *console = vm ? consoleOf(vm) : nullptr;
+        if (!console) {
+            if (error) {
+                *error = "Vitrine's window is closed: the nested desktop has nowhere to show.";
+            }
+            return false;
         }
-    });
-    /* nor the nested desktop in its window: such a VM says so, and does not start */
-    vm->runner()->setNestedHost([](const QString &, QString *error) {
-        if (error) {
-            *error = "The GTK app does not show nested desktops yet: start this VM from "
-                     "Vitrine's Qt app.";
-        }
-        return false;
+        return console->serveNested(socket, error);
     });
     m_states[id] = vm->runner()->state();
+    /* found running: its screen, selected or not */
+    if (vm->runner()->isActive()) {
+        consoleOf(vm);
+    }
     updateItem(vm);
     if (m_items.size() == 1) {
         select(id);
@@ -532,6 +534,7 @@ void MainWindow::removeItem(const QString &id)
     m_endedFrom.remove(id);
     m_starting.remove(id);
     m_askingUsb.remove(id);
+    dropConsole(id);
     if (index < 0) {
         return;
     }
@@ -650,6 +653,10 @@ void MainWindow::stateChanged(Vm *vm, VmRunner::State state)
     m_states[id] = state;
     updateItem(vm);
     updateWaiting();
+    /* its screen comes up, selected or not: the console attaches to it */
+    if (state != VmRunner::State::Stopped) {
+        consoleOf(vm);
+    }
     if (vm == current()) {
         m_page->setError(m_errors.value(id));
         m_page->refresh();
@@ -743,8 +750,11 @@ void MainWindow::currentChanged()
         return;
     }
     gtk_stack_set_visible_child_name(m_main, m_items.isEmpty() ? "empty" : "vms");
+    m_page->setConsole(vm ? m_consoles.value(vm->id()) : nullptr);
     m_page->setVm(vm, vm ? m_errors.value(vm->id()) : QString());
     updateActions();
+    /* once the page shows the console: an unmapped widget takes no focus */
+    focusScreenLater(FocusCause::Switched);
 }
 
 void MainWindow::updateActions()
@@ -765,6 +775,7 @@ void MainWindow::updateActions()
     setEnabled("settings", vm);
     setEnabled("clone", vm && state == VmRunner::State::Stopped);
     setEnabled("snapshots", vm);
+    updateConsoleActions();
 }
 
 void MainWindow::updateWaiting()
@@ -1141,22 +1152,42 @@ bool MainWindow::closeRequested()
      */
     QList<QPointer<Vm>> shown;
     QStringList names;
+    /*
+     * and the guests' desktop sessions in it end: the guest does not get
+     * its window back, and logs the session out (the user's decision: no
+     * automatic login again, the guest waits at its login screen)
+     */
+    QStringList sessions;
     for (Vm *each : m_store->vms()) {
-        if (!each->runner()->displaySocket().isEmpty()) {
+        const VmConsole *console = m_consoles.value(each->id());
+        const bool session = console && console->hasNestedSession();
+        if (!each->runner()->displaySocket().isEmpty() || session) {
             shown << each;
             names << each->name();
+        }
+        if (session) {
+            sessions << each->name();
         }
     }
     if (shown.isEmpty()) {
         return askTasks();
     }
+    const QString loggedOut =
+        sessions.isEmpty() ? QString()
+        : sessions.size() == 1
+            ? QString("Closing Vitrine logs out the desktop session of %1: the guest goes back to "
+                      "its login screen, where you log in again from its Screen view.\n\n")
+                  .arg(sessions.first())
+            : QString("Closing Vitrine logs out the desktop sessions of %1: the guests go back to "
+                      "their login screens, where you log in again from their Screen views.\n\n")
+                  .arg(sessions.join(", "));
     AdwDialog *dialog = Gtk4::alert(
         "Close Vitrine",
         (shown.size() == 1 ? QString("%1 is running.").arg(names.first())
                            : QString("%1 VMs are running: %2.")
                                  .arg(shown.size())
                                  .arg(names.join(", "))) +
-            "\n\n" +
+            "\n\n" + loggedOut +
             (shown.size() == 1
                  ? QString("In the background, it has no screen until vitrine starts again. Shut "
                            "Down asks the guest to shut down, through its agent or the power "
@@ -1267,6 +1298,8 @@ void MainWindow::finishClosing()
     if (!m_window) {
         return;
     }
+    /* no screen left in full screen or grabbed */
+    leaveScreens();
     gtk_window_get_default_size(GTK_WINDOW(m_window), &width, &height);
     settings.setValue("gtk/width", width);
     settings.setValue("gtk/height", height);
@@ -1295,6 +1328,14 @@ void MainWindow::quitWithoutQuestions()
 
 void MainWindow::closed()
 {
+    /* the screens go with the window, the guests' sessions shown in it with them */
+    ViewKeys::setFilter({});
+    if (m_focusLater) {
+        g_source_remove(std::exchange(m_focusLater, 0));
+    }
+    for (const QString &id : m_consoles.keys()) {
+        dropConsole(id);
+    }
     /* nothing to show any more: the core's signals go nowhere */
     m_qt.reset();
     m_window = nullptr;

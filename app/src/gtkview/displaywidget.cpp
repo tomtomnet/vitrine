@@ -3,6 +3,10 @@
 
 #include "displaysurface.h"
 #include "pointerconstraints.h"
+#include "shortcutsinhibit.h"
+#include "viewkeys.h"
+#include "widgetrelease.h"
+#include "core/physicalsize.h"
 #include "vmview/dbusdisplay.h"
 #include "vmview/renderer.h"
 
@@ -113,6 +117,8 @@ DisplayWidget::DisplayWidget(DBusDisplay *display, DisplaySurface *surface, cons
 
 DisplayWidget::~DisplayWidget()
 {
+    /* GTK may keep the widget past this (the window's focus): no event to this object any more */
+    WidgetRelease::dropControllers(GTK_WIDGET(gobj()));
     QObject::disconnect(m_modeWatch);
     m_uiInfoTimer.disconnect();
     if (m_cursorTexture) {
@@ -363,6 +369,26 @@ uint32_t DisplayWidget::refreshMilliHz() const
     return mhz > 0 ? uint32_t(mhz) : 60000;
 }
 
+QSize DisplayWidget::physicalMm(GtkWidget *widget, const QSize &view)
+{
+    GtkNative *native = widget ? gtk_widget_get_native(widget) : nullptr;
+    GdkSurface *surface = native ? gtk_native_get_surface(native) : nullptr;
+    GdkMonitor *monitor =
+        surface ? gdk_display_get_monitor_at_surface(gtk_widget_get_display(widget), surface)
+                : nullptr;
+    if (!monitor) {
+        return {};
+    }
+    GdkRectangle geometry;
+    gdk_monitor_get_geometry(monitor, &geometry);
+    const double scale = gdk_monitor_get_scale(monitor);
+    return PhysicalSize::ofView(view,
+                                QSize(int(std::lround(geometry.width * scale)),
+                                      int(std::lround(geometry.height * scale))),
+                                QSizeF(gdk_monitor_get_width_mm(monitor),
+                                       gdk_monitor_get_height_mm(monitor)));
+}
+
 void DisplayWidget::sendUiInfo()
 {
     const QSize size = m_opts.guestWidth ? QSize(m_opts.guestWidth, m_opts.guestHeight)
@@ -370,8 +396,12 @@ void DisplayWidget::sendUiInfo()
     if (size.isEmpty()) {
         return;
     }
+    /* the view's share of its monitor's physical size: the guest's EDID
+       says it, and the guest picks its scale from it (not QEMU's 100 DPI) */
+    const QSize mm = physicalMm(gobj(), physicalSize());
     m_display->applyUiInfo(uint32_t(size.width()), uint32_t(size.height()),
-                           m_opts.sendRefreshRate ? refreshMilliHz() : 0, 0, 0);
+                           m_opts.sendRefreshRate ? refreshMilliHz() : 0, uint16_t(mm.width()),
+                           uint16_t(mm.height()));
 }
 
 void DisplayWidget::setGuestSize(uint32_t width, uint32_t height)
@@ -493,6 +523,12 @@ void DisplayWidget::setFullScreenWindow(bool on)
 bool DisplayWidget::onKeyPressed(guint keyval, guint keycode, Gdk::ModifierType state)
 {
     inputSeen.emit();
+    /* the app's own keys (the console's views), its release and repeats with it */
+    if (!m_hotkeys.count(keycode) &&
+        ViewKeys::take(keyval, keycode, static_cast<GdkModifierType>(state))) {
+        m_hotkeys.insert(keycode);
+        return true;
+    }
     /* the hotkeys of QEMU's SDL and GTK displays: Ctrl+Alt+G grab, Ctrl+Alt+F
        full screen.  Ctrl and Alt still reach the guest, the letter does not */
     const auto mods = static_cast<GdkModifierType>(state);
@@ -612,11 +648,8 @@ void DisplayWidget::setShortcutsInhibited(bool on)
         return;
     }
     m_inhibited = on;
-    if (on) {
-        gdk_toplevel_inhibit_system_shortcuts(GDK_TOPLEVEL(surface), nullptr);
-    } else {
-        gdk_toplevel_restore_system_shortcuts(GDK_TOPLEVEL(surface));
-    }
+    /* the window's one inhibitor, which the nested desktop's view may hold too */
+    ShortcutsInhibit::set(surface, this, on);
     /* the state line says so until the compositor grants it */
     grabChanged.emit();
 }

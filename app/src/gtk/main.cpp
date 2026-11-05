@@ -7,6 +7,7 @@
 #include <cstdio>
 #include <memory>
 
+#include "core/hostgpus.h"
 #include "core/managerinstance.h"
 #include "core/paths.h"
 #include "core/quitsignals.h"
@@ -14,6 +15,7 @@
 #include "core/vmconfig.h"
 #include "core/vmrunner.h"
 #include "core/vmstore.h"
+#include "gtk/desktopgpu.h"
 #include "gtk/gtkloop.h"
 #include "gtk/mainwindow.h"
 #include "ui/qemudocs.h"
@@ -71,12 +73,12 @@ int main(int argc, char **argv)
     gtk_window_set_default_icon_name(kAppId);
 
     /*
-     * The core as the Qt app's main() sets it up.  Not yet: the desktop's
-     * GPU for the VMs' Automatic choice (HostGpus::setDesktopDevice(), from
-     * linux-dmabuf's feedback over GDK's Wayland connection, once the GTK
-     * view brings that protocol): the GPU the firmware showed its screen
-     * on meanwhile, the desktop's on a laptop with two.
+     * The core as the Qt app's main() sets it up: the desktop's GPU first,
+     * for the VMs' Automatic choice and the display's render node, from
+     * linux-dmabuf's feedback over GDK's Wayland connection (else the GPU
+     * the firmware showed its screen on), before any VM starts
      */
+    HostGpus::setDesktopDevice(DesktopGpu::mainDevice(gdk_display_get_default()));
     VmStore store(Paths::vmsDir());
     /* VMs outlive the manager: find those still running */
     for (Vm *vm : store.vms()) {
