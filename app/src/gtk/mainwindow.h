@@ -21,6 +21,7 @@ class GtkLoop;
 class Notices;
 class PreferencesDialog;
 class SettingsDialog;
+class StatsButton;
 class Task;
 class TaskButton;
 class Vm;
@@ -99,6 +100,7 @@ public:
     PreferencesDialog *showPreferences();
     Notices *notices() const;
     TaskButton *tasks() const;
+    StatsButton *stats() const;
     /* The Builds window, on "qemu", "medium" (with a Fedora release) or a host package's id */
     void showBuilds(const QString &component = {}, const QString &guestRelease = {});
 
@@ -263,6 +265,7 @@ private:
     /* made by createParts(), gone with the window (dropParts()) */
     Notices *m_notices = nullptr;
     TaskButton *m_tasks = nullptr;
+    StatsButton *m_stats = nullptr;
     /* The Preferences, while they show */
     PreferencesDialog *m_preferences = nullptr;
     /* The clones' tasks: the VM copied, and once made, the clone */

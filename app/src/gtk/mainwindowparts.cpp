@@ -19,6 +19,7 @@
 #include "gtk/gtkloop.h"
 #include "gtk/notices.h"
 #include "gtk/preferencesdialog.h"
+#include "gtk/statsbutton.h"
 #include "gtk/taskbutton.h"
 #include "gtk/vmpage.h"
 #include "gtk/widgets.h"
@@ -52,6 +53,27 @@ void MainWindow::createParts()
 
     m_notices = new Notices(HostSettings::instance(), m_store, GTK_WINDOW(m_window), presenter());
     adw_header_bar_pack_start(m_page->headerBar(), m_notices->button());
+
+    /* the statistics of the VM shown, while it runs: before its screen's buttons */
+    m_stats = new StatsButton([this]() { return current(); }, [this]() { return currentConsole(); });
+    adw_header_bar_pack_end(m_page->headerBar(), m_stats->widget());
+    Gtk4::connect<void(GParamSpec *)>(m_sidebar, "notify::selected", [this](GParamSpec *) {
+        if (m_stats) {
+            m_stats->update();
+        }
+    });
+    const auto follow = [this](Vm *vm) {
+        QObject::connect(vm->runner(), &VmRunner::stateChanged, m_qt.get(), [this]() {
+            if (m_stats) {
+                m_stats->update();
+            }
+        });
+    };
+    for (Vm *vm : m_store->vms()) {
+        follow(vm);
+    }
+    QObject::connect(m_store, &VmStore::added, m_qt.get(), follow);
+    m_stats->update();
 }
 
 void MainWindow::dropParts()
@@ -59,6 +81,7 @@ void MainWindow::dropParts()
     /* nothing of this window shows the tasks' details any more */
     TaskList::instance()->setDetails(Task::Kind::Clone, {});
     m_cloneTasks.clear();
+    delete std::exchange(m_stats, nullptr);
     delete std::exchange(m_tasks, nullptr);
     delete std::exchange(m_notices, nullptr);
 }
@@ -71,6 +94,11 @@ Notices *MainWindow::notices() const
 TaskButton *MainWindow::tasks() const
 {
     return m_tasks;
+}
+
+StatsButton *MainWindow::stats() const
+{
+    return m_stats;
 }
 
 PreferencesDialog *MainWindow::showPreferences()

@@ -81,6 +81,8 @@ add_library(vitrine_gtk STATIC
     src/gtk/settingspages.h
     src/gtk/sharespage.cpp
     src/gtk/sharespage.h
+    src/gtk/statsbutton.cpp
+    src/gtk/statsbutton.h
     src/gtk/snapshotsdialog.cpp
     src/gtk/snapshotsdialog.h
     src/gtk/storagepage.cpp
@@ -163,4 +165,9 @@ if(BUILD_TESTING)
     # the tasks' button: its texts, the popover, the ring alone, a success that lingers
     vitrine_gtk_test(gtktasks)
     target_sources(test_gtktasks PRIVATE tests/gtkdisplay.h)
+    # the statistics: read only while they show, a VM found running (the stand-in QEMU)
+    vitrine_gtk_test(gtkstats)
+    target_sources(test_gtkstats PRIVATE tests/gtkdisplay.h)
+    target_compile_definitions(test_gtkstats PRIVATE FAKE_QEMU="$<TARGET_FILE:fake-qemu>")
+    add_dependencies(test_gtkstats fake-qemu)
 endif()
