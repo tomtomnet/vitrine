@@ -40,7 +40,7 @@ A desktop VM stays smooth under host load when the host gives it a hand:
 - **The CPU ready to wake up**: its cores rest in their first idle state
   only, at the energy performance preference `performance`. A VM's keys
   then reach its screen as fast as on the bare desktop: 11.3-11.9 ms
-  instead of 15.1-16.3 ms on a Ryzen 7 260 laptop, for about 1.6 W at
+  instead of 15.1-16.3 ms on a Ryzen 7 260 laptop, for about 2 W at
   idle. Preferences > Host turns it off ([below](#the-cpu-ready-to-wake-up)).
 - **Higher udmabuf limits** (VMs whose GPU has native context): QEMU
   hands the host GPU each guest buffer in guest memory as a udmabuf, one
@@ -209,7 +209,8 @@ grabbing the keyboard), from a key to the VM's screen, on 2026-11-04 and
 | No idle state at all (a 0 µs request) | 11.7 ms, for 26 W more | |
 
 The bare desktop shows keys in 10.6-11.7 ms there. Both together cost about
-1.6 W at idle (one 20 s sample). While VMs run, host tuning holds both:
+2 W at idle: 10.4 W against 8.35 W with a VM idle in front (3 x 60 s; a first
+20 s sample had said 1.6 W). While VMs run, host tuning holds both:
 
 - A PM QoS request on `/dev/cpu_dma_latency` for the wake-up time of the
   CPUs' first usable idle state - not POLL, not disabled; the slowest

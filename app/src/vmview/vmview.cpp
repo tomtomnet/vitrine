@@ -106,6 +106,14 @@ void retire(DBusDisplay *dbus, std::unique_ptr<Stats> stats)
 
 VmView::VmView(QObject *parent) : QObject(parent)
 {
+    /* VITRINE_VIEW_ZERO_COPY=0: the view copies the guest's frames into its own
+       buffers (Listener.Unix.ZeroCopy not advertised) instead of showing them as
+       they are: for an A/B of Mutter guests at high refresh rates, where the
+       held flip event of zero copy cost GNOME 51 a refresh (the research,
+       2026-11-05: 75 % of its animation frames late at 240 Hz) */
+    if (qgetenv("VITRINE_VIEW_ZERO_COPY") == "0") {
+        m_opts.zeroCopy = false;
+    }
     m_host = new QWidget;
     m_host->setMinimumSize(160, 100);
     auto *layout = new QVBoxLayout(m_host);
