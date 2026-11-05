@@ -157,8 +157,11 @@ if(BUILD_TESTING)
     # the consoles: views, keys, a dialog over them, what closing says (a stand-in
     # for the nested desktop)
     vitrine_gtk_test(gtkconsole)
+    # the Builds window through a run of stand-ins, Install Guest Tools, the banners
+    vitrine_gtk_test(gtkbuilds)
     target_sources(test_gtkloop PRIVATE tests/gtkdisplay.h)
     target_sources(test_gtkmainwindow PRIVATE tests/gtkdisplay.h)
     target_sources(test_gtkdialogs PRIVATE tests/gtkdisplay.h)
     target_sources(test_gtkconsole PRIVATE tests/gtkdisplay.h)
+    target_sources(test_gtkbuilds PRIVATE tests/gtkdisplay.h tests/buildstandins.h)
 endif()
