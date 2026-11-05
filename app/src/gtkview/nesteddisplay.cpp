@@ -1,6 +1,8 @@
 // SPDX-License-Identifier: GPL-2.0-or-later
 #include "nesteddisplay.h"
 
+#include "fullscreenorder.h"
+
 #include "nested/vmview.h"
 #include "shortcutsinhibit.h"
 #include "viewkeys.h"
@@ -155,6 +157,7 @@ private:
 
     DesktopWidget *m_embedded = nullptr;
     Gtk::Window *m_fullWindow = nullptr;
+    FullScreenOrder m_fullScreenOrder;
     DesktopWidget *m_fullWidget = nullptr;
     bool m_inputEnabled = true;
     bool m_covered = false;
@@ -554,6 +557,7 @@ bool GuestDesktop::init(const QString &socket, QString *error)
 
 GuestDesktop::~GuestDesktop()
 {
+    m_fullScreenOrder.cancel();
     /* first: the guest's objects on the surface go, and its callbacks stop */
     vmview_destroy(std::exchange(m_view, nullptr));
     m_alive.reset();
@@ -714,7 +718,17 @@ void GuestDesktop::updateMessage()
 
 void GuestDesktop::setFullScreen(bool on)
 {
+    if (!on) {
+        /* a full screen still waiting for its turn does not come */
+        m_fullScreenOrder.cancel();
+    }
     if (on == isFullScreen()) {
+        return;
+    }
+    /* the full-screen window maps after the window the view leaves, or that
+       window, mapped after it, takes the focus and covers it (FullScreenOrder) */
+    if (on && !m_fullScreenOrder.ready(dynamic_cast<Gtk::Window *>(m_embedded->get_root()),
+                                       [this]() { setFullScreen(true); })) {
         return;
     }
     detach();

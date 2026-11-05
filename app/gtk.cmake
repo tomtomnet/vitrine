@@ -32,8 +32,14 @@ configure_file(data/vitrine.svg ${CMAKE_CURRENT_BINARY_DIR}/gtk-icons/org.vitrin
 # of its own: Qt's connections go to context objects (no moc over GTK's
 # headers, which use Qt's keywords as names: src/gtk/gtkbase.h)
 add_library(vitrine_gtk STATIC
+    src/gtk/appbanners.cpp
+    src/gtk/appbanners.h
     src/gtk/argspage.cpp
     src/gtk/argspage.h
+    src/gtk/buildsmodel.cpp
+    src/gtk/buildsmodel.h
+    src/gtk/buildswindow.cpp
+    src/gtk/buildswindow.h
     src/gtk/clonedialog.cpp
     src/gtk/clonedialog.h
     src/gtk/desktopgpu.cpp
@@ -46,6 +52,14 @@ add_library(vitrine_gtk STATIC
     src/gtk/gtkloop.cpp
     src/gtk/gtkloop.h
     src/gtk/guarded.h
+    src/gtk/guesttoolsdialog.cpp
+    src/gtk/guesttoolsdialog.h
+    src/gtk/guesttoolsinstall.cpp
+    src/gtk/guesttoolsinstall.h
+    src/gtk/guesttoolsstatus.cpp
+    src/gtk/guesttoolsstatus.h
+    src/gtk/hostkdealerts.cpp
+    src/gtk/hostkdealerts.h
     src/gtk/hostprefs.cpp
     src/gtk/hostprefs.h
     src/gtk/importdialog.cpp
@@ -56,9 +70,13 @@ add_library(vitrine_gtk STATIC
     src/gtk/machinepage.h
     src/gtk/mainwindow.cpp
     src/gtk/mainwindow.h
+    src/gtk/mainwindowbuilds.cpp
+    src/gtk/mainwindowbuilds.h
     src/gtk/mainwindowconsole.cpp
     src/gtk/mainwindowdialogs.cpp
     src/gtk/mainwindowparts.cpp
+    src/gtk/markup.cpp
+    src/gtk/markup.h
     src/gtk/newvmdialog.cpp
     src/gtk/newvmdialog.h
     src/gtk/notices.cpp
@@ -81,16 +99,18 @@ add_library(vitrine_gtk STATIC
     src/gtk/settingspages.h
     src/gtk/sharespage.cpp
     src/gtk/sharespage.h
-    src/gtk/statsbutton.cpp
-    src/gtk/statsbutton.h
     src/gtk/snapshotsdialog.cpp
     src/gtk/snapshotsdialog.h
+    src/gtk/statsbutton.cpp
+    src/gtk/statsbutton.h
     src/gtk/storagepage.cpp
     src/gtk/storagepage.h
     src/gtk/taskbutton.cpp
     src/gtk/taskbutton.h
     src/gtk/textdialog.cpp
     src/gtk/textdialog.h
+    src/gtk/updatenotifier.cpp
+    src/gtk/updatenotifier.h
     src/gtk/usbdialog.cpp
     src/gtk/usbdialog.h
     src/gtk/vmconsole.cpp
@@ -103,6 +123,8 @@ add_library(vitrine_gtk STATIC
     src/gtk/widgets.h
 )
 target_include_directories(vitrine_gtk PUBLIC src)
+# buildinfo.h: the commit this build is of, for the check for updates
+target_include_directories(vitrine_gtk PRIVATE "${CMAKE_CURRENT_BINARY_DIR}")
 # the VM's screen and the nested desktop (vitrine_gtkview), the desktop's GPU
 # from linux-dmabuf over GDK's connection (vitrine_wlprotocols)
 target_link_libraries(vitrine_gtk
@@ -146,16 +168,21 @@ if(BUILD_TESTING)
     vitrine_gtk_test(gtkloop Qt6::Concurrent)
     # what the windows say of a VM: words alone, no display needed
     vitrine_gtk_test(vmsummary)
+    # what the Builds window says, on stand-ins for the build scripts: words alone
+    vitrine_gtk_test(buildsmodel)
     vitrine_gtk_test(qemureference)
     vitrine_gtk_test(gtkmainwindow)
     vitrine_gtk_test(gtkdialogs)
     # the consoles: views, keys, a dialog over them, what closing says (a stand-in
     # for the nested desktop)
     vitrine_gtk_test(gtkconsole)
+    # the Builds window through a run of stand-ins, Install Guest Tools, the banners
+    vitrine_gtk_test(gtkbuilds)
     target_sources(test_gtkloop PRIVATE tests/gtkdisplay.h)
     target_sources(test_gtkmainwindow PRIVATE tests/gtkdisplay.h)
     target_sources(test_gtkdialogs PRIVATE tests/gtkdisplay.h)
     target_sources(test_gtkconsole PRIVATE tests/gtkdisplay.h)
+    target_sources(test_gtkbuilds PRIVATE tests/gtkdisplay.h tests/buildstandins.h)
     # Preferences and the notices: a fake host (GPUs, gpu-input-awake's root, pkexec and
     # systemctl stand-ins), the stand-in QEMU for a VM found running
     vitrine_gtk_test(gtkprefs)

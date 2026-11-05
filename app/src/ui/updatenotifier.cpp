@@ -17,6 +17,7 @@
 
 #include "core/paths.h"
 #include "ui/icons.h"
+#include "ui/updatetext.h"
 #include "ui/widgets.h"
 
 /* configured by CMake; not in the builds of the tests */
@@ -30,13 +31,6 @@
 static const qint64 kDaySecs = 24 * 3600;
 /* Help > Check for Updates again soon after: the answer of a moment ago */
 static const qint64 kAgainSecs = 5 * 60;
-
-/* "1 new commit", "12 new commits": English has no translation file to pick */
-static QString newCommits(int count)
-{
-    return count == 1 ? UpdateNotifier::tr("1 new commit")
-                      : UpdateNotifier::tr("%1 new commits").arg(count);
-}
 
 static QSettings settings()
 {
@@ -155,10 +149,7 @@ void UpdateNotifier::checkNow()
         return;
     }
     if (notBefore.isValid() && now < notBefore) {
-        Widgets::inform(m_window, tr("Updates"),
-                        tr("GitHub asked to wait before it is asked again, until %1.")
-                            .arg(QLocale().toString(notBefore.toLocalTime().time(),
-                                                    QLocale::ShortFormat)));
+        Widgets::inform(m_window, tr("Updates"), UpdateText::waitText(notBefore));
         return;
     }
     start(true);
@@ -174,10 +165,7 @@ void UpdateNotifier::start(bool asked)
     m_asked = asked;
     if (list.isEmpty()) {
         if (asked) {
-            Widgets::inform(
-                m_window, tr("Updates"),
-                tr("There is nothing to check: this copy of Vitrine was not built from a git "
-                   "checkout."));
+            Widgets::inform(m_window, tr("Updates"), UpdateText::nothingToCheck());
         }
         return;
     }
@@ -208,7 +196,7 @@ void UpdateNotifier::updateButton()
 
     for (const UpdateCheck::Result &r : std::as_const(m_results)) {
         if (r.newCommits > 0) {
-            news << r.project.name + ": " + newCommits(r.newCommits);
+            news << r.project.name + ": " + UpdateText::newCommits(r.newCommits);
         }
     }
     m_button->setToolTip(news.join('\n'));
@@ -225,35 +213,7 @@ void UpdateNotifier::showResults()
     auto *buttons = new QDialogButtonBox(QDialogButtonBox::Close);
     QString text;
 
-    for (const UpdateCheck::Result &r : std::as_const(m_results)) {
-        const QString name = "<b>" + r.project.name.toHtmlEscaped() + "</b>";
-        if (r.newCommits < 0) {
-            text += "<p>" + tr("%1: could not check (%2).").arg(name, r.error.toHtmlEscaped()) +
-                    "</p>";
-            continue;
-        }
-        if (r.newCommits == 0) {
-            text += "<p>" + tr("%1 is up to date.").arg(name) + "</p>";
-            continue;
-        }
-        text += "<p>" + tr("%1 has %2, the latest:").arg(name, newCommits(r.newCommits)) +
-                "</p><ul>";
-        for (const QString &subject : r.subjects) {
-            text += "<li>" + subject.toHtmlEscaped() + "</li>";
-        }
-        text += "</ul><p>";
-        text += tr("To update it: <code>git pull</code> in %1, then build and install it as the "
-                   "first time. If it pins a new QEMU, Vitrine then offers to update its QEMU.")
-                    .arg(QString(VITRINE_SOURCE_DIR).isEmpty()
-                             ? tr("its folder")
-                             : "<code>" + QString(VITRINE_SOURCE_DIR).toHtmlEscaped() +
-                                   "</code>");
-        if (!r.url.isEmpty()) {
-            text += QString(" <a href=\"%1\">%2</a>").arg(r.url.toHtmlEscaped(),
-                                                           tr("See the changes"));
-        }
-        text += "</p>";
-    }
+    text = UpdateText::results(m_results, VITRINE_SOURCE_DIR);
 
     dialog.setWindowTitle(tr("Updates"));
     label->setObjectName("updates");
@@ -261,7 +221,7 @@ void UpdateNotifier::showResults()
     label->setWordWrap(true);
     label->setOpenExternalLinks(true);
     label->setTextInteractionFlags(Qt::TextBrowserInteraction);
-    label->setText(text.isEmpty() ? tr("Nothing checked yet.") : text);
+    label->setText(text);
     /* a width to read, not a column */
     label->setMinimumWidth(Widgets::em(label) * 26);
     layout->addWidget(label);

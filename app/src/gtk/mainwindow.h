@@ -18,6 +18,7 @@
 
 class CloneDialog;
 class GtkLoop;
+class MainWindowBuilds;
 class Notices;
 class PreferencesDialog;
 class SettingsDialog;
@@ -44,8 +45,9 @@ class VmStore;
  * access), Shut Down and how it reached the guest, Pause and Resume, Reset,
  * Force Off and a QEMU that does not end, why a run failed, Remove; and
  * what closing asks while VMs show in the window or tasks run.  The
- * actions whose dialogs are not in the GTK app yet are there, inactive:
- * New VM, Import VM, Settings, Clone, Builds, Preferences.
+ * dialogs are in mainwindowdialogs.cpp; the Builds window and the guest
+ * tools in mainwindowbuilds.cpp; Preferences, the notices, the tasks, the
+ * statistics and USB Devices… in mainwindowparts.cpp.
  *
  * The VMs' screens (mainwindowconsole.cpp): one console per VM
  * (VmConsole), the selected one's in the page, with its views, full
@@ -89,6 +91,13 @@ public:
     /* The console of the VM @id, made the first time (tests); null once the window is gone */
     VmConsole *console(const QString &id);
     /*
+     * The Builds window, in front: on @component if given ("qemu",
+     * "medium", a host package's id, or a group: "host", "guest",
+     * "system"), with the guest tools of Fedora @guestRelease if given
+     * (not during a run); empty, as it is (mainwindowbuilds.cpp)
+     */
+    void showBuilds(const QString &component = {}, const QString &guestRelease = {});
+    /*
      * Ctrl+Alt+1/2 from anywhere in the window, the VMs' screens included,
      * their full-screen windows too: the view of the selected VM's console
      * (a VM with the nested desktop in this window), whatever character the
@@ -104,10 +113,11 @@ public:
     StatsButton *stats() const;
     /* USB Devices… of the selected VM, while it runs: the dialog shown */
     UsbDialog *showUsbDevices();
-    /* The Builds window, on "qemu", "medium" (with a Fedora release) or a host package's id */
-    void showBuilds(const QString &component = {}, const QString &guestRelease = {});
 
 private:
+    /* the builds and the guest tools: mainwindowbuilds.cpp */
+    friend class MainWindowBuilds;
+
     struct Item {
         QString id;
         AdwSidebarItem *item;
@@ -275,4 +285,6 @@ private:
     PreferencesDialog *m_preferences = nullptr;
     /* The clones' tasks: the VM copied, and once made, the clone */
     QHash<const Task *, std::pair<QString, QString>> m_cloneTasks;
+    /* The builds and the guest tools */
+    std::unique_ptr<MainWindowBuilds> m_builds;
 };

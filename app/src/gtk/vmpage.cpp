@@ -108,6 +108,7 @@ static GMenuModel *machineMenu()
     g_menu_append(files, "Show _Log", "win.show-log");
     g_menu_append(files, "_Open Folder", "win.open-folder");
     g_menu_append(files, "Show Comma_nd Line", "win.command-line");
+    g_menu_append(vm, "Install _Guest Tools…", "win.install-guest-tools");
     g_menu_append(vm, "S_napshots", "win.snapshots");
     g_menu_append(vm, "_Clone…", "win.clone");
     g_menu_append(vm, "Re_move…", "win.remove");
@@ -512,7 +513,16 @@ void VmPage::clearNotice(const QString &text)
  */
 void VmPage::placeNotice()
 {
-    const bool over = m_noticeShown && screenShown();
+    const bool shown = screenShown();
+    const bool over = m_noticeShown && shown;
+
+    /* at once, before the screen is laid out: what hides over it goes first */
+    if (shown != m_screenWasShown) {
+        m_screenWasShown = shown;
+        if (screenShownChanged) {
+            screenShownChanged(shown);
+        }
+    }
 
     adw_banner_set_revealed(m_notice, m_noticeShown && !over);
     if (!over) {
@@ -531,6 +541,17 @@ void VmPage::setClosing(const QString &text)
         adw_banner_set_title(m_closing, utf8(text.toHtmlEscaped()).constData());
     }
     adw_banner_set_revealed(m_closing, !text.isEmpty());
+}
+
+void VmPage::addHomeWidget(GtkWidget *widget)
+{
+    gtk_box_insert_child_after(GTK_BOX(gtk_widget_get_parent(m_homeError)), widget, m_homeError);
+}
+
+void VmPage::addDetailsGroup(AdwPreferencesGroup *group)
+{
+    /* after the last run's error; the sections come after it, and stay there as they change */
+    adw_preferences_page_add(m_details, group);
 }
 
 void VmPage::setCovered(bool covered)

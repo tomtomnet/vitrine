@@ -30,7 +30,6 @@ void MainWindow::createParts()
 {
     auto *app = G_ACTION_MAP(m_loop->adw());
 
-    /* Preferences, active now: in the place of the inactive one of createActions() */
     addAction(app, "preferences", [this]() { showPreferences(); }, "<Control>comma");
     /* the host's USB devices for the VM while it runs: the machine menu's, the list's */
     addAction(G_ACTION_MAP(m_window), "usb-devices", [this]() { showUsbDevices(); });
@@ -155,19 +154,6 @@ PreferencesDialog *MainWindow::showPreferences()
     });
     present(dialog->dialog());
     return dialog;
-}
-
-/*
- * The Builds window on @component: gtk-builds' window, which takes this
- * place when its stream is merged; until then, the primary menu's Builds
- */
-void MainWindow::showBuilds(const QString &component, const QString &guestRelease)
-{
-    Q_UNUSED(component);
-    Q_UNUSED(guestRelease);
-    if (m_loop) {
-        g_action_group_activate_action(G_ACTION_GROUP(m_loop->adw()), "builds", nullptr);
-    }
 }
 
 void MainWindow::followClone(VmCloner *cloner, const QString &sourceId)
