@@ -287,6 +287,8 @@ qt_add_library(vitrine_uishared STATIC
     src/ui/preferencestext.h
     src/ui/qemudocs.cpp
     src/ui/qemudocs.h
+    src/ui/statstext.cpp
+    src/ui/statstext.h
     src/ui/udmabuftext.cpp
     src/ui/udmabuftext.h
     src/ui/uiconfig.cpp
