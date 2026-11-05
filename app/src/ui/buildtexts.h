@@ -5,6 +5,7 @@
 #include <QString>
 
 #include "core/guesttoolsbuilder.h"
+#include "core/hostkde.h"
 #include "core/stackbuilder.h"
 
 /*
@@ -28,4 +29,12 @@ public:
     static QString explain(GuestToolsBuilder::State state);
     /* "40 s", "18 min", "1 h 20 min": how long a build took */
     static QString duration(qint64 ms);
+    /*
+     * What a group of the Builds window makes, and of what: "host" (Vitrine's
+     * QEMU), "system" (the host's desktop), else the guest tools of Fedora
+     * @guestRelease; rich text
+     */
+    static QString groupAbout(const QString &group, const QString &guestRelease);
+    /* What a host package is, and what the research's set changes and measured */
+    static QString systemAbout(const HostKde::Target &target);
 };
