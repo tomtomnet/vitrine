@@ -1,6 +1,6 @@
 Name:    kwin
 Version: 6.8.2
-Release: 3.1.g26%{?dist}
+Release: 3.2.g27%{?dist}
 Summary: KDE Window manager
 
 License: BSD-2-Clause AND BSD-3-Clause AND CC0-1.0 AND GPL-2.0-only AND GPL-2.0-or-later AND GPL-3.0-only AND GPL-3.0-or-later AND LGPL-2.0-only AND LGPL-2.0-or-later AND LGPL-2.1-only AND LGPL-2.1-or-later AND LGPL-3.0-only AND (GPL-2.0-only OR GPL-3.0-only) AND (LGPL-2.1-only OR LGPL-3.0-only) AND MIT
@@ -21,8 +21,8 @@ Source10: macros.kwin.in
 Patch0:  c9d720793bbcef9483ab290673032d39441c0e6f.patch
 
 ## proposed patches
-## the research's guest set g21jmc96-681, as g26 (virtio-gpu-desktop a163a50,
-## patches/kwin/sets/g21jmc96-681.series), without its 0033 (upstream in 6.8).
+## the research's guest set g21jmc97-681, as g27 (virtio-gpu-desktop 0ad5465,
+## patches/kwin/sets/g21jmc97-681.series), without its 0033 (upstream in 6.8).
 # KWin as the guest's compositor, on the VM's screen and as the nested desktop:
 # - frames paced to the host's: render timing from the CPU, a commit grace for
 #   buffers the GPU has not finished, late frames scheduled for the next vblank,
@@ -33,13 +33,15 @@ Patch0:  c9d720793bbcef9483ab290673032d39441c0e6f.patch
 #   preferred scale, its refresh rate, no resent geometry, frames whose
 #   presentation feedback the host loses (0045-0046, 0051, 0064, 0084-0087), the
 #   cursor handed to the host as shared memory, which a GNOME host puts on its
-#   cursor plane and so keeps scanning the full-screen VM out (0091)
+#   cursor plane and so keeps scanning the full-screen VM out (0091), the frame
+#   callbacks and presentation feedback asked for on the content layer, as a
+#   GNOME host sends none for the black main surface under it (0097)
 # - a high-rate mouse: moves, window geometry and pointer motion once per frame or
 #   per ms (0060-0063); animations on a steady clock, one refresh in (0035, 0037)
 # - the Overview keeps its views between openings (0095); the GPU's clock read
 #   once a second for render times, as each read wakes an Intel xe GPU (0096)
-# Most act only with their KWIN_* variable, which the guest tools set; 0091, 0095
-# and 0096 act unless theirs turns them off.
+# Most act only with their KWIN_* variable, which the guest tools set; 0091, 0095,
+# 0096 and 0097 act unless theirs turns them off.
 Patch1001: 0001-Patch100-kwin-vm-frame-timing-ported-to-6.8.v2.patch
 Patch1002: 0002-Patch101-kwin-render-journal-variance-cap-applies-un.v2.patch
 Patch1003: 0003-Patch102-kwin-late-frame-scheduling-ported-to-6.8-re.v2.68.patch
@@ -99,6 +101,7 @@ Patch1056: 0087-FIX-wayland-backend-frames-whose-feedback-the-host-loses-are-dro
 Patch1057: 0091-EXP-wayland-backend-cursor-as-wl_shm.patch
 Patch1058: 0095-EXP-overview-keep-the-views-between-openings.patch
 Patch1059: 0096-EXP-opengl-the-GPU-s-clock-read-once-a-second-for-render-time-queries.patch
+Patch1060: 0097-FIX-wayland-backend-frame-callback-and-feedback-on-the-content-layer.patch
 
 
 # Base
@@ -374,6 +377,20 @@ sed -i \
 
 
 %changelog
+* Thu Nov 05 2026 vitrine <noreply@anthropic.com> - 6.8.2-3.2.g27
+- the research's guest set g21jmc97-681 as g27 (60 patches: g26's 59, then
+  0097): the nested desktop asks for its frame callbacks and presentation
+  feedback on its content layer, not on the black main surface under it.
+  A GNOME host culls that covered surface: it sent no frame callbacks and
+  discarded every feedback (855 of 857), so the nested KWin never learned
+  when the host showed its frames and aimed them from a stale vblank phase.
+  With 0097 a GNOME host presents them (80 of 80 key frames on the
+  research's Arc Pro B50, none missing its target), and its keys reach the
+  screen sooner: 7.73 ms mean against 8.72, 75 % at the first refresh
+  against 48 %, with fewer refreshes shown twice in the launcher's
+  animations; a KDE host as before.
+  KWIN_WAYLAND_FEEDBACK_ON_CONTENT=0 asks on the main surface again
+
 * Thu Nov 05 2026 vitrine <noreply@anthropic.com> - 6.8.2-3.1.g26
 - the research's guest set g21jmc96-681 as g26 (59 patches: g24's 56, then 0091,
   0095 and 0096) on Fedora's 6.8.2-3 and its upstream crash fix (c9d72079: no

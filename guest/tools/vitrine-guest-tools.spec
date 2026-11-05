@@ -2,7 +2,7 @@
 # exact version, and dnf takes an installed one of the same version as done.
 Name:           vitrine-guest-tools
 Version:        0.1.0
-Release:        34%{?dist}
+Release:        35%{?dist}
 Summary:        vitrine guest tools: patched virtio-gpu driver, settings and agent
 
 # the driver's sources (dkms/vendor, dkms/patches) are the kernel's: MIT
@@ -181,6 +181,15 @@ fi
 %dir %{_sharedstatedir}/%{name}
 
 %changelog
+* Thu Nov 05 2026 vitrine <noreply@anthropic.com> - 0.1.0-35
+- with KWin 6.8.2-3.2.g27 and wl-cross-domain-proxy at the research's
+  fe4eacc on Fedora 44's medium: on a GNOME host the nested desktop's KWin
+  learns again when the host shows its frames (it asked for its frame
+  callbacks and presentation feedback on a surface GNOME treats as
+  covered, and got none), and the proxy's statistics count that feedback.
+  The tools' new version lets vitrine see the update for a guest that is
+  not running, and name it
+
 * Thu Nov 05 2026 vitrine <noreply@anthropic.com> - 0.1.0-34
 - with KWin 6.8.2-3.1.g26 on Fedora 44's medium (the research's guest set g26
   on Fedora's 6.8.2-3): the nested desktop's cursor reaches the host as shared

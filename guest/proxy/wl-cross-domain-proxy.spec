@@ -1,5 +1,5 @@
 # Upstream's commit c6ce1ca89fb4, where the research's work starts, with that
-# work as one patch, taken at the research's commit a56b97b (the patch's
+# work as one patch, taken at the research's commit fe4eacc (the patch's
 # description has what it adds).  Literal, without macros: vitrine's Builds
 # window reads Version and Source0 as they are written.  The date the patch
 # was taken comes first, so that each version sorts after the one before
@@ -7,7 +7,7 @@
 # a counter after it for another one on the same day: 20261015.1 sorts after
 # 20261015, .2 after .1, the next day's date after both.
 Name:           wl-cross-domain-proxy
-Version:        0.1.0^20261031.3gitc6ce1ca.ra56b97b
+Version:        0.1.0^20261105gitc6ce1ca.rfe4eacc
 Release:        1%{?dist}
 Summary:        Wayland proxy over virtio-gpu cross-domain, for vitrine's nested desktop
 
@@ -63,6 +63,13 @@ install -Dm 0644 %{SOURCE1} %{buildroot}%{_licensedir}/%{name}/GPL-2.0.txt
 %{_bindir}/%{name}
 
 %changelog
+* Thu Nov 05 2026 vitrine <noreply@anthropic.com> - 0.1.0^20261105gitc6ce1ca.rfe4eacc-1
+- the research's fe4eacc: the statistics count the presentation feedback
+  that a client asks for on a subsurface with the toplevel's next commit.
+  The nested KWin asks on its content layer's subsurface since its 0097
+  (KWin 6.8.2-3.2.g27): without this the window title, the overlay and
+  the journal's summaries read 0 fps presented with it
+
 * Sat Oct 31 2026 vitrine <noreply@anthropic.com> - 0.1.0^20261031.3gitc6ce1ca.ra56b97b-1
 - the research's a56b97b: the message parser takes a message's file
   descriptors only once all its arguments parse (a message refused
