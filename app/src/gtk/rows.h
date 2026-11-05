@@ -8,6 +8,7 @@
 #include <QStringList>
 
 #include <functional>
+#include <utility>
 
 /*
  * The pieces the dialogs are made of, libadwaita's boxed lists: groups of
@@ -56,6 +57,14 @@ QString itemText(GtkWidget *comboRow, int index);
 /* A row's subtitle, title and the like: markup, so escaped here */
 void setSubtitle(GtkWidget *row, const QString &text);
 void setTitle(GtkWidget *row, const QString &text);
+
+/*
+ * A button at the end of @entryRow that lists what it can hold, to pick
+ * from or search: @items, asked each time the list opens, as (name,
+ * description) pairs.  Picking one writes its name in the row.
+ */
+void addSuggestions(GtkWidget *entryRow, const QString &tooltip,
+                    std::function<QList<std::pair<QString, QString>>()> items);
 
 struct FileFilter {
     QString name;

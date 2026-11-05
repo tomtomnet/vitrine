@@ -11,6 +11,7 @@
 #include "core/vmstore.h"
 #include "gtk/argspage.h"
 #include "gtk/displaypage.h"
+#include "gtk/machinepage.h"
 #include "gtk/settingspages.h"
 #include "gtk/sharespage.h"
 #include "gtk/storagepage.h"
@@ -102,6 +103,9 @@ SettingsDialog::SettingsDialog(Vm *vm, VmStore *store, Presenter presenter,
     addPage(Storage, std::make_unique<StoragePage>(vm->dir()));
     addPage(Network, std::make_unique<NetworkPage>(vm));
     addPage(SharedFolders, std::make_unique<SharesPage>());
+    addPage(UsbDevices, std::make_unique<UsbPage>());
+    addPage(Machine, std::make_unique<MachinePage>(vm, m_resetFirmware));
+    addPage(PciDevices, std::make_unique<PciPage>());
     addPage(Arguments, std::make_unique<ArgumentsPage>(vm->dir()));
 
     on<void()>(switcher, "activated",

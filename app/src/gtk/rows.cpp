@@ -222,6 +222,69 @@ QString itemText(GtkWidget *comboRow, int index)
     return text ? QString::fromUtf8(text) : QString();
 }
 
+void addSuggestions(GtkWidget *entryRow, const QString &tooltip,
+                    std::function<QList<std::pair<QString, QString>>()> items)
+{
+    GtkWidget *button = gtk_menu_button_new();
+    GtkWidget *popover = gtk_popover_new();
+    GtkWidget *box = gtk_box_new(GTK_ORIENTATION_VERTICAL, 6);
+    GtkWidget *search = gtk_search_entry_new();
+    GtkWidget *scroll = gtk_scrolled_window_new();
+    GtkWidget *list = gtk_list_box_new();
+
+    gtk_menu_button_set_icon_name(GTK_MENU_BUTTON(button), "view-list-symbolic");
+    gtk_widget_set_valign(button, GTK_ALIGN_CENTER);
+    gtk_widget_add_css_class(button, "flat");
+    gtk_widget_set_tooltip_text(button, utf8(tooltip).constData());
+    gtk_list_box_set_selection_mode(GTK_LIST_BOX(list), GTK_SELECTION_NONE);
+    gtk_widget_add_css_class(list, "navigation-sidebar");
+    gtk_scrolled_window_set_child(GTK_SCROLLED_WINDOW(scroll), list);
+    gtk_scrolled_window_set_policy(GTK_SCROLLED_WINDOW(scroll), GTK_POLICY_NEVER,
+                                   GTK_POLICY_AUTOMATIC);
+    gtk_scrolled_window_set_max_content_height(GTK_SCROLLED_WINDOW(scroll), 360);
+    gtk_scrolled_window_set_propagate_natural_height(GTK_SCROLLED_WINDOW(scroll), true);
+    gtk_widget_set_size_request(scroll, 360, -1);
+    gtk_box_append(GTK_BOX(box), search);
+    gtk_box_append(GTK_BOX(box), scroll);
+    gtk_popover_set_child(GTK_POPOVER(popover), box);
+    gtk_menu_button_set_popover(GTK_MENU_BUTTON(button), popover);
+    adw_entry_row_add_suffix(ADW_ENTRY_ROW(entryRow), button);
+
+    /* what the search finds: in the name or the description */
+    gtk_list_box_set_filter_func(
+        GTK_LIST_BOX(list),
+        [](GtkListBoxRow *row, gpointer data) -> gboolean {
+            const QString words = text(GTK_WIDGET(data)).trimmed();
+            const auto *haystack = static_cast<const char *>(g_object_get_data(G_OBJECT(row), "text"));
+            return words.isEmpty() ||
+                   QString::fromUtf8(haystack).contains(words, Qt::CaseInsensitive);
+        },
+        search, nullptr);
+    connect<void()>(search, "search-changed",
+                    [list]() { gtk_list_box_invalidate_filter(GTK_LIST_BOX(list)); });
+    connect<void()>(popover, "show", [list, search, items]() {
+        while (GtkWidget *row = gtk_widget_get_first_child(list)) {
+            gtk_list_box_remove(GTK_LIST_BOX(list), row);
+        }
+        for (const auto &[name, description] : items()) {
+            GtkWidget *row = actionRow(name, description);
+            adw_action_row_set_subtitle_lines(ADW_ACTION_ROW(row), 2);
+            gtk_list_box_row_set_activatable(GTK_LIST_BOX_ROW(row), true);
+            g_object_set_data_full(G_OBJECT(row), "name", g_strdup(utf8(name).constData()), g_free);
+            g_object_set_data_full(G_OBJECT(row), "text",
+                                   g_strdup(utf8(name + ' ' + description).constData()), g_free);
+            gtk_list_box_append(GTK_LIST_BOX(list), row);
+        }
+        setText(search, {});
+        gtk_widget_grab_focus(search);
+    });
+    connect<void(GtkListBoxRow *)>(list, "row-activated", [entryRow, popover](GtkListBoxRow *row) {
+        setText(entryRow,
+                QString::fromUtf8(static_cast<const char *>(g_object_get_data(G_OBJECT(row), "name"))));
+        gtk_popover_popdown(GTK_POPOVER(popover));
+    });
+}
+
 /* The window of @widget, for a dialog of its own */
 static GtkWindow *windowOf(GtkWidget *widget)
 {

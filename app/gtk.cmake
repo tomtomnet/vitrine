@@ -42,6 +42,8 @@ add_library(vitrine_gtk STATIC
     src/gtk/gtkloop.cpp
     src/gtk/gtkloop.h
     src/gtk/guarded.h
+    src/gtk/machinepage.cpp
+    src/gtk/machinepage.h
     src/gtk/mainwindow.cpp
     src/gtk/mainwindow.h
     src/gtk/mainwindowdialogs.cpp

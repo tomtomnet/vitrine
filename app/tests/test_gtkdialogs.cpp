@@ -20,6 +20,7 @@
 #include "gtk/argspage.h"
 #include "gtk/displaypage.h"
 #include "gtk/gtkloop.h"
+#include "gtk/machinepage.h"
 #include "gtk/newvmdialog.h"
 #include "gtk/settingsdialog.h"
 #include "gtk/settingspages.h"
@@ -339,6 +340,36 @@ private slots:
         QVERIFY(settings->isModified());
         QVERIFY(settings->apply());
         QCOMPARE(VmConfig::screen(vm->args()), VmConfig::Screen::Embedded);
+        delete settings;
+    }
+
+    /* The topology on -smp, the count kept; the model on -cpu, its flags kept */
+    void machinePage()
+    {
+        QTemporaryDir dir;
+        QVERIFY(addVm(dir.path(), "m", "-name M\n-m 1G\n-machine q35\n-cpu host,topoext=on\n"
+                                       "-smp 4\n"));
+        VmStore store(dir.path());
+        Vm *vm = store.find("m");
+        auto *settings = new SettingsDialog(vm, &store, presenter());
+
+        settings->setPage(SettingsDialog::Machine);
+        auto *machine = static_cast<MachinePage *>(settings->pageWidget(SettingsDialog::Machine));
+        QVERIFY(!settings->isModified());
+        machine->setTopology(true, 1, 2, 2);
+        QVERIFY(settings->isModified());
+        QVERIFY(settings->apply());
+        VmConfig::Cpus cpus = VmConfig::cpus(vm->args());
+        QCOMPARE(cpus.count, 4);
+        QCOMPARE(cpus.sockets, 1);
+        QCOMPARE(cpus.cores, 2);
+        QCOMPARE(cpus.threads, 2);
+
+        machine->setModel("max");
+        QVERIFY(settings->apply());
+        QCOMPARE(VmConfig::cpus(vm->args()).model, "max");
+        QVERIFY(vm->args().valueAt(vm->args().indexOf("cpu")).toString().contains("topoext"));
+        QCOMPARE(VmConfig::machineType(vm->args()), "q35");
         delete settings;
     }
 

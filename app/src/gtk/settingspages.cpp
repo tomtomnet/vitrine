@@ -2,10 +2,13 @@
 #include "gtk/settingspages.h"
 
 #include <QDir>
+#include <QFileInfo>
+#include <QMap>
 #include <QThread>
 
 #include <iterator>
 
+#include "core/hostdevices.h"
 #include "core/hostmemory.h"
 #include "core/paths.h"
 #include "core/vmstore.h"
@@ -396,4 +399,312 @@ bool NetworkPage::isModified() const
     }
     return n.kind != m_loaded.kind ||
            (n.kind == VmConfig::Network::Nat && n.sshPort != m_loaded.sshPort);
+}
+
+/* USB */
+
+/* A row with a check box in front, for a list of things to check */
+static GtkWidget *checkRow(const QString &title, const QString &subtitle, bool checked,
+                           GtkWidget **check)
+{
+    GtkWidget *row = Gtk4::actionRow(title, subtitle);
+
+    *check = gtk_check_button_new();
+    gtk_widget_set_valign(*check, GTK_ALIGN_CENTER);
+    gtk_check_button_set_active(GTK_CHECK_BUTTON(*check), checked);
+    adw_action_row_add_prefix(ADW_ACTION_ROW(row), *check);
+    adw_action_row_set_activatable_widget(ADW_ACTION_ROW(row), *check);
+    return row;
+}
+
+static QString usbId(quint16 vendor, quint16 product)
+{
+    return QString("%1:%2").arg(vendor, 4, 16, QChar('0')).arg(product, 4, 16, QChar('0'));
+}
+
+UsbPage::UsbPage()
+    : SettingsPage(adw_preferences_page_new()), m_controller(ADW_BANNER(adw_banner_new(""))),
+      m_list(Gtk4::group({}, "The checked devices are given to the VM when it starts, by their "
+                             "vendor and product ID: this computer cannot use them while the VM "
+                             "runs."))
+{
+    auto *page = ADW_PREFERENCES_PAGE(widget());
+
+    adw_preferences_page_set_banner(page, m_controller);
+    adw_preferences_page_add(page, m_list);
+    on<void()>(m_controller, "button-clicked", [this]() {
+        m_addController = true;
+        adw_banner_set_button_label(m_controller, nullptr);
+        adw_banner_set_title(m_controller, "A USB 3 controller (qemu-xhci) will be added.");
+        changed();
+    });
+}
+
+void UsbPage::load(const ArgsFile &args)
+{
+    const Loading loading(m_loading);
+    const QList<UsbDevice> devices = HostDevices::usbDevices();
+    QList<VmConfig::UsbId> missing;
+
+    m_loaded = VmConfig::usbPassthrough(args);
+    missing = m_loaded;
+    m_addController = false;
+    for (GtkWidget *row : std::as_const(m_rows)) {
+        adw_preferences_group_remove(m_list, row);
+    }
+    m_rows.clear();
+    m_items.clear();
+
+    if (VmConfig::hasUsbController(args)) {
+        adw_banner_set_revealed(m_controller, false);
+    } else {
+        adw_banner_set_title(m_controller, "This VM has no USB controller, so it cannot use USB "
+                                           "devices.");
+        adw_banner_set_button_label(m_controller, "_Add a USB Controller");
+        adw_banner_set_revealed(m_controller, true);
+    }
+
+    const auto add = [this](GtkWidget *row) {
+        adw_preferences_group_add(m_list, row);
+        m_rows << row;
+    };
+    for (const UsbDevice &dev : devices) {
+        const VmConfig::UsbId id{dev.vendorId, dev.productId};
+        const bool access = QFileInfo(dev.devNode()).isWritable();
+        QString name = QString("%1 %2").arg(dev.manufacturer, dev.product).simplified();
+        GtkWidget *check;
+
+        if (dev.isHub) {
+            continue;
+        }
+        if (name.isEmpty()) {
+            name = "Unknown device";
+        }
+        GtkWidget *row = checkRow(name,
+                                  QString("%1 · %2").arg(usbId(dev.vendorId, dev.productId),
+                                                         access ? QString("Ready")
+                                                                : QString("No access")),
+                                  m_loaded.contains(id), &check);
+        gtk_widget_set_tooltip_text(
+            row, utf8(access ? QString("Bus %1, port %2").arg(dev.bus).arg(dev.port)
+                             : QString("QEMU cannot open %1. Give your user access with a udev "
+                                       "rule, e.g. in /etc/udev/rules.d/70-qemu-usb.rules:\n"
+                                       "SUBSYSTEM==\"usb\", ATTR{idVendor}==\"%2\", "
+                                       "ATTR{idProduct}==\"%3\", TAG+=\"uaccess\"")
+                                   .arg(dev.devNode())
+                                   .arg(dev.vendorId, 4, 16, QChar('0'))
+                                   .arg(dev.productId, 4, 16, QChar('0')))
+                     .constData());
+        on<void(GParamSpec *)>(check, "notify::active", [this](GParamSpec *) { changed(); });
+        m_items << Item{id, check};
+        add(row);
+        missing.removeAll(id);
+    }
+    for (const VmConfig::UsbId &id : std::as_const(missing)) {
+        GtkWidget *check;
+        GtkWidget *row = checkRow("Not connected",
+                                  QString("%1 · attached when connected before the VM starts")
+                                      .arg(usbId(id.vendor, id.product)),
+                                  true, &check);
+        on<void(GParamSpec *)>(check, "notify::active", [this](GParamSpec *) { changed(); });
+        m_items << Item{id, check};
+        add(row);
+    }
+    if (m_rows.isEmpty()) {
+        GtkWidget *row = Gtk4::actionRow("No USB devices found");
+        gtk_widget_set_sensitive(row, false);
+        add(row);
+    }
+}
+
+QList<VmConfig::UsbId> UsbPage::checked() const
+{
+    QList<VmConfig::UsbId> list;
+
+    for (const Item &item : m_items) {
+        if (gtk_check_button_get_active(GTK_CHECK_BUTTON(item.check))) {
+            list << item.id;
+        }
+    }
+    return list;
+}
+
+QList<VmConfig::UsbId> UsbPage::listed() const
+{
+    QList<VmConfig::UsbId> list;
+
+    for (const Item &item : m_items) {
+        list << item.id;
+    }
+    return list;
+}
+
+void UsbPage::setChecked(const VmConfig::UsbId &id, bool on)
+{
+    for (const Item &item : std::as_const(m_items)) {
+        if (item.id == id) {
+            gtk_check_button_set_active(GTK_CHECK_BUTTON(item.check), on);
+        }
+    }
+}
+
+void UsbPage::save(ArgsFile &args)
+{
+    const QList<VmConfig::UsbId> list = checked();
+
+    if (list != m_loaded) {
+        VmConfig::setUsbPassthrough(args, list);
+        m_loaded = list;
+    }
+    if (m_addController && !VmConfig::hasUsbController(args)) {
+        args.add("device", "qemu-xhci");
+    }
+    m_addController = false;
+}
+
+bool UsbPage::isModified() const
+{
+    return checked() != m_loaded || m_addController;
+}
+
+/* PCI */
+
+PciPage::PciPage()
+    : SettingsPage(adw_preferences_page_new()), m_banner(ADW_BANNER(adw_banner_new(""))),
+      m_note(Gtk4::group({}, "A device passed through belongs to the VM, which drives it "
+                             "directly: this computer cannot use it while the VM runs. The "
+                             "devices of an IOMMU group go together, and the functions of a card, "
+                             "such as a graphics card and its sound, are checked together."))
+{
+    auto *page = ADW_PREFERENCES_PAGE(widget());
+
+    adw_preferences_page_set_banner(page, m_banner);
+    adw_preferences_page_add(page, m_note);
+}
+
+void PciPage::load(const ArgsFile &args)
+{
+    const Loading loading(m_loading);
+    const QList<PciDevice> devices = HostDevices::pciDevices();
+    const qint64 memory = VmConfig::memoryMiB(args);
+    QMap<int, AdwPreferencesGroup *> groups;
+    QStringList missing;
+    auto *page = ADW_PREFERENCES_PAGE(widget());
+
+    m_loaded = VmConfig::pciPassthrough(args);
+    missing = m_loaded;
+    for (AdwPreferencesGroup *group : std::as_const(m_groups)) {
+        adw_preferences_page_remove(page, group);
+    }
+    m_groups.clear();
+    m_items.clear();
+
+    if (!HostDevices::iommuEnabled()) {
+        adw_banner_set_title(m_banner, "The IOMMU is off, so no device can be passed through. Turn "
+                                       "on VT-d (Intel) or AMD-Vi in the firmware settings of this "
+                                       "computer, and add intel_iommu=on or amd_iommu=on to the "
+                                       "kernel command line.");
+        adw_banner_set_revealed(m_banner, true);
+    } else if (devices.isEmpty()) {
+        adw_banner_set_title(m_banner, "No PCI devices were found.");
+        adw_banner_set_revealed(m_banner, true);
+    } else {
+        adw_banner_set_revealed(m_banner, false);
+    }
+
+    /* each function, and what checking it checks too: the other functions of its card */
+    const auto watch = [this](GtkWidget *check, const QString &address) {
+        on<void(GParamSpec *)>(check, "notify::active", [this, check, address](GParamSpec *) {
+            if (m_loading) {
+                return;
+            }
+            if (gtk_check_button_get_active(GTK_CHECK_BUTTON(check))) {
+                /* 0000:03:00.0 and 0000:03:00.1 */
+                const QString slot = address.section('.', 0, 0);
+                const Loading loading(m_loading);
+                for (const Item &item : std::as_const(m_items)) {
+                    if (item.address.section('.', 0, 0) == slot) {
+                        gtk_check_button_set_active(GTK_CHECK_BUTTON(item.check), true);
+                    }
+                }
+            }
+            changed();
+        });
+    };
+    for (const PciDevice &dev : devices) {
+        if ((dev.classCode >> 16) == 0x06) {
+            /* bridges stay with the host */
+            continue;
+        }
+        AdwPreferencesGroup *&group = groups[dev.iommuGroup];
+        if (!group) {
+            group = Gtk4::group(dev.iommuGroup < 0 ? QString("No IOMMU Group")
+                                                   : QString("IOMMU Group %1").arg(dev.iommuGroup));
+        }
+        const QStringList problems = HostDevices::pciProblems(dev, memory);
+        GtkWidget *check;
+        GtkWidget *row = checkRow(dev.displayName(),
+                                  QStringList({dev.driver.isEmpty() ? QString("no driver")
+                                                                    : dev.driver,
+                                               problems.isEmpty() ? QString("Ready")
+                                                                  : problems.first()})
+                                      .join(" · "),
+                                  m_loaded.contains(dev.address), &check);
+        gtk_widget_set_tooltip_text(
+            row, utf8(QString("%1 [%2:%3]\n%4\n%5")
+                          .arg(dev.address)
+                          .arg(dev.vendorId, 4, 16, QChar('0'))
+                          .arg(dev.deviceId, 4, 16, QChar('0'))
+                          .arg(dev.className,
+                               problems.isEmpty() ? QString("Ready to be passed through")
+                                                  : problems.join('\n')))
+                     .constData());
+        watch(check, dev.address);
+        m_items << Item{dev.address, check};
+        adw_preferences_group_add(group, row);
+        missing.removeAll(dev.address);
+    }
+    for (AdwPreferencesGroup *group : std::as_const(groups)) {
+        adw_preferences_page_add(page, group);
+        m_groups << group;
+    }
+    if (!missing.isEmpty()) {
+        AdwPreferencesGroup *group = Gtk4::group("Not on This Computer");
+        for (const QString &address : std::as_const(missing)) {
+            GtkWidget *check;
+            GtkWidget *row = checkRow(address, "Not found", true, &check);
+            watch(check, address);
+            m_items << Item{address, check};
+            adw_preferences_group_add(group, row);
+        }
+        adw_preferences_page_add(page, group);
+        m_groups << group;
+    }
+}
+
+QStringList PciPage::checked() const
+{
+    QStringList list;
+
+    for (const Item &item : m_items) {
+        if (gtk_check_button_get_active(GTK_CHECK_BUTTON(item.check))) {
+            list << item.address;
+        }
+    }
+    return list;
+}
+
+void PciPage::save(ArgsFile &args)
+{
+    const QStringList list = checked();
+
+    if (list != m_loaded) {
+        VmConfig::setPciPassthrough(args, list);
+        m_loaded = list;
+    }
+}
+
+bool PciPage::isModified() const
+{
+    return checked() != m_loaded;
 }

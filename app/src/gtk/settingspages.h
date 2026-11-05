@@ -94,3 +94,60 @@ private:
     /* passt, if this computer and the VM's QEMU have it */
     QString m_backend;
 };
+
+/* The USB devices given to the VM when it starts, by their IDs */
+class UsbPage : public SettingsPage
+{
+public:
+    UsbPage();
+
+    QString title() const override { return "USB Devices"; }
+    const char *icon() const override { return "media-removable-symbolic"; }
+    void load(const ArgsFile &args) override;
+    void save(ArgsFile &args) override;
+    bool isModified() const override;
+
+    /* For tests: the rows' devices, checked or not */
+    QList<VmConfig::UsbId> listed() const;
+    void setChecked(const VmConfig::UsbId &id, bool checked);
+
+private:
+    QList<VmConfig::UsbId> checked() const;
+
+    struct Item {
+        VmConfig::UsbId id;
+        GtkWidget *check;
+    };
+    AdwBanner *m_controller;
+    AdwPreferencesGroup *m_list;
+    QList<GtkWidget *> m_rows;
+    QList<Item> m_items;
+    QList<VmConfig::UsbId> m_loaded;
+    bool m_addController = false;
+};
+
+/* The host's PCI devices passed through, by IOMMU group */
+class PciPage : public SettingsPage
+{
+public:
+    PciPage();
+
+    QString title() const override { return "PCI Devices"; }
+    const char *icon() const override { return "preferences-system-devices-symbolic"; }
+    void load(const ArgsFile &args) override;
+    void save(ArgsFile &args) override;
+    bool isModified() const override;
+
+private:
+    QStringList checked() const;
+
+    struct Item {
+        QString address;
+        GtkWidget *check;
+    };
+    AdwBanner *m_banner;
+    AdwPreferencesGroup *m_note;
+    QList<AdwPreferencesGroup *> m_groups;
+    QList<Item> m_items;
+    QStringList m_loaded;
+};
