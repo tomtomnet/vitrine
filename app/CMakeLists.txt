@@ -295,6 +295,8 @@ qt_add_library(vitrine_uishared STATIC
     src/ui/uiconfig.h
     src/ui/usbaccess.cpp
     src/ui/usbaccess.h
+    src/ui/usbchoices.cpp
+    src/ui/usbchoices.h
 )
 target_link_libraries(vitrine_uishared PUBLIC vitrine_core)
 target_compile_options(vitrine_uishared PRIVATE -Wall -Wextra)
