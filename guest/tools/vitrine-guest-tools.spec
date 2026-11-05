@@ -2,7 +2,7 @@
 # exact version, and dnf takes an installed one of the same version as done.
 Name:           vitrine-guest-tools
 Version:        0.1.0
-Release:        35%{?dist}
+Release:        36%{?dist}
 Summary:        vitrine guest tools: patched virtio-gpu driver, settings and agent
 
 # the driver's sources (dkms/vendor, dkms/patches) are the kernel's: MIT
@@ -181,6 +181,16 @@ fi
 %dir %{_sharedstatedir}/%{name}
 
 %changelog
+* Thu Nov 05 2026 vitrine <noreply@anthropic.com> - 0.1.0-36
+- the nested desktop's statistics go to the guest's journal by default
+  (CROSVM_DESKTOP_STATS=journal in nested.conf; the research's 5eee06a
+  and fd4db41, with wl-cross-domain-proxy at fd4db41 on Fedora 44's
+  medium): every minute with frames, the frames presented and dropped
+  and the latencies (journalctl --user -t crosvm-desktop-proxy), no
+  numbers in the window title.  Up to 0.1.0-35 they were off, and
+  nothing showed, for weeks, that a GNOME host discarded every frame's
+  feedback
+
 * Thu Nov 05 2026 vitrine <noreply@anthropic.com> - 0.1.0-35
 - with KWin 6.8.2-3.2.g27 and wl-cross-domain-proxy at the research's
   fe4eacc on Fedora 44's medium: on a GNOME host the nested desktop's KWin

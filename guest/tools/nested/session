@@ -176,10 +176,10 @@ case $CROSVM_DESKTOP_RESIZE_SETTLE_MS in
 esac
 # live numbers in the window title (fps, latencies)
 case $CROSVM_DESKTOP_STATS in
-    title | detail) proxy_args+=(--stats "$CROSVM_DESKTOP_STATS") ;;
+    title | detail | journal) proxy_args+=(--stats "$CROSVM_DESKTOP_STATS") ;;
     off | "") ;;
     *)
-        log "CROSVM_DESKTOP_STATS=$CROSVM_DESKTOP_STATS is not title, detail or off: using title" warning
+        log "CROSVM_DESKTOP_STATS=$CROSVM_DESKTOP_STATS is not title, detail, journal or off: using title" warning
         proxy_args+=(--stats title)
         ;;
 esac
