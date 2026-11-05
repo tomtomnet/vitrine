@@ -24,15 +24,13 @@
 #include "ui/buildswindow.h"
 #include "ui/hosttuningprefs.h"
 #include "ui/icons.h"
+#include "ui/preferencestext.h"
 #include "ui/qemudocs.h"
 #include "ui/widgets.h"
 
 static QString autoVirtiofsd()
 {
-    if (QFileInfo("/usr/libexec/virtiofsd").isExecutable()) {
-        return "/usr/libexec/virtiofsd";
-    }
-    return QStandardPaths::findExecutable("virtiofsd");
+    return PreferencesText::autoVirtiofsd();
 }
 
 PreferencesDialog::PreferencesDialog(QWidget *parent)
@@ -65,9 +63,7 @@ PreferencesDialog::PreferencesDialog(QWidget *parent)
     m_qemu->setPlaceholderText(tr("Path of qemu-system-x86_64"));
     m_virtiofsd->setPlaceholderText(autoVirtiofsd().isEmpty() ? tr("virtiofsd from PATH")
                                                               : autoVirtiofsd());
-    /* VMs with a #qemu line of their own keep it, whatever is chosen here */
-    m_custom->setToolTip(tr("For the VMs without a QEMU of their own; Vitrine's QEMU has what "
-                            "its VMs need, another one may not."));
+    m_custom->setToolTip(PreferencesText::customQemuTip());
     m_custom->setChecked(!custom.isEmpty());
     m_qemu->setText(custom);
     /* empty when automatic */
@@ -77,8 +73,7 @@ PreferencesDialog::PreferencesDialog(QWidget *parent)
     m_vmsDirLabel->setWordWrap(true);
     vmsChange->setObjectName("vmsDirChange");
     m_vmsDirDefault->setObjectName("vmsDirDefault");
-    vmsChange->setToolTip(tr("A folder holding VMs, each a folder with its vm.args: Vitrine "
-                             "lists the VMs it finds there, and makes new ones there"));
+    vmsChange->setToolTip(PreferencesText::vmsDirTip());
     m_updates->setObjectName("checkUpdates");
     m_updates->setChecked(QSettings(Paths::settingsPath(), QSettings::IniFormat)
                               .value("updates/check", true).toBool());
@@ -105,7 +100,7 @@ PreferencesDialog::PreferencesDialog(QWidget *parent)
     form->addRow(tr("Virtual machines:"), vmsRow);
     form->addRow(QString(), m_vmsDirState);
     form->addRow(QString(), m_updates);
-    form->addRow(QString(), Widgets::hint(tr("Of Vitrine itself: one request to GitHub.")));
+    form->addRow(QString(), Widgets::hint(PreferencesText::updatesHint()));
     /* the host's settings while VMs run: HostSettings' entries */
     connect(this, &QDialog::accepted, new HostTuningPrefs(form, this), &HostTuningPrefs::save);
     layout->addLayout(form);
@@ -172,12 +167,9 @@ void PreferencesDialog::updateStack()
 
     m_stack->setText(BuildsWindow::describe(build).toHtmlEscaped());
     m_stack->setToolTip(build.isValid() ? build.qemuBinary() : QString());
-    m_stackState->setText(running ? tr("Building…")
+    m_stackState->setText(running ? PreferencesText::stackBuilding()
                                   : BuildsWindow::explain(state, build).toHtmlEscaped());
-    m_build->setText(running                                    ? tr("Show…")
-                     : state == StackBuilder::State::Outdated  ? tr("Update…")
-                     : state == StackBuilder::State::UpToDate ? tr("Details…")
-                                                               : tr("Build…"));
+    m_build->setText(PreferencesText::stackButton(running, state));
     m_build->setEnabled(state != StackBuilder::State::NoSources || running);
 }
 
@@ -192,13 +184,9 @@ void PreferencesDialog::updateTools()
     m_tools->setText(BuildsWindow::describeGuestTools(release).toHtmlEscaped());
     m_tools->setToolTip(GuestToolsBuilder::mediumImage(release));
     m_toolsState->setText(
-        running ? tr("Building: %1.").arg(builder->progressText(false))
-                      .toHtmlEscaped()
+        running ? PreferencesText::toolsBuilding(builder->progressText(false)).toHtmlEscaped()
                 : BuildsWindow::explain(state).toHtmlEscaped());
-    m_buildTools->setText(running                                         ? tr("Show…")
-                          : state == GuestToolsBuilder::State::Outdated ? tr("Update…")
-                          : state == GuestToolsBuilder::State::UpToDate ? tr("Details…")
-                                                                        : tr("Build…"));
+    m_buildTools->setText(PreferencesText::toolsButton(running, state));
     m_buildTools->setEnabled(state != GuestToolsBuilder::State::NoSources || running);
 }
 
@@ -217,27 +205,26 @@ void PreferencesDialog::checkQemu()
         return;
     }
     if (binary.isEmpty()) {
-        m_qemuStatus->setText(tr("Choose the QEMU binary, for example one you built."));
+        m_qemuStatus->setText(PreferencesText::qemuNone());
         return;
     }
     if (!QFileInfo(binary).isExecutable()) {
-        m_qemuStatus->setText(tr("This file is not an executable."));
+        m_qemuStatus->setText(PreferencesText::notExecutable());
         return;
     }
 
-    m_qemuStatus->setText(tr("Checking…"));
+    m_qemuStatus->setText(PreferencesText::checking());
     m_version = new QProcess(this);
     m_version->setProcessChannelMode(QProcess::MergedChannels);
     connect(m_version, &QProcess::finished, this, [this]() {
-        const QString first = QString::fromLocal8Bit(m_version->readAll()).section('\n', 0, 0);
-        m_qemuStatus->setText(first.contains("version") ? first.trimmed().toHtmlEscaped()
-                                                        : tr("This does not look like QEMU."));
+        m_qemuStatus->setText(
+            PreferencesText::qemuVersion(QString::fromLocal8Bit(m_version->readAll())));
         m_version->deleteLater();
         m_version = nullptr;
     });
     connect(m_version, &QProcess::errorOccurred, this, [this](QProcess::ProcessError error) {
         if (error == QProcess::FailedToStart) {
-            m_qemuStatus->setText(tr("Cannot run it: %1").arg(m_version->errorString()));
+            m_qemuStatus->setText(PreferencesText::cannotRun(m_version->errorString()));
             m_version->deleteLater();
             m_version = nullptr;
         }
@@ -251,15 +238,7 @@ void PreferencesDialog::checkVirtiofsd()
                                ? autoVirtiofsd()
                                : m_virtiofsd->text().trimmed();
 
-    if (binary.isEmpty()) {
-        m_virtiofsdStatus->setText(
-            tr("Not found: shared folders need it. Install it with "
-               "<code>sudo dnf install virtiofsd</code>."));
-    } else if (!QFileInfo(binary).isExecutable()) {
-        m_virtiofsdStatus->setText(tr("This file is not an executable."));
-    } else {
-        m_virtiofsdStatus->setText(tr("Shared folders use %1.").arg(binary.toHtmlEscaped()));
-    }
+    m_virtiofsdStatus->setText(PreferencesText::virtiofsd(binary));
 }
 
 void PreferencesDialog::accept()
@@ -276,31 +255,17 @@ void PreferencesDialog::accept()
 void PreferencesDialog::updateVmsDir()
 {
     const QDir dir(m_vmsDir);
-    int count = 0;
 
     m_vmsDirLabel->setText(QString("<a href=\"%1\">%2</a>")
                                .arg(QUrl::fromLocalFile(m_vmsDir).toString(),
                                     QDir::toNativeSeparators(m_vmsDir).toHtmlEscaped()));
     m_vmsDirDefault->setEnabled(QDir(Paths::defaultVmsDir()).absolutePath() !=
                                 dir.absolutePath());
-    for (const QString &id : dir.entryList(QDir::Dirs | QDir::NoDotAndDotDot)) {
-        if (QFileInfo::exists(dir.filePath(id) + "/vm.args")) {
-            count++;
-        }
-    }
     if (m_vmsDir == Paths::vmsDir()) {
         m_vmsDirState->clear();
         m_vmsDirState->hide();
         return;
     }
-    if (!QFileInfo(m_vmsDir).isWritable() && dir.exists()) {
-        m_vmsDirState->setText(tr("%n VM(s) found there. The folder is read-only: new VMs "
-                                  "cannot be made there, and VMs may not start.", nullptr,
-                                  count));
-    } else {
-        m_vmsDirState->setText(tr("%n VM(s) found there. The VMs of the folder used until "
-                                  "now stay where they are; running ones stay listed until "
-                                  "they stop.", nullptr, count));
-    }
+    m_vmsDirState->setText(PreferencesText::vmsDirState(m_vmsDir));
     m_vmsDirState->show();
 }

@@ -283,6 +283,8 @@ qt_add_library(vitrine_uishared STATIC
     src/ui/hosttuningtext.h
     src/ui/memorytext.cpp
     src/ui/memorytext.h
+    src/ui/preferencestext.cpp
+    src/ui/preferencestext.h
     src/ui/qemudocs.cpp
     src/ui/qemudocs.h
     src/ui/udmabuftext.cpp
