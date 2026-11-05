@@ -150,3 +150,58 @@ QString BuildTexts::systemAbout(const HostKde::Target &target)
     }
     return tr("A package of this computer's with the research's host set.");
 }
+
+/* The Qt app's StackBanner's words, in its translation context */
+static QString stackTr(const char *text)
+{
+    return QCoreApplication::translate("StackBanner", text);
+}
+
+QString BuildTexts::stackNote(const StackBuilder *builder, int percent, const QString &error,
+                              QString *button, bool *note)
+{
+    const StackBuilder::State state = StackBuilder::state();
+    bool isNote = false;
+    QString text;
+    QString word;
+
+    if (builder->isRunning()) {
+        isNote = true;
+        text = stackTr("Building Vitrine's QEMU");
+        if (builder->step() > 0) {
+            text += stackTr(": step %1 of %2, %3").arg(builder->step()).arg(builder->steps())
+                        .arg(builder->stepText().toHtmlEscaped());
+            if (percent >= 0) {
+                text += stackTr(" (%1%)").arg(percent);
+            }
+        }
+        text += '.';
+        word = stackTr("Show");
+    } else if (!Paths::customQemuBinary().isEmpty() ||
+               state == StackBuilder::State::UpToDate) {
+        /* the user's QEMU, or nothing to do */
+    } else if (!error.isEmpty()) {
+        text = stackTr("Vitrine's QEMU could not be built. %1.").arg(error.toHtmlEscaped());
+        word = stackTr("Show…");
+    } else if (state == StackBuilder::State::NotBuilt) {
+        text = stackTr("<b>Vitrine's QEMU is not built yet.</b> VMs need it for their display "
+                       "in this window and for 3D acceleration, and new Linux VMs need it to "
+                       "start. Building it takes a few minutes.");
+        word = stackTr("Build…");
+    } else if (state == StackBuilder::State::Outdated) {
+        text = stackTr("<b>Vitrine's QEMU is out of date:</b> this version of Vitrine builds "
+                       "it from other sources or patches. VMs running keep the QEMU they "
+                       "started with.");
+        word = stackTr("Update…");
+    } else {
+        text = explain(state, {}).toHtmlEscaped();
+    }
+
+    if (button) {
+        *button = word;
+    }
+    if (note) {
+        *note = isNote;
+    }
+    return text;
+}

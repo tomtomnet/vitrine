@@ -35,3 +35,21 @@ QString revertText(const QList<HostKde::Status> &statuses);
 QString consoleCommands(const QStringList &packages);
 
 }
+
+/*
+ * The banner over the main window while one of Vitrine's host packages is
+ * installed and no longer matches the system (the Qt app's HostKdeBanner):
+ * KWin after a Plasma or Qt update, KSvg or Kirigami once the KDE
+ * Frameworks moved to another release, Kirigami after a Qt update.  Of
+ * @statuses (HostKdeMonitor::statuses()).
+ */
+namespace HostKdeNotice {
+
+/* The packages out of date: Vitrine's, installed, no longer matching */
+QStringList outdated(const QList<HostKde::Status> &statuses);
+/* The first of them that the recipe has a set for, to build again; empty if none */
+QString rebuildable(const QList<HostKde::Status> &statuses);
+/* What the banner says (rich text); empty when none is out of date */
+QString text(const QList<HostKde::Status> &statuses);
+
+}

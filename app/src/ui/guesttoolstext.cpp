@@ -2,6 +2,8 @@
 #include "guesttoolstext.h"
 
 #include <QCoreApplication>
+#include <QDateTime>
+#include <QLocale>
 
 #include "core/buildmanager.h"
 #include "core/guesttoolsbuilder.h"
@@ -199,6 +201,76 @@ QString what(Vm *vm, const GuestTools::Medium &medium)
                                            "installs them before its desktop starts, which takes "
                                            "a few minutes, then restarts once more.</p>");
     return what;
+}
+
+/* The Qt app's GuestToolsBuildBanner's words, in its translation context */
+static QString mediumTr(const char *text)
+{
+    return QCoreApplication::translate("GuestToolsBuildBanner", text);
+}
+
+/* The date of the medium of @release, "5 October 2026"; empty if unknown */
+static QString builtOn(const QString &release)
+{
+    const QDateTime built = GuestToolsBuilder::made(GuestToolsBuilder::mediumImage(release)).built;
+
+    return built.isValid() ? QLocale().toString(built.toLocalTime().date(), "d MMMM yyyy")
+                           : QString();
+}
+
+QString mediumNote(const QString &release, QString *button, bool *warning)
+{
+    using State = GuestToolsBuilder::State;
+    const GuestToolsBuilder *builder = GuestToolsBuilder::instance();
+    bool isWarning = true;
+    QString text;
+    QString word;
+
+    if (builder->isRunning()) {
+        isWarning = false;
+        text = mediumTr("The guest tools for Fedora %1 are being built: %2.")
+                   .arg(builder->runRelease(), builder->progressText().toHtmlEscaped());
+        word = mediumTr("Show");
+    } else {
+        const State state = GuestToolsBuilder::releaseState(release);
+        const QString date = builtOn(release);
+
+        if (!builder->error().isEmpty() && (state == State::NotBuilt || state == State::Outdated)) {
+            text = mediumTr("The guest tools could not be built: %1.")
+                       .arg(builder->error().toHtmlEscaped());
+            word = mediumTr("Show…");
+        } else if (state == State::NotBuilt) {
+            /* KWin, Qt base and the rest of KDE's take longer than Mesa itself */
+            const bool kde = GuestToolsBuilder::packages(GuestToolsBuilder::guestDir(), release)
+                                 .contains("kwin");
+            text = mediumTr("<b>The guest tools for Fedora %1 are not built yet.</b> Vitrine "
+                            "builds them in a Fedora %1 container, which takes %2.")
+                       .arg(release, kde ? mediumTr("40 to 70 minutes")
+                                         : mediumTr("15 to 30 minutes"));
+            word = mediumTr("Build…");
+        } else if (state == State::Outdated) {
+            isWarning = false;
+            text = date.isEmpty()
+                       ? mediumTr("<b>The guest tools medium for Fedora %1 is out of date:</b> "
+                                  "this version of Vitrine has other guest tools sources.")
+                             .arg(release)
+                       : mediumTr("<b>The guest tools medium for Fedora %1 is out of date:</b> "
+                                  "this version of Vitrine has other guest tools sources than "
+                                  "the medium made on %2.")
+                             .arg(release, date);
+            word = mediumTr("Update…");
+        } else if (state == State::NoSources && !GuestTools::medium(release).isValid()) {
+            text = mediumTr("The guest tools are not built, and this installation of Vitrine "
+                            "has no guest/ folder to build them from.");
+        }
+    }
+    if (button) {
+        *button = word;
+    }
+    if (warning) {
+        *warning = isWarning;
+    }
+    return text;
 }
 
 }

@@ -37,4 +37,14 @@ public:
     static QString groupAbout(const QString &group, const QString &guestRelease);
     /* What a host package is, and what the research's set changes and measured */
     static QString systemAbout(const HostKde::Target &target);
+    /*
+     * What the banner over the main window says of Vitrine's QEMU (rich
+     * text), as @builder is: building (@percent of its step, -1 unknown), its
+     * last build failed (@error, empty when it did not, or was stopped), not
+     * built yet, out of date; nothing when it is up to date, or when the
+     * preferences choose another QEMU.  @button: the banner's button (Show,
+     * Show…, Build…, Update…); @note: a note rather than a warning
+     */
+    static QString stackNote(const StackBuilder *builder, int percent, const QString &error,
+                             QString *button = nullptr, bool *note = nullptr);
 };

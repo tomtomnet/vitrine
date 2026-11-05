@@ -246,3 +246,83 @@ QString installAllText(const QList<Status> &statuses)
 }
 
 }
+
+namespace HostKdeNotice {
+
+/* The Qt app's HostKdeBanner's words, in its translation context */
+static QString noticeTr(const char *text)
+{
+    return QCoreApplication::translate("HostKdeBanner", text);
+}
+
+/* "Plasma 6.8.0" of "plasma-workspace 6.7.91 6.8.0", "Qt 6.11.3" of qt6-qtbase's */
+static QString now(const QString &line)
+{
+    const QStringList f = line.split(' ');
+    return HostKde::packageTitle(f.value(0)) + ' ' + f.value(2);
+}
+
+QStringList outdated(const QList<Status> &statuses)
+{
+    QStringList ids;
+
+    for (const HostKde::Status &s : statuses) {
+        if (s.isOutdated()) {
+            ids << s.target.id;
+        }
+    }
+    return ids;
+}
+
+QString rebuildable(const QList<Status> &statuses)
+{
+    for (const HostKde::Status &s : statuses) {
+        if (s.isOutdated() && s.canBuild()) {
+            return s.target.id;
+        }
+    }
+    return {};
+}
+
+QString text(const QList<Status> &statuses)
+{
+    QStringList sentences;
+    bool kwin = false;
+
+    for (const HostKde::Status &s : statuses) {
+        QStringList moved;
+        if (!s.isOutdated()) {
+            continue;
+        }
+        for (const QString &line : s.outdated) {
+            moved << now(line).toHtmlEscaped();
+        }
+        const QString title = s.target.title.toHtmlEscaped();
+        if (s.target.package == "kwin") {
+            kwin = true;
+            sentences << noticeTr("<b>Vitrine's KWin no longer matches this computer's %1.</b> "
+                                  "At your next login the desktop would run KWin %2 with the new "
+                                  "libraries, and might not start.")
+                             .arg(moved.join(noticeTr(" and ")),
+                                  s.installed.version.toHtmlEscaped());
+        } else {
+            sentences << noticeTr("<b>Vitrine's %1 no longer matches this computer's %2.</b> "
+                                  "Programs use %1 %3 with the newer libraries, which upstream "
+                                  "does not support: some may not work as they should.")
+                             .arg(title, moved.join(noticeTr(" and ")),
+                                  s.installed.version.toHtmlEscaped());
+        }
+    }
+    if (sentences.isEmpty()) {
+        return {};
+    }
+    const QString what = rebuildable(statuses).isEmpty()
+                             ? noticeTr("The research has no set for the new version yet: put "
+                                        "the distribution's packages back")
+                             : noticeTr("Build and install the matching packages, or put the "
+                                        "distribution's back");
+    return sentences.join(' ') + ' ' +
+           (kwin ? noticeTr("%1 before you log out.").arg(what) : noticeTr("%1.").arg(what));
+}
+
+}
