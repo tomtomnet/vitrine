@@ -90,12 +90,6 @@ SettingsDialog::SettingsDialog(Vm *vm, VmStore *store, Presenter presenter,
     adw_navigation_split_view_set_max_sidebar_width(m_split, 260);
     adw_dialog_set_child(dialog(), GTK_WIDGET(m_split));
 
-    /* narrow: the list of pages, a page over it */
-    AdwBreakpoint *narrow = adw_breakpoint_new(adw_breakpoint_condition_parse("max-width: 600sp"));
-    adw_breakpoint_add_setters(narrow, G_OBJECT(m_split), "collapsed", true, nullptr);
-    adw_breakpoint_add_setters(narrow, G_OBJECT(switcher), "mode", ADW_SIDEBAR_MODE_PAGE, nullptr);
-    adw_dialog_add_breakpoint(dialog(), narrow);
-
     /* in the order of the list; the Qt app's Page order names them */
     addPage(General, std::make_unique<GeneralPage>(vm));
     addPage(Hardware, std::make_unique<HardwarePage>());
@@ -107,6 +101,17 @@ SettingsDialog::SettingsDialog(Vm *vm, VmStore *store, Presenter presenter,
     addPage(Machine, std::make_unique<MachinePage>(vm, m_resetFirmware));
     addPage(PciDevices, std::make_unique<PciPage>());
     addPage(Arguments, std::make_unique<ArgumentsPage>(vm->dir()));
+
+    /* narrow: the list of pages, a page over it, and what the pages do there */
+    AdwBreakpoint *narrow = adw_breakpoint_new(adw_breakpoint_condition_parse("max-width: 600sp"));
+    adw_breakpoint_add_setters(narrow, G_OBJECT(m_split), "collapsed", true, nullptr);
+    adw_breakpoint_add_setters(narrow, G_OBJECT(switcher), "mode", ADW_SIDEBAR_MODE_PAGE, nullptr);
+    for (const auto &page : m_pages) {
+        if (page) {
+            page->addNarrowSetters(narrow);
+        }
+    }
+    adw_dialog_add_breakpoint(dialog(), narrow);
 
     on<void()>(switcher, "activated",
                [this]() { adw_navigation_split_view_set_show_content(m_split, true); });

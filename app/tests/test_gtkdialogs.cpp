@@ -373,6 +373,39 @@ private slots:
         delete settings;
     }
 
+    /* The text's tags, the Qt highlighter's formats; Insert's line */
+    void argumentsPage()
+    {
+        QTemporaryDir dir;
+        QVERIFY(addVm(dir.path(), "a", "-name A\n-m 1G\n"));
+        VmStore store(dir.path());
+        Vm *vm = store.find("a");
+        auto *settings = new SettingsDialog(vm, &store, presenter());
+
+        settings->setPage(SettingsDialog::Arguments);
+        auto *args = static_cast<ArgumentsPage *>(settings->pageWidget(SettingsDialog::Arguments));
+        args->setText("# a comment\n-name x,debug-threads=on\n#guest linux,desktop=kde\nbogus\n");
+        QVERIFY(args->tagsAt(0, 2).contains("comment"));
+        QVERIFY(args->tagsAt(1, 1).contains("option") || args->tagsAt(1, 1).contains("unknown"));
+        QVERIFY(args->tagsAt(1, 9).contains("key"));
+        QVERIFY(!args->tagsAt(1, 6).contains("key"));
+        QVERIFY(args->tagsAt(2, 1).contains("directive"));
+        QVERIFY(args->tagsAt(2, 15).contains("key"));
+        QVERIFY(args->tagsAt(3, 1).contains("invalid"));
+
+        /* after the cursor's line, or on it if blank */
+        args->placeCursor(1, 3);
+        args->insertLine("-smp 2");
+        QCOMPARE(args->text().split('\n').value(2), "-smp 2");
+        args->placeCursor(5, 0);
+        args->insertLine("-m 2G");
+        QCOMPARE(args->text().split('\n').value(5), "-m 2G");
+        QVERIFY(settings->isModified());
+        args->check();
+        QVERIFY(args->problems().join('\n').contains("Line 5"));
+        delete settings;
+    }
+
     /* The page names of the settings file, the Qt app's */
     void pageKeys()
     {

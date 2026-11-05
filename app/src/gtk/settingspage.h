@@ -37,6 +37,8 @@ public:
     virtual void save(ArgsFile &args) = 0;
     /* The user changed something since load() */
     virtual bool isModified() const = 0;
+    /* What the page changes in a narrow dialog, as @narrow applies */
+    virtual void addNarrowSetters(AdwBreakpoint *narrow) { Q_UNUSED(narrow); }
     virtual bool commit(const ArgsFile &args, const QString &vmDir, QString *error)
     {
         Q_UNUSED(args);

@@ -49,6 +49,10 @@ add_library(vitrine_gtk STATIC
     src/gtk/mainwindowdialogs.cpp
     src/gtk/newvmdialog.cpp
     src/gtk/newvmdialog.h
+    src/gtk/qemureference.cpp
+    src/gtk/qemureference.h
+    src/gtk/referencepanel.cpp
+    src/gtk/referencepanel.h
     src/gtk/rows.cpp
     src/gtk/rows.h
     src/gtk/settingsdialog.cpp
@@ -111,6 +115,7 @@ if(BUILD_TESTING)
     vitrine_gtk_test(gtkloop Qt6::Concurrent)
     # what the windows say of a VM: words alone, no display needed
     vitrine_gtk_test(vmsummary)
+    vitrine_gtk_test(qemureference)
     vitrine_gtk_test(gtkmainwindow)
     vitrine_gtk_test(gtkdialogs)
     target_sources(test_gtkloop PRIVATE tests/gtkdisplay.h)
