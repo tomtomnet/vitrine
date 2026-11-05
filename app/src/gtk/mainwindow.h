@@ -76,8 +76,8 @@ public:
      * No screen stays in full screen or grabbed: it would hide the dialog.
      */
     void present(AdwDialog *dialog);
-    /* The console of the VM @id, if it has one (tests) */
-    VmConsole *console(const QString &id) const;
+    /* The console of the VM @id, made the first time (tests); null once the window is gone */
+    VmConsole *console(const QString &id);
     /*
      * Ctrl+Alt+1/2 from anywhere in the window, the VMs' screens included,
      * their full-screen windows too: the view of the selected VM's console

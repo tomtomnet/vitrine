@@ -94,6 +94,10 @@ if(BUILD_TESTING)
     # what the windows say of a VM: words alone, no display needed
     vitrine_gtk_test(vmsummary)
     vitrine_gtk_test(gtkmainwindow)
+    # the consoles: views, keys, a dialog over them, what closing says (a stand-in
+    # for the nested desktop)
+    vitrine_gtk_test(gtkconsole)
     target_sources(test_gtkloop PRIVATE tests/gtkdisplay.h)
     target_sources(test_gtkmainwindow PRIVATE tests/gtkdisplay.h)
+    target_sources(test_gtkconsole PRIVATE tests/gtkdisplay.h)
 endif()

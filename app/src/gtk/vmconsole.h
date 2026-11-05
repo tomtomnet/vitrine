@@ -9,6 +9,7 @@
 #include <QString>
 
 #include <functional>
+#include <optional>
 
 #include "core/consoleviews.h"
 #include "vmview/stats.h"
@@ -95,6 +96,13 @@ public:
     ConsoleViews::View currentView() const;
     /* The user's choice of view */
     void showView(ConsoleViews::View view);
+    /*
+     * Ctrl+Alt and the key of 1 or 2 above the letters, or on the keypad,
+     * as GDK gives the key: its view (ConsoleViews::viewForKey()), by the
+     * key's place - XKB's @keycode - whatever character the layout gives it
+     */
+    static std::optional<ConsoleViews::View> viewForKey(guint keyval, guint keycode,
+                                                        GdkModifierType state);
     /* The guest's desktop is the view shown */
     bool desktopShown() const;
     /* The guest's desktop, while the VM runs with it in this window; else null */

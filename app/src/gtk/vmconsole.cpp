@@ -236,6 +236,28 @@ void VmConsole::showView(ConsoleViews::View view)
     }
 }
 
+std::optional<ConsoleViews::View> VmConsole::viewForKey(guint keyval, guint keycode,
+                                                       GdkModifierType state)
+{
+    Qt::KeyboardModifiers mods;
+
+    if (state & GDK_SHIFT_MASK) {
+        mods |= Qt::ShiftModifier;
+    }
+    if (state & GDK_CONTROL_MASK) {
+        mods |= Qt::ControlModifier;
+    }
+    if (state & GDK_ALT_MASK) {
+        mods |= Qt::AltModifier;
+    }
+    if (state & GDK_SUPER_MASK) {
+        mods |= Qt::MetaModifier;
+    }
+    /* the key's character only where GDK gives no keycode */
+    const int key = keyval >= GDK_KEY_1 && keyval <= GDK_KEY_9 ? Qt::Key_1 + int(keyval - GDK_KEY_1) : 0;
+    return ConsoleViews::viewForKey(mods, keycode, key);
+}
+
 bool VmConsole::desktopShown() const
 {
     return m_nested && m_views->view() == ConsoleViews::View::Desktop;

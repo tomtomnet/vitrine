@@ -112,9 +112,11 @@ void MainWindow::createConsoleActions()
     m_page->consoleShown = [this]() { focusScreen(FocusCause::Shown); };
 }
 
-VmConsole *MainWindow::console(const QString &id) const
+VmConsole *MainWindow::console(const QString &id)
 {
-    return m_consoles.value(id);
+    Vm *vm = m_store->find(id);
+
+    return vm ? consoleOf(vm) : nullptr;
 }
 
 VmConsole *MainWindow::consoleOf(Vm *vm)
@@ -253,26 +255,11 @@ void MainWindow::toggleFullScreen()
 bool MainWindow::switchViewByKey(guint keyval, guint keycode, GdkModifierType state)
 {
     VmConsole *console = currentConsole();
-    Qt::KeyboardModifiers mods;
 
     if (!console || !console->hasViews()) {
         return false;
     }
-    if (state & GDK_SHIFT_MASK) {
-        mods |= Qt::ShiftModifier;
-    }
-    if (state & GDK_CONTROL_MASK) {
-        mods |= Qt::ControlModifier;
-    }
-    if (state & GDK_ALT_MASK) {
-        mods |= Qt::AltModifier;
-    }
-    if (state & GDK_SUPER_MASK) {
-        mods |= Qt::MetaModifier;
-    }
-    /* the key's place (XKB's keycode); its character only where GDK gives no keycode */
-    const int key = keyval >= GDK_KEY_1 && keyval <= GDK_KEY_9 ? Qt::Key_1 + int(keyval - GDK_KEY_1) : 0;
-    const std::optional<ConsoleViews::View> view = ConsoleViews::viewForKey(mods, keycode, key);
+    const std::optional<ConsoleViews::View> view = VmConsole::viewForKey(keyval, keycode, state);
     if (!view) {
         return false;
     }
