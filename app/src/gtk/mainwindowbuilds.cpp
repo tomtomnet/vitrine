@@ -164,6 +164,11 @@ void MainWindowBuilds::showBuilds(const QString &component, const QString &guest
         watchActive(GTK_WIDGET(m_buildsWindow->window()));
     }
     m_buildsWindow->present(component);
+    /* closed meanwhile, not yet let go: a new one */
+    if (!m_buildsWindow->window()) {
+        m_buildsWindow.reset();
+        showBuilds(component, {});
+    }
 }
 
 void MainWindowBuilds::installGuestTools(Vm *vm)

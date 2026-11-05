@@ -49,7 +49,8 @@ public:
     BuildsWindow(const BuildsWindow &) = delete;
     BuildsWindow &operator=(const BuildsWindow &) = delete;
 
-    GtkWindow *window() const { return GTK_WINDOW(m_window); }
+    /* Null once it is destroyed */
+    GtkWindow *window() const { return m_destroyed ? nullptr : GTK_WINDOW(m_window); }
     /* In front, on @component if given (a component's id, a group's, "" for the Overview) */
     void present(const QString &component = {});
     void select(const QString &component);

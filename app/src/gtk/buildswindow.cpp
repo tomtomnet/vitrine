@@ -95,10 +95,13 @@ const char *kindIcon(Kind kind)
     return "package-x-generic-symbolic";
 }
 
-/* A label of rich text, wrapping, to select and copy from */
+/*
+ * A label of rich text, wrapping.  Not selectable: a page shown narrow
+ * gives the focus to its first selectable label, all of its text selected
+ */
 GtkWidget *richLabel(const QString &html)
 {
-    GtkWidget *label = Gtk4::label({}, true);
+    GtkWidget *label = Gtk4::label({});
 
     gtk_label_set_markup(GTK_LABEL(label), utf8(Markup::pango(html)).constData());
     return label;
@@ -119,8 +122,11 @@ BuildsWindow::BuildsWindow(GtkWindow *parent, BuildManager *manager)
 {
     const QSettings settings(Paths::settingsPath(), QSettings::IniFormat);
 
-    /* its widgets live as long as this; the window until it is destroyed */
-    g_object_ref(m_window);
+    /*
+     * The window is GTK's: no reference of this side's, or it would never
+     * be disposed, and say "destroy", once closed.  Its pages and actions
+     * are this side's, for as long as it lives
+     */
     gtk_window_set_title(GTK_WINDOW(m_window), "Builds");
     gtk_window_set_transient_for(GTK_WINDOW(m_window), parent);
     gtk_window_set_destroy_with_parent(GTK_WINDOW(m_window), true);
@@ -270,7 +276,6 @@ BuildsWindow::~BuildsWindow()
     g_object_unref(m_componentPage);
     g_object_unref(m_componentTitle);
     g_object_unref(m_actions);
-    g_object_unref(m_window);
 }
 
 void BuildsWindow::saveSize()
@@ -668,6 +673,9 @@ void BuildsWindow::fill()
 
 void BuildsWindow::present(const QString &component)
 {
+    if (m_destroyed) {
+        return;
+    }
     const bool first = !gtk_widget_get_visible(m_window);
 
     if (!component.isEmpty()) {
@@ -743,6 +751,11 @@ void BuildsWindow::lookAgain()
 
 void BuildsWindow::presentDialog(AdwDialog *dialog)
 {
+    if (m_destroyed) {
+        g_object_ref_sink(dialog);
+        g_object_unref(dialog);
+        return;
+    }
     adw_dialog_present(dialog, m_window);
 }
 
@@ -1238,7 +1251,7 @@ void BuildsWindow::setSeen()
 {
     Task *task = m_manager->task();
 
-    if (task && !task->isRunning() && gtk_widget_get_visible(m_window) &&
+    if (task && !task->isRunning() && !m_destroyed && gtk_widget_get_visible(m_window) &&
         gtk_window_is_active(GTK_WINDOW(m_window))) {
         task->seen();
     }
