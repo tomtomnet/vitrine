@@ -10,9 +10,10 @@
   helper refuses a run without one (pkexec would use its generic action).
 
   - session: the kernel's fair server, an AMD GPU's clock floor, the
-    udmabuf limits, shared memory's transparent huge pages and the
-    scheduling of the caller's QEMU threads (real-time for the VM in front)
-    while vitrine's VMs run, all put back after the last one;
+    udmabuf limits, shared memory's transparent huge pages, the CPUs' idle
+    latency and energy performance preference, and the scheduling of the
+    caller's QEMU threads (real-time for the VM in front) while vitrine's
+    VMs run, all put back after the last one;
   - setup-group: the caller in the vitrine group, created if need be.
 
   An administrator's password by default.  49-vitrine.rules lets members of
@@ -27,7 +28,7 @@
   <vendor_url>https://github.com/tomtomnet/vitrine</vendor_url>
   <action id="org.vitrine.helper">
     <description>Tune the host while virtual machines run</description>
-    <message>Authentication is required to tune the host's scheduler and GPU settings while your virtual machines run</message>
+    <message>Authentication is required to tune the host's scheduler, CPU and GPU settings while your virtual machines run</message>
     <defaults>
       <allow_any>auth_admin</allow_any>
       <allow_inactive>auth_admin</allow_inactive>
