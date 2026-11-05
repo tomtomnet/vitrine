@@ -8,6 +8,7 @@
 #include <QSettings>
 
 #include <algorithm>
+#include <utility>
 
 #include "core/hostsettings.h"
 #include "core/nesteddesktop.h"
@@ -750,9 +751,7 @@ void MainWindow::currentChanged()
     m_page->setVm(vm, vm ? m_errors.value(vm->id()) : QString());
     updateActions();
     /* once the page shows the console: an unmapped widget takes no focus */
-    g_idle_add_once([](gpointer self) {
-        static_cast<MainWindow *>(self)->focusScreen(FocusCause::Switched);
-    }, this);
+    focusScreenLater(FocusCause::Switched);
 }
 
 void MainWindow::updateActions()
@@ -1315,6 +1314,9 @@ void MainWindow::closed()
 {
     /* the screens go with the window, the guests' sessions shown in it with them */
     ViewKeys::setFilter({});
+    if (m_focusLater) {
+        g_source_remove(std::exchange(m_focusLater, 0));
+    }
     for (const QString &id : m_consoles.keys()) {
         dropConsole(id);
     }

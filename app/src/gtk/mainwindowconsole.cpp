@@ -100,9 +100,7 @@ void MainWindow::createConsoleActions()
     /* back in front: the keys to the screen, once GTK gave the focus back to its widget */
     Gtk4::connect<void(GParamSpec *)>(m_window, "notify::is-active", [this](GParamSpec *) {
         if (m_window && gtk_window_is_active(GTK_WINDOW(m_window))) {
-            g_idle_add_once([](gpointer self) {
-                static_cast<MainWindow *>(self)->focusScreen(FocusCause::Activated);
-            }, this);
+            focusScreenLater(FocusCause::Activated);
         }
     });
     /* a VM chosen in the list, the one shown too: its screen */
@@ -231,6 +229,19 @@ void MainWindow::focusScreen(FocusCause cause)
         return;
     }
     console->focusScreen();
+}
+
+void MainWindow::focusScreenLater(FocusCause cause)
+{
+    m_focusCause = cause;
+    if (m_focusLater || !m_window) {
+        return;
+    }
+    m_focusLater = g_idle_add_once([](gpointer self) {
+        auto *window = static_cast<MainWindow *>(self);
+        window->m_focusLater = 0;
+        window->focusScreen(window->m_focusCause);
+    }, this);
 }
 
 void MainWindow::leaveScreens()

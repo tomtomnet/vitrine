@@ -142,6 +142,8 @@ private:
     };
     /* The keys to the screen of the VM shown, without a click on it */
     void focusScreen(FocusCause cause);
+    /* That, once GTK is done with what it does now (a page shown, the focus given back) */
+    void focusScreenLater(FocusCause cause);
     /* No screen in full screen, none grabbing: before a dialog */
     void leaveScreens();
     void toggleFullScreen();
@@ -211,4 +213,7 @@ private:
     /* When the last button went down in the window, and a key in the sidebar */
     gint64 m_lastPress = 0;
     gint64 m_lastSidebarKey = 0;
+    /* focusScreenLater()'s idle, removed with the window */
+    guint m_focusLater = 0;
+    FocusCause m_focusCause = FocusCause::Shown;
 };
