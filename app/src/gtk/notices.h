@@ -108,4 +108,13 @@ private:
     GtkWidget *m_button;
     GtkWidget *m_popover;
     GtkWidget *m_list;
+    /*
+     * The popover's rows, one per notice shown, in their order: made again
+     * only when the notices shown change, their words updated in place
+     * otherwise (a row taken from under the pointer, or from under the
+     * focus, closes the popover)
+     */
+    QList<Kind> m_rowKinds;
+    QList<GtkWidget *> m_rows;
+    QList<GtkWidget *> m_rowButtons;
 };

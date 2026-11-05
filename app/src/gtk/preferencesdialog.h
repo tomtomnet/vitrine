@@ -73,10 +73,10 @@ private:
     GtkWidget *m_qemuStatus;
     GtkWidget *m_tools;
     GtkWidget *m_toolsButton;
+    /* the group says what shared folders use */
+    AdwPreferencesGroup *m_shares;
     GtkWidget *m_virtiofsd;
-    GtkWidget *m_virtiofsdStatus;
     GtkWidget *m_vmsDir;
     GtkWidget *m_vmsDirDefault;
-    GtkWidget *m_vmsDirState;
     GtkWidget *m_updates;
 };

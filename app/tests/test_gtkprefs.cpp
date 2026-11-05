@@ -192,9 +192,14 @@ class TestGtkPrefs : public QObject
         return nullptr;
     }
 
+    /* Its body, and the explanation under it (a long one's) */
     static QString body(AdwAlertDialog *alert)
     {
-        return QString::fromUtf8(adw_alert_dialog_get_body(alert));
+        QString text = QString::fromUtf8(adw_alert_dialog_get_body(alert));
+        if (GtkWidget *extra = adw_alert_dialog_get_extra_child(alert); extra && GTK_IS_LABEL(extra)) {
+            text += QString::fromUtf8(gtk_label_get_label(GTK_LABEL(extra)));
+        }
+        return text;
     }
 
     /* The widget named @name under @widget, depth first */
@@ -407,10 +412,11 @@ private slots:
 
         /* virtiofsd: checked as typed, saved when applied; empty for the one found */
         GtkWidget *virtiofsd = dialog->find("virtiofsd");
-        GtkWidget *virtiofsdStatus = dialog->find("virtiofsd-status");
-        QVERIFY(virtiofsd && virtiofsdStatus);
+        auto *shares = ADW_PREFERENCES_GROUP(dialog->find("shared-folders"));
+        QVERIFY(virtiofsd && shares);
         Gtk4::setText(virtiofsd, "/nonexistent/virtiofsd");
-        QCOMPARE(subtitle(virtiofsdStatus), PreferencesText::notExecutable());
+        QCOMPARE(QString::fromUtf8(adw_preferences_group_get_description(shares)),
+                 PreferencesText::notExecutable());
         g_signal_emit_by_name(virtiofsd, "apply");
         QCOMPARE(Paths::virtiofsd(), QString("/nonexistent/virtiofsd"));
         Gtk4::setText(virtiofsd, QString());
@@ -421,16 +427,16 @@ private slots:
         QTemporaryDir other;
         QVERIFY(writeFile(other.path() + "/x/vm.args", "-name X\n") &&
                 writeFile(other.path() + "/y/vm.args", "-name Y\n"));
-        GtkWidget *state = dialog->find("vms-dir-state");
+        GtkWidget *folder = dialog->find("vms-dir");
         GtkWidget *byDefault = dialog->find("vms-dir-default");
-        QVERIFY(state && byDefault);
-        QVERIFY(!gtk_widget_get_visible(state));
+        QVERIFY(folder && byDefault);
+        QVERIFY(!subtitle(folder).contains("found there"));
         dialog->setVmsDir(other.path());
         QCOMPARE(Paths::vmsDir(), QDir(other.path()).absolutePath());
         QCOMPARE(store.dir(), QDir(other.path()).absolutePath());
         QCOMPARE(store.vms().size(), 2);
-        QVERIFY(gtk_widget_get_visible(state));
-        QVERIFY(subtitle(state).startsWith("2 VM(s) found there."));
+        QVERIFY(subtitle(folder).startsWith(QDir(other.path()).absolutePath().toHtmlEscaped() +
+                                            "\n2 VM(s) found there."));
         QVERIFY(gtk_widget_get_sensitive(byDefault));
         g_signal_emit_by_name(byDefault, "clicked");
         QCOMPARE(Paths::vmsDir(), Paths::defaultVmsDir());

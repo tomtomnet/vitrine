@@ -19,15 +19,43 @@
 
 using Gtk4::utf8;
 
-/* An alert with @box's title and its rich text, and @responses (the first the close one) */
+/*
+ * An alert with @box's title and its rich text, and @responses (the first
+ * the close one).  An explanation of several paragraphs, commands among
+ * them, reads from the left in a wide alert; a sentence is its body.
+ */
 static AdwDialog *boxAlert(const HostTuningText::Box &box,
                            const QList<std::pair<QString, QString>> &responses = {{"close", "_Close"}})
 {
     AdwDialog *dialog = Gtk4::alert(box.title, QString(), responses);
+    auto *alert = ADW_ALERT_DIALOG(dialog);
+    const QString markup = Gtk4::markup(box.text);
 
-    adw_alert_dialog_set_body_use_markup(ADW_ALERT_DIALOG(dialog), true);
-    adw_alert_dialog_set_body(ADW_ALERT_DIALOG(dialog), utf8(Gtk4::markup(box.text)).constData());
+    if (!markup.contains('\n')) {
+        adw_alert_dialog_set_body_use_markup(alert, true);
+        adw_alert_dialog_set_body(alert, utf8(markup).constData());
+        return dialog;
+    }
+    GtkWidget *label = gtk_label_new(nullptr);
+    gtk_label_set_markup(GTK_LABEL(label), utf8(markup).constData());
+    gtk_label_set_wrap(GTK_LABEL(label), true);
+    gtk_label_set_wrap_mode(GTK_LABEL(label), PANGO_WRAP_WORD_CHAR);
+    gtk_label_set_xalign(GTK_LABEL(label), 0);
+    gtk_widget_set_name(label, "explanation");
+    /* its link would take the focus first, scrolled to, the heading out of sight; a click opens it */
+    gtk_widget_set_focusable(label, false);
+    adw_alert_dialog_set_extra_child(alert, label);
+    adw_alert_dialog_set_prefer_wide_layout(alert, true);
     return dialog;
+}
+
+/* The first sentence of @markup's first paragraph */
+static QString firstSentence(const QString &markup)
+{
+    const QString paragraph = markup.section('\n', 0, 0);
+    const qsizetype end = paragraph.indexOf(". ");
+
+    return end < 0 ? paragraph : paragraph.left(end + 1);
 }
 
 Notices::Notices(HostSettings *host, VmStore *store, GtkWindow *window,
@@ -53,7 +81,14 @@ Notices::Notices(HostSettings *host, VmStore *store, GtkWindow *window,
     gtk_widget_set_margin_end(m_list, 6);
     gtk_widget_set_margin_top(m_list, 6);
     gtk_widget_set_margin_bottom(m_list, 6);
-    gtk_popover_set_child(GTK_POPOVER(m_popover), m_list);
+    /*
+     * As wide as a column of text: a wrapping subtitle asks for its whole
+     * line, and a popover wider than the monitor is taken down as it shows
+     */
+    GtkWidget *clamp = adw_clamp_new();
+    adw_clamp_set_maximum_size(ADW_CLAMP(clamp), 420);
+    adw_clamp_set_child(ADW_CLAMP(clamp), m_list);
+    gtk_popover_set_child(GTK_POPOVER(m_popover), clamp);
     gtk_menu_button_set_popover(GTK_MENU_BUTTON(m_button), m_popover);
     gtk_widget_set_visible(m_button, false);
 
@@ -216,28 +251,40 @@ void Notices::update()
     const QList<Kind> kinds = shown();
     QStringList tip;
 
-    while (GtkWidget *row = gtk_widget_get_first_child(m_list)) {
-        gtk_list_box_remove(GTK_LIST_BOX(m_list), row);
-    }
-    for (const Kind kind : kinds) {
-        GtkWidget *row = Gtk4::actionRow(title(kind));
-        GtkWidget *button = Gtk4::rowTextButton(kind == Kind::Memory ? "_Details…" : "What to _Do…");
-
-        /* the explanation's, rich text for the memory: its first lines here */
-        if (kind == Kind::Memory) {
-            adw_action_row_set_subtitle(ADW_ACTION_ROW(row), utf8(Gtk4::markup(text(kind))).constData());
-        } else {
-            Gtk4::setSubtitle(row, text(kind));
+    if (kinds != m_rowKinds) {
+        while (GtkWidget *row = gtk_widget_get_first_child(m_list)) {
+            gtk_list_box_remove(GTK_LIST_BOX(m_list), row);
         }
-        adw_action_row_set_subtitle_lines(ADW_ACTION_ROW(row), 4);
-        gtk_list_box_row_set_activatable(GTK_LIST_BOX_ROW(row), false);
-        adw_action_row_add_suffix(ADW_ACTION_ROW(row), button);
-        on<void()>(button, "clicked", [this, kind]() {
-            gtk_popover_popdown(GTK_POPOVER(m_popover));
-            explain(kind);
-        });
-        gtk_widget_set_sensitive(button, kind != Kind::HostTuning || !m_rechecking);
-        gtk_list_box_append(GTK_LIST_BOX(m_list), row);
+        m_rows.clear();
+        m_rowButtons.clear();
+        for (const Kind kind : kinds) {
+            GtkWidget *row = Gtk4::actionRow(title(kind));
+            GtkWidget *button =
+                Gtk4::rowTextButton(kind == Kind::Memory ? "_Details…" : "What to _Do…");
+
+            adw_action_row_set_subtitle_lines(ADW_ACTION_ROW(row), 4);
+            gtk_list_box_row_set_activatable(GTK_LIST_BOX_ROW(row), false);
+            adw_action_row_add_suffix(ADW_ACTION_ROW(row), button);
+            on<void()>(button, "clicked", [this, kind]() {
+                gtk_popover_popdown(GTK_POPOVER(m_popover));
+                explain(kind);
+            });
+            gtk_list_box_append(GTK_LIST_BOX(m_list), row);
+            m_rows << row;
+            m_rowButtons << button;
+        }
+        m_rowKinds = kinds;
+    }
+    for (qsizetype i = 0; i < kinds.size(); i++) {
+        const Kind kind = kinds[i];
+        Gtk4::setTitle(m_rows[i], title(kind));
+        /* the memory's explanation: its first sentence here, the rest in Details */
+        const QString subtitle = kind == Kind::Memory ? firstSentence(Gtk4::markup(text(kind)))
+                                                      : Gtk4::escaped(text(kind));
+        if (QString::fromUtf8(adw_action_row_get_subtitle(ADW_ACTION_ROW(m_rows[i]))) != subtitle) {
+            adw_action_row_set_subtitle(ADW_ACTION_ROW(m_rows[i]), utf8(subtitle).constData());
+        }
+        gtk_widget_set_sensitive(m_rowButtons[i], kind != Kind::HostTuning || !m_rechecking);
         tip << title(kind);
     }
     gtk_widget_set_tooltip_text(m_button, utf8(tip.join('\n')).constData());

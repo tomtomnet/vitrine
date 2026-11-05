@@ -287,7 +287,11 @@ TaskButton::TaskButton(TaskList *tasks, GtkWindow *window)
     gtk_widget_set_margin_end(content, 6);
     gtk_widget_set_margin_top(content, 6);
     gtk_widget_set_margin_bottom(content, 6);
-    gtk_popover_set_child(GTK_POPOVER(m_popover), content);
+    /* as wide as a column of text: a popover wider than the monitor is taken down as it shows */
+    GtkWidget *clamp = adw_clamp_new();
+    adw_clamp_set_maximum_size(ADW_CLAMP(clamp), 400);
+    adw_clamp_set_child(ADW_CLAMP(clamp), content);
+    gtk_popover_set_child(GTK_POPOVER(m_popover), clamp);
     gtk_widget_set_parent(m_popover, m_button);
 
     on<void()>(m_button, "clicked", [this]() { activate(); });

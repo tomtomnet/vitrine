@@ -186,15 +186,15 @@ void PreferencesDialog::buildGeneral(AdwPreferencesPage *general)
     adw_preferences_group_add(tools, m_tools);
     adw_preferences_page_add(general, tools);
 
-    /* virtiofsd: empty for the one found, as the shared folders' page says */
-    AdwPreferencesGroup *shares = Gtk4::group("Shared Folders");
+    /* virtiofsd: empty for the one found; the group says which one shared folders use */
+    m_shares = Gtk4::group("Shared Folders");
+    gtk_widget_set_name(GTK_WIDGET(m_shares), "shared-folders");
     m_virtiofsd = Gtk4::entryRow("virtiofsd",
                                  virtiofsd == PreferencesText::autoVirtiofsd() ? QString() : virtiofsd);
     gtk_widget_set_name(m_virtiofsd, "virtiofsd");
     adw_entry_row_set_show_apply_button(ADW_ENTRY_ROW(m_virtiofsd), true);
     GtkWidget *browseVirtiofsd = Gtk4::rowButton("document-open-symbolic", "Choose virtiofsd");
     adw_entry_row_add_suffix(ADW_ENTRY_ROW(m_virtiofsd), browseVirtiofsd);
-    m_virtiofsdStatus = noteRow("virtiofsd-status");
     on<void()>(m_virtiofsd, "apply", [this]() { applyVirtiofsd(); });
     on<void()>(m_virtiofsd, "changed", [this]() { checkVirtiofsd(); });
     on<void()>(browseVirtiofsd, "clicked", [this, browseVirtiofsd]() {
@@ -206,9 +206,8 @@ void PreferencesDialog::buildGeneral(AdwPreferencesPage *general)
             applyVirtiofsd();
         }));
     });
-    adw_preferences_group_add(shares, m_virtiofsd);
-    adw_preferences_group_add(shares, m_virtiofsdStatus);
-    adw_preferences_page_add(general, shares);
+    adw_preferences_group_add(m_shares, m_virtiofsd);
+    adw_preferences_page_add(general, m_shares);
 
     /* the folder of the VMs, which the window lists */
     AdwPreferencesGroup *vms = Gtk4::group("Virtual Machines");
@@ -229,9 +228,8 @@ void PreferencesDialog::buildGeneral(AdwPreferencesPage *general)
                            guarded<void(const QString &)>([this](const QString &dir) { setVmsDir(dir); }));
     });
     on<void()>(m_vmsDirDefault, "clicked", [this]() { setVmsDir(Paths::defaultVmsDir()); });
-    m_vmsDirState = noteRow("vms-dir-state");
+    adw_action_row_set_subtitle_lines(ADW_ACTION_ROW(m_vmsDir), 0);
     adw_preferences_group_add(vms, m_vmsDir);
-    adw_preferences_group_add(vms, m_vmsDirState);
     adw_preferences_page_add(general, vms);
 
     /* Vitrine's own updates */
@@ -367,9 +365,10 @@ void PreferencesDialog::checkVirtiofsd()
 {
     const QString typed = Gtk4::text(m_virtiofsd).trimmed();
 
-    setNote(m_virtiofsdStatus,
-            Gtk4::markup(PreferencesText::virtiofsd(typed.isEmpty() ? PreferencesText::autoVirtiofsd()
-                                                                    : typed)));
+    adw_preferences_group_set_description(
+        m_shares, utf8(Gtk4::markup(PreferencesText::virtiofsd(
+                           typed.isEmpty() ? PreferencesText::autoVirtiofsd() : typed)))
+                      .constData());
 }
 
 void PreferencesDialog::setVmsDir(const QString &dir)
@@ -393,14 +392,12 @@ void PreferencesDialog::updateVmsDir()
 {
     const QString dir = Paths::vmsDir();
 
-    Gtk4::setSubtitle(m_vmsDir, QDir::toNativeSeparators(dir));
+    /* the path; once changed here, what the folder chosen holds, and what changed */
+    setNote(m_vmsDir, Gtk4::escaped(QDir::toNativeSeparators(dir)) +
+                          (m_dirChanged ? "\n" + Gtk4::markup(PreferencesText::vmsDirState(dir))
+                                        : QString()));
     gtk_widget_set_sensitive(m_vmsDirDefault,
                              QDir(Paths::defaultVmsDir()).absolutePath() != QDir(dir).absolutePath());
-    /* once changed here: what the folder chosen holds, and what changed */
-    gtk_widget_set_visible(m_vmsDirState, m_dirChanged);
-    if (m_dirChanged) {
-        setNote(m_vmsDirState, Gtk4::markup(PreferencesText::vmsDirState(dir)));
-    }
 }
 
 void PreferencesDialog::closed()
