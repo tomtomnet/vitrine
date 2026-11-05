@@ -82,8 +82,7 @@ How it fits GTK:
   pointer through a motion controller, the buttons as they come (a legacy
   controller: a gesture would take drags for its own), the wheel through a
   scroll controller. The desktop's shortcuts go to the guest through GDK's
-  `gdk_toplevel_inhibit_system_shortcuts` (GNOME asks the user once per
-  application ID, `org.vitrine.Vitrine`, and remembers an Allow; the state
+  `gdk_toplevel_inhibit_system_shortcuts` (how GNOME asks: below; the state
   line says when the desktop keeps its shortcuts); the pointer lock and
   confinement are vitrine's own Wayland objects, on the window's main
   surface, and work without the inhibitor.
@@ -151,7 +150,8 @@ screen's own surface is (`displaysurface`).
 - The guest's shortcuts capture (its session asks: the library's
   `shortcuts`) goes to the window that has the keys, through GDK's
   inhibitor (`shortcutsinhibit`): the library puts the guest's on its
-  parent surface, which never has the keyboard focus.
+  parent surface, which never has the keyboard focus. Not on GNOME for an
+  app it does not know (below).
 - Full screen: a window of its own, the parent surface moved there.
 - Covered by an in-window dialog: the parent surface leaves the window
   (the guest's window with it, over anything GTK draws) and the view is
@@ -160,3 +160,34 @@ screen's own surface is (`displaysurface`).
 - Its geometry goes to the library only once GTK gave the view a size: a
   full-screen window just made has none yet, and the guest's desktop would
   follow a 1x1 view.
+
+## How GNOME asks for the desktop's shortcuts
+
+GNOME Shell answers an inhibitor request with its "Allow inhibiting
+shortcuts" dialog, which takes the keyboard and the pointer from the VM
+until answered (checked on GNOME Shell 51.1, 2026-11-05):
+
+- For an app it knows by its desktop file (`org.vitrine.Vitrine.desktop`
+  installed, its program in PATH), the answer goes to its permission store
+  (table `gnome`, id `shortcuts-inhibitor`, key
+  `org.vitrine.Vitrine.desktop`): one dialog in the app's life, then the
+  same answer for all its windows, the full-screen ones too, and for
+  vitrine-gtk-view (the same application ID). GNOME's Settings change it:
+  Apps, the app's Inhibit Shortcuts. After Deny the keys still reach the guest; the desktop keeps its
+  shortcuts, and Super then opens GNOME's overview as well as the guest's
+  menu (GNOME acts on the key's release, the guest got its press: QEMU's
+  own displays behave the same).
+- For a window it cannot match ("window-backed": vitrine run from its
+  build tree, or not installed), Mutter keeps the answer for that surface
+  only: the dialog came at every run and again at every full-screen window,
+  as soon as the pointer was over the screen with the keyboard, and a
+  script that did not answer it never had the keys.
+
+So on GNOME (`XDG_CURRENT_DESKTOP` lists `GNOME`) for an app it does not
+know, the views ask only when the user grabs with Ctrl+Alt+G: no automatic
+grab of the pointer over the screen, nor the nested desktop's session
+asking, and the state line reads "not grabbed (Ctrl+Alt+G grabs; GNOME asks
+first)" (`ShortcutsInhibit::automatic()`). KWin grants without asking, and
+other desktops and a known app keep the automatic grab.
+`VITRINE_VIEW_INHIBIT=0` never asks at all, Ctrl+Alt+G included (scripted
+runs).

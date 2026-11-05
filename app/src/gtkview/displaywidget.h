@@ -122,6 +122,7 @@ private:
     void setShortcutsInhibited(bool on) override;
     void setPointerLocked(bool on) override;
     void setPointerConfined(bool on) override;
+    bool shortcutsInhibitPending() const override;
 
     bool onKeyPressed(guint keyval, guint keycode, Gdk::ModifierType state);
     void onKeyReleased(guint keyval, guint keycode, Gdk::ModifierType state);

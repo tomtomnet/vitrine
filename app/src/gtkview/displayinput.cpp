@@ -197,6 +197,12 @@ void DisplayInput::setPointerLockActive(bool active)
     m_lockActive = active;
 }
 
+void DisplayInput::setAutoGrab(bool allowed)
+{
+    m_autoGrabAllowed = allowed;
+    updateGrab();
+}
+
 void DisplayInput::setHostActive(bool active)
 {
     if (active == m_hostActive) {
@@ -206,7 +212,12 @@ void DisplayInput::setHostActive(bool active)
     if (!active) {
         releaseAllKeys();
         releaseAllButtons();
-        m_grab = false;
+        /* the user's grab, unless the compositor is still asking the user
+           about it: GNOME's dialog takes the keyboard, and its Allow must
+           find the grab there (else the VM was left not grabbed) */
+        if (!(m_grab && m_inhibited && m_compositor && m_compositor->shortcutsInhibitPending())) {
+            m_grab = false;
+        }
         m_suppressAuto = false;
     }
     updateGrab();
@@ -251,7 +262,7 @@ void DisplayInput::updateGrab()
     const QString before = grabState();
     /* as QEMU's SDL display: an absolute pointer over the focused display
        grabs the keyboard */
-    m_autoGrab = m_hostActive && m_pointerInside && absolute && !m_suppressAuto;
+    m_autoGrab = m_autoGrabAllowed && m_hostActive && m_pointerInside && absolute && !m_suppressAuto;
     const bool inhibit = m_grab || m_autoGrab;
     const bool lock = m_grab && !absolute;
     /* KWin runs its modifier + button window actions (Meta + left: move,
@@ -302,6 +313,9 @@ QString DisplayInput::grabState() const
     }
     if (m_autoGrab) {
         return QStringLiteral("grabbed while the pointer is on the VM (Ctrl+Alt+G releases)");
+    }
+    if (!m_autoGrabAllowed) {
+        return QStringLiteral("not grabbed (Ctrl+Alt+G grabs; GNOME asks first)");
     }
     return QStringLiteral("not grabbed (Ctrl+Alt+G grabs)");
 }

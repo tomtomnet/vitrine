@@ -50,6 +50,9 @@ public:
         virtual void setShortcutsInhibited(bool on) = 0;
         virtual void setPointerLocked(bool on) = 0;
         virtual void setPointerConfined(bool on) = 0;
+        /* Asked for the shortcuts, and no answer yet: GNOME asks the user
+           in a dialog of its own, which takes the window's keyboard */
+        virtual bool shortcutsInhibitPending() const { return false; }
     };
 
     /* QEMU's mouse buttons (Mouse.Press); 7 and 8 reach qemu_input_queue_btn()
@@ -88,6 +91,11 @@ public:
     void relativeMotion(double dx, double dy);
     void setPointerLockActive(bool active);
 
+    /* Whether an absolute pointer over the focused view grabs on its own (as
+       QEMU's SDL display), or only Ctrl+Alt+G grabs: on GNOME for an app it
+       does not know, whose every new window it asks the user about
+       (ShortcutsInhibit::automatic()) */
+    void setAutoGrab(bool allowed);
     /* The window around the view has the keyboard on it */
     void setHostActive(bool active);
     bool hostActive() const { return m_hostActive; }
@@ -128,6 +136,7 @@ private:
     bool m_cursorHidden = false;    // as last told
     bool m_grab = false;            // Ctrl+Alt+G, or a click with a relative mouse
     bool m_autoGrab = false;        // absolute pointer over the display
+    bool m_autoGrabAllowed = true;  // setAutoGrab()
     bool m_suppressAuto = false;    // Ctrl+Alt+G released it until the pointer leaves
     bool m_pointerInside = false;
     bool m_hostActive = false;
