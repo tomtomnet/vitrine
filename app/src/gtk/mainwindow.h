@@ -21,6 +21,8 @@ class GtkLoop;
 class Notices;
 class PreferencesDialog;
 class SettingsDialog;
+class Task;
+class TaskButton;
 class Vm;
 class VmConsole;
 class VmCloner;
@@ -93,9 +95,10 @@ public:
      */
     bool switchViewByKey(guint keyval, guint keycode, GdkModifierType state);
 
-    /* Preferences and the notices (mainwindowparts.cpp): the dialog shown */
+    /* Preferences, the notices and the tasks (mainwindowparts.cpp): the dialog shown */
     PreferencesDialog *showPreferences();
     Notices *notices() const;
+    TaskButton *tasks() const;
     /* The Builds window, on "qemu", "medium" (with a Fedora release) or a host package's id */
     void showBuilds(const QString &component = {}, const QString &guestRelease = {});
 
@@ -250,11 +253,18 @@ private:
     QHash<QString, QPointer<VmCloner>> m_clones;
     CloneDialog *m_cloneDialog = nullptr;
 
-    /* Preferences and the notices of the running VMs: mainwindowparts.cpp */
+    /* Preferences, the notices of the running VMs, the tasks: mainwindowparts.cpp */
     void createParts();
     void dropParts();
+    /* The copy of @cloner, of the VM @sourceId: its task's details are the window's */
+    void followClone(VmCloner *cloner, const QString &sourceId);
+    /* A clone's details: the dialog of the copy, the clone, or why it failed */
+    void showCloneTask(Task *task);
     /* made by createParts(), gone with the window (dropParts()) */
     Notices *m_notices = nullptr;
+    TaskButton *m_tasks = nullptr;
     /* The Preferences, while they show */
     PreferencesDialog *m_preferences = nullptr;
+    /* The clones' tasks: the VM copied, and once made, the clone */
+    QHash<const Task *, std::pair<QString, QString>> m_cloneTasks;
 };

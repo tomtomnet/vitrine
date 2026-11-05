@@ -85,6 +85,8 @@ add_library(vitrine_gtk STATIC
     src/gtk/snapshotsdialog.h
     src/gtk/storagepage.cpp
     src/gtk/storagepage.h
+    src/gtk/taskbutton.cpp
+    src/gtk/taskbutton.h
     src/gtk/textdialog.cpp
     src/gtk/textdialog.h
     src/gtk/vmconsole.cpp
@@ -158,4 +160,7 @@ if(BUILD_TESTING)
         FAKE_QEMU="$<TARGET_FILE:fake-qemu>"
         GPU_AWAKE_SOURCE_DIR="${PROJECT_SOURCE_DIR}/host/gpu-input-awake")
     add_dependencies(test_gtkprefs fake-qemu)
+    # the tasks' button: its texts, the popover, the ring alone, a success that lingers
+    vitrine_gtk_test(gtktasks)
+    target_sources(test_gtktasks PRIVATE tests/gtkdisplay.h)
 endif()
