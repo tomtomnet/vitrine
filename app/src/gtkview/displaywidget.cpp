@@ -146,6 +146,7 @@ void DisplayWidget::size_allocate_vfunc(int width, int height, int)
     m_width = width;
     m_height = height;
     updateSize();
+    updateExposed();
 }
 
 void DisplayWidget::snapshot_vfunc(const Glib::RefPtr<Gtk::Snapshot> &snapshot)
@@ -273,10 +274,17 @@ void DisplayWidget::setCovered(bool covered, GdkTexture *still)
     queue_draw();
 }
 
-/* The frames show while the widget is mapped and nothing covers it */
+/*
+ * The frames show while the widget is mapped, has its size and nothing
+ * covers it.  GTK maps a window's widgets before it lays them out: exposed
+ * at the map, the render thread made its EGL window at 1x1, and its first
+ * frame - the only one while the guest's screen does not change - was a
+ * pixel stretched over the view (a full-screen switch over a still screen
+ * stayed black until the guest drew again).
+ */
 void DisplayWidget::updateExposed()
 {
-    setExposed(m_mapped && !m_covered);
+    setExposed(m_mapped && !m_covered && m_width > 0 && m_height > 0);
 }
 
 void DisplayWidget::setExposed(bool exposed)
