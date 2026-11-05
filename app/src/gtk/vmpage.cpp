@@ -299,14 +299,13 @@ void VmPage::buildHeader()
                               "win.full-screen");
     m_sendKey = gtk_menu_button_new();
     {
-        GMenu *keys = g_menu_new();
+        /* the keys' sections, and Release Input after them (a section in a
+           section would lose their separators) */
+        GMenuModel *keys = sendKeyMenu();
         GMenu *release = g_menu_new();
-        GMenuModel *send = sendKeyMenu();
-        g_menu_append_section(keys, nullptr, send);
         g_menu_append(release, "Release _Input", "win.release-input");
-        g_menu_append_section(keys, nullptr, G_MENU_MODEL(release));
-        gtk_menu_button_set_menu_model(GTK_MENU_BUTTON(m_sendKey), G_MENU_MODEL(keys));
-        g_object_unref(send);
+        g_menu_append_section(G_MENU(keys), nullptr, G_MENU_MODEL(release));
+        gtk_menu_button_set_menu_model(GTK_MENU_BUTTON(m_sendKey), keys);
         g_object_unref(release);
         g_object_unref(keys);
     }
