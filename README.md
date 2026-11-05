@@ -40,12 +40,15 @@ with an AMD Radeon 780M, with Fedora 44 KDE guests. It is not packaged.
 
 Building the app (wayland-devel brings wayland-scanner, which with
 wayland-protocols and python3 generates the Wayland protocol code the app
-uses):
+uses). gtk4-devel, gtkmm4.0-devel and libadwaita-devel are for the GTK app,
+`vitrine-gtk`: without them only the Qt app is built, and the configure
+step says so:
 
 ```
 sudo dnf install cmake ninja-build gcc gcc-c++ pkgconf-pkg-config git python3 \
     qt6-qtbase-devel qt6-qtbase-private-devel glib2-devel mesa-libEGL-devel \
-    mesa-libgbm-devel libdrm-devel wayland-devel wayland-protocols-devel
+    mesa-libgbm-devel libdrm-devel wayland-devel wayland-protocols-devel \
+    gtk4-devel gtkmm4.0-devel libadwaita-devel
 ```
 
 Building vitrine's QEMU (the list in `host/build.sh`; `host/build.sh
@@ -89,8 +92,12 @@ ctest --test-dir build --output-on-failure   # optional
 ## Run
 
 ```
-./build/app/vitrine
+./build/app/vitrine-gtk    # the GTK app, for GNOME
+./build/app/vitrine        # the Qt app
 ```
+
+Both run the same VMs, one app at a time. The rest of this section shows
+the Qt app.
 
 The window has one bar above the VMs: the menus (File, View, Machine, Help)
 that the steps below name, the buttons that start, pause, shut down, reset
@@ -323,12 +330,18 @@ settings in `~/.config/vitrine/settings.conf`.
 sudo cmake --install build
 ```
 
-This installs `vitrine` (also in the application menu), `host/` for building
-its QEMU, `guest/` for building the guest tools, and the optional root helper
-with its polkit files (polkit reads actions only from
-`/usr/share/polkit-1/actions`, hence the `/usr` prefix). To update: `git pull`,
-build and install again; vitrine then offers to update its QEMU and the guest
-tools if needed.
+This installs `vitrine-gtk` ("Vitrine (GTK)" in the application menu) and
+`vitrine` ("Vitrine", the Qt app), `host/` for building its QEMU, `guest/`
+for building the guest tools, and the optional root helper with its polkit
+files (polkit reads actions only from `/usr/share/polkit-1/actions`, hence
+the `/usr` prefix). The menu entries come with the install, not with the
+build. To update: `git pull`, build and install again; vitrine then offers
+to update its QEMU and the guest tools if needed.
+
+A build folder where `VITRINE_GTK` is `OFF` keeps it: set by hand, or by
+a vitrine of before 2026-11-05 that did not find the GTK packages at its
+first configure. `cmake -S . -B build -DVITRINE_GTK=auto` then builds the
+GTK app whenever gtkmm4.0-devel and libadwaita-devel are installed.
 
 The helper tunes the host while VMs run, for members of the `vitrine` group
 ([docs/host-tuning.md](docs/host-tuning.md)); without it, VMs run untuned

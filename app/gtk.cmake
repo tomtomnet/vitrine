@@ -1,7 +1,11 @@
 # The GTK4 + libadwaita app, vitrine-gtk: the windows of src/gtk on the
 # core the Qt app runs on (vitrine_core, Qt Core without Qt GUI), in one
-# main loop (src/gtk/gtkloop.h).  Built when pkg-config finds gtkmm-4.0 and
-# libadwaita-1 (libadwaita through its C API: there is no C++ binding).
+# main loop (src/gtk/gtkloop.h).  libadwaita through its C API: there is no
+# C++ binding.
+#
+# VITRINE_GTK: auto (the default) builds it when pkg-config finds gtkmm-4.0
+# and libadwaita-1, looked for again at each configure, so that installing
+# them later is enough; ON requires them; OFF never builds it.
 
 pkg_check_modules(VITRINE_GTKMM QUIET IMPORTED_TARGET gtkmm-4.0)
 pkg_check_modules(VITRINE_ADW QUIET IMPORTED_TARGET libadwaita-1)
@@ -10,13 +14,23 @@ if(VITRINE_GTKMM_FOUND AND VITRINE_ADW_FOUND)
 else()
     set(VITRINE_GTK_FOUND OFF)
 endif()
-option(VITRINE_GTK "Build vitrine-gtk, the GTK4 app (gtkmm-4.0, libadwaita-1)" ${VITRINE_GTK_FOUND})
-if(NOT VITRINE_GTK)
+set(VITRINE_GTK auto CACHE STRING
+    "Build vitrine-gtk, the GTK4 app: auto (when gtkmm-4.0 and libadwaita-1 are found), ON or OFF")
+set_property(CACHE VITRINE_GTK PROPERTY STRINGS auto ON OFF)
+if(VITRINE_GTK STREQUAL "auto")
+    if(NOT VITRINE_GTK_FOUND)
+        message(STATUS "vitrine-gtk, the GTK4 app, is not built: pkg-config does not find "
+                "gtkmm-4.0 and libadwaita-1 (Fedora: gtkmm4.0-devel and libadwaita-devel)")
+        return()
+    endif()
+elseif(NOT VITRINE_GTK)
+    message(STATUS "vitrine-gtk, the GTK4 app, is not built: VITRINE_GTK is ${VITRINE_GTK} "
+            "(-DVITRINE_GTK=auto builds it when gtkmm-4.0 and libadwaita-1 are found)")
     return()
-endif()
-if(NOT VITRINE_GTK_FOUND)
+elseif(NOT VITRINE_GTK_FOUND)
     message(FATAL_ERROR "VITRINE_GTK needs gtkmm-4.0 and libadwaita-1, which pkg-config does "
-            "not find: install their development files, or configure with -DVITRINE_GTK=OFF")
+            "not find: install their development files (Fedora: gtkmm4.0-devel and "
+            "libadwaita-devel), or configure with -DVITRINE_GTK=OFF")
 endif()
 
 # The VM display (src/gtkview): its library, vitrine_gtkview, and its test
