@@ -35,6 +35,7 @@
 #include <sys/xattr.h>
 #include <unistd.h>
 
+#include "core/hostgpus.h"
 #include "core/hostsettings.h"
 #include "core/paths.h"
 #include "core/udmabuf.h"
@@ -282,6 +283,9 @@ private slots:
         /* its own keys only: the file is the app's (and, run by hand, may
            be another test's) */
         QSettings(Paths::settingsPath(), QSettings::IniFormat).remove("host");
+        /* the CPU kept ready, as on a laptop: the default depends on the
+           host's chassis (cpuLatencyByChassis) */
+        HostSettings::setCpuLatency(true);
         qunsetenv("VITRINE_HELPER");
         qunsetenv("VITRINE_GROUP");
         qputenv("PATH", m_path);
@@ -334,11 +338,44 @@ private slots:
         QCOMPARE(HostSettings::gpuFloor(), QString("auto"));
         HostSettings::setGpuFloor("0800");
         QCOMPARE(HostSettings::gpuFloor(), QString("auto"));
-        QVERIFY(HostSettings::cpuLatency());
         HostSettings::setCpuLatency(false);
         QVERIFY(!HostSettings::cpuLatency());
         HostSettings::setEnabled(false);
         QVERIFY(!HostSettings::enabled());
+    }
+
+    /* The CPU kept ready to wake up: on by default on laptops and tablets
+       only (the firmware's chassis type), the user's choice kept either way */
+    void cpuLatencyByChassis()
+    {
+        struct Restore {
+            ~Restore() { HostGpus::setRoots("/sys", "/dev"); }
+        } restore;
+        QSettings(Paths::settingsPath(), QSettings::IniFormat).remove("host/cpuLatency");
+        const QString sys = m_root + "/sys";
+        const QString chassis = sys + "/class/dmi/id/chassis_type";
+        HostGpus::setRoots(sys, m_root + "/dev");
+        /* none said: not taken for a laptop */
+        QVERIFY(!HostSettings::portable(sys));
+        QVERIFY(!HostSettings::cpuLatency());
+        for (const char *type : {"8", "9", "10", "14", "30", "31", "32"}) {
+            QVERIFY(writeFile(chassis, QByteArray(type) + '\n'));
+            QVERIFY2(HostSettings::portable(sys), type);
+        }
+        QVERIFY(HostSettings::cpuLatency());
+        for (const char *type : {"1", "2", "3", "4", "7", "13", "17", "23", "35", "x", ""}) {
+            QVERIFY(writeFile(chassis, QByteArray(type) + '\n'));
+            QVERIFY2(!HostSettings::portable(sys), type);
+        }
+        /* a desktop: off by default, on when chosen */
+        QVERIFY(writeFile(chassis, "3\n"));
+        QVERIFY(!HostSettings::cpuLatency());
+        HostSettings::setCpuLatency(true);
+        QVERIFY(HostSettings::cpuLatency());
+        /* a laptop: off when chosen */
+        QVERIFY(writeFile(chassis, "10\n"));
+        HostSettings::setCpuLatency(false);
+        QVERIFY(!HostSettings::cpuLatency());
     }
 
     void amdCards()

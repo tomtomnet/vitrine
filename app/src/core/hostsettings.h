@@ -92,15 +92,21 @@ public:
     static QString gpuFloor();
     static void setGpuFloor(const QString &floor);
     /*
-     * The CPU ready to wake up while VMs run, on by default: its cores rest
-     * in their first idle state (C1) only, at their energy performance
-     * preference "performance" - the helper's cpu-latency and epp.  A VM's
+     * The CPU ready to wake up while VMs run: its cores rest in their first
+     * idle state (C1) only, at their energy performance preference
+     * "performance" - the helper's cpu-latency and epp.  On a laptop a VM's
      * keys then reach its screen as fast as the bare desktop's (11.3-11.9
-     * ms instead of 15.1-16.3 on a Ryzen 7 260 laptop), for about 1.6 W at
-     * idle.  Off: both let go, at once for the VMs running too.
+     * ms instead of 15.1-16.3 on a Ryzen 7 260), for about 2 W at idle: on
+     * by default there (portable()).  On a desktop it gained nothing
+     * measurable (a Ryzen 7 7800X3D: 9.20 against 9.37 ms, runs of one
+     * setting 0.55 ms apart) for 3.5 W: off by default.  Off: both let go,
+     * at once for the VMs running too.
      */
     static bool cpuLatency();
     static void setCpuLatency(bool on);
+    /* The host is a laptop or a tablet, as its firmware says under @sysRoot
+       (/sys: HostGpus::sysfs()): DMI chassis types 8, 9, 10, 14, 30, 31, 32 */
+    static bool portable(const QString &sysRoot);
 
     /* The installed helper, the one polkit's action names and the only one
        pkexec runs; $VITRINE_HELPER names another for helperInstalled() (tests) */

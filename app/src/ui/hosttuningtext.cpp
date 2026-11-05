@@ -134,14 +134,18 @@ QString HostTuningPrefsText::notActive(const HostSettings::Status &status)
 
 QString HostTuningPrefsText::cpuHint()
 {
-    /* the research's measures: a GNOME VM's keys 11.3-11.9 ms instead of
-       15.1-16.3, as on the bare desktop; +2.1 W at idle (10.4 W against
-       8.35 W, 3 x 60 s with a VM idle in front) */
+    /* the research's measures: on a laptop a GNOME VM's keys 11.3-11.9 ms
+       instead of 15.1-16.3, as on the bare desktop, +2.1 W at idle (10.4 W
+       against 8.35 W, 3 x 60 s with a VM idle in front); on a desktop
+       (Ryzen 7 7800X3D) the nested desktop's keys 9.20 against 9.37 ms, two
+       runs of one setting 0.55 ms apart, +3.5 W (HostSettings::portable()) */
     return tr("Its cores stay in their lightest idle state, at their "
               "performance setting, so that keys show in a VM as "
-              "fast as on the bare desktop. It costs about 2 W at "
-              "idle (measured on a Ryzen 7 260 laptop, a VM idle in "
-              "front), and ends when the last VM stops.");
+              "fast as on the bare desktop. On a laptop it costs about "
+              "2 W at idle (a Ryzen 7 260, a VM idle in front) and is "
+              "on by default. On a desktop it gained nothing measurable "
+              "(a Ryzen 7 7800X3D) for 3.5 W, and is off by default. "
+              "It ends when the last VM stops.");
 }
 
 QString HostTuningPrefsText::awake(const QStringList &gpus, GpuInputAwake::Installed installed,

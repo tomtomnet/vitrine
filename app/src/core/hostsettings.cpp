@@ -30,6 +30,7 @@
 #include <sys/xattr.h>
 #include <unistd.h>
 
+#include "core/hostgpus.h"
 #include "core/nesteddesktop.h"
 #include "core/paths.h"
 #include "core/vmhardware.h"
@@ -80,9 +81,24 @@ void HostSettings::setGpuFloor(const QString &floor)
     settings().setValue("host/gpuFloor", floor);
 }
 
+bool HostSettings::portable(const QString &sysRoot)
+{
+    /* SMBIOS chassis types: portable, laptop, notebook, sub notebook, tablet,
+       convertible, detachable */
+    static const QList<int> types = {8, 9, 10, 14, 30, 31, 32};
+    QFile chassis(sysRoot + "/class/dmi/id/chassis_type");
+
+    if (!chassis.open(QIODevice::ReadOnly)) {
+        return false;
+    }
+    bool ok = false;
+    const int type = chassis.readAll().trimmed().toInt(&ok);
+    return ok && types.contains(type);
+}
+
 bool HostSettings::cpuLatency()
 {
-    return settings().value("host/cpuLatency", true).toBool();
+    return settings().value("host/cpuLatency", portable(HostGpus::sysfs())).toBool();
 }
 
 void HostSettings::setCpuLatency(bool on)

@@ -342,12 +342,13 @@ sudo groupadd --system vitrine
 sudo usermod -aG vitrine "$USER"
 ```
 
-Among other things, host tuning keeps the CPU ready to wake up while VMs
-run: its cores stay in their first idle state (C1), at the energy
-performance preference `performance`. On a Ryzen 7 260 laptop a GNOME VM's
-keys then reached its screen in 11.3-11.9 ms instead of 15.1-16.3 ms, as on
-the bare desktop, for about 2 W more at idle. It ends with the last VM;
-Preferences > Host turns it off.
+On laptops, host tuning also keeps the CPU ready to wake up while VMs run:
+its cores stay in their first idle state (C1), at the energy performance
+preference `performance`. On a Ryzen 7 260 laptop a GNOME VM's keys then
+reached its screen in 11.3-11.9 ms instead of 15.1-16.3 ms, as on the bare
+desktop, for about 2 W more at idle. A desktop (a Ryzen 7 7800X3D) gained
+nothing measurable for 3.5 W, so it is off there by default. It ends with
+the last VM; Preferences > Host turns it on or off.
 
 ## Made by AI
 
