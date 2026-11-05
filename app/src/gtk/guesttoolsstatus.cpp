@@ -148,9 +148,9 @@ void GuestToolsStatus::update()
             for (const Row &row : {m_homeRow, m_detailsRow}) {
                 adw_preferences_row_set_title(ADW_PREFERENCES_ROW(row.row),
                                               utf8(Markup::pango(text)).constData());
-                gtk_image_set_from_icon_name(GTK_IMAGE(row.icon), warning
-                                                                      ? "dialog-warning-symbolic"
-                                                                      : "dialog-information-symbolic");
+                gtk_image_set_from_icon_name(GTK_IMAGE(row.icon),
+                                             warning ? "dialog-warning-symbolic"
+                                                     : "dialog-information-symbolic");
                 if (warning) {
                     gtk_widget_add_css_class(row.icon, "warning");
                 } else {

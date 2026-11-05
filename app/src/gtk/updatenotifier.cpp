@@ -130,7 +130,8 @@ void UpdateNotifier::updateButtons()
         /* the menu's icon with a dot at its corner */
         GtkWidget *overlay = gtk_overlay_new();
         GtkWidget *dot = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 0);
-        gtk_overlay_set_child(GTK_OVERLAY(overlay), gtk_image_new_from_icon_name("open-menu-symbolic"));
+        gtk_overlay_set_child(GTK_OVERLAY(overlay),
+                              gtk_image_new_from_icon_name("open-menu-symbolic"));
         gtk_widget_add_css_class(dot, "vitrine-news");
         gtk_widget_set_halign(dot, GTK_ALIGN_END);
         gtk_widget_set_valign(dot, GTK_ALIGN_START);
@@ -170,8 +171,9 @@ void UpdateNotifier::revalidate()
 
 void UpdateNotifier::save()
 {
-    settings().setValue("updates/results",
-                        QJsonDocument(UpdateCheck::toJson(m_results)).toJson(QJsonDocument::Compact));
+    settings().setValue(
+        "updates/results",
+        QJsonDocument(UpdateCheck::toJson(m_results)).toJson(QJsonDocument::Compact));
 }
 
 void UpdateNotifier::maybeCheck()

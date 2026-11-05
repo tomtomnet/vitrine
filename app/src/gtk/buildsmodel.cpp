@@ -200,7 +200,8 @@ Details systemDetails(const BuildManager &m, const Component &c,
                              {}, {}};
     d.properties << Property{"Recipe",
                              QString("the research's %1 at commit %2, in a Fedora container")
-                                 .arg(code("kde-rpms.sh"), code(c.values.value("research").left(12))),
+                                 .arg(code("kde-rpms.sh"),
+                                      code(c.values.value("research").left(12))),
                              {}, {}};
     if (!host.series.isEmpty()) {
         int count = 0;
@@ -255,7 +256,9 @@ Details systemDetails(const BuildManager &m, const Component &c,
             break;
         }
         if (host.names.size() > 1) {
-            installed += QString(" (%1 packages: %2)").arg(host.names.size()).arg(host.names.join(", "));
+            installed += QString(" (%1 packages: %2)")
+                             .arg(host.names.size())
+                             .arg(host.names.join(", "));
         }
         d.properties << Property{"Installed", escaped(installed), {}, {}};
     }
@@ -798,7 +801,8 @@ Details details(const BuildManager &m, const QString &id,
     case Kind::Host:
         d.properties << Property{"Source",
                                  QString("%1, commit %2")
-                                     .arg(escaped(shortUrl(source.url)), code(source.revision.left(12))),
+                                     .arg(escaped(shortUrl(source.url)),
+                                          code(source.revision.left(12))),
                                  webPage(source.url), {}};
         break;
     case Kind::Package:
@@ -824,9 +828,8 @@ Details details(const BuildManager &m, const QString &id,
                 parts << escaped(dc.title);
             }
         }
-        d.properties << Property{"Made of",
-                                 QString("the packages %1, and the installer").arg(parts.join(", ")),
-                                 {}, {}};
+        d.properties << Property{
+            "Made of", QString("the packages %1, and the installer").arg(parts.join(", ")), {}, {}};
         break;
     }
     case Kind::System:

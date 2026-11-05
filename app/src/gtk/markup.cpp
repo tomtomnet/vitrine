@@ -79,8 +79,11 @@ QString escaped(const QString &text)
 
 QString pango(const QString &html)
 {
-    static const QRegularExpression tagPattern("<(/?)([A-Za-z][A-Za-z0-9]*)((?:\\s[^>]*?)?)\\s*/?>");
+    static const QRegularExpression tagPattern(
+        "<(/?)([A-Za-z][A-Za-z0-9]*)((?:\\s[^>]*?)?)\\s*/?>");
     static const QRegularExpression href("href\\s*=\\s*(\"[^\"]*\"|'[^']*')");
+    /* the inline tags Pango has, by their names there */
+    static const QStringList kept = {"b", "i", "u", "s", "tt", "sub", "sup", "small", "big"};
     Writer w;
     qsizetype from = 0;
 
@@ -116,7 +119,7 @@ QString pango(const QString &html)
             }
         } else if (name == "br") {
             w.out += '\n';
-        } else if (QStringList{"b", "i", "u", "s", "tt", "sub", "sup", "small", "big"}.contains(name)) {
+        } else if (kept.contains(name)) {
             w.inlineTag('<' + QString(closing ? "/" : "") + name + '>');
         } else if (name == "strong" || name == "em") {
             w.inlineTag('<' + QString(closing ? "/" : "") + (name == "strong" ? "b" : "i") + '>');
@@ -125,7 +128,8 @@ QString pango(const QString &html)
         } else if (name == "a") {
             if (closing) {
                 w.inlineTag("</a>");
-            } else if (const QRegularExpressionMatch link = href.match(m.captured(3)); link.hasMatch()) {
+            } else if (const QRegularExpressionMatch link = href.match(m.captured(3));
+                       link.hasMatch()) {
                 w.inlineTag("<a href=" + link.captured(1) + '>');
             } else {
                 w.inlineTag("<a href=\"\">");

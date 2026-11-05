@@ -37,12 +37,14 @@ void MainWindow::showBuilds(const QString &component, const QString &guestReleas
 }
 
 MainWindowBuilds::MainWindowBuilds(MainWindow *window)
-    : m_window(window), m_qt(std::make_unique<QObject>()), m_banners(std::make_unique<AppBanners>()),
+    : m_window(window), m_qt(std::make_unique<QObject>()),
+      m_banners(std::make_unique<AppBanners>()),
       m_toolsStatus(std::make_unique<GuestToolsStatus>()), m_qemuBefore(Paths::qemuBinary())
 {
     auto *win = G_ACTION_MAP(window->m_window);
 
-    window->addAction(win, "install-guest-tools", [this]() { installGuestTools(m_window->current()); });
+    window->addAction(win, "install-guest-tools",
+                      [this]() { installGuestTools(m_window->current()); });
 
     /* new commits of Vitrine: the primary menu's buttons say so, Check for Updates… tells */
     m_updates = std::make_unique<UpdateNotifier>();
@@ -52,7 +54,8 @@ MainWindowBuilds::MainWindowBuilds(MainWindow *window)
                       [this]() { m_updates->checkNow(); });
     std::function<void(GtkWidget *)> findMenus = [&](GtkWidget *widget) {
         if (GTK_IS_MENU_BUTTON(widget) &&
-            g_strcmp0(gtk_menu_button_get_icon_name(GTK_MENU_BUTTON(widget)), "open-menu-symbolic") == 0) {
+            g_strcmp0(gtk_menu_button_get_icon_name(GTK_MENU_BUTTON(widget)),
+                      "open-menu-symbolic") == 0) {
             m_updates->addMenuButton(widget);
             return;
         }
@@ -91,7 +94,9 @@ MainWindowBuilds::MainWindowBuilds(MainWindow *window)
     QObject::connect(monitor, &HostKdeMonitor::started, m_qt.get(),
                      [this](bool install) { hostStarted(install); });
     QObject::connect(monitor, &HostKdeMonitor::finished, m_qt.get(),
-                     [this](const QString &error, bool cancelled) { hostFinished(error, cancelled); });
+                     [this](const QString &error, bool cancelled) {
+        hostFinished(error, cancelled);
+    });
 
     /* Vitrine's QEMU built anew, here or by hand: the preferred QEMU's documentation with it */
     QObject::connect(StackBuilder::instance(), &StackBuilder::started, m_qt.get(),

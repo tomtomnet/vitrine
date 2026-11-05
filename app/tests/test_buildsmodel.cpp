@@ -95,6 +95,12 @@ class TestBuildsModel : public QObject
         return places;
     }
 
+    /* No size known yet, as the window has it while it counts */
+    static qint64 unknownSize(const QString &)
+    {
+        return -1;
+    }
+
     static QStringList labels(const BuildsModel::Details &d)
     {
         QStringList list;
@@ -142,7 +148,8 @@ private slots:
         QCOMPARE(BuildsModel::groups(m), (QList<Group>{Group::Host, Group::Guest}));
         QCOMPARE(BuildsModel::componentsOf(m, Group::Host),
                  QStringList({"virglrenderer", "rutabaga_gfx", "passt", "qemu"}));
-        QCOMPARE(BuildsModel::componentsOf(m, Group::Guest), QStringList({"tools", "mesa", "medium"}));
+        QCOMPARE(BuildsModel::componentsOf(m, Group::Guest),
+                 QStringList({"tools", "mesa", "medium"}));
         QCOMPARE(BuildsModel::groupTitle(Group::Guest, "45"), "Guest Tools for Fedora 45");
         QCOMPARE(BuildsModel::groupTitle(Group::Host, "45"), "Vitrine's QEMU");
         QCOMPARE(BuildsModel::title(m, "mesa"), "Mesa 26.2.3");
@@ -174,7 +181,7 @@ private slots:
         QVERIFY(BuildsModel::memoryText(m).isEmpty());
 
         /* where it comes from, and its patches */
-        const BuildsModel::Details d = BuildsModel::details(m, "qemu", [](const QString &) { return -1; });
+        const BuildsModel::Details d = BuildsModel::details(m, "qemu", unknownSize);
         QVERIFY2(Markup::plain(d.paragraphs.value(0)) == "QEMU — not built yet.",
                  qPrintable(d.paragraphs.value(0)));
         QCOMPARE(labels(d), QStringList({"Source", "Patches", "Built against", "Runs with"}));
@@ -211,8 +218,9 @@ private slots:
         QVERIFY(!BuildsModel::buildAll(m).enabled);
         QVERIFY(!BuildsModel::build(m, "mesa").enabled);
         QVERIFY(BuildsModel::missingText(m).isEmpty());
-        const BuildsModel::Details d = BuildsModel::details(m, "qemu", [](const QString &) { return -1; });
-        QVERIFY2(d.paragraphs.contains("Building: compiling QEMU."), qPrintable(d.paragraphs.join('|')));
+        const BuildsModel::Details d = BuildsModel::details(m, "qemu", unknownSize);
+        QVERIFY2(d.paragraphs.contains("Building: compiling QEMU."),
+                 qPrintable(d.paragraphs.join('|')));
 
         QVERIFY(write(m_tmp.filePath("run/go"), "\n"));
         QVERIFY(finished.wait(10000));
@@ -247,7 +255,7 @@ private slots:
         QVERIFY2(BuildsModel::runText(m).startsWith("The last build failed: QEMU: Compiling QEMU "
                                                     "failed (status 2). "),
                  qPrintable(BuildsModel::runText(m)));
-        const BuildsModel::Details d = BuildsModel::details(m, "qemu", [](const QString &) { return -1; });
+        const BuildsModel::Details d = BuildsModel::details(m, "qemu", unknownSize);
         QVERIFY2(d.paragraphs.contains("Its last build failed: Compiling QEMU failed (status 2)"),
                  qPrintable(d.paragraphs.join('|')));
     }

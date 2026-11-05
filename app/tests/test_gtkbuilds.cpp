@@ -69,7 +69,8 @@ class TestGtkBuilds : public QObject
         return [this](AdwDialog *dialog) {
             g_object_ref_sink(dialog);
             if (ADW_IS_ALERT_DIALOG(dialog)) {
-                m_alerts << QString::fromUtf8(adw_alert_dialog_get_heading(ADW_ALERT_DIALOG(dialog)));
+                m_alerts << QString::fromUtf8(
+                    adw_alert_dialog_get_heading(ADW_ALERT_DIALOG(dialog)));
             }
             g_object_unref(dialog);
         };
@@ -140,6 +141,12 @@ class TestGtkBuilds : public QObject
                write(dir + "/vitrine-guest-tools-fc44.json",
                      R"({"label": "VITRINETOOL", "mediumId": "32fe6c83b34e87e8", "fedora": "44",
                          "tools": "0.1.0-1.fc44", "mesa": "26.2.6-1.xe.fc44", "packages": []})");
+    }
+
+    /* What a Fedora 44 KDE guest says it runs */
+    static GuestTools::System fedora44()
+    {
+        return {"fedora", "44", "Fedora Linux 44 (KDE Plasma Desktop Edition)"};
     }
 
     /* QEMU for a VM that runs: $VITRINE_TEST_QEMU, else the system's */
@@ -262,8 +269,9 @@ private slots:
     {
         QTemporaryDir dir;
         QVERIFY(write(dir.filePath("off/vm.args"), QString(kVm).arg("Off").toUtf8()));
-        GuestTools::setSystem("off", {"fedora", "44", "Fedora Linux 44 (KDE Plasma Desktop Edition)"});
-        QVERIFY(QDir(GuestTools::dataDir()).removeRecursively() || !QFileInfo::exists(GuestTools::dataDir()));
+        GuestTools::setSystem("off", fedora44());
+        QVERIFY(QDir(GuestTools::dataDir()).removeRecursively() ||
+                !QFileInfo::exists(GuestTools::dataDir()));
         GuestToolsBuilder::instance()->checkMedium();
         VmStore store(dir.path());
         Vm *vm = store.find("off");
@@ -281,7 +289,8 @@ private slots:
         auto *dialog = new GuestToolsDialog(
             vm, nullptr, start, [&](const QString &c, const QString &r) { builds << c + ' ' + r; },
             presenter());
-        QVERIFY2(dialog->buildBannerText().contains("The guest tools for Fedora 44 are not built yet."),
+        QVERIFY2(dialog->buildBannerText().contains(
+                     "The guest tools for Fedora 44 are not built yet."),
                  qPrintable(dialog->buildBannerText()));
         QVERIFY(!dialog->canInstall());
         QVERIFY(!dialog->canAttach());
@@ -296,7 +305,8 @@ private slots:
         QVERIFY(dialog->canInstall());
         QVERIFY(dialog->canAttach());
         QVERIFY(dialog->warningText().isEmpty());
-        QVERIFY2(dialog->text().contains("They install:") && dialog->text().contains("• Mesa 26.2.6"),
+        QVERIFY2(dialog->text().contains("They install:") &&
+                     dialog->text().contains("• Mesa 26.2.6"),
                  qPrintable(dialog->text()));
         dialog->go(false);
         QVERIFY(install);
@@ -326,7 +336,7 @@ private slots:
         QVERIFY(write(dir.filePath("on/vm.args"), QString(kVm).arg("On").toUtf8()));
         QVERIFY(writeMedium());
         GuestToolsBuilder::instance()->checkMedium();
-        GuestTools::setSystem("on", {"fedora", "44", "Fedora Linux 44 (KDE Plasma Desktop Edition)"});
+        GuestTools::setSystem("on", fedora44());
         Paths::setQemuBinary(testQemu());
         VmStore store(dir.path());
         Vm *vm = store.find("on");
@@ -348,7 +358,8 @@ private slots:
         QTRY_COMPARE_WITH_TIMEOUT(install->step(), Step::Done, 5000);
         QVERIFY(!install->succeeded());
         QVERIFY(!install->failed());
-        QVERIFY2(install->progress().contains("did not shut down"), qPrintable(install->progress()));
+        QVERIFY2(install->progress().contains("did not shut down"),
+                 qPrintable(install->progress()));
         QCOMPARE(GuestTools::pending("on"), Pending::Bootstrap);
         QVERIFY(started.isEmpty());
 
@@ -388,7 +399,8 @@ private slots:
                       "QEMU_URL=https://q/qemu.git\nQEMU_COMMIT=1\nVIRGL_URL=https://v/v.git\n"
                       "VIRGL_COMMIT=2\nRUTABAGA_URL=https://r/r.git\nRUTABAGA_COMMIT=3\n"
                       "PASST_URL=https://p/passt\nPASST_COMMIT=4\n"));
-        QVERIFY(QFile::copy(StackBuilder::hostDir() + "/components.conf", host + "/components.conf"));
+        QVERIFY(QFile::copy(StackBuilder::hostDir() + "/components.conf",
+                            host + "/components.conf"));
         qputenv("VITRINE_HOST_DIR", QFile::encodeName(host));
         QCOMPARE(StackBuilder::state(), StackBuilder::State::NotBuilt);
         GtkWidget *view = adw_toolbar_view_new();
@@ -425,7 +437,7 @@ private slots:
         GuestToolsBuilder::instance()->checkMedium();
         QSettings(Paths::settingsPath(), QSettings::IniFormat).setValue("guesttools/last/st",
                                                                          "not-installed");
-        GuestTools::setSystem("st", {"fedora", "44", "Fedora Linux 44 (KDE Plasma Desktop Edition)"});
+        GuestTools::setSystem("st", fedora44());
         VmStore store(dir.path());
         Vm *vm = store.find("st");
         QVERIFY(vm);
@@ -434,7 +446,8 @@ private slots:
         status.install = [&](Vm *v) { asked = v; };
 
         status.setVm(vm);
-        QVERIFY2(status.text().startsWith("The guest tools were not installed when this VM last ran"),
+        QVERIFY2(status.text().startsWith(
+                     "The guest tools were not installed when this VM last ran"),
                  qPrintable(status.text()));
         QCOMPARE(status.button(), "Install Guest Tools…");
         QVERIFY(gtk_widget_get_visible(status.homeWidget()));

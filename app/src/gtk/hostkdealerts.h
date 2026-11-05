@@ -30,7 +30,7 @@ void installAll(const Present &present, const QStringList &ids);
 /* The same for a revert of @ids, at once (one password) */
 void revert(const Present &present, const QStringList &ids);
 
-/* The alert of @heading with the rich text @html, and the commands of its <pre> part apart, to copy */
+/* The alert of @heading with the rich text @html; the commands of its <pre> part apart, to copy */
 AdwDialog *alert(const QString &heading, const QString &html);
 
 }

@@ -56,7 +56,8 @@ public:
     void select(const QString &component);
     /* The component shown, "" for the Overview */
     QString selected() const;
-    /* Vitrine back in front: the states again, what builds by hand made meanwhile; not during a run */
+    /* Vitrine back in front: the states again, what builds by hand made meanwhile; not during
+       a run */
     void lookAgain();
     /* @dialog over this window */
     void presentDialog(AdwDialog *dialog);

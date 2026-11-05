@@ -33,13 +33,15 @@ AppBanners::AppBanners()
             refreshStack();
         }
     });
-    QObject::connect(builder, &StackBuilder::finished, &m_qt, [this, builder](const QString &error) {
+    QObject::connect(builder, &StackBuilder::finished, &m_qt,
+                     [this, builder](const QString &error) {
         /* stopped: as before it started */
         m_error = builder->wasStopped() ? QString() : error;
         refreshStack();
     });
     /* the preferences chose another QEMU, or the default again: reloadPreferred() tells */
-    QObject::connect(QemuDocs::preferred(), &QemuDocs::changed, &m_qt, [this]() { refreshStack(); });
+    QObject::connect(QemuDocs::preferred(), &QemuDocs::changed, &m_qt,
+                     [this]() { refreshStack(); });
     QObject::connect(monitor, &HostKdeMonitor::changed, &m_qt, [this]() { refreshHost(); });
     /* the system as it is now: it may have moved since the last run */
     if (!monitor->isRead()) {

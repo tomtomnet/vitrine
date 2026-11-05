@@ -39,7 +39,8 @@ void setMarkup(GtkWidget *label, const QString &html)
 GuestToolsDialog::GuestToolsDialog(Vm *vm, std::shared_ptr<GuestToolsInstall> install, Start start,
                                    ShowBuilds builds, Presenter presenter)
     : Dialog(adw_dialog_new(), std::move(presenter)), m_vm(vm), m_install(install),
-      m_start(std::move(start)), m_builds(std::move(builds)), m_release(GuestTools::newestRelease()),
+      m_start(std::move(start)), m_builds(std::move(builds)),
+      m_release(GuestTools::newestRelease()),
       m_seenStep(install ? int(install->step()) : int(Step::Idle)),
       m_build(ADW_BANNER(adw_banner_new(""))), m_warning(ADW_BANNER(adw_banner_new("")))
 {

@@ -131,15 +131,16 @@ BuildsWindow::BuildsWindow(GtkWindow *parent, BuildManager *manager)
     gtk_window_set_transient_for(GTK_WINDOW(m_window), parent);
     gtk_window_set_destroy_with_parent(GTK_WINDOW(m_window), true);
     gtk_widget_set_size_request(m_window, 360, 294);
-    gtk_window_set_default_size(GTK_WINDOW(m_window), settings.value("gtk/builds-width", 980).toInt(),
+    gtk_window_set_default_size(GTK_WINDOW(m_window),
+                                settings.value("gtk/builds-width", 980).toInt(),
                                 settings.value("gtk/builds-height", 700).toInt());
 
     createActions();
     buildSidebar();
-    m_overviewPage = ADW_NAVIGATION_PAGE(adw_navigation_page_new_with_tag(buildOverview(),
-                                                                          "Overview", "overview"));
-    m_componentPage = ADW_NAVIGATION_PAGE(adw_navigation_page_new_with_tag(buildComponentPage(),
-                                                                           "Component", "component"));
+    m_overviewPage = ADW_NAVIGATION_PAGE(
+        adw_navigation_page_new_with_tag(buildOverview(), "Overview", "overview"));
+    m_componentPage = ADW_NAVIGATION_PAGE(
+        adw_navigation_page_new_with_tag(buildComponentPage(), "Component", "component"));
     /* the one not shown waits, kept */
     g_object_ref_sink(m_overviewPage);
     g_object_ref_sink(m_componentPage);
@@ -363,7 +364,8 @@ void BuildsWindow::buildSidebar()
             return;
         }
         AdwSidebarItem *item = adw_sidebar_get_selected_item(m_sidebar);
-        const char *id = item ? static_cast<const char *>(g_object_get_data(G_OBJECT(item), "vitrine-id"))
+        const auto *id = item ? static_cast<const char *>(
+                                    g_object_get_data(G_OBJECT(item), "vitrine-id"))
                               : nullptr;
         m_selected = id ? QString::fromUtf8(id) : QString();
         showSelected();
@@ -374,7 +376,8 @@ void BuildsWindow::buildSidebar()
     });
     /* the menu acts on the item it opens on */
     on<void(AdwSidebarItem *)>(m_sidebar, "setup-menu", [this](AdwSidebarItem *item) {
-        if (const char *id = item ? static_cast<const char *>(g_object_get_data(G_OBJECT(item), "vitrine-id"))
+        if (const auto *id = item ? static_cast<const char *>(
+                                        g_object_get_data(G_OBJECT(item), "vitrine-id"))
                                   : nullptr) {
             select(QString::fromUtf8(id));
         }
@@ -527,15 +530,17 @@ GtkWidget *BuildsWindow::buildComponentPage()
         gtk_text_view_set_cursor_visible(GTK_TEXT_VIEW(m_logView), false);
         gtk_text_view_set_monospace(GTK_TEXT_VIEW(m_logView), true);
         gtk_text_view_set_wrap_mode(GTK_TEXT_VIEW(m_logView), GTK_WRAP_NONE);
-        for (const auto margin : {&gtk_text_view_set_left_margin, &gtk_text_view_set_right_margin,
-                                  &gtk_text_view_set_top_margin, &gtk_text_view_set_bottom_margin}) {
+        for (const auto margin :
+             {&gtk_text_view_set_left_margin, &gtk_text_view_set_right_margin,
+              &gtk_text_view_set_top_margin, &gtk_text_view_set_bottom_margin}) {
             margin(GTK_TEXT_VIEW(m_logView), 12);
         }
         gtk_scrolled_window_set_child(GTK_SCROLLED_WINDOW(scroll), m_logView);
         gtk_widget_set_vexpand(scroll, true);
         gtk_stack_add_named(GTK_STACK(m_logStack), scroll, "log");
     }
-    adw_view_stack_add_titled_with_icon(m_views, m_logStack, "log", "Log", "text-x-generic-symbolic");
+    adw_view_stack_add_titled_with_icon(m_views, m_logStack, "log", "Log",
+                                        "text-x-generic-symbolic");
     adw_toolbar_view_set_content(ADW_TOOLBAR_VIEW(view), GTK_WIDGET(m_views));
     adw_toolbar_view_add_bottom_bar(ADW_TOOLBAR_VIEW(view), GTK_WIDGET(m_switcherBar));
     /* the log of the view shown: its end as it comes */
@@ -617,7 +622,8 @@ void BuildsWindow::fill()
             Row row;
 
             adw_sidebar_item_set_icon_name(item, kindIcon(c.kind));
-            g_object_set_data_full(G_OBJECT(item), "vitrine-id", g_strdup(utf8(id).constData()), g_free);
+            g_object_set_data_full(G_OBJECT(item), "vitrine-id", g_strdup(utf8(id).constData()),
+                                   g_free);
             adw_sidebar_section_append(section, item);
             m_items << Item{id, item, -1};
 
@@ -633,7 +639,8 @@ void BuildsWindow::fill()
             row.built = gtk_label_new(nullptr);
             gtk_widget_add_css_class(row.built, "dim-label");
             adw_action_row_add_suffix(ADW_ACTION_ROW(row.row), row.built);
-            adw_action_row_add_suffix(ADW_ACTION_ROW(row.row), gtk_image_new_from_icon_name("go-next-symbolic"));
+            adw_action_row_add_suffix(ADW_ACTION_ROW(row.row),
+                                      gtk_image_new_from_icon_name("go-next-symbolic"));
             on<void()>(row.row, "activated", [this, id]() {
                 select(id);
                 adw_navigation_split_view_set_show_content(m_split, true);
@@ -823,7 +830,8 @@ void BuildsWindow::refreshItem(const QString &id)
         if (status.fraction >= 0) {
             gtk_progress_bar_set_fraction(GTK_PROGRESS_BAR(row.progress), status.fraction);
         }
-        gtk_label_set_text(GTK_LABEL(row.built), utf8(BuildsModel::built(*m_manager, id)).constData());
+        gtk_label_set_text(GTK_LABEL(row.built),
+                           utf8(BuildsModel::built(*m_manager, id)).constData());
         setTip(row.built, BuildsModel::built(*m_manager, id, true));
     }
     /* the group's state, beside its title */
@@ -844,8 +852,9 @@ void BuildsWindow::refreshRun()
     const BuildsModel::Action all = BuildsModel::buildAll(*m_manager);
     const Task *task = m_manager->task();
 
-    adw_preferences_row_set_title(ADW_PREFERENCES_ROW(m_runRow),
-                                  utf8(Markup::escaped(BuildsModel::runText(*m_manager))).constData());
+    adw_preferences_row_set_title(
+        ADW_PREFERENCES_ROW(m_runRow),
+        utf8(Markup::escaped(BuildsModel::runText(*m_manager))).constData());
     gtk_widget_set_visible(m_runSpinner, running);
     gtk_widget_set_visible(m_runProgress, running);
     gtk_widget_set_visible(m_background, running);
@@ -862,10 +871,11 @@ void BuildsWindow::refreshRun()
     gtk_button_set_label(GTK_BUTTON(m_all), utf8(all.label).constData());
     setTip(m_all, all.tooltip);
     gtk_widget_set_visible(m_stopAll, running);
-    g_simple_action_set_enabled(
-        G_SIMPLE_ACTION(g_action_map_lookup_action(G_ACTION_MAP(m_actions), "build-all")), all.enabled);
-    g_simple_action_set_enabled(
-        G_SIMPLE_ACTION(g_action_map_lookup_action(G_ACTION_MAP(m_actions), "stop")), running);
+    const auto action = [this](const char *name) {
+        return G_SIMPLE_ACTION(g_action_map_lookup_action(G_ACTION_MAP(m_actions), name));
+    };
+    g_simple_action_set_enabled(action("build-all"), all.enabled);
+    g_simple_action_set_enabled(action("stop"), running);
 }
 
 void BuildsWindow::refreshMemory()
@@ -956,8 +966,8 @@ void BuildsWindow::refreshDetails()
     if (m_selected.isEmpty()) {
         return;
     }
-    const BuildsModel::Details d =
-        BuildsModel::details(*m_manager, m_selected, [this](const QString &path) { return size(path); });
+    const BuildsModel::Details d = BuildsModel::details(
+        *m_manager, m_selected, [this](const QString &path) { return size(path); });
 
     AdwPreferencesGroup *about = Gtk4::group();
     for (const QString &paragraph : d.paragraphs) {
@@ -1003,14 +1013,17 @@ void BuildsWindow::refreshDetails()
             /* the value first, the key over it: GNOME's property rows */
             gtk_widget_add_css_class(row, "property");
             Gtk4::setTitle(row, p.label);
-            adw_action_row_set_subtitle(ADW_ACTION_ROW(row), utf8(Markup::pango(p.value)).constData());
+            adw_action_row_set_subtitle(ADW_ACTION_ROW(row),
+                                        utf8(Markup::pango(p.value)).constData());
             adw_action_row_set_subtitle_selectable(ADW_ACTION_ROW(row), true);
             if (!p.link.isEmpty()) {
-                GtkWidget *open = Gtk4::rowButton("adw-external-link-symbolic", "Open in the Browser");
+                GtkWidget *open =
+                    Gtk4::rowButton("adw-external-link-symbolic", "Open in the Browser");
                 const QString link = p.link;
                 on<void()>(open, "clicked", [this, link]() {
                     GtkUriLauncher *launcher = gtk_uri_launcher_new(utf8(link).constData());
-                    gtk_uri_launcher_launch(launcher, GTK_WINDOW(m_window), nullptr, nullptr, nullptr);
+                    gtk_uri_launcher_launch(launcher, GTK_WINDOW(m_window), nullptr, nullptr,
+                                            nullptr);
                     g_object_unref(launcher);
                 });
                 adw_action_row_add_suffix(ADW_ACTION_ROW(row), open);
@@ -1060,7 +1073,8 @@ void BuildsWindow::refreshPatches()
             GtkWidget *row = Gtk4::actionRow(subject, patch.name());
             gtk_widget_set_tooltip_text(row, utf8(patch.path).constData());
             gtk_list_box_row_set_activatable(GTK_LIST_BOX_ROW(row), true);
-            adw_action_row_add_suffix(ADW_ACTION_ROW(row), gtk_image_new_from_icon_name("go-next-symbolic"));
+            adw_action_row_add_suffix(ADW_ACTION_ROW(row),
+                                      gtk_image_new_from_icon_name("go-next-symbolic"));
             /* its text on demand */
             on<void()>(row, "activated", [this, c, patch, subject]() {
                 auto *text = new TextDialog(patch.name(), c.title, Builds::text(c, patch), {});
@@ -1071,8 +1085,10 @@ void BuildsWindow::refreshPatches()
         adw_preferences_page_add(m_patches, group);
         m_patchGroups << group;
     }
-    gtk_stack_set_visible_child_name(GTK_STACK(m_patchesStack), groups.isEmpty() ? "none" : "patches");
-    adw_view_stack_page_set_visible(adw_view_stack_get_page(m_views, m_patchesStack), !groups.isEmpty());
+    gtk_stack_set_visible_child_name(GTK_STACK(m_patchesStack),
+                                     groups.isEmpty() ? "none" : "patches");
+    adw_view_stack_page_set_visible(adw_view_stack_get_page(m_views, m_patchesStack),
+                                    !groups.isEmpty());
 }
 
 void BuildsWindow::refreshLog()
@@ -1151,7 +1167,8 @@ void BuildsWindow::updateCache()
     Gtk4::setSubtitle(GTK_WIDGET(m_cacheRow), "Counting…");
     gtk_widget_set_tooltip_text(
         GTK_WIDGET(m_cacheRow),
-        utf8(QString("Sources and build trees, downloads, the compiler cache:\n%1").arg(dirs.join('\n')))
+        utf8(QString("Sources and build trees, downloads, the compiler cache:\n%1")
+                 .arg(dirs.join('\n')))
             .constData());
     QObject::connect(watcher, &QFutureWatcher<qint64>::finished, &m_qt, [this, watcher]() {
         m_cacheSize = watcher->result();
@@ -1278,7 +1295,8 @@ QStringList BuildsWindow::items() const
 
 QString BuildsWindow::runText() const
 {
-    return Markup::plain(QString::fromUtf8(adw_preferences_row_get_title(ADW_PREFERENCES_ROW(m_runRow))));
+    return Markup::plain(
+        QString::fromUtf8(adw_preferences_row_get_title(ADW_PREFERENCES_ROW(m_runRow))));
 }
 
 QString BuildsWindow::buildLabel() const
@@ -1327,7 +1345,8 @@ QStringList BuildsWindow::patchRows() const
     QStringList rows;
     for (AdwPreferencesGroup *group : m_patchGroups) {
         for (guint i = 0; GtkWidget *row = adw_preferences_group_get_row(group, i); i++) {
-            rows << Markup::plain(QString::fromUtf8(adw_preferences_row_get_title(ADW_PREFERENCES_ROW(row))));
+            rows << Markup::plain(
+                QString::fromUtf8(adw_preferences_row_get_title(ADW_PREFERENCES_ROW(row))));
         }
     }
     return rows;

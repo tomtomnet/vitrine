@@ -120,10 +120,11 @@ void GuestToolsInstall::setStep(Step step, const QString &progress)
     m_step = step;
     m_progress = progress;
     if (m_task && m_task->isRunning()) {
-        m_task->setText(step == Step::WaitingForBuild ? QString("Waiting for the build of the medium")
-                        : step == Step::ShuttingDown  ? QString("Waiting for the guest to shut down")
-                        : step == Step::Snapshot      ? QString("Taking a snapshot of the disks")
-                                                      : QString("Starting the VM"));
+        m_task->setText(step == Step::WaitingForBuild
+                            ? QString("Waiting for the build of the medium")
+                        : step == Step::ShuttingDown ? QString("Waiting for the guest to shut down")
+                        : step == Step::Snapshot     ? QString("Taking a snapshot of the disks")
+                                                     : QString("Starting the VM"));
     }
     notify();
 }
