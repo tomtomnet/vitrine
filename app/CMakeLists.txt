@@ -277,6 +277,8 @@ add_custom_command(OUTPUT ${UI_PROTOCOL_DIR}/linux-dmabuf-v1-client-protocol.h
 qt_add_library(vitrine_uishared STATIC
     src/ui/argscheck.cpp
     src/ui/argscheck.h
+    src/ui/buildtexts.cpp
+    src/ui/buildtexts.h
     src/ui/qemudocs.cpp
     src/ui/qemudocs.h
     src/ui/uiconfig.cpp

@@ -52,6 +52,7 @@ public:
     void select(const QString &component);
     QString selected() const;
 
+    /* The words of BuildTexts (ui/buildtexts.h), which the GTK app shares */
     /* "Vitrine's build of 3 October 2026, QEMU 11.1.50 + 7 patches" */
     static QString describe(const StackBuilder::Build &build);
     /* What the state of Vitrine's QEMU means for the user, in a sentence or two */
