@@ -112,9 +112,9 @@ VmDisplay::VmDisplay() : m_alive(std::make_shared<bool>(true))
 {
     /* VITRINE_VIEW_ZERO_COPY=0: the view copies the guest's frames into its own
        buffers (Listener.Unix.ZeroCopy not advertised) instead of showing them as
-       they are: for an A/B of Mutter guests at high refresh rates, where the
-       held flip event of zero copy cost GNOME 51 a refresh (the research,
-       2026-11-05: 75 % of its animation frames late at 240 Hz) */
+       they are, for A/B runs.  Zero copy stays the default for GNOME guests too:
+       at 240 Hz, in a window and in full screen, it lost no frame and showed
+       them about 2.3 ms sooner than the copy (the research, 2026-11-05) */
     if (qgetenv("VITRINE_VIEW_ZERO_COPY") == "0") {
         m_opts.zeroCopy = false;
     }
