@@ -49,6 +49,22 @@
  * boot 1.38 -> 0.79 s (the research's vm-host-session, 2026-10-06).
  */
 #define THP_SHMEM "/sys/kernel/mm/transparent_hugepage/shmem_enabled"
+/*
+ * The CPU ready to wake up while VMs run: its cores rest in their first
+ * idle state (C1), never deeper - a PM QoS request on /dev/cpu_dma_latency
+ * for that state's wake-up time - and each one's energy performance
+ * preference is EPP_TARGET.  On a Ryzen 7 260 laptop (C1 1 us, C2 18 us, C3
+ * 350 us) a GNOME VM's keys reached its screen in 11.3-11.9 ms instead of
+ * 15.1-16.3 ms, as on the bare desktop (10.6-11.7), for ~1.6 W at idle; C1
+ * alone 13.7 ms, the preference alone 14.7, no idle state at all 11.7 ms for
+ * +26 W (the research, 2026-11-05).  The request is the helper's open
+ * file: the kernel takes the lowest of all requests, and drops one when its
+ * file closes, whatever the way.
+ */
+#define CPU_LATENCY_DEV "/dev/cpu_dma_latency"
+#define EPP_TARGET "performance"
+#define CPU_DIR "/sys/devices/system/cpu"
+#define CPUIDLE_DRIVER "/sys/devices/system/cpu/cpuidle/current_driver"
 
 #define FAIR_SERVER_DIR "/sys/kernel/debug/sched/fair_server"
 #define EXT_SERVER_DIR "/sys/kernel/debug/sched/ext_server"
@@ -83,6 +99,15 @@ int sys_setnice(pid_t tid, int nice);
  */
 int sys_getrttime(pid_t pid, rlim_t *soft, rlim_t *hard);
 int sys_setrttime(pid_t pid, rlim_t soft, rlim_t hard);
+/*
+ * A PM QoS request: the device @path (CPU_LATENCY_DEV under the root)
+ * opened and @us written to it, the kernel's 32-bit value.  It holds while
+ * the file returned stays open, and the kernel drops it when that file
+ * closes, crash included.  The file, or -errno.
+ */
+int sys_latency_request(const char *path, int us);
+/* The request of sys_latency_request() let go */
+void sys_latency_release(int fd);
 /* An entry in the system log (the journal), for the record of what root did */
 void sys_log(const char *fmt, ...) __attribute__((format(printf, 1, 2)));
 /* The group @name in the user database: 1 with its gid in @gid, 0 if there
@@ -126,6 +151,13 @@ bool settings_bound(const char **why);
 /* Shared memory's transparent huge pages on madvise (THP_SHMEM), and back */
 void thp_on(void);
 void thp_off(void);
+/* The CPUs kept in their first idle state: this helper's PM QoS request,
+   held until cpu_latency_off() or the end */
+void cpu_latency_on(void);
+void cpu_latency_off(void);
+/* Each online CPU's energy performance preference at EPP_TARGET, and back */
+void epp_on(void);
+void epp_off(void);
 /* @card: "cardN"; @value: a clock in MHz, "auto" or "off" */
 void gpu_floor(const char *card, const char *value);
 /* The protocol's udmabuf <pid>: the udmabuf limits raised while that

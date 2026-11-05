@@ -1,12 +1,14 @@
 // SPDX-License-Identifier: GPL-2.0-or-later
 /*
  * Preferences > Host: gpu-input-awake on the GPU clock floor's row of a
- * dedicated GPU, Install… and Remove… run as the app runs them, on a fake
+ * dedicated GPU, Install… and Remove… run as the app runs them, and the
+ * CPU kept ready to wake up, on a fake
  * host (its GPUs, a fake root for /usr and /etc) with stand-ins for pkexec,
  * id and systemctl.  Nothing here touches this computer's /usr or /etc,
  * nor asks polkit.
  */
 #include <QApplication>
+#include <QCheckBox>
 #include <QDir>
 #include <QFile>
 #include <QLabel>
@@ -21,6 +23,7 @@
 
 #include "core/gpuinputawake.h"
 #include "core/hostgpus.h"
+#include "core/hostsettings.h"
 #include "fakegpus.h"
 #include "ui/hosttuningprefs.h"
 #include "ui/widgets.h"
@@ -207,6 +210,44 @@ private slots:
         QVERIFY(shown.contains("This removes the copy installed now, which is not Vitrine's version"));
         QTRY_VERIFY(p.awake()->text().endsWith("It is not installed."));
         QCOMPARE(GpuInputAwake::installed(source(), m_root), GpuInputAwake::Installed::No);
+    }
+
+    /* The CPU kept ready to wake up: on by default, said what it does and
+       costs; only with tuning on; saved */
+    void cpuLatency()
+    {
+        m_gpus->use();
+        Prefs p;
+        auto *box = p.window->findChild<QCheckBox *>("cpuLatency");
+        auto *tune = p.window->findChild<QCheckBox *>("tuneHost");
+        QVERIFY(box && tune);
+        QCOMPARE(box->text(), QString("&Keep the CPU ready to wake up while VMs run"));
+        QVERIFY(box->isChecked());
+        QVERIFY(box->isEnabled());
+        QString hint;
+        for (QLabel *label : p.window->findChildren<QLabel *>()) {
+            if (label->text().contains("idle state")) {
+                hint = label->text();
+            }
+        }
+        QVERIFY(hint.contains("lightest idle state"));
+        QVERIFY(hint.contains("about 1.6 W at idle"));
+        QVERIFY(hint.contains("ends when the last VM stops"));
+        tune->setChecked(false);
+        QVERIFY(!box->isEnabled());
+        tune->setChecked(true);
+        QVERIFY(box->isEnabled());
+
+        box->setChecked(false);
+        p.prefs->save();
+        QVERIFY(!HostSettings::cpuLatency());
+        {
+            Prefs again;
+            QVERIFY(!again.window->findChild<QCheckBox *>("cpuLatency")->isChecked());
+        }
+        box->setChecked(true);
+        p.prefs->save();
+        QVERIFY(HostSettings::cpuLatency());
     }
 
     /* An AMD APU: the floor, no gpu-input-awake row; a discrete AMD card: the row */

@@ -43,7 +43,8 @@ static void fitWindow(QWidget *widget)
 HostTuningPrefs::HostTuningPrefs(Form *form, QWidget *parent)
     : QObject(parent), m_parent(parent),
       m_tune(new QCheckBox(tr("&Tune the host while VMs run"))), m_state(Widgets::note()), m_setUp(new QPushButton(tr("Set &Up…"))),
-      m_floor(new QComboBox), m_mhz(new QSpinBox)
+      m_floor(new QComboBox), m_mhz(new QSpinBox),
+      m_cpuLatency(new QCheckBox(tr("&Keep the CPU ready to wake up while VMs run")))
 {
     const QString floor = HostSettings::gpuFloor();
     auto *floorRow = new QHBoxLayout;
@@ -53,6 +54,8 @@ HostTuningPrefs::HostTuningPrefs(Form *form, QWidget *parent)
     m_setUp->setObjectName("tuneHostSetUp");
     m_floor->setObjectName("gpuFloor");
     m_mhz->setObjectName("gpuFloorMhz");
+    m_cpuLatency->setObjectName("cpuLatency");
+    m_cpuLatency->setChecked(HostSettings::cpuLatency());
     /* the user's choice, whatever the state: the line under it says that */
     m_tune->setChecked(HostSettings::enabled());
     m_setUp->setToolTip(tr("Adds you to the vitrine group: asks for an administrator's password"));
@@ -95,6 +98,14 @@ HostTuningPrefs::HostTuningPrefs(Form *form, QWidget *parent)
         connect(m_awakeRemove, &QPushButton::clicked, this, [this]() { runAwake(false); });
         refreshAwake();
     }
+    /* the research's measure: a GNOME VM's keys 11.3-11.9 ms instead of
+       15.1-16.3, as on the bare desktop, for ~1.6 W at idle */
+    form->addRow(tr("CPU:"), m_cpuLatency);
+    form->addRow(QString(), Widgets::hint(tr("Its cores stay in their lightest idle state, at their "
+                                             "performance setting, so that keys show in a VM as "
+                                             "fast as on the bare desktop. It costs about 1.6 W at "
+                                             "idle (measured on a Ryzen 7 260 laptop), and ends "
+                                             "when the last VM stops.")));
 
     connect(m_tune, &QCheckBox::toggled, this, &HostTuningPrefs::update);
     connect(m_floor, &QComboBox::currentIndexChanged, this, &HostTuningPrefs::update);
@@ -120,6 +131,7 @@ void HostTuningPrefs::update()
     m_setUp->setVisible(on && m_needsGroup);
     m_floor->setEnabled(on);
     m_mhz->setEnabled(on);
+    m_cpuLatency->setEnabled(on);
     m_mhz->setVisible(m_floor->currentData() == "mhz");
 }
 
@@ -267,12 +279,15 @@ void HostTuningPrefs::save() const
     const QString floor = m_floor->currentData().toString();
     const bool wasEnabled = HostSettings::enabled();
     const QString wasFloor = HostSettings::gpuFloor();
+    const bool wasCpuLatency = HostSettings::cpuLatency();
 
     HostSettings::setEnabled(m_tune->isChecked());
     HostSettings::setGpuFloor(floor == "mhz" ? QString::number(m_mhz->value()) : floor);
+    HostSettings::setCpuLatency(m_cpuLatency->isChecked());
     /* for the VMs running now, not only the next ones */
     HostSettings *running = HostSettings::instance();
-    if (running && (HostSettings::enabled() != wasEnabled || HostSettings::gpuFloor() != wasFloor)) {
+    if (running && (HostSettings::enabled() != wasEnabled || HostSettings::gpuFloor() != wasFloor ||
+                    HostSettings::cpuLatency() != wasCpuLatency)) {
         running->preferencesChanged();
     }
 }

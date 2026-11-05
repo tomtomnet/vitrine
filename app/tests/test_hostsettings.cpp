@@ -12,6 +12,7 @@
 #include <QLocalServer>
 #include <QLocalSocket>
 #include <QProcess>
+#include <QRegularExpression>
 #include <QSettings>
 #include <QSignalSpy>
 #include <QStandardPaths>
@@ -23,10 +24,13 @@
 #include <memory>
 #include <vector>
 
+#include <algorithm>
 #include <cerrno>
 
+#include <fcntl.h>
 #include <grp.h>
 #include <pwd.h>
+#include <sys/file.h>
 #include <sys/prctl.h>
 #include <sys/xattr.h>
 #include <unistd.h>
@@ -40,6 +44,8 @@
 static const char kFair[] = "/sys/kernel/debug/sched/fair_server";
 static const char kUdmabuf[] = "/sys/module/udmabuf/parameters";
 static const char kThp[] = "/sys/kernel/mm/transparent_hugepage/shmem_enabled";
+static const char kCpu[] = "/sys/devices/system/cpu";
+static const char kLatency[] = "/dev/cpu_dma_latency";
 
 /* What QCOMPARE prints of a Status */
 char *toString(const HostSettings::Status &status)
@@ -177,6 +183,31 @@ private:
         return readFile(m_root + kCard + "/power_dpm_force_performance_level");
     }
     QByteArray odTable() const { return readFile(m_root + kCard + "/pp_od_clk_voltage"); }
+    /* cpuN's energy performance preference in the fake tree */
+    QString eppFile(int cpu) const
+    {
+        return QString("%1%2/cpu%3/cpufreq/energy_performance_preference").arg(m_root, kCpu).arg(cpu);
+    }
+    QString epp(int cpu) const { return QString::fromLatin1(readFile(eppFile(cpu))); }
+    /* The live requests on the fake /dev/cpu_dma_latency, lowest first: the
+       files their process holds locked (the helper's fakesys.c) */
+    QList<int> latencyRequests() const
+    {
+        const QDir dev(m_root + "/dev");
+        QList<int> out;
+        for (const QString &name : dev.entryList({"cpu_dma_latency.*"}, QDir::Files)) {
+            const int fd = ::open(QFile::encodeName(dev.filePath(name)).constData(), O_RDONLY | O_CLOEXEC);
+            if (fd < 0) {
+                continue;
+            }
+            if (flock(fd, LOCK_SH | LOCK_NB) < 0 && errno == EWOULDBLOCK) {
+                out << readFile(dev.filePath(name)).toInt();
+            }
+            ::close(fd);
+        }
+        std::sort(out.begin(), out.end());
+        return out;
+    }
     /* "list_limit/size_limit_mb" */
     QString udmabuf() const
     {
@@ -268,6 +299,25 @@ private slots:
         writeFile(m_root + kUdmabuf + "/list_limit", "1024\n");
         writeFile(m_root + kUdmabuf + "/size_limit_mb", "64\n");
         writeFile(m_root + kThp, "always within_size advise [never] deny force\n");
+        /* two CPUs like a Ryzen 7 260's: acpi_idle's states, amd-pstate's
+           preference (cpuN/cpufreq a link to its policy, as in sysfs) */
+        for (int cpu = 0; cpu < 2; cpu++) {
+            const QString dir = QString("%1%2/cpu%3").arg(m_root, kCpu).arg(cpu);
+            const QString policy = QString("%1%2/cpufreq/policy%3").arg(m_root, kCpu).arg(cpu);
+            int i = 0;
+            for (const char *state : {"POLL 0", "C1 1", "C2 18", "C3 350"}) {
+                const QList<QByteArray> f = QByteArray(state).split(' ');
+                writeFile(QString("%1/cpuidle/state%2/name").arg(dir).arg(i), f[0] + '\n');
+                writeFile(QString("%1/cpuidle/state%2/latency").arg(dir).arg(i), f[1] + '\n');
+                writeFile(QString("%1/cpuidle/state%2/disable").arg(dir).arg(i), "0\n");
+                i++;
+            }
+            writeFile(policy + "/scaling_driver", "amd-pstate-epp\n");
+            writeFile(policy + "/energy_performance_preference", "balance_performance\n");
+            QFile::link(QString("../cpufreq/policy%1").arg(cpu), dir + "/cpufreq");
+        }
+        writeFile(m_root + kCpu + "/cpuidle/current_driver", "acpi_idle\n");
+        writeFile(m_root + kLatency, "");
         qputenv("VITRINE_HELPER_TEST_ROOT", m_root.toLocal8Bit());
     }
 
@@ -284,6 +334,9 @@ private slots:
         QCOMPARE(HostSettings::gpuFloor(), QString("auto"));
         HostSettings::setGpuFloor("0800");
         QCOMPARE(HostSettings::gpuFloor(), QString("auto"));
+        QVERIFY(HostSettings::cpuLatency());
+        HostSettings::setCpuLatency(false);
+        QVERIFY(!HostSettings::cpuLatency());
         HostSettings::setEnabled(false);
         QVERIFY(!HostSettings::enabled());
     }
@@ -311,9 +364,13 @@ private slots:
         QTRY_VERIFY(saw(lines, QString("ok rt %1").arg(qemu.pid())));
         QVERIFY(saw(lines, "ok fair-server on: 2 cpus"));
         QVERIFY(saw(lines, "ok thp on: advise (was never)"));
+        QVERIFY(saw(lines, "ok cpu-latency on: 1 us (C1 on every cpu; C2, C3 unused)"));
+        QVERIFY(saw(lines, "ok epp on: performance on 2 cpus (was balance_performance)"));
         QVERIFY(saw(lines, "ok gpu-floor card1 1800 MHz"));
         QCOMPARE(fair(0), QString("10000000/1000000"));
         QCOMPARE(thp(), QString("advise"));
+        QCOMPARE(latencyRequests(), QList<int>({1}));
+        QCOMPARE(epp(1), QString("performance"));
         QCOMPARE(level(), QString("manual"));
         QCOMPARE(odTable(), od(1800, 2700).trimmed());
         QVERIFY(notices.isEmpty());
@@ -324,6 +381,9 @@ private slots:
         QVERIFY(!hs.helperRunning());
         QCOMPARE(fair(0), QString("1000000000/50000000"));
         QCOMPARE(thp(), QString("never"));
+        QVERIFY(latencyRequests().isEmpty());
+        QCOMPARE(epp(0), QString("balance_performance"));
+        QCOMPARE(epp(1), QString("balance_performance"));
         QCOMPARE(level(), QString("auto"));
         QCOMPARE(odTable(), od(800, 2700).trimmed());
         QVERIFY(notices.isEmpty());
@@ -347,6 +407,8 @@ private slots:
         QVERIFY(!saw(lines, QString("ok rt %1:").arg(q2.pid())));
         QVERIFY(saw(lines, "ok fair-server on: already"));
         QVERIFY(saw(lines, "ok thp on: already"));
+        QVERIFY(saw(lines, "ok cpu-latency on: already 1 us"));
+        QVERIFY(saw(lines, "ok epp on: already"));
         QVERIFY(saw(lines, "ok gpu-floor card1 auto: already"));
         QVERIFY(fifoThreads(q1.pid()) > 0);
         QCOMPARE(fifoThreads(q2.pid()), 0);
@@ -357,10 +419,13 @@ private slots:
         QVERIFY(hs.helperRunning());
         QCOMPARE(fair(1), QString("10000000/1000000"));
         QCOMPARE(thp(), QString("advise"));
+        QCOMPARE(latencyRequests(), QList<int>({1}));
         q2.stop();
         QTRY_COMPARE(finished.size(), 1);
         QCOMPARE(fair(1), QString("1000000000/50000000"));
         QCOMPARE(thp(), QString("never"));
+        QVERIFY(latencyRequests().isEmpty());
+        QCOMPARE(epp(1), QString("balance_performance"));
         QCOMPARE(level(), QString("auto"));
     }
 
@@ -479,6 +544,139 @@ private slots:
         QCOMPARE(fair(0), QString("1000000000/50000000"));
         QCOMPARE(level(), QString("auto"));
         QCOMPARE(odTable(), od(800, 2700).trimmed());
+    }
+
+    /* The CPU ready to wake up turned off: nothing held of it (off is
+       sent, for a helper that held it), the rest tuned */
+    void cpuLatencyOff()
+    {
+        HostSettings::setCpuLatency(false);
+        FakeQemu qemu;
+        HostSettings hs(nullptr);
+        QSignalSpy lines(&hs, &HostSettings::helperLine), notices(&hs, &HostSettings::notice);
+        fake(hs);
+        hs.tune(qemu.pid());
+        QTRY_VERIFY(saw(lines, QString("ok rt %1").arg(qemu.pid())));
+        QVERIFY(saw(lines, "ok cpu-latency off"));
+        QVERIFY(saw(lines, "ok epp off"));
+        QVERIFY(!saw(lines, "ok cpu-latency on"));
+        QVERIFY(latencyRequests().isEmpty());
+        QCOMPARE(epp(0), QString("balance_performance"));
+        QCOMPARE(thp(), QString("advise"));
+        QVERIFY(notices.isEmpty());
+    }
+
+    /* Turned off while a VM runs: both let go at once, the VM still tuned;
+       on again, held again; all back with the VM's end */
+    void cpuLatencyWhileRunning()
+    {
+        QTemporaryDir runtime(QDir::tempPath() + "/vt-XXXXXX");
+        QTemporaryDir vms;
+        QVERIFY(runtime.isValid() && vms.isValid());
+        qputenv("XDG_RUNTIME_DIR", runtime.path().toLocal8Bit());
+        QDir(vms.path()).mkpath("one");
+        writeFile(vms.path() + "/one/vm.args", "-name one\n");
+        const QString run = Paths::vmRuntimeDir("one");
+        FakeQemu qemu({"-qmp", QString("unix:%1/qmp.sock,server=on,wait=off").arg(run)});
+        writeFile(run + "/qemu.pid", QByteArray::number(qemu.pid()) + "\n");
+        FakeQmp qmp(run + "/qmp.sock");
+        VmStore store(vms.path());
+        HostSettings hs(&store);
+        QSignalSpy lines(&hs, &HostSettings::helperLine), finished(&hs, &HostSettings::helperFinished),
+            notices(&hs, &HostSettings::notice);
+        fake(hs);
+        store.vms().first()->runner()->attach(store.vms().first()->args());
+        QTRY_VERIFY(saw(lines, QString("ok rt %1").arg(qemu.pid())));
+        QCOMPARE(latencyRequests(), QList<int>({1}));
+        QCOMPARE(epp(0), QString("performance"));
+
+        HostSettings::setCpuLatency(false);
+        hs.preferencesChanged();
+        QTRY_VERIFY(saw(lines, "ok epp off"));
+        QVERIFY(saw(lines, "restored cpu-latency: request of 1 us ended"));
+        QVERIFY(saw(lines, "restored epp: 2 cpus back to balance_performance"));
+        QVERIFY(latencyRequests().isEmpty());
+        QCOMPARE(epp(0), QString("balance_performance"));
+        QVERIFY(hs.helperRunning());
+        QCOMPARE(fair(0), QString("10000000/1000000"));
+
+        HostSettings::setCpuLatency(true);
+        hs.preferencesChanged();
+        QTRY_COMPARE(latencyRequests(), QList<int>({1}));
+        QTRY_COMPARE(epp(1), QString("performance"));
+        QVERIFY(notices.isEmpty());
+
+        qemu.stop();
+        QTRY_COMPARE(finished.size(), 1);
+        QVERIFY(latencyRequests().isEmpty());
+        QCOMPARE(epp(0), QString("balance_performance"));
+        QCOMPARE(epp(1), QString("balance_performance"));
+    }
+
+    /* What the helper cannot do of it here is said once, however many VMs start */
+    void cpuLatencySkipsSaid()
+    {
+        QFile::remove(m_root + kLatency);
+        for (int cpu = 0; cpu < 2; cpu++) {
+            QFile::remove(eppFile(cpu));
+            writeFile(QString("%1%2/cpufreq/policy%3/scaling_driver").arg(m_root, kCpu).arg(cpu),
+                      "acpi-cpufreq\n");
+        }
+        FakeQemu q1, q2;
+        HostSettings hs(nullptr);
+        QSignalSpy lines(&hs, &HostSettings::helperLine), notices(&hs, &HostSettings::notice);
+        fake(hs);
+        hs.tune(q1.pid());
+        QTRY_VERIFY(saw(lines, QString("ok rt %1").arg(q1.pid())));
+        hs.tune(q2.pid());
+        QTRY_VERIFY(tuned(lines, q2.pid()));
+        QCOMPARE(notices.size(), 2);
+        QCOMPARE(notices.at(0).first().toString(),
+                 QString("Host tuning: the CPU is not kept out of its deeper idle states: this kernel "
+                         "has no /dev/cpu_dma_latency."));
+        QCOMPARE(notices.at(1).first().toString(),
+                 QString("Host tuning: the CPU's energy performance preference stays as it is: "
+                         "acpi-cpufreq has no energy performance preference (amd-pstate and "
+                         "intel_pstate have one, in active mode)."));
+    }
+
+    /* A helper installed before cpu-latency and epp: "install it again",
+       once, with the preference on; nothing with it off (off is sent too) */
+    void cpuLatencyOlderHelper_data()
+    {
+        QTest::addColumn<bool>("on");
+        QTest::newRow("on") << true;
+        QTest::newRow("off") << false;
+    }
+    void cpuLatencyOlderHelper()
+    {
+        QFETCH(bool, on);
+        HostSettings::setCpuLatency(on);
+        FakeQemu qemu;
+        HostSettings hs(nullptr);
+        QSignalSpy lines(&hs, &HostSettings::helperLine), notices(&hs, &HostSettings::notice);
+        hs.setSysRoot(m_root + "/sys");
+        hs.setHelperCommand(
+            {"/bin/sh", "-c",
+             "echo 'ready 1'; while read -r verb arg rest; do case $verb in "
+             "watch) echo \"ok watch $arg\";; "
+             "fair-server) echo 'ok fair-server on: already 10 ms / 1 ms';; "
+             "thp) echo 'ok thp on: already';; "
+             "gpu-floor) echo \"ok gpu-floor $arg auto: already\";; "
+             "rt) echo \"ok rt $arg: 1 of 1 threads real-time\";; "
+             "*) echo \"error $verb: unknown request\";; esac; done"});
+        hs.tune(qemu.pid());
+        QTRY_VERIFY(saw(lines, QString("ok rt %1").arg(qemu.pid())));
+        QVERIFY(saw(lines, "error cpu-latency: unknown request"));
+        QVERIFY(saw(lines, "error epp: unknown request"));
+        if (on) {
+            QCOMPARE(notices.size(), 1);
+            QCOMPARE(notices.first().first().toString(),
+                     QString("Host tuning: the installed vitrine-helper is older than Vitrine and "
+                             "cannot keep the CPU ready to wake up while VMs run: install it again."));
+        } else {
+            QVERIFY(notices.isEmpty());
+        }
     }
 
     /* auto: a floor on APUs only, a fixed one chosen before goes from the others */
@@ -805,6 +1003,18 @@ private slots:
         };
         const bool hasUdmabuf = QFileInfo::exists(udma + "list_limit");
         const QString udmabufBefore = udmabufNow();
+        /* the CPU's preference (world-readable; none with acpi-cpufreq), and
+           the latency the kernel applies: od's own open of the device adds
+           a request of no constraint, gone with it */
+        const QString epp0 = "/sys/devices/system/cpu/cpu0/cpufreq/energy_performance_preference";
+        const QByteArray eppBefore = readFile(epp0);
+        auto latencyNow = []() {
+            QProcess od;
+            od.start("sudo", {"-n", "od", "-An", "-td4", "-N4", "/dev/cpu_dma_latency"});
+            od.waitForFinished();
+            return QString::fromLatin1(od.readAllStandardOutput()).trimmed().toLongLong();
+        };
+        const qint64 latencyBefore = latencyNow();
 
         QProcess qemu;
         /* gone with the test, crash included: the root helper then sees it
@@ -822,9 +1032,24 @@ private slots:
         for (const QList<QVariant> &line : lines) {
             qInfo("helper: %s", qPrintable(line.first().toString()));
         }
-        QVERIFY(notices.isEmpty());
+        /* none, but that of a host without a preference */
+        for (const QList<QVariant> &notice : notices) {
+            QVERIFY2(eppBefore.isEmpty() && notice.first().toString().startsWith(
+                                                "Host tuning: the CPU's energy performance preference"),
+                     qPrintable(notice.first().toString()));
+        }
         QCOMPARE(root(fairDir + "period") + '/' + root(fairDir + "runtime"),
                  QString("10000000/1000000"));
+        /* "ok cpu-latency on: 1 us (C1 on every cpu; ...)": at most that */
+        const qsizetype request = lineOf(lines, "ok cpu-latency on: ");
+        QVERIFY(request >= 0);
+        const qint64 us = QRegularExpression("on: (\\d+) us")
+                              .match(lines.at(request).first().toString()).captured(1).toLongLong();
+        QVERIFY(us > 0);
+        QVERIFY(latencyNow() <= us);
+        if (!eppBefore.isEmpty()) {
+            QCOMPARE(readFile(epp0), QByteArray("performance"));
+        }
         if (!levelFile.isEmpty() && levelBefore == "auto") {
             QCOMPARE(readFile(levelFile), QByteArray("manual"));
         }
@@ -848,6 +1073,8 @@ private slots:
             QCOMPARE(readFile(levelFile), levelBefore);
         }
         QCOMPARE(udmabufNow(), udmabufBefore);
+        QCOMPARE(readFile(epp0), eppBefore);
+        QCOMPARE(latencyNow(), latencyBefore);
     }
 
     /*
@@ -1899,11 +2126,16 @@ private slots:
             QVERIFY(answered(answers, q2.pid(), false,
                              "the installed vitrine-helper is older than Vitrine and cannot raise "
                              "them: install it again"));
-            /* nor huge pages: said once */
-            QTRY_COMPARE(notices.size(), 1);
-            QCOMPARE(notices.first().first().toString(),
+            /* nor huge pages, nor the CPU's latency and preference: said once each */
+            QTRY_COMPARE(notices.size(), 2);
+            QCOMPARE(notices.at(0).first().toString(),
                      QString("Host tuning: the installed vitrine-helper is older than Vitrine and "
                              "cannot turn on huge pages for VM memory: install it again."));
+            QCOMPARE(notices.at(1).first().toString(),
+                     QString("Host tuning: the installed vitrine-helper is older than Vitrine and "
+                             "cannot keep the CPU ready to wake up while VMs run: install it again."));
+            QTest::qWait(100);
+            QCOMPARE(notices.size(), 2);
         }
         {
             /* tuning off: at once */

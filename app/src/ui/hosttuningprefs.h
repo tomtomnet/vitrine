@@ -17,7 +17,8 @@ class QWidget;
 
 /*
  * The Preferences entries of host tuning while VMs run (HostSettings,
- * vitrine-helper): on or off, and the GPU clock floor.  On, a line under it
+ * vitrine-helper): on or off, the GPU clock floor, and the CPU kept ready
+ * to wake up (HostSettings::cpuLatency()).  On, a line under it
  * says whether tuning is active, and if not why and what to do (Set Up for
  * the vitrine group); off, nothing to warn about.  On a host with a
  * dedicated GPU, which a clock floor does nothing for, the floor's row has
@@ -51,6 +52,7 @@ private:
     QPushButton *m_setUp;
     QComboBox *m_floor;
     QSpinBox *m_mhz;
+    QCheckBox *m_cpuLatency;
     bool m_checked = false;
     bool m_needsGroup = false;
     /* gpu-input-awake: none of these without a dedicated GPU */

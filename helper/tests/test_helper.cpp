@@ -15,6 +15,8 @@
 #include <QTest>
 #include <QXmlStreamReader>
 
+#include <algorithm>
+
 #include <fcntl.h>
 #include <poll.h>
 #include <pwd.h>
@@ -33,6 +35,10 @@ static const char kExt[] = "/sys/kernel/debug/sched/ext_server";
 static const char kCard[] = "/sys/class/drm/card1/device";
 static const char kUdmabuf[] = "/sys/module/udmabuf/parameters";
 static const char kThp[] = "/sys/kernel/mm/transparent_hugepage/shmem_enabled";
+static const char kCpu[] = "/sys/devices/system/cpu";
+static const char kLatency[] = "/dev/cpu_dma_latency";
+/* what the kernel applies without any request: 2000 s */
+static const int kNoLatency = 2000000000;
 
 static bool writeFile(const QString &path, const QByteArray &data)
 {
@@ -267,6 +273,62 @@ private:
         const qsizetype open = text.indexOf('['), close = text.indexOf(']');
         return open >= 0 && close > open ? text.mid(open + 1, close - open - 1) : QString();
     }
+    /* cpuN's cpuidle states, state0 first: "NAME LATENCY_US[ disabled]" */
+    void setIdleStates(int cpu, const QStringList &states) const
+    {
+        const QString dir = path(QString("%1/cpu%2/cpuidle").arg(kCpu).arg(cpu));
+        QDir(dir).removeRecursively();
+        for (int i = 0; i < states.size(); i++) {
+            const QStringList f = states[i].split(' ');
+            const QString state = QString("%1/state%2/").arg(dir).arg(i);
+            writeFile(state + "name", f.value(0).toLatin1() + '\n');
+            writeFile(state + "latency", f.value(1).toLatin1() + '\n');
+            writeFile(state + "disable", f.value(2) == "disabled" ? "1\n" : "0\n");
+        }
+    }
+    /* cpuN's energy performance preference, as the test sees the file (the
+       helper gets EBUSY for an offline CPU's) */
+    QString eppFile(int cpu) const
+    {
+        return path(QString("%1/cpu%2/cpufreq/energy_performance_preference").arg(kCpu).arg(cpu));
+    }
+    QString epp(int cpu) const { return QString::fromLatin1(readFile(eppFile(cpu)).trimmed()); }
+    void setEpp(int cpu, const QByteArray &value) const { writeFile(eppFile(cpu), value + '\n'); }
+    bool eppAll(const QString &expected) const
+    {
+        for (int i = 0; i < m_cpus; i++) {
+            if (epp(i) != expected) {
+                return false;
+            }
+        }
+        return true;
+    }
+    void setOnline(const QByteArray &list) const { writeFile(path(QString(kCpu) + "/online"), list + '\n'); }
+    /* The live requests on the fake /dev/cpu_dma_latency, lowest first:
+       the files a process holds locked (fakesys.c) */
+    QList<int> latencyRequests() const
+    {
+        const QDir dev(path("/dev"));
+        QList<int> out;
+        for (const QString &name : dev.entryList({"cpu_dma_latency.*"}, QDir::Files)) {
+            const int fd = ::open(QFile::encodeName(dev.filePath(name)).constData(), O_RDONLY | O_CLOEXEC);
+            if (fd < 0) {
+                continue;
+            }
+            if (flock(fd, LOCK_SH | LOCK_NB) < 0 && errno == EWOULDBLOCK) {
+                out << readFile(dev.filePath(name)).trimmed().toInt();
+            }
+            ::close(fd);
+        }
+        std::sort(out.begin(), out.end());
+        return out;
+    }
+    /* what the kernel applies: the lowest request */
+    int latency() const
+    {
+        const QList<int> requests = latencyRequests();
+        return requests.isEmpty() ? kNoLatency : requests.first();
+    }
     /* what the helpers leave in their state folder */
     QStringList stateFiles() const
     {
@@ -341,6 +403,19 @@ private:
         /* the kernel's defaults */
         setUdmabuf(1024, 64);
         setThp("never");
+        /* the CPUs of a Ryzen 7 260: acpi_idle's states, amd-pstate's
+           preference (cpuN/cpufreq is a link to its policy, as in sysfs) */
+        for (int i = 0; i < m_cpus; i++) {
+            const QString policy = path(QString("%1/cpufreq/policy%2").arg(kCpu).arg(i));
+            setIdleStates(i, {"POLL 0", "C1 1", "C2 18", "C3 350"});
+            QDir().mkpath(policy);
+            QFile::link(QString("../cpufreq/policy%1").arg(i),
+                        path(QString("%1/cpu%2/cpufreq").arg(kCpu).arg(i)));
+            writeFile(policy + "/scaling_driver", "amd-pstate-epp\n");
+            setEpp(i, "balance_performance");
+        }
+        writeFile(path(QString(kCpu) + "/cpuidle/current_driver"), "acpi_idle\n");
+        writeFile(path(kLatency), "");
     }
 
 private slots:
@@ -1868,6 +1943,591 @@ private slots:
         QCOMPARE(stateFiles(), QStringList({"lock"}));
     }
 
+    /* The CPU latency request: held while VMs run by the helper's open
+       file, nothing recorded; let go by off and by the last VM's end */
+    void cpuLatencyHeldAndLetGo()
+    {
+        FakeQemu qemu;
+        Helper h(m_root);
+        QVERIFY(h.ready());
+        /* nothing applied while no VM runs; letting go is always allowed */
+        QCOMPARE(h.answer("cpu-latency on"), QString("error cpu-latency: watch a QEMU first"));
+        QCOMPARE(h.answer("cpu-latency off"), QString("ok cpu-latency off"));
+        h.answer("watch " + qemu.pidText());
+        QCOMPARE(h.answer("cpu-latency on"),
+                 QString("ok cpu-latency on: 1 us (C1 on every cpu; C2, C3 unused)"));
+        QCOMPARE(latencyRequests(), QList<int>({1}));
+        QCOMPARE(stateFiles(), QStringList({"lock"}));
+        QVERIFY(journal().contains("request /dev/cpu_dma_latency 1"));
+        QVERIFY(journal().join('\n').contains("log uid "));
+        QCOMPARE(h.answer("cpu-latency on"), QString("ok cpu-latency on: already 1 us"));
+        QCOMPARE(h.answer("cpu-latency maybe"), QString("error cpu-latency: unknown request"));
+        QCOMPARE(h.ask("cpu-latency off"),
+                 QStringList({"restored cpu-latency: request of 1 us ended", "ok cpu-latency off"}));
+        QVERIFY(latencyRequests().isEmpty());
+        QCOMPARE(h.answer("cpu-latency off"), QString("ok cpu-latency off"));
+
+        QVERIFY(h.answer("cpu-latency on").startsWith("ok cpu-latency on: 1 us"));
+        QCOMPARE(latency(), 1);
+        qemu.stop();
+        QCOMPARE(h.waitFor("restored"), QString("restored cpu-latency: request of 1 us ended"));
+        QCOMPARE(h.waitFor("bye"), QString("bye"));
+        QVERIFY(h.finished());
+        QCOMPARE(latency(), kNoLatency);
+        QCOMPARE(stateFiles(), QStringList({"lock"}));
+        QVERIFY(journal().join('\n').contains("log cpu latency request of 1 us ended"));
+    }
+
+    /*
+     * The value: the wake-up time of the CPUs' first usable idle state, the
+     * slowest CPU's, so that each one may rest there - never below (a CPU
+     * would only poll, as with a fixed 1 us on Intel's C1 of 2 us) and never 0
+     */
+    void cpuLatencyValue_data()
+    {
+        QTest::addColumn<QStringList>("states");
+        QTest::addColumn<QStringList>("cpu3");      // when not the same
+        QTest::addColumn<QString>("answer");
+        const QStringList amd{"POLL 0", "C1 1", "C2 18", "C3 350"};
+        QTest::newRow("AMD: C1, 1 us")
+            << amd << QStringList() << "ok cpu-latency on: 1 us (C1 on every cpu; C2, C3 unused)";
+        /* intel_idle's Haswell to Comet Lake tables */
+        QTest::newRow("Intel: C1, 2 us")
+            << QStringList{"POLL 0", "C1 2", "C1E 10", "C3 33", "C6 133"} << QStringList()
+            << "ok cpu-latency on: 2 us (C1 on every cpu; C1E, C3, C6 unused)";
+        QTest::newRow("C1 disabled")
+            << QStringList{"POLL 0", "C1 1 disabled", "C2 18", "C3 350"} << QStringList()
+            << "ok cpu-latency on: 18 us (C2 on every cpu; C3 unused)";
+        QTest::newRow("a first state of 0 us")
+            << QStringList{"POLL 0", "C1 0", "C2 18"} << QStringList()
+            << "ok cpu-latency on: 1 us (C1 on every cpu; C2 unused)";
+        QTest::newRow("nothing deeper")
+            << QStringList{"POLL 0", "C1 1"} << QStringList() << "ok cpu-latency on: 1 us (C1 on every cpu)";
+        QTest::newRow("one cpu slower")
+            << amd << QStringList{"POLL 0", "C1E 2", "C6 133"}
+            << "ok cpu-latency on: 2 us (C1E of cpu3, the slowest first idle state; C6 unused)";
+        QTest::newRow("one cpu without")
+            << amd << QStringList{"POLL 0"}
+            << "ok cpu-latency on: 1 us (C1 on 3 cpus, none on 1; C2, C3 unused)";
+    }
+    void cpuLatencyValue()
+    {
+        QFETCH(QStringList, states);
+        QFETCH(QStringList, cpu3);
+        QFETCH(QString, answer);
+        for (int i = 0; i < m_cpus; i++) {
+            setIdleStates(i, i == 3 && !cpu3.isEmpty() ? cpu3 : states);
+        }
+        FakeQemu qemu;
+        Helper h(m_root);
+        QVERIFY(h.ready());
+        h.answer("watch " + qemu.pidText());
+        QCOMPARE(h.answer("cpu-latency on"), answer);
+        const int us = QRegularExpression("on: (\\d+) us").match(answer).captured(1).toInt();
+        QCOMPARE(latencyRequests(), QList<int>({us}));
+        h.ask("release");
+        QVERIFY(h.finished());
+        QVERIFY(h.all().contains(QString("restored cpu-latency: request of %1 us ended").arg(us)));
+        QVERIFY(latencyRequests().isEmpty());
+    }
+
+    /* What it cannot do here: skipped, or refused, and nothing held */
+    void cpuLatencySkips_data()
+    {
+        QTest::addColumn<QString>("what");
+        QTest::addColumn<QString>("answer");
+        QTest::newRow("no device") << "no device"
+                                   << "skip cpu-latency: this kernel has no /dev/cpu_dma_latency";
+        QTest::newRow("only polling")
+            << "only polling"
+            << "skip cpu-latency: the cpus have no idle state but polling (cpuidle driver acpi_idle)";
+        QTest::newRow("no cpuidle") << "no cpuidle"
+                                    << "skip cpu-latency: the cpus have no idle states (no cpuidle driver)";
+        QTest::newRow("refused") << "refused"
+                                 << "error cpu-latency: /dev/cpu_dma_latency: Permission denied";
+    }
+    void cpuLatencySkips()
+    {
+        QFETCH(QString, what);
+        QFETCH(QString, answer);
+        if (what == "no device") {
+            QFile::remove(path(kLatency));
+        } else if (what == "only polling") {
+            for (int i = 0; i < m_cpus; i++) {
+                setIdleStates(i, {"POLL 0"});
+            }
+        } else if (what == "no cpuidle") {
+            for (int i = 0; i < m_cpus; i++) {
+                QDir(path(QString("%1/cpu%2/cpuidle").arg(kCpu).arg(i))).removeRecursively();
+            }
+            writeFile(path(QString(kCpu) + "/cpuidle/current_driver"), "none\n");
+        } else {
+            writeFile(path(kLatency) + ".refuse", "");
+        }
+        FakeQemu qemu;
+        Helper h(m_root);
+        QVERIFY(h.ready());
+        h.answer("watch " + qemu.pidText());
+        QCOMPARE(h.answer("cpu-latency on"), answer);
+        QVERIFY(latencyRequests().isEmpty());
+        QCOMPARE(h.ask("cpu-latency off"), QStringList({"ok cpu-latency off"}));
+        qemu.stop();
+        QVERIFY(h.finished());
+        QVERIFY(!h.all().join('\n').contains("restored cpu-latency"));
+        QCOMPARE(stateFiles(), QStringList({"lock"}));
+    }
+
+    /* Two helpers (vitrine restarted, another user): a request each, the
+       kernel applies the lowest; the one ending first leaves the other's */
+    void cpuLatencyTwoHelpers()
+    {
+        FakeQemu q1, q2;
+        Helper a(m_root), b(m_root);
+        QVERIFY(a.ready());
+        QVERIFY(b.ready());
+        a.answer("watch " + q1.pidText());
+        b.answer("watch " + q2.pidText());
+        QVERIFY(a.answer("cpu-latency on").startsWith("ok cpu-latency on: 1 us"));
+        QVERIFY(b.answer("cpu-latency on").startsWith("ok cpu-latency on: 1 us"));
+        QCOMPARE(latencyRequests(), QList<int>({1, 1}));
+        q1.stop();
+        QVERIFY(a.finished());
+        QVERIFY(a.all().contains("restored cpu-latency: request of 1 us ended"));
+        QCOMPARE(latencyRequests(), QList<int>({1}));
+        q2.stop();
+        QVERIFY(b.finished());
+        QCOMPARE(latency(), kNoLatency);
+        QCOMPARE(stateFiles(), QStringList({"lock"}));
+    }
+
+    /* A helper killed holding it: the request goes with it (the kernel's
+       doing), and the next helper finds nothing to put back */
+    void cpuLatencyCrash()
+    {
+        FakeQemu qemu;
+        {
+            Helper a(m_root);
+            QVERIFY(a.ready());
+            a.answer("watch " + qemu.pidText());
+            QVERIFY(a.answer("cpu-latency on").startsWith("ok cpu-latency on: 1 us"));
+            QCOMPARE(latencyRequests(), QList<int>({1}));
+            a.kill();
+        }
+        QCOMPARE(latency(), kNoLatency);
+        QCOMPARE(stateFiles(), QStringList({"lock"}));
+        Helper b(m_root);
+        QCOMPARE(b.line(), QString("ready 1"));
+        b.closeInput();
+        QVERIFY(b.finished());
+    }
+
+    /* Another program's request (tuned's latency-performance, the research
+       side's vm-host-session) is its own: the kernel applies the lowest, and
+       it stays after the helper */
+    void cpuLatencyOthersLeftAlone()
+    {
+        const QString theirs = path(kLatency) + ".1";
+        writeFile(theirs, "20\n");
+        const int fd = ::open(QFile::encodeName(theirs).constData(), O_RDONLY | O_CLOEXEC);
+        QVERIFY(fd >= 0);
+        auto close = qScopeGuard([fd]() { ::close(fd); });
+        QCOMPARE(flock(fd, LOCK_EX), 0);
+        QCOMPARE(latency(), 20);
+        FakeQemu qemu;
+        Helper h(m_root);
+        QVERIFY(h.ready());
+        h.answer("watch " + qemu.pidText());
+        QVERIFY(h.answer("cpu-latency on").startsWith("ok cpu-latency on: 1 us"));
+        QCOMPARE(latencyRequests(), QList<int>({1, 20}));
+        QCOMPARE(latency(), 1);
+        qemu.stop();
+        QVERIFY(h.finished());
+        QCOMPARE(latencyRequests(), QList<int>({20}));
+    }
+
+    /* Each CPU's preference at performance while VMs run, recorded first;
+       back to its own value after the last one */
+    void eppPerformanceAndRestore()
+    {
+        FakeQemu qemu;
+        Helper h(m_root);
+        QVERIFY(h.ready());
+        QCOMPARE(h.answer("epp on"), QString("error epp: watch a QEMU first"));
+        QCOMPARE(h.answer("epp off"), QString("ok epp off"));
+        h.answer("watch " + qemu.pidText());
+        QCOMPARE(h.answer("epp on"), QString("ok epp on: performance on 4 cpus (was balance_performance)"));
+        QVERIFY(eppAll("performance"));
+        QVERIFY(stateExists("epp"));
+        QStringList set;
+        for (int i = 0; i < m_cpus; i++) {
+            set << QString("%1/cpu%2/cpufreq/energy_performance_preference performance").arg(kCpu).arg(i);
+        }
+        QCOMPARE(writes(), set);
+        QVERIFY(journal().join('\n').contains("log uid "));
+        QCOMPARE(h.answer("epp on"), QString("ok epp on: already"));
+        QCOMPARE(h.answer("epp maybe"), QString("error epp: unknown request"));
+
+        clearJournal();
+        qemu.stop();
+        QCOMPARE(h.waitFor("restored"), QString("restored epp: 4 cpus back to balance_performance"));
+        QCOMPARE(h.waitFor("bye"), QString("bye"));
+        QVERIFY(h.finished());
+        QVERIFY(eppAll("balance_performance"));
+        QCOMPARE(writes(), set.replaceInStrings(" performance", " balance_performance"));
+        QCOMPARE(stateFiles(), QStringList({"lock"}));
+        QVERIFY(journal().join('\n').contains(
+            "log energy performance preference: 4 cpus back to balance_performance"));
+    }
+
+    /* epp off puts it back at once, the VM still running; and so does release */
+    void eppOffAndRelease()
+    {
+        FakeQemu qemu;
+        Helper h(m_root);
+        QVERIFY(h.ready());
+        h.answer("watch " + qemu.pidText());
+        QVERIFY(h.answer("epp on").startsWith("ok epp on: performance on 4 cpus"));
+        QCOMPARE(h.ask("epp off"),
+                 QStringList({"restored epp: 4 cpus back to balance_performance", "ok epp off"}));
+        QVERIFY(eppAll("balance_performance"));
+        QVERIFY(!stateExists("epp"));
+        QVERIFY(h.answer("epp on").startsWith("ok epp on: performance on 4 cpus"));
+        QVERIFY(h.answer("cpu-latency on").startsWith("ok cpu-latency on: 1 us"));
+        h.ask("release");
+        QVERIFY(h.finished());
+        const QStringList all = h.all();
+        QVERIFY(all.contains("restored epp: 4 cpus back to balance_performance"));
+        QVERIFY(all.contains("restored cpu-latency: request of 1 us ended"));
+        QCOMPARE(all.last(), QString("bye"));
+        QVERIFY(eppAll("balance_performance"));
+        QCOMPARE(latency(), kNoLatency);
+        QCOMPARE(stateFiles(), QStringList({"lock"}));
+    }
+
+    /* CPUs at performance already: left as they are, and put back by no one */
+    void eppAlready()
+    {
+        FakeQemu qemu;
+        {
+            for (int i = 0; i < m_cpus; i++) {
+                setEpp(i, "performance");
+            }
+            Helper h(m_root);
+            QVERIFY(h.ready());
+            h.answer("watch " + qemu.pidText());
+            QCOMPARE(h.answer("epp on"), QString("ok epp on: already performance on 4 cpus, left as it is"));
+            QVERIFY(writes().isEmpty());
+            QCOMPARE(stateFiles(), QStringList({"lock"}));
+            h.ask("release");
+            QVERIFY(h.finished());
+            QVERIFY(!h.all().join('\n').contains("restored epp"));
+            QVERIFY(eppAll("performance"));
+        }
+        /* some of them: those are listed, and stay */
+        for (int i = 0; i < m_cpus; i++) {
+            setEpp(i, i == 1 ? "performance" : "balance_performance");
+        }
+        Helper h(m_root);
+        QVERIFY(h.ready());
+        h.answer("watch " + qemu.pidText());
+        QCOMPARE(h.answer("epp on"), QString("ok epp on: performance on 3 cpus (was "
+                                             "balance_performance); 1 at performance already"));
+        QVERIFY(readFile(path("/run/vitrine-helper/epp.state")).contains("cpu1 performance -\n"));
+        /* changed by someone since: still not the helper's to put back */
+        setEpp(1, "power");
+        h.ask("release");
+        QVERIFY(h.finished());
+        const QString all = h.all().join('\n');
+        QVERIFY(all.contains("restored epp: 3 cpus back to balance_performance"));
+        QVERIFY(!all.contains("left epp"));
+        QCOMPARE(epp(1), QString("power"));
+        QCOMPARE(epp(2), QString("balance_performance"));
+        QCOMPARE(stateFiles(), QStringList({"lock"}));
+    }
+
+    /* Each CPU back to its own value: words, or a raw number (amd-pstate
+       and intel_pstate take those, and show them) */
+    void eppOwnValues()
+    {
+        setEpp(0, "power");
+        setEpp(2, "128");
+        FakeQemu qemu;
+        Helper h(m_root);
+        QVERIFY(h.ready());
+        h.answer("watch " + qemu.pidText());
+        QCOMPARE(h.answer("epp on"),
+                 QString("ok epp on: performance on 4 cpus (was power, balance_performance, 128)"));
+        QVERIFY(eppAll("performance"));
+        qemu.stop();
+        QCOMPARE(h.waitFor("restored"),
+                 QString("restored epp: 4 cpus back to power, balance_performance, 128"));
+        QVERIFY(h.finished());
+        QCOMPARE(epp(0), QString("power"));
+        QCOMPARE(epp(1), QString("balance_performance"));
+        QCOMPARE(epp(2), QString("128"));
+        QCOMPARE(epp(3), QString("balance_performance"));
+    }
+
+    /* Put back only where it still reads performance: a power profile chosen
+       meanwhile (power-profiles-daemon, tuned) keeps its value */
+    void eppRestoreOnlyIfOurs()
+    {
+        FakeQemu qemu;
+        Helper h(m_root);
+        QVERIFY(h.ready());
+        h.answer("watch " + qemu.pidText());
+        QVERIFY(h.answer("epp on").startsWith("ok epp on: performance on 4 cpus"));
+        setEpp(2, "power");
+        qemu.stop();
+        QVERIFY(h.finished());
+        const QStringList all = h.all();
+        QVERIFY(all.contains("restored epp: 3 cpus back to balance_performance"));
+        QVERIFY(all.contains("left epp: 1 cpus changed by someone else since"));
+        QCOMPARE(epp(2), QString("power"));
+        QCOMPARE(epp(3), QString("balance_performance"));
+        QCOMPARE(stateFiles(), QStringList({"lock"}));
+        QVERIFY(journal().join('\n').contains("1 left as changed since"));
+    }
+
+    /* No preference here: skipped, saying which cpufreq driver there is */
+    void eppSkips_data()
+    {
+        QTest::addColumn<QString>("driver");
+        QTest::addColumn<QString>("answer");
+        QTest::newRow("acpi-cpufreq") << "acpi-cpufreq"
+                                      << "skip epp: acpi-cpufreq has no energy performance preference "
+                                         "(amd-pstate and intel_pstate have one, in active mode)";
+        QTest::newRow("no cpufreq") << ""
+                                    << "skip epp: no cpufreq driver, so no energy performance preference";
+    }
+    void eppSkips()
+    {
+        QFETCH(QString, driver);
+        QFETCH(QString, answer);
+        for (int i = 0; i < m_cpus; i++) {
+            const QString policy = path(QString("%1/cpufreq/policy%2").arg(kCpu).arg(i));
+            QFile::remove(policy + "/energy_performance_preference");
+            if (driver.isEmpty()) {
+                QFile::remove(path(QString("%1/cpu%2/cpufreq").arg(kCpu).arg(i)));
+                QDir(policy).removeRecursively();
+            } else {
+                writeFile(policy + "/scaling_driver", driver.toLatin1() + '\n');
+            }
+        }
+        FakeQemu qemu;
+        Helper h(m_root);
+        QVERIFY(h.ready());
+        h.answer("watch " + qemu.pidText());
+        QCOMPARE(h.answer("epp on"), answer);
+        QCOMPARE(stateFiles(), QStringList({"lock"}));
+        qemu.stop();
+        QVERIFY(h.finished());
+        QVERIFY(!h.all().join('\n').contains("restored epp"));
+        QVERIFY(writes().isEmpty());
+    }
+
+    /* A CPU without one beside others: those are set */
+    void eppSomeWithout()
+    {
+        QFile::remove(eppFile(3));
+        FakeQemu qemu;
+        Helper h(m_root);
+        QVERIFY(h.ready());
+        h.answer("watch " + qemu.pidText());
+        QCOMPARE(h.answer("epp on"),
+                 QString("ok epp on: performance on 3 cpus (was balance_performance); 1 without one"));
+        qemu.stop();
+        QCOMPARE(h.waitFor("restored"), QString("restored epp: 3 cpus back to balance_performance"));
+        QVERIFY(h.finished());
+        QCOMPARE(epp(0), QString("balance_performance"));
+        QVERIFY(!QFile::exists(eppFile(3)));
+    }
+
+    /* All or nothing: taken and not kept, or refused (busy: a driver that
+       sets it itself), those written before go back; nothing held */
+    void eppAllOrNothing_data()
+    {
+        QTest::addColumn<QString>("sibling");
+        QTest::addColumn<QString>("answer");
+        QTest::newRow("not kept") << ".stuck" << "error epp: cpu2 does not keep what was written";
+        QTest::newRow("refused") << ".writes"
+                                 << "error epp: cpu2 refuses it (busy: offline, or its driver sets it "
+                                    "itself)";
+    }
+    void eppAllOrNothing()
+    {
+        QFETCH(QString, sibling);
+        QFETCH(QString, answer);
+        writeFile(eppFile(2) + sibling, sibling == ".writes" ? "0\n" : "");
+        FakeQemu qemu;
+        Helper h(m_root);
+        QVERIFY(h.ready());
+        h.answer("watch " + qemu.pidText());
+        QCOMPARE(h.answer("epp on"), answer);
+        QVERIFY(eppAll("balance_performance"));
+        QCOMPARE(stateFiles(), QStringList({"lock"}));
+        const QStringList w = writes();
+        QVERIFY(w.contains(QString("%1/cpu0/cpufreq/energy_performance_preference balance_performance").arg(kCpu)));
+        QVERIFY(w.contains(QString("%1/cpu1/cpufreq/energy_performance_preference balance_performance").arg(kCpu)));
+        QVERIFY(!w.join('\n').contains("cpu3/"));
+        qemu.stop();
+        QVERIFY(h.finished());
+        QVERIFY(!h.all().join('\n').contains("restored epp"));
+    }
+
+    /* An undo refused: that CPU stays recorded, and the next helper puts it back */
+    void eppUndoRefused()
+    {
+        /* cpu1 takes one write (performance), then refuses; cpu2 refuses at once */
+        writeFile(eppFile(1) + ".writes", "1\n");
+        writeFile(eppFile(2) + ".writes", "0\n");
+        FakeQemu qemu;
+        Helper h(m_root);
+        QVERIFY(h.ready());
+        h.answer("watch " + qemu.pidText());
+        QVERIFY(h.answer("epp on").startsWith("error epp: cpu2 refuses it"));
+        QCOMPARE(epp(0), QString("balance_performance"));
+        QCOMPARE(epp(1), QString("performance"));
+        QCOMPARE(stateFiles(), QStringList({"epp.state", "lock"}));
+        QCOMPARE(readFile(path("/run/vitrine-helper/epp.state")),
+                 QByteArray("cpu1 balance_performance performance\n"));
+        QFile::remove(eppFile(1) + ".writes");
+        Helper b(m_root);
+        QCOMPARE(b.line(), QString("restored epp: 1 cpus back to balance_performance"));
+        QVERIFY(b.ready());
+        QVERIFY(eppAll("balance_performance"));
+        QCOMPARE(stateFiles(), QStringList({"lock"}));
+        b.closeInput();
+        QVERIFY(b.finished());
+    }
+
+    /* Offline CPUs (their policy inactive: EBUSY) are left out, and taken
+       by a later epp on - the next VM's start - once online */
+    void eppOffline()
+    {
+        setOnline("0-2");
+        FakeQemu qemu;
+        Helper h(m_root);
+        QVERIFY(h.ready());
+        h.answer("watch " + qemu.pidText());
+        QCOMPARE(h.answer("epp on"),
+                 QString("ok epp on: performance on 3 cpus (was balance_performance); 1 offline"));
+        QCOMPARE(epp(3), QString("balance_performance"));
+        QVERIFY(!writes().join('\n').contains("cpu3/"));
+        setOnline("0-3");
+        QCOMPARE(h.answer("epp on"),
+                 QString("ok epp on: already; 1 cpus online since at performance (was balance_performance)"));
+        QVERIFY(eppAll("performance"));
+        QCOMPARE(h.answer("epp on"), QString("ok epp on: already"));
+        qemu.stop();
+        QCOMPARE(h.waitFor("restored"), QString("restored epp: 4 cpus back to balance_performance"));
+        QVERIFY(h.finished());
+        QVERIFY(eppAll("balance_performance"));
+        QCOMPARE(stateFiles(), QStringList({"lock"}));
+    }
+
+    /* A CPU offline at the end keeps the preference (the driver holds it):
+       recorded, and put back by the next helper once online */
+    void eppOfflineAtRestore()
+    {
+        FakeQemu qemu;
+        {
+            Helper h(m_root);
+            QVERIFY(h.ready());
+            h.answer("watch " + qemu.pidText());
+            QVERIFY(h.answer("epp on").startsWith("ok epp on: performance on 4 cpus"));
+            setOnline("0-2");
+            qemu.stop();
+            QCOMPARE(h.waitFor("restored"), QString("restored epp: 3 cpus back to balance_performance; "
+                                                    "1 kept for later (offline or refused)"));
+            QVERIFY(h.finished());
+        }
+        QCOMPARE(epp(3), QString("performance"));
+        QCOMPARE(readFile(path("/run/vitrine-helper/epp.state")),
+                 QByteArray("cpu3 balance_performance performance\n"));
+        {
+            /* still offline: kept again */
+            Helper b(m_root);
+            QCOMPARE(b.line(), QString("restored epp: 1 cpus kept for later (offline or refused)"));
+            b.closeInput();
+            QVERIFY(b.finished());
+            QVERIFY(stateExists("epp"));
+        }
+        setOnline("0-3");
+        Helper c(m_root);
+        QCOMPARE(c.line(), QString("restored epp: 1 cpus back to balance_performance"));
+        QVERIFY(c.ready());
+        QVERIFY(eppAll("balance_performance"));
+        QCOMPARE(stateFiles(), QStringList({"lock"}));
+        c.closeInput();
+        QVERIFY(c.finished());
+    }
+
+    /* Killed holding it, setting it or putting it back: the next helper puts it back */
+    void eppCrashRecovery_data()
+    {
+        QTest::addColumn<int>("killAt");
+        QTest::addColumn<bool>("restoring");
+        QTest::newRow("held") << 0 << false;
+        QTest::newRow("setting, after two writes") << 2 << false;
+        QTest::newRow("restoring, after a write") << 5 << true;
+    }
+    void eppCrashRecovery()
+    {
+        QFETCH(int, killAt);
+        QFETCH(bool, restoring);
+        {
+            FakeQemu qemu;
+            Helper a(m_root, killAt ? QStringList{QString("VITRINE_HELPER_TEST_KILL_AT=%1").arg(killAt)}
+                                    : QStringList());
+            QVERIFY(a.ready());
+            a.answer("watch " + qemu.pidText());
+            const QString on = a.answer("epp on");
+            if (!killAt) {
+                QVERIFY(on.startsWith("ok epp on: performance on 4 cpus"));
+                a.kill();
+            } else if (restoring) {
+                QVERIFY(on.startsWith("ok epp on: performance on 4 cpus"));
+                qemu.stop();
+            }
+            QVERIFY(a.finished());
+        }
+        QVERIFY(stateExists("epp"));
+        QVERIFY(!eppAll("balance_performance"));
+        Helper b(m_root);
+        QCOMPARE(b.line(), QString("restored epp: 4 cpus back to balance_performance"));
+        QVERIFY(b.ready());
+        QVERIFY(eppAll("balance_performance"));
+        QCOMPARE(stateFiles(), QStringList({"lock"}));
+        b.closeInput();
+        QVERIFY(b.finished());
+        QVERIFY(!b.all().join('\n').contains("left epp"));
+    }
+
+    /* Two helpers: the second one joins the first's hold, the last one out restores */
+    void eppTwoHelpers()
+    {
+        FakeQemu q1, q2;
+        Helper a(m_root), b(m_root);
+        QVERIFY(a.ready());
+        QVERIFY(b.ready());
+        a.answer("watch " + q1.pidText());
+        b.answer("watch " + q2.pidText());
+        QVERIFY(a.answer("epp on").startsWith("ok epp on: performance on 4 cpus"));
+        clearJournal();
+        QCOMPARE(b.answer("epp on"), QString("ok epp on: set by another vitrine session"));
+        QVERIFY(writes().isEmpty());
+        q1.stop();
+        QVERIFY(a.finished());
+        QVERIFY(!a.all().join('\n').contains("restored"));
+        QVERIFY(eppAll("performance"));
+        q2.stop();
+        QVERIFY(b.finished());
+        QVERIFY(b.all().contains("restored epp: 4 cpus back to balance_performance"));
+        QVERIFY(eppAll("balance_performance"));
+        QCOMPARE(stateFiles(), QStringList({"lock"}));
+    }
+
     void holdsExhausted()
     {
         for (int n = 2; n <= 9; n++) {
@@ -1880,6 +2540,7 @@ private slots:
         QVERIFY(h.answer("fair-server on").startsWith("ok fair-server on"));
         QVERIFY(h.answer("udmabuf " + qemu.pidText()).startsWith("ok udmabuf"));
         QVERIFY(h.answer("thp on").startsWith("ok thp on: advise"));
+        QVERIFY(h.answer("epp on").startsWith("ok epp on: performance on 4 cpus"));
         for (int n = 1; n <= 8; n++) {
             QVERIFY(h.answer(QString("gpu-floor card%1 auto").arg(n)).startsWith("ok gpu-floor"));
         }
@@ -1889,6 +2550,7 @@ private slots:
         QVERIFY(h.finished());
         QCOMPARE(udmabuf(), QString("1024/64"));
         QCOMPARE(thp(), QString("never"));
+        QVERIFY(eppAll("balance_performance"));
         QCOMPARE(stateFiles(), QStringList({"lock"}));
     }
 
