@@ -419,10 +419,10 @@ private slots:
         QVERIFY(subject(ffi, ffiPatches[0]).startsWith("rutabaga_gfx: native contexts through the FFI"));
 
         /* a spec's Patch lines: Fedora's own fix (6.8.2-3's Patch0), then the research's guest
-           set g26 from Patch1001, each patch with its own subject */
+           set g27 from Patch1001, each patch with its own subject */
         const Component kwin = find(all, "kwin");
         const QList<Patch> kwinPatches = patches(kwin);
-        QCOMPARE(kwinPatches.size(), 60);
+        QCOMPARE(kwinPatches.size(), 61);
         QCOMPARE(kwinPatches.first().number, "0");
         QCOMPARE(kwinPatches.first().origin, "Fedora");
         QCOMPARE(subject(kwin, kwinPatches.first()), "compositor: handle possibly missing render device");
@@ -433,8 +433,14 @@ private slots:
         QCOMPARE(kwinPatches[57].number, "1057");
         QCOMPARE(subject(kwin, kwinPatches[57]),
                  "EXP wayland backend: the cursor handed to the host as wl_shm (KWIN_WAYLAND_SHM_CURSOR)");
-        QCOMPARE(kwinPatches.last().path,
+        QCOMPARE(kwinPatches[59].path,
                  "kwin/0096-EXP-opengl-the-GPU-s-clock-read-once-a-second-for-render-time-queries.patch");
+        /* a Subject folded over two lines, read as one */
+        QCOMPARE(kwinPatches.last().number, "1060");
+        QCOMPARE(kwinPatches.last().path,
+                 "kwin/0097-FIX-wayland-backend-frame-callback-and-feedback-on-the-content-layer.patch");
+        QCOMPARE(subject(kwin, kwinPatches.last()),
+                 "FIX wayland backend: the frame callback and the presentation feedback on the content layer");
         QCOMPARE(kwinPatches.last().origin, "Research");
         for (const Patch &p : kwinPatches) {
             QVERIFY2(QFileInfo::exists(kwin.dir + '/' + p.path), qPrintable(p.path));
