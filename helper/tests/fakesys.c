@@ -400,7 +400,7 @@ static int epp_write(const char *path, const char *value)
 {
     static const char *const words[] = {"default", "performance", "balance_performance",
                                         "balance_power", "power", NULL};
-    char stuck[PATH_MAX], text[48];
+    char stuck[PATH_MAX], text[160];
     unsigned long long n;
     bool known = parse_uint(value, 255, &n);
 
