@@ -24,6 +24,7 @@ class SettingsDialog;
 class StatsButton;
 class Task;
 class TaskButton;
+class UsbDialog;
 class Vm;
 class VmConsole;
 class VmCloner;
@@ -101,6 +102,8 @@ public:
     Notices *notices() const;
     TaskButton *tasks() const;
     StatsButton *stats() const;
+    /* USB Devices… of the selected VM, while it runs: the dialog shown */
+    UsbDialog *showUsbDevices();
     /* The Builds window, on "qemu", "medium" (with a Fedora release) or a host package's id */
     void showBuilds(const QString &component = {}, const QString &guestRelease = {});
 
@@ -262,6 +265,8 @@ private:
     void followClone(VmCloner *cloner, const QString &sourceId);
     /* A clone's details: the dialog of the copy, the clone, or why it failed */
     void showCloneTask(Task *task);
+    /* The statistics and USB Devices… follow the VM selected and its state */
+    void updateParts();
     /* made by createParts(), gone with the window (dropParts()) */
     Notices *m_notices = nullptr;
     TaskButton *m_tasks = nullptr;

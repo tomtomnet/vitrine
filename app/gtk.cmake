@@ -91,6 +91,8 @@ add_library(vitrine_gtk STATIC
     src/gtk/taskbutton.h
     src/gtk/textdialog.cpp
     src/gtk/textdialog.h
+    src/gtk/usbdialog.cpp
+    src/gtk/usbdialog.h
     src/gtk/vmconsole.cpp
     src/gtk/vmconsole.h
     src/gtk/vmpage.cpp
@@ -170,4 +172,9 @@ if(BUILD_TESTING)
     target_sources(test_gtkstats PRIVATE tests/gtkdisplay.h)
     target_compile_definitions(test_gtkstats PRIVATE FAKE_QEMU="$<TARGET_FILE:fake-qemu>")
     add_dependencies(test_gtkstats fake-qemu)
+    # the USB devices dialog: a fake host's devices, stand-in QEMUs answering QMP
+    vitrine_gtk_test(gtkusb)
+    target_sources(test_gtkusb PRIVATE tests/gtkdisplay.h tests/fakeusbqemu.h)
+    target_compile_definitions(test_gtkusb PRIVATE FAKE_QEMU="$<TARGET_FILE:fake-qemu>")
+    add_dependencies(test_gtkusb fake-qemu)
 endif()

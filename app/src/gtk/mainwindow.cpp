@@ -66,6 +66,7 @@ static GMenuModel *itemMenu()
     g_menu_append(power, "Shut _Down", "win.shut-down");
     g_menu_append(power, "_Reset…", "win.reset");
     g_menu_append(power, "_Force Off…", "win.force-off");
+    g_menu_append(power, "_USB Devices…", "win.usb-devices");
     g_menu_append(files, "_Settings", "win.settings");
     g_menu_append(files, "Show _Log", "win.show-log");
     g_menu_append(files, "_Open Folder", "win.open-folder");
