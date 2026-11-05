@@ -346,7 +346,7 @@ Among other things, host tuning keeps the CPU ready to wake up while VMs
 run: its cores stay in their first idle state (C1), at the energy
 performance preference `performance`. On a Ryzen 7 260 laptop a GNOME VM's
 keys then reached its screen in 11.3-11.9 ms instead of 15.1-16.3 ms, as on
-the bare desktop, for about 1.6 W more at idle. It ends with the last VM;
+the bare desktop, for about 2 W more at idle. It ends with the last VM;
 Preferences > Host turns it off.
 
 ## Made by AI
