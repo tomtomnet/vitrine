@@ -321,12 +321,12 @@ void MainWindow::createActions()
     /* their windows are not in the GTK app yet */
     addAction(app, "builds", [] {}, "<Control>b");
     addAction(app, "preferences", [] {}, "<Control>comma");
-    addAction(win, "import-vm", [] {}, "<Control>i");
-    for (const char *name : {"builds", "preferences", "import-vm"}) {
+    for (const char *name : {"builds", "preferences"}) {
         setEnabled(name, false);
     }
     /* the dialogs (mainwindowdialogs.cpp) */
     addAction(win, "new-vm", [this]() { newVm(); }, "<Control>n");
+    addAction(win, "import-vm", [this]() { importVm(); }, "<Control>i");
     addAction(win, "settings", [this]() { settingsShortcut(); }, "<Control>s");
     addAction(win, "command-line", [this]() { showCommandLine(); });
     addAction(win, "clone", [this]() { cloneVm(); });

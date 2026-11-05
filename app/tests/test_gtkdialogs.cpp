@@ -23,6 +23,7 @@
 #include "gtk/clonedialog.h"
 #include "gtk/displaypage.h"
 #include "gtk/gtkloop.h"
+#include "gtk/importdialog.h"
 #include "gtk/machinepage.h"
 #include "gtk/newvmdialog.h"
 #include "gtk/settingsdialog.h"
@@ -445,6 +446,31 @@ private slots:
         QVERIFY(clone);
         QVERIFY(QFileInfo::exists(QDir(clone->dir()).filePath("disk.qcow2")));
         QVERIFY(clone->runner()->busy().isEmpty());
+        QTest::qWait(50);
+    }
+
+    /* A command line pasted in: its arguments, then the VM */
+    void importDialog()
+    {
+        QTemporaryDir dir, scripts;
+        VmStore store(dir.path());
+        Vm *made = nullptr;
+        auto *dialog = new ImportDialog(&store, nullptr, presenter(), [&](Vm *vm) { made = vm; });
+
+        QVERIFY(!dialog->canCreate());
+        dialog->setBaseDir(scripts.path());
+        dialog->setScript("#!/bin/sh\nqemu-system-x86_64 -name Imported -m 2G \\\n"
+                          "    -smp 2 -drive file=disk.img,format=raw\n");
+        QVERIFY(dialog->preview().contains("-m 2G"));
+        QCOMPARE(dialog->name(), "Imported");
+        QVERIFY(dialog->canCreate());
+        dialog->setName("Mine");
+        Vm *vm = dialog->create();
+        QVERIFY2(vm, qPrintable(m_alerts.join(", ")));
+        QCOMPARE(made, vm);
+        QCOMPARE(vm->name(), "Mine");
+        QCOMPARE(VmConfig::memoryMiB(vm->args()), 2048);
+        QCOMPARE(VmConfig::cpus(vm->args()).count, 2);
         QTest::qWait(50);
     }
 

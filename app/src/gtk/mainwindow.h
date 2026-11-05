@@ -114,6 +114,7 @@ private:
     /* The dialogs, in mainwindowdialogs.cpp: what they present goes through present() */
     std::function<void(AdwDialog *)> presenter();
     void newVm();
+    void importVm();
     void showCommandLine();
     /* The settings of @vm, on @page (SettingsDialog::Page), else the one shown last */
     void openSettings(Vm *vm, int page = -1);

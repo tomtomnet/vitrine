@@ -11,10 +11,12 @@
 #include "core/vmrunner.h"
 #include "core/vmstore.h"
 #include "gtk/clonedialog.h"
+#include "gtk/importdialog.h"
 #include "gtk/newvmdialog.h"
 #include "gtk/settingsdialog.h"
 #include "gtk/textdialog.h"
 #include "gtk/widgets.h"
+#include "ui/qemudocs.h"
 #include "ui/uiconfig.h"
 
 std::function<void(AdwDialog *)> MainWindow::presenter()
@@ -37,6 +39,17 @@ void MainWindow::newVm()
                 openSettings(vm, SettingsDialog::General);
             }
         });
+    present(dialog->dialog());
+}
+
+void MainWindow::importVm()
+{
+    if (!m_window) {
+        return;
+    }
+    /* the documentation of the preferred QEMU, if loaded, tells which options take a value */
+    auto *dialog = new ImportDialog(m_store, QemuDocs::preferred()->info(), presenter(),
+                                    [this](Vm *vm) { select(vm->id()); });
     present(dialog->dialog());
 }
 
