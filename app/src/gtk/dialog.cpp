@@ -37,9 +37,9 @@ void Dialog::forceClose()
     if (m_closed) {
         return;
     }
-    /* never presented (a test's): closed all the same */
+    /* never presented (a test's): closed all the same, for all that follow it */
     if (!gtk_widget_get_parent(GTK_WIDGET(m_dialog))) {
-        finish();
+        g_signal_emit_by_name(m_dialog, "closed");
         return;
     }
     adw_dialog_force_close(m_dialog);

@@ -322,14 +322,14 @@ void MainWindow::createActions()
     addAction(app, "builds", [] {}, "<Control>b");
     addAction(app, "preferences", [] {}, "<Control>comma");
     addAction(win, "import-vm", [] {}, "<Control>i");
-    addAction(win, "clone", [] {});
-    for (const char *name : {"builds", "preferences", "import-vm", "clone"}) {
+    for (const char *name : {"builds", "preferences", "import-vm"}) {
         setEnabled(name, false);
     }
     /* the dialogs (mainwindowdialogs.cpp) */
     addAction(win, "new-vm", [this]() { newVm(); }, "<Control>n");
     addAction(win, "settings", [this]() { settingsShortcut(); }, "<Control>s");
     addAction(win, "command-line", [this]() { showCommandLine(); });
+    addAction(win, "clone", [this]() { cloneVm(); });
 
     /* the sidebar shown or hidden: the split view's own state */
     GPropertyAction *sidebar = g_property_action_new("show-sidebar", m_split, "show-sidebar");
@@ -761,6 +761,7 @@ void MainWindow::updateActions()
     setEnabled("open-folder", vm);
     setEnabled("command-line", vm);
     setEnabled("settings", vm);
+    setEnabled("clone", vm && state == VmRunner::State::Stopped);
 }
 
 void MainWindow::updateWaiting()

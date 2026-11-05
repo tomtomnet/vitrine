@@ -34,6 +34,8 @@ configure_file(data/vitrine.svg ${CMAKE_CURRENT_BINARY_DIR}/gtk-icons/org.vitrin
 add_library(vitrine_gtk STATIC
     src/gtk/argspage.cpp
     src/gtk/argspage.h
+    src/gtk/clonedialog.cpp
+    src/gtk/clonedialog.h
     src/gtk/dialog.cpp
     src/gtk/dialog.h
     src/gtk/displaypage.cpp

@@ -6,6 +6,7 @@
 #include <QDir>
 #include <QFile>
 #include <QFileInfo>
+#include <QPointer>
 #include <QStandardPaths>
 #include <QTemporaryDir>
 #include <QTest>
@@ -13,11 +14,13 @@
 #include "gtkdisplay.h"
 
 #ifndef Q_MOC_RUN
+#include "core/vmcloner.h"
 #include "core/vmconfig.h"
 #include "core/vmhardware.h"
 #include "core/vmrunner.h"
 #include "core/vmstore.h"
 #include "gtk/argspage.h"
+#include "gtk/clonedialog.h"
 #include "gtk/displaypage.h"
 #include "gtk/gtkloop.h"
 #include "gtk/machinepage.h"
@@ -404,6 +407,45 @@ private slots:
         args->check();
         QVERIFY(args->problems().join('\n').contains("Line 5"));
         delete settings;
+    }
+
+    /* The copy, its end closing the dialog, the clone a VM with its own disk */
+    void cloneDialog()
+    {
+        QTemporaryDir dir;
+        QVERIFY(addVm(dir.path(), "src", "-name Source\n-m 1G\n"
+                                         "-drive file=disk.qcow2,format=qcow2,if=virtio\n"));
+        QVERIFY(createDiskImage(dir.filePath("src/disk.qcow2"), qint64(1) << 20));
+        VmStore store(dir.path());
+        Vm *vm = store.find("src");
+        QObject owner;
+        QPointer<VmCloner> started;
+        bool closed = false;
+        auto *dialog = new CloneDialog(
+            &store, vm, nullptr,
+            [&](Vm *source, const QString &name) {
+                auto *cloner = new VmCloner(&store, &owner);
+                started = cloner;
+                cloner->start(source, name);
+                return cloner;
+            },
+            presenter());
+        Gtk4::connect<void()>(dialog->dialog(), "closed", [&closed]() { closed = true; });
+
+        QCOMPARE(dialog->name(), "Source clone");
+        dialog->clone();
+        QVERIFY(started);
+        QTRY_VERIFY(closed);
+        Vm *clone = nullptr;
+        for (Vm *each : store.vms()) {
+            if (each->name() == "Source clone") {
+                clone = each;
+            }
+        }
+        QVERIFY(clone);
+        QVERIFY(QFileInfo::exists(QDir(clone->dir()).filePath("disk.qcow2")));
+        QVERIFY(clone->runner()->busy().isEmpty());
+        QTest::qWait(50);
     }
 
     /* The page names of the settings file, the Qt app's */

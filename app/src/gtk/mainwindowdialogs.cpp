@@ -6,8 +6,11 @@
  */
 #include "gtk/mainwindow.h"
 
+#include "core/tasks.h"
+#include "core/vmcloner.h"
 #include "core/vmrunner.h"
 #include "core/vmstore.h"
+#include "gtk/clonedialog.h"
 #include "gtk/newvmdialog.h"
 #include "gtk/settingsdialog.h"
 #include "gtk/textdialog.h"
@@ -90,4 +93,57 @@ void MainWindow::settingsShortcut()
         return;
     }
     openSettings(current());
+}
+
+void MainWindow::cloneVm()
+{
+    Vm *vm = current();
+
+    if (!vm || !m_window || vm->runner()->isActive()) {
+        return;
+    }
+    /* its copy going on, if any: that one shows */
+    VmCloner *running = m_clones.value(vm->id());
+    auto *dialog = new CloneDialog(
+        m_store, vm, running && running->isRunning() ? running : nullptr,
+        [this](Vm *source, const QString &name) { return startClone(source, name); }, presenter());
+    m_cloneDialog = dialog;
+    Gtk4::connect<void()>(dialog->dialog(), "closed", [this, dialog]() {
+        if (m_cloneDialog == dialog) {
+            m_cloneDialog = nullptr;
+        }
+    });
+    present(dialog->dialog());
+}
+
+VmCloner *MainWindow::startClone(Vm *source, const QString &name)
+{
+    auto *cloner = new VmCloner(m_store, m_qt.get());
+    const QString id = source->id();
+    const QString sourceName = source->name();
+
+    m_clones.insert(id, cloner);
+    QObject::connect(cloner, &VmCloner::finished, m_qt.get(),
+                     [this, cloner, id, sourceName](Vm *clone, const QString &error) {
+        /* the dialog shows the end of the copy it showed; else the window says it */
+        const bool shown = m_cloneDialog && m_cloneDialog->cloner() == cloner;
+        const Task *task = cloner->task();
+
+        if (clone) {
+            if (shown) {
+                select(clone->id());
+            } else {
+                notify(QString("The clone of %1 is ready: %2").arg(sourceName, clone->name()));
+            }
+        } else if (!shown && !(task && task->state() == Task::State::Stopped)) {
+            present(Gtk4::alert(QString("Cannot Clone %1").arg(sourceName), error));
+        }
+        if (m_clones.value(id) == cloner) {
+            m_clones.remove(id);
+        }
+        cloner->deleteLater();
+        updateActions();
+    });
+    cloner->start(source, name);
+    return cloner;
 }

@@ -165,10 +165,10 @@ private slots:
 
         QCOMPARE(window.current()->runner()->state(), VmRunner::State::Stopped);
         for (const char *on : {"start", "remove", "show-log", "open-folder", "new-vm", "settings",
-                               "command-line"}) {
+                               "command-line", "clone"}) {
             QVERIFY2(enabled(window, on), on);
         }
-        for (const char *off : {"pause", "shut-down", "reset", "force-off", "import-vm", "clone"}) {
+        for (const char *off : {"pause", "shut-down", "reset", "force-off", "import-vm"}) {
             QVERIFY2(!enabled(window, off), off);
         }
     }
