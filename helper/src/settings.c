@@ -1825,13 +1825,13 @@ void cpu_latency_on(void)
     }
     latency_fd = fd;
     latency_us = (unsigned)us;
-    if (same && !without) {
-        snprintf(what, sizeof(what), "%s on every cpu", slowest);
+    if (!same) {
+        snprintf(what, sizeof(what), "%s of cpu%u, the slowest first idle state%s", slowest,
+                 slow_cpu, without ? "; none on some cpus" : "");
+    } else if (without) {
+        snprintf(what, sizeof(what), "%s on %d cpus, none on %d", slowest, found, without);
     } else {
-        snprintf(what, sizeof(what), "%s of cpu%u, the slowest first idle state", slowest, slow_cpu);
-    }
-    if (without) {
-        snprintf(what + strlen(what), sizeof(what) - strlen(what), "; %d cpus have none", without);
+        snprintf(what, sizeof(what), "%s on every cpu", slowest);
     }
     if (deeper[0]) {
         snprintf(what + strlen(what), sizeof(what) - strlen(what), "; %s unused", deeper);
