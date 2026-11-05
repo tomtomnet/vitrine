@@ -55,7 +55,7 @@
  * for that state's wake-up time - and each one's energy performance
  * preference is EPP_TARGET.  On a Ryzen 7 260 laptop (C1 1 us, C2 18 us, C3
  * 350 us) a GNOME VM's keys reached its screen in 11.3-11.9 ms instead of
- * 15.1-16.3 ms, as on the bare desktop (10.6-11.7), for ~1.6 W at idle; C1
+ * 15.1-16.3 ms, as on the bare desktop (10.6-11.7), for ~2 W at idle; C1
  * alone 13.7 ms, the preference alone 14.7, no idle state at all 11.7 ms for
  * +26 W (the research, 2026-11-05).  The request is the helper's open
  * file: the kernel takes the lowest of all requests, and drops one when its
