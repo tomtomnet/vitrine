@@ -13,6 +13,7 @@
 
 #include "core/hostgpus.h"
 #include "ui/hosttuningnotifier.h"
+#include "ui/hosttuningtext.h"
 #include "ui/widgets.h"
 
 /*
@@ -98,14 +99,8 @@ HostTuningPrefs::HostTuningPrefs(Form *form, QWidget *parent)
         connect(m_awakeRemove, &QPushButton::clicked, this, [this]() { runAwake(false); });
         refreshAwake();
     }
-    /* the research's measure: a GNOME VM's keys 11.3-11.9 ms instead of
-       15.1-16.3, as on the bare desktop, for ~1.6 W at idle */
     form->addRow(tr("CPU:"), m_cpuLatency);
-    form->addRow(QString(), Widgets::hint(tr("Its cores stay in their lightest idle state, at their "
-                                             "performance setting, so that keys show in a VM as "
-                                             "fast as on the bare desktop. It costs about 1.6 W at "
-                                             "idle (measured on a Ryzen 7 260 laptop), and ends "
-                                             "when the last VM stops.")));
+    form->addRow(QString(), Widgets::hint(HostTuningPrefsText::cpuHint()));
 
     connect(m_tune, &QCheckBox::toggled, this, &HostTuningPrefs::update);
     connect(m_floor, &QComboBox::currentIndexChanged, this, &HostTuningPrefs::update);
@@ -159,12 +154,9 @@ void HostTuningPrefs::showState(const HostSettings::Status &status)
            real-time threads without the fair server */
         const HostSettings *host = HostSettings::instance();
         const QString realtime = host ? host->realtimeOff() : HostSettings::realtimeLimit();
-        m_state->setText(tr("Active: vitrine-helper may tune the host without a password.") +
-                         (realtime.isEmpty() ? QString() : ' ' + realtime.toHtmlEscaped()));
+        m_state->setText(HostTuningPrefsText::active(realtime));
     } else {
-        m_state->setText("<b>" + tr("Not active:") + "</b> " +
-                         tr("%1.").arg(status.why().toHtmlEscaped()) + ' ' +
-                         HostTuningNotifier::fix(status));
+        m_state->setText(HostTuningPrefsText::notActive(status));
     }
     m_needsGroup = status.needsGroup();
     m_setUp->setVisible(m_needsGroup && m_tune->isChecked());
@@ -193,31 +185,8 @@ void HostTuningPrefs::showAwake(const QString &active)
     using enum GpuInputAwake::Installed;
     const bool source = !GpuInputAwake::sourceDir().isEmpty();
     const bool busy = GpuInputAwake::running();
-    QString state;
 
-    switch (m_installed) {
-    case No:
-        state = tr("It is not installed.");
-        break;
-    case Vitrine:
-        state = active == "active" ? tr("It is installed and runs.")
-                : active.isEmpty()  ? tr("It is installed.")
-                                    : tr("It is installed and does not run (%1): <nobr>journalctl -u "
-                                         "gpu-input-awake</nobr> says why.")
-                                          .arg(active.toHtmlEscaped());
-        break;
-    case Other:
-        state = tr("It is installed, not Vitrine's version.");
-        break;
-    case Partial:
-        state = tr("It is partly installed: one of its two files is missing.");
-        break;
-    }
-    m_awake->setText(tr("%1: a clock floor does nothing on a dedicated GPU. gpu-input-awake, a "
-                        "service that runs as root from boot, wakes it at each key or pointer "
-                        "event instead.")
-                         .arg(m_dedicated.join(", ").toHtmlEscaped()) +
-                     ' ' + state);
+    m_awake->setText(HostTuningPrefsText::awake(m_dedicated, m_installed, active));
     /* both run install.sh of Vitrine's copy */
     const QString tip = source ? tr("Asks for an administrator's password")
                                : tr("This installation of Vitrine has no host/gpu-input-awake");
@@ -232,27 +201,10 @@ void HostTuningPrefs::showAwake(const QString &active)
 
 void HostTuningPrefs::runAwake(bool install)
 {
-    using enum GpuInputAwake::Installed;
-    const QString title = install ? tr("Install gpu-input-awake") : tr("Remove gpu-input-awake");
-    QString text;
+    const HostTuningText::Box confirm = HostTuningPrefsText::awakeConfirm(install, m_installed);
+    const QString title = confirm.title;
+    const QString text = confirm.text;
 
-    if (install) {
-        text = tr("gpu-input-awake runs as root from now on, and at each boot: it reads the "
-                  "keyboard's and the pointer's events, without taking them, and wakes the GPU "
-                  "at each one.");
-        if (m_installed == Other) {
-            text += ' ' + tr("It replaces the copy installed now, which is not Vitrine's version.");
-        } else if (m_installed == Partial) {
-            text += ' ' + tr("It replaces what is installed of it now.");
-        }
-    } else {
-        text = tr("gpu-input-awake stops now and no longer starts at boot.");
-        if (m_installed == Other) {
-            text += ' ' + tr("This removes the copy installed now, which is not Vitrine's "
-                             "version: another tool may have installed it.");
-        }
-    }
-    text += ' ' + tr("It takes an administrator's password.");
     if (!Widgets::confirm(m_parent, QMessageBox::Question, title, text,
                           install ? tr("&Install") : tr("&Remove"), QIcon())) {
         return;
@@ -260,11 +212,11 @@ void HostTuningPrefs::runAwake(bool install)
     m_awakeInstall->setEnabled(false);
     m_awakeRemove->setEnabled(false);
     /* before: the answer may come at once, and its state goes over this */
-    m_awake->setText(install ? tr("Installing gpu-input-awake…") : tr("Removing gpu-input-awake…"));
+    m_awake->setText(HostTuningPrefsText::awakeBusy(install));
     const bool started = GpuInputAwake::run(this, install, [this, title](GpuInputAwake::Result result,
                                                                          const QString &error) {
         if (result == GpuInputAwake::Result::Failed) {
-            Widgets::warn(m_parent, title, tr("It did not work: %1.").arg(error));
+            Widgets::warn(m_parent, title, HostTuningPrefsText::awakeFailed(error));
         }
         refreshAwake();
     });

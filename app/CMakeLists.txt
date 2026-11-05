@@ -279,8 +279,14 @@ qt_add_library(vitrine_uishared STATIC
     src/ui/argscheck.h
     src/ui/buildtexts.cpp
     src/ui/buildtexts.h
+    src/ui/hosttuningtext.cpp
+    src/ui/hosttuningtext.h
+    src/ui/memorytext.cpp
+    src/ui/memorytext.h
     src/ui/qemudocs.cpp
     src/ui/qemudocs.h
+    src/ui/udmabuftext.cpp
+    src/ui/udmabuftext.h
     src/ui/uiconfig.cpp
     src/ui/uiconfig.h
     src/ui/usbaccess.cpp

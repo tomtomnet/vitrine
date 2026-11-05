@@ -231,7 +231,7 @@ private slots:
             }
         }
         QVERIFY(hint.contains("lightest idle state"));
-        QVERIFY(hint.contains("about 1.6 W at idle"));
+        QVERIFY(hint.contains("about 2 W at idle"));
         QVERIFY(hint.contains("ends when the last VM stops"));
         tune->setChecked(false);
         QVERIFY(!box->isEnabled());
