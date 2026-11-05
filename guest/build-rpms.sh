@@ -8,8 +8,8 @@
 #   mesa   Mesa 26.2.6 + the Xe native context, the iris upload fix, longer BO
 #          caches for radeonsi/iris over virtio and a floor of big buffers
 #          for iris's, RADV's virtio probe fix
-#   kwin   KWin 6.8.2 + the research's guest set g24 (VM frame pacing, the nested
-#          desktop): for Plasma 6.8.2 guests (guest/kwin/kwin.spec)
+#   kwin   KWin 6.8.2 (Fedora's 6.8.2-3) + the research's guest set g26 (VM frame
+#          pacing, the nested desktop): for Plasma 6.8.2 guests (guest/kwin/kwin.spec)
 #   qtbase, ksvg, kirigami  Qt 6.11.2's qtbase, KSvg and Kirigami 6.31.0 with
 #          the research's sets (q4, k2, f1): Fedora's specs, as the others
 # A package is a folder of guest/ with its spec; components.conf gives

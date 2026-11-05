@@ -1,0 +1,160 @@
+From: virtio-gpu-desktop research <noreply@anthropic.com>
+Subject: [PATCH] EXP wayland backend: the cursor handed to the host as wl_shm (KWIN_WAYLAND_SHM_CURSOR)
+
+Mutter makes hardware cursors of wl_shm buffers only; the nested backend's cursor was a linux-dmabuf
+buffer, so on a GNOME host its cursor was drawn by Mutter itself ("overlapping software cursors") and a
+full-screen nested session was never scanned out while its cursor showed (findings/gnome-vs-kde-b50-2026-11-04.md).
+The cursor layer reads its picture back into one of two shm buffers per cursor frame. KWIN_WAYLAND_SHM_CURSOR=0
+keeps the dmabuf.
+
+Assisted-by: Claude Opus 5.5
+---
+diff --git a/src/backends/wayland/wayland_egl_backend.cpp b/src/backends/wayland/wayland_egl_backend.cpp
+index be6990c..03f60ef 100644
+--- a/src/backends/wayland/wayland_egl_backend.cpp
++++ b/src/backends/wayland/wayland_egl_backend.cpp
+@@ -11,6 +11,8 @@
+ #include "wayland_egl_backend.h"
+ #include "core/drmdevice.h"
+ #include "core/gbmgraphicsbufferallocator.h"
++#include "core/graphicsbufferview.h"
++#include "core/shmgraphicsbufferallocator.h"
+ #include "core/renderdevice.h"
+ #include "opengl/eglswapchain.h"
+ #include "opengl/glrendertimequery.h"
+@@ -28,6 +30,7 @@
+ #include <KWayland/Client/surface.h>
+ 
+ #include <cmath>
++#include <cstring>
+ #include <drm_fourcc.h>
+ #include <fcntl.h>
+ #include <unistd.h>
+@@ -175,6 +178,73 @@ WaylandEglCursorLayer::WaylandEglCursorLayer(WaylandOutput *output, WaylandEglBa
+ WaylandEglCursorLayer::~WaylandEglCursorLayer()
+ {
+     (void)m_backend->openglContext()->makeCurrent();
++    dropShmBuffers();
++}
++
++void WaylandEglCursorLayer::dropShmBuffers()
++{
++    for (GraphicsBuffer *&slot : m_shmBuffers) {
++        if (slot) {
++            slot->drop(); // freed once the host has released it
++            slot = nullptr;
++        }
++    }
++}
++
++/**
++ * EXP (2026-11-04): the cursor goes to the host compositor as a wl_shm buffer, not as the swapchain's linux-dmabuf
++ * one. Mutter makes hardware cursors of shm buffers only (meta-cursor-renderer-native.c: any other buffer goes through
++ * gbm_bo_import(GBM_BO_IMPORT_WL_BUFFER), which fails for a linux-dmabuf buffer, "Importing HW cursor from wl_buffer
++ * failed") and else draws the cursor itself - "overlapping software cursors", so a full-screen nested session was
++ * never scanned out on a GNOME host while its cursor showed. The pixels are read back once per cursor frame (at most
++ * the cursor plane's size, and the cursor changes seldom); KWIN_WAYLAND_SHM_CURSOR=0 keeps the dmabuf.
++ */
++static const bool s_shmCursor = environmentVariableBoolValue("KWIN_WAYLAND_SHM_CURSOR").value_or(true);
++
++GraphicsBuffer *WaylandEglCursorLayer::shmCopy()
++{
++    if (!s_shmCursor) {
++        return nullptr;
++    }
++    const QSize size = m_buffer->buffer()->size();
++    GraphicsBuffer *target = nullptr;
++    for (GraphicsBuffer *&slot : m_shmBuffers) {
++        if (slot && slot->size() != size && !slot->isReferenced()) {
++            slot->drop();
++            slot = nullptr;
++        }
++        if (!slot) {
++            slot = ShmGraphicsBufferAllocator().allocate(GraphicsBufferOptions{
++                .size = size,
++                .format = DRM_FORMAT_ARGB8888,
++                .software = true,
++            });
++        }
++        if (slot && slot->size() == size && !slot->isReferenced()) {
++            target = slot;
++            break;
++        }
++    }
++    if (!target) {
++        return nullptr; // both still with the host: the dmabuf this once
++    }
++    QImage pixels(size, QImage::Format_RGBA8888_Premultiplied);
++    GLFramebuffer::pushFramebuffer(m_buffer->framebuffer());
++    glPixelStorei(GL_PACK_ALIGNMENT, 4);
++    glReadPixels(0, 0, size.width(), size.height(), GL_RGBA, GL_UNSIGNED_BYTE, pixels.bits());
++    GLFramebuffer::popFramebuffer();
++    GraphicsBufferView view(target, GraphicsBuffer::Write);
++    if (view.isNull()) {
++        return nullptr;
++    }
++    // the swapchain buffer is drawn turned (FlipY, beginFrame) so that its first row is the picture's top: GL's
++    // first row read back is that row
++    const QImage argb = pixels.convertToFormat(QImage::Format_ARGB32_Premultiplied);
++    QImage *destination = view.image();
++    for (int y = 0; y < size.height(); y++) {
++        std::memcpy(destination->scanLine(y), argb.constScanLine(y), size.width() * 4);
++    }
++    return target;
+ }
+ 
+ std::optional<OutputLayerBeginFrameInfo> WaylandEglCursorLayer::beginFrame(OutputFrame *frame)
+@@ -235,7 +305,8 @@ bool WaylandEglCursorLayer::endFrame(const Region &renderedDeviceRegion, const R
+     // Flush rendering commands to the dmabuf.
+     glFlush();
+ 
+-    wl_buffer *buffer = m_backend->backend()->importBuffer(m_buffer->buffer());
++    GraphicsBuffer *shm = shmCopy();
++    wl_buffer *buffer = m_backend->backend()->importBuffer(shm ? shm : m_buffer->buffer());
+     Q_ASSERT(buffer);
+ 
+     static_cast<WaylandOutput *>(m_output.get())->cursor()->update(buffer, m_buffer->buffer()->size() / m_output->scale(), (hotspot() / m_output->scale()).toPoint());
+@@ -254,6 +325,7 @@ void WaylandEglCursorLayer::releaseBuffers()
+ {
+     m_buffer.reset();
+     m_swapchain.reset();
++    dropShmBuffers();
+ }
+ 
+ WaylandEglBackend::WaylandEglBackend(WaylandBackend *b, RenderDevice *device)
+diff --git a/src/backends/wayland/wayland_egl_backend.h b/src/backends/wayland/wayland_egl_backend.h
+index 6b66c87..d71fd77 100644
+--- a/src/backends/wayland/wayland_egl_backend.h
++++ b/src/backends/wayland/wayland_egl_backend.h
+@@ -14,6 +14,7 @@
+ #include "utils/damagejournal.h"
+ #include "wayland_layer.h"
+ 
++#include <array>
+ #include <memory>
+ 
+ struct wl_buffer;
+@@ -24,6 +25,7 @@ namespace KWin
+ class EglSwapchainSlot;
+ class EglSwapchain;
+ class GLFramebuffer;
++class GraphicsBuffer;
+ class GraphicsBufferAllocator;
+ class GLRenderTimeQuery;
+ 
+@@ -72,10 +74,15 @@ public:
+     void releaseBuffers() override;
+ 
+ private:
++    GraphicsBuffer *shmCopy();
++    void dropShmBuffers();
++
+     WaylandEglBackend *m_backend;
+     std::shared_ptr<EglSwapchain> m_swapchain;
+     std::shared_ptr<EglSwapchainSlot> m_buffer;
+     std::unique_ptr<GLRenderTimeQuery> m_query;
++    // the cursor's pixels for the host as wl_shm, two buffers in turn (one may still be with the host)
++    std::array<GraphicsBuffer *, 2> m_shmBuffers{};
+ };
+ 
+ /**

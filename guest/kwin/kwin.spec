@@ -1,6 +1,6 @@
 Name:    kwin
 Version: 6.8.2
-Release: 2.1.g24%{?dist}
+Release: 3.1.g26%{?dist}
 Summary: KDE Window manager
 
 License: BSD-2-Clause AND BSD-3-Clause AND CC0-1.0 AND GPL-2.0-only AND GPL-2.0-or-later AND GPL-3.0-only AND GPL-3.0-or-later AND LGPL-2.0-only AND LGPL-2.0-or-later AND LGPL-2.1-only AND LGPL-2.1-or-later AND LGPL-3.0-only AND (GPL-2.0-only OR GPL-3.0-only) AND (LGPL-2.1-only OR LGPL-3.0-only) AND MIT
@@ -16,10 +16,13 @@ Source10: macros.kwin.in
 
 ## upstream patches
 
+# compositor: handle possibly missing render device
+# https://invent.kde.org/plasma/kwin/-/commit/c9d720793bbcef9483ab290673032d39441c0e6f
+Patch0:  c9d720793bbcef9483ab290673032d39441c0e6f.patch
 
 ## proposed patches
-## the research's guest set g21jmc87-681, as g24 (virtio-gpu-desktop 9535bf2,
-## patches/kwin/sets/g21jmc87-681.series), without its 0033 (upstream in 6.8).
+## the research's guest set g21jmc96-681, as g26 (virtio-gpu-desktop a163a50,
+## patches/kwin/sets/g21jmc96-681.series), without its 0033 (upstream in 6.8).
 # KWin as the guest's compositor, on the VM's screen and as the nested desktop:
 # - frames paced to the host's: render timing from the CPU, a commit grace for
 #   buffers the GPU has not finished, late frames scheduled for the next vblank,
@@ -28,10 +31,15 @@ Source10: macros.kwin.in
 #   readers, no udmabufs when their import is off (0013-0015, 0036, 0073)
 # - the nested desktop's Wayland backend: the pointer grab (Ctrl+Alt+G), the host's
 #   preferred scale, its refresh rate, no resent geometry, frames whose
-#   presentation feedback the host loses (0045-0046, 0051, 0064, 0084-0087)
+#   presentation feedback the host loses (0045-0046, 0051, 0064, 0084-0087), the
+#   cursor handed to the host as shared memory, which a GNOME host puts on its
+#   cursor plane and so keeps scanning the full-screen VM out (0091)
 # - a high-rate mouse: moves, window geometry and pointer motion once per frame or
 #   per ms (0060-0063); animations on a steady clock, one refresh in (0035, 0037)
-# Most act only with their KWIN_* variable, which the guest tools set.
+# - the Overview keeps its views between openings (0095); the GPU's clock read
+#   once a second for render times, as each read wakes an Intel xe GPU (0096)
+# Most act only with their KWIN_* variable, which the guest tools set; 0091, 0095
+# and 0096 act unless theirs turns them off.
 Patch1001: 0001-Patch100-kwin-vm-frame-timing-ported-to-6.8.v2.patch
 Patch1002: 0002-Patch101-kwin-render-journal-variance-cap-applies-un.v2.patch
 Patch1003: 0003-Patch102-kwin-late-frame-scheduling-ported-to-6.8-re.v2.68.patch
@@ -88,6 +96,9 @@ Patch1053: 0084-FIX-wayland-backend-black-background-without-single-pixel-buffer
 Patch1054: 0085-FIX-wayland-backend-layer-image-description-only-when-the-color-changes.patch
 Patch1055: 0086-FIX-wayland-backend-unchanged-geometry-viewports-positions-not-resent.patch
 Patch1056: 0087-FIX-wayland-backend-frames-whose-feedback-the-host-loses-are-dropped.patch
+Patch1057: 0091-EXP-wayland-backend-cursor-as-wl_shm.patch
+Patch1058: 0095-EXP-overview-keep-the-views-between-openings.patch
+Patch1059: 0096-EXP-opengl-the-GPU-s-clock-read-once-a-second-for-render-time-queries.patch
 
 
 # Base
@@ -363,6 +374,22 @@ sed -i \
 
 
 %changelog
+* Thu Nov 05 2026 vitrine <noreply@anthropic.com> - 6.8.2-3.1.g26
+- the research's guest set g21jmc96-681 as g26 (59 patches: g24's 56, then 0091,
+  0095 and 0096) on Fedora's 6.8.2-3 and its upstream crash fix (c9d72079: no
+  direct scanout of another GPU's buffer on an output without a render device,
+  such as DisplayLink's, where kwin_wayland crashed):
+  - 0091: the nested desktop's cursor goes to the host as shared memory, which
+    GNOME puts on its cursor plane: the full-screen VM stays scanned out there,
+    keys ~1.5 ms and drags ~2 ms sooner on a GNOME host (KDE hosts unchanged)
+  - 0095: the Overview keeps its views between openings: its later openings
+    18 ms to a first frame instead of 35-44 (the research's Arc Pro B50)
+  - 0096: the GPU's clock read once a second for render times: on Intel xe each
+    read wakes the GPU
+
+* Tue Nov 03 2026 Steve Cossette <farchord@gmail.com> - 6.8.2-3
+- Fix for a kwin crash
+
 * Tue Nov 03 2026 vitrine <noreply@anthropic.com> - 6.8.2-2.1.g24
 - the research's guest set g21jmc87-681 as g24 (56 patches, its 0033 is upstream)
   on Fedora's 6.8.2-2, in place of vitrine's ports of its earlier sets to 6.7.5:
