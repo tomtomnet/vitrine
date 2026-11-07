@@ -19,8 +19,8 @@ RemainAfterExit=yes
 # before systemd-user-sessions.service, a check that hung would keep every
 # login but root's out, ssh's too, the way to repair a guest.  Its slowest
 # step, the capset's question to the host, gives up after 5 s.  Stopped, it
-# leaves its files in /run whole or absent, and the boot goes on as on a
-# host it could not ask: no settings for the host's GPU
+# leaves its files in /run whole or absent: the guest's own sessions then get
+# no lead, the nested desktop's session asks the host's GPU itself at login
 TimeoutStartSec=60
 
 [Install]

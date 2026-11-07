@@ -119,8 +119,9 @@ The file follows the native context only, not `CROSVM_DESKTOP_HOST_GPU`,
 and is written again at each boot: a VM moved to another host keeps no
 stale setting. The check gives up after a minute (`TimeoutStartSec=60`), as
 a hung one would keep every login but root's out; stopped, it leaves each
-of its files whole or absent, and the boot goes on without the settings
-for the host's GPU.
+of its files whole or absent. Without them the guest's own sessions get no
+lead, and the nested desktop's session asks the native context itself at
+login.
 
 environment.d sorts the files of `~/.config/environment.d`,
 `/etc/environment.d`, `/run/environment.d` and `/usr/lib/environment.d`
