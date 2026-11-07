@@ -275,11 +275,11 @@ vitrine's shows as such, and Install replaces it.
 
 ### Keys in VMs on an Arc Pro B50
 
-Keys in VMs reached the screen about 2 ms later on an Arc Pro B50 than on
-an RX 6900 XT (the research, 2026-11-06 and 07, on a KDE Plasma 6.8 host at
-4K and 240 Hz). Not because the B50 draws slower: a VM's GPU work took it
-at most 0.33 ms of a 4.17 ms refresh, with the guest's launcher opened 8
-times a second. Three things:
+Keys in VMs reached the screen 0.3-2 ms later on an Arc Pro B50 than on an
+RX 6900 XT (the research, 2026-11-06 and 07, on a KDE Plasma 6.8 host at 4K
+and 240 Hz; the table below). Not because the B50 draws slower: a VM's GPU
+work took it at most 0.33 ms of a 4.17 ms refresh, with the guest's
+launcher opened 8 times a second. Three things:
 
 - The VMs' KWin held a key's frame back longer than an xe host needs (its
   lone-frame lead). Guest tools 0.1.0-38 shorten it on xe hosts: to 1000
