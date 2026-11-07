@@ -1,8 +1,10 @@
 // SPDX-License-Identifier: GPL-2.0-or-later
 #include <QCryptographicHash>
 #include <QDir>
+#include <QDirIterator>
 #include <QFile>
 #include <QProcess>
+#include <QRegularExpression>
 #include <QSignalSpy>
 #include <QTemporaryDir>
 #include <QTest>
@@ -347,6 +349,39 @@ private slots:
         }
         /* not a system section, or without its package: none */
         QVERIFY(Target::parse("[a]\ntitle=A\nkind=system\n[b]\npackage=b\n").isEmpty());
+    }
+
+    /* The copy of the research's recipe is the one host/kde/README.md names: each file of
+       research/ has its row with its sha256, no row names a file the copy lacks, and no file
+       has a Claude-Session line (the research removed them on 2026-10-14) */
+    void pinnedCopy()
+    {
+        const QString copy = hostKdeDir() + "/research";
+        static const QRegularExpression row("^\\| `([0-9a-f]{64})` \\| `([^`]+)` \\|$",
+                                            QRegularExpression::MultilineOption);
+        QHash<QString, QString> rows;
+        for (auto it = row.globalMatch(QString::fromUtf8(read(hostKdeDir() + "/README.md"))); it.hasNext();) {
+            const QRegularExpressionMatch m = it.next();
+            QVERIFY2(!rows.contains(m.captured(2)), qPrintable("two rows for " + m.captured(2)));
+            rows.insert(m.captured(2), m.captured(1));
+        }
+        QStringList files;
+        QDirIterator it(copy, QDir::Files | QDir::Hidden | QDir::System, QDirIterator::Subdirectories);
+        while (it.hasNext()) {
+            files << QDir(copy).relativeFilePath(it.next());
+        }
+        QVERIFY(files.contains("setup/versions.sh"));
+        for (const QString &file : std::as_const(files)) {
+            const QByteArray data = read(copy + '/' + file);
+            QVERIFY2(rows.contains(file), qPrintable(file + " has no row in host/kde/README.md"));
+            QCOMPARE(QString::fromLatin1(QCryptographicHash::hash(data, QCryptographicHash::Sha256).toHex()),
+                     rows.value(file));
+            QVERIFY2(!data.contains("Claude-Session"), qPrintable(file));
+        }
+        QStringList named = rows.keys();
+        named.sort();
+        files.sort();
+        QCOMPARE(named, files);
     }
 
     /* What versions.sh maps to sets, as the window lists them */
