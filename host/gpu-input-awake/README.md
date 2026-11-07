@@ -75,9 +75,11 @@ EOF
 systemctl daemon-reload && systemctl restart gpu-input-awake
 ```
 
-It needs this version of the script: an older one stops at the unknown
-option (`journalctl -u gpu-input-awake`). The drop-in's line replaces the
-unit's: compare the two after Vitrine updates gpu-input-awake. To go back:
+It needs this version of the script. An older one stops at the unknown
+option, and systemd starts it again every 5 seconds, failing each time
+(`journalctl -u gpu-input-awake`): the GPU gets no wake until Install…
+puts this version in. The drop-in's line replaces the unit's: compare the
+two after Vitrine updates gpu-input-awake. To go back:
 
 ```sh
 rm -r /etc/systemd/system/gpu-input-awake.service.d
