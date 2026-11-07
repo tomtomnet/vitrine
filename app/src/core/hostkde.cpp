@@ -357,7 +357,7 @@ static QString hostKwinSet(const QString &versionsSh, const QString &series)
 QList<Set> sets(const QString &sourceDir, const QString &package)
 {
     /* host/kwin/6.8.0) echo "hl39-68 h18" ;;   # a comment
-       host/kwin/6.8.*) host_kwin_set "${VGD_HOST_KWIN_SET_68:-h681zu}" ;;   # KWin's, 0082 out */
+       host/kwin/6.8.*) host_kwin_set "${VGD_HOST_KWIN_SET_68:-h681zy}" ;;   # KWin's, 0082 out */
     const QString prefix = "host/" + package + '/';
     const QRegularExpression line("^\\s*(host/" + QRegularExpression::escape(package) +
                                   "/[^)]*)\\)\\s*(echo|host_kwin_set)\\s+\"([^\"]*)\"");

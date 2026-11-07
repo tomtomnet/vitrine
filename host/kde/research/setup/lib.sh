@@ -62,6 +62,17 @@ clone_at() {
 stamp_get() { cat "$VGD_STAMPS/$1" 2> /dev/null || true; }
 stamp_set() { mkdir -p "$VGD_STAMPS"; printf '%s\n' "$2" > "$VGD_STAMPS/$1"; }
 hash_of() { cat "$@" | sha256sum | cut -c1-16; }
+# tree_is_old_diff DIR REPO-PATH: DIR's uncommitted changes are one of the committed versions of this repository's diff
+# REPO-PATH (compared by their changed lines) - a tree a setup step patched before it kept stamps (2026-11-04)
+diff_lines() { grep -E '^[+-]' | grep -vE '^(\+\+\+|---) '; }
+tree_is_old_diff() {
+	local t c
+	t=$(git -C "$1" diff HEAD | diff_lines | sha256sum)
+	for c in $(git -C "$VGD_REPO" log --format=%h -- "$2"); do
+		[ "$(git -C "$VGD_REPO" show "$c:$2" | diff_lines | sha256sum)" = "$t" ] && return 0
+	done
+	return 1
+}
 # fedora_container NAME SCRIPT [PODMAN OPTIONS...]: SCRIPT (bash) as root in a fresh fedora container;
 # its dnf cache (metadata and packages) is kept in $VGD_BUILD/dnf-cache/NAME between runs
 # VGD_PODMAN_ARGS: more podman run options from the caller, split on spaces (e.g. --name NAME, so that the

@@ -253,8 +253,8 @@ KWin, KSvg, Kirigami and Qt base with the research's host sets. KWin's
 gives steadier frames and quicker input in VMs, and the pointer grab
 inside the Desktop view; KSvg's and Kirigami's make Plasma's popups cheaper
 to open; Qt base's makes windows cheaper to resize. The research has KWin
-sets for Plasma 6.7.91 (the KDE SIG's beta COPR) and 6.8 (`h681zu` for
-Fedora 44's 6.8.2), none for Fedora 44's earlier 6.7.5, and sets for KSvg
+sets for Plasma 6.7.91 (the KDE SIG's beta COPR) and 6.8 (`h681zy` for
+Fedora 44's and 45's 6.8.2), none for Fedora 44's earlier 6.7.5, and sets for KSvg
 and Kirigami 6.31.0 and Qt 6.11.2: the window says which apply. Build builds one in a Fedora container
 (`host/kde/build.sh`, up to 10 GiB of memory). Install… says what it does
 first, then, with the administrator's password, replaces all the installed

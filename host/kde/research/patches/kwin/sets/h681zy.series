@@ -29,3 +29,8 @@
 0083-EXP-opengl-udmabuf-import-at-run-time.patch
 0089-EXP-drm-night-light-after-blending-at-run-time.patch
 0090-EXP-opengl-persistent-upload-buffer-for-big-texture-uploads.patch
+0092-EXP-opengl-new-textures-big-uploads-through-the-upload-buffer.patch
+0093-FIX-wayland-a-wl_shm-buffer-s-udmabuf-made-when-first-asked-for.patch
+0094-EXP-wayland-a-client-s-shm-memory-let-go-on-a-thread-of-its-own.patch
+0095-EXP-overview-keep-the-views-between-openings.patch
+0096-EXP-opengl-the-GPU-s-clock-read-once-a-second-for-render-time-queries.patch

@@ -55,25 +55,58 @@ systemctl daemon-reload
 
 `journalctl -u gpu-input-awake` shows what it did.
 
+## A longer hold while VMs run
+
+`--vm-hold S` holds the GPU S seconds after an input while a VM runs (a
+`qemu-system-*` or `crosvm` process), the bare desktop keeping `--hold`.
+On an Arc Pro B50, `--vm-hold 0.3` brought keys in VMs ~0.5 ms sooner while
+typing, for ~5 W more while typing in a VM and nothing at rest
+(docs/host-tuning.md). The unit does not set it. To try it, as root, a
+drop-in that repeats the unit's command line with it (Vitrine's two files
+stay as installed):
+
+```sh
+mkdir -p /etc/systemd/system/gpu-input-awake.service.d
+cat > /etc/systemd/system/gpu-input-awake.service.d/vm-hold.conf <<'EOF'
+[Service]
+ExecStart=
+ExecStart=/usr/bin/python3 -B /usr/local/sbin/gpu-input-awake --hold 0.02 --vm-hold 0.3 --activity --vm-activity --activity-hold 10 --sample 0.05 --temp-refresh 2
+EOF
+systemctl daemon-reload && systemctl restart gpu-input-awake
+```
+
+It needs this version of the script: an older one stops at the unknown
+option (`journalctl -u gpu-input-awake`). The drop-in's line replaces the
+unit's: compare the two after Vitrine updates gpu-input-awake. To go back:
+
+```sh
+rm -r /etc/systemd/system/gpu-input-awake.service.d
+systemctl daemon-reload && systemctl restart gpu-input-awake
+```
+
+Remove… leaves the drop-in, which is yours: after it, the `rm` and
+`systemctl daemon-reload` are enough.
+
 ## The pinned copy
 
 `gpu-input-awake` and `gpu-input-awake.service` are the research's
 (virtio-gpu-desktop) `bench/tools/gpu_input_awake.py` and
-`src/host-config/gpu-input-awake.service` at commit `6c4e5ed` (2026-10-28,
-the same at `8289f62`), byte for byte, with their modes. GPL-2.0-or-later,
+`src/host-config/gpu-input-awake.service` at commit `4ee46dd` (2026-11-07,
+the same at `fd5c043`), byte for byte, with their modes. GPL-2.0-or-later,
 as the research's README says of its files without a notice of their own.
 
 | sha256 | file |
 |---|---|
-| `6286c5d8ec3bf91ce6164b34d053a4fc5b960001b9973cd4eb64fd8fab4cb47d` | `gpu-input-awake` |
-| `85e100e8a370d6ae92879f92a9697fc99f3f504a409cd6ff3504f7f6a91dcd66` | `gpu-input-awake.service` |
+| `e93c081ed9b7ab47d0a37db6fe2b7ea3ed64394f2abe02c4c2ae831316aeeae6` | `gpu-input-awake` |
+| `ad36c266a625a4c5d37bd743316f1ca480dd8c7ebe81a4a3bc307d0eaa6b97da` | `gpu-input-awake.service` |
 
-The app tells Vitrine's copy from another by these. When the research's
-moves, take it again (`r` its repository, `c` the commit) and update the
-table:
+The app tells Vitrine's copy from another by these: the copy of `6c4e5ed`
+(2026-10-28), installed before, shows as another version until Install…
+replaces it. When the research's moves, take it again (`r` its repository,
+`c` the commit) and update the table:
 
 ```sh
-r=~/Documents/virtio-gpu-desktop c=6c4e5ed
+r=~/Documents/virtio-gpu-desktop c=4ee46dd
 git -C "$r" show "$c:bench/tools/gpu_input_awake.py" > gpu-input-awake
 git -C "$r" show "$c:src/host-config/gpu-input-awake.service" > gpu-input-awake.service
 chmod 0755 gpu-input-awake && chmod 0644 gpu-input-awake.service

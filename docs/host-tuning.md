@@ -273,6 +273,54 @@ Its files are those of the research's setup, at the same paths:
 `/etc/systemd/system/gpu-input-awake.service`; a copy that is not
 vitrine's shows as such, and Install replaces it.
 
+### Keys in VMs on an Arc Pro B50
+
+Keys in VMs reached the screen 0.3-2 ms later on an Arc Pro B50 than on an
+RX 6900 XT (the research, 2026-11-06 and 07, on a KDE Plasma 6.8 host at 4K
+and 240 Hz; the table below). Not because the B50 draws slower: a VM's GPU
+work took it at most 0.33 ms of a 4.17 ms refresh, with the guest's
+launcher opened 8 times a second. Three things:
+
+- The VMs' KWin held a key's frame back longer than an xe host needs (its
+  lone-frame lead). Guest tools 0.1.0-38 shorten it on xe hosts: to 1000
+  µs instead of 1500 in the nested desktop, and to 1000 µs in a KDE
+  guest's own session, where it was unset.
+- The GPU was asleep at each key. gpu-input-awake holds an xe GPU 20 ms
+  after an input and an AMD GPU 0.3 s, so the 6900 XT was measured awake,
+  with keys 0.3 s apart. Waking the B50 takes ~0.45 ms, during which a CPU
+  busy-waits with interrupts off, and the key's first GPU jobs then run
+  ~1.5 times slower at the 1200 MHz minimum clock: a key that finds the
+  GPU asleep reaches the screen 0.5-0.85 ms later, on every VM path. While
+  typing (4-7 keys a second), the 20 ms hold lets it sleep before every
+  key.
+- Part of the gap was the measurement: keys exactly 0.3 s apart are 72
+  refreshes apart, so a run of 80 keys sweeps only about one refresh of
+  phase from a random start. How many keys missed their refresh depended
+  on that start, and a run's median could move by a whole refresh. The
+  B50's runs below spread the keys over a refresh.
+
+Key to screen, mean, keys 0.3 s apart:
+
+| VM path | B50 as installed | B50, its GPU kept awake | RX 6900 XT |
+| --- | --- | --- | --- |
+| The nested desktop (a KDE guest); lone-frame lead 1000 µs on the B50, 1500 on the 6900 XT | 8.39 ms | 7.72 ms | 8.11 ms |
+| A GNOME guest in QEMU's window, copied (no lead: GNOME) | 9.68 ms | 8.90 ms | 8.41 ms |
+| A GNOME guest in QEMU's window, zero copy | 9.07 ms | 8.52 ms | 8.19 ms |
+| A KDE guest in QEMU's window, copied; its session's lead 1000 µs on the B50, unset on the 6900 XT | 10.29 ms | 9.04 ms | 8.33 ms |
+
+The B50's: two or three runs of 80 keys each (2026-11-07), the keys
+spread over a refresh; the 6900 XT's: its runs of 2026-11-06, its GPU
+awake through them. With its GPU awake, the B50 is 0.3-0.7 ms behind in
+QEMU's window and 0.4 ms ahead on the nested desktop.
+
+`--vm-hold 0.3` holds the GPU 0.3 s after an input while a VM runs, the
+bare desktop keeping its 20 ms. While typing, keys came ~0.5 ms sooner on
+the nested desktop and in a GNOME guest, for ~5 W more while typing and
+nothing at rest; a KDE guest in QEMU's window answers ~1.25 ms sooner with
+its GPU awake. It is not set by default:
+[host/gpu-input-awake](../host/gpu-input-awake/README.md) says how to try
+it.
+
 ## The udmabuf limits without host tuning
 
 To have the udmabuf limits raised at every boot instead, with or without
