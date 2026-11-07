@@ -569,6 +569,21 @@ subprojects_of() {
 
 # configured DIR LINE: whether build tree DIR was configured with LINE
 configured() { [ -f "$1/.vitrine-configure" ] && [ "$(cat "$1/.vitrine-configure")" = "$2" ]; }
+# meson_moved DIR MESON: whether MESON is another version than the meson that
+# set up build tree DIR, saying so.  Meson refuses to install from a tree
+# another version set up ("Build directory has been generated with Meson
+# version 1.11.2, which is incompatible with the current version 1.12.1"),
+# though ninja compiles in it; and the system's meson moves with the
+# distribution's updates, under a line that stays the same.  Such a tree is
+# configured again in place, as for a new line
+meson_moved() {
+	local made now
+	made=$(python3 -c 'import json, sys; print(json.load(open(sys.argv[1]))["meson_version"]["full"])' \
+		"$1/meson-info/meson-info.json" 2> /dev/null)
+	now=$("$2" --version 2> /dev/null)
+	[ -n "$made" ] && [ "$made" = "$now" ] && return 1
+	echo "set up by meson ${made:-(unknown)}, and the meson now is ${now:-(none)}: configured again in place"
+}
 
 # put FILE DEST: DEST with FILE's content, written only if it differs: what
 # depends on it does not compile again
@@ -717,7 +732,7 @@ else
 	if [ ! -f "$vbuild/build.ninja" ]; then
 		rm -rf "$vbuild"
 		meson setup "$vbuild" "$src/virglrenderer" "${vargs[@]}"
-	elif ! configured "$vbuild" "$vline"; then
+	elif ! configured "$vbuild" "$vline" || meson_moved "$vbuild" meson; then
 		rm -f "$vbuild/.vitrine-configure"
 		meson setup --reconfigure "$vbuild" "$src/virglrenderer" "${vargs[@]}" || {
 			echo "configuring again in place failed: from nothing"
@@ -779,7 +794,7 @@ else
 	if [ ! -f "$rbuild/build.ninja" ]; then
 		rm -rf "$rbuild"
 		meson setup "$rbuild" "$src/rutabaga_gfx" "${rargs[@]}"
-	elif ! configured "$rbuild" "$rline"; then
+	elif ! configured "$rbuild" "$rline" || meson_moved "$rbuild" meson; then
 		rm -f "$rbuild/.vitrine-configure"
 		meson setup --reconfigure "$rbuild" "$src/rutabaga_gfx" "${rargs[@]}" || {
 			echo "configuring again in place failed: from nothing"
@@ -864,7 +879,11 @@ qargs=(--prefix="$qconf" --target-list=x86_64-softmmu --without-default-features
 devel rutabaga_gfx_ffi librutabaga_gfx_ffi "$rprefix" "$rdev"
 qpkg=$vdev/lib64/pkgconfig:$rdev/lib64/pkgconfig
 qline="$src/qemu ${qargs[*]} PKG_CONFIG_PATH=$qpkg virglrenderer=$vkey rutabaga_gfx=$rkey"
-if [ -f "$qbuild/build.ninja" ] && configured "$qbuild" "$qline"; then
+# (and when the meson of QEMU's Python environment is another version than
+# the one that set the tree up: configure makes that environment anew, with
+# the system's meson or the one QEMU carries, and sets meson up again)
+if [ -f "$qbuild/build.ninja" ] && configured "$qbuild" "$qline" &&
+	! meson_moved "$qbuild" "$qbuild/pyvenv/bin/meson"; then
 	echo "configured already"
 else
 	rm -f "$qbuild/.vitrine-configure"

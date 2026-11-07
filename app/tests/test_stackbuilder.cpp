@@ -52,7 +52,10 @@ PASST_PREFIX=/s/passt/fedcba9876543210
  * QEMU whose configure writes a Makefile linking a "qemu-system-x86_64"
  * against both with configure's --extra-ldflags, as QEMU's does, linked
  * again when configure ran again; its install takes DESTDIR, and writes a
- * firmware descriptor naming the configured prefix, as QEMU's do
+ * firmware descriptor naming the configured prefix, as QEMU's do; like
+ * QEMU's, its tree tells the meson version that set it up
+ * (meson-info/meson-info.json) and has the meson of its Python environment
+ * (pyvenv/bin/meson), here the system's
  */
 static const char kVirglMeson[] = R"(project('virglrenderer', 'c', version : '1.3.0')
 lib = shared_library('virglrenderer', 'virgl.c', version : '1.9.0', install : true)
@@ -94,6 +97,9 @@ for a; do
 done
 echo "#define HAVE_VIRGL_RESOURCE_SET_GUEST_DMABUF 1" > config-host.h
 : > build.ninja
+mkdir -p meson-info pyvenv/bin
+printf '{"meson_version": {"full": "%s"}}\n' "$(meson --version)" > meson-info/meson-info.json
+ln -sf "$(command -v meson)" pyvenv/bin/meson
 t=$(printf '\t')
 cat > Makefile <<EOF
 all: qemu-system-x86_64 qemu-img
@@ -1529,6 +1535,35 @@ sh -c 'echo $$ > %1; exec sleep 300'
         QVERIFY(log(output).contains("build trees from nothing (--clean)"));
         QVERIFY(!QFileInfo::exists(work + "/qemu-build/KEPT"));
         QVERIFY(StackBuilder::current(stack).isValid());
+
+        /* 9. QEMU's tree set up by another meson version than the one of its
+           Python environment now (a system update moved meson, and meson
+           would refuse to install from it): a QEMU patch changed, which
+           keeps configure's line, configures it again in place; the next
+           one finds it configured already */
+        QVERIFY(write(work + "/qemu-build/KEPT", "\n"));
+        QVERIFY(write(work + "/qemu-build/meson-info/meson-info.json",
+                      "{\"meson_version\": {\"full\": \"0.1.0\"}}\n"));
+        QVERIFY(write(host + "/patches/qemu/fork/0001-mark.patch",
+                      QString(newFile).arg("MARK", "six").toUtf8()));
+        output.clear();
+        error = build(b, 300000);
+        QVERIFY2(error.isEmpty(), qPrintable(error + "\n" + log(output)));
+        QVERIFY2(log(output).contains("set up by meson 0.1.0, and the meson now is " +
+                                      run("meson", {"--version"}).trimmed() +
+                                      ": configured again in place") &&
+                     !log(output).contains("configured already"),
+                 qPrintable(log(output)));
+        QVERIFY(QFileInfo::exists(work + "/qemu-build/KEPT"));
+        QVERIFY(!read(work + "/qemu-build/meson-info/meson-info.json").contains("0.1.0"));
+        QVERIFY(write(host + "/patches/qemu/fork/0001-mark.patch",
+                      QString(newFile).arg("MARK", "seven").toUtf8()));
+        output.clear();
+        error = build(b, 300000);
+        QVERIFY2(error.isEmpty(), qPrintable(error + "\n" + log(output)));
+        QVERIFY2(log(output).contains("configured already") &&
+                     !log(output).contains("set up by meson"),
+                 qPrintable(log(output)));
     }
 };
 
