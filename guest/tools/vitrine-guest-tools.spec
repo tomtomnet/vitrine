@@ -2,7 +2,7 @@
 # exact version, and dnf takes an installed one of the same version as done.
 Name:           vitrine-guest-tools
 Version:        0.1.0
-Release:        37%{?dist}
+Release:        38%{?dist}
 Summary:        vitrine guest tools: patched virtio-gpu driver, settings and agent
 
 # the driver's sources (dkms/vendor, dkms/patches) are the kernel's: MIT
@@ -40,12 +40,14 @@ What a Fedora guest needs to run well in vitrine: the virtio-gpu driver with
 vitrine's patches (host vblank, zero-copy display) as a DKMS module, its
 module options, the KWin settings for vitrine's KWin, a fix-up that makes the
 GPU's shared memory cacheable, full kernel preemption, a boot-time check of
-the driver and of the host's GPU behind the native context, the nested
-desktop's session (a boot with the VM's Nested desktop box logs Plasma into
-a window of the host's desktop, with KWin's settings for the host's GPU),
-and the vitrine agent, which tells vitrine the state of the guest tools and
-installs their updates.  vitrine's Mesa, KWin, KPipeWire, the nested
-desktop's proxy, Qt Base, KSvg and Kirigami come from the same tools medium.
+the driver and of the host's GPU behind the native context (on an Intel xe
+host it gives the guest's own sessions KWin's shorter lone-frame lead), the
+nested desktop's session (a boot with the VM's Nested desktop box logs
+Plasma into a window of the host's desktop, with KWin's settings for the
+host's GPU), and the vitrine agent, which tells vitrine the state of the
+guest tools and installs their updates.  vitrine's Mesa, KWin, KPipeWire,
+the nested desktop's proxy, Qt Base, KSvg and Kirigami come from the same
+tools medium.
 
 %prep
 %autosetup
@@ -181,6 +183,27 @@ fi
 %dir %{_sharedstatedir}/%{name}
 
 %changelog
+* Sat Nov 07 2026 vitrine <noreply@anthropic.com> - 0.1.0-38
+- on an Intel xe host, KWin's lone-frame lead goes to 1000 µs instead of
+  1500 in the nested desktop, and to 1000 µs in a KDE guest's own
+  session, where it was unset (the research's e152b8a and ef7974d, on its
+  Arc Pro B50 under KDE: the nested desktop's keys 7.8-10.2 -> 7.4-7.6 ms,
+  bare KDE's 7.6-7.7, the launcher's start still without a repeated
+  refresh; the guest's own session in QEMU's window 11.01 -> 10.29 ms,
+  where its KWin held a key's frame up to ~2 ms for its own vblank).
+  Nothing changes on other hosts
+- the nested desktop: a 1500 in nested.conf's CROSVM_DESKTOP_KWIN_ENV, the
+  xe value its notes gave until now, is replaced too, and the session's
+  journal says so
+- the guest's own session: the boot check writes
+  /run/environment.d/45-vitrine-lone-frame.conf at each boot, from the
+  native context alone, before any user's systemd starts; a file of the
+  same name in /etc/environment.d turns it off (nested.md: "KWin's
+  settings on Intel xe hosts")
+- the boot check gives up after a minute: now that user logins wait for it,
+  a hung check would keep them all out, ssh's too.  Stopped, it leaves its
+  files in /run whole or absent
+
 * Thu Nov 05 2026 vitrine <noreply@anthropic.com> - 0.1.0-37
 - on an Intel host the VM's screen can show the guest's own buffers
   instead of copying each frame (the research's 4ba00a2 and 420b32d, 7.2

@@ -5,12 +5,23 @@ ConditionVirtualization=vm
 # it may lower blob_flush_fence before a compositor uses the GPU; the
 # options of a nested-desktop boot differ
 After=vitrine-nested-boot.service
-Before=display-manager.service plasmalogin.service sddm.service gdm.service
+# and it writes KWin's lone-frame lead of an Intel xe host into
+# /run/environment.d before any user's systemd reads it as it starts: every
+# user@.service comes after systemd-user-sessions.service (systemd's login
+# barrier), for an automatic login, a lingering user and ssh alike
+Before=display-manager.service plasmalogin.service sddm.service gdm.service systemd-user-sessions.service
 
 [Service]
 Type=oneshot
 ExecStart=/usr/libexec/vitrine-guest-tools/virtio-gpu-check
 RemainAfterExit=yes
+# A minute at most (a oneshot has no start timeout of its own): ordered
+# before systemd-user-sessions.service, a check that hung would keep every
+# login but root's out, ssh's too, the way to repair a guest.  Its slowest
+# step, the capset's question to the host, gives up after 5 s.  Stopped, it
+# leaves its files in /run whole or absent: the guest's own sessions then get
+# no lead, the nested desktop's session asks the host's GPU itself at login
+TimeoutStartSec=60
 
 [Install]
 WantedBy=multi-user.target

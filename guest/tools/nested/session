@@ -96,8 +96,14 @@ fi
 #  - KWIN_WAYLAND_SCANOUT_BUFFERS=1: the output's buffers allocated for scanout, the only ones xe
 #    puts on a plane (the research's KWin 0073, in vitrine's KWin 6.8.2; its 6.7.5 allocated them
 #    so anyway and ignored the variable);
-#  - KWIN_LONE_FRAME_LEAD_US=1500 in place of the 2500 tuned on AMD hosts: keys 11.4 -> 10.1-10.6 ms
-#    on the B50, the launcher no worse (2026-10-23).
+#  - KWIN_LONE_FRAME_LEAD_US=1000 in place of the 2500 tuned on AMD hosts. With commit timing the
+#    nested KWin planned a key's frame two refreshes ahead, as its render estimate counts xe's
+#    0.3-0.8 ms per GPU job, and the frame's stamp held it there; the B50 host takes a lone commit
+#    up to ~1 ms before its vblank. Keys 7.8-10.2 -> 7.4-7.6 ms p50, bare KDE's 7.6-7.7 (one run in
+#    four still ~9.3), the launcher's start still without a repeated refresh (2026-11-06, the
+#    research's e152b8a). 1500, the xe value up to guest tools 0.1.0-37 (keys 11.4 -> 10.1-10.6 ms,
+#    2026-10-23), is replaced as well: a 1500 in CROSVM_DESKTOP_KWIN_ENV is most likely that advice,
+#    copied from these notes or nested.conf's.
 kwin_env_value() {   # the value VAR has in CROSVM_DESKTOP_KWIN_ENV; status 1 if it has none
     local kv
     for kv in $CROSVM_DESKTOP_KWIN_ENV; do
@@ -123,16 +129,23 @@ else
 fi
 if [ "$host_gpu" = xe ]; then
     xe_own=
-    for kv in KWIN_DISABLE_UDMABUF_IMPORT=1 KWIN_WAYLAND_SCANOUT_BUFFERS=1 KWIN_LONE_FRAME_LEAD_US=1500; do
-        # a value of your own stays; the lead's 2500 is the default, for AMD hosts
-        if have=$(kwin_env_value "${kv%%=*}") &&
-            ! { [ "${kv%%=*}" = KWIN_LONE_FRAME_LEAD_US ] && [ "$have" = 2500 ]; }; then
-            [ "$have" = "${kv#*=}" ] || xe_own="${xe_own:+$xe_own }${kv%%=*}=$have"
-            continue
+    xe_replaced=
+    for kv in KWIN_DISABLE_UDMABUF_IMPORT=1 KWIN_WAYLAND_SCANOUT_BUFFERS=1 KWIN_LONE_FRAME_LEAD_US=1000; do
+        # a value of your own stays; the lead's 2500 is the default, for AMD hosts, and its 1500 the
+        # xe value up to guest tools 0.1.0-37
+        if have=$(kwin_env_value "${kv%%=*}"); then
+            case "${kv%%=*}=$have" in
+            KWIN_LONE_FRAME_LEAD_US=2500) ;;
+            KWIN_LONE_FRAME_LEAD_US=1500) xe_replaced=" (the earlier shipped 1500 replaced)" ;;
+            *)
+                [ "$have" = "${kv#*=}" ] || xe_own="${xe_own:+$xe_own }${kv%%=*}=$have"
+                continue
+                ;;
+            esac
         fi
         kwin_env_put "$kv"
     done
-    log "host GPU: Intel xe (from $host_gpu_from): this session's KWin gets KWIN_DISABLE_UDMABUF_IMPORT=$(kwin_env_value KWIN_DISABLE_UDMABUF_IMPORT) KWIN_WAYLAND_SCANOUT_BUFFERS=$(kwin_env_value KWIN_WAYLAND_SCANOUT_BUFFERS) KWIN_LONE_FRAME_LEAD_US=$(kwin_env_value KWIN_LONE_FRAME_LEAD_US)${xe_own:+ (your own: $xe_own)}"
+    log "host GPU: Intel xe (from $host_gpu_from): this session's KWin gets KWIN_DISABLE_UDMABUF_IMPORT=$(kwin_env_value KWIN_DISABLE_UDMABUF_IMPORT) KWIN_WAYLAND_SCANOUT_BUFFERS=$(kwin_env_value KWIN_WAYLAND_SCANOUT_BUFFERS) KWIN_LONE_FRAME_LEAD_US=$(kwin_env_value KWIN_LONE_FRAME_LEAD_US)$xe_replaced${xe_own:+ (your own: $xe_own)}"
 else
     log "host GPU: ${host_gpu:-unknown} (from $host_gpu_from): none of the Intel xe settings"
 fi
