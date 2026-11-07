@@ -2,7 +2,7 @@
 # exact version, and dnf takes an installed one of the same version as done.
 Name:           vitrine-guest-tools
 Version:        0.1.0
-Release:        37%{?dist}
+Release:        38%{?dist}
 Summary:        vitrine guest tools: patched virtio-gpu driver, settings and agent
 
 # the driver's sources (dkms/vendor, dkms/patches) are the kernel's: MIT
@@ -181,6 +181,15 @@ fi
 %dir %{_sharedstatedir}/%{name}
 
 %changelog
+* Sat Nov 07 2026 vitrine <noreply@anthropic.com> - 0.1.0-38
+- on an Intel xe host, KWin's lone-frame lead goes to 1000 µs instead of
+  1500 in the nested desktop (the research's e152b8a: on its Arc Pro B50
+  under KDE, keys 7.8-10.2 -> 7.4-7.6 ms, bare KDE's 7.6-7.7, the
+  launcher's start still without a repeated refresh).  A 1500 in
+  nested.conf's CROSVM_DESKTOP_KWIN_ENV, the xe value its notes gave until
+  now, is replaced too, and the session's journal says so.  Nothing
+  changes on other hosts
+
 * Thu Nov 05 2026 vitrine <noreply@anthropic.com> - 0.1.0-37
 - on an Intel host the VM's screen can show the guest's own buffers
   instead of copying each frame (the research's 4ba00a2 and 420b32d, 7.2
