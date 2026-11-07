@@ -9,11 +9,11 @@ pinned copy of the research's recipe, `research/`.
 
 What the sets change (the research's measurements):
 
-- KWin, sets `hl39y` for Plasma 6.7.91, `hl39-68` for 6.8.0, `h681zu` for
-  6.8.1 and later (Fedora 44's Plasma 6.8.2); none for Fedora 44's earlier
-  Plasma 6.7.5. Patch 0082 (damage-free layers) is left out of the builds
-  of the sets that have it (`h681zu_no82`): with a host window over a VM,
-  Firefox in the guest froze. Keys in a VM take 8.5-9.3 ms against 12.5
+- KWin, sets `hl39y` for Plasma 6.7.91, `hl39-68` for 6.8.0, `h681zy` for
+  6.8.1 and later (Fedora 44's and 45's Plasma 6.8.2); none for Fedora 44's
+  earlier Plasma 6.7.5. Patch 0082 (damage-free layers) is left out of the
+  builds of the sets that have it (`h681zy_no82`): with a host window over a
+  VM, Firefox in the guest froze. Keys in a VM take 8.5-9.3 ms against 12.5
   ms with Fedora's KWin; drags and the launcher under load are smoother;
   the guest's frames are paced to the host's deadlines (presentation-time
   v3); the pointer grab (Ctrl+Alt+G) works inside Vitrine's Desktop view
@@ -35,11 +35,41 @@ What the sets change (the research's measurements):
     session; with no file, nothing changes.
 
   On the research's desktop (Arc Pro B50, Plasma 6.8.2), the bare desktop
-  is level with the 6.7.91 sets and VMs drag about 2 ms sooner. On an AMD
-  laptop GPU (Radeon 780M), an existing KWin hiccup in minimize and restore
-  animations came about 10 times as often after maximizing and tiling
-  windows (6 in 36 animations against 1 in 72 with Fedora's KWin). It was
-  not seen on the B50, and the research is narrowing it down.
+  is level with the 6.7.91 sets and VMs drag about 2 ms sooner.
+- `h681zy` adds five patches to `h681zu`:
+  - 0092: a new texture's big upload goes through 0090's buffer too: a
+    CPU-drawn window's first buffer at a new size, after a maximize say.
+    `KWIN_UPLOAD_BUFFER=0` turns both off.
+  - 0093: a shared-memory window's udmabuf is made only when KWin imports
+    one. It pinned each buffer's pages on KWin's main thread (~5.5 ms for a
+    4K window on the B50), for nothing on Intel xe, i915 and NVIDIA.
+  - 0094: a window's old shared memory is let go on a thread of its own:
+    its last close freed ~6.5 ms of pages on KWin's main thread.
+    `KWIN_SHM_RELEASE_THREAD=0` turns it off.
+  - 0095: the Overview keeps its views between openings.
+    `KWIN_OVERVIEW_VIEW_CACHE=0` turns it off.
+  - 0096: KWin reads the GPU's clock once a second for its render-time
+    queries, not at every frame: on xe each read woke the GPU, ~0.3 ms of
+    KWin's main thread a frame. `KWIN_GPU_CLOCK_EVERY_FRAME=1` reads it at
+    every frame.
+
+  On the Arc Pro B50 at 4K and 240 Hz, against `h681zu`: a CPU-drawn
+  window's maximize (Konsole) has at most 8-13 ms between two frames
+  instead of 42, and KWin's main thread runs 5-9 ms at a stretch instead of
+  36-49; from its second opening, the Overview shows its first frame after
+  17-18 ms instead of 37-45; window operations show 106-111 refreshes twice
+  in a slow pass instead of 154-155, 73-82 instead of 96-101 in a fast one
+  (KWin's count). The research's desktop also ran it through a night of
+  tests with an RX 6900 XT: no crash or GPU error, and a CPU-drawn 4K
+  window's maximize repeated one refresh.
+
+  On an AMD laptop GPU (Radeon 780M, Fedora 45, 4K at 240 Hz), against
+  Fedora's KWin 6.8.2: keys in 10.6-11.0 ms instead of 12.8-13.4 (p50);
+  window operations repeat 104-115 refreshes a pass against 110-139; Super
+  pressed 8 times a second under load is level; no short minimize animation
+  in 24 for either. With `h681zu`, a cluster of short minimize and restore
+  animations was seen once on Fedora 44 (kernel 7.2.13), and not on Fedora
+  45.
 - KSvg 6.31.0, set `k2`: Plasma's popups stop uploading their themed frames
   again at each opening.
 - Kirigami 6.31.0, set `f1`: its items react to the frame contrast only
@@ -164,8 +194,8 @@ sudo rm -f /etc/user-tmpfiles.d/vitrine-host-kwin.conf /etc/environment.d/vitrin
 ## `research/`: the research's recipe, pinned
 
 A copy of what `kde-rpms.sh` reads in the research's repository
-(virtio-gpu-desktop) at commit `5dbcc81fd81629eb505a610718db06e1fa26572b`
-(2026-11-03), in its layout (the container mounts the folder as `/repo`),
+(virtio-gpu-desktop) at commit `4ee46dd6c4e6d456efe4a31c84a91a55c7f9db30`
+(2026-11-07), in its layout (the container mounts the folder as `/repo`),
 byte for byte and with its files' modes: the scripts, the host sets of the
 four packages (`kde_set_for host ...` in `setup/versions.sh`) and the
 patches they name, and the run-time switches of KWin's patches
@@ -222,16 +252,21 @@ installing.
 | `318443465694ad35a85d1f5686e8a34837abadeb9ef2eb96bd3b2b31394d0f18` | `patches/kwin/0083-EXP-opengl-udmabuf-import-at-run-time.patch` |
 | `a2cafc576a9bcce8b7064daba66578b71f7a71f3fd9350cc7c90e3ebae933c2a` | `patches/kwin/0089-EXP-drm-night-light-after-blending-at-run-time.patch` |
 | `bc91ee813206b23353a848555ee9fc62a5c7b71b837291b98a215408f42b3c6c` | `patches/kwin/0090-EXP-opengl-persistent-upload-buffer-for-big-texture-uploads.patch` |
-| `aecb99f3dc3e99ef45a1de3ad1041b13964d16e9ea6d8e0fa5caca551aa93145` | `patches/kwin/sets/h681zu.series` |
+| `18dd95d05d04bfdb04810403663e216ea986c9b7870cf1795fbc904ab1f9f6e7` | `patches/kwin/0092-EXP-opengl-new-textures-big-uploads-through-the-upload-buffer.patch` |
+| `b497dca1af670d1795671a0a639ac6511c0a62748284a50664bea808928b622d` | `patches/kwin/0093-FIX-wayland-a-wl_shm-buffer-s-udmabuf-made-when-first-asked-for.patch` |
+| `0ccdf78c3fcc9c50bc7902989d4ca925ffe8d47336e1d1072d7753ccd6d888d6` | `patches/kwin/0094-EXP-wayland-a-client-s-shm-memory-let-go-on-a-thread-of-its-own.patch` |
+| `90ffb02e25ac75ab1e305d3592e2cacfa262b69d8c6a2251cdd578b4c4cdf30e` | `patches/kwin/0095-EXP-overview-keep-the-views-between-openings.patch` |
+| `1afe99bbcd5b04da7865274f9256cffa6df922b51c0eb40666fb4be893bef515` | `patches/kwin/0096-EXP-opengl-the-GPU-s-clock-read-once-a-second-for-render-time-queries.patch` |
+| `c43b05c3c6c2fc11a460184fd73046399c57df4360f80c17a10230ff69d1fd38` | `patches/kwin/sets/h681zy.series` |
 | `c18c004fe7319f2d4509deeadf37df8434088affde845d0eb96b11bb6642367d` | `patches/kwin/sets/hl39-68.series` |
 | `45da20f38c96aeb3d44540c0567de26c293e6aba799b1e64e01eebb79ee7ad11` | `patches/kwin/sets/hl39y.series` |
 | `bdfcd81c8c252a31ffad2f62bd99e793a0c6d0d0300c5704d74ee0ccba454b25` | `patches/qtbase/qtbase-wayland-shm-reuse-pools-v3.patch` |
 | `e1c33999e3ea401a4a5d4017023d34d85962c318c993e3bf5804799baa2ab3b3` | `patches/qtbase/sets/q4.series` |
-| `7a897bedc00932a2a04068746278082ac32317e28bb120884d7f371cf4ba39c0` | `setup/lib.sh` |
+| `475c0f28931454124716683c6c068a173fefc458d5d28a00c28961a629b086f2` | `setup/lib.sh` |
 | `761707846b55e70bac195d24e30520ca5c7b96164c0ce45b113317fc13150deb` | `setup/paths.sh` |
 | `fa2026f1f4b365859cf919667685f23bb7d6988ec8906dbdf2c8831428750182` | `setup/tools/build-patched-rpm.sh` |
 | `044bf5dc522dc2ae268ae734bf0389569eff2ef095f2ddd48ddd270488656bdb` | `setup/tools/kde-rpms.sh` |
-| `6b1822c3dacfe0c142d5681ff28a82cfb756d40ac2e6d02b807905c80850317e` | `setup/versions.sh` |
+| `8868c2cecf05cf8fa0f8695dd05d0bfcd3ea4917935a0cae594a63ff77e89816` | `setup/versions.sh` |
 | `19cf4324887903cc1185fc8dc83d38bb9e97176a36ef8ed9506611be4f6e1ddf` | `src/host-config/kwin-active-window-candidate.conf` |
 | `cf647e7f955d60ec6cae1ee58196b94d939996df44697f9e479023921bbe1f91` | `src/host-config/kwin-animation-start-step.conf` |
 | `ebb40936ea5b94c0970194727a29954e954780bc5b7817421e79fc5ee9d04911` | `src/host-config/kwin-empty-render-not-content.conf` |
@@ -245,7 +280,7 @@ When the research's recipe moves (`r` its repository, `c` the commit, `v`
 this folder), take it again as it is, the sets' patches with it:
 
 ```sh
-r=~/Documents/virtio-gpu-desktop c=5dbcc81 v=~/Documents/vitrine/host/kde/research
+r=~/Documents/virtio-gpu-desktop c=4ee46dd v=~/Documents/vitrine/host/kde/research
 rm -rf "$v" && mkdir -p "$v/setup/tools" "$v/src/host-config"
 for f in setup/lib.sh setup/paths.sh setup/versions.sh setup/tools/kde-rpms.sh \
 	setup/tools/build-patched-rpm.sh \
@@ -253,7 +288,7 @@ for f in setup/lib.sh setup/paths.sh setup/versions.sh setup/tools/kde-rpms.sh \
 	git -C "$r" show "$c:$f" > "$v/$f"
 done
 # patches/DIR (kde_patch_dir) and the host sets kde_set_for names for each package
-for d in kwin:hl39y,hl39-68,h681zu ksvg:k2 kirigami:f1 qtbase:q4; do
+for d in kwin:hl39y,hl39-68,h681zy ksvg:k2 kirigami:f1 qtbase:q4; do
 	dir=${d%%:*} sets=${d#*:}
 	mkdir -p "$v/patches/$dir/sets"
 	for s in ${sets//,/ }; do

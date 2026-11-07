@@ -1,0 +1,61 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: Local build <local@localhost>
+Date: Wed, 4 Nov 2026 09:40:00 +0100
+Subject: [PATCH] EXP opengl: new textures' big uploads through the upload buffer
+ too (KWIN_UPLOAD_BUFFER=0 turns it off)
+
+0090 sends GLTexture::update()'s big uploads through a persistent pixel-unpack buffer; GLTexture::upload() - a new
+texture from an image - still handed glTexImage2D() the image, and the driver copied it into a fresh staging buffer,
+faulted in page by page (glibc copies a page-aligned wl_shm buffer backwards; TTM maps only the pages after a fault).
+That is the path of a window's first buffer at a new size: on the Arc Pro B50 at 4K, maximizing a Konsole kept KWin's
+main thread busy 35-39 ms right after the client's new frame came in - two animation frames, then ~45 ms without one
+(bench/ab/kde_maximize_trace_1104.sh kmt1-kmt3, tools/kwin_maximize_stall.bt: GLTexture::upload -> glTexImage2D ->
+u_default_texture_subdata, ~9,000 page faults a maximize). GPU-drawn windows (dmabuf) never pause.
+
+So upload() makes the texture's storage empty and fills it from the upload buffer when the image is big (1 MiB or more,
+4-byte pixels), as update() does; smaller images and contexts without the buffer upload as before.
+---
+diff --git a/src/opengl/gltexture.cpp b/src/opengl/gltexture.cpp
+index 8ca481e..7c4e1c8 100644
+--- a/src/opengl/gltexture.cpp
++++ b/src/opengl/gltexture.cpp
+@@ -576,9 +576,36 @@ std::unique_ptr<GLTexture> GLTexture::upload(const QImage &image)
+     }
+ 
+     glBindTexture(GL_TEXTURE_2D, texture);
+-    glPixelStorei(GL_UNPACK_ROW_LENGTH, im.bytesPerLine() / (im.depth() / 8));
+-    glTexImage2D(GL_TEXTURE_2D, 0, internalFormat, im.width(), im.height(), 0, format, type, im.constBits());
+-    glPixelStorei(GL_UNPACK_ROW_LENGTH, 0);
++    // a big image of 4-byte pixels goes through the context's persistent upload buffer (see
++    // GLUploadBuffer) as update() does: a window's first buffer at a new size - a maximized or
++    // restored CPU-drawn window - would otherwise be copied into a new driver staging buffer
++    // faulted in page by page (Arc Pro B50: ~35 ms for a 4K Konsole)
++    const int bpp = im.depth() / 8;
++    const size_t rowBytes = size_t(im.width()) * bpp;
++    const size_t bytes = rowBytes * im.height();
++    GLUploadBuffer *upload = (bpp == 4 && bytes >= 1024 * 1024) ? context->uploadBuffer() : nullptr;
++    uint8_t *staging = upload ? upload->map(bytes) : nullptr;
++    if (staging) {
++        if (rowBytes == size_t(im.bytesPerLine())) {
++            std::memcpy(staging, im.constBits(), bytes);
++        } else {
++            for (int y = 0; y < im.height(); ++y) {
++                std::memcpy(staging + y * rowBytes, im.constScanLine(y), rowBytes);
++            }
++        }
++        glTexImage2D(GL_TEXTURE_2D, 0, internalFormat, im.width(), im.height(), 0, format, type, nullptr);
++        glBindBuffer(GL_PIXEL_UNPACK_BUFFER, upload->handle());
++        glPixelStorei(GL_UNPACK_ROW_LENGTH, 0);
++        glPixelStorei(GL_UNPACK_SKIP_PIXELS, 0);
++        glPixelStorei(GL_UNPACK_SKIP_ROWS, 0);
++        glTexSubImage2D(GL_TEXTURE_2D, 0, 0, 0, im.width(), im.height(), format, type, nullptr);
++        glBindBuffer(GL_PIXEL_UNPACK_BUFFER, 0);
++        upload->unmap();
++    } else {
++        glPixelStorei(GL_UNPACK_ROW_LENGTH, im.bytesPerLine() / (im.depth() / 8));
++        glTexImage2D(GL_TEXTURE_2D, 0, internalFormat, im.width(), im.height(), 0, format, type, im.constBits());
++        glPixelStorei(GL_UNPACK_ROW_LENGTH, 0);
++    }
+     if (supportsSwizzle()) {
+         glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_SWIZZLE_A, image.hasAlphaChannel() ? GL_ALPHA : GL_ONE);
+     }

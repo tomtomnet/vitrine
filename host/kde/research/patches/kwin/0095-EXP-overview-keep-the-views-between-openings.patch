@@ -1,0 +1,32 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: Local build <local@localhost>
+Date: Wed, 4 Nov 2026 10:30:00 +0100
+Subject: [PATCH] EXP overview: keep the views between openings
+ (KWIN_OVERVIEW_VIEW_CACHE=0 turns it off)
+
+Each opening of the Overview built its Qt Quick scene again: on the B50 desktop (a desktop CPU) ~20 ms of the
+compositor's main thread before the first frame - two runs of ~10 ms after QuickSceneEffect::startInternal, the first
+change ~34 ms after the last one before it (bench/ab/kde_maximize_trace_1104.sh kmt7/kmt8, KMT_STALL=1, Meta+W); in the
+window-operations test the first opening of a pass showed 42-66 ms without a change (dgk4). QuickSceneEffect has had
+opt-in view caching since !8998 (hidden views release their GL resources and render nothing), meant for this effect,
+whose port was left out of the merge. The overview clears its search text at each activation, and its window and desktop
+models follow the workspace while hidden.
+---
+diff --git a/src/plugins/overview/overvieweffect.cpp b/src/plugins/overview/overvieweffect.cpp
+index d50cbae..9be1977 100644
+--- a/src/plugins/overview/overvieweffect.cpp
++++ b/src/plugins/overview/overvieweffect.cpp
+@@ -172,6 +172,13 @@ OverviewEffect::OverviewEffect()
+     });
+     delegate->loadFromModule(QStringLiteral("org.kde.kwin.overview"), QStringLiteral("Main"), QQmlComponent::Asynchronous);
+     setDelegate(delegate);
++
++    // EXP (2026-11-04): the overview's views kept between openings (QuickSceneEffect's opt-in view caching, upstream
++    // !8998, which meant to port this effect and did not): each opening built the whole Qt Quick scene again - ~20 ms
++    // of the compositor's main thread on a desktop CPU before the first frame (bench/ab/kde_maximize_trace_1104.sh with
++    // KMT_STALL=1, Meta+W). Hidden views release their GL resources and render nothing; KWIN_OVERVIEW_VIEW_CACHE=0
++    // builds them at each opening as before.
++    setViewCachingEnabled(qEnvironmentVariable("KWIN_OVERVIEW_VIEW_CACHE") != QLatin1String("0"));
+ }
+ 
+ OverviewEffect::~OverviewEffect()

@@ -1,0 +1,105 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: Local build <local@localhost>
+Date: Wed, 4 Nov 2026 10:10:00 +0100
+Subject: [PATCH] EXP wayland: a client's shm memory let go on a thread of its
+ own (KWIN_SHM_RELEASE_THREAD=0 turns it off)
+
+When a client drops its old buffers - after a resize, a maximize, a restore - KWin's descriptors and mappings of that
+memory are often the last ones, and the last close frees its pages on the compositor's main thread: ~6.5 ms for a 4K
+window's buffer on an Arc Pro B50 (bench/ab/kde_maximize_trace_1104.sh with tools/kwin_maximize_stall.bt:
+shmem_evict_inode under ShmClientBuffer's destructor, in the main thread's stall after a maximize).
+
+So a wl_shm buffer's descriptors (its pool's descriptor duplicate, a udmabuf's) and a pool's descriptor and mapping are
+let go on one thread of their own, in the order they were dropped: the last close, and the freeing, happen there.
+---
+diff --git a/src/wayland/shmclientbuffer.cpp b/src/wayland/shmclientbuffer.cpp
+index c864dc0..823ad19 100644
+--- a/src/wayland/shmclientbuffer.cpp
++++ b/src/wayland/shmclientbuffer.cpp
+@@ -12,6 +12,7 @@
+ #include "wayland/shmclientbuffer.h"
+ #include "wayland/shmclientbuffer_p.h"
+ 
++#include <QThreadPool>
+ #include <drm_fourcc.h>
+ #include <fcntl.h>
+ #include <mutex>
+@@ -62,6 +63,52 @@ static uint32_t shmFormatToDrmFormat(uint32_t shmFormat)
+     }
+ }
+ 
++/**
++ * EXP (2026-11-04): the last close of a client's shm memory frees its pages - ~6.5 ms for a 4K window's buffer on an Arc
++ * Pro B50, on the compositor's main thread (bench/ab/kde_maximize_trace_1104.sh: shmem_evict_inode after a maximize or
++ * restore, when the client drops its old buffers). KWin's descriptors and mappings of that memory are let go on a thread
++ * of its own, in order, so the last one - and the freeing - happens there. KWIN_SHM_RELEASE_THREAD=0 turns it off.
++ */
++static bool releaseOffThread()
++{
++    static const bool on = qEnvironmentVariable("KWIN_SHM_RELEASE_THREAD") != QLatin1String("0");
++    return on;
++}
++
++static QThreadPool *shmReleaseThread()
++{
++    // one thread: the releases run in the order they were queued; never destroyed (a leak at exit, nothing pending matters)
++    static QThreadPool *pool = [] {
++        auto *p = new QThreadPool;
++        p->setMaxThreadCount(1);
++        return p;
++    }();
++    return pool;
++}
++
++static void releaseLater(FileDescriptor &&fd, std::shared_ptr<MemoryMap> &&mapping = nullptr)
++{
++    if (!fd.isValid() && !mapping) {
++        return;
++    }
++    if (!releaseOffThread()) {
++        mapping.reset();
++        fd = FileDescriptor();
++        return;
++    }
++    // std::function wants a copyable callable: the move-only descriptor goes in a shared_ptr
++    auto held = std::make_shared<std::pair<FileDescriptor, std::shared_ptr<MemoryMap>>>(std::move(fd), std::move(mapping));
++    shmReleaseThread()->start([held]() {
++        held->second.reset();
++        held->first = FileDescriptor();
++    });
++}
++
++ShmPool::~ShmPool()
++{
++    releaseLater(std::move(fd), std::move(mapping));
++}
++
+ ShmPool::ShmPool(ShmClientBufferIntegration *integration, wl_client *client, int id, uint32_t version, FileDescriptor &&fd, std::shared_ptr<MemoryMap> mapping)
+     : QtWaylandServer::wl_shm_pool(client, id, version)
+     , integration(integration)
+@@ -194,6 +241,13 @@ ShmClientBuffer::ShmClientBuffer(ShmPool *pool, ShmAttributes attributes, wl_cli
+ ShmClientBuffer::~ShmClientBuffer()
+ {
+     Q_ASSERT(!m_shmAccess);
++    // the buffer's own descriptors first, then the pool's (if this was its last buffer): see releaseLater()
++    if (m_udmabufAttributes) {
++        for (FileDescriptor &plane : m_udmabufAttributes->fd) {
++            releaseLater(std::move(plane));
++        }
++    }
++    releaseLater(std::move(m_shmAttributes.fd));
+     m_shmPool->unref();
+ }
+ 
+diff --git a/src/wayland/shmclientbuffer_p.h b/src/wayland/shmclientbuffer_p.h
+index 113e0a0..06825e6 100644
+--- a/src/wayland/shmclientbuffer_p.h
++++ b/src/wayland/shmclientbuffer_p.h
+@@ -33,6 +33,7 @@ class ShmPool : public QtWaylandServer::wl_shm_pool
+ {
+ public:
+     ShmPool(ShmClientBufferIntegration *integration, wl_client *client, int id, uint32_t version, FileDescriptor &&fd, std::shared_ptr<MemoryMap> mapping);
++    ~ShmPool() override;
+ 
+     void ref();
+     void unref();

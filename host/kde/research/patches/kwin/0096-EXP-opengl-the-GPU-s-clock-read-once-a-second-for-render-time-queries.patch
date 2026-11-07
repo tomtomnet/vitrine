@@ -1,0 +1,113 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: Local build <local@localhost>
+Date: Wed, 4 Nov 2026 11:00:00 +0100
+Subject: [PATCH] EXP opengl: the GPU's clock read once a second for render-time
+ queries (KWIN_GPU_CLOCK_EVERY_FRAME=1 reads it every frame)
+
+GLRenderTimeQuery read GL_TIMESTAMP at the start of every frame to place the GPU's end-of-render timestamp on the CPU's
+clock. On Intel xe Mesa reads it with DRM_XE_DEVICE_QUERY_ENGINE_CYCLES, which takes all of the GT's forcewake domains:
+~0.3 ms of the compositor's main thread a frame on an Arc Pro B50 (tools/kwin_maximize_stall.bt: GLRenderTimeQuery ->
+glGetInteger64v -> iris_get_timestamp -> xe_gem_read_render_timestamp -> query_engine_cycles -> xe_force_wake_get,
+~3.5 % of the main thread's time during animations).
+
+The GPU's clock and the CPU's run at the same rate to a few ppm, so EglContext reads the GPU's at most once a second and
+carries the reading forward with the CPU's clock in between (tens of microseconds off at most). A result that comes out
+negative or longer than a second (the GPU counter wrapped) drops the reading and gives no result for that frame.
+---
+diff --git a/src/opengl/eglcontext.cpp b/src/opengl/eglcontext.cpp
+index 8bd3703..f591d03 100644
+--- a/src/opengl/eglcontext.cpp
++++ b/src/opengl/eglcontext.cpp
+@@ -337,6 +337,24 @@ bool EglContext::supportsTimerQueries() const
+     return m_supportsTimerQueries;
+ }
+ 
++std::chrono::nanoseconds EglContext::gpuClockNow()
++{
++    static const bool s_everyFrame = qEnvironmentVariableIntValue("KWIN_GPU_CLOCK_EVERY_FRAME") != 0;
++    const auto now = std::chrono::steady_clock::now();
++    if (s_everyFrame || !m_gpuClock || now - m_gpuClock->second >= std::chrono::seconds(1)) {
++        GLint64 timestamp = 0;
++        glGetInteger64v(GL_TIMESTAMP, &timestamp);
++        m_gpuClock = std::make_pair(std::chrono::nanoseconds(timestamp), std::chrono::steady_clock::now());
++        return m_gpuClock->first;
++    }
++    return m_gpuClock->first + std::chrono::duration_cast<std::chrono::nanoseconds>(now - m_gpuClock->second);
++}
++
++void EglContext::resetGpuClock()
++{
++    m_gpuClock.reset();
++}
++
+ bool EglContext::supportsTextureStorage() const
+ {
+     return m_supportsTextureStorage;
+diff --git a/src/opengl/eglcontext.h b/src/opengl/eglcontext.h
+index 179ce19..a8fb7e9 100644
+--- a/src/opengl/eglcontext.h
++++ b/src/opengl/eglcontext.h
+@@ -8,6 +8,9 @@
+ */
+ #pragma once
+ 
++#include <chrono>
++#include <optional>
++
+ #include "opengl/gltexture.h"
+ #include "utils/version.h"
+ 
+@@ -95,6 +98,16 @@ public:
+     bool hasOpenglExtension(QByteArrayView name) const;
+     bool isSoftwareRenderer() const;
+     bool supportsTimerQueries() const;
++    /**
++     * The GPU's clock now (GL_TIMESTAMP), read at most once a second and carried forward with the CPU's clock in
++     * between: on Intel xe each read is a DRM_XE_DEVICE_QUERY_ENGINE_CYCLES ioctl that wakes the GT (~0.3 ms of the
++     * main thread a frame). KWIN_GPU_CLOCK_EVERY_FRAME=1 reads it every time.
++     */
++    std::chrono::nanoseconds gpuClockNow();
++    /**
++     * Forgets the last reading of the GPU's clock: the next gpuClockNow() reads it.
++     */
++    void resetGpuClock();
+     bool supportsTextureSwizzle() const;
+     bool supportsTextureStorage() const;
+     bool supportsARGB32Textures() const;
+@@ -173,6 +186,7 @@ private:
+     const QByteArrayView m_renderer;
+     const QSet<QByteArray> m_extensions;
+     const bool m_supportsTimerQueries;
++    std::optional<std::pair<std::chrono::nanoseconds, std::chrono::steady_clock::time_point>> m_gpuClock;
+     const bool m_supportsTextureStorage;
+     const bool m_supportsTextureSwizzle;
+     const bool m_supportsARGB32Textures;
+diff --git a/src/opengl/glrendertimequery.cpp b/src/opengl/glrendertimequery.cpp
+index 0844dc2..45f5ba9 100644
+--- a/src/opengl/glrendertimequery.cpp
++++ b/src/opengl/glrendertimequery.cpp
+@@ -35,9 +35,8 @@ GLRenderTimeQuery::GLRenderTimeQuery(const std::shared_ptr<EglContext> &context,
+     : m_context(context)
+ {
+     m_gpuProbe.query = query;
+-    GLint64 start = 0;
+-    glGetInteger64v(GL_TIMESTAMP, &start);
+-    m_gpuProbe.start = std::chrono::nanoseconds(start);
++    // the GPU's clock as of now, read at most once a second (EglContext::gpuClockNow())
++    m_gpuProbe.start = context->gpuClockNow();
+     m_cpuStart = std::chrono::steady_clock::now();
+ }
+ 
+@@ -82,6 +81,12 @@ std::optional<RenderTimeSpan> GLRenderTimeQuery::query()
+         if (previousContext && previousContext != context.get()) {
+             (void)previousContext->makeCurrent();
+         }
++        // a start carried forward from an older reading of the GPU's clock: if the clock went back (its counter
++        // wrapped) or the span is not a frame's, read it afresh next time and give no result for this frame
++        if (m_gpuProbe.end < m_gpuProbe.start || m_gpuProbe.end - m_gpuProbe.start > std::chrono::seconds(1)) {
++            context->resetGpuClock();
++            return std::nullopt;
++        }
+     }
+ 
+     m_result = RenderTimeSpan{
