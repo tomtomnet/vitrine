@@ -1,0 +1,287 @@
+From 144af18ebc5c62f2b5d654fb7e7a2654dfb04df0 Mon Sep 17 00:00:00 2001
+From: tomtomnet <tompere8000@proton.me>
+Date: Thu, 5 Nov 2026 08:46:49 +0100
+Subject: [PATCH] virtio-gpu: the scanout blob layout the guest tells, for zero
+ copy on hosts that keep none in the buffer
+
+An Intel host GPU keeps no layout in a buffer (amdgpu has its metadata, which
+ui/dmabuf-layout.c reads), so every Intel guest scanout buffer was refused for
+zero copy ("layout unknown") and copied, 4K frames included (the Arc Pro B50,
+2026-11-05). The device now offers VIRTIO_GPU_F_SCANOUT_MODIFIER_VGD (bit 23,
+ours; property x-scanout-modifier, on by default): a guest driver that
+negotiates it puts the framebuffer modifier into SET_SCANOUT_BLOB padding
+word (bit 31 set, the vendor in bits 24-30, the low 24 bits below: linear and
+Intel layouts fit; zero otherwise). It is decoded into the scanout dma-buf
+modifier, which the SDL swapchain and the D-Bus display then take as the
+layout when the compositor takes it. The word is read only from a guest that
+negotiated the feature.
+
+vhost-user-gpu, whose backend process handles SET_SCANOUT_BLOB itself and does
+not decode the word, never offers the feature (it would otherwise inherit the
+offer from the shared base properties).
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ hw/display/vhost-user-gpu.c      |  7 +++++++
+ hw/display/virtio-gpu-base.c     |  3 +++
+ hw/display/virtio-gpu-rutabaga.c |  4 ++++
+ hw/display/virtio-gpu-udmabuf.c  |  2 +-
+ hw/display/virtio-gpu-virgl.c    |  4 ++++
+ hw/display/virtio-gpu.c          | 14 ++++++++++++++
+ include/hw/virtio/virtio-gpu.h   | 21 +++++++++++++++++++++
+ ui/dbus-listener.c               | 22 ++++++++++++++++++----
+ ui/sdl2-swapchain.c              | 22 ++++++++++++++++++++--
+ 9 files changed, 92 insertions(+), 7 deletions(-)
+
+diff --git a/hw/display/vhost-user-gpu.c b/hw/display/vhost-user-gpu.c
+index c09aca0411..c825f3b0b6 100644
+--- a/hw/display/vhost-user-gpu.c
++++ b/hw/display/vhost-user-gpu.c
+@@ -680,6 +680,13 @@ vhost_user_gpu_device_realize(DeviceState *qdev, Error **errp)
+     if (vhost_dev_has_feature(&g->vhost->dev, VIRTIO_GPU_F_RESOURCE_UUID)) {
+         g->parent_obj.conf.flags |= 1 << VIRTIO_GPU_FLAG_RESOURCE_UUID_ENABLED;
+     }
++    /*
++     * The scanout modifier word (x-scanout-modifier): QEMU's own devices
++     * decode it; here the backend process handles SET_SCANOUT_BLOB and does
++     * not, so the feature is never offered (a guest would send Intel Tile4
++     * buffers that the backend took for linear ones)
++     */
++    g->parent_obj.conf.flags &= ~(1 << VIRTIO_GPU_FLAG_SCANOUT_MODIFIER_ENABLED);
+ 
+     if (!virtio_gpu_base_device_realize(qdev, NULL, NULL, errp)) {
+         return;
+diff --git a/hw/display/virtio-gpu-base.c b/hw/display/virtio-gpu-base.c
+index d557a4e056..4de689cc0f 100644
+--- a/hw/display/virtio-gpu-base.c
++++ b/hw/display/virtio-gpu-base.c
+@@ -855,6 +855,9 @@ virtio_gpu_base_get_features(VirtIODevice *vdev, uint64_t features,
+     if (virtio_gpu_resource_uuid_enabled(g->conf)) {
+         features |= (1 << VIRTIO_GPU_F_RESOURCE_UUID);
+     }
++    if (virtio_gpu_scanout_modifier_enabled(g->conf)) {
++        features |= (1ULL << VIRTIO_GPU_F_SCANOUT_MODIFIER_VGD);
++    }
+ 
+     return features;
+ }
+diff --git a/hw/display/virtio-gpu-rutabaga.c b/hw/display/virtio-gpu-rutabaga.c
+index dab2e99ab2..cd7ad02a16 100644
+--- a/hw/display/virtio-gpu-rutabaga.c
++++ b/hw/display/virtio-gpu-rutabaga.c
+@@ -569,6 +569,10 @@ rutabaga_cmd_set_scanout_blob(VirtIOGPU *g,
+ 
+     VIRTIO_GPU_FILL_CMD(ss);
+     virtio_gpu_scanout_blob_bswap(&ss);
++    if (!virtio_vdev_has_feature(VIRTIO_DEVICE(g),
++                                 VIRTIO_GPU_F_SCANOUT_MODIFIER_VGD)) {
++        ss.padding = 0;     /* the modifier word: only from a guest that negotiated it */
++    }
+     trace_virtio_gpu_cmd_set_scanout_blob(ss.scanout_id, ss.resource_id,
+                                           ss.r.width, ss.r.height, ss.r.x,
+                                           ss.r.y);
+diff --git a/hw/display/virtio-gpu-udmabuf.c b/hw/display/virtio-gpu-udmabuf.c
+index a240069173..e69bbe2d59 100644
+--- a/hw/display/virtio-gpu-udmabuf.c
++++ b/hw/display/virtio-gpu-udmabuf.c
+@@ -225,7 +225,7 @@ virtio_gpu_create_dmabuf(struct virtio_gpu_simple_resource *res,
+                            &offset, &fb->stride,
+                            r->x, r->y, fb->width, fb->height,
+                            qemu_pixman_to_drm_format(fb->format),
+-                           DRM_FORMAT_MOD_INVALID, &fd,
++                           fb->has_modifier ? fb->modifier : DRM_FORMAT_MOD_INVALID, &fd,
+                            1, true, false);
+ }
+ 
+diff --git a/hw/display/virtio-gpu-virgl.c b/hw/display/virtio-gpu-virgl.c
+index 6b7667d57a..093e2d43a0 100644
+--- a/hw/display/virtio-gpu-virgl.c
++++ b/hw/display/virtio-gpu-virgl.c
+@@ -1175,6 +1175,10 @@ static void virgl_cmd_set_scanout_blob(VirtIOGPU *g,
+ 
+     VIRTIO_GPU_FILL_CMD(ss);
+     virtio_gpu_scanout_blob_bswap(&ss);
++    if (!virtio_vdev_has_feature(VIRTIO_DEVICE(g),
++                                 VIRTIO_GPU_F_SCANOUT_MODIFIER_VGD)) {
++        ss.padding = 0;     /* the modifier word: only from a guest that negotiated it */
++    }
+     trace_virtio_gpu_cmd_set_scanout_blob(ss.scanout_id, ss.resource_id,
+                                           ss.r.width, ss.r.height, ss.r.x,
+                                           ss.r.y);
+diff --git a/hw/display/virtio-gpu.c b/hw/display/virtio-gpu.c
+index 930d631365..0ea1a82e71 100644
+--- a/hw/display/virtio-gpu.c
++++ b/hw/display/virtio-gpu.c
+@@ -25,6 +25,7 @@
+ #include "hw/virtio/virtio-gpu.h"
+ #include "hw/virtio/virtio-gpu-bswap.h"
+ #include "hw/virtio/virtio-gpu-pixman.h"
++#include "standard-headers/drm/drm_fourcc.h"
+ #include "hw/virtio/virtio-bus.h"
+ #include "hw/core/qdev-properties.h"
+ #include "migration/blocker.h"
+@@ -908,6 +909,15 @@ bool virtio_gpu_scanout_blob_to_fb(struct virtio_gpu_framebuffer *fb,
+     fb->width = ss->width;
+     fb->height = ss->height;
+     fb->stride = ss->strides[0];
++    /*
++     * The guest driver's scanout_modifier word (padding, zero otherwise): bit
++     * 31 set, the vendor in bits 24-30, the modifier's low 24 bits below -
++     * linear and Intel's layouts fit
++     */
++    fb->has_modifier = ss->padding & (1u << 31);
++    fb->modifier = fb->has_modifier ?
++        ((uint64_t)((ss->padding >> 24) & 0x7f) << 56) | (ss->padding & 0xffffff) :
++        DRM_FORMAT_MOD_INVALID;
+ 
+     if (fb->stride < (uint64_t)fb->width * bytes_pp) {
+         qemu_log_mask(LOG_GUEST_ERROR,
+@@ -951,6 +961,10 @@ static void virtio_gpu_set_scanout_blob(VirtIOGPU *g,
+ 
+     VIRTIO_GPU_FILL_CMD(ss);
+     virtio_gpu_scanout_blob_bswap(&ss);
++    if (!virtio_vdev_has_feature(VIRTIO_DEVICE(g),
++                                 VIRTIO_GPU_F_SCANOUT_MODIFIER_VGD)) {
++        ss.padding = 0;     /* the modifier word: only from a guest that negotiated it */
++    }
+     trace_virtio_gpu_cmd_set_scanout_blob(ss.scanout_id, ss.resource_id,
+                                           ss.r.width, ss.r.height, ss.r.x,
+                                           ss.r.y);
+diff --git a/include/hw/virtio/virtio-gpu.h b/include/hw/virtio/virtio-gpu.h
+index 249da9a3f5..0bfc166991 100644
+--- a/include/hw/virtio/virtio-gpu.h
++++ b/include/hw/virtio/virtio-gpu.h
+@@ -79,6 +79,14 @@ struct virtio_gpu_framebuffer {
+     uint32_t width, height;
+     uint32_t stride;
+     uint32_t offset;
++    /*
++     * The layout the guest told for a scanout blob (its virtio_gpu
++     * scanout_modifier option: SET_SCANOUT_BLOB's padding word), when it did:
++     * a host GPU that keeps no layout in the buffer (Intel) needs it to take
++     * the buffer as it is
++     */
++    bool has_modifier;
++    uint64_t modifier;
+ };
+ 
+ #define VIRTIO_GPU_HELD_FENCES 8
+@@ -159,8 +167,17 @@ enum virtio_gpu_base_conf_flags {
+     VIRTIO_GPU_FLAG_VENUS_ENABLED,
+     VIRTIO_GPU_FLAG_RESOURCE_UUID_ENABLED,
+     VIRTIO_GPU_FLAG_DRM_ENABLED,
++    VIRTIO_GPU_FLAG_SCANOUT_MODIFIER_ENABLED,
+ };
+ 
++/*
++ * Research extension (2026-11-05): the device decodes the scanout modifier
++ * word the guest driver puts into SET_SCANOUT_BLOB's padding (its
++ * scanout_modifier and intel_scanout options use it only when offered). No
++ * virtio-gpu feature of the specification is this high.
++ */
++#define VIRTIO_GPU_F_SCANOUT_MODIFIER_VGD 23
++
+ #define virtio_gpu_virgl_enabled(_cfg) \
+     (_cfg.flags & (1 << VIRTIO_GPU_FLAG_VIRGL_ENABLED))
+ #define virtio_gpu_stats_enabled(_cfg) \
+@@ -183,6 +200,8 @@ enum virtio_gpu_base_conf_flags {
+     (_cfg.flags & (1 << VIRTIO_GPU_FLAG_VENUS_ENABLED))
+ #define virtio_gpu_drm_enabled(_cfg) \
+     (_cfg.flags & (1 << VIRTIO_GPU_FLAG_DRM_ENABLED))
++#define virtio_gpu_scanout_modifier_enabled(_cfg) \
++    (_cfg.flags & (1 << VIRTIO_GPU_FLAG_SCANOUT_MODIFIER_ENABLED))
+ 
+ struct virtio_gpu_base_conf {
+     uint32_t max_outputs;
+@@ -258,6 +277,8 @@ struct VirtIOGPUBaseClass {
+     DEFINE_PROP_VIRTIO_GPU_OUTPUT_LIST("outputs", _state, _conf.outputs), \
+     DEFINE_PROP_BIT("edid", _state, _conf.flags, \
+                     VIRTIO_GPU_FLAG_EDID_ENABLED, true), \
++    DEFINE_PROP_BIT("x-scanout-modifier", _state, _conf.flags, \
++                    VIRTIO_GPU_FLAG_SCANOUT_MODIFIER_ENABLED, true), \
+     DEFINE_PROP_UINT32("xres", _state, _conf.xres, 1280), \
+     DEFINE_PROP_UINT32("yres", _state, _conf.yres, 800)
+ 
+diff --git a/ui/dbus-listener.c b/ui/dbus-listener.c
+index 2330c0d797..ef1ff5097b 100644
+--- a/ui/dbus-listener.c
++++ b/ui/dbus-listener.c
+@@ -433,10 +433,24 @@ static void dbus_scanout_dmabuf_v2(DBusDisplayListener *ddl,
+     if (ddl->zero_copy && num_planes == 1 && num_fds == 1 && !y0_top &&
+         graphic_hw_gl_flush_fenced(ddl->dcl.con)) {
+         struct stat st;
+-
+-        if (fstat(fds[0], &st) == 0 &&
+-            qemu_dmabuf_layout_get(ddl->zc_fd, fds[0], backing_width,
+-                                   offsets[0], strides[0], NULL, 0, false, &l) &&
++        bool known;
++
++        if (modifier != DRM_FORMAT_MOD_INVALID) {
++            /*
++             * the layout the guest told (its virtio_gpu scanout_modifier
++             * option, 2026-11-05): an Intel host keeps none in the buffer
++             */
++            l = (QemuDmabufLayout) {
++                .modifier = modifier, .planes = 1,
++                .offsets = { offsets[0] }, .strides = { strides[0] },
++            };
++            known = true;
++        } else {
++            known = qemu_dmabuf_layout_get(ddl->zc_fd, fds[0], backing_width,
++                                           offsets[0], strides[0], NULL, 0,
++                                           false, &l);
++        }
++        if (fstat(fds[0], &st) == 0 && known &&
+             qemu_dmabuf_layout_fits(fds[0], &l, backing_height)) {
+             ddl->zc_token = st.st_ino;
+             modifier = l.modifier;
+diff --git a/ui/sdl2-swapchain.c b/ui/sdl2-swapchain.c
+index 1c01a74a2c..ff90588962 100644
+--- a/ui/sdl2-swapchain.c
++++ b/ui/sdl2-swapchain.c
+@@ -678,7 +678,8 @@ static void guest_buffer_refuse(struct sdl2_swapchain *sc, ino_t ino, int why)
+ /* Whether this guest buffer may go to the compositor, and how */
+ static bool guest_buffer_attachable(struct sdl2_swapchain *sc, int dmabuf_fd,
+                                     ino_t ino, uint32_t width, uint32_t offset0,
+-                                    uint32_t stride0, QemuDmabufLayout *l)
++                                    uint32_t stride0, uint64_t told,
++                                    QemuDmabufLayout *l)
+ {
+     int i, linear;
+ 
+@@ -688,6 +689,23 @@ static bool guest_buffer_attachable(struct sdl2_swapchain *sc, int dmabuf_fd,
+         }
+     }
+     *l = (QemuDmabufLayout) { .planes = 1, .offsets = { offset0 }, .strides = { stride0 } };
++    /*
++     * A layout the guest told (its virtio_gpu scanout_modifier option,
++     * 2026-11-05): an Intel host keeps none in the buffer for the query
++     * below, which made every Intel guest buffer a copy. Taken when the
++     * compositor takes that modifier for our format (linear always)
++     */
++    if (told != DRM_FORMAT_MOD_INVALID) {
++        for (i = 0; told != DRM_FORMAT_MOD_LINEAR && i < sc->n_taken &&
++             sc->taken[i] != told; i++) {
++        }
++        if (told == DRM_FORMAT_MOD_LINEAR || i < sc->n_taken) {
++            l->modifier = told;
++            return true;
++        }
++        guest_buffer_refuse(sc, ino, -2);
++        return false;
++    }
+     linear = qemu_dmabuf_amdgpu_linear(sc->query_fd, dmabuf_fd);
+     if (linear == 1 || (linear < 0 && !g_strcmp0(getenv("QEMU_SDL_ZERO_COPY"), "force"))) {
+         l->modifier = DRM_FORMAT_MOD_LINEAR;
+@@ -1057,7 +1075,7 @@ static GuestBuffer *guest_buffer_get(struct sdl2_swapchain *sc, QemuDmaBuf *dmab
+     if (planes != 1 ||
+         !guest_buffer_attachable(sc, fds[0], st.st_ino,
+                                  qemu_dmabuf_get_backing_width(dmabuf),
+-                                 offsets[0], strides[0], &layout)) {
++                                 offsets[0], strides[0], modifier, &layout)) {
+         return NULL;
+     }
+     if (!qemu_dmabuf_layout_fits(fds[0], &layout,
+-- 
+2.56.0
+

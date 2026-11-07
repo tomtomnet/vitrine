@@ -15,8 +15,9 @@
 # (patches/NAME-7.3.patch next to patches/NAME.patch): the first that applies
 # without fuzz is used, and when none does the build stops, naming the patch
 # to rebase (the research's prepare.sh of 2026-10-26).  Linux 7.3 takes the
-# 7.3 versions of host-vblank, linear-scanout and tiled-scanout; 7.4 has
-# host-blob-damage's change itself, and its host-vblank needs a rebase.
+# 7.3 versions of host-vblank, linear-scanout, tiled-scanout and
+# scanout-modifier; 7.4 has host-blob-damage's change itself, and its
+# host-vblank needs a rebase.
 #
 # Usage (DKMS calls it): prepare.sh KERNELVERSION
 set -eu
@@ -251,4 +252,20 @@ if grep -q 'ret = virtio_gpu_vram_map_deferred' virtgpu_vram.c; then
 else
 	apply linux-drm-virtio-deferred-map-error
 	say "deferred-map-error patch applied"
+fi
+
+# The scanout's layout for the host (the research's 4ba00a2 and 420b32d): an
+# Intel GPU keeps none in the buffer, so the host copied every frame of an
+# Intel guest.  When the host offers VIRTIO_GPU_F_SCANOUT_MODIFIER_VGD (bit
+# 23: vitrine's QEMU, with its virtio-gpu-scanout-modifier patch),
+# SET_SCANOUT_BLOB's padding word carries the framebuffer's modifier
+# (scanout_modifier, on by default), and intel_scanout=1 adds Intel's Tile4
+# to tiled_scanout's list on the primary planes (alone it changes nothing);
+# a host that does not offer it gets neither (the probe line's
+# "-scanout_modifier"), as it would take Tile4 buffers for linear ones
+if grep -q 'scanout_modifier' virtgpu_vq.c; then
+	say "the scanout-modifier patch is already in these sources, nothing to apply"
+else
+	apply linux-drm-virtio-scanout-modifier
+	say "scanout-modifier patch applied"
 fi
