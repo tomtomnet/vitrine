@@ -31,7 +31,7 @@ resting above that speed is left alone) or a "pkg" reading is --stale C or more 
 controller's (which keeps updating): after a 70 W load the fan then glides down within ~50 s (2,850 -> 1,460 rpm)
 instead of holding ~3,000 rpm; nothing at rest (b50fr: pokes every 2 s cost +0.3 W). The "pkg" against "mctrl" test
 alone came late (b50fs: the memory controller cools slowly, the fan held ~2,900 rpm for 20-25 s, then fell at once).
-    sudo ./gpu_input_awake.py [--hold 0.02] [--activity [--cpu-busy 0.5] [--vm-activity] [--gt-busy 0.1]
+    sudo ./gpu_input_awake.py [--hold 0.02] [--vm-hold S] [--activity [--cpu-busy 0.5] [--vm-activity] [--gt-busy 0.1]
                               [--activity-hold 4] [--sample 0.1] [--busy-samples 2]] [--temp-refresh 2 [--fan-above 1500]
                               [--fan-window 120] [--stale 2] [--poke-ms 20]]
                               [--forcewake PATH] [--wait 60] [--verbose]
@@ -46,6 +46,14 @@ import time
 
 ap = argparse.ArgumentParser()
 ap.add_argument("--hold", type=float, default=0.02, help="seconds without input before the GPU may idle again")
+# --vm-hold (2026-11-07, findings/b50-day-2026-11-06.md X6d/X6i): the hold while a VM (a QEMU or crosvm process) runs. A
+# B50's GT left to sleep 20 ms after each input slept before every key even at typing speed (4-7 keys/s), and a key
+# that finds it asleep reaches the screen 0.5-0.85 ms later in every VM path (the wake ~0.45 ms, then the key's jobs at
+# the minimum clock); --hold 0.3 kept it awake for every key: VM keys ~0.5 ms sooner, ~+5 W while typing, nothing at
+# rest. On the bare desktop the 20 ms hold already gets the whole gain (2026-10-22, b50wh2) - hence a VM-only hold.
+# Not set in the service: an improvement, not the default for now (the user, 11-07)
+ap.add_argument("--vm-hold", type=float, default=None,
+                help="seconds without input before the GPU may idle while a VM runs (default: --hold)")
 ap.add_argument("--gfxoff-hold", type=float, default=0.3,
                 help="AMD: the hold instead of --hold (a69ia2: 0.3 s 8.1 / 9.6-9.7 ms, 0.02 s 8.1-8.3 / 9.8-10.3, none 8.6-8.9 / 10.9-11.0)")
 ap.add_argument("--activity", action="store_true", help="also hold while the GT draws continuously and the CPUs are busy")
@@ -234,9 +242,13 @@ try:
         if now - last_scan > 1.0:
             rescan()
             last_scan = now
+        if a.vm_hold is not None and now - vm_checked > 2.0:
+            vm = vm_running()
+            vm_checked = now
+        hold_s = a.vm_hold if (a.vm_hold is not None and vm) else a.hold   # (not "hold": that is the function)
         deadlines = [now + 1.0]
         if fw_fd is not None:
-            deadlines.append(max(last_input + a.hold, activity_until))
+            deadlines.append(max(last_input + hold_s, activity_until))
         if a.activity:
             deadlines.append(sample_at)
         if temps:
@@ -308,7 +320,7 @@ try:
                     os.close(fd)
                     sample = None   # the poke's wake is not the GT drawing
                     log(f"pkg {pkg / 1000:.0f} C, mctrl {mctrl / 1000:.0f} C, fan {fan} rpm: GT woken for {a.poke_ms:.0f} ms")
-        if fw_fd is not None and now >= last_input + a.hold and now >= activity_until:
+        if fw_fd is not None and now >= last_input + hold_s and now >= activity_until:
             release(fw_fd)
             fw_fd = None
             # the GT takes a few ms to reach C6 once released: the next sample starts after it settled

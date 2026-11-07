@@ -24,6 +24,10 @@ Wants=sys-kernel-debug.mount
 # --busy-samples 2 (the default since 2026-10-24, b50vi1-3): a hold needs two consecutive drawing samples - with one, a
 # stray idle job of the VM held the GT for 10 s at a time (the idle VM 25.7 W, C6 68 % instead of 22.1 W, 100 %); a
 # 60 fps video in the VM still holds it (display-resample 98.2-99.4 %, b50vv3)
+# --vm-hold S (2026-11-07, not set): the hold while a VM runs - on the B50 0.3 s kept the GT awake for every key while
+# typing in a VM (keys ~0.5 ms sooner in every VM path, ~+5 W while typing, nothing at rest; the 20 ms hold let it sleep
+# before every key), the bare desktop keeping its 20 ms (findings/b50-day-2026-11-06.md X6d, X6i, X6j). An improvement,
+# not the default for now (the user, 11-07: 0.5 ms is not something they would notice); to try it, add --vm-hold 0.3
 ExecStart=/usr/bin/python3 -B /usr/local/sbin/gpu-input-awake --hold 0.02 --activity --vm-activity --activity-hold 10 --sample 0.05 --temp-refresh 2
 Restart=on-failure
 RestartSec=5
