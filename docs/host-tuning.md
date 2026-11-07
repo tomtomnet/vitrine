@@ -294,9 +294,10 @@ times a second. Three things:
   typing (4-7 keys a second), the 20 ms hold lets it sleep before every
   key.
 - Part of the gap was the measurement: keys exactly 0.3 s apart are 72
-  refreshes apart, so a run of 80 keys covers about one refresh of phase
-  from where it starts, and its median moved by a whole refresh with that
-  start. The B50's runs below spread the keys over a refresh.
+  refreshes apart, so a run of 80 keys sweeps only about one refresh of
+  phase from a random start. How many keys missed their refresh depended
+  on that start, and a run's median could move by a whole refresh. The
+  B50's runs below spread the keys over a refresh.
 
 Key to screen, mean, keys 0.3 s apart:
 

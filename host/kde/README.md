@@ -57,11 +57,11 @@ What the sets change (the research's measurements):
   window's maximize (Konsole) has at most 8-13 ms between two frames
   instead of 42, and KWin's main thread runs 5-9 ms at a stretch instead of
   36-49; from its second opening, the Overview shows its first frame after
-  17-18 ms instead of 37-45; window operations show 106-111 refreshes twice
-  in a slow pass instead of 154-155, 73-82 instead of 96-101 in a fast one
-  (KWin's count). The research's desktop also ran it through a night of
-  tests with an RX 6900 XT: no crash or GPU error, and a CPU-drawn 4K
-  window's maximize repeated one refresh.
+  17-18 ms instead of 37-45; window operations repeat a refresh 106-111
+  times in a slow pass instead of 154-155, and 73-82 times instead of
+  96-101 in a fast one (KWin's count). The research's desktop also ran it
+  through a night of tests with an RX 6900 XT: no crash or GPU error, and a
+  CPU-drawn 4K window's maximize repeated one refresh.
 
   On an AMD laptop GPU (Radeon 780M, Fedora 45, 4K at 240 Hz), against
   Fedora's KWin 6.8.2: keys in 10.6-11.0 ms instead of 12.8-13.4 (p50);
