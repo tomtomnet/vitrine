@@ -117,7 +117,10 @@ follows, for an automatic login, a lingering user and ssh alike. Each
 user's systemd reads environment.d as it starts and passes it on to KWin.
 The file follows the native context only, not `CROSVM_DESKTOP_HOST_GPU`,
 and is written again at each boot: a VM moved to another host keeps no
-stale setting.
+stale setting. The check gives up after a minute (`TimeoutStartSec=60`), as
+a hung one would keep every login but root's out; stopped, it leaves each
+of its files whole or absent, and the boot goes on without the settings
+for the host's GPU.
 
 environment.d sorts the files of `~/.config/environment.d`,
 `/etc/environment.d`, `/run/environment.d` and `/usr/lib/environment.d`

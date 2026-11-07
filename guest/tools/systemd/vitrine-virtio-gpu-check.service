@@ -15,6 +15,13 @@ Before=display-manager.service plasmalogin.service sddm.service gdm.service syst
 Type=oneshot
 ExecStart=/usr/libexec/vitrine-guest-tools/virtio-gpu-check
 RemainAfterExit=yes
+# A minute at most (a oneshot has no start timeout of its own): ordered
+# before systemd-user-sessions.service, a check that hung would keep every
+# login but root's out, ssh's too, the way to repair a guest.  Its slowest
+# step, the capset's question to the host, gives up after 5 s.  Stopped, it
+# leaves its files in /run whole or absent, and the boot goes on as on a
+# host it could not ask: no settings for the host's GPU
+TimeoutStartSec=60
 
 [Install]
 WantedBy=multi-user.target

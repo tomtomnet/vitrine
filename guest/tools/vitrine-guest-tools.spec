@@ -200,6 +200,9 @@ fi
   native context alone, before any user's systemd starts; a file of the
   same name in /etc/environment.d turns it off (nested.md: "KWin's
   settings on Intel xe hosts")
+- the boot check gives up after a minute: now that user logins wait for it,
+  a hung check would keep them all out, ssh's too.  Stopped, it leaves its
+  files in /run whole or absent
 
 * Thu Nov 05 2026 vitrine <noreply@anthropic.com> - 0.1.0-37
 - on an Intel host the VM's screen can show the guest's own buffers
