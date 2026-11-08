@@ -837,16 +837,30 @@ private slots:
                  QStringList({"-device", "virtio-gpu-gl-pci,x-vblank-swap-target=6000"}));
     }
 
-    /* QEMU's environment: no RTKit, the SDL window's settings, then #env */
+    /* QEMU's environment: no RTKit, the SDL window's settings (zero copy for
+       KDE guests), then #env */
     void environment()
     {
-        QCOMPARE(VmRunner::environment(ArgsFile::parse("-display sdl,gl=on\n")),
+        QCOMPARE(VmRunner::environment(ArgsFile::parse("#guest linux,desktop=kde\n"
+                                                       "-display sdl,gl=on\n")),
                  QStringList({"DISABLE_RTKIT=1", "QEMU_SDL_POLL_FOCUSED=1",
                               "QEMU_SDL_ZERO_COPY=1", "QEMU_SDL_ZC_TILED=explicit"}));
         QCOMPARE(VmRunner::environment(ArgsFile::parse(
-                     "-display sdl,gl=on\n#env QEMU_SDL_ZERO_COPY=0\n#env A=b\n")),
+                     "#guest linux,desktop=kde\n-display sdl,gl=on\n"
+                     "#env QEMU_SDL_ZERO_COPY=0\n#env A=b\n")),
                  QStringList({"DISABLE_RTKIT=1", "QEMU_SDL_POLL_FOCUSED=1",
                               "QEMU_SDL_ZC_TILED=explicit", "QEMU_SDL_ZERO_COPY=0", "A=b"}));
+        /* other guests, or none known: copies, unless the VM asks */
+        QCOMPARE(VmRunner::environment(ArgsFile::parse("#guest linux,desktop=gnome\n"
+                                                       "-display sdl,gl=on\n")),
+                 QStringList({"DISABLE_RTKIT=1", "QEMU_SDL_POLL_FOCUSED=1"}));
+        QCOMPARE(VmRunner::environment(ArgsFile::parse("-display sdl,gl=on\n")),
+                 QStringList({"DISABLE_RTKIT=1", "QEMU_SDL_POLL_FOCUSED=1"}));
+        QCOMPARE(VmRunner::environment(ArgsFile::parse("#guest linux,desktop=gnome\n"
+                                                       "-display sdl,gl=on\n"
+                                                       "#env QEMU_SDL_ZERO_COPY=1\n")),
+                 QStringList({"DISABLE_RTKIT=1", "QEMU_SDL_POLL_FOCUSED=1",
+                              "QEMU_SDL_ZERO_COPY=1"}));
         QCOMPARE(VmRunner::environment(ArgsFile::parse("-display dbus,p2p=yes,gl=on\n")),
                  QStringList({"DISABLE_RTKIT=1"}));
         QCOMPARE(VmRunner::environment(ArgsFile::parse("-display gtk\n#env A=b\n")),

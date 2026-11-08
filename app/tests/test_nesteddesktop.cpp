@@ -403,7 +403,8 @@ private slots:
 
     void environment()
     {
-        ArgsFile a = ArgsFile::parse(kNested);
+        /* a KDE guest: the only one with the nested desktop's session */
+        ArgsFile a = ArgsFile::parse(QString("#guest linux,desktop=kde\n") + kNested);
 
         QCOMPARE(NestedDesktop::environment(a), QStringList());
         VmConfig::setScreen(a, VmConfig::Screen::OwnWindow, "sdl");

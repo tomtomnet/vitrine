@@ -1696,16 +1696,19 @@ QString VmRunner::renderNodeProblem(const ArgsFile &args)
 
 /*
  * QEMU's SDL window as the research launcher runs it: input read at the
- * refresh rate while it has the focus, and in full screen the guest's
- * buffers go to the screen as they are (the guest's driver must hold them,
- * else QEMU copies them, as other QEMUs ignore the variables).  A VM's
- * "#env NAME=0" turns each off in Vitrine's QEMU.
+ * refresh rate while it has the focus, and for a KDE guest, in full screen,
+ * the guest's buffers go to the screen as they are (its driver must hold
+ * them, else QEMU copies them, as other QEMUs ignore the variables).  The
+ * flips of other guests wait for the buffer on the screen (blob_flush_fence
+ * 1, where vitrine's KWin waits for its readers itself), which a full
+ * screen scanned out gives back only after the compositor's next flip:
+ * half rate at 240 Hz in vitrine's view (the research, 2026-11-08).  They
+ * get copies, as the research's GNOME VM does (VM_ZERO_COPY=0).  A VM's
+ * "#env NAME=0" turns each off in Vitrine's QEMU, and its "#env
+ * QEMU_SDL_ZERO_COPY=1" on.
  */
-static const QStringList kSdlEnvironment = {
-    "QEMU_SDL_POLL_FOCUSED=1",
-    "QEMU_SDL_ZERO_COPY=1",
-    "QEMU_SDL_ZC_TILED=explicit",
-};
+static const QStringList kSdlEnvironment = {"QEMU_SDL_POLL_FOCUSED=1"};
+static const QStringList kSdlZeroCopy = {"QEMU_SDL_ZERO_COPY=1", "QEMU_SDL_ZC_TILED=explicit"};
 
 /*
  * Every QEMU: no real-time from RTKit for its PipeWire audio.  QEMU has no
@@ -1728,6 +1731,9 @@ QStringList VmRunner::environment(const ArgsFile &args)
     if (VmConfig::screen(args) == VmConfig::Screen::OwnWindow &&
         VmConfig::graphics(args).display != "gtk") {
         env += kSdlEnvironment;
+        if (VmConfig::guest(args).desktop == "kde") {
+            env += kSdlZeroCopy;
+        }
     }
     env += NestedDesktop::environment(args);
     for (const VmConfig::EnvVar &var : VmConfig::environment(args)) {
