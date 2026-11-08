@@ -1,0 +1,110 @@
+From 1fed40c7cd1a460ad2063d34fc82c3fd03d57ac6 Mon Sep 17 00:00:00 2001
+From: tomtomnet <tompere8000@proton.me>
+Date: Mon, 2 Nov 2026 09:31:56 +0100
+Subject: [PATCH] ui/sdl2-gl: no 2D render while the guest's GL scanout is up
+
+A guest that changes modes (GNOME following the window size after a full
+screen toggle) replaces its scanout: QEMU switches the console to a new
+surface (blank, or the "not active" placeholder) and sends 2D updates for
+it; the new mode's GL scanout follows within ~50-120 ms. sdl2_gl_refresh
+then drew those updates with SDL_GL_SwapWindow - SDL's own window surface,
+at its old size, stale or black - on top of the guest's new frame, which
+the compositor discarded: a stretched old frame for a few refreshes (most
+mode changes), now and then a black flash (1 in 40 toggles on an Intel host).
+
+While the guest's GL scanout is up, 2D updates now wait 300 ms for it to
+come back (a new frame drops them); a scanout that does not come back
+hands the window to the 2D surface as before.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ include/ui/sdl2.h |  2 ++
+ ui/sdl2-gl.c      | 38 +++++++++++++++++++++++++++++++++++++-
+ 2 files changed, 39 insertions(+), 1 deletion(-)
+
+diff --git a/include/ui/sdl2.h b/include/ui/sdl2.h
+index 07f71a1840..8c3ef72f4f 100644
+--- a/include/ui/sdl2.h
++++ b/include/ui/sdl2.h
+@@ -68,6 +68,8 @@ struct sdl2_console {
+     egl_fb win_fb;
+     bool y0_top;
+     bool scanout_mode;
++    /* 2D updates under the guest's GL scanout: since when (sdl2-gl.c, SURFACE_GRACE_NS) */
++    int64_t surface_pending_ns;
+ #endif
+ };
+ 
+diff --git a/ui/sdl2-gl.c b/ui/sdl2-gl.c
+index 8972d37137..5afebc20cd 100644
+--- a/ui/sdl2-gl.c
++++ b/ui/sdl2-gl.c
+@@ -40,6 +40,7 @@ static void sdl2_set_scanout_mode(struct sdl2_console *scon, bool scanout)
+     }
+ 
+     scon->scanout_mode = scanout;
++    scon->surface_pending_ns = 0;
+     if (!scon->scanout_mode) {
+         egl_fb_destroy(&scon->guest_fb);
+         if (scon->surface) {
+@@ -64,6 +65,38 @@ static void sdl2_gl_render_surface(struct sdl2_console *scon)
+     sdl2_stats_present_end(scon);
+ }
+ 
++/*
++ * A guest that changes modes replaces its scanout: QEMU switches the console
++ * to a new surface (blank, or the "not active" placeholder) and sends 2D
++ * updates for it, and the new mode's GL scanout follows within ~50-120 ms
++ * (GNOME 51 on an Intel host: three surface switches, two full updates, then
++ * the new frame).  Drawing those updates swapped SDL's own window surface - at
++ * its old size, stale or black - over the guest's new frame: a stretched old
++ * frame for a few refreshes, now and then a black flash.  So while the guest's
++ * GL scanout is up, 2D updates wait this long for it to come back before the
++ * 2D surface takes the window over (a guest that really leaves its scanout).
++ */
++#define SURFACE_GRACE_NS (300 * 1000 * 1000LL)
++
++static bool sdl2_gl_surface_waits(struct sdl2_console *scon)
++{
++    int64_t now;
++
++    if (!scon->scanout_mode) {
++        return false;
++    }
++    now = qemu_clock_get_ns(QEMU_CLOCK_REALTIME);
++    if (!scon->surface_pending_ns) {
++        scon->surface_pending_ns = now;
++    }
++    if (now - scon->surface_pending_ns < SURFACE_GRACE_NS) {
++        return true;
++    }
++    /* the guest's scanout did not come back: its 2D surface takes over */
++    sdl2_set_scanout_mode(scon, false);
++    return false;
++}
++
+ void sdl2_gl_update(DisplayChangeListener *dcl,
+                     int x, int y, int w, int h)
+ {
+@@ -122,7 +155,7 @@ void sdl2_gl_refresh(DisplayChangeListener *dcl)
+     sdl2_stats_refresh_begin(scon);
+     qemu_console_hw_update(dcl->con);
+     sdl2_stats_refresh_end(scon);
+-    if (scon->updates && scon->real_window) {
++    if (scon->updates && scon->real_window && !sdl2_gl_surface_waits(scon)) {
+         scon->updates = 0;
+         scon->frames++;
+         sdl2_gl_render_surface(scon);
+@@ -140,6 +173,9 @@ static void sdl2_gl_scanout_present(struct sdl2_console *scon)
+     if (!scon->guest_fb.framebuffer) {
+         return;
+     }
++    /* the guest's scanout is back: the 2D updates of its mode change are moot */
++    scon->updates = 0;
++    scon->surface_pending_ns = 0;
+ 
+     SDL_GL_MakeCurrent(scon->real_window, scon->winctx);
+ 
+-- 
+2.56.0
+

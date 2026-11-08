@@ -27,11 +27,14 @@ patches that go on top, in this order:
    not committed on 2026-10-12, split by topic (0020 left when upstream
    took it), then twelve for `virtio-gpu-rutabaga`, the nested desktop's
    device, and the last for `pflash_cfi01`, the flash that holds a VM's UEFI
-   variables. After them, alone, its `virtio-gpu-scanout-modifier.patch`
-   at `f1d762f` (2026-11-05): its series of that day has two more patches
-   before it, `sdl2-gl-no-2d-under-scanout.patch` and
-   `virtio-gpu-gl-prefault-blobs.patch`, and the pflash patch reflowed,
-   none of which this one needs; Vitrine takes them when asked to.
+   variables. After them its `sdl2-gl-no-2d-under-scanout.patch` (research
+   `5ed9fbc`, 2026-11-02; taken 2026-11-08 at the research's word, its
+   `From:` line with the public address), then its
+   `virtio-gpu-scanout-modifier.patch` at `f1d762f` (2026-11-05), in the
+   research's order. Its series of that day has one more patch between
+   them, `virtio-gpu-gl-prefault-blobs.patch`, and the pflash patch
+   reflowed, neither of which these need; Vitrine takes them when asked
+   to.
 2. `qemu/vitrine/`: Vitrine's own changes, as new files here rather than
    edits of the others.
 
@@ -75,6 +78,7 @@ patches that go on top, in this order:
 | `9d575192c1885c56faf07cc405392a41d04b43394de92a287359f391ea920516` | `virtio-gpu-rutabaga-2d-resource-id.patch`: `RESOURCE_CREATE_2D` refuses an id of 0 or one in use itself, as virtio-gpu's 2D device does: a 2D resource that QEMU keeps alone (virgl off) never reached rutabaga's own check, and a guest could put two resources with one id in QEMU's list |
 | `cbe566ec428885695e5b8a526a7b2c8bd6a19a63017d3c2a11d8ab99ab9a17ab` | `virtio-gpu-rutabaga-ctx0-fences.patch`: when no renderer runs context 0 (no virgl2, no gfxstream), QEMU signals the fences of the global timeline's commands (2D transfers, flushes, scanouts) itself, all done by then, where virglrenderer refused them (`EINVAL`) and the guest waited on them for ever: without `x-virgl2` a guest's KWin on the virtio output got no further than its first cursor; with `x-virgl2` on, as Vitrine sets it, nothing changes |
 | `2e0ac56c065ad57e17a83f1e5975b747d78844c977a5c959c34426fad1750f66` | `pflash-cfi01-batched-writeback.patch`: the flash of a VM's UEFI variables writes its programmed sectors back to its file in runs, when the guest returns it to read-array mode, from a 100 ms timer, at reset, when the VM stops and after a migration, where each programmed byte was one 512-byte write: OVMF's variable store reclaim, every few boots, froze the TianoCore logo for 6-9 s (about 3.5 s now), and every boot is ~0.2 s shorter; `-global driver=cfi.pflash01,property=x-write-batch,value=off` writes each byte at once again (not `-global cfi.pflash01.x-write-batch=off`: QEMU splits that at its first dot, for a driver `cfi`) |
+| `fdaa9e03262659091ba90503d3c09abe9b01ddfa457c3f5a27d3260453384ab0` | `sdl2-gl-no-2d-under-scanout.patch` (research `5ed9fbc`): while the guest's GL scanout is up, QEMU's SDL window holds 2D updates for 300 ms for it to come back (a new frame drops them), where it drew them with SDL's own window surface, at its old size, over the guest's new frame: after a full-screen toggle a guest that changes modes (GNOME following the window's size) showed a stretched old frame for a few refreshes, and now and then a black flash (1 in 40 toggles on an Intel host). A scanout that does not come back hands the window to the 2D surface as before |
 | `74a0461acc0ef58d9cb0960af2e3e33d38cba6d8a1e1356b2edf931fdaca8763` | `virtio-gpu-scanout-modifier.patch` (research `f1d762f`): the device offers `VIRTIO_GPU_F_SCANOUT_MODIFIER_VGD` (bit 23, the research's; property `x-scanout-modifier`, on by default), and from a guest driver that negotiated it reads the framebuffer's format modifier in `SET_SCANOUT_BLOB`'s padding word (the guest tools' `scanout_modifier`; zeroed for a guest that did not), in the three handlers (virtio-gpu, -virgl, -rutabaga); the scanout dma-buf carries it, and the D-Bus display (Vitrine's view) and SDL's swapchain take it as the buffer's layout. An Intel GPU keeps no layout in the buffer, unlike amdgpu's metadata, so every Intel guest frame was a copy (the user's Arc Pro B50); with the guest's Tile4 (`intel_scanout=1`) the view shows the guest's own buffers. vhost-user-gpu never offers it (its backend does not decode the word). `-global virtio-vga-gl.x-scanout-modifier=off` (or on the device) is the QEMU before it for the guest |
 
 When the research's series moves (`r` its repository, `c` the commit,

@@ -1,6 +1,7 @@
 # The patches build.sh applies to QEMU, in this order (see ../README.md):
 # the research's series (research/: patches/qemu/series of
 # ~/Documents/virtio-gpu-desktop at 4d3c53d, then its
+# sdl2-gl-no-2d-under-scanout.patch at 5ed9fbc and
 # virtio-gpu-scanout-modifier.patch at f1d762f), then Vitrine's own (vitrine/).
 research/0001-ui-sdl2-follow-the-host-refresh-rate-tolerate-grab-b.patch
 research/0002-ui-sdl2-add-an-in-window-control-menu-Dear-ImGui.patch
@@ -38,6 +39,7 @@ research/virtio-gpu-rutabaga-2d-shadow-budget.patch
 research/virtio-gpu-rutabaga-2d-resource-id.patch
 research/virtio-gpu-rutabaga-ctx0-fences.patch
 research/pflash-cfi01-batched-writeback.patch
+research/sdl2-gl-no-2d-under-scanout.patch
 research/virtio-gpu-scanout-modifier.patch
 vitrine/0001-ui-sdl2-QEMU_SDL_POLL_FOCUSED-0-is-off.patch
 vitrine/0002-virtio-vga-forward-the-display-s-frame-feedback.patch
