@@ -592,6 +592,30 @@ private slots:
         QVERIFY2(!text.contains("KWin") && !text.contains("newer Plasma"), qPrintable(text));
     }
 
+    /* Fedora 44's: KWin with the KWayland it is built against, both kept at their versions */
+    void namesTheKwaylandOfKwin()
+    {
+        const QString manifest = dataDir() + "/vitrine-guest-tools-fc44.json";
+        const auto restore = qScopeGuard([this]() {
+            writeMedium();
+            GuestToolsBuilder::instance()->checkMedium();
+        });
+        QVERIFY(writeFile(manifest, R"({"label": "VITRINETOOL", "mediumId": "a1b2c3d4e5f6071a",
+                                        "fedora": "44", "tools": "0.1.0-39.fc44",
+                                        "mesa": "26.2.6-1.xe.fc44", "kwin": "6.8.2-3.3.g28.fc44",
+                                        "kwayland": "6.8.2-1.1.w1.fc44",
+                                        "kpipewire": "6.8.2-1.1.k2.fc44", "packages": []})"));
+        GuestToolsBuilder::instance()->checkMedium();
+        GuestToolsDialog::run(m_window, vm());
+        GuestToolsDialog *dialog = GuestToolsDialog::of(vm());
+        QVERIFY(dialog);
+        const QString text = textOf(dialog);
+        QVERIFY2(text.contains("KWin 6.8.2-3.3.g28.fc44 for Plasma 6.8.2, with KWayland "
+                               "6.8.2-1.1.w1.fc44, which it is built against") &&
+                     text.contains("Mesa, KWin, KWayland and KPipeWire then stay at these versions"),
+                 qPrintable(text));
+    }
+
     /* What the buttons say follows the VM, which may start or stop meanwhile */
     void followsTheVm()
     {

@@ -123,7 +123,8 @@ private:
         if (json.open(QIODevice::WriteOnly)) {
             json.write(QString(R"({"label": "VITRINETOOL", "mediumId": "%2", "fedora": "%1",
                           "tools": "0.1.0-1.fc%1", "mesa": "26.2.3-1.xe.fc%1",
-                          "kwin": "6.7.5-1.21.fc%1", "kpipewire": "6.7.5-1.1.fc%1",
+                          "kwin": "6.7.5-1.21.fc%1", "kwayland": "6.8.2-1.1.w1.fc%1",
+                          "kpipewire": "6.7.5-1.1.fc%1",
                           "proxy": "0.1.0^gitc6ce1ca.r5799347-1.fc%1",
                           "qtbase": "6.11.2-3.1.q4.fc%1", "ksvg": "6.31.0-1.1.k2.fc%1",
                           "kirigami": "6.31.0-1.1.f1.fc%1", "packages": [
@@ -191,6 +192,7 @@ private slots:
         QCOMPARE(m.fedora, "44");
         QCOMPARE(m.tools, "0.1.0-1.fc44");
         QCOMPARE(m.kwin, "6.7.5-1.21.fc44");
+        QCOMPARE(m.kwayland, "6.8.2-1.1.w1.fc44");
         QCOMPARE(m.kpipewire, "6.7.5-1.1.fc44");
         QCOMPARE(m.proxy, "0.1.0^gitc6ce1ca.r5799347-1.fc44");
         QCOMPARE(m.qtbase, "6.11.2-3.1.q4.fc44");

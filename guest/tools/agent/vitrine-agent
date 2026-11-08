@@ -60,7 +60,7 @@ MAX_LINE = 65536
 # the installer's steps: "== [2/6] Installing the packages"
 STEP = re.compile(r"^== \[(\d+)/(\d+)\] (.*)$")
 PACKAGES = ["vitrine-guest-tools", "mesa-dri-drivers", "mesa-vulkan-drivers", "mesa-libEGL",
-            "mesa-libgbm", "kwin", "kwin-common", "kwin-libs", "plasma-workspace",
+            "mesa-libgbm", "kwin", "kwin-common", "kwin-libs", "kwayland", "plasma-workspace",
             "gnome-shell", "kernel-core", "dkms", "kpipewire", "wl-cross-domain-proxy",
             "qt6-qtbase", "kf6-ksvg", "kf6-kirigami"]
 # What the tools replace only while the guest has the version they are built

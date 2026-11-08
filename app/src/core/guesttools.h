@@ -58,6 +58,7 @@ struct Medium {
     QString tools;          // vitrine-guest-tools' version-release
     QString mesa;           // version-release, empty if none on it
     QString kwin;
+    QString kwayland;       // the one that KWin is built against
     QString kpipewire;
     QString proxy;          // the nested desktop's (wl-cross-domain-proxy)
     /* in place of the guest's while it has their version: Fedora's next

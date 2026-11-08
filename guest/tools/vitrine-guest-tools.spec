@@ -2,7 +2,7 @@
 # exact version, and dnf takes an installed one of the same version as done.
 Name:           vitrine-guest-tools
 Version:        0.1.0
-Release:        38%{?dist}
+Release:        39%{?dist}
 Summary:        vitrine guest tools: patched virtio-gpu driver, settings and agent
 
 # the driver's sources (dkms/vendor, dkms/patches) are the kernel's: MIT
@@ -45,9 +45,9 @@ host it gives the guest's own sessions KWin's shorter lone-frame lead), the
 nested desktop's session (a boot with the VM's Nested desktop box logs
 Plasma into a window of the host's desktop, with KWin's settings for the
 host's GPU), and the vitrine agent, which tells vitrine the state of the
-guest tools and installs their updates.  vitrine's Mesa, KWin, KPipeWire,
-the nested desktop's proxy, Qt Base, KSvg and Kirigami come from the same
-tools medium.
+guest tools and installs their updates.  vitrine's Mesa, KWin with the
+KWayland it is built against, KPipeWire, the nested desktop's proxy, Qt Base,
+KSvg and Kirigami come from the same tools medium.
 
 %prep
 %autosetup
@@ -183,6 +183,21 @@ fi
 %dir %{_sharedstatedir}/%{name}
 
 %changelog
+* Sun Nov 08 2026 vitrine <noreply@anthropic.com> - 0.1.0-39
+- with KWin 6.8.2-3.3.g28 on Fedora 44's medium (the research's guest set
+  g28: the nested desktop binds the host's seat at version 9 and hands a
+  scroll's source, wheel steps and direction on, so that a high-resolution
+  wheel scrolls smoothly on a KDE host) and KWayland 6.8.2-1.1.w1, which
+  that KWin is built against and does not start without
+- the installer puts vitrine's KWayland in with vitrine's KWin, every
+  installed package of it, in the same transaction, and locks it with that
+  KWin; a guest with 32-bit KWayland keeps its KWin, and says why.
+  --no-kwin keeps the guest's KWayland, --uninstall brings Fedora's back,
+  and an earlier tools' KWayland that no longer matches the guest's Plasma
+  goes back to Fedora's with their KWin
+- the agent reports the installed kwayland too
+- the nested desktop's notes name the guest set g28
+
 * Sat Nov 07 2026 vitrine <noreply@anthropic.com> - 0.1.0-38
 - on an Intel xe host, KWin's lone-frame lead goes to 1000 µs instead of
   1500 in the nested desktop, and to 1000 µs in a KDE guest's own
