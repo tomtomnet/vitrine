@@ -183,8 +183,8 @@ private slots:
             ids << c.id;
         }
         QCOMPARE(ids, QStringList({"virglrenderer", "rutabaga_gfx", "passt", "qemu", "tools", "mesa",
-                                   "kwin", "proxy", "kpipewire", "qtbase", "ksvg", "kirigami",
-                                   "medium"}));
+                                   "kwayland", "kwin", "proxy", "kpipewire", "qtbase", "ksvg",
+                                   "kirigami", "medium"}));
         QCOMPARE(find(all, "qemu").kind, Kind::Host);
         QCOMPARE(find(all, "qemu").title, "QEMU");
         QCOMPARE(find(all, "qemu").deps, QStringList({"virglrenderer", "rutabaga_gfx"}));
@@ -203,8 +203,15 @@ private slots:
         QVERIFY(!find(all, "tools").heavy);
         QCOMPARE(find(all, "medium").kind, Kind::Medium);
         QCOMPARE(find(all, "medium").deps,
-                 QStringList({"tools", "mesa", "kwin", "proxy", "kpipewire", "qtbase", "ksvg",
-                              "kirigami"}));
+                 QStringList({"tools", "mesa", "kwayland", "kwin", "proxy", "kpipewire", "qtbase",
+                              "ksvg", "kirigami"}));
+        /* KWin built against vitrine's KWayland, whose signals its nested desktop uses */
+        QCOMPARE(find(all, "kwayland").kind, Kind::Package);
+        QCOMPARE(find(all, "kwayland").title, "KWayland");
+        QVERIFY(!find(all, "kwayland").heavy);
+        QVERIFY(find(all, "kwayland").deps.isEmpty());
+        QCOMPARE(find(all, "kwin").deps, QStringList({"kwayland"}));
+        QVERIFY(find(all, "kwin").heavy);
         QVERIFY(!find(all, "proxy").heavy);
         QVERIFY(!find(all, "kpipewire").heavy);
         QCOMPARE(find(all, "qtbase").title, "Qt Base");
@@ -252,12 +259,15 @@ private slots:
 
         const QString inputs = run({places.guestDir + "/build-rpms.sh", "--print-inputs"}, &status);
         QCOMPARE(status, 0);
-        for (const char *id :
-             {"tools", "mesa", "kwin", "proxy", "kpipewire", "qtbase", "ksvg", "kirigami"}) {
+        for (const char *id : {"tools", "mesa", "kwayland", "kwin", "proxy", "kpipewire", "qtbase",
+                               "ksvg", "kirigami"}) {
             QVERIFY2(inputs.contains(QString("%1 %2\n").arg(id, key(find(all, id), all))),
                      qPrintable(inputs));
             QCOMPARE(key(find(all, id), all), GuestToolsBuilder::inputsHash(places.guestDir, id));
         }
+        /* KWin's: KWayland's key last */
+        QVERIFY(inputLines(find(all, "kwin"), all)
+                    .endsWith("\ndep kwayland " + key(find(all, "kwayland"), all).toLatin1() + '\n'));
         /* the medium's: its packages' keys and its script */
         const QByteArray medium = inputLines(find(all, "medium"), all);
         QVERIFY(medium.startsWith("dep tools " + key(find(all, "tools"), all).toLatin1() + '\n'));
@@ -419,10 +429,10 @@ private slots:
         QVERIFY(subject(ffi, ffiPatches[0]).startsWith("rutabaga_gfx: native contexts through the FFI"));
 
         /* a spec's Patch lines: Fedora's own fix (6.8.2-3's Patch0), then the research's guest
-           set g27 from Patch1001, each patch with its own subject */
+           set g28 from Patch1001, each patch with its own subject */
         const Component kwin = find(all, "kwin");
         const QList<Patch> kwinPatches = patches(kwin);
-        QCOMPARE(kwinPatches.size(), 61);
+        QCOMPARE(kwinPatches.size(), 62);
         QCOMPARE(kwinPatches.first().number, "0");
         QCOMPARE(kwinPatches.first().origin, "Fedora");
         QCOMPARE(subject(kwin, kwinPatches.first()), "compositor: handle possibly missing render device");
@@ -436,15 +446,31 @@ private slots:
         QCOMPARE(kwinPatches[59].path,
                  "kwin/0096-EXP-opengl-the-GPU-s-clock-read-once-a-second-for-render-time-queries.patch");
         /* a Subject folded over two lines, read as one */
-        QCOMPARE(kwinPatches.last().number, "1060");
-        QCOMPARE(kwinPatches.last().path,
+        QCOMPARE(kwinPatches[60].number, "1060");
+        QCOMPARE(kwinPatches[60].path,
                  "kwin/0097-FIX-wayland-backend-frame-callback-and-feedback-on-the-content-layer.patch");
-        QCOMPARE(subject(kwin, kwinPatches.last()),
+        QCOMPARE(subject(kwin, kwinPatches[60]),
                  "FIX wayland backend: the frame callback and the presentation feedback on the content layer");
+        QCOMPARE(kwinPatches.last().number, "1061");
+        QCOMPARE(kwinPatches.last().path,
+                 "kwin/0098-FIX-wayland-backend-scroll-source-steps-and-direction-from-the-host.patch");
+        QCOMPARE(subject(kwin, kwinPatches.last()),
+                 "FIX wayland backend: the scroll source, wheel steps and direction from the host");
         QCOMPARE(kwinPatches.last().origin, "Research");
         for (const Patch &p : kwinPatches) {
             QVERIFY2(QFileInfo::exists(kwin.dir + '/' + p.path), qPrintable(p.path));
         }
+        /* KWayland: Fedora's spec without patches of its own, the research's w1 */
+        const Component kwayland = find(all, "kwayland");
+        const QList<Patch> kwaylandPatches = patches(kwayland);
+        QCOMPARE(kwaylandPatches.size(), 1);
+        QCOMPARE(kwaylandPatches[0].number, "1001");
+        QCOMPARE(kwaylandPatches[0].origin, "Research");
+        QCOMPARE(kwaylandPatches[0].path,
+                 "kwayland/0001-client-pointer-and-touch-events-of-wl_seat-versions-6-to-9.patch");
+        QCOMPARE(subject(kwayland, kwaylandPatches[0]),
+                 "client: the pointer and touch events of wl_seat versions 6 to 9");
+        QVERIFY(QFileInfo::exists(kwayland.dir + '/' + kwaylandPatches[0].path));
         const QList<Patch> mesaPatches = patches(find(all, "mesa"));
         QCOMPARE(mesaPatches.size(), 5);
         QCOMPARE(subject(find(all, "mesa"), mesaPatches[2]),
@@ -528,6 +554,12 @@ private slots:
         const Source kwin = source(find(all, "kwin"));
         QVERIFY(kwin.archive.startsWith("kwin-") && kwin.archive.endsWith(".tar.xz"));
         QCOMPARE(kwin.archiveHost, "download.kde.org");
+        QCOMPARE(kwin.revision, "6.8.2-3.3.g28");
+        const Source kwayland = source(find(all, "kwayland"));
+        QCOMPARE(kwayland.archive, "kwayland-6.8.2.tar.xz");
+        QCOMPARE(kwayland.archiveHost, "download.kde.org");
+        QCOMPARE(kwayland.url, "https://invent.kde.org/plasma/kwayland");
+        QCOMPARE(kwayland.revision, "6.8.2-1.1.w1");
         const Source proxy = source(find(all, "proxy"));
         QCOMPARE(proxy.archive, "wl-cross-domain-proxy-c6ce1ca.tar.gz");
         QCOMPARE(proxy.archiveHost, "codeberg.org");

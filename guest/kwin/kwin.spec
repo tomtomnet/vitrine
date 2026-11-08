@@ -1,6 +1,6 @@
 Name:    kwin
 Version: 6.8.2
-Release: 3.2.g27%{?dist}
+Release: 3.3.g28%{?dist}
 Summary: KDE Window manager
 
 License: BSD-2-Clause AND BSD-3-Clause AND CC0-1.0 AND GPL-2.0-only AND GPL-2.0-or-later AND GPL-3.0-only AND GPL-3.0-or-later AND LGPL-2.0-only AND LGPL-2.0-or-later AND LGPL-2.1-only AND LGPL-2.1-or-later AND LGPL-3.0-only AND (GPL-2.0-only OR GPL-3.0-only) AND (LGPL-2.1-only OR LGPL-3.0-only) AND MIT
@@ -21,8 +21,8 @@ Source10: macros.kwin.in
 Patch0:  c9d720793bbcef9483ab290673032d39441c0e6f.patch
 
 ## proposed patches
-## the research's guest set g21jmc97-681, as g27 (virtio-gpu-desktop 0ad5465,
-## patches/kwin/sets/g21jmc97-681.series), without its 0033 (upstream in 6.8).
+## the research's guest set g21jmc98-681, as g28 (virtio-gpu-desktop 5192412,
+## patches/kwin/sets/g21jmc98-681.series), without its 0033 (upstream in 6.8).
 # KWin as the guest's compositor, on the VM's screen and as the nested desktop:
 # - frames paced to the host's: render timing from the CPU, a commit grace for
 #   buffers the GPU has not finished, late frames scheduled for the next vblank,
@@ -35,13 +35,16 @@ Patch0:  c9d720793bbcef9483ab290673032d39441c0e6f.patch
 #   cursor handed to the host as shared memory, which a GNOME host puts on its
 #   cursor plane and so keeps scanning the full-screen VM out (0091), the frame
 #   callbacks and presentation feedback asked for on the content layer, as a
-#   GNOME host sends none for the black main surface under it (0097)
+#   GNOME host sends none for the black main surface under it (0097), the host's
+#   seat bound up to version 9 and a scroll's source, wheel steps and direction
+#   handed on with its frame, which a high-resolution wheel needs on a KDE host
+#   (0098: with KWayland w1's signals, guest/kwayland)
 # - a high-rate mouse: moves, window geometry and pointer motion once per frame or
 #   per ms (0060-0063); animations on a steady clock, one refresh in (0035, 0037)
 # - the Overview keeps its views between openings (0095); the GPU's clock read
 #   once a second for render times, as each read wakes an Intel xe GPU (0096)
 # Most act only with their KWIN_* variable, which the guest tools set; 0091, 0095,
-# 0096 and 0097 act unless theirs turns them off.
+# 0096 and 0097 act unless theirs turns them off, 0098 always.
 Patch1001: 0001-Patch100-kwin-vm-frame-timing-ported-to-6.8.v2.patch
 Patch1002: 0002-Patch101-kwin-render-journal-variance-cap-applies-un.v2.patch
 Patch1003: 0003-Patch102-kwin-late-frame-scheduling-ported-to-6.8-re.v2.68.patch
@@ -102,6 +105,7 @@ Patch1057: 0091-EXP-wayland-backend-cursor-as-wl_shm.patch
 Patch1058: 0095-EXP-overview-keep-the-views-between-openings.patch
 Patch1059: 0096-EXP-opengl-the-GPU-s-clock-read-once-a-second-for-render-time-queries.patch
 Patch1060: 0097-FIX-wayland-backend-frame-callback-and-feedback-on-the-content-layer.patch
+Patch1061: 0098-FIX-wayland-backend-scroll-source-steps-and-direction-from-the-host.patch
 
 
 # Base
@@ -190,6 +194,9 @@ BuildRequires:  cmake(KGlobalAccelD)
 BuildRequires:  libdisplay-info-devel
 
 BuildRequires:  cmake(KWayland)
+# vitrine's KWayland w1 (guest/kwayland), whose pointer signals 0098 uses: Fedora's
+# has none of them
+BuildRequires:  kwayland-devel(vitrine-w1) >= 6.8.2
 BuildRequires:  cmake(Plasma)
 BuildRequires:  cmake(PlasmaActivities)
 
@@ -262,6 +269,9 @@ Conflicts:      kde-workspace-libs%{?_isa} < 4.11.14-2
 # kwin uses wl_display_set_default_max_buffer_size from wayland 1.23.0
 # https://bugzilla.redhat.com/show_bug.cgi?id=2312499
 Requires:       libwayland-server%{?_isa} >= 1.23.0
+# libkwin's nested-desktop backend (0098) uses vitrine's KWayland w1's signals:
+# with Fedora's KWayland, kwin_wayland would not start (undefined symbols)
+Requires:       kwayland(vitrine-w1)%{?_isa}
 %description    libs
 %{summary}.
 
@@ -377,6 +387,22 @@ sed -i \
 
 
 %changelog
+* Sun Nov 08 2026 vitrine <noreply@anthropic.com> - 6.8.2-3.3.g28
+- the research's guest set g21jmc98-681 as g28 (61 patches: g27's 60, then
+  0098): the nested desktop binds the host's seat up to version 9, and hands
+  a scroll's source, wheel steps (axis_value120) and direction on with its
+  pointer frame, as the libinput backend does.  It bound the seat at
+  version 5 and handed every scroll on as a bare amount: a KDE host held a
+  high-resolution wheel's steps back from that seat until a whole notch was
+  full, and Chromium in the nested desktop animated each notch on its own,
+  198 new images a second at 240 Hz with a 29 ms pause six times a second.
+  With g28 239.6-239.9 a second in every boot (the research's Arc Pro B50
+  under KDE, 8 alternated boots); Super at 8/s and keys level.  A GNOME
+  host did not hold the steps back
+- built against KWayland 6.8.2-1.1.w1 (the research's set w1), whose pointer
+  signals 0098 uses: the build needs its devel package, and kwin-libs
+  requires it (kwayland(vitrine-w1))
+
 * Thu Nov 05 2026 vitrine <noreply@anthropic.com> - 6.8.2-3.2.g27
 - the research's guest set g21jmc97-681 as g27 (60 patches: g26's 59, then
   0097): the nested desktop asks for its frame callbacks and presentation

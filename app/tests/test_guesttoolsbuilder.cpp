@@ -333,8 +333,13 @@ private slots:
                              .toHex()));
         QCOMPARE(GuestToolsBuilder::version(GUEST_SOURCE_DIR, "kwin"), "6.8.2");
         QCOMPARE(GuestToolsBuilder::packages(GUEST_SOURCE_DIR),
-                 QStringList({"tools", "mesa", "kwin", "proxy", "kpipewire", "qtbase", "ksvg",
-                              "kirigami"}));
+                 QStringList({"tools", "mesa", "kwayland", "kwin", "proxy", "kpipewire", "qtbase",
+                              "ksvg", "kirigami"}));
+        /* KWin's inputs: KWayland's key, which it is built against */
+        QVERIFY(GuestToolsBuilder::inputLines(GUEST_SOURCE_DIR, "kwin")
+                    .endsWith("\ndep kwayland " +
+                              GuestToolsBuilder::inputsHash(GUEST_SOURCE_DIR, "kwayland").toUtf8() +
+                              '\n'));
     }
 
     /* guest/ found as host/ is: chosen, installed with the app, or the source tree's */
