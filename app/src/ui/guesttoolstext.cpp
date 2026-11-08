@@ -137,7 +137,14 @@ QString what(Vm *vm, const GuestTools::Medium &medium)
                     .arg(medium.mesa.toHtmlEscaped());
     }
     const QString desktop = VmConfig::guest(vm->args()).desktop;
-    if (!medium.kwin.isEmpty() && (desktop.isEmpty() || desktop == "kde")) {
+    if (!medium.kwin.isEmpty() && !medium.kwayland.isEmpty() &&
+        (desktop.isEmpty() || desktop == "kde")) {
+        what += tr("<li>KWin %1 for Plasma %2, with KWayland %3, which it is built "
+                                     "against; a guest with Fedora's older Plasma gets Fedora's "
+                                     "Plasma %2 with them, in the same update</li>")
+                    .arg(medium.kwin.toHtmlEscaped(), medium.kwin.section('-', 0, 0),
+                         medium.kwayland.toHtmlEscaped());
+    } else if (!medium.kwin.isEmpty() && (desktop.isEmpty() || desktop == "kde")) {
         what += tr("<li>KWin %1 for Plasma %2; a guest with Fedora's older "
                                      "Plasma gets Fedora's Plasma %2 with it, in the same "
                                      "update</li>")
@@ -179,12 +186,16 @@ QString what(Vm *vm, const GuestTools::Medium &medium)
                              !medium.qtbase.isEmpty() || !medium.ksvg.isEmpty() ||
                              !medium.kirigami.isEmpty();
     if (kdePackages) {
-        what += tr("<p>Mesa, KWin and KPipeWire then stay at these versions "
-                                     "until the next guest tools, and so do Qt Base and the "
-                                     "guest's Plasma with vitrine's KWin. "
-                                     "KSvg, Kirigami and Qt Base otherwise give way to Fedora's "
-                                     "next build of them. The guest needs the network: dkms, the "
-                                     "kernel headers and a newer Plasma come from Fedora.</p>");
+        what += medium.kwayland.isEmpty()
+                    ? tr("<p>Mesa, KWin and KPipeWire then stay at these versions until the "
+                         "next guest tools, and so do Qt Base and the guest's Plasma with "
+                         "vitrine's KWin. ")
+                    : tr("<p>Mesa, KWin, KWayland and KPipeWire then stay at these versions "
+                         "until the next guest tools, and so do Qt Base and the guest's Plasma "
+                         "with vitrine's KWin. ");
+        what += tr("KSvg, Kirigami and Qt Base otherwise give way to Fedora's next build of "
+                   "them. The guest needs the network: dkms, the kernel headers and a newer "
+                   "Plasma come from Fedora.</p>");
     } else if (!medium.mesa.isEmpty()) {
         what += tr("<p>Mesa then stays at this version until the next guest "
                                      "tools. The guest needs the network: dkms and the kernel "

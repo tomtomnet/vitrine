@@ -107,11 +107,14 @@ public:
     static QStringList packages(const QString &guestDir, const QString &release = {});
     /* The Version of @package's spec, "" if none */
     static QString version(const QString &guestDir, const QString &package);
-    /* What build-rpms.sh's inputs_hash() prints: @package's folder and the
-       build script; empty if a file cannot be read */
+    /* What build-rpms.sh's inputs_hash() prints: @package's folder, the
+       build script and the keys of the packages it is built against; empty
+       if a file cannot be read */
     static QString inputsHash(const QString &guestDir, const QString &package);
     /* The lines it sums up, which a build records in PACKAGE/.inputs.list:
-       sha256sum's, for the files of @package's folder and the build script */
+       sha256sum's, for the files of @package's folder and the build script,
+       then "dep PACKAGE HASH" for each package it is built against (its
+       deps= in components.conf) */
     static QByteArray inputLines(const QString &guestDir, const QString &package);
     /* What build-medium.sh records of itself */
     static QString mediumHash(const QString &guestDir);

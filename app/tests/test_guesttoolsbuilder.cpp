@@ -310,6 +310,7 @@ private slots:
             const QString printed = run("bash", {guest + "/build-rpms.sh", "--print-inputs",
                                                  "tools", "kwin"},
                                         &status, env);
+            QVERIFY2(printed.count('\n') == 2, qPrintable(printed));
             QCOMPARE(status, 0);
             for (const QString &line : printed.split('\n', Qt::SkipEmptyParts)) {
                 const QString package = line.section(' ', 0, 0);
@@ -332,8 +333,13 @@ private slots:
                              .toHex()));
         QCOMPARE(GuestToolsBuilder::version(GUEST_SOURCE_DIR, "kwin"), "6.8.2");
         QCOMPARE(GuestToolsBuilder::packages(GUEST_SOURCE_DIR),
-                 QStringList({"tools", "mesa", "kwin", "proxy", "kpipewire", "qtbase", "ksvg",
-                              "kirigami"}));
+                 QStringList({"tools", "mesa", "kwayland", "kwin", "proxy", "kpipewire", "qtbase",
+                              "ksvg", "kirigami"}));
+        /* KWin's inputs: KWayland's key, which it is built against */
+        QVERIFY(GuestToolsBuilder::inputLines(GUEST_SOURCE_DIR, "kwin")
+                    .endsWith("\ndep kwayland " +
+                              GuestToolsBuilder::inputsHash(GUEST_SOURCE_DIR, "kwayland").toUtf8() +
+                              '\n'));
     }
 
     /* guest/ found as host/ is: chosen, installed with the app, or the source tree's */
@@ -510,6 +516,135 @@ private slots:
         QCOMPARE(b.release(), GuestTools::newestRelease());
         b.setRelease("44");
         QCOMPARE(b.release(), "44");
+    }
+
+    /*
+     * A package built against another (deps=, KWin against KWayland): that
+     * one's key in its inputs, the script's and the app's alike; built after
+     * it, with its packages in the container; never without its build
+     */
+    void buildsAgainstItsDeps()
+    {
+        const QString guest = guestDir("deps-guest", true);
+        QVERIFY(!guest.isEmpty());
+        QVERIFY(write(guest + "/kwayland/kwayland.spec", "Name: kwayland\nVersion: 6.8.2\n"));
+        const QByteArray conf = "[tools]\nspec=tools/vitrine-guest-tools.spec\n"
+                                "[mesa]\nspec=mesa/mesa.spec\nheavy=1\n"
+                                "[kwayland]\nspec=kwayland/kwayland.spec\nreleases=44\n"
+                                "[kwin]\nspec=kwin/kwin.spec\nheavy=1\ndeps=kwayland\nreleases=44\n"
+                                "[medium]\nkind=medium\ndeps=tools mesa kwayland kwin\n";
+        QVERIFY(write(guest + "/components.conf", conf));
+        const QString kwayland = GuestToolsBuilder::inputsHash(guest, "kwayland");
+        QVERIFY(!kwayland.isEmpty());
+        QVERIFY(!GuestToolsBuilder::inputLines(guest, "kwayland").contains("dep "));
+        QVERIFY(GuestToolsBuilder::inputLines(guest, "kwin")
+                    .endsWith(("\ndep kwayland " + kwayland + '\n').toUtf8()));
+        const auto printedKeys = [&guest](const QStringList &packages = {}) {
+            int status = -1;
+            const QString printed =
+                run("bash", QStringList{guest + "/build-rpms.sh", "--print-inputs"} + packages,
+                    &status);
+            QHash<QString, QString> keys;
+            for (const QString &line : printed.split('\n', Qt::SkipEmptyParts)) {
+                keys.insert(line.section(' ', 0, 0), line.section(' ', 1));
+            }
+            return status == 0 ? keys : QHash<QString, QString>();
+        };
+        QHash<QString, QString> keys = printedKeys();
+        QCOMPARE(keys.size(), 4);
+        for (auto it = keys.begin(); it != keys.end(); ++it) {
+            QCOMPARE(GuestToolsBuilder::inputsHash(guest, it.key()), it.value());
+        }
+
+        /* KWayland's sources changed: KWin's key too, not the others' */
+        const QString kwin = GuestToolsBuilder::inputsHash(guest, "kwin");
+        const QString tools = GuestToolsBuilder::inputsHash(guest, "tools");
+        QVERIFY(write(guest + "/kwayland/0001-fix.patch", "--- a\n+++ b\n"));
+        QVERIFY(GuestToolsBuilder::inputsHash(guest, "kwayland") != kwayland);
+        QVERIFY(GuestToolsBuilder::inputsHash(guest, "kwin") != kwin);
+        QCOMPARE(GuestToolsBuilder::inputsHash(guest, "tools"), tools);
+        keys = printedKeys({"kwin"});
+        QCOMPARE(keys.value("kwin"), GuestToolsBuilder::inputsHash(guest, "kwin"));
+
+        /* KWin alone, KWayland neither built nor asked for: refused, before any container */
+        const QString rpms = m_tmp.filePath("deps/rpms");
+        QProcessEnvironment env = QProcessEnvironment::systemEnvironment();
+        env.insert("RPMS_DIR", rpms);
+        env.insert("CACHE_DIR", m_tmp.filePath("deps/cache"));
+        const QString refusal = "vitrine-build: error: kwin is built against kwayland, which is "
+                                "not built from its sources: build it first "
+                                "(guest/build-rpms.sh kwayland kwin)";
+        int status = -1;
+        QFile::remove(m_podman + "/calls");
+        QString out = run("bash", {guest + "/build-rpms.sh", "kwin"}, &status, env);
+        QCOMPARE(status, 1);
+        QVERIFY2(out.contains(refusal), qPrintable(out));
+        QVERIFY(!QFileInfo::exists(m_podman + "/calls"));
+        QVERIFY(!QFileInfo::exists(rpms + "/kwin"));
+
+        /* both, asked for in any order: KWayland first, its packages in KWin's container */
+        out = run("bash", {guest + "/build-rpms.sh", "kwin", "kwayland"}, &status, env);
+        QVERIFY2(status == 0, qPrintable(out));
+        QVERIFY(out.indexOf("building: kwayland") >= 0);
+        QVERIFY(out.indexOf("building: kwayland") < out.indexOf("building: kwin"));
+        /* (the calls' lines: the prepare script's own lines too) */
+        const QByteArray calls = read(m_podman + "/calls");
+        QStringList runs;
+        for (const QByteArray &call : calls.split('\n')) {
+            if (call.startsWith("run ")) {
+                runs << QString::fromUtf8(call);
+            }
+        }
+        QCOMPARE(runs.size(), 2);
+        QVERIFY2(runs[0].contains("vitrine-rpm-kwayland-") && !runs[0].contains(":/deps/"),
+                 qPrintable(runs[0]));
+        QVERIFY2(runs[1].contains("vitrine-rpm-kwin-") &&
+                     runs[1].contains("-v " + rpms + "/kwayland:/deps/kwayland:ro "),
+                 qPrintable(runs[1]));
+        QVERIFY(calls.contains("rpm-build-inside.sh \"$t\" prepare kwin kwin\n"));
+        QCOMPARE(read(rpms + "/kwin/.inputs").trimmed(),
+                 GuestToolsBuilder::inputsHash(guest, "kwin").toUtf8());
+        QCOMPARE(read(rpms + "/kwin/.inputs.list"), GuestToolsBuilder::inputLines(guest, "kwin"));
+        /* the app's plan: nothing of them left */
+        QStringList names;
+        for (const GuestToolsBuilder::Step &s : GuestToolsBuilder::plan(guest, rpms, "44")) {
+            names << s.name;
+        }
+        QCOMPARE(names, QStringList({"tools", "mesa", "medium"}));
+
+        /* KWayland's sources changed since: KWin refused again, built with it */
+        QVERIFY(write(guest + "/kwayland/0001-fix.patch", "--- a\n+++ c\n"));
+        names.clear();
+        for (const GuestToolsBuilder::Step &s : GuestToolsBuilder::plan(guest, rpms, "44")) {
+            names << s.name;
+        }
+        QCOMPARE(names, QStringList({"tools", "mesa", "kwayland", "kwin", "medium"}));
+        QFile::remove(m_podman + "/calls");
+        out = run("bash", {guest + "/build-rpms.sh", "kwin"}, &status, env);
+        QCOMPARE(status, 1);
+        QVERIFY2(out.contains(refusal), qPrintable(out));
+        QVERIFY(!QFileInfo::exists(m_podman + "/calls"));
+        out = run("bash", {guest + "/build-rpms.sh", "kwayland", "kwin"}, &status, env);
+        QVERIFY2(status == 0 && out.contains("vitrine-build: built: " + rpms + "/kwin"),
+                 qPrintable(out));
+        QCOMPARE(read(rpms + "/kwin/.inputs.list"), GuestToolsBuilder::inputLines(guest, "kwin"));
+
+        /* a dep that is no package here, or one built against itself: no key, refused */
+        QVERIFY(write(guest + "/components.conf",
+                      QByteArray(conf).replace("deps=kwayland\n", "deps=nothing\n")));
+        QVERIFY(GuestToolsBuilder::inputsHash(guest, "kwin").isEmpty());
+        out = run("bash", {guest + "/build-rpms.sh", "--print-inputs", "kwin"}, &status);
+        QCOMPARE(status, 2);
+        QVERIFY2(out.contains("kwin is built against nothing: no folder nothing with its spec"),
+                 qPrintable(out));
+        QVERIFY(write(guest + "/components.conf",
+                      QByteArray(conf).replace("[kwayland]\n", "[kwayland]\ndeps=kwin\n")));
+        QVERIFY(GuestToolsBuilder::inputsHash(guest, "kwin").isEmpty());
+        QVERIFY(GuestToolsBuilder::inputsHash(guest, "kwayland").isEmpty());
+        out = run("bash", {guest + "/build-rpms.sh", "--print-inputs", "kwin"}, &status);
+        QCOMPARE(status, 2);
+        QVERIFY2(out.contains("kwayland is built against kwin, which is built against it"),
+                 qPrintable(out));
     }
 
     /* The steps, their phases and progress from the scripts' lines, and the medium */

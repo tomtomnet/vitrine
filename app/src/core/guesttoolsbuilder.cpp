@@ -235,17 +235,23 @@ static bool listFiles(const QString &root, const QString &path, QList<QByteArray
 }
 
 /*
- * As build-rpms.sh: the sha256 of the lines sha256sum prints for the files
+ * As build-rpms.sh's inputs_lines: the lines sha256sum prints for the files
  * of the package's folder and rpm-build-inside.sh, in the C locale's order
- * of their paths
+ * of their paths, then "dep PACKAGE HASH" for each package it is built
+ * against (its deps= in components.conf, @all), with the hash of that one's
+ * lines.  Empty if a file cannot be read, or a dep is no package of @all;
+ * deps deeper than build-rpms.sh allows (one built against itself) too.
  */
-QByteArray GuestToolsBuilder::inputLines(const QString &guestDir, const QString &package)
+static QByteArray packageLines(const QString &guestDir, const QString &package,
+                               const QList<Builds::Component> &all, int depth)
 {
+    static const int kMaxDepth = 16;
     QList<QByteArray> files;
     QByteArray lines;
 
-    if (guestDir.isEmpty() || package.isEmpty() || !QFileInfo(guestDir + '/' + package).isDir() ||
-        !listFiles(guestDir, package, files) || !listFiles(guestDir, "rpm-build-inside.sh", files)) {
+    if (guestDir.isEmpty() || package.isEmpty() || depth > kMaxDepth ||
+        !QFileInfo(guestDir + '/' + package).isDir() || !listFiles(guestDir, package, files) ||
+        !listFiles(guestDir, "rpm-build-inside.sh", files)) {
         return {};
     }
     std::sort(files.begin(), files.end());
@@ -258,7 +264,27 @@ QByteArray GuestToolsBuilder::inputLines(const QString &guestDir, const QString 
         }
         lines += hash.result().toHex() + "  " + name + '\n';
     }
+    for (const QString &dep : Builds::find(all, package).deps) {
+        const QByteArray depLines = Builds::find(all, dep).kind == Builds::Kind::Package
+                                        ? packageLines(guestDir, dep, all, depth + 1)
+                                        : QByteArray();
+        if (depLines.isEmpty()) {
+            return {};
+        }
+        lines += "dep " + dep.toUtf8() + ' ' +
+                 QCryptographicHash::hash(depLines, QCryptographicHash::Sha256).toHex() + '\n';
+    }
     return lines;
+}
+
+QByteArray GuestToolsBuilder::inputLines(const QString &guestDir, const QString &package)
+{
+    Builds::Places places;
+
+    places.guestDir = guestDir;
+    return packageLines(guestDir, package, guestDir.isEmpty() ? QList<Builds::Component>()
+                                                              : Builds::load(places),
+                        0);
 }
 
 QString GuestToolsBuilder::inputsHash(const QString &guestDir, const QString &package)

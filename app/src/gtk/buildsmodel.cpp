@@ -858,7 +858,8 @@ Details details(const BuildManager &m, const QString &id,
         }
         d.properties << Property{"Patches", parts.join(", "), {}, {}};
     }
-    if (c.kind == Kind::Host && !c.deps.isEmpty()) {
+    /* a library of QEMU's, or a package's (KWin's KWayland) */
+    if ((c.kind == Kind::Host || c.kind == Kind::Package) && !c.deps.isEmpty()) {
         QStringList titles;
         for (const QString &dep : c.deps) {
             titles << escaped(m.component(dep).title);

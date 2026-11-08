@@ -46,7 +46,8 @@ GPL-2.0-or-later (the research's licence since b973b6b, the user's choice;
 each file's SPDX line). The proxy (guest/proxy) is Victoria Brekenfeld's
 wl-cross-domain-proxy, MIT, with the research's changes, GPL-2.0-or-later:
 the tree is GPL-2.0-or-later AND MIT. The research's patches to KWin,
-KPipeWire, Mesa and the virtio-gpu driver keep those projects' licences.
+KWayland, KPipeWire, Mesa and the virtio-gpu driver keep those projects'
+licences.
 
 ## How a boot becomes a nested-desktop one
 

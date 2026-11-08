@@ -75,6 +75,7 @@ Medium parseManifest(const QByteArray &json, const QString &image)
     m.tools = o["tools"].toString();
     m.mesa = o["mesa"].toString();
     m.kwin = o["kwin"].toString();
+    m.kwayland = o["kwayland"].toString();
     m.kpipewire = o["kpipewire"].toString();
     m.proxy = o["proxy"].toString();
     m.qtbase = o["qtbase"].toString();
