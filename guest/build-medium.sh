@@ -13,7 +13,9 @@
 #      *.rpm, for the packages of the medium's deps in components.conf (tools
 #      needed; without Mesa, KWin, KPipeWire, Qt Base, KSvg or Kirigami the
 #      medium keeps the guest's own, without the proxy there is no nested
-#      desktop)
+#      desktop).  A package built against another (its deps=: KWin against
+#      KWayland) goes on the medium only with that one's packages of the build
+#      it was built against: else no medium
 # Out: $OUT [~/.local/share/vitrine/guest-tools/vitrine-guest-tools-fcRELEASE.img]
 #      and its manifest beside it (.json: versions, packages, and the inputs
 #      of the packages and of this script, which tell vitrine whether the
@@ -72,6 +74,13 @@ for_release() {
 		}
 		END { exit found && !ok }' "$here/components.conf"
 }
+# The packages @1 is built against: its section's deps= (as build-rpms.sh's)
+deps_of() {
+	[ -f "$here/components.conf" ] || return 0
+	awk -v p="$1" '
+		/^[[:space:]]*\[/ { s = $0; gsub(/^[[:space:]]*\[|\][[:space:]]*$/, "", s); next }
+		s == p && /^deps=/ { sub(/^deps=/, ""); print; exit }' "$here/components.conf"
+}
 # the packages on the medium: its deps in components.conf (those of an older
 # guest/ without the file) that are built for this release
 deps=()
@@ -88,6 +97,20 @@ flock -n 9 || die "a build of the guest tools is running into $rpms"
 for t in "${medium_packages[@]}"; do
 	[ "$t" = tools ] || ls "$rpms/$t"/*.rpm > /dev/null 2>&1 ||
 		say "warning: no $t packages in $rpms/$t (guest/build-rpms.sh $t): the medium keeps the guest's own"
+done
+# a package built against another, with that one's packages of the build it
+# was built against (the "dep" line its build recorded): vitrine's KWin does
+# not even start without the KWayland it is built against
+for t in "${medium_packages[@]}"; do
+	ls "$rpms/$t"/*.rpm > /dev/null 2>&1 || continue
+	for d in $(deps_of "$t"); do
+		[[ " ${medium_packages[*]} " == *" $d "* ]] ||
+			die "$t is built against $d, which this medium does not have (the medium's deps= in $here/components.conf)"
+		key=$(head -c 64 "$rpms/$d/.inputs" 2> /dev/null || true)
+		ls "$rpms/$d"/*.rpm > /dev/null 2>&1 && [ ${#key} = 64 ] &&
+			grep -qx "dep $d $key" "$rpms/$t/.inputs.list" 2> /dev/null ||
+			die "$t is built against $d, and $rpms/$d has not the build of $d it was built against: guest/build-rpms.sh $d $t"
+	done
 done
 
 stage=$(mktemp -d)
@@ -122,6 +145,7 @@ evr_of() { awk -v n="$1" '$1 == n { print $2; exit }' "$stage/packages.txt"; }
 tools_evr=$(evr_of vitrine-guest-tools)
 tools_version=${tools_evr%-*}
 kwin_evr=$(evr_of kwin)
+kwayland_evr=$(evr_of kwayland)
 mesa_evr=$(evr_of mesa-dri-drivers)
 kpipewire_evr=$(evr_of kpipewire)
 proxy_evr=$(evr_of wl-cross-domain-proxy)
@@ -145,6 +169,7 @@ join() {  # join WORD...: "a", "a and b", "a, b and c"
 locked=() unlocked=()
 [ -z "$mesa_evr" ] || locked+=(Mesa)
 [ -z "$kwin_evr" ] || locked+=(KWin)
+[ -z "$kwayland_evr" ] || locked+=(KWayland)
 [ -z "$kpipewire_evr" ] || locked+=(KPipeWire)
 [ -z "$proxy_evr" ] || locked+=("the proxy")
 [ -z "$ksvg_evr" ] || unlocked+=(KSvg)
@@ -171,7 +196,12 @@ What they install:
   driver) and the vitrine agent
 EOF
 	[ -z "$mesa_evr" ] || echo "- Mesa $mesa_evr with native context, in place of the Mesa installed"
-	[ -z "$kwin_evr" ] || echo "- KWin $kwin_evr, only on Plasma ${kwin_evr%%-*} guests"
+	if [ -n "$kwin_evr" ] && [ -n "$kwayland_evr" ]; then
+		echo "- KWin $kwin_evr, only on Plasma ${kwin_evr%%-*} guests, with KWayland $kwayland_evr,"
+		echo "  which it is built against (the nested desktop's scrolling)"
+	elif [ -n "$kwin_evr" ]; then
+		echo "- KWin $kwin_evr, only on Plasma ${kwin_evr%%-*} guests"
+	fi
 	[ -z "$kpipewire_evr" ] || echo "- KPipeWire $kpipewire_evr, only on Plasma ${kpipewire_evr%%-*} guests"
 	if [ -n "$proxy_evr" ]; then
 		echo "- the nested desktop: its session, offered in the boots of a VM with the"
@@ -216,6 +246,7 @@ TOOLS_EVR=$tools_evr
 FEDORA_RELEASE=$release
 MEDIUM_ID=$medium_id
 KWIN_VERSION=${kwin_evr%%-*}
+KWAYLAND_VERSION=${kwayland_evr%%-*}
 MESA_VERSION=${mesa_evr%%-*}
 KPIPEWIRE_VERSION=${kpipewire_evr%%-*}
 QTBASE_VERSION=${qtbase_evr%%-*}
@@ -241,6 +272,7 @@ cat > "$stage/manifest.json" <<EOF
   "toolsVersion": "$tools_version",
   "mesa": "$mesa_evr",
   "kwin": "$kwin_evr",
+  "kwayland": "$kwayland_evr",
   "kpipewire": "$kpipewire_evr",
   "proxy": "$proxy_evr",
   "qtbase": "$qtbase_evr",
@@ -266,6 +298,7 @@ mv -f "$img" "$out"
 mv -f "$manifest" "${out%.img}.json"
 echo
 echo "$out: $((kib / 1024)) MiB, tools $tools_evr, medium $medium_id"
-echo "  Mesa: ${mesa_evr:-none}   KWin: ${kwin_evr:-none}   KPipeWire: ${kpipewire_evr:-none}   proxy: ${proxy_evr:-none}"
+echo "  Mesa: ${mesa_evr:-none}   KWin: ${kwin_evr:-none}   KWayland: ${kwayland_evr:-none}"
+echo "  KPipeWire: ${kpipewire_evr:-none}   proxy: ${proxy_evr:-none}"
 echo "  Qt Base: ${qtbase_evr:-none}   KSvg: ${ksvg_evr:-none}   Kirigami: ${kirigami_evr:-none}"
 say "built: $out"
