@@ -2,7 +2,7 @@
 # exact version, and dnf takes an installed one of the same version as done.
 Name:           vitrine-guest-tools
 Version:        0.1.0
-Release:        39%{?dist}
+Release:        40%{?dist}
 Summary:        vitrine guest tools: patched virtio-gpu driver, settings and agent
 
 # the driver's sources (dkms/vendor, dkms/patches) are the kernel's: MIT
@@ -183,6 +183,22 @@ fi
 %dir %{_sharedstatedir}/%{name}
 
 %changelog
+* Sun Nov 08 2026 vitrine <noreply@anthropic.com> - 0.1.0-40
+- the driver's flip grace holds only for a tick that has no flip yet (the
+  research's a5e7488): a flip committed in the grace of a tick that had
+  one already was completed for that same tick, so the compositor drew its
+  next frame at once and the host showed only one of the two.  A GNOME
+  guest in vitrine's window fell into spells of half rate for seconds at a
+  time (the research's gdl13, gdl17/18: in those spells 46 % of its
+  flushes fell in the grace, 6 % outside them).  Such a flip now waits for
+  the next tick: module parameter flip_grace_once, default 1 (0: the grace
+  for any flip in it, as before); flip_grace_us stays 1200
+- debugfs virtio-gpu-flip-gate counts the flips completed in a grace and
+  the second flips in the grace of a tick that had one.  On the research's
+  laptop (Radeon 780M, GNOME host and guest, 6 boots) the fixed driver
+  sent every second flip to the next tick (0, 81 and 26 in its boots; the
+  old one completed 13, 1 and 1,252 for the same tick), at no cost seen
+
 * Sun Nov 08 2026 vitrine <noreply@anthropic.com> - 0.1.0-39
 - with KWin 6.8.2-3.3.g28 on Fedora 44's medium (the research's guest set
   g28: the nested desktop binds the host's seat at version 9 and hands a

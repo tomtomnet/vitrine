@@ -1,0 +1,153 @@
+The flip grace (linux-drm-virtio-flip-grace) completes a flip committed up to
+flip_grace_us after the host's tick for that tick.  It did so even when the
+tick already had its flip: a flip whose event went out at the tick, and a
+second one in its grace, were both for that tick.  The compositor, told its
+frame was on the screen, drew the next at once, and the host showed one of
+the two at that blank and nothing new at the next - a GNOME guest whose
+flips fell near the grace's edge ran at half rate for seconds at a time
+(the research's gdl13, gdl17/18, 2026-11-08: its frames 2.0 then 6.3 ms
+apart; 46 % of its flips in the grace in those seconds, 6 % otherwise; no
+such spell in 3 boots with flip_grace_us=0, in 6 of 7 with 1200).
+
+The grace now holds only for a tick that has no flip yet: each output keeps
+the vblank its last flip event went out for, or is due at, and a second
+flip in the grace waits for the next tick (module parameter
+flip_grace_once, default 1; 0 = the grace for any flip in it, as before).
+debugfs virtio-gpu-flip-gate counts the flips completed in a grace and the
+second flips in the grace of a tick that had one, in both modes.
+
+diff --git a/drivers/gpu/drm/virtio/virtgpu_debugfs.c b/drivers/gpu/drm/virtio/virtgpu_debugfs.c
+index 33e945c..482961f 100644
+--- a/drivers/gpu/drm/virtio/virtgpu_debugfs.c
++++ b/drivers/gpu/drm/virtio/virtgpu_debugfs.c
+@@ -106,7 +106,7 @@ virtio_gpu_debugfs_flip_gate(struct seq_file *m, void *data)
+ 	seq_printf(m, "blob_flush_fence %d\n", virtio_gpu_modparam_blob_flush_fence);
+ 	for (i = 0; i < vgdev->num_scanouts; i++) {
+ 		struct virtio_gpu_output *output = &vgdev->outputs[i];
+-		u64 events, waited, timeouts, wait_ns, max_ns;
++		u64 events, waited, timeouts, wait_ns, max_ns, used, second;
+ 		bool pending;
+ 
+ 		spin_lock_irq(&dev->event_lock);
+@@ -116,7 +116,13 @@ virtio_gpu_debugfs_flip_gate(struct seq_file *m, void *data)
+ 		wait_ns = output->gate_wait_ns;
+ 		max_ns = output->gate_wait_max_ns;
+ 		pending = output->gated_event != NULL;
++		used = output->grace_used;
++		second = output->grace_second;
+ 		spin_unlock_irq(&dev->event_lock);
++		if (used || second)
++			seq_printf(m, "output %d: %llu flips completed in the grace of a tick; %llu second flips in the grace of a tick that had one (flip_grace_once %d: %s)\n",
++				   i, used, second, virtio_gpu_modparam_flip_grace_once,
++				   virtio_gpu_modparam_flip_grace_once ? "refused, for the next tick" : "completed for the same tick");
+ 		if (!events)
+ 			continue;
+ 		seq_printf(m, "output %d: %llu gated flip events, %llu waited for the host, %llu let go after 100 ms, mean wait %llu us, max %llu us%s\n",
+diff --git a/drivers/gpu/drm/virtio/virtgpu_display.c b/drivers/gpu/drm/virtio/virtgpu_display.c
+index cfe9055..50641cd 100644
+--- a/drivers/gpu/drm/virtio/virtgpu_display.c
++++ b/drivers/gpu/drm/virtio/virtgpu_display.c
+@@ -82,6 +82,9 @@ module_param_named(host_vblank, virtio_gpu_modparam_host_vblank, int, 0644);
+ int virtio_gpu_modparam_flip_grace_us = 1200;
+ MODULE_PARM_DESC(flip_grace_us, "A flip this long after the host's vblank tick still completes for that tick (default 1200)");
+ module_param_named(flip_grace_us, virtio_gpu_modparam_flip_grace_us, int, 0644);
++int virtio_gpu_modparam_flip_grace_once = 1;
++MODULE_PARM_DESC(flip_grace_once, "The flip grace only for a tick that has no flip yet (default 1; 0 = for any flip in it)");
++module_param_named(flip_grace_once, virtio_gpu_modparam_flip_grace_once, int, 0644);
+ 
+ /*
+  * Zero copy: the host puts the scanout buffer itself on its screen, and it
+@@ -523,6 +526,16 @@ static int virtio_gpu_crtc_atomic_check(struct drm_crtc *crtc,
+  * same blank: complete it for the tick just gone, with its count and time,
+  * or the compositor would take the frame for a refresh late and skip the
+  * next one.
++ *
++ * Only for a tick that has no flip yet (flip_grace_once): a flip that went
++ * out for the tick just gone, and a second one in its grace, would both be
++ * for that tick - the compositor, told its frame is on the screen, draws
++ * the next at once, and the host shows one of the two at that blank and
++ * nothing new at the next.  A GNOME guest whose flips fell near the
++ * grace's edge ran at half rate for seconds at a time (the research's
++ * gdl13, gdl17/18, 2026-11-08: two frames 2.0 then 6.3 ms apart; 46 % of
++ * its flips in the grace then, 6 % otherwise; none with the grace off).
++ * Called with the device's event_lock held.
+  */
+ bool virtio_gpu_flip_in_grace(struct virtio_gpu_output *output)
+ {
+@@ -539,7 +552,17 @@ bool virtio_gpu_flip_in_grace(struct virtio_gpu_output *output)
+ 		return false;
+ 	in = ktime_before(ktime_get(),
+ 			  ktime_add_us(last, virtio_gpu_modparam_flip_grace_us));
+-	return in;
++	if (!in)
++		return false;
++	if (output->flip_seq_set &&
++	    (s64)(output->flip_seq - drm_crtc_vblank_count(&output->crtc)) >= 0) {
++		/* the tick just gone has its flip: this one is for the next */
++		output->grace_second++;
++		if (virtio_gpu_modparam_flip_grace_once)
++			return false;
++	}
++	output->grace_used++;
++	return true;
+ }
+ 
+ static void virtio_gpu_crtc_atomic_flush(struct drm_crtc *crtc,
+@@ -577,6 +600,8 @@ static void virtio_gpu_crtc_atomic_flush(struct drm_crtc *crtc,
+ 			output->gate_count++;
+ 			output->gate_ref = true;
+ 		}
++		output->flip_seq = output->gate_count;
++		output->flip_seq_set = true;
+ 		output->gated_event = event;
+ 		output->gate_fence = fence;
+ 		output->gate_time = ktime_get();
+@@ -587,13 +612,19 @@ static void virtio_gpu_crtc_atomic_flush(struct drm_crtc *crtc,
+ 		if (output->gated_event)
+ 			output->gate_waited++;
+ 	} else if (event) {
+-		if (virtio_gpu_flip_in_grace(output))
++		if (virtio_gpu_flip_in_grace(output)) {
+ 			/* for the tick just gone: the host still shows it then */
+ 			drm_crtc_send_vblank_event(crtc, event);
+-		else if (drm_crtc_vblank_get(crtc) == 0)
++			output->flip_seq = drm_crtc_vblank_count(crtc);
++		} else if (drm_crtc_vblank_get(crtc) == 0) {
++			/* at the next tick */
+ 			drm_crtc_arm_vblank_event(crtc, event);
+-		else
++			output->flip_seq = drm_crtc_vblank_count(crtc) + 1;
++		} else {
+ 			drm_crtc_send_vblank_event(crtc, event);
++			output->flip_seq = drm_crtc_vblank_count(crtc);
++		}
++		output->flip_seq_set = true;
+ 	}
+ 
+ 	spin_unlock_irq(&dev->event_lock);
+diff --git a/drivers/gpu/drm/virtio/virtgpu_drv.h b/drivers/gpu/drm/virtio/virtgpu_drv.h
+index db3f296..224f1a5 100644
+--- a/drivers/gpu/drm/virtio/virtgpu_drv.h
++++ b/drivers/gpu/drm/virtio/virtgpu_drv.h
+@@ -241,9 +241,21 @@ struct virtio_gpu_output {
+ 	/* debugfs virtio-gpu-flip-gate */
+ 	u64 gate_events, gate_waited, gate_timeouts;
+ 	u64 gate_wait_ns, gate_wait_max_ns;
++	/*
++	 * The flip grace once a tick (flip_grace_once): the vblank the last
++	 * flip event went out for, or is due at - under the device's
++	 * event_lock.  A second flip in the grace of a tick that has one waits
++	 * for the next tick.  debugfs: flips completed in a grace, and second
++	 * flips in the grace of a tick that had one (refused the grace with
++	 * flip_grace_once, completed for the same tick without).
++	 */
++	u64 flip_seq;
++	bool flip_seq_set;
++	u64 grace_used, grace_second;
+ };
+ extern int virtio_gpu_modparam_host_vblank;
+ extern int virtio_gpu_modparam_flip_grace_us;
++extern int virtio_gpu_modparam_flip_grace_once;
+ extern int virtio_gpu_modparam_blob_flush_fence;
+ extern int virtio_gpu_modparam_linear_scanout;
+ extern int virtio_gpu_modparam_tiled_scanout;
