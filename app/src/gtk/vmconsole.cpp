@@ -5,6 +5,7 @@
 
 #include <utility>
 
+#include "core/guesttools.h"
 #include "core/nesteddesktop.h"
 #include "core/vmconfig.h"
 #include "core/vmhardware.h"
@@ -29,6 +30,15 @@ static NestedDisplay::Factory &nestedFactory()
 {
     static NestedDisplay::Factory factory;
     return factory;
+}
+
+/* How the view shows the guest's frames in full screen: by the guest's
+   driver options, as its agent said since the guest booted
+   (VmDisplay::setFlipsWaitForRelease) */
+static bool flipsWait(Vm *vm)
+{
+    const GuestToolsMonitor *tools = GuestToolsMonitor::of(vm);
+    return !tools->hasAgent() || GuestTools::flipsWaitForRelease(tools->report());
 }
 
 VmConsole::VmConsole(Vm *vm)
@@ -68,6 +78,11 @@ VmConsole::VmConsole(Vm *vm)
         QObject::connect(runner, &VmRunner::guestReset, &m_qt, [this]() {
             if (m_nested) {
                 renewNested();
+            }
+        });
+        QObject::connect(GuestToolsMonitor::of(vm), &GuestToolsMonitor::changed, &m_qt, [this]() {
+            if (m_display && m_vm) {
+                m_display->setFlipsWaitForRelease(flipsWait(m_vm));
             }
         });
     }
@@ -497,6 +512,7 @@ void VmConsole::attach()
     m_stats = {};
     display->setInputEnabled(runnerTakesInput(m_vm->runner()));
     display->setCovered(m_covered);
+    display->setFlipsWaitForRelease(flipsWait(m_vm));
     display->grabChanged.connect([this]() { notifyChanged(); });
     display->fullScreenChanged.connect([this](bool) { notifyChanged(); });
     /* a guest paused for its screen runs once QEMU has the screen's size and refresh rate */

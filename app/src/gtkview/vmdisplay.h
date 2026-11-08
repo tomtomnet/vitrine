@@ -78,6 +78,19 @@ public:
     /* On: once the window the view is in is shown and active, if it is
        shown and not yet active (FullScreenOrder) */
     void setFullScreen(bool on);
+    /*
+     * Whether the guest's flips wait for the view to give back the buffer
+     * shown before (GuestTools::flipsWaitForRelease()); true until set.
+     * In full screen the view then copies the guest's frames: its own
+     * buffer would go to the screen as it is and come back only after the
+     * compositor's next flip, too late for a guest drawing at every refresh
+     * (half rate at 240 Hz on an Arc Pro B50, the research's window drags
+     * of 2026-11-08).  VITRINE_VIEW_FULL_SCREEN_ZERO_COPY=1 or 0 decides
+     * instead, for A/B runs.
+     */
+    void setFlipsWaitForRelease(bool on);
+    /* In full screen, the guest's buffers go to the screen as they are */
+    bool fullScreenZeroCopy() const;
 
     /* Whether the guest gets the keys the desktop would take, as Alt+Tab */
     bool grabbed() const;
@@ -142,6 +155,9 @@ private:
     GtkWidget *m_placeholder = nullptr;  // in m_host while full screen
     std::shared_ptr<bool> m_alive;       // for what the other threads queue for this one
     bool m_fullScreen = false;
+    bool m_flipsWait = true;
+    /* VITRINE_VIEW_FULL_SCREEN_ZERO_COPY: 1 or 0, -1 when not set */
+    int m_fullScreenZeroCopyEnv = -1;
     bool m_covered = false;
     bool m_hasKeyboard = false;
     bool m_inputEnabled = true;

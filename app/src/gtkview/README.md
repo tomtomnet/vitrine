@@ -117,7 +117,17 @@ How it fits GTK:
   two seconds at most.  In full screen, the window's surface (GTK's,
   black, opaque) has the frames' subsurface over all of it, opaque, with
   the guest's buffer attached as it is when zero copy holds: the topmost
-  surface, which a compositor can put on the screen directly.
+  surface, which a compositor can put on the screen directly.  That
+  buffer then comes back only after the compositor's next flip, and a
+  guest whose flips wait for it draws a frame only once the one before is
+  on the screen: a GNOME guest ran at half rate at 240 Hz while a window
+  was dragged (an Arc Pro B50, the research's run of 2026-11-08; the copy
+  kept the full rate). So in full screen the view copies the frames of a
+  guest whose flips wait (`blob_flush_fence` 1: any compositor but
+  vitrine's KWin), and does so too while the guest's agent has not said
+  since the boot (`VmDisplay::setFlipsWaitForRelease`, which the console
+  sets from the agent's report). In a window the compositor composites
+  the guest's buffer and gives it back sooner: zero copy stays.
 - The guest is told its screen's physical size with each size (UIInfo's
   `width_mm` and `height_mm`): the view's share of its monitor's, from
   GdkMonitor's width_mm and height_mm, through `core/physicalsize.h` as the Qt
@@ -199,6 +209,12 @@ what vitrine ships:
 
 - `VITRINE_VIEW_ZERO_COPY=0`: the view copies the guest's frames into its
   own buffers instead of showing them as they are.
+- `VITRINE_VIEW_FULL_SCREEN_ZERO_COPY=1` or `0`: in full screen, the
+  guest's buffers go on the frames' surface as they are (1) or are copied
+  (0), whatever the guest's driver says; unset, the view copies for a
+  guest whose flips wait for the release (above). With
+  `VITRINE_VIEW_COMPOSITE=1` too, `1` has the compositor composite the
+  guest's own buffers.
 - `VITRINE_VIEW_INHIBIT=0`: never asks for the desktop's shortcuts (above).
 - `VITRINE_VIEW_COMPOSITE=1`: a nearly transparent pixel without input
   above the frames' top left corner (`DisplaySurface`), so that the

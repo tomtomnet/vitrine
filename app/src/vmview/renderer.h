@@ -53,6 +53,13 @@ public:
     // Where to tell that a frame reached the screen: the console's
     // org.qemu.Display1.Presentation, on the control connection
     void setPresentationSink(GDBusConnection *conn, const QByteArray &consolePath);
+    // In full screen, whether a guest buffer that fills the view goes on the
+    // surface as it is (zero copy, the default) or is copied as any other.
+    // A full-screen surface goes to the screen as it is, and the compositor
+    // gives its buffer back only after its next flip: a guest whose flips
+    // wait for that release (virtio_gpu blob_flush_fence=1) draws a frame
+    // only once the one before is on the screen.  Any thread.
+    void setFullScreenZeroCopy(bool on);
     void requestRedraw();
     void stop();
 
@@ -68,6 +75,7 @@ private:
     Stats *m_stats;
     Options m_opts;
     std::atomic<bool> m_exposed{false};
+    std::atomic<bool> m_fullScreenZeroCopy{true};
     std::atomic<wl_display *> m_wlDisplay{nullptr};
     std::atomic<wl_surface *> m_wlSurface{nullptr};
     std::atomic<GDBusConnection *> m_sinkConn{nullptr};

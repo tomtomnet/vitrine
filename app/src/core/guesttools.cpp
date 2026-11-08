@@ -609,6 +609,11 @@ bool kwinMismatch(const Report &r)
     return r.kwinPatched && !plasma.isEmpty() && !kwin.isEmpty() && kwin != plasma;
 }
 
+bool flipsWaitForRelease(const Report &r)
+{
+    return r.driverParams.value("blob_flush_fence") != "3";
+}
+
 }
 
 using namespace GuestTools;

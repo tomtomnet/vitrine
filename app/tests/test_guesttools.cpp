@@ -647,6 +647,24 @@ private slots:
         QTest::newRow("unknown, no medium") << "" << "" << false << false;
     }
 
+    void flipsWait()
+    {
+        /* vitrine's KWin: the release goes on the buffer as a fence, its flips go on */
+        Report r = parseMessage(kHello).report;
+        QCOMPARE(r.driverParams.value("blob_flush_fence"), "3");
+        QVERIFY(!flipsWaitForRelease(r));
+        /* any other compositor (GNOME): the flip waits for the host's release */
+        r.driverParams["blob_flush_fence"] = "1";
+        QVERIFY(flipsWaitForRelease(r));
+        /* a nested-desktop boot: no fence on its flushes, QEMU copies them anyway */
+        r.driverParams["blob_flush_fence"] = "0";
+        QVERIFY(flipsWaitForRelease(r));
+        /* the stock driver, or an agent that does not say */
+        r.driverParams.clear();
+        QVERIFY(flipsWaitForRelease(r));
+        QVERIFY(flipsWaitForRelease(Report{}));
+    }
+
     void systems()
     {
         QFETCH(QString, id);

@@ -928,6 +928,13 @@ void Renderer::setPresentationSink(GDBusConnection *conn, const QByteArray &cons
     m_sinkConn = conn;
 }
 
+void Renderer::setFullScreenZeroCopy(bool on)
+{
+    if (m_fullScreenZeroCopy.exchange(on) != on) {
+        requestRedraw();
+    }
+}
+
 void Renderer::requestRedraw()
 {
     {
@@ -1086,8 +1093,12 @@ void Renderer::run()
                 eglQuerySurface(eglDpy, surf, EGL_HEIGHT, &h);
             }
             // zero copy: the guest's buffer itself, when it fills the view 1:1
+            // (in full screen only if setFullScreenZeroCopy() lets it)
+            const bool fullScreen =
+                m_opts.toplevel && (m_window->windowStates() & Qt::WindowFullScreen);
             GuestBuffer *gb = nullptr;
-            if (st.zcSupported && scanout && scanout->kind == Scanout::Dmabuf &&
+            if (st.zcSupported && (m_fullScreenZeroCopy || !fullScreen) && scanout &&
+                scanout->kind == Scanout::Dmabuf &&
                 scanout->inode && scanout->modifier != DRM_FORMAT_MOD_INVALID &&
                 !scanout->y0Top && !scanout->x && !scanout->y &&
                 scanout->width == scanout->backingWidth &&
@@ -1110,7 +1121,7 @@ void Renderer::run()
                 }
                 drawnInode = gb->inode;
                 // the late swap target when nothing composites it: a full-screen window of its own
-                st.sendZeroCopy(m_opts.toplevel && (m_window->windowStates() & Qt::WindowFullScreen));
+                st.sendZeroCopy(fullScreen);
                 const int64_t t = nowNs();
                 if (fb) {
                     std::lock_guard g(st.lock);

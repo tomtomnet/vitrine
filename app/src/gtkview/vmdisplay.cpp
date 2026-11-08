@@ -113,10 +113,15 @@ VmDisplay::VmDisplay() : m_alive(std::make_shared<bool>(true))
     /* VITRINE_VIEW_ZERO_COPY=0: the view copies the guest's frames into its own
        buffers (Listener.Unix.ZeroCopy not advertised) instead of showing them as
        they are, for A/B runs.  Zero copy stays the default for GNOME guests too:
-       at 240 Hz, in a window and in full screen, it lost no frame and showed
-       them about 2.3 ms sooner than the copy (the research, 2026-11-05) */
+       in a window at 240 Hz it lost no frame and showed them about 1.7 ms
+       sooner than the copy (the research, 2026-11-05).  Full screen:
+       setFlipsWaitForRelease() */
     if (qgetenv("VITRINE_VIEW_ZERO_COPY") == "0") {
         m_opts.zeroCopy = false;
+    }
+    const QByteArray fullScreenZeroCopy = qgetenv("VITRINE_VIEW_FULL_SCREEN_ZERO_COPY");
+    if (fullScreenZeroCopy == "1" || fullScreenZeroCopy == "0") {
+        m_fullScreenZeroCopyEnv = fullScreenZeroCopy == "1";
     }
     m_host = new Gtk::Box(Gtk::Orientation::VERTICAL);
     m_host->set_size_request(160, 100);
@@ -392,6 +397,7 @@ void VmDisplay::createWindow(bool fullScreen)
     m_renderer = new Renderer(m_widget->rendererWindow(), &m_mailbox, m_stats.get(), m_opts);
     m_renderer->setObjectName(QStringLiteral("render"));   // the thread's name in /proc
     m_renderer->setRenderTarget(m_surface.get());
+    m_renderer->setFullScreenZeroCopy(fullScreenZeroCopy());
     m_renderer->setPresentationSink(m_dbus->connection(), m_dbus->consolePath().toUtf8());
     /* on the render thread, as it ends */
     QObject::connect(m_renderer, &Renderer::failed,
@@ -508,6 +514,19 @@ void VmDisplay::setCovered(bool on)
                                : nullptr;
         m_widget->setCovered(on, still);
     }
+}
+
+void VmDisplay::setFlipsWaitForRelease(bool on)
+{
+    m_flipsWait = on;
+    if (m_renderer) {
+        m_renderer->setFullScreenZeroCopy(fullScreenZeroCopy());
+    }
+}
+
+bool VmDisplay::fullScreenZeroCopy() const
+{
+    return m_fullScreenZeroCopyEnv >= 0 ? m_fullScreenZeroCopyEnv == 1 : !m_flipsWait;
 }
 
 bool VmDisplay::grabbed() const
