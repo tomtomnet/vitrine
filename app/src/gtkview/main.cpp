@@ -4,13 +4,18 @@
  * its display monitor (a QMP socket) as the GTK app's VM page will attach
  * it: the way to try the GTK view until it lands there.
  *
- *   vitrine-gtk-view [--console N] [--full-screen] [--stats] SOCKET
+ *   vitrine-gtk-view [--console N] [--full-screen] [--stats] [--flips-wait 0|1]
+ *                    [--flips-wait-toggle SECONDS] SOCKET
  *
  * --stats prints the frame statistics every second: of the frames presented,
  * "direct" ones the compositor scanned out as they were (the presentation
  * feedback's ZERO_COPY flag), "composited" ones it drew into its own frame;
- * the totals since the start end the line.  Qt Core runs on GLib's default
- * context, which GTK's loop runs, as in the GTK app.
+ * the totals since the start end the line.  --flips-wait says what the
+ * guest's agent would (VmDisplay::setFlipsWaitForRelease: 0 for a guest
+ * with blob_flush_fence 3); unset, the view knows nothing, as before the
+ * agent's first report.  --flips-wait-toggle turns it over every SECONDS,
+ * for checks of the switch while the view shows.  Qt Core runs on GLib's
+ * default context, which GTK's loop runs, as in the GTK app.
  */
 #include <QAbstractEventDispatcher>
 #include <QCoreApplication>
@@ -39,7 +44,8 @@ namespace {
 
 void usage()
 {
-    fprintf(stderr, "usage: vitrine-gtk-view [--console N] [--full-screen] [--stats] SOCKET\n");
+    fprintf(stderr, "usage: vitrine-gtk-view [--console N] [--full-screen] [--stats] "
+                    "[--flips-wait 0|1] [--flips-wait-toggle SECONDS] SOCKET\n");
 }
 
 void printStats(VmDisplay *view)
@@ -63,7 +69,7 @@ void printStats(VmDisplay *view)
 int main(int argc, char **argv)
 {
     QString socket;
-    int console = -1;
+    int console = -1, flipsWait = -1, flipsToggle = 0;
     bool fullScreen = false, stats = false;
     for (int i = 1; i < argc; i++) {
         if (!strcmp(argv[i], "--console") && i + 1 < argc) {
@@ -72,6 +78,12 @@ int main(int argc, char **argv)
             fullScreen = true;
         } else if (!strcmp(argv[i], "--stats")) {
             stats = true;
+        } else if (!strcmp(argv[i], "--flips-wait") && i + 1 < argc &&
+                   (!strcmp(argv[i + 1], "0") || !strcmp(argv[i + 1], "1"))) {
+            flipsWait = argv[++i][0] == '1';
+        } else if (!strcmp(argv[i], "--flips-wait-toggle") && i + 1 < argc &&
+                   atoi(argv[i + 1]) > 0) {
+            flipsToggle = atoi(argv[++i]);
         } else if (argv[i][0] != '-' && socket.isEmpty()) {
             socket = QString::fromLocal8Bit(argv[i]);
         } else {
@@ -103,6 +115,9 @@ int main(int argc, char **argv)
 
     app->signal_activate().connect([&]() {
         view = std::make_unique<VmDisplay>();
+        if (flipsWait >= 0) {
+            view->setFlipsWaitForRelease(flipsWait == 1);
+        }
         QString error;
         if (!view->attach(socket, &error, false, console)) {
             fprintf(stderr, "vitrine-gtk-view: %s\n", qPrintable(error));
@@ -207,6 +222,16 @@ int main(int argc, char **argv)
                 }
                 return true;
             }, 1);
+        }
+        if (flipsToggle > 0) {
+            Glib::signal_timeout().connect_seconds([&]() {
+                if (view) {
+                    flipsWait = flipsWait == 0;   // unset (-1) counts as 1
+                    fprintf(stderr, "vitrine-gtk-view: flips wait %d\n", flipsWait);
+                    view->setFlipsWaitForRelease(flipsWait == 1);
+                }
+                return true;
+            }, flipsToggle);
         }
         gtk_window_present(GTK_WINDOW(window));
         view->focus();

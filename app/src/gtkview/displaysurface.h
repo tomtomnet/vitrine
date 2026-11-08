@@ -38,11 +38,12 @@ typedef struct _GdkSurface GdkSurface;
  * without a role is not shown, and the render thread may go on committing
  * to it.
  *
- * VITRINE_VIEW_COMPOSITE=1 (A/B runs only): a nearly transparent pixel of
- * its own, without input, above the frames' top left corner, so that the
- * compositor composites a full-screen view rather than scanning its frames
- * out directly (GNOME's Mutter scans out only a topmost surface that covers
- * the screen).
+ * setOverlay(): a nearly transparent pixel of its own, without input, above
+ * the frames' top left corner, so that the compositor composites a
+ * full-screen view rather than scanning its frames out directly (GNOME's
+ * Mutter scans out only a topmost surface that covers the screen):
+ * VmDisplay's full screen for a guest whose flips wait for the release of
+ * the buffer shown (VmDisplay::setFlipsWaitForRelease).
  */
 class DisplaySurface : public RenderTarget
 {
@@ -66,6 +67,9 @@ public:
     void setSize(int width, int height, double scale);
     /* That product: what the guest is told to be */
     QSize physicalSize() const;
+    /* The pixel above the frames, or none: on the window at once when
+       attached, else once attached */
+    void setOverlay(bool on);
 
     /* RenderTarget, on the render thread */
     wl_display *display() const override;
@@ -77,17 +81,20 @@ public:
 private:
     DisplaySurface() = default;
     bool init(GdkDisplay *display);
-    void initOverlay(wl_compositor *compositor);
+    bool initOverlay();
+    void attachOverlay(wl_surface *parent);
 
     wl_display *m_display = nullptr;
+    wl_compositor *m_compositor = nullptr;   // GDK's
     wl_subcompositor *m_subcompositor = nullptr;
     wp_viewporter *m_viewporter = nullptr;
     wl_surface *m_surface = nullptr;
     wp_viewport *m_viewport = nullptr;
-    /* VITRINE_VIEW_COMPOSITE=1: the pixel above the frames */
+    /* setOverlay(): the pixel above the frames */
     wl_shm *m_shm = nullptr;
     wl_surface *m_overlay = nullptr;
     wl_buffer *m_overlayPixel = nullptr;
+    bool m_overlayOn = false;
     /* GUI thread */
     wl_subsurface *m_subsurface = nullptr;
     wl_subsurface *m_overlaySub = nullptr;

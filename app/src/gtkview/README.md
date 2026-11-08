@@ -121,13 +121,19 @@ How it fits GTK:
   buffer then comes back only after the compositor's next flip, and a
   guest whose flips wait for it draws a frame only once the one before is
   on the screen: a GNOME guest ran at half rate at 240 Hz while a window
-  was dragged (an Arc Pro B50, the research's run of 2026-11-08; the copy
-  kept the full rate). So in full screen the view copies the frames of a
-  guest whose flips wait (`blob_flush_fence` 1: any compositor but
-  vitrine's KWin), and does so too while the guest's agent has not said
-  since the boot (`VmDisplay::setFlipsWaitForRelease`, which the console
-  sets from the agent's report). In a window the compositor composites
-  the guest's buffer and gives it back sooner: zero copy stays.
+  was dragged (an Arc Pro B50, the research's run of 2026-11-08). So for
+  a guest whose flips wait (`blob_flush_fence` 1: any compositor but
+  vitrine's KWin), and while the guest's agent has not said since the
+  boot (`VmDisplay::setFlipsWaitForRelease`, which the console sets from
+  the agent's report), full screen puts a nearly transparent pixel over
+  the frames' corner (`DisplaySurface::setOverlay`): the compositor
+  composites the guest's buffer, as in a window, and gives it back
+  sooner. Of the ways that keep the full rate, that one stuttered least
+  in the research's drags (gdl8, a terminal dragged by its title bar on a
+  GNOME 51 host: 0.24 stutters a second at rest against 2.10 with a copy,
+  0.41 against 5.05 under a light host GPU load, level under a compile).
+  A guest whose flips don't wait keeps the direct scanout. In a window
+  the compositor composites anyway: zero copy stays.
 - The guest is told its screen's physical size with each size (UIInfo's
   `width_mm` and `height_mm`): the view's share of its monitor's, from
   GdkMonitor's width_mm and height_mm, through `core/physicalsize.h` as the Qt
@@ -210,17 +216,20 @@ what vitrine ships:
 - `VITRINE_VIEW_ZERO_COPY=0`: the view copies the guest's frames into its
   own buffers instead of showing them as they are.
 - `VITRINE_VIEW_FULL_SCREEN_ZERO_COPY=1` or `0`: in full screen, the
-  guest's buffers go on the frames' surface as they are (1) or are copied
-  (0), whatever the guest's driver says; unset, the view copies for a
-  guest whose flips wait for the release (above). With
-  `VITRINE_VIEW_COMPOSITE=1` too, `1` has the compositor composite the
-  guest's own buffers. The view says on stderr which of the two full
-  screen takes, and why, at its start and at each change ("vitrine:
-  display: full screen: ...").
+  guest's buffers go on the frames' surface as they are, for the
+  compositor to scan out (1), or are copied (0), whatever the guest's
+  driver says; unset, the compositor composites them for a guest whose
+  flips wait for the release (above). With `VITRINE_VIEW_COMPOSITE=1`
+  too, `1` composites them: the default's way for such a guest. The view
+  says on stderr which of the three full screen takes, and why, at its
+  start and at each change ("vitrine: display: full screen: ...").
+  `vitrine-gtk-view` has no agent to ask: `--flips-wait 0` says what the
+  agent of a guest with `blob_flush_fence` 3 would, and
+  `--flips-wait-toggle SECONDS` turns it over while the view shows.
 - `VITRINE_VIEW_INHIBIT=0`: never asks for the desktop's shortcuts (above).
-- `VITRINE_VIEW_COMPOSITE=1`: a nearly transparent pixel without input
-  above the frames' top left corner (`DisplaySurface`), so that the
-  compositor composites a full-screen view instead of scanning its frames
-  out directly: GNOME's Mutter scans out only a topmost surface that covers
-  the screen. `vitrine-gtk-view --stats` counts the frames scanned out
-  ("direct"): with the switch, none should be.
+- `VITRINE_VIEW_COMPOSITE=1`: the pixel over the frames
+  (`DisplaySurface::setOverlay`) whatever the guest, windowed too, so
+  that the compositor composites the view instead of scanning its frames
+  out directly: GNOME's Mutter scans out only a topmost surface that
+  covers the screen. `vitrine-gtk-view --stats` counts the frames scanned
+  out ("direct"): with the pixel, none should be.

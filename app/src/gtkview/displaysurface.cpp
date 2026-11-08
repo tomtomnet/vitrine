@@ -122,41 +122,73 @@ bool DisplaySurface::init(GdkDisplay *display)
     if (m_viewporter) {
         m_viewport = wp_viewporter_get_viewport(m_viewporter, m_surface);
     }
-    if (g_strcmp0(g_getenv("VITRINE_VIEW_COMPOSITE"), "1") == 0) {
-        initOverlay(compositor);
-    }
+    m_compositor = compositor;
     wl_display_flush(m_display);
     return true;
 }
 
 /*
- * VITRINE_VIEW_COMPOSITE=1, for A/B runs: one pixel of black at 1/255
- * opacity, without input, to go above the frames once attached.  A
+ * The pixel of setOverlay(): black at 1/255 opacity, without input.  A
  * compositor scans out only a topmost surface that covers the whole
  * screen: over the full-screen view, this one makes it composite.
  */
-void DisplaySurface::initOverlay(wl_compositor *compositor)
+bool DisplaySurface::initOverlay()
 {
     const uint32_t pixel = 0x01000000;   // ARGB8888, premultiplied
     const int fd = m_shm ? memfd_create("vitrine-view-overlay", MFD_CLOEXEC) : -1;
     if (fd < 0 || write(fd, &pixel, sizeof pixel) != ssize_t(sizeof pixel)) {
-        fprintf(stderr, "vitrine: display: VITRINE_VIEW_COMPOSITE: no pixel over the view\n");
+        fprintf(stderr, "vitrine: display: no pixel over the view: the compositor may scan "
+                        "its frames out\n");
         if (fd >= 0) {
             close(fd);
         }
-        return;
+        return false;
     }
     wl_shm_pool *pool = wl_shm_create_pool(m_shm, fd, sizeof pixel);
     m_overlayPixel = wl_shm_pool_create_buffer(pool, 0, 1, 1, 4, WL_SHM_FORMAT_ARGB8888);
     wl_shm_pool_destroy(pool);
     close(fd);
-    m_overlay = wl_compositor_create_surface(compositor);
-    wl_region *none = wl_compositor_create_region(compositor);
+    m_overlay = wl_compositor_create_surface(m_compositor);
+    wl_region *none = wl_compositor_create_region(m_compositor);
     wl_surface_set_input_region(m_overlay, none);
     wl_region_destroy(none);
+    return true;
+}
+
+/* The pixel's subsurface on @parent, above the frames, at their corner */
+void DisplaySurface::attachOverlay(wl_surface *parent)
+{
+    m_overlaySub = wl_subcompositor_get_subsurface(m_subcompositor, m_overlay, parent);
+    wl_subsurface_place_above(m_overlaySub, m_surface);
+    wl_subsurface_set_position(m_overlaySub, m_x, m_y);
+    /* its buffer again for each new subsurface: shown with the parent's
+       next commit, as the subsurface is */
     wl_surface_attach(m_overlay, m_overlayPixel, 0, 0);
     wl_surface_damage_buffer(m_overlay, 0, 0, 1, 1);
     wl_surface_commit(m_overlay);
+}
+
+void DisplaySurface::setOverlay(bool on)
+{
+    if (on == m_overlayOn) {
+        return;
+    }
+    m_overlayOn = on;
+    if (on && !m_overlay && !initOverlay()) {
+        return;
+    }
+    /* not on a window: attachTo() puts it there */
+    if (!m_subsurface) {
+        return;
+    }
+    if (on) {
+        attachOverlay(gdk_wayland_surface_get_wl_surface(m_parent));
+    } else if (m_overlaySub) {
+        /* unmapped at once */
+        wl_subsurface_destroy(std::exchange(m_overlaySub, nullptr));
+    }
+    wl_display_flush(m_display);
+    gdk_wayland_surface_force_next_commit(m_parent);
 }
 
 DisplaySurface::~DisplaySurface()
@@ -211,10 +243,8 @@ void DisplaySurface::attachTo(GdkSurface *parent)
     /* its frames show as they come, not with the window's next commit */
     wl_subsurface_set_desync(m_subsurface);
     wl_subsurface_set_position(m_subsurface, m_x, m_y);
-    if (m_overlay) {
-        m_overlaySub = wl_subcompositor_get_subsurface(m_subcompositor, m_overlay, surface);
-        wl_subsurface_place_above(m_overlaySub, m_surface);
-        wl_subsurface_set_position(m_overlaySub, m_x, m_y);
+    if (m_overlayOn && m_overlay) {
+        attachOverlay(surface);
     }
     wl_display_flush(m_display);
     /* a new subsurface, like its position, counts from the parent's next

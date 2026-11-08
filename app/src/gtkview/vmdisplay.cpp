@@ -123,6 +123,7 @@ VmDisplay::VmDisplay() : m_alive(std::make_shared<bool>(true))
     if (fullScreenZeroCopy == "1" || fullScreenZeroCopy == "0") {
         m_fullScreenZeroCopyEnv = fullScreenZeroCopy == "1";
     }
+    m_compositeEnv = qgetenv("VITRINE_VIEW_COMPOSITE") == "1";
     sayFullScreenPath();
     m_host = new Gtk::Box(Gtk::Orientation::VERTICAL);
     m_host->set_size_request(160, 100);
@@ -325,6 +326,7 @@ void VmDisplay::createWindow(bool fullScreen)
         startUndrawn();
         return;
     }
+    m_surface->setOverlay(wantsOverlay());
     m_widget = new DisplayWidget(m_dbus, m_surface.get(), m_opts);
     if (!m_guestSize.isEmpty()) {
         m_widget->setGuestSize(uint32_t(m_guestSize.width()), uint32_t(m_guestSize.height()));
@@ -398,7 +400,7 @@ void VmDisplay::createWindow(bool fullScreen)
     m_renderer = new Renderer(m_widget->rendererWindow(), &m_mailbox, m_stats.get(), m_opts);
     m_renderer->setObjectName(QStringLiteral("render"));   // the thread's name in /proc
     m_renderer->setRenderTarget(m_surface.get());
-    m_renderer->setFullScreenZeroCopy(fullScreenZeroCopy());
+    m_renderer->setFullScreenZeroCopy(fullScreenPath() != FullScreenPath::Copied);
     m_renderer->setPresentationSink(m_dbus->connection(), m_dbus->consolePath().toUtf8());
     /* on the render thread, as it ends */
     QObject::connect(m_renderer, &Renderer::failed,
@@ -520,33 +522,73 @@ void VmDisplay::setCovered(bool on)
 void VmDisplay::setFlipsWaitForRelease(bool on)
 {
     m_flipsWait = on;
-    if (m_renderer) {
-        m_renderer->setFullScreenZeroCopy(fullScreenZeroCopy());
-    }
+    applyFullScreenPath();
     sayFullScreenPath();
 }
 
-bool VmDisplay::fullScreenZeroCopy() const
+VmDisplay::FullScreenPath VmDisplay::fullScreenPath() const
 {
-    return m_fullScreenZeroCopyEnv >= 0 ? m_fullScreenZeroCopyEnv == 1 : !m_flipsWait;
+    if (m_fullScreenZeroCopyEnv == 0) {
+        return FullScreenPath::Copied;
+    }
+    if (m_compositeEnv) {
+        return FullScreenPath::Composited;
+    }
+    if (m_fullScreenZeroCopyEnv == 1) {
+        return FullScreenPath::Direct;
+    }
+    return m_flipsWait ? FullScreenPath::Composited : FullScreenPath::Direct;
+}
+
+/*
+ * The window's renderer and surface as fullScreenPath() says, at once.
+ * Composited, the renderer still tells QEMU that the guest's buffers go to
+ * the screen as they are (Presentation.ZeroCopy, its later swap target in
+ * full screen): what the research measured (gdl8's ZC arm).
+ */
+void VmDisplay::applyFullScreenPath()
+{
+    if (m_renderer) {
+        m_renderer->setFullScreenZeroCopy(fullScreenPath() != FullScreenPath::Copied);
+    }
+    if (m_surface) {
+        m_surface->setOverlay(wantsOverlay());
+    }
+}
+
+/* The pixel over the frames: in full screen when composited, or always
+   with VITRINE_VIEW_COMPOSITE=1 */
+bool VmDisplay::wantsOverlay() const
+{
+    return m_compositeEnv || (m_opts.toplevel && fullScreenPath() == FullScreenPath::Composited);
 }
 
 /* The path full screen takes, once and at each change: what a run measured */
 void VmDisplay::sayFullScreenPath()
 {
-    const bool zeroCopy = fullScreenZeroCopy();
-    if (m_saidFullScreenZeroCopy == int(zeroCopy)) {
+    const FullScreenPath path = fullScreenPath();
+    if (m_saidFullScreenPath == int(path)) {
         return;
     }
-    m_saidFullScreenZeroCopy = zeroCopy;
-    const char *why = m_fullScreenZeroCopyEnv >= 0
-                          ? (zeroCopy ? "VITRINE_VIEW_FULL_SCREEN_ZERO_COPY=1"
-                                      : "VITRINE_VIEW_FULL_SCREEN_ZERO_COPY=0")
-                      : zeroCopy ? "the guest's flips do not wait for the release: blob_flush_fence 3"
-                                 : "the guest's flips may wait for the release: blob_flush_fence "
-                                   "not 3, or not known";
-    fprintf(stderr, "vitrine: display: full screen: %s (%s)\n",
-            zeroCopy ? "the guest's buffers as they are" : "the guest's frames copied", why);
+    m_saidFullScreenPath = int(path);
+    QByteArray why;
+    if (m_fullScreenZeroCopyEnv >= 0) {
+        why = m_fullScreenZeroCopyEnv == 1 ? "VITRINE_VIEW_FULL_SCREEN_ZERO_COPY=1"
+                                           : "VITRINE_VIEW_FULL_SCREEN_ZERO_COPY=0";
+    }
+    if (m_compositeEnv) {
+        why += why.isEmpty() ? "VITRINE_VIEW_COMPOSITE=1" : ", VITRINE_VIEW_COMPOSITE=1";
+    }
+    if (why.isEmpty()) {
+        why = m_flipsWait ? "the guest's flips may wait for the release: blob_flush_fence not 3, "
+                            "or not known"
+                          : "the guest's flips do not wait for the release: blob_flush_fence 3";
+    }
+    const char *what = path == FullScreenPath::Direct ? "the guest's buffers as they are, scanned out"
+                       : path == FullScreenPath::Composited
+                           ? "the guest's buffers as they are, composited under a pixel"
+                           : "the guest's frames copied";
+    fprintf(stderr, "vitrine: display: full screen: %s (%s)\n", what, why.constData());
 }
 
 bool VmDisplay::grabbed() const

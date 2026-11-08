@@ -81,16 +81,25 @@ public:
     /*
      * Whether the guest's flips wait for the view to give back the buffer
      * shown before (GuestTools::flipsWaitForRelease()); true until set.
-     * In full screen the view then copies the guest's frames: its own
-     * buffer would go to the screen as it is and come back only after the
-     * compositor's next flip, too late for a guest drawing at every refresh
-     * (half rate at 240 Hz on an Arc Pro B50, the research's window drags
-     * of 2026-11-08).  VITRINE_VIEW_FULL_SCREEN_ZERO_COPY=1 or 0 decides
-     * instead, for A/B runs.
+     * In full screen the compositor then composites the guest's buffers
+     * (FullScreenPath::Composited) rather than scanning them out: a buffer
+     * on the screen comes back only after the compositor's next flip, too
+     * late for a guest drawing at every refresh (half rate at 240 Hz on an
+     * Arc Pro B50, the research's window drags of 2026-11-08), and the
+     * composite stuttered less than a copy (its gdl8 run: 0.24 against 2.10
+     * stutters a second at rest, 0.41 against 5.05 under a light GPU load,
+     * level under a compile).  VITRINE_VIEW_FULL_SCREEN_ZERO_COPY=0 copies
+     * instead and =1 scans them out (composited with
+     * VITRINE_VIEW_COMPOSITE=1 too), for A/B runs.
      */
     void setFlipsWaitForRelease(bool on);
-    /* In full screen, the guest's buffers go to the screen as they are */
-    bool fullScreenZeroCopy() const;
+    /* How full screen shows the guest's frames */
+    enum class FullScreenPath {
+        Direct,       // its buffers as they are, for the compositor to scan out
+        Composited,   // its buffers as they are, under a pixel that has them composited
+        Copied,       // copied into the view's own buffers
+    };
+    FullScreenPath fullScreenPath() const;
 
     /* Whether the guest gets the keys the desktop would take, as Alt+Tab */
     bool grabbed() const;
@@ -138,6 +147,8 @@ private:
     void sendFirstUiInfo(bool guestWaits);
     void screenChanged();
     void startUndrawn();
+    void applyFullScreenPath();
+    bool wantsOverlay() const;
     void sayFullScreenPath();
 
     Options m_opts;
@@ -159,8 +170,10 @@ private:
     bool m_flipsWait = true;
     /* VITRINE_VIEW_FULL_SCREEN_ZERO_COPY: 1 or 0, -1 when not set */
     int m_fullScreenZeroCopyEnv = -1;
-    /* fullScreenZeroCopy() as last said on stderr, -1 before */
-    int m_saidFullScreenZeroCopy = -1;
+    /* VITRINE_VIEW_COMPOSITE=1: the pixel over the frames, windowed too */
+    bool m_compositeEnv = false;
+    /* fullScreenPath() as last said on stderr, -1 before */
+    int m_saidFullScreenPath = -1;
     bool m_covered = false;
     bool m_hasKeyboard = false;
     bool m_inputEnabled = true;
