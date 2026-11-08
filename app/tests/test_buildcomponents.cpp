@@ -781,6 +781,62 @@ private slots:
         QCOMPARE(describe(medium.changes.last()), "Built without KWin");
         QCOMPARE(summary(medium.changes), "build script changed, Mesa changed, without KWin");
     }
+
+    /* A package built against another: that one's key among its inputs, and
+       what changed when that one did */
+    void packageDeps()
+    {
+        const QString guest = m_tmp.filePath("deps-guest");
+        Places places;
+        places.guestDir = guest;
+        places.rpmsDir = m_tmp.filePath("deps-rpms");
+        QVERIFY(write(guest + "/rpm-build-inside.sh", "#!/bin/bash\n"));
+        QVERIFY(write(guest + "/build-medium.sh", "#!/bin/bash\n"));
+        QVERIFY(write(guest + "/kwayland/kwayland.spec", "Name: kwayland\nVersion: 6.8.2\n"));
+        QVERIFY(write(guest + "/kwin/kwin.spec", "Name: kwin\nVersion: 6.8.2\n"));
+        const QByteArray conf = "[kwayland]\ntitle=KWayland\nspec=kwayland/kwayland.spec\n"
+                                "[kwin]\ntitle=KWin\nspec=kwin/kwin.spec\ndeps=kwayland\n"
+                                "[medium]\nkind=medium\ndeps=kwayland kwin\n";
+        QVERIFY(write(guest + "/components.conf", conf));
+        const auto statusOf = [&places](const char *id) {
+            const QList<Component> all = load(places);
+            return status(find(all, id), all, places);
+        };
+
+        QList<Component> all = load(places);
+        QCOMPARE(find(all, "kwin").kind, Kind::Package);
+        QCOMPARE(find(all, "kwin").deps, QStringList({"kwayland"}));
+        const QByteArray lines = inputLines(find(all, "kwin"), all);
+        QVERIFY(lines.endsWith("\ndep kwayland " + key(find(all, "kwayland"), all).toLatin1() +
+                               '\n'));
+        QCOMPARE(lines, GuestToolsBuilder::inputLines(guest, "kwin"));
+        QCOMPARE(key(find(all, "kwin"), all), GuestToolsBuilder::inputsHash(guest, "kwin"));
+        QVERIFY(write(places.rpmsDir + "/kwin/.inputs", key(find(all, "kwin"), all).toUtf8()));
+        QVERIFY(write(places.rpmsDir + "/kwin/.inputs.list", lines));
+        QVERIFY(write(places.rpmsDir + "/kwin/kwin-6.8.2-3.3.g28.fc44.x86_64.rpm", "x"));
+        QCOMPARE(statusOf("kwin").state, Status::State::UpToDate);
+
+        /* KWayland's patch: KWin out of date, by it alone */
+        QVERIFY(write(guest + "/kwayland/0001-x.patch", "x\n"));
+        Status kwin = statusOf("kwin");
+        QCOMPARE(kwin.state, Status::State::Outdated);
+        QCOMPARE(kwin.changes.size(), 1);
+        QCOMPARE(kwin.changes[0].what, Change::What::Dependency);
+        QCOMPARE(describe(kwin.changes[0]), "KWayland changed");
+        QCOMPARE(summary(kwin.changes), "KWayland changed");
+        /* a build of before KWayland: built without it */
+        QVERIFY(write(places.rpmsDir + "/kwin/.inputs.list", lines.left(lines.indexOf("dep "))));
+        kwin = statusOf("kwin");
+        QCOMPARE(kwin.changes.size(), 1);
+        QCOMPARE(describe(kwin.changes[0]), "Built without KWayland");
+
+        /* one built against no package here: no key, nothing to build from */
+        QVERIFY(write(guest + "/components.conf",
+                      QByteArray(conf).replace("deps=kwayland\n", "deps=nothing\n")));
+        all = load(places);
+        QVERIFY(key(find(all, "kwin"), all).isEmpty());
+        QCOMPARE(statusOf("kwin").state, Status::State::NoSources);
+    }
 };
 
 QTEST_GUILESS_MAIN(TestBuildComponents)

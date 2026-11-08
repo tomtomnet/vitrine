@@ -15,8 +15,12 @@
 # A package is a folder of guest/ with its spec; components.conf gives
 # their order (the app's Builds window shows them from there), and with a
 # releases= line the Fedora releases a package is built for (every one
-# without it): the KDE packages are Fedora 44's for now.  Two files of the
-# folder are this script's too:
+# without it): the KDE packages are Fedora 44's for now.  A deps= line names
+# the packages it is built against: their packages of this run's builds go
+# into its container before its build requirements, and their keys into its
+# inputs (a "dep PACKAGE HASH" line each, as host/build.sh's), so that a new
+# build of one builds it again; it is not built without them.  Two files of
+# the folder are this script's too:
 #   sources             the files the spec downloads, as Fedora's dist-git
 #                       pins them ("SHA512 (FILE) = HASH"): they come from
 #                       Fedora's lookaside cache by that hash (the very files
@@ -34,7 +38,9 @@
 #   guest/build-rpms.sh --print-deps
 #
 # A package is built again only when its inputs changed (its directory here,
-# and the script that builds it in the container), or with --force.  Each
+# the script that builds it in the container, the keys of those it is built
+# against), or with --force.  The packages asked for are built in the order
+# of components.conf, each after those it is built against.  Each
 # one goes to a directory of its own, replaced only once a build succeeded:
 # a failed or stopped build keeps the last good one, and the one it
 # replaced is kept as PACKAGE.previous: inputs that go back to it bring it
@@ -89,7 +95,8 @@ is_package() {
 all_packages() {
 	local p
 	{
-		sed -n 's/^[[:space:]]*\[\([^]]*\)\][[:space:]]*$/\1/p' "$here/components.conf" 2> /dev/null
+		[ ! -f "$here/components.conf" ] ||
+			sed -n 's/^[[:space:]]*\[\([^]]*\)\][[:space:]]*$/\1/p' "$here/components.conf"
 		find "$here" -mindepth 1 -maxdepth 1 -type d -printf '%f\n' | LC_ALL=C sort
 	} | awk '!seen[$0]++' | while read -r p; do
 		! is_package "$p" || ! for_release "$p" || echo "$p"
@@ -106,6 +113,27 @@ for_release() {
 			for (i = 1; i <= n; i++) if (a[i] == r) ok = 1
 		}
 		END { exit found && !ok }' "$here/components.conf"
+}
+# The packages @1 is built against: its section's deps= in components.conf
+deps_of() {
+	[ -f "$here/components.conf" ] || return 0
+	awk -v p="$1" '
+		/^[[:space:]]*\[/ { s = $0; gsub(/^[[:space:]]*\[|\][[:space:]]*$/, "", s); next }
+		s == p && /^deps=/ { sub(/^deps=/, ""); print; exit }' "$here/components.conf"
+}
+# Those of the package @1 (and theirs): packages here, built for this
+# release, none built against itself (@2: the packages on the way to it)
+check_deps() {
+	local d
+	for d in $(deps_of "$1"); do
+		case " ${2:-} $1 " in
+		*" $d "*) echo "$here/components.conf: $1 is built against $d, which is built against it" >&2; exit 2 ;;
+		esac
+		is_package "$d" || { echo "$1 is built against $d: no folder $d with its spec in $here" >&2; exit 2; }
+		for_release "$d" ||
+			{ echo "$1 is built against $d, which is not built for Fedora $release (its releases= in $here/components.conf)" >&2; exit 2; }
+		check_deps "$d" "${2:-} $1"
+	done
 }
 
 action=build
@@ -128,25 +156,59 @@ for a in "$@"; do
 		;;
 	esac
 done
-[ ${#targets[@]} -gt 0 ] || mapfile -t targets < <(all_packages)
+if [ ${#targets[@]} -gt 0 ]; then
+	# in components.conf's order: a package after those it is built against
+	ordered=()
+	while read -r p; do
+		[[ " ${targets[*]} " != *" $p "* ]] || ordered+=("$p")
+	done < <(all_packages)
+	for t in "${targets[@]}"; do
+		[[ " ${ordered[*]} " == *" $t "* ]] || ordered+=("$t")
+	done
+	targets=("${ordered[@]}")
+else
+	mapfile -t targets < <(all_packages)
+fi
+for t in "${targets[@]}"; do
+	check_deps "$t"
+done
 
 # What a package's build depends on: its directory and the script that
 # builds it in the container, in the C locale's order (sort's own would
-# change with the user's locale); a build records these lines, and their hash
+# change with the user's locale), then the key of each package it is built
+# against; a build records these lines, and their hash
 inputs_lines() {
+	local d
 	(cd "$here" && find "$1" rpm-build-inside.sh -type f -print0 | LC_ALL=C sort -z |
 		xargs -0 sha256sum)
+	for d in $(deps_of "$1"); do
+		echo "dep $d $(inputs_hash "$d")"
+	done
 }
 inputs_hash() { inputs_lines "$1" | sha256sum | cut -d' ' -f1; }
+# The package @1 is built from its inputs now in $out
+built_now() { [ "$(cat "$out/$1/.inputs" 2> /dev/null)" = "$(inputs_hash "$1")" ]; }
 
 # Run in the container before rpm-build-inside.sh, for a package with a sources
-# file or a container-setup.sh (prepare DIST-GIT-NAME PACKAGE): the files the
-# sources file pins and the cache lacks, from Fedora's lookaside cache by their
-# hash.  KDE respun kirigami-6.31.0.tar.xz after Fedora had taken it (without
-# the delegates' new textFormat): the spec's URL gives the other file.  A file
-# the lookaside does not have is left to the spec's URL.
+# file, a container-setup.sh or packages it is built against (prepare
+# DIST-GIT-NAME PACKAGE): the files the sources file pins and the cache lacks,
+# from Fedora's lookaside cache by their hash.  KDE respun kirigami-6.31.0.tar.xz
+# after Fedora had taken it (without the delegates' new textFormat): the spec's
+# URL gives the other file.  A file the lookaside does not have is left to the
+# spec's URL.  Then the packages of the builds it is built against, mounted in
+# /deps (not their debug information or documentation), which its build
+# requirements then find installed.
 prepare='set -eu
+shopt -s nullglob
 name=$1 t=$2
+deps=()
+for f in /deps/*/*.rpm; do
+	case ${f##*/} in *-debuginfo-* | *-debugsource-* | *-doc-* | *.src.rpm) ;; *) deps+=("$f") ;; esac
+done
+if [ ${#deps[@]} -gt 0 ]; then
+	echo "vitrine-build: phase: installing $(cd /deps && echo *), which $t is built against"
+	dnf -y --setopt=keepcache=True --setopt=install_weak_deps=False install "${deps[@]}"
+fi
 if [ -f "/src/$t/sources" ]; then
 	while IFS= read -r line || [ -n "$line" ]; do
 		[[ $line =~ ^SHA512\ \((.+)\)\ =\ ([0-9a-f]{128}) ]] || continue
@@ -182,6 +244,17 @@ if [ "$action" = print-inputs ]; then
 		echo "$t $(inputs_hash "$t")"
 	done
 	exit 0
+fi
+# a package is built against the builds of its deps' sources now: this
+# run's, before it, or an earlier run's; never without them
+if [ "$action" = build ]; then
+	for t in "${targets[@]}"; do
+		for d in $(deps_of "$t"); do
+			case " ${targets[*]} " in *" $d "*) continue ;; esac
+			built_now "$d" ||
+				die "$t is built against $d, which is not built from its sources: build it first (guest/build-rpms.sh $d $t)"
+		done
+	done
 fi
 
 # podman runs the build; flock keeps it to one at a time; Fedora's packages
@@ -254,6 +327,14 @@ for t in "${targets[@]}"; do
 		say "restored: $out/$t"
 		continue
 	fi
+	# the builds of those it is built against, read-only in its container:
+	# this run's, as their sources are now
+	depmounts=()
+	for d in $(deps_of "$t"); do
+		built_now "$d" ||
+			die "$t is built against $d, which is not built from its sources: build it first (guest/build-rpms.sh $d $t)"
+		depmounts+=(-v "$out/$d:/deps/$d:ro")
+	done
 	# a download that is not the pinned file (another release under its name,
 	# one cut short): downloaded again
 	stale=$(sources_wrong "$t") || exit 1
@@ -274,7 +355,7 @@ for t in "${targets[@]}"; do
 	: > "$log"
 	# what the package's build needs in the container before rpm-build-inside.sh
 	inside=(bash /src/rpm-build-inside.sh "$t")
-	if [ -f "$here/$t/sources" ] || [ -f "$here/$t/container-setup.sh" ]; then
+	if [ -f "$here/$t/sources" ] || [ -f "$here/$t/container-setup.sh" ] || [ ${#depmounts[@]} -gt 0 ]; then
 		spec=$(find "$here/$t" -maxdepth 1 -name '*.spec' | head -n 1)
 		inside=(bash -c "$prepare" prepare "$(basename "$spec" .spec)" "$t")
 	fi
@@ -284,7 +365,7 @@ for t in "${targets[@]}"; do
 	# in the foreground before it runs a trap); without the lock's descriptor
 	podman run --rm --name "$container" --security-opt label=disable --memory="${MEMORY:-10g}" \
 		-v "$here:/src:ro" -v "$new:/out" -v "$cache/dnf:/var/cache/libdnf5" \
-		-v "$cache/sources:/sources" ${ccache[@]+"${ccache[@]}"} \
+		-v "$cache/sources:/sources" ${ccache[@]+"${ccache[@]}"} ${depmounts[@]+"${depmounts[@]}"} \
 		-e JOBS="${JOBS:-$(( $(nproc) < 8 ? $(nproc) : 8 ))}" -e DEBUGINFO="${DEBUGINFO:-0}" \
 		"$image" "${inside[@]}" >> "$log" 2>&1 9>&- &
 	pid=$!
