@@ -139,11 +139,32 @@ static QString firmwareConsequences(const QList<File> &files)
     return text.join("\n\n");
 }
 
+/* The screen of the VMs @window starts (VmRunner::setHostScreen): its
+   monitor's refresh rate, 0 when not known, and whether GNOME's is the
+   session (XDG_CURRENT_DESKTOP lists GNOME) */
+static VmRunner::HostScreen windowScreen(GtkWidget *window)
+{
+    VmRunner::HostScreen screen{};
+    GtkNative *native = window ? gtk_widget_get_native(window) : nullptr;
+    GdkSurface *surface = native ? gtk_native_get_surface(native) : nullptr;
+    GdkMonitor *monitor =
+        surface ? gdk_display_get_monitor_at_surface(gtk_widget_get_display(window), surface)
+                : nullptr;
+    screen.refreshMhz = monitor ? std::max(gdk_monitor_get_refresh_rate(monitor), 0) : 0;
+    const char *session = g_getenv("XDG_CURRENT_DESKTOP");
+    gchar **desktops = g_strsplit(session ? session : "", ":", -1);
+    screen.gnome = g_strv_contains(desktops, "GNOME");
+    g_strfreev(desktops);
+    return screen;
+}
+
 MainWindow::MainWindow(GtkLoop *loop, VmStore *store)
     : m_loop(loop), m_store(store), m_qt(std::make_unique<QObject>()),
       m_page(std::make_unique<VmPage>())
 {
     buildWindow();
+    /* the swap target of the VMs started from here follows the window's screen */
+    VmRunner::setHostScreen([this]() { return windowScreen(m_window); });
     createActions();
     createConsoleActions();
     /* before the VMs: its groups come first in their Details */
@@ -175,6 +196,7 @@ MainWindow::MainWindow(GtkLoop *loop, VmStore *store)
 
 MainWindow::~MainWindow()
 {
+    VmRunner::setHostScreen(nullptr);
     if (GtkWidget *window = m_window) {
         g_signal_handlers_disconnect_by_data(window, this);
         /* nothing follows the window's signals any more */

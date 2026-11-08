@@ -65,16 +65,24 @@ public:
      * from that QEMU.  @why: the message for the user.
      */
     static bool needsQemuBuild(const ArgsFile &args, QString *why = nullptr);
+    /* The host's screen that a VM shows on, as it starts ({}: nothing known) */
+    struct HostScreen {
+        int refreshMhz;   // 0: not known
+        bool gnome;       // in a GNOME session: Mutter composites the view
+    };
     /*
      * @args with the properties vitrine computes for the 3D card, those
      * that @args leaves out (on the card's line, and with -global) and the
      * card has in the VM's QEMU
      * (@propertiesOf a driver; empty when not known, and then none):
      * x-vblank-swap-target by the guest's desktop, 4500 us for KDE, 6000
-     * otherwise; x-vblank-swap-target-zc 3500 us, 4500 in vitrine's window
+     * otherwise, 3700 in vitrine's window on a GNOME host's screen of
+     * 110 Hz or more (@screen); x-vblank-swap-target-zc 3500 us, 4500 in
+     * vitrine's window
      */
     static ArgsFile withComputedProperties(
-        const ArgsFile &args, const std::function<QStringList(const QString &driver)> &propertiesOf);
+        const ArgsFile &args, const std::function<QStringList(const QString &driver)> &propertiesOf,
+        const HostScreen &screen = {});
     /*
      * @args with x-render-node=@node, the GPU the VMs render on when they
      * choose none (HostGpus::automaticNode()), on its virtio-gpu-rutabaga
@@ -174,6 +182,12 @@ public:
     void displayReady();
     /* How long the guest waits for its screen at most, in ms (for tests) */
     static void setDisplayWait(int ms);
+    /*
+     * The host's screen that the VMs show on, as @provider says when a VM
+     * starts (none set: not known): the swap target of a guest in
+     * vitrine's window follows it (withComputedProperties)
+     */
+    static void setHostScreen(std::function<HostScreen()> provider);
     /*
      * The arguments of the current run, or the last: those given to start(),
      * also for a QEMU found running (start() keeps them with the run's

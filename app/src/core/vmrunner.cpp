@@ -49,6 +49,8 @@ static const int kHelperTimeoutMs = 10000;
 static const int kQuitTimeoutMs = 5000;
 /* The guest waiting for its screen at most (VmRunner::waitsForDisplay) */
 static int displayWaitMs = 5000;
+/* setHostScreen() */
+static std::function<VmRunner::HostScreen()> hostScreenProvider;
 /* A nested desktop's guest that stalls in its shutdown: QEMU quits after this */
 static const int kShutdownStallMs = 5 * 60 * 1000;
 
@@ -1386,7 +1388,9 @@ QStringList VmRunner::Private::commandLine(const ArgsFile &args, const QString &
     hostArgs = withRefcountCache(hostArgs, dir);
     /* the NAT network's passt: Vitrine's, with its fix */
     hostArgs = withPasstPath(hostArgs, StackBuilder::passtFor(qemu));
-    command += withComputedProperties(hostArgs, propertiesOf).argv();
+    command += withComputedProperties(hostArgs, propertiesOf,
+                                      hostScreenProvider ? hostScreenProvider() : HostScreen{})
+                   .argv();
     for (qsizetype i = 0; i < shares.size(); i++) {
         command << "-chardev"
                 << QString("socket,id=vitrine-fs%1,path=%2")
@@ -1491,7 +1495,8 @@ ArgsFile VmRunner::withRefcountCache(const ArgsFile &args, const QString &dir)
 }
 
 ArgsFile VmRunner::withComputedProperties(
-    const ArgsFile &args, const std::function<QStringList(const QString &driver)> &propertiesOf)
+    const ArgsFile &args, const std::function<QStringList(const QString &driver)> &propertiesOf,
+    const HostScreen &screen)
 {
     static const QStringList cards = {
         "virtio-vga-gl", "virtio-gpu-gl-pci", "virtio-gpu-gl", "virtio-gpu-gl-device",
@@ -1503,9 +1508,25 @@ ArgsFile VmRunner::withComputedProperties(
          * The frames of a burst are swapped this long before the vblank
          * that shows them: the host's KWin takes a frame ~3.9 ms before
          * its vblank at 240 Hz; KDE's commits in the guest are steady
-         * enough for 4.5 ms, other desktops keep a margin of 6 ms
+         * enough for 4.5 ms, other desktops keep a margin of 6 ms.  In
+         * vitrine's window at 240 Hz a GNOME guest (its flips wait for
+         * the buffer the host composites) fell into spells of half rate
+         * at 6 ms, and sometimes at 9; 12 ms had none, and keys took as
+         * long as at 6 (~10 ms: the guest draws later in the refresh; the
+         * research's drags and keys on an Arc Pro B50, GNOME 51 host,
+         * gdl10 and dvk1).  QEMU keeps
+         * only the place within a refresh: 12 ms is 3.67 ms there and at
+         * 120 Hz, which 3.7 ms is at every rate; at 60 Hz, where a frame
+         * that misses costs 16.7 ms and the margin was not measured, 6.
+         * GNOME's Mutter only: it takes the view's frames later than KWin
+         * does, which shows a frame swapped 3.9 ms before its vblank at
+         * 240 Hz with a drifting place around it (QEMU's lead patch,
+         * 0014): 3.7 ms would sit on its wrong side
          */
-        {"x-vblank-swap-target", kde ? "4500" : "6000"},
+        {"x-vblank-swap-target",
+         kde ? "4500"
+         : embedded && screen.gnome && screen.refreshMhz >= 110000 ? "3700"
+                                                                   : "6000"},
         /*
          * Those that go to the screen as they are (zero copy) need no
          * copy before the host takes them, but must come before the
@@ -1759,6 +1780,11 @@ void VmRunner::displayReady()
 void VmRunner::setDisplayWait(int ms)
 {
     displayWaitMs = ms;
+}
+
+void VmRunner::setHostScreen(std::function<HostScreen()> provider)
+{
+    hostScreenProvider = std::move(provider);
 }
 
 QString VmRunner::displaySocket() const

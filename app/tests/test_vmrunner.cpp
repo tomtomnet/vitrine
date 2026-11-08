@@ -401,9 +401,12 @@ private slots:
             };
         };
         auto computed = [&](const QString &args, const QStringList &known = {
-                                "blob", "x-vblank-swap-target", "x-vblank-swap-target-zc"}) {
-            return VmRunner::withComputedProperties(ArgsFile::parse(args), props(known)).toText();
+                                "blob", "x-vblank-swap-target", "x-vblank-swap-target-zc"},
+                            VmRunner::HostScreen screen = {}) {
+            return VmRunner::withComputedProperties(ArgsFile::parse(args), props(known), screen)
+                .toText();
         };
+        const QStringList all = {"blob", "x-vblank-swap-target", "x-vblank-swap-target-zc"};
 
         /* KDE in QEMU's window */
         QCOMPARE(computed("#guest linux,desktop=kde\n-device virtio-gpu-gl-pci,blob=on\n"
@@ -417,6 +420,29 @@ private slots:
                           "-display dbus,p2p=yes,gl=on\n"),
                  "#guest linux,desktop=gnome\n-device virtio-vga-gl,"
                  "x-vblank-swap-target=6000,x-vblank-swap-target-zc=4500\n"
+                 "-display dbus,p2p=yes,gl=on\n");
+        /* there on a GNOME host's screen of 110 Hz or more: 3.7 ms */
+        const QString inWindow = "#guest linux,desktop=gnome\n-device virtio-vga-gl\n"
+                                 "-display dbus,p2p=yes,gl=on\n";
+        auto target = [](const QString &value) {
+            return "#guest linux,desktop=gnome\n-device virtio-vga-gl,x-vblank-swap-target=" +
+                   value + ",x-vblank-swap-target-zc=4500\n-display dbus,p2p=yes,gl=on\n";
+        };
+        QCOMPARE(computed(inWindow, all, {119880, true}), target("3700"));
+        QCOMPARE(computed(inWindow, all, {240000, true}), target("3700"));
+        QCOMPARE(computed(inWindow, all, {60000, true}), target("6000"));
+        QCOMPARE(computed(inWindow, all, {0, true}), target("6000"));
+        /* not on another desktop's compositor (KWin), in QEMU's window, nor for KDE */
+        QCOMPARE(computed(inWindow, all, {240000, false}), target("6000"));
+        QCOMPARE(computed("#guest linux,desktop=gnome\n-device virtio-vga-gl\n"
+                          "-display sdl,gl=on\n", all, {240000, true}),
+                 "#guest linux,desktop=gnome\n-device virtio-vga-gl,"
+                 "x-vblank-swap-target=6000,x-vblank-swap-target-zc=3500\n"
+                 "-display sdl,gl=on\n");
+        QCOMPARE(computed("#guest linux,desktop=kde\n-device virtio-vga-gl\n"
+                          "-display dbus,p2p=yes,gl=on\n", all, {240000, true}),
+                 "#guest linux,desktop=kde\n-device virtio-vga-gl,"
+                 "x-vblank-swap-target=4500,x-vblank-swap-target-zc=4500\n"
                  "-display dbus,p2p=yes,gl=on\n");
         QCOMPARE(computed("-device virtio-vga-gl\n"),
                  "-device virtio-vga-gl,x-vblank-swap-target=6000,"
