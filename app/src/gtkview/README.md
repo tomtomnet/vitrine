@@ -214,7 +214,9 @@ what vitrine ships:
   (0), whatever the guest's driver says; unset, the view copies for a
   guest whose flips wait for the release (above). With
   `VITRINE_VIEW_COMPOSITE=1` too, `1` has the compositor composite the
-  guest's own buffers.
+  guest's own buffers. The view says on stderr which of the two full
+  screen takes, and why, at its start and at each change ("vitrine:
+  display: full screen: ...").
 - `VITRINE_VIEW_INHIBIT=0`: never asks for the desktop's shortcuts (above).
 - `VITRINE_VIEW_COMPOSITE=1`: a nearly transparent pixel without input
   above the frames' top left corner (`DisplaySurface`), so that the

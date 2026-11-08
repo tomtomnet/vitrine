@@ -138,6 +138,7 @@ private:
     void sendFirstUiInfo(bool guestWaits);
     void screenChanged();
     void startUndrawn();
+    void sayFullScreenPath();
 
     Options m_opts;
     /* on the heap: it outlives the view while D-Bus calls complete (detach) */
@@ -158,6 +159,8 @@ private:
     bool m_flipsWait = true;
     /* VITRINE_VIEW_FULL_SCREEN_ZERO_COPY: 1 or 0, -1 when not set */
     int m_fullScreenZeroCopyEnv = -1;
+    /* fullScreenZeroCopy() as last said on stderr, -1 before */
+    int m_saidFullScreenZeroCopy = -1;
     bool m_covered = false;
     bool m_hasKeyboard = false;
     bool m_inputEnabled = true;

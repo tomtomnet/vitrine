@@ -123,6 +123,7 @@ VmDisplay::VmDisplay() : m_alive(std::make_shared<bool>(true))
     if (fullScreenZeroCopy == "1" || fullScreenZeroCopy == "0") {
         m_fullScreenZeroCopyEnv = fullScreenZeroCopy == "1";
     }
+    sayFullScreenPath();
     m_host = new Gtk::Box(Gtk::Orientation::VERTICAL);
     m_host->set_size_request(160, 100);
     m_host->set_hexpand(true);
@@ -522,11 +523,30 @@ void VmDisplay::setFlipsWaitForRelease(bool on)
     if (m_renderer) {
         m_renderer->setFullScreenZeroCopy(fullScreenZeroCopy());
     }
+    sayFullScreenPath();
 }
 
 bool VmDisplay::fullScreenZeroCopy() const
 {
     return m_fullScreenZeroCopyEnv >= 0 ? m_fullScreenZeroCopyEnv == 1 : !m_flipsWait;
+}
+
+/* The path full screen takes, once and at each change: what a run measured */
+void VmDisplay::sayFullScreenPath()
+{
+    const bool zeroCopy = fullScreenZeroCopy();
+    if (m_saidFullScreenZeroCopy == int(zeroCopy)) {
+        return;
+    }
+    m_saidFullScreenZeroCopy = zeroCopy;
+    const char *why = m_fullScreenZeroCopyEnv >= 0
+                          ? (zeroCopy ? "VITRINE_VIEW_FULL_SCREEN_ZERO_COPY=1"
+                                      : "VITRINE_VIEW_FULL_SCREEN_ZERO_COPY=0")
+                      : zeroCopy ? "the guest's flips do not wait for the release: blob_flush_fence 3"
+                                 : "the guest's flips may wait for the release: blob_flush_fence "
+                                   "not 3, or not known";
+    fprintf(stderr, "vitrine: display: full screen: %s (%s)\n",
+            zeroCopy ? "the guest's buffers as they are" : "the guest's frames copied", why);
 }
 
 bool VmDisplay::grabbed() const
