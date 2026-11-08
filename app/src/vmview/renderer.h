@@ -60,6 +60,12 @@ public:
     // wait for that release (virtio_gpu blob_flush_fence=1) draws a frame
     // only once the one before is on the screen.  Any thread.
     void setFullScreenZeroCopy(bool on);
+    // In full screen, whether the compositor composites the guest's buffers
+    // shown as they are (something of the caller's over them, as vitrine's
+    // GTK view's pixel): QEMU is told then, as for a window, that they do
+    // not go to the screen as they are (Presentation.ZeroCopy false), and
+    // takes the swap target of composited frames.  Any thread.
+    void setFullScreenComposited(bool on);
     void requestRedraw();
     void stop();
 
@@ -76,6 +82,7 @@ private:
     Options m_opts;
     std::atomic<bool> m_exposed{false};
     std::atomic<bool> m_fullScreenZeroCopy{true};
+    std::atomic<bool> m_fullScreenComposited{false};
     std::atomic<wl_display *> m_wlDisplay{nullptr};
     std::atomic<wl_surface *> m_wlSurface{nullptr};
     std::atomic<GDBusConnection *> m_sinkConn{nullptr};

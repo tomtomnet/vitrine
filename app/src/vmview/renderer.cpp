@@ -183,6 +183,7 @@ public:
     uint64_t guestUse = 0;
     GuestBuffer *attached = nullptr;            // the guest buffer on the surface
     int zcScanout = -1;                         // what QEMU was told (Presentation.ZeroCopy)
+    int zcAsIs = -1;                            // the frames as said with it: as they are, copied
     // read fences of released buffers: Released when signalled (under lock)
     std::vector<std::pair<int, uint64_t>> pendingReads;
     PFNEGLCREATESYNCKHRPROC createSync = nullptr;
@@ -193,7 +194,7 @@ public:
     void guestReleased(GuestBuffer *g);         // the compositor's release (under lock)
     void released(uint64_t inode);
     void releaseAfterGpu(uint64_t inode);       // after the GL work queued so far
-    void sendZeroCopy(bool on, const char *why);
+    void sendZeroCopy(bool on, bool asIs, const char *why);
     void destroyGuests();
 
     void forget(Feedback *d)
@@ -324,14 +325,20 @@ void RenderState::released(uint64_t inode)
                            G_DBUS_CALL_FLAGS_NO_AUTO_START, -1, nullptr, nullptr, nullptr);
 }
 
-void RenderState::sendZeroCopy(bool on, const char *why)
+void RenderState::sendZeroCopy(bool on, bool asIs, const char *why)
 {
-    if (zcScanout == int(on) || !sinkConn || sinkPath.isEmpty()) {
+    if ((zcScanout == int(on) && zcAsIs == int(asIs)) || !sinkConn || sinkPath.isEmpty()) {
+        return;
+    }
+    // QEMU's swap target follows it: each switch, and each change of the
+    // frames' way (the guest's buffers as they are, or copies), for the
+    // logs of a run
+    fprintf(stderr, "renderer: Presentation.ZeroCopy %d: %s\n", int(on), why);
+    zcAsIs = asIs;
+    if (zcScanout == int(on)) {
         return;
     }
     zcScanout = on;
-    // QEMU's swap target follows it: the switch and its cause, for the logs of a run
-    fprintf(stderr, "renderer: Presentation.ZeroCopy %d: %s\n", int(on), why);
     g_dbus_connection_call(sinkConn, nullptr, sinkPath.constData(),
                            "org.qemu.Display1.Presentation", "ZeroCopy",
                            g_variant_new("(b)", gboolean(on)), nullptr,
@@ -937,6 +944,13 @@ void Renderer::setFullScreenZeroCopy(bool on)
     }
 }
 
+void Renderer::setFullScreenComposited(bool on)
+{
+    if (m_fullScreenComposited.exchange(on) != on) {
+        requestRedraw();
+    }
+}
+
 void Renderer::requestRedraw()
 {
     {
@@ -1122,9 +1136,13 @@ void Renderer::run()
                     st.attached = gb;
                 }
                 drawnInode = gb->inode;
-                // the late swap target when nothing composites it: a full-screen window of its own
-                st.sendZeroCopy(fullScreen, fullScreen ? "the guest's buffers as they are, in full screen"
-                                                       : "the guest's buffers as they are, in a window");
+                // the late swap target when nothing composites it: a full-screen
+                // window of its own, with nothing of the caller's over the buffers
+                const bool direct = fullScreen && !m_fullScreenComposited;
+                st.sendZeroCopy(direct, true, direct ? "the guest's buffers as they are, in full screen"
+                                        : fullScreen ? "the guest's buffers as they are, composited in "
+                                                       "full screen"
+                                                     : "the guest's buffers as they are, in a window");
                 const int64_t t = nowNs();
                 if (fb) {
                     std::lock_guard g(st.lock);
@@ -1172,7 +1190,7 @@ void Renderer::run()
                 std::lock_guard g(st.lock);
                 st.attached = nullptr;   // our own buffer replaces the guest's on the surface
             }
-            if (st.zcScanout != 0) {
+            if (st.zcScanout != 0 || st.zcAsIs != 0) {
                 // why this frame is copied, for the line of the switch
                 char why[200];
                 if (!st.zcSupported) {
@@ -1189,7 +1207,7 @@ void Renderer::run()
                                               "flipped or without a modifier, or the compositor did "
                                               "not take it");
                 }
-                st.sendZeroCopy(false, why);
+                st.sendZeroCopy(false, false, why);
             }
             if (buf) {
                 own->commit(buf, w, h);

@@ -132,8 +132,12 @@ How it fits GTK:
   in the research's drags (gdl8, a terminal dragged by its title bar on a
   GNOME 51 host: 0.24 stutters a second at rest against 2.10 with a copy,
   0.41 against 5.05 under a light host GPU load, level under a compile).
-  A guest whose flips don't wait keeps the direct scanout. In a window
-  the compositor composites anyway: zero copy stays.
+  A guest whose flips don't wait keeps the direct scanout. QEMU is told
+  of the composite as of a window (`Renderer::setFullScreenComposited`):
+  it then aims the guest's frames at the compositor's latch for
+  composited frames (`x-vblank-swap-target`), not at the later one of a
+  direct scanout (`x-vblank-swap-target-zc`). In a window the compositor
+  composites anyway: zero copy stays.
 - The guest is told its screen's physical size with each size (UIInfo's
   `width_mm` and `height_mm`): the view's share of its monitor's, from
   GdkMonitor's width_mm and height_mm, through `core/physicalsize.h` as the Qt

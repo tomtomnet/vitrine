@@ -400,7 +400,7 @@ void VmDisplay::createWindow(bool fullScreen)
     m_renderer = new Renderer(m_widget->rendererWindow(), &m_mailbox, m_stats.get(), m_opts);
     m_renderer->setObjectName(QStringLiteral("render"));   // the thread's name in /proc
     m_renderer->setRenderTarget(m_surface.get());
-    m_renderer->setFullScreenZeroCopy(fullScreenPath() != FullScreenPath::Copied);
+    applyFullScreenPath();
     m_renderer->setPresentationSink(m_dbus->connection(), m_dbus->consolePath().toUtf8());
     /* on the render thread, as it ends */
     QObject::connect(m_renderer, &Renderer::failed,
@@ -542,14 +542,18 @@ VmDisplay::FullScreenPath VmDisplay::fullScreenPath() const
 
 /*
  * The window's renderer and surface as fullScreenPath() says, at once.
- * Composited, the renderer still tells QEMU that the guest's buffers go to
- * the screen as they are (Presentation.ZeroCopy, its later swap target in
- * full screen): what the research measured (gdl8's ZC arm).
+ * Composited, the renderer tells QEMU as for a window that the guest's
+ * buffers do not go to the screen as they are (Presentation.ZeroCopy
+ * false): the swap target of composited frames, x-vblank-swap-target
+ * (3700 us on a GNOME host at 110 Hz and up), not the -zc one of frames
+ * scanned out (4500 in vitrine's window), which gave a full-screen spell of
+ * half rate in the research's gdl14.
  */
 void VmDisplay::applyFullScreenPath()
 {
     if (m_renderer) {
         m_renderer->setFullScreenZeroCopy(fullScreenPath() != FullScreenPath::Copied);
+        m_renderer->setFullScreenComposited(wantsOverlay());
     }
     if (m_surface) {
         m_surface->setOverlay(wantsOverlay());
