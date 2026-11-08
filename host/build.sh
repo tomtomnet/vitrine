@@ -21,7 +21,8 @@
 # the VMs running keep theirs.  The sources and build trees stay in the work
 # folder: a patch changed rewrites only the files whose content changes,
 # and a build tree is configured again in place, never made anew, so that
-# an update compiles only what it has to (--clean starts them over).
+# an update compiles only what it has to (--clean starts them over); but
+# rutabaga_gfx's starts over when another rustc compiles it (rustc_moved).
 #
 #   build.sh [--deps|--print-deps|--print-stamp|--print-keys|--print-inputs COMPONENT]
 #            [--stack DIR|--prefix DIR] [--work DIR] [-j N] [--clean] [COMPONENT]
@@ -585,6 +586,20 @@ meson_moved() {
 	echo "set up by meson ${made:-(unknown)}, and the meson now is ${now:-(none)}: configured again in place"
 }
 
+# rustc_moved DIR RUSTC: whether build tree DIR was compiled by another rustc
+# than the one of RUSTC (rustc -vV), or one not recorded, saying so.  Rust's
+# compiled crates are for the rustc that made them: another one refuses
+# them ("found crate `zerocopy` compiled by an incompatible version of
+# rustc", E0514), and neither meson nor ninja compiles them again for a new
+# rustc, under command lines that stay the same (Fedora 44 to 45: rustc
+# 1.98.1 to 1.99.1, 2026-11-08).  Such a tree starts over
+rustc_moved() {
+	local made
+	made=$(head -n 1 "$1/.vitrine-rustc" 2> /dev/null)
+	[ -f "$1/.vitrine-rustc" ] && [ "$(cat "$1/.vitrine-rustc")" = "$2" ] && return 1
+	echo "built by ${made:-a rustc not recorded}, and the rustc now is $(head -n 1 <<< "$2"): from nothing"
+}
+
 # put FILE DEST: DEST with FILE's content, written only if it differs: what
 # depends on it does not compile again
 put() {
@@ -791,6 +806,11 @@ else
 	rargs=(--prefix="$rprefix" --libdir=lib64 --buildtype=release --wrap-mode=nodownload
 		--pkg-config-path="$vdev/lib64/pkgconfig" -Dffi=true -Dfeatures=virgl_renderer)
 	rline="$src/rutabaga_gfx ${rargs[*]} virglrenderer=$vkey"
+	# its crates, compiled by rustc: for that rustc only (rustc_moved)
+	rustc_now=$(rustc -vV)
+	if [ -d "$rbuild" ] && rustc_moved "$rbuild" "$rustc_now"; then
+		rm -rf "$rbuild"
+	fi
 	if [ ! -f "$rbuild/build.ninja" ]; then
 		rm -rf "$rbuild"
 		meson setup "$rbuild" "$src/rutabaga_gfx" "${rargs[@]}"
@@ -803,6 +823,7 @@ else
 		}
 	fi
 	echo "$rline" > "$rbuild/.vitrine-configure"
+	printf '%s\n' "$rustc_now" > "$rbuild/.vitrine-rustc"
 	ninja -C "$rbuild" -j "$jobs"
 	meson install -C "$rbuild" --no-rebuild --quiet
 	[ -f "$rprefix/lib64/pkgconfig/rutabaga_gfx_ffi.pc" ] && [ -e "$rprefix/lib64/librutabaga_gfx_ffi.so" ] ||

@@ -1564,6 +1564,53 @@ sh -c 'echo $$ > %1; exec sleep 300'
         QVERIFY2(log(output).contains("configured already") &&
                      !log(output).contains("set up by meson"),
                  qPrintable(log(output)));
+
+        /* 10. rutabaga_gfx's tree compiled by another rustc than the one now
+           (a system update moved rustc: Rust's crates of the old one are
+           refused, and nothing compiles them again): a rutabaga_gfx patch
+           changed sets it up from nothing, with the rustc recorded; the next
+           change keeps the tree.  So does one without a record (a tree of an
+           older build.sh) */
+        const QString rustc = run("rustc", {"-vV"}).trimmed();
+        QVERIFY(!rustc.isEmpty());
+        /* (--clean took its tree, and nothing built it since) */
+        QVERIFY(write(host + "/patches/rutabaga_gfx/0001-mark.patch",
+                      QString(newFile).arg("MARK", "rutabaga 10a").toUtf8()));
+        output.clear();
+        error = build(b, 300000);
+        QVERIFY2(error.isEmpty(), qPrintable(error + "\n" + log(output)));
+        QCOMPARE(read(work + "/rutabaga_gfx-build/.vitrine-rustc").trimmed(), rustc);
+        QVERIFY(write(work + "/rutabaga_gfx-build/KEPT", "\n"));
+        QVERIFY(write(work + "/rutabaga_gfx-build/.vitrine-rustc", "rustc 0.0.1 (test)\n"));
+        QVERIFY(write(host + "/patches/rutabaga_gfx/0001-mark.patch",
+                      QString(newFile).arg("MARK", "rutabaga 10b").toUtf8()));
+        output.clear();
+        error = build(b, 300000);
+        QVERIFY2(error.isEmpty(), qPrintable(error + "\n" + log(output)));
+        QVERIFY2(log(output).contains("built by rustc 0.0.1 (test), and the rustc now is " +
+                                      rustc.section('\n', 0, 0) + ": from nothing"),
+                 qPrintable(log(output)));
+        QVERIFY(!QFileInfo::exists(work + "/rutabaga_gfx-build/KEPT"));
+        QCOMPARE(read(work + "/rutabaga_gfx-build/.vitrine-rustc").trimmed(), rustc);
+        QVERIFY(StackBuilder::current(stack).isValid());
+        QVERIFY(write(work + "/rutabaga_gfx-build/KEPT", "\n"));
+        QVERIFY(write(host + "/patches/rutabaga_gfx/0001-mark.patch",
+                      QString(newFile).arg("MARK", "rutabaga 10c").toUtf8()));
+        output.clear();
+        error = build(b, 300000);
+        QVERIFY2(error.isEmpty(), qPrintable(error + "\n" + log(output)));
+        QVERIFY2(!log(output).contains("from nothing"), qPrintable(log(output)));
+        QVERIFY(QFileInfo::exists(work + "/rutabaga_gfx-build/KEPT"));
+        QVERIFY(QFile::remove(work + "/rutabaga_gfx-build/.vitrine-rustc"));
+        QVERIFY(write(host + "/patches/rutabaga_gfx/0001-mark.patch",
+                      QString(newFile).arg("MARK", "rutabaga 10d").toUtf8()));
+        output.clear();
+        error = build(b, 300000);
+        QVERIFY2(error.isEmpty(), qPrintable(error + "\n" + log(output)));
+        QVERIFY2(log(output).contains("built by a rustc not recorded, and the rustc now is " +
+                                      rustc.section('\n', 0, 0) + ": from nothing"),
+                 qPrintable(log(output)));
+        QVERIFY(!QFileInfo::exists(work + "/rutabaga_gfx-build/KEPT"));
     }
 };
 
