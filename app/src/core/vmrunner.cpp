@@ -1509,15 +1509,17 @@ ArgsFile VmRunner::withComputedProperties(
          * that shows them: the host's KWin takes a frame ~3.9 ms before
          * its vblank at 240 Hz; KDE's commits in the guest are steady
          * enough for 4.5 ms, other desktops keep a margin of 6 ms.  In
-         * vitrine's window at 240 Hz a GNOME guest (its flips wait for
-         * the buffer the host composites) fell into spells of half rate
-         * at 6 ms, and sometimes at 9; 12 ms had none, and keys took as
-         * long as at 6 (~10 ms: the guest draws later in the refresh; the
-         * research's drags and keys on an Arc Pro B50, GNOME 51 host,
-         * gdl10 and dvk1).  QEMU keeps
-         * only the place within a refresh: 12 ms is 3.67 ms there and at
-         * 120 Hz, which 3.7 ms is at every rate; at 60 Hz, where a frame
-         * that misses costs 16.7 ms and the margin was not measured, 6.
+         * vitrine's window at 240 Hz a GNOME guest fell into spells of
+         * half rate at 6 ms, and sometimes at 9: two of its frames for one
+         * of the host's refreshes, as its driver's flip grace completed a
+         * flip for a tick that had one already, with the guest's flushes
+         * near the grace's edge (the research's gdl13, gdl17/18); 12 ms had
+         * none, and keys took as long as at 6 (~10 ms: the guest draws
+         * later in the refresh; the research's drags and keys on an Arc
+         * Pro B50, GNOME 51 host, gdl10 and dvk1).  QEMU keeps only the
+         * place within a refresh: 12 ms is 3.67 ms there and at 120 Hz,
+         * which 3.7 ms is at every rate; at 60 Hz, where a frame that
+         * misses costs 16.7 ms and the margin was not measured, 6.
          * GNOME's Mutter only: it takes the view's frames later than KWin
          * does, which shows a frame swapped 3.9 ms before its vblank at
          * 240 Hz with a drifting place around it (QEMU's lead patch,
