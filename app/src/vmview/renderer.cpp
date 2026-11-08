@@ -193,7 +193,7 @@ public:
     void guestReleased(GuestBuffer *g);         // the compositor's release (under lock)
     void released(uint64_t inode);
     void releaseAfterGpu(uint64_t inode);       // after the GL work queued so far
-    void sendZeroCopy(bool on);
+    void sendZeroCopy(bool on, const char *why);
     void destroyGuests();
 
     void forget(Feedback *d)
@@ -324,12 +324,14 @@ void RenderState::released(uint64_t inode)
                            G_DBUS_CALL_FLAGS_NO_AUTO_START, -1, nullptr, nullptr, nullptr);
 }
 
-void RenderState::sendZeroCopy(bool on)
+void RenderState::sendZeroCopy(bool on, const char *why)
 {
     if (zcScanout == int(on) || !sinkConn || sinkPath.isEmpty()) {
         return;
     }
     zcScanout = on;
+    // QEMU's swap target follows it: the switch and its cause, for the logs of a run
+    fprintf(stderr, "renderer: Presentation.ZeroCopy %d: %s\n", int(on), why);
     g_dbus_connection_call(sinkConn, nullptr, sinkPath.constData(),
                            "org.qemu.Display1.Presentation", "ZeroCopy",
                            g_variant_new("(b)", gboolean(on)), nullptr,
@@ -1121,7 +1123,8 @@ void Renderer::run()
                 }
                 drawnInode = gb->inode;
                 // the late swap target when nothing composites it: a full-screen window of its own
-                st.sendZeroCopy(fullScreen);
+                st.sendZeroCopy(fullScreen, fullScreen ? "the guest's buffers as they are, in full screen"
+                                                       : "the guest's buffers as they are, in a window");
                 const int64_t t = nowNs();
                 if (fb) {
                     std::lock_guard g(st.lock);
@@ -1169,7 +1172,25 @@ void Renderer::run()
                 std::lock_guard g(st.lock);
                 st.attached = nullptr;   // our own buffer replaces the guest's on the surface
             }
-            st.sendZeroCopy(false);
+            if (st.zcScanout != 0) {
+                // why this frame is copied, for the line of the switch
+                char why[200];
+                if (!st.zcSupported) {
+                    snprintf(why, sizeof why, "a copied frame: this QEMU has no zero copy");
+                } else if (fullScreen && !m_fullScreenZeroCopy) {
+                    snprintf(why, sizeof why, "a copied frame: full screen copies");
+                } else if (!scanout || scanout->kind != Scanout::Dmabuf) {
+                    snprintf(why, sizeof why, "a copied frame: the guest's scanout is no dma-buf");
+                } else if (int(scanout->backingWidth) != w || int(scanout->backingHeight) != h) {
+                    snprintf(why, sizeof why, "a copied frame: the guest's buffer is %ux%u, the view %dx%d",
+                             scanout->backingWidth, scanout->backingHeight, int(w), int(h));
+                } else {
+                    snprintf(why, sizeof why, "a copied frame: the guest shows part of its buffer, "
+                                              "flipped or without a modifier, or the compositor did "
+                                              "not take it");
+                }
+                st.sendZeroCopy(false, why);
+            }
             if (buf) {
                 own->commit(buf, w, h);
                 // direct scanout or not, when it changes (see Swapchain::scanout),
