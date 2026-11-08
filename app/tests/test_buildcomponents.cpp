@@ -481,17 +481,20 @@ private slots:
                  "iris: under virtio-gpu, keep the newest big cached buffers past the timeout");
 
         /* the driver's patches, in the order prepare.sh applies them ("apply NAME"), a
-           version rebased for a later kernel right after its patch */
+           version rebased for a later kernel right after its patch (flip-grace-once is
+           a patch of its own, not a version of flip-grace) */
         const QList<Patch> toolsPatches = patches(find(all, "tools"));
-        QCOMPARE(toolsPatches.size(), 19);
+        QCOMPARE(toolsPatches.size(), 20);
         QCOMPARE(toolsPatches.first().name(), "linux-drm-virtio-attach-imported-dmabufs.patch");
         QCOMPARE(toolsPatches[1].name(), "linux-drm-virtio-import-3d.patch");
         QCOMPARE(toolsPatches[2].name(), "linux-drm-virtio-host-vblank.patch");
         QCOMPARE(toolsPatches[3].name(), "linux-drm-virtio-host-vblank-7.3.patch");
         QCOMPARE(toolsPatches[4].name(), "linux-drm-virtio-flip-grace.patch");
+        QCOMPARE(toolsPatches[5].name(), "linux-drm-virtio-skip-unchanged-flush.patch");
         QCOMPARE(toolsPatches[16].name(), "linux-drm-virtio-deferred-map-error.patch");
         QCOMPARE(toolsPatches[17].name(), "linux-drm-virtio-scanout-modifier.patch");
-        QCOMPARE(toolsPatches.last().name(), "linux-drm-virtio-scanout-modifier-7.3.patch");
+        QCOMPARE(toolsPatches[18].name(), "linux-drm-virtio-scanout-modifier-7.3.patch");
+        QCOMPARE(toolsPatches.last().name(), "linux-drm-virtio-flip-grace-once.patch");
         /* the nested desktop's: the research's work on the proxy as one patch, KPipeWire's k2 */
         const QList<Patch> proxyPatches = patches(find(all, "proxy"));
         QCOMPARE(proxyPatches.size(), 1);

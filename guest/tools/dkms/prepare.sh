@@ -16,7 +16,8 @@
 # without fuzz is used, and when none does the build stops, naming the patch
 # to rebase (the research's prepare.sh of 2026-10-26).  Linux 7.3 takes the
 # 7.3 versions of host-vblank, linear-scanout, tiled-scanout and
-# scanout-modifier; 7.4 has host-blob-damage's change itself, and its
+# scanout-modifier (the other patches, flip-grace-once too, fit 7.2 and 7.3
+# as they are); 7.4 has host-blob-damage's change itself, and its
 # host-vblank needs a rebase.
 #
 # Usage (DKMS calls it): prepare.sh KERNELVERSION
@@ -268,4 +269,19 @@ if grep -q 'scanout_modifier' virtgpu_vq.c; then
 else
 	apply linux-drm-virtio-scanout-modifier
 	say "scanout-modifier patch applied"
+fi
+
+# The flip grace only for a tick that has no flip yet (the research's
+# a5e7488): a flip in the grace of a tick that had one already was
+# completed for that same tick, so the compositor drew its next frame at
+# once and the host showed one of the two - a GNOME guest ran at half rate
+# for seconds at a time (the research's gdl13, gdl17/18).  Such a flip
+# waits for the next tick now (flip_grace_once, default 1; 0 = the grace
+# for any flip in it, as before); debugfs virtio-gpu-flip-gate counts the
+# flips completed in a grace and those second flips
+if grep -q 'flip_grace_once' virtgpu_display.c; then
+	say "the flip-grace-once patch is already in these sources, nothing to apply"
+else
+	apply linux-drm-virtio-flip-grace-once
+	say "flip-grace-once patch applied"
 fi
