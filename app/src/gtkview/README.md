@@ -151,7 +151,12 @@ How it fits GTK:
   the event was dispatched, a reader held up under a compile made the lead
   shorter, the research's lgt5),
   for the frames it copies in full screen only; 0, not known, for the
-  others (`Feedback::passLead`). From it a QEMU with
+  others (`Feedback::copy`). The copies the compositor discarded (a later
+  frame shown in their place), in a window too, go to QEMU with when they
+  were committed and when their update came (`Presentation.Discarded`,
+  one-way, CLOCK_MONOTONIC, when this QEMU has it): placed against the
+  host's latch, a late commit of the full screen says the margin was
+  short. From the lead a QEMU with
   `x-vblank-deadline=on,x-vblank-deadline-callback=on` estimates the
   host's deadline for those frames: their target is then the host's lead
   plus 1 ms and its margin (700 us), up at once and down after N calm
