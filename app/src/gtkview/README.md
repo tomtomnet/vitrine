@@ -152,18 +152,19 @@ How it fits GTK:
   shorter, the research's lgt5),
   for the frames it copies in full screen only; 0, not known, for the
   others (`Feedback::passLead`). From it a QEMU with
-  `x-vblank-deadline-callback` estimates the host's deadline for those
-  frames: their target is then the host's lead plus 1 ms and its margin
-  (700 us), up at once and down after 8 calm windows
-  (`x-vblank-deadline-hold=8`), which vitrine sets for guests other than
-  KDE's in its window (`VmRunner::withComputedProperties`). The copied
-  full screen came 0.35 ms sooner than at the fixed 6 ms, as smoothly, on
-  a Radeon 780M and an Arc Pro B50 at rest and under CPU and GPU loads
-  (the research's lgt4 and bcb3, 2026-11-09); without the margin the
-  view's own copy came late under a GPU load on the 780M. A window of
-  presentations without a lead (144) drops the estimate, so the window
-  keeps the fixed 6 ms, and the direct scanout its own target. A user's
-  swap target in `vm.args` keeps it fixed.
+  `x-vblank-deadline=on,x-vblank-deadline-callback=on` estimates the
+  host's deadline for those frames: their target is then the host's lead
+  plus 1 ms and its margin (700 us), up at once and down after N calm
+  windows (`x-vblank-deadline-hold=N`). A window of presentations without
+  a lead (144) drops the estimate, so the window keeps the fixed 6 ms, and
+  the direct scanout its own target. Vitrine does not set them: with
+  `x-vblank-deadline-hold=8` the copied full screen came 0.35 ms sooner
+  than at the fixed 6 ms, and as smoothly on a Radeon 780M at rest and
+  under CPU and GPU loads (10 boots), but on an Arc Pro B50 it lost a
+  little more under load (0.87 and 0.66 stutters a second under a compile
+  and a GPU load against 0.74 and 0.46, 4 boots each, the view's discards
+  up with them: the research's lgt6, lgt7, bcb4 and bcb5, 2026-11-09).
+  A VM's `vm.args` can set them on its 3D card's line to try.
 - The guest is told its screen's physical size with each size (UIInfo's
   `width_mm` and `height_mm`): the view's share of its monitor's, from
   GdkMonitor's width_mm and height_mm, through `core/physicalsize.h` as the Qt
