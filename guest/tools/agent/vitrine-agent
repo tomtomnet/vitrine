@@ -62,10 +62,10 @@ STEP = re.compile(r"^== \[(\d+)/(\d+)\] (.*)$")
 PACKAGES = ["vitrine-guest-tools", "mesa-dri-drivers", "mesa-vulkan-drivers", "mesa-libEGL",
             "mesa-libgbm", "kwin", "kwin-common", "kwin-libs", "kwayland", "plasma-workspace",
             "gnome-shell", "kernel-core", "dkms", "kpipewire", "wl-cross-domain-proxy",
-            "qt6-qtbase", "kf6-ksvg", "kf6-kirigami"]
+            "qt6-qtbase", "kf6-ksvg", "kf6-kirigami", "mutter"]
 # What the tools replace only while the guest has the version they are built
 # from: Fedora's next build takes their place, until the next guest tools
-FOLLOWING = ["qt6-qtbase", "kf6-ksvg", "kf6-kirigami"]
+FOLLOWING = ["qt6-qtbase", "kf6-ksvg", "kf6-kirigami", "mutter"]
 CAPSETS = {1: "virgl", 2: "virgl2", 3: "gfxstream-vulkan", 4: "venus", 5: "cross-domain",
            6: "drm"}
 # what the VM's own screen shows, looked at this often while the host listens
