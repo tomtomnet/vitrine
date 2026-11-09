@@ -33,6 +33,12 @@
  *                          real-time time limit lifted: the VM in front
  *   behind PID             those threads back to SCHED_OTHER, its vCPUs at
  *                          nice -5: a VM behind the one in front
+ *   view-rt TID            SCHED_FIFO 1 on thread TID of the process that
+ *                          started the helper (pkexec's caller: vitrine),
+ *                          while a watched QEMU is in front and the fair
+ *                          server set: vitrine's view of the VM in front
+ *   view-behind            those threads back to SCHED_OTHER, as they go
+ *                          whenever no watched QEMU is in front any more
  *   udmabuf PID            the udmabuf limits raised (65536 entries, 2048 MB)
  *                          while that watched QEMU runs: one with a
  *                          native-context GPU
@@ -220,8 +226,11 @@ static bool request(char *line)
         epp_off();
     } else if (IS("gpu-floor", 2) && strcmp(words[2], "off") == 0) {
         gpu_floor(words[1], words[2]);
+    } else if (IS("view-behind", 0)) {
+        view_behind();
     } else if ((IS("fair-server", 1) || IS("thp", 1) || IS("cpu-latency", 1) || IS("epp", 1) ||
-                IS("gpu-floor", 2) || IS("rt", 1) || IS("behind", 1) || IS("udmabuf", 1)) &&
+                IS("gpu-floor", 2) || IS("rt", 1) || IS("behind", 1) || IS("udmabuf", 1) ||
+                IS("view-rt", 1)) &&
                !nwatched) {
         /* nothing applied while no VM runs */
         reply("error %s: watch a QEMU first", words[0]);
@@ -241,6 +250,8 @@ static bool request(char *line)
         behind(words[1]);
     } else if (IS("udmabuf", 1)) {
         udmabuf_on(words[1]);
+    } else if (IS("view-rt", 1)) {
+        view_rt(words[1]);
     } else {
         reply("error %.32s: unknown request", words[0]);
     }
@@ -265,6 +276,8 @@ static int session(void)
         reply("error: %s", sfd < 0 ? strerror(errno) : "cannot use " STATE_DIR);
         return 1;
     }
+    /* who started it, before any request can come */
+    parent_init();
     reply("ready %d", HELPER_PROTOCOL);
 
     for (;;) {
@@ -340,9 +353,10 @@ static int session(void)
             }
         }
         /* the udmabuf limits go with the last QEMU that asked for them, not
-           with the last QEMU */
+           with the last QEMU; the view's threads with the QEMU in front */
         if (ngone) {
             udmabuf_check();
+            view_check();
         }
         /* the last VM is gone, or vitrine with none left */
         if ((ever && !nwatched) || (!input && !nwatched)) {

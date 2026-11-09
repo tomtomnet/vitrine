@@ -113,6 +113,8 @@ for them. It does only this, for the user who started it:
 | `gpu-floor CARD MHZ\|auto` | An AMD GPU's lowest gfx clock | `cardN` of vendor 0x1002 driven by amdgpu; the clock within the GPU's own overdrive range; only when its performance level is `auto` |
 | `rt PID` | SCHED_FIFO 1 on every thread of a watched QEMU (the VM in front), its real-time time limit (`RLIMIT_RTTIME`) lifted first | Only once `fair-server on` holds; watched first, and checked again to be the caller's QEMU (it may have run another program since); no thread made real-time if the limit cannot be lifted; real-time threads it finds are left as they are; its child processes (passt) are not touched |
 | `behind PID` | The threads `rt` made real-time back to SCHED_OTHER, its vCPU threads (`CPU n/KVM`) at nice -5 (a VM behind the one in front) | The same checks as `rt`; nice -5 only while the fair server holds, and only for vCPUs at nice 0 |
+| `view-rt TID` | SCHED_FIFO 1 on one thread of the program that started the helper: vitrine's view of the VM in front (its render thread, Wayland reader and D-Bus listener, GLib's D-Bus worker) | Only once `fair-server on` holds, and while a watched QEMU is in front (its `rt`); a thread of the helper's parent - the program that ran pkexec, taken at the start and held through a pidfd - whose uids are all the caller's; threads at SCHED_FIFO 1 before its first `view-rt`, other real-time ones and SCHED_IDLE ones are left as they are; recorded first, as for `rt` |
+| `view-behind` | Those threads, and the threads they started since, back to SCHED_OTHER | Only threads at SCHED_FIFO 1 that were not before the first `view-rt`; the helper also does it whenever no watched QEMU is in front any more (`behind` of the one in front, its exit), at `fair-server off` and at its end |
 | `udmabuf PID` | The udmabuf module's `list_limit` at 65536 and `size_limit_mb` at 2048, while that watched QEMU runs | A watched QEMU (its GPU is not checked: vitrine asks only for native-context ones); fixed values; raised only, a higher value stays; skipped when the module is not loaded; put back after the last QEMU that asked for it |
 | `thp on` | `/sys/kernel/mm/transparent_hugepage/shmem_enabled` at `advise` | A watched QEMU; a fixed value, written only over `never`; read back |
 | `cpu-latency on` | A request on `/dev/cpu_dma_latency` for the wake-up time of the CPUs' first usable idle state (C1), held by the helper's open file | A watched QEMU; the value from cpuidle, at least 1 µs; nothing recorded: the kernel drops the request with the file |
@@ -129,7 +131,9 @@ What this amounts to:
 - Real-time priority 1 for your own processes, and nice -5 for their
   threads named as vCPUs. The `qemu-system-*` name is no proof of
   anything, and a guest's own code runs on those vCPUs: think of the group
-  as `rtprio 1` in `limits.conf`. The shorter fair-server period keeps
+  as `rtprio 1` in `limits.conf`. The program that runs the helper gets it
+  for threads of its own too (`view-rt`), while one of its QEMUs is in
+  front. The shorter fair-server period keeps
   ordinary tasks running beside them, and without it there is no
   real-time priority.
 - Host-wide settings changed while your VMs run, and put back after: the

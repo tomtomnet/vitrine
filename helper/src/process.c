@@ -598,10 +598,12 @@ void behind(const char *arg)
     }
     reply("ok behind %d: %d threads ordinary, %d vCPUs at nice %d", (int)w->pid,
           others.counts[0], niced.counts[0], BEHIND_NICE);
+    /* the VM in front gone behind: its view's threads with it */
+    view_check();
 }
 
 void sched_restore(pid_t pid, unsigned long long start, bool niced, const pid_t *keep,
-                   int nkeep, bool say)
+                   int nkeep, const char *verb)
 {
     struct pass others = {.kept = keep, .nkept = nkeep}, unniced = {0};
     unsigned long long now;
@@ -623,9 +625,11 @@ void sched_restore(pid_t pid, unsigned long long start, bool niced, const pid_t 
         each_thread(procfd, unnice_vcpu, &unniced);
     }
     close(procfd);
-    if (say) {
-        reply("restored rt %d: %d threads back to SCHED_OTHER%s", (int)pid, others.counts[0],
-              unniced.counts[0] ? ", vCPUs back to nice 0" : "");
+    /* a QEMU's always; the view's when there were some (view_check() put
+       them back already as no VM was in front) */
+    if (verb && (strcmp(verb, "rt") == 0 || others.counts[0] || unniced.counts[0])) {
+        reply("restored %s %d: %d threads back to SCHED_OTHER%s", verb, (int)pid,
+              others.counts[0], unniced.counts[0] ? ", vCPUs back to nice 0" : "");
     }
     if (others.counts[0] || unniced.counts[0]) {
         sys_log("pid %d: %d threads back to SCHED_OTHER, %d vCPUs back to nice 0", (int)pid,
@@ -633,11 +637,227 @@ void sched_restore(pid_t pid, unsigned long long start, bool niced, const pid_t 
     }
 }
 
+/*
+ * The process that started this helper (parent_init()): the threads view-rt
+ * made real-time are recorded as a watched QEMU's are (sched-<pid>, kept[]
+ * the threads at SCHED_FIFO 1 before its first change), but it is not
+ * watched: its end ends nothing.
+ */
+static struct watched parent = {.pidfd = -1, .procfd = -1, .view = true};
+/* why there is none, while parent.procfd < 0 */
+static const char *parent_why = "the process that started the helper is not known";
+
 void rt_off_all(void)
 {
     for (int i = 0; i < nwatched; i++) {
         /* the last holder of its record puts the threads back */
         sched_drop(&watched[i]);
         watched[i].rt = watched[i].behind = false;
+    }
+    /* no VM in front, so no view either; then its record goes */
+    view_check();
+    sched_drop(&parent);
+}
+
+void parent_init(void)
+{
+    const pid_t ppid = getppid();
+    unsigned long long start;
+    char path[64];
+
+    /* 1: it ended already, init (or a subreaper) took the helper over */
+    if (ppid <= 1) {
+        parent_why = "the process that started the helper has ended";
+        return;
+    }
+    parent.pidfd = pidfd_open_(ppid);
+    snprintf(path, sizeof(path), "/proc/%d", (int)ppid);
+    parent.procfd = open(path, O_RDONLY | O_DIRECTORY | O_CLOEXEC);
+    /* still the parent once both are open: they stay bound to that process
+       (one that got the pid of a parent ended before is not the parent) */
+    if (parent.pidfd < 0 || parent.procfd < 0 || getppid() != ppid ||
+        !start_time(parent.procfd, &start) || !pidfd_alive(parent.pidfd)) {
+        if (parent.pidfd >= 0) {
+            close(parent.pidfd);
+        }
+        if (parent.procfd >= 0) {
+            close(parent.procfd);
+        }
+        parent.pidfd = parent.procfd = -1;
+        parent_why = "the process that started the helper has ended";
+        return;
+    }
+    parent.pid = ppid;
+    parent.start = start;
+}
+
+/* That process can have threads made real-time: it runs, all four uids
+   the caller's; else why not */
+static bool parent_usable(const char **why)
+{
+    static char text[96];
+
+    if (parent.procfd < 0) {
+        *why = parent_why;
+        return false;
+    }
+    if (!pidfd_alive(parent.pidfd)) {
+        *why = "the process that started the helper has ended";
+        return false;
+    }
+    /* sudo, say: root's */
+    if (!owned_by(parent.procfd, caller_uid)) {
+        snprintf(text, sizeof(text), "pid %d, which started the helper, is not a process of uid %u",
+                 (int)parent.pid, (unsigned)caller_uid);
+        *why = text;
+        return false;
+    }
+    return true;
+}
+
+/* A watched QEMU is in front: its rt was asked for */
+static bool any_front(void)
+{
+    for (int i = 0; i < nwatched; i++) {
+        if (watched[i].rt) {
+            return true;
+        }
+    }
+    return false;
+}
+
+/* The threads of that process at SCHED_FIFO 1 - those view-rt made so and
+   those they started since - but the ones that were before its first
+   view-rt, back to SCHED_OTHER: how many */
+static int view_lower(void)
+{
+    struct pass others = {.kept = parent.kept, .nkept = parent.nkept};
+
+    if (!parent.rt) {
+        return 0;
+    }
+    parent.rt = false;
+    if (pidfd_alive(parent.pidfd)) {
+        each_thread(parent.procfd, other_thread, &others);
+    }
+    if (others.counts[0]) {
+        sys_log("pid %d: %d threads of its VM view back to SCHED_OTHER", (int)parent.pid,
+                others.counts[0]);
+    }
+    return others.counts[0];
+}
+
+/*
+ * SCHED_FIFO 1 on one thread of the process that started the helper - in
+ * vitrine, a thread of its view of the VM in front: the render thread, its
+ * Wayland reader, the D-Bus listener, GLib's D-Bus worker - as that VM's
+ * QEMU threads are.  The threads it starts inherit it.  Only a thread of
+ * that process, all of whose uids are the caller's, only with the fair
+ * server's bound in place and a watched QEMU in front (its rt), and back to
+ * SCHED_OTHER as soon as none is (view_check()).  Threads at SCHED_FIFO 1
+ * before the first view-rt are not this helper's doing: kept as they are,
+ * now and when put back; real-time ones are left alone (RTKit's are
+ * SCHED_RR), as are SCHED_IDLE ones.
+ */
+void view_rt(const char *arg)
+{
+    unsigned long long tid;
+    const bool was = parent.rt;
+    char name[24];
+    const char *why;
+    int taskfd, policy, priority, err;
+
+    if (!parse_uint(arg, PID_LIMIT, &tid) || tid < 1) {
+        reply("error view-rt: give a thread id");
+        return;
+    }
+    if (!parent_usable(&why)) {
+        reply("error view-rt %llu: %s", tid, why);
+        return;
+    }
+    if (!settings_bound(&why)) {
+        reply("skip view-rt %llu: the fair server is not set: %s", tid, why);
+        return;
+    }
+    if (!any_front()) {
+        reply("skip view-rt %llu: no VM in front", tid);
+        return;
+    }
+    /* one of its threads: its task folder lists those only */
+    snprintf(name, sizeof(name), "%llu", tid);
+    taskfd = openat(parent.procfd, "task", O_RDONLY | O_DIRECTORY | O_CLOEXEC);
+    if (taskfd < 0 || faccessat(taskfd, name, F_OK, 0) < 0) {
+        reply("error view-rt %llu: not a thread of pid %d", tid, (int)parent.pid);
+        if (taskfd >= 0) {
+            close(taskfd);
+        }
+        return;
+    }
+    if (!parent.rt_once) {
+        /* before any change of this helper's: what runs at FIFO 1 already
+           (the priority it sets and puts back) is not its own */
+        struct pass found = {.found = parent.kept, .maxfound = MAX_KEPT};
+
+        each_thread(parent.procfd, find_fifo1, &found);
+        parent.nkept = found.nfound;
+    }
+    if (parent.nkept == MAX_KEPT) {
+        /* kept[] is full, and may have left some out: a put-back would
+           take them too */
+        reply("skip view-rt %llu: pid %d runs real-time already (%d threads or more at "
+              "SCHED_FIFO 1)", tid, (int)parent.pid, MAX_KEPT);
+        close(taskfd);
+        return;
+    }
+    if ((err = sys_getsched((pid_t)tid, &policy, &priority)) < 0) {
+        reply("error view-rt %llu: %s", tid, strerror(-err));
+        close(taskfd);
+        return;
+    }
+    if (policy == SCHED_FIFO || policy == SCHED_RR || policy == SCHED_DEADLINE) {
+        /* this helper's (a thread started by one it made real-time), or
+           another's choice: as it is */
+        reply("ok view-rt %llu: real-time already", tid);
+        close(taskfd);
+        return;
+    }
+    if (policy == SCHED_IDLE) {
+        reply("skip view-rt %llu: SCHED_IDLE, its own choice", tid);
+        close(taskfd);
+        return;
+    }
+    /* recorded first: a helper that dies leaves them to the next one */
+    parent.rt = true;
+    if (!sched_hold(&parent)) {
+        parent.rt = was;
+        reply("error view-rt %llu: cannot record it: %s", tid, strerror(errno));
+        close(taskfd);
+        return;
+    }
+    parent.rt_once = true;
+    err = set_thread((pid_t)tid, taskfd, name, SCHED_FIFO, 1);
+    close(taskfd);
+    if (err < 0) {
+        reply("error view-rt %llu: %s", tid, strerror(-err));
+        return;
+    }
+    reply("ok view-rt %llu: real-time", tid);
+    sys_log("uid %u: SCHED_FIFO 1 on thread %llu of pid %d (its view of the VM in front)",
+            (unsigned)caller_uid, tid, (int)parent.pid);
+}
+
+void view_behind(void)
+{
+    const int n = view_lower();
+
+    reply("ok view-behind: %d threads ordinary", n);
+}
+
+void view_check(void)
+{
+    int n;
+
+    if (!any_front() && (n = view_lower()) > 0) {
+        reply("restored view-rt %d: %d threads back to SCHED_OTHER", (int)parent.pid, n);
     }
 }
