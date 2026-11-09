@@ -21,6 +21,7 @@
 #include "core/vmstore.h"
 #include "ui/guesttoolsbuildbanner.h"
 #include "ui/guesttoolsdialog.h"
+#include "ui/guesttoolstext.h"
 #include "ui/shutdownnotice.h"
 
 #include "activation.h"
@@ -66,6 +67,8 @@ class TestGuestToolsDialog : public QObject
     Vm *diskVm() const { return m_store->find("disk"); }
     /* the same, with a stand-in for qemu-img whose listing takes its time */
     Vm *slowVm() const { return m_store->find("slow"); }
+    /* a Fedora 45 GNOME guest */
+    Vm *gnomeVm() const { return m_store->find("gnome"); }
 
     static QList<GuestToolsDialog *> dialogs()
     {
@@ -245,14 +248,21 @@ private slots:
                               QByteArray(kVm).replace("Tools Test", "Slow Test") +
                               "-drive file=disk.qcow2,format=qcow2,if=virtio\n"));
         QVERIFY(writeFile(m_tmp.filePath("vms/slow/disk.qcow2"), {}));
+        /* and a GNOME guest of Fedora 45 */
+        QVERIFY(writeFile(m_tmp.filePath("vms/gnome/vm.args"),
+                          QByteArray(kVm)
+                              .replace("Tools Test", "Gnome Test")
+                              .replace("desktop=kde", "desktop=gnome")));
         /* Fedora 44 guests, as their agents said: the medium of 44 is theirs */
         for (const char *id : {"tools", "disk", "slow"}) {
             setSystem(id, System{"fedora", "44", "Fedora Linux 44 (KDE Plasma Desktop Edition)"});
         }
+        setSystem("gnome", System{"fedora", "45", "Fedora Linux 45 (Workstation Edition)"});
         m_store = new VmStore(m_tmp.filePath("vms"), this);
         QVERIFY(vm());
         QVERIFY(diskVm());
         QVERIFY(slowVm());
+        QVERIFY(gnomeVm());
         GuestToolsDialog::setStarter([this](Vm *v) { m_started << v; });
         m_window = new QWidget;
         m_window->resize(800, 600);
@@ -590,6 +600,60 @@ private slots:
                  qPrintable(text));
         /* (the guest's name says Plasma: what it runs) */
         QVERIFY2(!text.contains("KWin") && !text.contains("newer Plasma"), qPrintable(text));
+    }
+
+    /* Fedora 45's: Mutter for GNOME guests, in place of the guest's while it has its version,
+       not kept at it; a Plasma guest is not told of it */
+    void namesMutter()
+    {
+        const QString manifest = dataDir() + "/vitrine-guest-tools-fc45.json";
+        const auto restore = qScopeGuard([manifest]() {
+            QFile::remove(manifest);
+            QFile::remove(QString(manifest).replace(".json", ".img"));
+            GuestToolsBuilder::instance()->checkMedium();
+        });
+        QVERIFY(writeFile(QString(manifest).replace(".json", ".img"), QByteArray(1 << 20, '\0')));
+        QVERIFY(writeFile(manifest, R"({"label": "VITRINETOOL", "mediumId": "a1b2c3d4e5f6071b",
+                                        "fedora": "45", "tools": "0.1.0-41.fc45",
+                                        "mesa": "26.2.6-1.xe.fc45",
+                                        "mutter": "51.1-1.1.m1.fc45", "packages": []})"));
+        GuestToolsBuilder::instance()->checkMedium();
+        GuestToolsDialog::run(m_window, gnomeVm());
+        GuestToolsDialog *dialog = GuestToolsDialog::of(gnomeVm());
+        QVERIFY(dialog);
+        const QString text = textOf(dialog);
+        QVERIFY2(text.contains("Mutter 51.1-1.1.m1.fc45, GNOME's compositor") &&
+                     text.contains("if the guest's Mutter is 51.1"),
+                 qPrintable(text));
+        QVERIFY2(text.contains("Mesa then stays at this version until the next guest tools; "
+                               "Mutter gives way to Fedora's next build of it"),
+                 qPrintable(text));
+        /* (no agent in it: which Mutter it runs is not known) */
+        QVERIFY2(!text.contains("Its Mutter"), qPrintable(text));
+
+        /* the same medium for a Plasma guest: no Mutter */
+        Medium kde = GuestTools::medium("45");
+        QVERIFY(kde.isValid());
+        const QString plasma = GuestToolsText::what(vm(), kde);
+        QVERIFY2(!plasma.contains("Mutter") && plasma.contains("Mesa then stays at this version"),
+                 qPrintable(plasma));
+    }
+
+    /* Which Mutter the guest runs, as its agent said: the guard of the user's test of m1 */
+    void saysWhichMutterRuns()
+    {
+        GuestTools::Report r;
+        QVERIFY(GuestToolsText::runningMutter(r).isEmpty());
+        r.packages = {{"mutter", "51.1-1.1.m1.fc45"}, {"gnome-shell", "51.1-1.fc45"}};
+        r.vitrineBuilds = {{"mutter", true}};
+        QCOMPARE(GuestToolsText::runningMutter(r), "Its Mutter is vitrine's build, 51.1-1.1.m1.fc45.");
+        /* Fedora's next Mutter took its place */
+        r.packages["mutter"] = "51.2-1.fc45";
+        r.vitrineBuilds["mutter"] = false;
+        QCOMPARE(GuestToolsText::runningMutter(r), "Its Mutter is 51.2-1.fc45, not vitrine's build.");
+        /* an agent that does not say which builds are vitrine's: not vitrine's */
+        r.vitrineBuilds.clear();
+        QCOMPARE(GuestToolsText::runningMutter(r), "Its Mutter is 51.2-1.fc45, not vitrine's build.");
     }
 
     /* Fedora 44's: KWin with the KWayland it is built against, both kept at their versions */

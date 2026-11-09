@@ -2,7 +2,7 @@
 # exact version, and dnf takes an installed one of the same version as done.
 Name:           vitrine-guest-tools
 Version:        0.1.0
-Release:        40%{?dist}
+Release:        41%{?dist}
 Summary:        vitrine guest tools: patched virtio-gpu driver, settings and agent
 
 # the driver's sources (dkms/vendor, dkms/patches) are the kernel's: MIT
@@ -47,7 +47,7 @@ Plasma into a window of the host's desktop, with KWin's settings for the
 host's GPU), and the vitrine agent, which tells vitrine the state of the
 guest tools and installs their updates.  vitrine's Mesa, KWin with the
 KWayland it is built against, KPipeWire, the nested desktop's proxy, Qt Base,
-KSvg and Kirigami come from the same tools medium.
+KSvg, Kirigami and Mutter come from the same tools medium.
 
 %prep
 %autosetup
@@ -183,6 +183,24 @@ fi
 %dir %{_sharedstatedir}/%{name}
 
 %changelog
+* Mon Nov 09 2026 vitrine <noreply@anthropic.com> - 0.1.0-41
+- with Mutter 51.1-1.1.m1 on Fedora 45's medium, the research's set m1
+  (83db562): a new frame clock seeds its update-duration estimates with
+  at most one refresh, not with its first frame, often a mode set's.  After
+  a full-screen switch the guest's compositor no longer runs up to three
+  refreshes ahead for seconds of motion (the window after the switch, on
+  the research's Radeon 780M laptop: 0.21-0.31 stutters a second under a
+  compile, against 2.37-2.41)
+- the installer puts it in place of the guest's Mutter where the guest has
+  51.1 and no newer build, every installed Mutter package in the same
+  transaction, and does not lock it: Fedora updates Mutter together with
+  GNOME Shell, and a lock would keep Mutter and its fixes at 51.1 while
+  the Shell moved on, a pair GNOME does not release.  Fedora's next Mutter
+  takes its place until the next guest tools; --uninstall brings Fedora's
+  back
+- the agent reports the installed mutter, and whether it is vitrine's
+  build
+
 * Sun Nov 08 2026 vitrine <noreply@anthropic.com> - 0.1.0-40
 - the driver's flip grace holds only for a tick that has no flip yet (the
   research's a5e7488): a flip committed in the grace of a tick that had

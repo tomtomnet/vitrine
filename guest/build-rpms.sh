@@ -14,15 +14,19 @@
 #          pacing, the nested desktop): for Plasma 6.8.2 guests (guest/kwin/kwin.spec)
 #   qtbase, ksvg, kirigami  Qt 6.11.2's qtbase, KSvg and Kirigami 6.31.0 with
 #          the research's sets (q4, k2, f1): Fedora's specs, as the others
+#   mutter  Mutter 51.1 (Fedora's 51.1-1) + the research's set m1 (a new frame
+#          clock's first estimates of at most one refresh): for Fedora 45's
+#          GNOME guests
 # A package is a folder of guest/ with its spec; components.conf gives
 # their order (the app's Builds window shows them from there), and with a
 # releases= line the Fedora releases a package is built for (every one
-# without it): the KDE packages are Fedora 44's for now.  A deps= line names
-# the packages it is built against: their packages of this run's builds go
-# into its container before its build requirements, and their keys into its
-# inputs (a "dep PACKAGE HASH" line each, as host/build.sh's), so that a new
-# build of one builds it again; it is not built without them.  Two files of
-# the folder are this script's too:
+# without it): the KDE packages are Fedora 44's for now, Mutter Fedora
+# 45's.  A deps= line names the packages it is built against: their
+# packages of this run's builds go into its container before its build
+# requirements, and their keys into its inputs (a "dep PACKAGE HASH" line
+# each, as host/build.sh's), so that a new build of one builds it again;
+# it is not built without them.  Two files of the folder are this script's
+# too:
 #   sources             the files the spec downloads, as Fedora's dist-git
 #                       pins them ("SHA512 (FILE) = HASH"): they come from
 #                       Fedora's lookaside cache by that hash (the very files

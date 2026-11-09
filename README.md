@@ -6,7 +6,7 @@ app shows the guest's display in its window through QEMU's D-Bus display, or
 leaves it to QEMU's own SDL or GTK window.
 
 QEMU, virglrenderer, rutabaga_gfx, passt and the guest's graphics stack
-(virtio-gpu driver, Mesa, KWin) are used at pinned versions, with the
+(virtio-gpu driver, Mesa, KWin, Mutter) are used at pinned versions, with the
 patches vitrine needs kept in this repository: `host/versions.conf` and
 `host/patches` for the QEMU, virglrenderer, rutabaga_gfx and passt vitrine
 builds (upstream QEMU with a series of patches, `host/patches/qemu/series`),
@@ -135,8 +135,8 @@ files it changes, and the guest packages compile through ccache.
    release. Fedora 44's: virtio-gpu driver, Mesa 26.2.6, KWin (with the
    KWayland it is built against) and KPipeWire for Plasma 6.8.2, Qt Base
    6.11.2, KSvg and Kirigami 6.31.0, the nested desktop's session and proxy,
-   an agent. Fedora 45's has the driver, Mesa and the agent, no KDE packages
-   yet: a Plasma guest keeps Fedora's KWin.
+   an agent. Fedora 45's has the driver, Mesa, Mutter 51.1 and the agent, no
+   KDE packages yet: a Plasma guest keeps Fedora's KWin.
    The Builds window (also Build… in Machine > Install Guest Tools… and in
    Preferences) builds those of one release at a time, its "Guest tools for"
    choice (at first the newest one the VMs run; a VM's Install Guest Tools…
@@ -144,10 +144,11 @@ files it changes, and the guest packages compile through ccache.
    makes the medium VMs install them from: 40 to 70 minutes the first time
    for Fedora 44 (Mesa ~15-25 min, Qt Base ~15, KWin ~10, Kirigami ~3, the
    proxy, KWayland, KPipeWire and KSvg ~2 each, tools ~1), 15 to 30 for
-   Fedora 45, up to 10 GiB of memory. Mesa, Qt Base and KWin wait until
-   that much is free, unless told to build anyway. `guest/build-rpms.sh`
-   then `guest/build-medium.sh`, with `FEDORA_RELEASE=45` for Fedora 45, do
-   the same by hand, which vitrine takes in the same way.
+   Fedora 45 (Mutter ~3), up to 10 GiB of memory. Mesa, Qt Base and KWin
+   wait until that much is free, unless told to build anyway.
+   `guest/build-rpms.sh` then `guest/build-medium.sh`, with
+   `FEDORA_RELEASE=45` for Fedora 45, do the same by hand, which vitrine
+   takes in the same way.
 
    Then Machine > Install Guest Tools… > Install starts the VM with the tools
    medium (Restart and Install restarts a running one); the guest installs
@@ -165,7 +166,9 @@ files it changes, and the guest packages compile through ccache.
    KSvg and Kirigami (6.31.0, with the research's fix for Plasma's popups,
    which no longer upload their frames again at each opening) replace the
    guest's only where it has that version, all of a package's subpackages or
-   none.
+   none, and so does Mutter (51.1, with the research's frame clock fix: after
+   a new screen mode, such as a VM's screen leaving full screen, GNOME's
+   first seconds of motion no longer skip refreshes).
    Qt Base is locked too where vitrine's KWin is installed, as that KWin is
    built against Qt's private API, and so is the guest's Plasma, at the
    version that KWin is built for: Plasma's packages would otherwise update
@@ -176,10 +179,12 @@ files it changes, and the guest packages compile through ccache.
    that Plasma; otherwise its KWin stays and its Plasma is no longer held.
    Where a guest got a Plasma that does not match the tools' KWin, the VM's
    Console and Details tabs say so, and installing the tools again repairs
-   it. KSvg, Kirigami, and Qt Base without
-   vitrine's KWin, are not: Fedora's next build of them replaces them with
-   the rest of KDE Frameworks or of Qt, and the next guest tools bring
-   vitrine's back. `--uninstall` puts Fedora's builds of all of them back.
+   it. KSvg, Kirigami, Mutter, and Qt Base without vitrine's KWin, are not
+   (a lock would keep Mutter at 51.1 while Fedora's GNOME Shell moved on, a
+   pair GNOME does not release): Fedora's next build of them replaces them
+   with the rest of KDE Frameworks, of Qt or of GNOME, and the next guest
+   tools bring vitrine's back. Install Guest Tools… says which Mutter the
+   guest runs. `--uninstall` puts Fedora's builds of all of them back.
 
    A VM's Console and Details tabs offer them only once its guest has said
    it runs Fedora 44 or 45: QEMU's guest agent tells at each boot (Fedora

@@ -411,6 +411,9 @@ static QString expand(QString text, const QString &spec)
     text.replace("%{version}", version);
     /* Mesa's: the version with - for ~ */
     text.replace("%{ver}", QString(version).replace('~', '-'));
+    /* GNOME's (gnome-srpm-macros: Mutter's tarball): the version with . for ~,
+       "51~rc" in "mutter-51.rc.tar.xz" */
+    text.replace("%{gnome_tarball_version}", QString(version).replace('~', '.'));
     text.remove("%{?dist}");
     return globals(text);
 }

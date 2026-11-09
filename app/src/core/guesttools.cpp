@@ -81,6 +81,7 @@ Medium parseManifest(const QByteArray &json, const QString &image)
     m.qtbase = o["qtbase"].toString();
     m.ksvg = o["ksvg"].toString();
     m.kirigami = o["kirigami"].toString();
+    m.mutter = o["mutter"].toString();
     for (const QJsonValue &p : o["packages"].toArray()) {
         m.packages << QString("%1-%2.%3").arg(p["name"].toString(), p["evr"].toString(),
                                               p["arch"].toString());

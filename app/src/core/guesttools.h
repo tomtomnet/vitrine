@@ -66,6 +66,7 @@ struct Medium {
     QString qtbase;         // qt6-qtbase
     QString ksvg;           // kf6-ksvg
     QString kirigami;       // kf6-kirigami
+    QString mutter;         // GNOME's compositor (Fedora 45's medium)
     QStringList packages;   // name-version-release.arch
     bool isValid() const { return !image.isEmpty(); }
 };
@@ -188,8 +189,9 @@ struct Report {
     QStringList capsets;                // offered by the host: virgl, venus, drm...
     QHash<QString, QString> packages;   // name: version-release
     bool kwinPatched = false;
-    /* Of qt6-qtbase, kf6-ksvg, kf6-kirigami, those installed: vitrine's build,
-       or the guest's own (Fedora's next build, which is no fault) */
+    /* Of qt6-qtbase, kf6-ksvg, kf6-kirigami and mutter, those installed:
+       vitrine's build, or the guest's own (Fedora's next build, which is no
+       fault) */
     QHash<QString, bool> vitrineBuilds;
     QString preempt;
     bool rebootNeeded = false;

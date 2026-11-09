@@ -57,6 +57,9 @@ QString BuildTexts::describeGuestTools(const QString &fedora)
     if (!medium.kwin.isEmpty()) {
         parts << tr("KWin %1").arg(medium.kwin.section('-', 0, 0));
     }
+    if (!medium.mutter.isEmpty()) {
+        parts << tr("Mutter %1").arg(medium.mutter.section('-', 0, 0));
+    }
     return built.isValid()
                ? tr("Built on %1: %2")
                      .arg(QLocale().toString(built.toLocalTime().date(), "d MMMM yyyy"),

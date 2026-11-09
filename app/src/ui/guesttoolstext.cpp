@@ -113,9 +113,14 @@ static QString forWhom(Vm *vm)
         return text;
     }
     if (monitor->system().isKnown()) {
-        return text + ' ' +
-               tr("This guest runs %1.")
-                   .arg(monitor->system().displayName().toHtmlEscaped());
+        QString runs = text + ' ' +
+                       tr("This guest runs %1.")
+                           .arg(monitor->system().displayName().toHtmlEscaped());
+        /* vitrine's Mutter or Fedora's: what the user's own test of it needs to know */
+        if (const QString mutter = runningMutter(monitor->report()); !mutter.isEmpty()) {
+            runs += ' ' + mutter;
+        }
+        return runs;
     }
     return text + ' ' +
            tr("What this guest runs is not known yet: QEMU's guest agent "
@@ -179,6 +184,13 @@ QString what(Vm *vm, const GuestTools::Medium &medium)
                                      "versions</li>")
                     .arg(frameworks.join(tr(" and ")));
     }
+    /* GNOME's compositor, in place of the guest's while it has its version */
+    const bool mutter = !medium.mutter.isEmpty() && (desktop.isEmpty() || desktop == "gnome");
+    if (mutter) {
+        what += tr("<li>Mutter %1, GNOME's compositor (the first seconds of motion after a new "
+                   "screen mode no longer skip refreshes), if the guest's Mutter is %2</li>")
+                    .arg(medium.mutter.toHtmlEscaped(), medium.mutter.section('-', 0, 0));
+    }
     what += tr("<li>the vitrine agent, which tells vitrine how the guest is "
                                  "doing</li></ul>");
     /* what stays at its version: of what the medium has (Fedora 45's has no KDE packages) */
@@ -196,6 +208,10 @@ QString what(Vm *vm, const GuestTools::Medium &medium)
         what += tr("KSvg, Kirigami and Qt Base otherwise give way to Fedora's next build of "
                    "them. The guest needs the network: dkms, the kernel headers and a newer "
                    "Plasma come from Fedora.</p>");
+    } else if (!medium.mesa.isEmpty() && mutter) {
+        what += tr("<p>Mesa then stays at this version until the next guest tools; Mutter gives "
+                   "way to Fedora's next build of it. The guest needs the network: dkms and the "
+                   "kernel headers come from Fedora.</p>");
     } else if (!medium.mesa.isEmpty()) {
         what += tr("<p>Mesa then stays at this version until the next guest "
                                      "tools. The guest needs the network: dkms and the kernel "
@@ -212,6 +228,18 @@ QString what(Vm *vm, const GuestTools::Medium &medium)
                                            "installs them before its desktop starts, which takes "
                                            "a few minutes, then restarts once more.</p>");
     return what;
+}
+
+QString runningMutter(const GuestTools::Report &report)
+{
+    const QString mutter = report.packages.value("mutter");
+
+    if (mutter.isEmpty()) {
+        return {};
+    }
+    return report.vitrineBuilds.value("mutter")
+               ? tr("Its Mutter is vitrine's build, %1.").arg(mutter.toHtmlEscaped())
+               : tr("Its Mutter is %1, not vitrine's build.").arg(mutter.toHtmlEscaped());
 }
 
 /* The Qt app's GuestToolsBuildBanner's words, in its translation context */
