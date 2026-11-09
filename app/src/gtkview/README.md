@@ -145,7 +145,11 @@ How it fits GTK:
   `x-vblank-swap-target-zc`. In a window the compositor composites
   anyway: zero copy stays.
 - With each frame's presentation the view passes QEMU the compositor
-  lead (the presentation less the frame callback of the same commit),
+  lead (the presentation less the frame callback of the same commit, as
+  the view's reader thread saw it come: its poll's wake, before the lock
+  and the read, which waits for GDK's reader of the same display; when
+  the event was dispatched, a reader held up under a compile made the lead
+  shorter, the research's lgt5),
   for the frames it copies in full screen only; 0, not known, for the
   others (`Feedback::passLead`). From it a QEMU with
   `x-vblank-deadline-callback` estimates the host's deadline for those
@@ -200,9 +204,12 @@ On a B50 under a compile, the copied full screen of a GNOME guest lost
 0.9-1.5 with the render thread, its reader, the listener and GDBus's
 worker real-time (9, in two runs), 1.8 with the driver thread too (7),
 0.8 with the main thread as well (3) and 0.8 with every thread of
-`vitrine-gtk-view` (11); the default, all but the driver thread, was not
-run on its own (the research's bfs3, brt1, brt2 and brt4, 2026-11-09;
-every boot had 99-100 % of its frames on time).
+`vitrine-gtk-view` (11); in a noisier run the default, all but the driver
+thread, lost 0.9-1.1 (one boot 4.0), the four named ones 0.8-2.5 and every
+thread 0.7-1.5 (3 boots each): pooled, their medians were alike (0.9-1.0),
+and only the driver thread without the main thread was clearly worse (the
+research's bfs3, brt1, brt2, brt4 and brt5, 2026-11-09; every boot had
+99-100 % of its frames on time).
 
 ## The nested desktop (`nesteddisplay`)
 
