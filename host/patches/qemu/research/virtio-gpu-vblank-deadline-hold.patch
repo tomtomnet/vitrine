@@ -1,0 +1,133 @@
+From 202bbd2bc083256e6607d5b523dcc3255db5e0aa Mon Sep 17 00:00:00 2001
+From: tomtomnet <tompere8000@proton.me>
+Date: Mon, 9 Nov 2026 09:32:55 +0100
+Subject: [PATCH] virtio-gpu: x-vblank-deadline-hold, the deadline's target up
+ at once and down slowly
+
+A frame that misses the host's latch is shown a refresh late and the one
+after it lands in the same refresh, a stutter; a target too high by a
+millisecond costs only that much latency.  A composited host's deadline
+moves with its own load from window to window (the windowed view on an
+Arc Pro B50 under a GPU load: the 90th percentile of a window between
+5.3 and 7.9 ms), and the two-window rule followed it down as readily as
+up.  With x-vblank-deadline-hold=N the target takes any window above it
+(by more than the slack) at once, and comes down only after N windows in
+a row below it, to the highest of those.  Replayed on traces of a GNOME
+host (Radeon 780M and B50, composited and copied views, at rest and
+under CPU and GPU loads), N = 8 changed the target half as often (6-9
+times a run on the B50 against 12-17) and left 0.4-1.3 % of the frames'
+deadlines past it instead of 4-9 %.  0 (the default) keeps the two-window
+rule.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ hw/display/virtio-gpu-base.c   | 37 ++++++++++++++++++++++++++++++++++
+ hw/display/virtio-gpu.c        |  1 +
+ include/hw/virtio/virtio-gpu.h | 13 ++++++++++++
+ 3 files changed, 51 insertions(+)
+
+diff --git a/hw/display/virtio-gpu-base.c b/hw/display/virtio-gpu-base.c
+index 24a635936a..46eadc7fae 100644
+--- a/hw/display/virtio-gpu-base.c
++++ b/hw/display/virtio-gpu-base.c
+@@ -438,10 +438,46 @@ static void virtio_gpu_vblank_deadline(VirtIOGPUBase *g,
+         trace_virtio_gpu_vblank_deadline(head, s->vblank_deadline_ns[VBLANK_WINDOW / 2],
+                                          p90, target);
+         s->vblank_deadline_target_ns = target;
++        s->vblank_deadline_calm = 0;
+         s->vblank_auto_set = false;
+         s->vblank_window = 0;
+         return;
+     }
++    if (g->vblank_deadline_hold) {
++        /*
++         * x-vblank-deadline-hold: up at once, down slowly.  A frame that
++         * misses the host's latch is shown a refresh late and the one after
++         * it lands in the same refresh (a stutter), while a target too high
++         * by a millisecond costs only that much latency; and a composited
++         * host's deadline moves with its own load from window to window
++         * (2026-11-09: the windowed view on the B50 under a GPU load, the
++         * 90th percentile of a window 5.3-7.9 ms; under a compile 4.3-7.4).
++         * Replayed on the night's traces (laptop and B50, composited and
++         * copied views, rest / compile / GPU load), a target that takes any
++         * window above it at once and comes down only after 8 windows below
++         * it, to the highest of them, changed half as often (B50 windowed
++         * 6-9 times a run against 12-17) and left 0.4-1.3 % of the frames'
++         * deadlines past it against 4-9 %.
++         */
++        if (target > cur + VBLANK_SWAP_SLACK_NS) {
++            s->vblank_deadline_calm = 0;
++            trace_virtio_gpu_vblank_deadline(head, s->vblank_deadline_ns[VBLANK_WINDOW / 2],
++                                             p90, target);
++            s->vblank_deadline_target_ns = target;
++        } else if (target < cur - VBLANK_SWAP_SLACK_NS) {
++            s->vblank_deadline_calm_ns = s->vblank_deadline_calm ?
++                MAX(s->vblank_deadline_calm_ns, target) : target;
++            if (++s->vblank_deadline_calm >= g->vblank_deadline_hold) {
++                s->vblank_deadline_calm = 0;
++                trace_virtio_gpu_vblank_deadline(head, s->vblank_deadline_ns[VBLANK_WINDOW / 2],
++                                                 p90, s->vblank_deadline_calm_ns);
++                s->vblank_deadline_target_ns = s->vblank_deadline_calm_ns;
++            }
++        } else {
++            s->vblank_deadline_calm = 0;
++        }
++        return;
++    }
+     if (llabs(target - cur) <= VBLANK_SWAP_SLACK_NS) {
+         s->vblank_deadline_pending_ns = 0;
+         return;
+@@ -515,6 +551,7 @@ static void virtio_gpu_gl_zero_copy(void *opaque, uint32_t head, bool on)
+     if (s->vblank_deadline_target_ns || s->vblank_deadline_n) {
+         s->vblank_deadline_target_ns = 0;
+         s->vblank_deadline_pending_ns = 0;
++        s->vblank_deadline_calm = 0;
+         s->vblank_deadline_n = 0;
+         s->vblank_auto_set = false;
+         s->vblank_window = 0;
+diff --git a/hw/display/virtio-gpu.c b/hw/display/virtio-gpu.c
+index b825f7dac2..2002a26061 100644
+--- a/hw/display/virtio-gpu.c
++++ b/hw/display/virtio-gpu.c
+@@ -2011,6 +2011,7 @@ static const Property virtio_gpu_properties[] = {
+     DEFINE_PROP_BOOL("x-vblank-deadline", VirtIOGPU, parent_obj.vblank_deadline, false),
+     DEFINE_PROP_UINT32("x-vblank-deadline-margin", VirtIOGPU, parent_obj.vblank_deadline_margin_us, 700),
+     DEFINE_PROP_BOOL("x-vblank-deadline-callback", VirtIOGPU, parent_obj.vblank_deadline_callback, false),
++    DEFINE_PROP_UINT32("x-vblank-deadline-hold", VirtIOGPU, parent_obj.vblank_deadline_hold, 0),
+ };
+ 
+ static void virtio_gpu_class_init(ObjectClass *klass, const void *data)
+diff --git a/include/hw/virtio/virtio-gpu.h b/include/hw/virtio/virtio-gpu.h
+index 3bc7ae582a..0368353099 100644
+--- a/include/hw/virtio/virtio-gpu.h
++++ b/include/hw/virtio/virtio-gpu.h
+@@ -128,6 +128,12 @@ struct virtio_gpu_scanout {
+     unsigned vblank_deadline_n;
+     int64_t vblank_deadline_target_ns;
+     int64_t vblank_deadline_pending_ns;     /* a new target one window has asked for */
++    /*
++     * x-vblank-deadline-hold: windows in a row whose deadline was below the
++     * target by more than the slack, and the latest of them
++     */
++    unsigned vblank_deadline_calm;
++    int64_t vblank_deadline_calm_ns;
+     /*
+      * Zero copy: the display attached the guest's buffer as it is and the
+      * compositor still holds the previous one; the flush's fence waits for
+@@ -260,6 +266,13 @@ struct VirtIOGPUBase {
+      * VBLANK_CALLBACK_PAINT_NS)
+      */
+     bool vblank_deadline_callback;
++    /*
++     * x-vblank-deadline-hold: the swap target from the host's deadline goes
++     * up with the first window that needs it and down only after this many
++     * windows in a row needed less (0: a change either way needs two windows
++     * in a row; see virtio_gpu_vblank_deadline)
++     */
++    uint32_t vblank_deadline_hold;
+     int enable;
+ 
+     MemoryRegion hostmem;
+-- 
+2.56.0
+

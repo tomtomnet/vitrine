@@ -1,0 +1,118 @@
+From 7b08a4e7f19ecf015cad114190b53e2f55f2ed39 Mon Sep 17 00:00:00 2001
+From: tomtomnet <tompere8000@proton.me>
+Date: Mon, 9 Nov 2026 11:49:19 +0100
+Subject: [PATCH] virtio-gpu: the fixed swap targets again when the display
+ stops passing the host's lead
+
+x-vblank-deadline-callback estimates the host's deadline from the lead
+the display passes with each presentation (presentation minus the frame
+callback), and kept its target once made.  A display may know the
+estimate fits some of its frames only: on a GNOME host the copied full
+screen's lead is steady (the estimate settled once, 0.35 ms sooner than a
+fixed 6000 us on a Radeon 780M and an Arc Pro B50, as smooth), a
+composited window's moves with the host's load (the estimate followed
+it 12-24 times a run and was no smoother than the fixed target).  Such a
+display passes the lead only for the frames it fits; a window of
+presentations without one (the display stopped passing it) drops the
+estimated target, and the fixed targets apply until the lead comes back.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ hw/display/trace-events        |  1 +
+ hw/display/virtio-gpu-base.c   | 40 +++++++++++++++++++++++++++++-----
+ include/hw/virtio/virtio-gpu.h |  2 ++
+ 3 files changed, 37 insertions(+), 6 deletions(-)
+
+diff --git a/hw/display/trace-events b/hw/display/trace-events
+index 333bf3bfb5..8ec10fbad6 100644
+--- a/hw/display/trace-events
++++ b/hw/display/trace-events
+@@ -30,6 +30,7 @@ vmware_update_rect_delayed_flush(void) "display update FIFO full - forcing flush
+ virtio_gpu_features(bool virgl) "virgl %d"
+ virtio_gpu_vblank_lead(uint32_t head, int64_t lead, int64_t median, int64_t off) "head %d lead %" PRId64 " ns: frames in a row are shown %" PRId64 " ns after their swap (median), %" PRId64 " from the target"
+ virtio_gpu_vblank_deadline(uint32_t head, int64_t median, int64_t p90, int64_t target) "head %d host deadline %" PRId64 " ns before the presentation (median), %" PRId64 " (p90): swap target %" PRId64 " ns"
++virtio_gpu_vblank_deadline_off(uint32_t head, int64_t target) "head %d the display passes no host lead: the fixed swap target %" PRId64 " ns again"
+ virtio_gpu_zero_copy(uint32_t head, bool on, int64_t target) "head %d zero copy %d: frames swapped %" PRId64 " ns before their vblank"
+ virtio_gpu_vblank_behind(uint32_t head, int64_t median) "head %d: frames in a row are shown %" PRId64 " ns after their swap (median), a refresh later than their swap allows: the host's compositor runs a frame ahead"
+ virtio_gpu_flush_fence_deferred(uint32_t head, uint32_t fence) "head %d: flush fence %u waits for the compositor to release the previous buffer"
+diff --git a/hw/display/virtio-gpu-base.c b/hw/display/virtio-gpu-base.c
+index 46eadc7fae..246b325038 100644
+--- a/hw/display/virtio-gpu-base.c
++++ b/hw/display/virtio-gpu-base.c
+@@ -519,7 +519,13 @@ static void virtio_gpu_vblank_deadline(VirtIOGPUBase *g,
+  * x-vblank-deadline-margin, two windows to agree on a change).  On the 780M
+  * (GNOME 51, 2026-11-09, lgd1/lgd2) the estimate per window was 5.2-8.2 ms
+  * (median 5.7-6.8), where the fixed 3.7 ms left 76-95 % of the frames a
+- * refresh late.
++ * refresh late.  A display that stops passing the host's lead for a window
++ * of presentations (vitrine's view passes it only for its copied full
++ * screen) has the fixed targets again (2026-11-09: on a GNOME host the
++ * copied full screen's lead is steady - the estimate settles once, 0.35 ms
++ * sooner than the fixed 6000 us on a Radeon 780M and an Arc Pro B50 - and
++ * a composited window's moves with the host's load: the estimate followed
++ * it, 12-24 times a run, no smoother than the fixed target).
+  */
+ #define VBLANK_CALLBACK_PAINT_NS    SCALE_MS
+ #define VBLANK_CALLBACK_WAIT_NS     (500 * SCALE_US)
+@@ -556,6 +562,7 @@ static void virtio_gpu_gl_zero_copy(void *opaque, uint32_t head, bool on)
+         s->vblank_auto_set = false;
+         s->vblank_window = 0;
+     }
++    s->vblank_callback_none = 0;
+     trace_virtio_gpu_zero_copy(head, on, VBLANK_SWAP_TARGET_NS);
+     if (g->vblank_swap_target_zc_us &&
+         g->vblank_swap_target_zc_us != g->vblank_swap_target_us) {
+@@ -602,11 +609,32 @@ virtio_gpu_gl_presented(void *opaque, uint32_t head, int64_t when_ns,
+         deadline_ns < 2 * s->vblank_period_ns) {
+         virtio_gpu_vblank_deadline(g, s, head, deadline_ns);
+     } else if (g->vblank_deadline && g->vblank_deadline_callback && deadline_ns <= 0 &&
+-               s->vblank_period_ns && compositor_lead_ns > 0 &&
+-               s->vblank_in_a_row >= VBLANK_BURST_START &&
+-               swap_lead_ns - compositor_lead_ns >= VBLANK_CALLBACK_WAIT_NS &&
+-               compositor_lead_ns + VBLANK_CALLBACK_PAINT_NS < 3 * s->vblank_period_ns) {
+-        virtio_gpu_vblank_deadline(g, s, head, compositor_lead_ns + VBLANK_CALLBACK_PAINT_NS);
++               s->vblank_period_ns) {
++        if (compositor_lead_ns > 0) {
++            s->vblank_callback_none = 0;
++            if (s->vblank_in_a_row >= VBLANK_BURST_START &&
++                swap_lead_ns - compositor_lead_ns >= VBLANK_CALLBACK_WAIT_NS &&
++                compositor_lead_ns + VBLANK_CALLBACK_PAINT_NS < 3 * s->vblank_period_ns) {
++                virtio_gpu_vblank_deadline(g, s, head, compositor_lead_ns + VBLANK_CALLBACK_PAINT_NS);
++            }
++        } else if ((s->vblank_deadline_target_ns || s->vblank_deadline_n) &&
++                   ++s->vblank_callback_none >= VBLANK_WINDOW) {
++            /*
++             * A window of presentations without the host's lead: the display
++             * stopped passing it (vitrine's view passes it only for its
++             * copied full screen, where the host's lead is steady - the
++             * windowed view stays on the fixed target), and the estimate for
++             * frames it no longer describes gives way to the fixed targets
++             */
++            s->vblank_callback_none = 0;
++            s->vblank_deadline_target_ns = 0;
++            s->vblank_deadline_pending_ns = 0;
++            s->vblank_deadline_calm = 0;
++            s->vblank_deadline_n = 0;
++            s->vblank_auto_set = false;
++            s->vblank_window = 0;
++            trace_virtio_gpu_vblank_deadline_off(head, VBLANK_SWAP_TARGET_NS);
++        }
+     }
+     if (g->vblank_lead_auto && g->vblank_lead_us && s->vblank_period_ns) {
+         virtio_gpu_vblank_lead_auto(g, s, head, when_ns, compositor_lead_ns,
+diff --git a/include/hw/virtio/virtio-gpu.h b/include/hw/virtio/virtio-gpu.h
+index 0368353099..915f4fc8ad 100644
+--- a/include/hw/virtio/virtio-gpu.h
++++ b/include/hw/virtio/virtio-gpu.h
+@@ -134,6 +134,8 @@ struct virtio_gpu_scanout {
+      */
+     unsigned vblank_deadline_calm;
+     int64_t vblank_deadline_calm_ns;
++    /* x-vblank-deadline-callback: presentations in a row without the host's lead */
++    unsigned vblank_callback_none;
+     /*
+      * Zero copy: the display attached the guest's buffer as it is and the
+      * compositor still holds the previous one; the flush's fence waits for
+-- 
+2.56.0
+

@@ -33,11 +33,15 @@ patches that go on top, in this order:
    `virtio-gpu-scanout-modifier.patch` at `f1d762f` (2026-11-05), its
    `ui-dbus-negative-lead-as-unknown.patch` at `16a4196` (2026-11-09) and
    its `virtio-gpu-vblank-no-double-tick.patch` at `ee5861d` (2026-11-09),
-   in the research's order. Its series of that day has three more patches
-   between them, `virtio-gpu-gl-prefault-blobs.patch` and, both off by
-   default and not ready, `virtio-gpu-vblank-swap-raise.patch` and
-   `virtio-gpu-vblank-deadline-callback.patch`, and the pflash patch
-   reflowed, none of which these need; Vitrine takes them when asked to.
+   in the research's order, then its `virtio-gpu-vblank-deadline-callback`,
+   `-deadline-hold` and `-deadline-callback-gate` patches as the research
+   rebased them for this series (`31f30a8`,
+   `patches/qemu/for-vitrine-2026-11-09`: only their context changed, as
+   this series has neither `virtio-gpu-vblank-swap-raise.patch`, off by
+   default and not ready, nor `virtio-gpu-gl-prefault-blobs.patch`).
+   The research's series of that day also has those two and the pflash
+   patch reflowed, none of which these need; Vitrine takes them when asked
+   to.
 2. `qemu/vitrine/`: Vitrine's own changes, as new files here rather than
    edits of the others.
 
@@ -85,6 +89,9 @@ patches that go on top, in this order:
 | `74a0461acc0ef58d9cb0960af2e3e33d38cba6d8a1e1356b2edf931fdaca8763` | `virtio-gpu-scanout-modifier.patch` (research `f1d762f`): the device offers `VIRTIO_GPU_F_SCANOUT_MODIFIER_VGD` (bit 23, the research's; property `x-scanout-modifier`, on by default), and from a guest driver that negotiated it reads the framebuffer's format modifier in `SET_SCANOUT_BLOB`'s padding word (the guest tools' `scanout_modifier`; zeroed for a guest that did not), in the three handlers (virtio-gpu, -virgl, -rutabaga); the scanout dma-buf carries it, and the D-Bus display (Vitrine's view) and SDL's swapchain take it as the buffer's layout. An Intel GPU keeps no layout in the buffer, unlike amdgpu's metadata, so every Intel guest frame was a copy (the user's Arc Pro B50); with the guest's Tile4 (`intel_scanout=1`) the view shows the guest's own buffers. vhost-user-gpu never offers it (its backend does not decode the word). `-global virtio-vga-gl.x-scanout-modifier=off` (or on the device) is the QEMU before it for the guest |
 | `d2ffe5e4e27ffe45425202fb21bfc04e31f63d36284a10c49d559ef2368a31bd` | `ui-dbus-negative-lead-as-unknown.patch` (research `16a4196`): a D-Bus display client's negative lead counts as not known (0), and its frame still sets the guest's vblank phase, where QEMU dropped every presentation that had one. A nested headless GNOME's virtual monitor stamps a frame 0.07-0.18 ms before its frame callback, so under vitrine's view there the guest's vblank never ticked (the guest-flip-grace stream's finding, 2026-11-08). Leads of 0 or more go through as before, and the regulator still skips frames whose swap lead is 0 |
 | `54c16f0382b1905555c1cdab85302f0e80f56690728da181d2048a4540319ae2` | `virtio-gpu-vblank-no-double-tick.patch` (research `ee5861d`): never two host vblank ticks in one period. The tick is re-scheduled at the first point of the presentation grid after now, the grid's phase following each presentation; a nested headless GNOME's virtual monitor dates its frames 0.98-1.02 periods apart, and a phase moved later than the timer ran late put the next tick just after the one fired: 75-77 ticks a second at 60 Hz behind vitrine's view (the qemu-dbus-lead check, 2026-11-09; a nested KWin kept 60.0). A tick less than half a period after the last now goes a period later; moves earlier (at most 400 us at once) are kept |
+| `54e3b267faee7f1399bf0b53b0c14790752a12f242dfd834f13fcb6a320f66df` | `virtio-gpu-vblank-deadline-callback.patch` (research `31f30a8`, rebased): `x-vblank-deadline-callback=on`, with `x-vblank-deadline=on`: a presentation without a deadline from the host (GNOME's Mutter sends none, nor does the D-Bus display) feeds the deadline window with the compositor lead the display passes plus 1 ms, from frames that waited at least 0.5 ms for the host, as a nested KWin estimates its host's (KWin MR 8261). Off by default; vitrine sets it for the frames its view copies in full screen (`VmRunner::withComputedProperties`) |
+| `19928fa4b2e257420fce7f2f0bbeb6ea0a42d4c108b84f00c5a3a74f350ad103` | `virtio-gpu-vblank-deadline-hold.patch` (research `31f30a8`, rebased): `x-vblank-deadline-hold=N`: the deadline's target takes a window above it at once and comes down only after N windows in a row below it, to the highest of those (0, the default, keeps the two-window rule); at 8 it changed half as often on traces of a GNOME host |
+| `99b44e718b03dafd0d46d3741046f8c4082c8ff0b2f37c1ff4b39a259555b5d6` | `virtio-gpu-vblank-deadline-callback-gate.patch` (research `31f30a8`, rebased): a window of presentations (144) without the host's lead drops the estimated target, and the fixed swap targets apply again until a lead comes back: the display passes the lead only for the frames the estimate fits (vitrine's view: those it copies in full screen), so its window keeps `x-vblank-swap-target` and its direct scanout `x-vblank-swap-target-zc` |
 
 When the research's series moves (`r` its repository, `c` the commit,
 `v` this folder; for now `c=4d3c53d`, and the scanout modifier patch
