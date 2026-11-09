@@ -545,7 +545,7 @@ VmDisplay::FullScreenPath VmDisplay::fullScreenPath() const
  * Composited, the renderer tells QEMU as for a window that the guest's
  * buffers do not go to the screen as they are (Presentation.ZeroCopy
  * false): the swap target of composited frames, x-vblank-swap-target
- * (3700 us on a GNOME host at 110 Hz and up), not the -zc one of frames
+ * (6000 us but for KDE guests), not the -zc one of frames
  * scanned out (4500 in vitrine's window), which gave a full-screen spell of
  * half rate in the research's gdl14.
  */
