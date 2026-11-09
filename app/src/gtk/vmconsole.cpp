@@ -6,6 +6,7 @@
 #include <utility>
 
 #include "core/guesttools.h"
+#include "core/hostsettings.h"
 #include "core/nesteddesktop.h"
 #include "core/vmconfig.h"
 #include "core/vmhardware.h"
@@ -515,6 +516,9 @@ void VmConsole::attach()
     display->setFlipsWaitForRelease(flipsWait(m_vm));
     display->grabChanged.connect([this]() { notifyChanged(); });
     display->fullScreenChanged.connect([this](bool) { notifyChanged(); });
+    /* its threads, real-time while the VM is in front: again with each new
+       render thread (full screen) */
+    display->threadsChanged.connect([this]() { sendViewThreads(); });
     /* a guest paused for its screen runs once QEMU has the screen's size and refresh rate */
     display->screenInfoApplied.connect([this]() {
         if (m_vm) {
@@ -541,10 +545,28 @@ void VmConsole::detach()
     /* display() is null while it goes: what it signals on its way out must
        not lead back to it */
     VmDisplay *display = std::exchange(m_display, nullptr);
+    /* its threads end with it: GDBus's worker, which stays, back first */
+    sendViewThreads();
     WidgetRelease::unfocus(GTK_WIDGET(display->widget()->gobj()));
     gtk_box_remove(GTK_BOX(m_screenBox), GTK_WIDGET(display->widget()->gobj()));
     delete display;
     notifyChanged();
+}
+
+void VmConsole::sendViewThreads()
+{
+    HostSettings *host = HostSettings::instance();
+    QList<qint64> tids;
+
+    if (!host || !m_vm) {
+        return;
+    }
+    if (m_display) {
+        for (const pid_t tid : m_display->realtimeThreads()) {
+            tids << tid;
+        }
+    }
+    host->setViewThreads(m_vm->id(), tids);
 }
 
 void VmConsole::showMessage(const QString &title, const QString &text, bool waiting, bool retry)

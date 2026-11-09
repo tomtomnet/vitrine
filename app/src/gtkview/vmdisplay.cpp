@@ -5,6 +5,7 @@
 #include "displaywidget.h"
 #include "framestill.h"
 #include "gtkclipboard.h"
+#include "viewthreads.h"
 #include "widgetrelease.h"
 #include "vmview/dbusdisplay.h"
 #include "vmview/listener.h"
@@ -106,6 +107,36 @@ void retire(DBusDisplay *dbus, std::unique_ptr<Stats> stats)
     }, new Retired{dbus, std::move(stats)}, nullptr);
 }
 
+/*
+ * The view's threads as a bench reads them, one line: "vitrine: display:
+ * threads:", then " ROLE=TID" for each of render, events, listener and gdbus
+ * that is there, then " driver=TID:NAME" for each driver thread, by id.  The
+ * name is Linux's (15 characters at most), anything but letters, digits and
+ * ._:/+$- turned into _: no spaces, no =.  Its format is fixed: benches parse
+ * it (src/gtkview/README.md).
+ */
+std::string threadLine(const std::vector<VmDisplay::Thread> &threads)
+{
+    static const char *const kRoles[] = {"render", "events", "listener", "gdbus", "driver"};
+    std::string line = "vitrine: display: threads:";
+
+    for (const VmDisplay::Thread &thread : threads) {
+        line += ' ';
+        line += kRoles[int(thread.role)];
+        line += '=';
+        line += std::to_string(thread.tid);
+        if (thread.role == VmDisplay::Thread::Role::Driver) {
+            line += ':';
+            for (const char c : thread.name) {
+                const bool kept = (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') ||
+                                  (c >= '0' && c <= '9') || strchr("._:/+$-", c);
+                line += kept && c ? c : '_';
+            }
+        }
+    }
+    return line;
+}
+
 } // namespace
 
 VmDisplay::VmDisplay() : m_alive(std::make_shared<bool>(true))
@@ -124,6 +155,24 @@ VmDisplay::VmDisplay() : m_alive(std::make_shared<bool>(true))
         m_fullScreenZeroCopyEnv = fullScreenZeroCopy == "1";
     }
     m_compositeEnv = qgetenv("VITRINE_VIEW_COMPOSITE") == "1";
+    /* VITRINE_VIEW_RT: which of the view's threads go real-time while its VM
+       is in front (the GTK app's host tuning), for A/B runs: all of them
+       (unset, 1), the named ones and GDBus's worker but not the driver
+       threads (named), none (0).  Said once a run when set. */
+    const QByteArray realTime = qgetenv("VITRINE_VIEW_RT");
+    m_realTime = realTime == "0"       ? RealTime::None
+                 : realTime == "named" ? RealTime::Named
+                                       : RealTime::All;
+    static bool saidRealTime = false;
+    if (!realTime.isEmpty() && !std::exchange(saidRealTime, true)) {
+        fprintf(stderr, "vitrine: display: VITRINE_VIEW_RT=%s: %s\n", realTime.constData(),
+                m_realTime == RealTime::None    ? "none of the view's threads real-time"
+                : m_realTime == RealTime::Named ? "the view's named threads and GDBus's worker "
+                                                  "real-time, not the driver threads"
+                : realTime == "1"               ? "all of the view's threads real-time"
+                                                : "not 0, named or 1: all of the view's threads "
+                                                  "real-time");
+    }
     sayFullScreenPath();
     m_host = new Gtk::Box(Gtk::Orientation::VERTICAL);
     m_host->set_size_request(160, 100);
@@ -195,6 +244,9 @@ bool VmDisplay::attach(const QString &monitorSocket, QString *error, bool guestW
         detach();
         return false;
     }
+    /* GLib's one D-Bus worker for the process, there once a connection is:
+       it carries the view's calls (Presented, Released) and QEMU's */
+    m_gdbusTid = ViewThreads::find("gdbus");
     m_console = m_dbus->consolePath().section('_', -1).toInt();
 
     /* from the listener thread to the widget, on the GUI thread */
@@ -246,6 +298,15 @@ bool VmDisplay::attach(const QString &monitorSocket, QString *error, bool guestW
                the view dirty (src/vmview/vmview.cpp) */
             if (m_renderer) {
                 m_renderer->requestRedraw();
+            }
+        });
+    };
+    cb.threadStarted = [this, alive]() {
+        const pid_t tid = ViewThreads::self();
+        onGuiThread([this, alive, tid]() {
+            if (!alive.expired()) {
+                m_listenerTid = tid;
+                updateThreads();
             }
         });
     };
@@ -327,6 +388,22 @@ void VmDisplay::createWindow(bool fullScreen)
         return;
     }
     m_surface->setOverlay(wantsOverlay());
+    /* the render thread's threads, as they come: those of this window only */
+    {
+        const int generation = ++m_windowGeneration;
+        const std::weak_ptr<bool> alive = m_alive;
+        m_surface->setThreadsReport([this, alive, generation](const DisplaySurface::Threads &t) {
+            onGuiThread([this, alive, generation, t]() {
+                if (alive.expired() || generation != m_windowGeneration) {
+                    return;
+                }
+                m_renderTid = t.render;
+                m_eventsTid = t.events;
+                m_driverTids = t.drivers;
+                updateThreads();
+            });
+        });
+    }
     m_widget = new DisplayWidget(m_dbus, m_surface.get(), m_opts);
     if (!m_guestSize.isEmpty()) {
         m_widget->setGuestSize(uint32_t(m_guestSize.width()), uint32_t(m_guestSize.height()));
@@ -467,6 +544,9 @@ void VmDisplay::destroyWindow()
     /* once the render thread is done with it, and off the window */
     m_surface.reset();
     m_hasKeyboard = false;
+    /* its threads are gone: the next window's come with its render thread */
+    m_renderTid = m_eventsTid = 0;
+    m_driverTids.clear();
 }
 
 void VmDisplay::setFullScreen(bool on)
@@ -593,6 +673,50 @@ void VmDisplay::sayFullScreenPath()
                            ? "the guest's buffers as they are, composited under a pixel"
                            : "the guest's frames copied";
     fprintf(stderr, "vitrine: display: full screen: %s (%s)\n", what, why.constData());
+}
+
+void VmDisplay::updateThreads()
+{
+    using Role = Thread::Role;
+    std::vector<Thread> now;
+
+    /* complete once the render thread's reader runs */
+    if (!ViewThreads::alive(m_renderTid) || !ViewThreads::alive(m_eventsTid)) {
+        return;
+    }
+    const auto add = [&now](Role role, pid_t tid) {
+        if (tid > 0 && ViewThreads::alive(tid)) {
+            now.push_back({role, tid, role == Role::Driver ? ViewThreads::name(tid) : std::string()});
+        }
+    };
+    add(Role::Render, m_renderTid);
+    add(Role::Events, m_eventsTid);
+    add(Role::Listener, m_listenerTid);
+    add(Role::GDBus, m_gdbusTid);
+    for (const pid_t tid : m_driverTids) {
+        add(Role::Driver, tid);
+    }
+    if (now == m_threads) {
+        return;
+    }
+    m_threads = std::move(now);
+    fprintf(stderr, "%s\n", threadLine(m_threads).c_str());
+    threadsChanged.emit();
+}
+
+std::vector<pid_t> VmDisplay::realtimeThreads() const
+{
+    std::vector<pid_t> tids;
+
+    if (m_realTime == RealTime::None) {
+        return tids;
+    }
+    for (const Thread &thread : m_threads) {
+        if (m_realTime == RealTime::All || thread.role != Thread::Role::Driver) {
+            tids.push_back(thread.tid);
+        }
+    }
+    return tids;
 }
 
 bool VmDisplay::grabbed() const

@@ -26,6 +26,9 @@
 
 #include <algorithm>
 #include <cerrno>
+#include <condition_variable>
+#include <mutex>
+#include <thread>
 
 #include <fcntl.h>
 #include <grp.h>
@@ -164,6 +167,85 @@ private:
     qint64 m_pid = 0;
 };
 
+/*
+ * Threads of the test's own process, idle until the object goes: the
+ * helper's parent here, as vitrine is pkexec's caller, and so the threads a
+ * view hands over (HostSettings::setViewThreads)
+ */
+class Threads
+{
+public:
+    explicit Threads(int n)
+    {
+        for (int i = 0; i < n; i++) {
+            m_threads.emplace_back([this]() {
+                std::unique_lock lk(m_lock);
+                m_tids.push_back(gettid());
+                m_changed.notify_all();
+                m_changed.wait(lk, [this]() { return m_quit; });
+            });
+        }
+        std::unique_lock lk(m_lock);
+        m_changed.wait(lk, [this, n]() { return int(m_tids.size()) == n; });
+    }
+    ~Threads()
+    {
+        {
+            std::lock_guard g(m_lock);
+            m_quit = true;
+        }
+        m_changed.notify_all();
+        for (std::thread &t : m_threads) {
+            t.join();
+        }
+    }
+    qint64 tid(int i) const { return m_tids.at(size_t(i)); }
+    QString text(int i) const { return QString::number(tid(i)); }
+
+private:
+    std::mutex m_lock;
+    std::condition_variable m_changed;
+    std::vector<pid_t> m_tids;
+    std::vector<std::thread> m_threads;
+    bool m_quit = false;
+};
+
+/* VMs found running, as a VmStore finds them: folders whose stand-in QEMU
+   runs with its QMP socket and pid file */
+class RunningVms
+{
+public:
+    explicit RunningVms(const QStringList &ids)
+    {
+        /* sockets need a short path: a runtime folder of the test's own */
+        qputenv("XDG_RUNTIME_DIR", m_runtime.path().toLocal8Bit());
+        for (const QString &id : ids) {
+            QDir(m_vms.path()).mkpath(id);
+            writeFile(m_vms.path() + "/" + id + "/vm.args",
+                      "-name " + id.toLatin1() + "\n-display dbus,p2p=yes\n");
+            const QString run = Paths::vmRuntimeDir(id);
+            m_qemus.push_back(std::make_unique<FakeQemu>(
+                QStringList{"-qmp", QString("unix:%1/qmp.sock,server=on,wait=off").arg(run)}));
+            writeFile(run + "/qemu.pid", QByteArray::number(m_qemus.back()->pid()) + "\n");
+            m_qmps.push_back(std::make_unique<FakeQmp>(run + "/qmp.sock"));
+        }
+    }
+    QString path() const { return m_vms.path(); }
+    qint64 pid(int i) const { return m_qemus.at(size_t(i))->pid(); }
+    /* a VM's end, as its runner sees it: QEMU gone, its QMP closed */
+    void stop(int i)
+    {
+        m_qemus.at(size_t(i))->stop();
+        m_qmps.at(size_t(i)).reset();
+    }
+
+private:
+    QTemporaryDir m_runtime{QDir::tempPath() + "/vt-XXXXXX"};
+    QTemporaryDir m_vms;
+    std::vector<std::unique_ptr<FakeQemu>> m_qemus;
+    std::vector<std::unique_ptr<FakeQmp>> m_qmps;
+};
+
 class TestHostSettings : public QObject
 {
     Q_OBJECT
@@ -260,6 +342,17 @@ private:
         const QString text = QString::fromLatin1(readFile(m_root + kThp));
         const qsizetype open = text.indexOf('['), close = text.indexOf(']');
         return open >= 0 && close > open ? text.mid(open + 1, close - open - 1) : QString();
+    }
+    /* What the fake kernel has for @tid: "policy priority nice", "" if untouched */
+    QString schedOf(qint64 tid) const
+    {
+        const QByteArray start = QByteArray::number(tid) + ' ';
+        for (const QByteArray &line : readFile(m_root + "/sched").split('\n')) {
+            if (line.startsWith(start)) {
+                return QString::fromLatin1(line.mid(start.size()));
+            }
+        }
+        return QString();
     }
     /* Threads of @pid at SCHED_FIFO, as the fake kernel has them */
     int fifoThreads(qint64 pid) const
@@ -1221,6 +1314,159 @@ private slots:
         qemus[0]->stop();
         QTRY_COMPARE(fair(0), QString("1000000000/50000000"));
         QTRY_VERIFY(!hs.helperRunning());
+    }
+
+    /*
+     * The view's threads (the test's own here) real-time with the VM in
+     * front, through the helper that tunes it; those of a VM behind never;
+     * a new thread of the view (a full-screen switch) asked for alone, one
+     * that ended forgotten; the view gone, its threads back; tuning off,
+     * everything back and nothing asked
+     */
+    void viewThreads()
+    {
+        RunningVms vms({"one", "two"});
+        const qint64 one = vms.pid(0), two = vms.pid(1);
+        const QString me = QString::number(getpid());
+        Threads viewOne(2), viewTwo(1), switched(1);
+        VmStore store(vms.path());
+        HostSettings hs(&store);
+        QSignalSpy lines(&hs, &HostSettings::helperLine), notices(&hs, &HostSettings::notice);
+        fake(hs);
+        /* known before its VM is tuned: asked for after its rt */
+        hs.setViewThreads("one", {viewOne.tid(0), viewOne.tid(1)});
+        for (const QString id : {"one", "two"}) {
+            store.find(id)->runner()->attach(store.find(id)->args());
+        }
+        QTRY_VERIFY(saw(lines, "ok view-rt " + viewOne.text(1) + ": real-time"));
+        QVERIFY(saw(lines, "ok view-rt " + viewOne.text(0) + ": real-time"));
+        QVERIFY(lineOf(lines, QString("ok rt %1:").arg(one)) < lineOf(lines, "ok view-rt "));
+        QTRY_VERIFY(saw(lines, QString("ok behind %1:").arg(two)));
+        QCOMPARE(schedOf(viewOne.tid(0)), QString("1 1 0"));
+        QCOMPARE(schedOf(viewOne.tid(1)), QString("1 1 0"));
+
+        /* the view of a VM behind: kept for later */
+        lines.clear();
+        hs.setViewThreads("two", {viewTwo.tid(0)});
+        QTest::qWait(100);
+        QVERIFY(lines.isEmpty());
+        QCOMPARE(schedOf(viewTwo.tid(0)), QString());
+
+        /* "two" in front: one's view back with its QEMU, then two's real-time */
+        hs.setFront("two");
+        QTRY_VERIFY(saw(lines, "ok view-rt " + viewTwo.text(0) + ": real-time"));
+        QVERIFY(saw(lines, QString("restored view-rt %1: 2 threads back to SCHED_OTHER").arg(me)));
+        QVERIFY(lineOf(lines, QString("restored view-rt %1:").arg(me)) <
+                lineOf(lines, QString("ok rt %1:").arg(two)));
+        QCOMPARE(schedOf(viewOne.tid(0)), QString("0 0 0"));
+        QCOMPARE(schedOf(viewOne.tid(1)), QString("0 0 0"));
+        QCOMPARE(schedOf(viewTwo.tid(0)), QString("1 1 0"));
+
+        /* a new thread in its view (a full-screen switch): that one alone; one
+           that ended is forgotten, not put back */
+        lines.clear();
+        {
+            Threads gone(1);
+            hs.setViewThreads("two", {viewTwo.tid(0), gone.tid(0)});
+            QTRY_VERIFY(saw(lines, "ok view-rt " + gone.text(0) + ": real-time"));
+        }
+        hs.setViewThreads("two", {viewTwo.tid(0), switched.tid(0)});
+        QTRY_VERIFY(saw(lines, "ok view-rt " + switched.text(0) + ": real-time"));
+        QVERIFY(!saw(lines, "ok view-rt " + viewTwo.text(0)));
+        QVERIFY(!saw(lines, "ok view-behind"));
+        QCOMPARE(schedOf(switched.tid(0)), QString("1 1 0"));
+
+        /* the view gone: its threads still there back (GDBus's worker, in the app) */
+        lines.clear();
+        hs.setViewThreads("two", {});
+        QTRY_VERIFY(saw(lines, "ok view-behind: 2 threads ordinary"));
+        QCOMPARE(schedOf(viewTwo.tid(0)), QString("0 0 0"));
+        QCOMPARE(schedOf(switched.tid(0)), QString("0 0 0"));
+        /* and a view again */
+        lines.clear();
+        hs.setViewThreads("two", {viewTwo.tid(0)});
+        QTRY_VERIFY(saw(lines, "ok view-rt " + viewTwo.text(0) + ": real-time"));
+        QCOMPARE(schedOf(viewTwo.tid(0)), QString("1 1 0"));
+
+        /* tuning off: everything back by the release, nothing asked while off */
+        lines.clear();
+        HostSettings::setEnabled(false);
+        hs.preferencesChanged();
+        QTRY_VERIFY(!hs.helperRunning());
+        QVERIFY(saw(lines, QString("restored view-rt %1: 1 threads back to SCHED_OTHER").arg(me)));
+        QCOMPARE(schedOf(viewTwo.tid(0)), QString("0 0 0"));
+        lines.clear();
+        hs.setViewThreads("two", {viewTwo.tid(0), switched.tid(0)});
+        hs.setFront("one");
+        QTest::qWait(200);
+        QVERIFY(lines.isEmpty());
+        QVERIFY(!hs.helperRunning());
+        QCOMPARE(schedOf(viewTwo.tid(0)), QString("0 0 0"));
+
+        /* on again: the view of the VM in front, after its QEMU's rt */
+        HostSettings::setEnabled(true);
+        hs.preferencesChanged();
+        QTRY_VERIFY(saw(lines, "ok view-rt "));
+        const bool oneInFront = saw(lines, QString("ok rt %1:").arg(one));
+        QVERIFY(oneInFront != saw(lines, QString("ok rt %1:").arg(two)));
+        const QList<qint64> raised = oneInFront ? QList<qint64>{viewOne.tid(0), viewOne.tid(1)}
+                                                : QList<qint64>{viewTwo.tid(0), switched.tid(0)};
+        for (const qint64 tid : raised) {
+            QTRY_COMPARE(schedOf(tid), QString("1 1 0"));
+        }
+
+        /* the VMs end: the helper with them, the threads back */
+        vms.stop(0);
+        vms.stop(1);
+        QTRY_VERIFY(!hs.helperRunning());
+        for (const qint64 tid : raised) {
+            QCOMPARE(schedOf(tid), QString("0 0 0"));
+        }
+        QVERIFY(notices.isEmpty());
+    }
+
+    /* A helper installed before view-rt: the VM tuned as before, its view's
+       threads left as they are, one notice a run */
+    void viewThreadsOlderHelper()
+    {
+        RunningVms vms({"one"});
+        Threads view(2);
+        VmStore store(vms.path());
+        HostSettings hs(&store);
+        QSignalSpy lines(&hs, &HostSettings::helperLine), notices(&hs, &HostSettings::notice);
+        hs.setSysRoot(m_root + "/sys");
+        hs.setHelperCommand(
+            {"/bin/sh", "-c",
+             "echo 'ready 1'; while read -r verb arg rest; do case $verb in "
+             "watch) echo \"ok watch $arg\";; "
+             "fair-server) echo 'ok fair-server on: already 10 ms / 1 ms';; "
+             "thp) echo 'ok thp on: already';; "
+             "cpu-latency) echo 'ok cpu-latency on: already 1 us';; "
+             "epp) echo 'ok epp on: already';; "
+             "gpu-floor) echo \"ok gpu-floor $arg auto: already\";; "
+             "rt) echo \"ok rt $arg: 1 of 1 threads real-time\";; "
+             "behind) echo \"ok behind $arg: 0 threads ordinary, 0 vCPUs at nice -5\";; "
+             "*) echo \"error $verb: unknown request\";; esac; done"});
+        hs.setViewThreads("one", {view.tid(0), view.tid(1)});
+        store.find("one")->runner()->attach(store.find("one")->args());
+        QTRY_VERIFY(saw(lines, QString("ok rt %1: 1 of 1 threads real-time").arg(vms.pid(0))));
+        QTRY_VERIFY(saw(lines, "error view-rt: unknown request"));
+        QCOMPARE(notices.size(), 1);
+        QCOMPARE(notices.first().first().toString(),
+                 QString("Host tuning: the installed vitrine-helper is older than Vitrine and "
+                         "cannot make its view of the VM in front real-time: install it again."));
+        /* the VM tuned all the same, the helper going on */
+        QVERIFY(!hs.untuned());
+        QVERIFY(hs.helperRunning());
+        QVERIFY(saw(lines, "ok fair-server on: already 10 ms / 1 ms"));
+        /* another set (a full-screen switch), the view gone: no more notices */
+        lines.clear();
+        hs.setViewThreads("one", {view.tid(0)});
+        hs.setViewThreads("one", {});
+        QTRY_VERIFY(saw(lines, "error view-behind: unknown request"));
+        QTest::qWait(100);
+        QCOMPARE(notices.size(), 1);
+        QVERIFY(hs.helperRunning());
     }
 
     /* Two VMs started at once, each in QEMU's own window, without KWin: one

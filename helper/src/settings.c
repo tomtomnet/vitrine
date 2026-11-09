@@ -3,7 +3,8 @@
  * The global settings: the kernel's fair server (and ext server), an AMD
  * GPU's clock floor, the udmabuf limits, shared memory's transparent huge
  * pages and the CPUs' energy performance preference; and the record of
- * each QEMU whose threads a helper made real-time or ordinary
+ * each QEMU whose threads a helper made real-time or ordinary, and of the
+ * process that started it, whose threads view-rt made real-time
  * (sched-<pid>).  The
  * settings belong to the whole machine, so several helpers (vitrine
  * restarted while its VMs run, other users' sessions) coordinate through
@@ -54,10 +55,11 @@ struct hold {
     char value[16];     /* what was asked: on, auto or MHz */
 };
 /* the fair and ext servers, the udmabuf limits, huge pages, the CPUs'
-   preference and eight cards; then the records of the QEMUs watched */
+   preference and eight cards; then the records of the QEMUs watched, and of
+   the process that started the helper (view-rt) */
 #define MAX_CARDS 8
 #define MAX_SETTINGS (5 + MAX_CARDS)
-#define MAX_HOLDS (MAX_SETTINGS + MAX_WATCHED)
+#define MAX_HOLDS (MAX_SETTINGS + MAX_WATCHED + 1)
 static struct hold holds[MAX_HOLDS];
 
 static void lock_all(void)
@@ -2283,8 +2285,9 @@ static int record_kept(const char *text, pid_t *keep)
     return nkeep;
 }
 
-/* sched-<pid>'s record ("pid P start S niced N rt R kept T,T..."): those
-   threads put back, but the ones kept */
+/* sched-<pid>'s record ("pid P start S niced N rt R [view 1 ]kept T,T..."):
+   those threads put back, but the ones kept; view 1: the process that
+   started a helper (view-rt), not a QEMU */
 static void sched_state_restore(const char *key)
 {
     char *text = state_read(key);
@@ -2295,7 +2298,8 @@ static void sched_state_restore(const char *key)
     if (text && sscanf(text, "pid %d start %llu niced %d", &pid, &start, &niced) == 3 &&
         pid > 1) {
         const int nkeep = record_kept(text, keep);
-        sched_restore((pid_t)pid, start, niced != 0, keep, nkeep, true);
+        sched_restore((pid_t)pid, start, niced != 0, keep, nkeep,
+                      strstr(text, " view 1 ") ? "view-rt" : "rt");
     }
     free(text);
     state_remove(key);
@@ -2346,9 +2350,10 @@ bool sched_hold(struct watched *w)
     }
     /* what to put back: threads made real-time (FIFO 1) but those kept,
        vCPUs niced or not; rt 1: kept is known (rt found them, or another
-       helper's record said) */
-    len = snprintf(text, sizeof(text), "pid %d start %llu niced %d rt %d kept ", (int)w->pid,
-                   w->start, w->behind ? 1 : 0, w->rt || w->rt_once ? 1 : 0);
+       helper's record said); view 1: the helper's parent, for the reply */
+    len = snprintf(text, sizeof(text), "pid %d start %llu niced %d rt %d %skept ", (int)w->pid,
+                   w->start, w->behind ? 1 : 0, w->rt || w->rt_once ? 1 : 0,
+                   w->view ? "view 1 " : "");
     for (int i = 0; i < w->nkept; i++) {
         len += snprintf(text + len, sizeof(text) - (size_t)len, "%s%d", i ? "," : "",
                         (int)w->kept[i]);

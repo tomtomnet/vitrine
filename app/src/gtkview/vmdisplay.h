@@ -11,6 +11,10 @@
 
 #include <cstdint>
 #include <memory>
+#include <string>
+#include <vector>
+
+#include <sys/types.h>
 
 #include "fullscreenorder.h"
 #include "vmview/common.h"
@@ -133,11 +137,35 @@ public:
     /* The widget the frames show over (tests, the test program) */
     DisplayWidget *displayWidget() const { return m_widget; }
 
+    /* A thread of the view, for real time while its VM is in front */
+    struct Thread {
+        enum class Role { Render, Events, Listener, GDBus, Driver };
+        Role role;
+        pid_t tid;
+        std::string name;   // a driver thread's (Mesa's), as Linux has it
+        bool operator==(const Thread &) const = default;
+    };
+    /*
+     * The view's threads, once its render thread's are all there (its
+     * Wayland reader started), and again after each full-screen switch,
+     * which makes them anew: the render thread, its reader, the listener's,
+     * GLib's D-Bus worker, and the threads the GL driver started for the
+     * render thread's context (ViewThreads); empty before.  Each change goes
+     * to stderr as one line, a stable interface for benches
+     * (src/gtkview/README.md), and to threadsChanged.
+     */
+    const std::vector<Thread> &threads() const { return m_threads; }
+    /* Those for real time, as VITRINE_VIEW_RT says: all of them (unset, 1),
+       all but the driver threads (named), none (0) */
+    std::vector<pid_t> realtimeThreads() const;
+
     /* grabbed(), grabState(), hasKeyboard() or inputEnabled() changed */
     sigc::signal<void()> grabChanged;
     sigc::signal<void(bool)> fullScreenChanged;
     /* QEMU answered the first size and refresh rate given for the guest */
     sigc::signal<void()> screenInfoApplied;
+    /* threads() changed */
+    sigc::signal<void()> threadsChanged;
 
 private:
     void detach();
@@ -152,6 +180,8 @@ private:
     void applyFullScreenPath();
     bool wantsOverlay() const;
     void sayFullScreenPath();
+    /* threads() from what the threads reported, its line and signal if new */
+    void updateThreads();
 
     Options m_opts;
     /* on the heap: it outlives the view while D-Bus calls complete (detach) */
@@ -184,6 +214,17 @@ private:
     bool m_renderFailed = false;
     sigc::connection m_uiInfo;
     bool m_uiInfoApplied = false;
+    /* the view's threads: the render thread's as its surface reports them
+       (the window m_windowGeneration's), the listener's, GDBus's worker */
+    int m_windowGeneration = 0;
+    pid_t m_renderTid = 0;
+    pid_t m_eventsTid = 0;
+    std::vector<pid_t> m_driverTids;
+    pid_t m_listenerTid = 0;
+    pid_t m_gdbusTid = 0;
+    std::vector<Thread> m_threads;
+    /* VITRINE_VIEW_RT */
+    enum class RealTime { All, Named, None } m_realTime = RealTime::All;
     QString m_grabState;
     /* what the guest said last, for a new window */
     QSize m_guestSize;

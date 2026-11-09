@@ -171,6 +171,7 @@ public:
     std::thread reader;
     std::atomic<bool> stopReader{false};
     int wakeFd = -1;    // eventfd: a fence to poll, or the end (wakeReader)
+    RenderTarget *target = nullptr; // told when the reader thread starts
     wl_surface *surfaceWrapper = nullptr; // the window's surface, on our queue
     wl_surface *wrappedSurface = nullptr;
     Swapchain *swapchain = nullptr; // the window's own buffers (its globals on our queue)
@@ -516,6 +517,9 @@ void RenderState::destroyGuests()
 void RenderState::readEvents()
 {
     pthread_setname_np(pthread_self(), "vmview-events");
+    if (target) {
+        target->threadStarted(RenderTarget::Thread::Reader);
+    }
     // without Wayland (a window without the handles, X11) the fences alone:
     // the copies' fences go nowhere else, and Released waits for them
     const int fd = wlDisplay ? wl_display_get_fd(wlDisplay) : -1;
@@ -975,6 +979,9 @@ void Renderer::stop()
 void Renderer::run()
 {
     pthread_setname_np(pthread_self(), "vmview-render");
+    if (m_target) {
+        m_target->threadStarted(RenderTarget::Thread::Render);
+    }
     QOpenGLContext ctx;
     ctx.setFormat(m_window->requestedFormat());
     if (!ctx.create()) {
@@ -997,6 +1004,7 @@ void Renderer::run()
         return;
     }
     RenderState st(m_stats);
+    st.target = m_target;
     QString err;
     if (!st.init(&ctx, &err)) {
         Q_EMIT failed(err);

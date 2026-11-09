@@ -16,6 +16,10 @@
 #include <QXmlStreamReader>
 
 #include <algorithm>
+#include <condition_variable>
+#include <mutex>
+#include <thread>
+#include <vector>
 
 #include <fcntl.h>
 #include <poll.h>
@@ -91,6 +95,48 @@ public:
 
 private:
     QProcess m_process;
+};
+
+/*
+ * Threads of the test's own process, idle until the object goes: the
+ * helper's parent here, as vitrine is pkexec's caller, and so the threads
+ * view-rt is for
+ */
+class Threads
+{
+public:
+    explicit Threads(int n)
+    {
+        for (int i = 0; i < n; i++) {
+            m_threads.emplace_back([this]() {
+                std::unique_lock lk(m_lock);
+                m_tids.push_back(gettid());
+                m_changed.notify_all();
+                m_changed.wait(lk, [this]() { return m_quit; });
+            });
+        }
+        std::unique_lock lk(m_lock);
+        m_changed.wait(lk, [this, n]() { return int(m_tids.size()) == n; });
+    }
+    ~Threads()
+    {
+        {
+            std::lock_guard g(m_lock);
+            m_quit = true;
+        }
+        m_changed.notify_all();
+        for (std::thread &t : m_threads) {
+            t.join();
+        }
+    }
+    QString tid(int i) const { return QString::number(m_tids.at(size_t(i))); }
+
+private:
+    std::mutex m_lock;
+    std::condition_variable m_changed;
+    std::vector<pid_t> m_tids;
+    std::vector<std::thread> m_threads;
+    bool m_quit = false;
 };
 
 /* One helper session */
@@ -2737,6 +2783,271 @@ private slots:
         QCOMPARE(h.answer("rt " + qemu.pidText()),
                  QString("error rt %1: no longer a QEMU of uid %2").arg(qemu.pid()).arg(getuid()));
         QVERIFY(journal().filter("sched ").isEmpty());
+    }
+
+    /*
+     * view-rt: threads of the process that started the helper - the test,
+     * here; vitrine's view of the VM in front, as pkexec's caller - at
+     * SCHED_FIFO 1, only with a watched QEMU in front and the fair server
+     * set, recorded first; view-behind puts them back
+     */
+    void viewRealtime()
+    {
+        FakeQemu qemu;
+        Threads view(3);
+        const QString me = QString::number(getpid());
+        Helper h(m_root);
+        QVERIFY(h.ready());
+        QCOMPARE(h.answer("view-rt " + view.tid(0)), QString("error view-rt: watch a QEMU first"));
+        h.answer("watch " + qemu.pidText());
+        QCOMPARE(h.answer("view-rt " + view.tid(0)),
+                 QString("skip view-rt %1: the fair server is not set: the fair server was not "
+                         "asked for").arg(view.tid(0)));
+        QVERIFY(h.answer("fair-server on").startsWith("ok fair-server on"));
+        QCOMPARE(h.answer("view-rt " + view.tid(0)),
+                 QString("skip view-rt %1: no VM in front").arg(view.tid(0)));
+        QCOMPARE(h.answer("behind " + qemu.pidText()),
+                 QString("ok behind %1: 0 threads ordinary, 2 vCPUs at nice -5").arg(qemu.pid()));
+        QCOMPARE(h.answer("view-rt " + view.tid(0)),
+                 QString("skip view-rt %1: no VM in front").arg(view.tid(0)));
+        QVERIFY(journal().filter("sched " + view.tid(0)).isEmpty());
+        QVERIFY(h.answer("rt " + qemu.pidText()).startsWith("ok rt "));
+        clearJournal();
+        QCOMPARE(h.answer("view-rt " + view.tid(0)), QString("ok view-rt %1: real-time").arg(view.tid(0)));
+        QCOMPARE(h.answer("view-rt " + view.tid(1)), QString("ok view-rt %1: real-time").arg(view.tid(1)));
+        QCOMPARE(schedOf(view.tid(0)), QString("1 1 0"));
+        QCOMPARE(schedOf(view.tid(1)), QString("1 1 0"));
+        QCOMPARE(schedOf(view.tid(2)), QString());
+        QVERIFY(journal().contains("sched " + view.tid(0) + " fifo 1"));
+        QVERIFY(journal().contains(QString("log uid %1: SCHED_FIFO 1 on thread %2 of pid %3 (its "
+                                           "view of the VM in front)")
+                                       .arg(getuid()).arg(view.tid(0), me)));
+        /* recorded, as a QEMU's threads are, for a helper that dies */
+        QVERIFY(readFile(path("/run/vitrine-helper/sched-" + me + ".state"))
+                    .endsWith(" niced 0 rt 1 view 1 kept -\n"));
+        /* again: as it is */
+        clearJournal();
+        QCOMPARE(h.answer("view-rt " + view.tid(0)),
+                 QString("ok view-rt %1: real-time already").arg(view.tid(0)));
+        QVERIFY(journal().filter("sched ").isEmpty());
+        QCOMPARE(h.answer("view-behind"), QString("ok view-behind: 2 threads ordinary"));
+        QCOMPARE(schedOf(view.tid(0)), QString("0 0 0"));
+        QCOMPARE(schedOf(view.tid(1)), QString("0 0 0"));
+        QCOMPARE(h.answer("view-behind"), QString("ok view-behind: 0 threads ordinary"));
+        /* the QEMU's threads stay as they are */
+        for (const QString &tid : tids(qemu.pid())) {
+            QVERIFY2(schedOf(tid).startsWith("1 1 "), qPrintable(schedOf(tid)));
+        }
+        /* real-time again; the release puts it back */
+        QCOMPARE(h.answer("view-rt " + view.tid(2)), QString("ok view-rt %1: real-time").arg(view.tid(2)));
+        h.ask("release");
+        QVERIFY(h.finished());
+        const QStringList all = h.all();
+        QVERIFY2(all.contains(QString("restored view-rt %1: 1 threads back to SCHED_OTHER").arg(me)),
+                 qPrintable(all.join('\n')));
+        /* sent behind once: its vCPUs too */
+        QVERIFY(all.contains(QString("restored rt %1: 4 threads back to SCHED_OTHER, vCPUs back to "
+                                     "nice 0").arg(qemu.pid())));
+        QCOMPARE(all.filter("restored view-rt ").size(), 1);
+        QCOMPARE(schedOf(view.tid(2)), QString("0 0 0"));
+        QCOMPARE(stateFiles(), QStringList({"lock"}));
+        QVERIFY(fairAll("1000000000/50000000"));
+    }
+
+    /*
+     * The view's threads go back by themselves once no watched QEMU is in
+     * front: the one in front sent behind, or gone; and with the bound, at
+     * fair-server off
+     */
+    void viewFollowsTheFront()
+    {
+        FakeQemu q1, q2;
+        Threads view(2);
+        const QString me = QString::number(getpid());
+        Helper h(m_root);
+        QVERIFY(h.ready());
+        h.answer("watch " + q1.pidText());
+        h.answer("watch " + q2.pidText());
+        QVERIFY(h.answer("fair-server on").startsWith("ok fair-server on"));
+        QVERIFY(h.answer("rt " + q1.pidText()).startsWith("ok rt "));
+        QCOMPARE(h.answer("view-rt " + view.tid(0)), QString("ok view-rt %1: real-time").arg(view.tid(0)));
+        /* another VM behind: the view stays */
+        QVERIFY(h.answer("behind " + q2.pidText()).startsWith("ok behind "));
+        QCOMPARE(schedOf(view.tid(0)), QString("1 1 0"));
+        /* the one in front behind: its view with it */
+        QVERIFY(h.answer("behind " + q1.pidText()).startsWith("ok behind "));
+        QCOMPARE(h.line(), QString("restored view-rt %1: 1 threads back to SCHED_OTHER").arg(me));
+        QCOMPARE(schedOf(view.tid(0)), QString("0 0 0"));
+        QVERIFY(journal().contains(
+            QString("log pid %1: 1 threads of its VM view back to SCHED_OTHER").arg(me)));
+        /* another in front, and it ends */
+        QVERIFY(h.answer("rt " + q2.pidText()).startsWith("ok rt "));
+        QCOMPARE(h.answer("view-rt " + view.tid(1)), QString("ok view-rt %1: real-time").arg(view.tid(1)));
+        const QString gone = q2.pidText();
+        q2.stop();
+        QCOMPARE(h.waitFor("exited "), "exited " + gone);
+        QCOMPARE(h.line(), QString("restored view-rt %1: 1 threads back to SCHED_OTHER").arg(me));
+        QCOMPARE(schedOf(view.tid(1)), QString("0 0 0"));
+        /* no real-time without the bound */
+        QVERIFY(h.answer("rt " + q1.pidText()).startsWith("ok rt "));
+        QCOMPARE(h.answer("view-rt " + view.tid(0)), QString("ok view-rt %1: real-time").arg(view.tid(0)));
+        const QStringList off = h.ask("fair-server off");
+        QVERIFY2(off.contains(QString("restored view-rt %1: 1 threads back to SCHED_OTHER").arg(me)),
+                 qPrintable(off.join('\n')));
+        QCOMPARE(off.last(), QString("ok fair-server off"));
+        QCOMPARE(schedOf(view.tid(0)), QString("0 0 0"));
+        QCOMPARE(h.answer("view-rt " + view.tid(0)),
+                 QString("skip view-rt %1: the fair server is not set: the fair server was let go")
+                     .arg(view.tid(0)));
+        /* its last QEMU gone, the helper ends with nothing left */
+        QVERIFY(h.answer("fair-server on").startsWith("ok fair-server on"));
+        QVERIFY(h.answer("rt " + q1.pidText()).startsWith("ok rt "));
+        QCOMPARE(h.answer("view-rt " + view.tid(1)), QString("ok view-rt %1: real-time").arg(view.tid(1)));
+        q1.stop();
+        QVERIFY(h.finished());
+        QCOMPARE(h.all().filter("restored view-rt ").size(), 4);
+        QCOMPARE(schedOf(view.tid(1)), QString("0 0 0"));
+        QCOMPARE(stateFiles(), QStringList({"lock"}));
+    }
+
+    /*
+     * Only what view-rt made real-time goes back: threads at SCHED_FIFO 1
+     * before its first change are kept, real-time ones of other kinds
+     * (RTKit gives SCHED_RR) and SCHED_IDLE ones are left alone; and only
+     * threads of the process that started the helper
+     */
+    void viewKeepsOthers()
+    {
+        FakeQemu qemu;
+        Threads view(4);
+        /* the fake kernel's: one at SCHED_FIFO 1, one at SCHED_RR 1, one at SCHED_IDLE */
+        writeFile(path("/sched"), QString("%1 1 1 0\n%2 2 1 0\n%3 5 0 0\n")
+                                      .arg(view.tid(0), view.tid(1), view.tid(2)).toLatin1());
+        Helper h(m_root);
+        QVERIFY(h.ready());
+        h.answer("watch " + qemu.pidText());
+        QVERIFY(h.answer("fair-server on").startsWith("ok fair-server on"));
+        QVERIFY(h.answer("rt " + qemu.pidText()).startsWith("ok rt "));
+        QCOMPARE(h.answer("view-rt " + view.tid(0)),
+                 QString("ok view-rt %1: real-time already").arg(view.tid(0)));
+        QCOMPARE(h.answer("view-rt " + view.tid(1)),
+                 QString("ok view-rt %1: real-time already").arg(view.tid(1)));
+        QCOMPARE(h.answer("view-rt " + view.tid(2)),
+                 QString("skip view-rt %1: SCHED_IDLE, its own choice").arg(view.tid(2)));
+        QCOMPARE(h.answer("view-rt " + view.tid(3)), QString("ok view-rt %1: real-time").arg(view.tid(3)));
+        QVERIFY(readFile(path("/run/vitrine-helper/sched-" + QString::number(getpid()) + ".state"))
+                    .endsWith(" rt 1 view 1 kept " + view.tid(0).toLatin1() + "\n"));
+        /* the QEMU's threads, the QEMU itself, and what is not a thread id */
+        const QString qemuThread = tids(qemu.pid()).last();
+        QCOMPARE(h.answer("view-rt " + qemuThread),
+                 QString("error view-rt %1: not a thread of pid %2").arg(qemuThread).arg(getpid()));
+        QCOMPARE(h.answer("view-rt " + qemu.pidText()),
+                 QString("error view-rt %1: not a thread of pid %2").arg(qemu.pid()).arg(getpid()));
+        QCOMPARE(h.answer("view-rt 4194303"),
+                 QString("error view-rt 4194303: not a thread of pid %1").arg(getpid()));
+        for (const QString &bad : {"0", "abc", "0123", "99999999", "-1"}) {
+            QCOMPARE(h.answer("view-rt " + bad), QString("error view-rt: give a thread id"));
+        }
+        QCOMPARE(h.answer("view-rt"), QString("error view-rt: unknown request"));
+        QCOMPARE(h.answer("view-behind now"), QString("error view-behind: unknown request"));
+        QCOMPARE(h.answer("view-behind"), QString("ok view-behind: 1 threads ordinary"));
+        QCOMPARE(schedOf(view.tid(0)), QString("1 1 0"));
+        QCOMPARE(schedOf(view.tid(1)), QString("2 1 0"));
+        QCOMPARE(schedOf(view.tid(2)), QString("5 0 0"));
+        QCOMPARE(schedOf(view.tid(3)), QString("0 0 0"));
+        for (const QString &tid : tids(qemu.pid())) {
+            QVERIFY2(schedOf(tid).startsWith("1 1 "), qPrintable(schedOf(tid)));
+        }
+        /* and at the end */
+        QCOMPARE(h.answer("view-rt " + view.tid(3)), QString("ok view-rt %1: real-time").arg(view.tid(3)));
+        h.ask("release");
+        QVERIFY(h.finished());
+        QCOMPARE(schedOf(view.tid(0)), QString("1 1 0"));
+        QCOMPARE(schedOf(view.tid(1)), QString("2 1 0"));
+        QCOMPARE(schedOf(view.tid(2)), QString("5 0 0"));
+        QCOMPARE(schedOf(view.tid(3)), QString("0 0 0"));
+    }
+
+    /* A process that runs real-time already (MAX_KEPT threads or more at
+       SCHED_FIFO 1, as under chrt): left as it is */
+    void viewProcessRealtimeAlready()
+    {
+        FakeQemu qemu;
+        Threads view(17);
+        QByteArray sched;
+        for (int i = 0; i < 16; i++) {
+            sched += view.tid(i).toLatin1() + " 1 1 0\n";
+        }
+        writeFile(path("/sched"), sched);
+        Helper h(m_root);
+        QVERIFY(h.ready());
+        h.answer("watch " + qemu.pidText());
+        QVERIFY(h.answer("fair-server on").startsWith("ok fair-server on"));
+        QVERIFY(h.answer("rt " + qemu.pidText()).startsWith("ok rt "));
+        QCOMPARE(h.answer("view-rt " + view.tid(16)),
+                 QString("skip view-rt %1: pid %2 runs real-time already (16 threads or more at "
+                         "SCHED_FIFO 1)").arg(view.tid(16)).arg(getpid()));
+        QCOMPARE(schedOf(view.tid(16)), QString());
+        QCOMPARE(h.answer("view-behind"), QString("ok view-behind: 0 threads ordinary"));
+        h.ask("release");
+        QVERIFY(h.finished());
+        for (int i = 0; i < 16; i++) {
+            QCOMPARE(schedOf(view.tid(i)), QString("1 1 0"));
+        }
+    }
+
+    /* Only threads of the process that started the helper: started by a
+       shell that waits for it, the test's threads are another process's */
+    void viewOnlyItsParent()
+    {
+        FakeQemu qemu;
+        Threads view(1);
+        Helper h(m_root, {}, "/bin/sh", {"-c", QString("%1 session; :").arg(HELPER_FAKE)});
+        QVERIFY(h.ready());
+        h.answer("watch " + qemu.pidText());
+        QVERIFY(h.answer("fair-server on").startsWith("ok fair-server on"));
+        QVERIFY(h.answer("rt " + qemu.pidText()).startsWith("ok rt "));
+        QCOMPARE(h.answer("view-rt " + view.tid(0)),
+                 QString("error view-rt %1: not a thread of pid %2").arg(view.tid(0)).arg(h.pid()));
+        QCOMPARE(schedOf(view.tid(0)), QString());
+    }
+
+    /* A helper killed while the view's threads are real-time: the next one
+       puts them back from the record, before the bound they needed */
+    void viewDeadHelper()
+    {
+        FakeQemu qemu;
+        Threads view(2);
+        const QString me = QString::number(getpid());
+        {
+            Helper a(m_root);
+            QVERIFY(a.ready());
+            a.answer("watch " + qemu.pidText());
+            QVERIFY(a.answer("fair-server on").startsWith("ok fair-server on"));
+            QVERIFY(a.answer("rt " + qemu.pidText()).startsWith("ok rt "));
+            QCOMPARE(a.answer("view-rt " + view.tid(0)), QString("ok view-rt %1: real-time").arg(view.tid(0)));
+            QCOMPARE(a.answer("view-rt " + view.tid(1)), QString("ok view-rt %1: real-time").arg(view.tid(1)));
+            a.kill();
+        }
+        QVERIFY(stateExists("sched-" + me));
+        QCOMPARE(schedOf(view.tid(0)), QString("1 1 0"));
+        Helper b(m_root);
+        QStringList before;
+        for (QString l = b.line(); !l.isNull() && !l.startsWith("ready"); l = b.line()) {
+            before << l;
+        }
+        const qsizetype viewLine = before.indexOf(
+            QString("restored view-rt %1: 2 threads back to SCHED_OTHER").arg(me));
+        const qsizetype qemuLine = before.indexOf(
+            QString("restored rt %1: 4 threads back to SCHED_OTHER").arg(qemu.pid()));
+        const qsizetype fairLine = before.indexOf("restored fair-server: 4 cpus back to 1000 ms / 50 ms");
+        QVERIFY2(viewLine >= 0 && qemuLine >= 0 && fairLine > viewLine && fairLine > qemuLine,
+                 qPrintable(before.join('\n')));
+        QCOMPARE(schedOf(view.tid(0)), QString("0 0 0"));
+        QCOMPARE(schedOf(view.tid(1)), QString("0 0 0"));
+        QCOMPARE(stateFiles(), QStringList({"lock"}));
+        b.closeInput();
+        QVERIFY(b.finished());
     }
 
     /* A caller that stops reading the replies: the watch goes on all the same */

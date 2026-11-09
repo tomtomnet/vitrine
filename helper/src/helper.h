@@ -171,9 +171,10 @@ void udmabuf_check(void);
 void settings_release(void);
 
 /* The record of a QEMU whose threads this helper made real-time or ordinary
-   at nice BEHIND_NICE (rt- and behind-), for the next helper to put back
-   should this one die: taken (or updated) before the change; false when it
-   cannot be, and then nothing is changed */
+   at nice BEHIND_NICE (rt- and behind-), or of the process that started it
+   (view-rt), for the next helper to put back should this one die: taken (or
+   updated) before the change; false when it cannot be, and then nothing is
+   changed */
 struct watched;
 bool sched_hold(struct watched *w);
 /* Lets go of it: the threads put back by the last holder, if still there */
@@ -205,6 +206,7 @@ struct watched {
     bool behind; /* its vCPUs were set to BEHIND_NICE */
     bool held;   /* sched_hold() holds its record */
     bool udmabuf; /* udmabuf was asked for it */
+    bool view;   /* not a QEMU: the process that started the helper (view-rt) */
     pid_t kept[MAX_KEPT];   /* threads at SCHED_FIFO 1 before its first rt */
     int nkept;
 };
@@ -220,18 +222,37 @@ struct watched *find_watched(const char *arg);
 void rt_on(const char *arg);
 /* The protocol's behind <pid>: a VM behind the one in front */
 void behind(const char *arg);
-/* Every watched QEMU's threads as they were before rt and behind */
+/* Every watched QEMU's threads as they were before rt and behind, and the
+   threads view-rt made real-time */
 void rt_off_all(void);
 /* Forgets watched[i], which has exited */
 void unwatch(int i);
 /*
- * The threads of the QEMU @pid, if it is still the process that started at
- * @start, put back from what rt and behind made them (@niced: its vCPUs at
- * BEHIND_NICE), but the @nkeep threads of @keep, real-time before: the
- * record of a helper that let go, or died.  Replies how many when @say.
+ * The threads of the QEMU @pid (or of the process that started a helper),
+ * if it is still the process that started at @start, put back from what rt,
+ * behind or view-rt made them (@niced: its vCPUs at BEHIND_NICE), but the
+ * @nkeep threads of @keep, real-time before: the record of a helper that let
+ * go, or died.  Replies how many, as "restored @verb": always for rt, for
+ * view-rt when there were some; never without @verb.
  */
 void sched_restore(pid_t pid, unsigned long long start, bool niced, const pid_t *keep,
-                   int nkeep, bool say);
+                   int nkeep, const char *verb);
+
+/*
+ * The process that started the helper: pkexec runs the helper in place, so
+ * that is the program that ran pkexec - vitrine, the process polkit was
+ * asked about - whose VM view's threads view-rt makes real-time while one
+ * of its QEMUs is in front.  Taken at the session's start, before any
+ * request.
+ */
+void parent_init(void);
+/* The protocol's view-rt <tid>: a thread of that process real-time */
+void view_rt(const char *arg);
+/* The protocol's view-behind: those threads ordinary again */
+void view_behind(void);
+/* After a QEMU went behind or exited: with none in front any more, the
+   threads view-rt made real-time back to SCHED_OTHER */
+void view_check(void);
 
 /* --- group.c: the vitrine group --- */
 

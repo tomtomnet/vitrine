@@ -1,6 +1,8 @@
 // SPDX-License-Identifier: GPL-2.0-or-later
 #include "qtguicompat.h"
 
+#include "gtkview/viewthreads.h"
+
 #include <cstdio>
 
 namespace {
@@ -111,7 +113,13 @@ bool QOpenGLContext::create()
         fprintf(stderr, "vitrine: display: no EGL config for the view: 0x%x\n", eglGetError());
         return false;
     }
+    /* the driver starts the context's own threads here (Mesa's glthread,
+       its threaded context): the render thread's, raised with it while the
+       VM is in front - marked, to tell them from those of GTK's contexts,
+       which Mesa names alike */
+    ViewThreads::Mark mark;
     const EGLContext context = eglCreateContext(dpy, config, EGL_NO_CONTEXT, nullptr);
+    m_startedThreads = mark.end();
     if (context == EGL_NO_CONTEXT) {
         fprintf(stderr, "vitrine: display: no EGL context: 0x%x\n", eglGetError());
         return false;
