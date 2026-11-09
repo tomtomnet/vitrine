@@ -21,6 +21,7 @@
 #include <memory>
 #include <mutex>
 #include <poll.h>
+#include <pthread.h>
 #include <thread>
 #include <sys/eventfd.h>
 #include <sys/ioctl.h>
@@ -514,6 +515,7 @@ void RenderState::destroyGuests()
 // one each prepare, poll and read or cancel.
 void RenderState::readEvents()
 {
+    pthread_setname_np(pthread_self(), "vmview-events");
     // without Wayland (a window without the handles, X11) the fences alone:
     // the copies' fences go nowhere else, and Released waits for them
     const int fd = wlDisplay ? wl_display_get_fd(wlDisplay) : -1;
@@ -972,6 +974,7 @@ void Renderer::stop()
 
 void Renderer::run()
 {
+    pthread_setname_np(pthread_self(), "vmview-render");
     QOpenGLContext ctx;
     ctx.setFormat(m_window->requestedFormat());
     if (!ctx.create()) {
