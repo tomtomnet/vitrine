@@ -108,6 +108,10 @@ struct GuestBuffer {
     uint64_t lastUse = 0;
 };
 
+// How a frame went to the compositor: the guest's buffer as it is (zero
+// copy), or the view's copy of it, in a window or in full screen
+enum class Copy { None, Window, FullScreen };
+
 struct Feedback {
     class RenderState *state;
     int64_t recvNs;
@@ -120,8 +124,9 @@ struct Feedback {
     int64_t frameDoneNs = 0;        // when the compositor let us draw again (RenderState::readNs)
     // the compositor lead goes to QEMU with the presentation: for the frames
     // copied in full screen only, from which QEMU may estimate the host's
-    // deadline (x-vblank-deadline-callback); the others' targets are fixed
-    bool passLead = false;
+    // deadline (x-vblank-deadline-callback); the others' targets are fixed.
+    // The copies the compositor discards go to QEMU too (Discarded)
+    Copy copy = Copy::None;
 };
 
 class RenderState
@@ -142,10 +147,11 @@ public:
     void upload(const Scanout &s, const uint8_t *pixels, uint32_t stride);
     void draw(const Scanout *s, GLuint fbo, QSize view, GLuint target = 0);
     Feedback *requestFeedback(wl_surface *surface, int64_t recvNs, uint64_t serial,
-                              Replies *replies, bool passLead);
+                              Replies *replies, Copy copy);
     void dispatchWayland();
     void destroyCache();
     void presented(Feedback *d, int64_t t, uint32_t refresh);
+    void discarded(Feedback *d);
 
     Stats *stats;
     QOpenGLContext *ctx = nullptr;
@@ -190,6 +196,7 @@ public:
     // zero copy (see GuestBuffer)
     zwp_linux_dmabuf_v1 *dmabuf = nullptr;      // a binding of our own, on our queue
     bool zcSupported = false;                   // QEMU has Presentation.Released
+    bool discardedSupported = false;            // QEMU has Presentation.Discarded
     std::vector<GuestBuffer *> guests;
     uint64_t guestUse = 0;
     GuestBuffer *attached = nullptr;            // the guest buffer on the surface
@@ -255,6 +262,7 @@ const wp_presentation_feedback_listener kFeedbackListener = {
     [](void *data, struct wp_presentation_feedback *fb) {
         auto *d = static_cast<Feedback *>(data);
         d->state->stats->frameDiscarded();
+        d->state->discarded(d);
         replyAll(d->state->stats, d->replies);
         d->state->forget(d);
     },
@@ -299,8 +307,9 @@ void RenderState::presented(Feedback *d, int64_t t, uint32_t refresh)
     if (!sinkConn || sinkPath.isEmpty() || clockId != CLOCK_MONOTONIC) {
         return;
     }
-    // 0, not known, but for a frame copied in full screen (Feedback::passLead)
-    int64_t compositorLead = d->passLead && d->frameDoneNs ? t - d->frameDoneNs : 0;
+    // 0, not known, but for a frame copied in full screen (Feedback::copy)
+    int64_t compositorLead =
+        d->copy == Copy::FullScreen && d->frameDoneNs ? t - d->frameDoneNs : 0;
     int64_t swapLead = d->swapNs ? t - d->swapNs : 0;
     g_dbus_connection_call(sinkConn, nullptr, sinkPath.constData(),
                            "org.qemu.Display1.Presentation", "Presented",
@@ -332,6 +341,23 @@ const zwp_linux_buffer_params_v1_listener kParamsListener = {
         static_cast<Made *>(data)->done = true;
     },
 };
+
+// A frame the compositor never showed, a later one in its place: when it was
+// committed and when its update came, for QEMU to place against the host's
+// latch (late: its margin was short; early: a burst).  Copies only, in a
+// window too: QEMU counts them all, and those of the full screen carry the
+// lead it estimates from (Feedback::copy).  One-way.
+void RenderState::discarded(Feedback *d)
+{
+    if (!discardedSupported || d->copy == Copy::None || !d->swapNs || !d->recvNs || !sinkConn ||
+        sinkPath.isEmpty() || clockId != CLOCK_MONOTONIC) {
+        return;
+    }
+    g_dbus_connection_call(sinkConn, nullptr, sinkPath.constData(),
+                           "org.qemu.Display1.Presentation", "Discarded",
+                           g_variant_new("(xx)", d->swapNs, d->recvNs), nullptr,
+                           G_DBUS_CALL_FLAGS_NO_AUTO_START, -1, nullptr, nullptr, nullptr);
+}
 
 // Zero copy: QEMU may let the guest render into the buffer again.  One-way.
 void RenderState::released(uint64_t inode)
@@ -710,7 +736,7 @@ void RenderState::finiWayland()
 }
 
 Feedback *RenderState::requestFeedback(wl_surface *surface, int64_t recvNs, uint64_t serial,
-                                       Replies *replies, bool passLead)
+                                       Replies *replies, Copy copy)
 {
     if (!presentation || !surface) {
         return nullptr;
@@ -719,7 +745,7 @@ Feedback *RenderState::requestFeedback(wl_surface *surface, int64_t recvNs, uint
     struct wp_presentation_feedback *fb = wp_presentation_feedback(presentation, surface);
     auto *d = new Feedback{this, recvNs, serial, {}, fb};
     d->requestNs = nowNs();
-    d->passLead = passLead;
+    d->copy = copy;
     if (replies) {
         d->replies = std::move(*replies);
         replies->clear();
@@ -1038,7 +1064,8 @@ void Renderer::run()
     st.sinkConn = m_sinkConn;
     st.sinkPath = m_sinkPath;
     // zero copy, when this QEMU knows Presentation.Released (the qemu-gui fork)
-    if (m_opts.zeroCopy && m_sinkConn && !m_sinkPath.isEmpty()) {
+    // what this QEMU's Presentation has: Released (zero copy), Discarded
+    if (m_sinkConn && !m_sinkPath.isEmpty()) {
         GVariant *r = g_dbus_connection_call_sync(
             m_sinkConn, nullptr, m_sinkPath.constData(), "org.freedesktop.DBus.Introspectable",
             "Introspect", nullptr, G_VARIANT_TYPE("(s)"), G_DBUS_CALL_FLAGS_NONE, 2000, nullptr,
@@ -1046,11 +1073,14 @@ void Renderer::run()
         if (r) {
             const char *xml = nullptr;
             g_variant_get(r, "(&s)", &xml);
-            st.zcSupported = xml && strstr(xml, "name=\"Released\"");
+            st.zcSupported = m_opts.zeroCopy && xml && strstr(xml, "name=\"Released\"");
+            st.discardedSupported = xml && strstr(xml, "name=\"Discarded\"");
             g_variant_unref(r);
         }
-        fprintf(stderr, "renderer: zero copy %s\n",
-                st.zcSupported ? "on" : "off (this QEMU has no Presentation.Released)");
+        if (m_opts.zeroCopy) {
+            fprintf(stderr, "renderer: zero copy %s\n",
+                    st.zcSupported ? "on" : "off (this QEMU has no Presentation.Released)");
+        }
     }
     std::unique_ptr<Swapchain> own;
     fprintf(stderr, "renderer: presentation feedback %d, wayland display %p surface %p, own swapchain %d\n",
@@ -1162,7 +1192,7 @@ void Renderer::run()
                 // zero copy, in a window or in full screen: no lead for QEMU
                 Feedback *fb = st.requestFeedback(m_wlSurface, recvNs, update,
                                                   m_opts.replyOnPresent ? &deferred : nullptr,
-                                                  false);
+                                                  Copy::None);
                 wl_surface_attach(m_wlSurface, gb->buffer, 0, 0);
                 // all of it: the compositor may not have shown the guest's previous frame
                 wl_surface_damage_buffer(m_wlSurface, 0, 0, INT32_MAX, INT32_MAX);
@@ -1225,7 +1255,7 @@ void Renderer::run()
             // copied: the lead for QEMU in full screen only
             Feedback *fb = st.requestFeedback(m_wlSurface, recvNs, update,
                                               m_opts.replyOnPresent ? &deferred : nullptr,
-                                              fullScreen);
+                                              fullScreen ? Copy::FullScreen : Copy::Window);
             if (st.zcSupported) {
                 std::lock_guard g(st.lock);
                 st.attached = nullptr;   // our own buffer replaces the guest's on the surface
