@@ -1524,24 +1524,6 @@ ArgsFile VmRunner::withComputedProperties(
          */
         {"x-vblank-swap-target-zc", embedded ? "4500" : "3500"},
     };
-    /*
-     * The frames vitrine's view copies in full screen (a guest whose flips
-     * wait) aim at the host's deadline as QEMU estimates it from the
-     * compositor lead the view passes for those frames only, plus its
-     * default margin (700 us), the target up at once and down after 8 calm
-     * windows: as smooth as the fixed 6000 us and 0.35 ms sooner on a Radeon
-     * 780M and an Arc Pro B50 under GNOME, at rest and under CPU and GPU
-     * loads (the research's lgt4 and bcb3, 2026-11-09; without the margin
-     * the view's own copy came late under a GPU load).  Without a lead - the
-     * window, the direct scanout - QEMU keeps the fixed targets.  All three
-     * or none (x-vblank-deadline alone is older), and not where the user
-     * fixed a swap target, for KDE guests or in QEMU's own window
-     */
-    const std::pair<QString, QString> deadline[] = {
-        {"x-vblank-deadline", "on"},
-        {"x-vblank-deadline-callback", "on"},
-        {"x-vblank-deadline-hold", "8"},
-    };
     ArgsFile out = args;
     QStringList global;
 
@@ -1563,26 +1545,11 @@ ArgsFile VmRunner::withComputedProperties(
             continue;
         }
         known = propertiesOf(v.implied());
-        /* the card has it, and the user left it out */
-        const auto ours = [&](const QString &key) {
-            return !v.has(key) && !global.contains(key) && known.contains(key);
-        };
-        /* before the fixed targets go on: a swap target of the user's */
-        const bool estimated =
-            embedded && !kde && ours("x-vblank-swap-target") &&
-            std::all_of(std::begin(deadline), std::end(deadline),
-                        [&](const std::pair<QString, QString> &p) { return ours(p.first); });
         for (const auto &[key, value] : computed) {
-            if (ours(key)) {
+            if (!v.has(key) && !global.contains(key) && known.contains(key)) {
                 v.set(key, value);
                 changed = true;
             }
-        }
-        if (estimated) {
-            for (const auto &[key, value] : deadline) {
-                v.set(key, value);
-            }
-            changed = true;
         }
         if (changed) {
             out.setValueAt(i, v);
