@@ -30,8 +30,9 @@ patches that go on top, in this order:
    variables. After them its `sdl2-gl-no-2d-under-scanout.patch` (research
    `5ed9fbc`, 2026-11-02; taken 2026-11-08 at the research's word, its
    `From:` line with the public address), then its
-   `virtio-gpu-scanout-modifier.patch` at `f1d762f` (2026-11-05), in the
-   research's order. Its series of that day has one more patch between
+   `virtio-gpu-scanout-modifier.patch` at `f1d762f` (2026-11-05) and its
+   `ui-dbus-negative-lead-as-unknown.patch` at `16a4196` (2026-11-09), in
+   the research's order. Its series of that day has one more patch between
    them, `virtio-gpu-gl-prefault-blobs.patch`, and the pflash patch
    reflowed, neither of which these need; Vitrine takes them when asked
    to.
@@ -80,6 +81,7 @@ patches that go on top, in this order:
 | `2e0ac56c065ad57e17a83f1e5975b747d78844c977a5c959c34426fad1750f66` | `pflash-cfi01-batched-writeback.patch`: the flash of a VM's UEFI variables writes its programmed sectors back to its file in runs, when the guest returns it to read-array mode, from a 100 ms timer, at reset, when the VM stops and after a migration, where each programmed byte was one 512-byte write: OVMF's variable store reclaim, every few boots, froze the TianoCore logo for 6-9 s (about 3.5 s now), and every boot is ~0.2 s shorter; `-global driver=cfi.pflash01,property=x-write-batch,value=off` writes each byte at once again (not `-global cfi.pflash01.x-write-batch=off`: QEMU splits that at its first dot, for a driver `cfi`) |
 | `fdaa9e03262659091ba90503d3c09abe9b01ddfa457c3f5a27d3260453384ab0` | `sdl2-gl-no-2d-under-scanout.patch` (research `5ed9fbc`): while the guest's GL scanout is up, QEMU's SDL window holds 2D updates for 300 ms for it to come back (a new frame drops them), where it drew them with SDL's own window surface, at its old size, over the guest's new frame: after a full-screen toggle a guest that changes modes (GNOME following the window's size) showed a stretched old frame for a few refreshes, and now and then a black flash (1 in 40 toggles on an Intel host). A scanout that does not come back hands the window to the 2D surface as before |
 | `74a0461acc0ef58d9cb0960af2e3e33d38cba6d8a1e1356b2edf931fdaca8763` | `virtio-gpu-scanout-modifier.patch` (research `f1d762f`): the device offers `VIRTIO_GPU_F_SCANOUT_MODIFIER_VGD` (bit 23, the research's; property `x-scanout-modifier`, on by default), and from a guest driver that negotiated it reads the framebuffer's format modifier in `SET_SCANOUT_BLOB`'s padding word (the guest tools' `scanout_modifier`; zeroed for a guest that did not), in the three handlers (virtio-gpu, -virgl, -rutabaga); the scanout dma-buf carries it, and the D-Bus display (Vitrine's view) and SDL's swapchain take it as the buffer's layout. An Intel GPU keeps no layout in the buffer, unlike amdgpu's metadata, so every Intel guest frame was a copy (the user's Arc Pro B50); with the guest's Tile4 (`intel_scanout=1`) the view shows the guest's own buffers. vhost-user-gpu never offers it (its backend does not decode the word). `-global virtio-vga-gl.x-scanout-modifier=off` (or on the device) is the QEMU before it for the guest |
+| `d2ffe5e4e27ffe45425202fb21bfc04e31f63d36284a10c49d559ef2368a31bd` | `ui-dbus-negative-lead-as-unknown.patch` (research `16a4196`): a D-Bus display client's negative lead counts as not known (0), and its frame still sets the guest's vblank phase, where QEMU dropped every presentation that had one. A nested headless GNOME's virtual monitor stamps a frame 0.07-0.18 ms before its frame callback, so under vitrine's view there the guest's vblank never ticked (the guest-flip-grace stream's finding, 2026-11-08). Leads of 0 or more go through as before, and the regulator still skips frames whose swap lead is 0 |
 
 When the research's series moves (`r` its repository, `c` the commit,
 `v` this folder; for now `c=4d3c53d`, and the scanout modifier patch

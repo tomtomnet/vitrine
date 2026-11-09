@@ -1,0 +1,49 @@
+From 7ca6877decc91a65669f05c96c6e00e39b6e000f Mon Sep 17 00:00:00 2001
+From: tomtomnet <tompere8000@proton.me>
+Date: Mon, 9 Nov 2026 00:38:04 +0100
+Subject: [PATCH] ui/dbus: a negative lead taken as not known, the frame kept
+
+A D-Bus display client reports, with each frame on the screen, how long
+before it the compositor let it draw (its frame callback) and how long
+before it the frame was handed over.  A virtual monitor (a nested headless
+GNOME) stamps a frame before its frame callback, by 0.07-0.18 ms, and
+dbus_presentation_presented dropped every such frame: the guest's vblank
+never ticked (the vitrine session's measurement, 2026-11-09: 512 Presented
+calls in a drag, none passed on).  A negative lead is now taken as not
+known (0): the frame still sets the vblank phase, and the regulator of the
+lead leaves a frame without a swap lead out, as it did.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ ui/dbus-console.c | 13 +++++++++++--
+ 1 file changed, 11 insertions(+), 2 deletions(-)
+
+diff --git a/ui/dbus-console.c b/ui/dbus-console.c
+index 9b67a7efef..0fee218473 100644
+--- a/ui/dbus-console.c
++++ b/ui/dbus-console.c
+@@ -568,10 +568,19 @@ dbus_presentation_presented(DBusDisplayConsole *ddc,
+ {
+     trace_dbus_presented(arg_time, arg_period, arg_compositor_lead,
+                          arg_swap_lead);
+-    if (arg_time > 0 && arg_compositor_lead >= 0 && arg_swap_lead >= 0) {
++    /*
++     * A lead below 0 is the client's clock, not a frame shown before the
++     * client had it: a virtual monitor (a nested headless GNOME) stamps a
++     * frame before its frame callback, by 0.07-0.18 ms.  Such frames were
++     * dropped, and the guest's vblank never ticked; a negative lead is
++     * taken as not known (0) now - the frame still sets the vblank phase,
++     * and the lead's regulator leaves a frame without a swap lead out.
++     */
++    if (arg_time > 0) {
+         /* the D-Bus client does not pass the host's latching deadline (yet) */
+         graphic_hw_gl_presented(ddc->dcl.con, arg_time, arg_period,
+-                                arg_compositor_lead, arg_swap_lead, 0);
++                                MAX(arg_compositor_lead, 0),
++                                MAX(arg_swap_lead, 0), 0);
+     }
+     qemu_dbus_display1_presentation_complete_presented(
+         ddc->iface_presentation, invocation);
+-- 
+2.56.0
+
