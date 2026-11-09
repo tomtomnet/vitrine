@@ -40,6 +40,8 @@
 #include <memory>
 #include <vector>
 
+#include <sys/types.h>
+
 namespace QtGuiCompat {
 /* The EGL display the contexts are made on (the GTK view's: its
    Wayland connection's), set before a context is created */
@@ -189,10 +191,16 @@ public:
     template <typename NativeInterface>
     NativeInterface *nativeInterface() const;
 
+    /* vitrine's: the threads the driver started for the context in create()
+       (Mesa's per-context threads), told from the others' by ViewThreads'
+       mark (src/gtkview/viewthreads.h); none when not marked */
+    const std::vector<pid_t> &startedThreads() const { return m_startedThreads; }
+
 private:
     QSurfaceFormat m_format;
     mutable QNativeInterface::QEGLContext m_egl;
     mutable std::unique_ptr<QOpenGLExtraFunctions> m_functions;
+    std::vector<pid_t> m_startedThreads;
 };
 
 template <>

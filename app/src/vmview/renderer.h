@@ -34,6 +34,11 @@ public:
     virtual void swapBuffers(QOpenGLContext *ctx) = 0;
     // the thread ends: @ctx is no longer current
     virtual void done(QOpenGLContext *ctx) = 0;
+    // A thread of the renderer starts, called on it: the render thread first
+    // thing, then its Wayland reader (vitrine makes them real-time while its
+    // VM is in front, by their ids)
+    enum class Thread { Render, Reader };
+    virtual void threadStarted(Thread) {}
 };
 
 // Where a width x height image lands in a view (letterboxed, top-left origin).

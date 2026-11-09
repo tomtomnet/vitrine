@@ -3,8 +3,12 @@
 
 #include <QSize>
 
+#include <functional>
 #include <memory>
 #include <mutex>
+#include <vector>
+
+#include <sys/types.h>
 
 #include "vmview/renderer.h"
 
@@ -71,18 +75,38 @@ public:
        attached, else once attached */
     void setOverlay(bool on);
 
+    /*
+     * The render thread's threads, for the view's real time: the render
+     * thread, the threads the GL driver started for its context (Mesa's:
+     * found by ViewThreads' marks around eglCreateContext and its first
+     * eglMakeCurrent), its Wayland reader.  @report gets all those known so
+     * far as each comes, on the render thread or the reader; set before the
+     * render thread starts.
+     */
+    struct Threads {
+        pid_t render = 0;
+        pid_t events = 0;
+        std::vector<pid_t> drivers;
+    };
+    void setThreadsReport(std::function<void(const Threads &)> report)
+    {
+        m_report = std::move(report);
+    }
+
     /* RenderTarget, on the render thread */
     wl_display *display() const override;
     wl_surface *surface() const override;
     bool makeCurrent(QOpenGLContext *ctx, QSize *size) override;
     void swapBuffers(QOpenGLContext *ctx) override;
     void done(QOpenGLContext *ctx) override;
+    void threadStarted(Thread thread) override;
 
 private:
     DisplaySurface() = default;
     bool init(GdkDisplay *display);
     bool initOverlay();
     void attachOverlay(wl_surface *parent);
+    void reportThreads();
 
     wl_display *m_display = nullptr;
     wl_compositor *m_compositor = nullptr;   // GDK's
@@ -114,4 +138,9 @@ private:
     QSize m_eglSize, m_viewportSize;
     int m_bufferScale = 0;          // without a viewporter
     bool m_intervalSet = false;
+
+    /* the render thread's threads: set on it and on its reader */
+    std::function<void(const Threads &)> m_report;
+    std::mutex m_threadsLock;
+    Threads m_threads;
 };

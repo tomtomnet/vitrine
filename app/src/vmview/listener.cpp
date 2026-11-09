@@ -153,6 +153,9 @@ void Listener::stop()
 void Listener::run(int fd)
 {
     pthread_setname_np(pthread_self(), "dbus-listener");
+    if (m_cb.threadStarted) {
+        m_cb.threadStarted();
+    }
     g_main_context_push_thread_default(m_ctx);
 
     GError *err = nullptr;

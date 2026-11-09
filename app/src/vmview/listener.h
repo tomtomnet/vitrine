@@ -28,6 +28,8 @@ public:
         std::function<void(QImage cursor, int hotX, int hotY)> cursorDefine;
         std::function<void(int x, int y, bool visible)> mouseSet;
         std::function<void(uint32_t w, uint32_t h)> scanoutSize;
+        // on the listener's thread, first thing (vitrine: its id, for real time)
+        std::function<void()> threadStarted;
     };
 
     Listener(FrameMailbox *mailbox, Stats *stats, const Options &opts, Callbacks cb);

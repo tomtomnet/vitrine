@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: GPL-2.0-or-later
 #include "displaysurface.h"
+#include "viewthreads.h"
 
 #include "viewporter-client-protocol.h"
 
@@ -9,9 +10,11 @@
 #include <wayland-client.h>
 #include <wayland-egl.h>
 
+#include <algorithm>
 #include <cmath>
 #include <cstdio>
 #include <cstring>
+#include <optional>
 #include <utility>
 
 #include <sys/mman.h>
@@ -324,6 +327,12 @@ bool DisplaySurface::makeCurrent(QOpenGLContext *ctx, QSize *size)
     if (!egl) {
         return false;
     }
+    /* the first: the context current on its surface, where the driver may
+       start threads of its own too (ViewThreads) */
+    std::optional<ViewThreads::Mark> mark;
+    if (!m_eglSurface) {
+        mark.emplace();
+    }
     QSize logical;
     double scale;
     {
@@ -376,6 +385,19 @@ bool DisplaySurface::makeCurrent(QOpenGLContext *ctx, QSize *size)
         eglSwapInterval(dpy, ctx->format().swapInterval() < 0 ? 0 : ctx->format().swapInterval());
         m_intervalSet = true;
     }
+    if (mark) {
+        /* the context's threads: those of its creation, then these */
+        std::vector<pid_t> drivers = ctx->startedThreads();
+        const std::vector<pid_t> more = mark->end();
+        drivers.insert(drivers.end(), more.begin(), more.end());
+        std::sort(drivers.begin(), drivers.end());
+        drivers.erase(std::unique(drivers.begin(), drivers.end()), drivers.end());
+        {
+            std::lock_guard g(m_threadsLock);
+            m_threads.drivers = drivers;
+        }
+        reportThreads();
+    }
     return true;
 }
 
@@ -384,6 +406,27 @@ void DisplaySurface::swapBuffers(QOpenGLContext *ctx)
     auto *egl = ctx->nativeInterface<QNativeInterface::QEGLContext>();
     if (egl && m_eglSurface) {
         eglSwapBuffers(egl->display(), m_eglSurface);
+    }
+}
+
+void DisplaySurface::threadStarted(Thread thread)
+{
+    {
+        std::lock_guard g(m_threadsLock);
+        (thread == Thread::Render ? m_threads.render : m_threads.events) = ViewThreads::self();
+    }
+    reportThreads();
+}
+
+void DisplaySurface::reportThreads()
+{
+    Threads threads;
+    {
+        std::lock_guard g(m_threadsLock);
+        threads = m_threads;
+    }
+    if (m_report) {
+        m_report(threads);
     }
 }
 

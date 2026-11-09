@@ -24,6 +24,7 @@ set(GTKVIEW_OWN_SOURCES
     src/gtkview/pointerconstraints.cpp
     src/gtkview/qtgui/qtguicompat.cpp
     src/gtkview/shortcutsinhibit.cpp
+    src/gtkview/viewthreads.cpp
     src/gtkview/vmdisplay.cpp)
 add_library(vitrine_gtkview STATIC
     # the research side's files, as in vitrine_vmview, and what goes where
@@ -58,6 +59,7 @@ add_library(vitrine_gtkview STATIC
     src/gtkview/qtgui/qtguicompat.h
     src/gtkview/shortcutsinhibit.h
     src/gtkview/viewkeys.h
+    src/gtkview/viewthreads.h
     src/gtkview/vmdisplay.h
     src/gtkview/widgetrelease.h)
 # <QOpenGLContext>, <QImage>...: src/gtkview/qtgui's, before anything else
@@ -80,7 +82,7 @@ target_compile_options(vitrine-gtk-view PRIVATE -Wall -Wextra)
 if(BUILD_TESTING)
     # headless: the input logic, and the Qt GUI stand-ins (a real context on
     # the render node when there is one)
-    foreach(name displayinput qtguicompat)
+    foreach(name displayinput qtguicompat viewthreads)
         add_executable(test_${name} tests/test_${name}.cpp)
         target_link_libraries(test_${name} PRIVATE vitrine_gtkview Qt6::Test)
         target_compile_definitions(test_${name} PRIVATE QT_NO_KEYWORDS)
@@ -89,6 +91,7 @@ if(BUILD_TESTING)
         vitrine_test_env(${name})
     endforeach()
     target_link_libraries(test_qtguicompat PRIVATE PkgConfig::EGL PkgConfig::GBM)
+    target_link_libraries(test_viewthreads PRIVATE PkgConfig::EGL PkgConfig::GBM)
     # the full-screen window's turn, on broadway (a display no one sees) and a
     # session bus of its own, as the app's GTK tests
     add_executable(test_fullscreenorder tests/test_fullscreenorder.cpp tests/gtkdisplay.h)
