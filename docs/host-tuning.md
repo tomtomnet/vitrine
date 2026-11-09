@@ -24,12 +24,12 @@ A desktop VM stays smooth under host load when the host gives it a hand:
   own window does its copies on QEMU's threads; vitrine's view runs
   inside the app, so its threads are raised alongside. On an Arc Pro B50
   under a 4-job compile, a GNOME guest's full screen lost 3.0 frames a
-  second at normal priority (6 boots), 0.9-1.5 with the view's own
-  threads real-time (9) and 0.8 with the main thread and the GPU driver's
-  threads too, as with every thread of the view's process (the research,
-  2026-11-09). The driver's threads did not help, and with the main thread
-  ordinary they made it worse (1.8), so they stay ordinary. On a Radeon
-  780M the compile cost it little either way.
+  second at normal priority (6 boots), about 0.9 with the view's own
+  threads real-time, with the main thread too (the default) or with every
+  thread of the view's process (the research's runs, 2026-11-09: their
+  medians alike). The GPU driver's threads did not help, and with the main
+  thread ordinary they made it worse (1.8), so they stay ordinary. On a
+  Radeon 780M the compile cost it little either way.
 - **A shorter fair-server period**: the kernel keeps some CPU time for
   ordinary tasks while real-time ones run, 50 ms per second by default. An
   ordinary task stuck behind a real-time vCPU (a kernel worker pushing GPU
