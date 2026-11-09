@@ -71,7 +71,11 @@ public:
      * card has in the VM's QEMU
      * (@propertiesOf a driver; empty when not known, and then none):
      * x-vblank-swap-target by the guest's desktop, 4500 us for KDE, 6000
-     * otherwise; x-vblank-swap-target-zc 3500 us, 4500 in vitrine's window
+     * otherwise; x-vblank-swap-target-zc 3500 us, 4500 in vitrine's window;
+     * in vitrine's window for other guests than KDE's, the host's deadline
+     * estimated from the lead of the frames the view copies in full screen
+     * (x-vblank-deadline, -callback and -hold=8, all three or none, and not
+     * with a swap target of the user's)
      */
     static ArgsFile withComputedProperties(
         const ArgsFile &args, const std::function<QStringList(const QString &driver)> &propertiesOf);
