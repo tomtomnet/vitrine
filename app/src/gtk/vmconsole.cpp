@@ -545,7 +545,8 @@ void VmConsole::detach()
     /* display() is null while it goes: what it signals on its way out must
        not lead back to it */
     VmDisplay *display = std::exchange(m_display, nullptr);
-    /* its threads end with it: GDBus's worker, which stays, back first */
+    /* its threads end with it: the main thread and GDBus's worker, which
+       stay, back first */
     sendViewThreads();
     WidgetRelease::unfocus(GTK_WIDGET(display->widget()->gobj()));
     gtk_box_remove(GTK_BOX(m_screenBox), GTK_WIDGET(display->widget()->gobj()));

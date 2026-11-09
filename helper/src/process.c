@@ -726,9 +726,9 @@ static bool any_front(void)
     return false;
 }
 
-/* The threads of that process at SCHED_FIFO 1 - those view-rt made so and
-   those they started since - but the ones that were before its first
-   view-rt, back to SCHED_OTHER: how many */
+/* The threads of that process at SCHED_FIFO 1 - those view-rt made so, and
+   any at SCHED_FIFO 1 since - but the ones that were before its first
+   view-rt, back to SCHED_OTHER (SCHED_RESET_ON_FORK cleared): how many */
 static int view_lower(void)
 {
     struct pass others = {.kept = parent.kept, .nkept = parent.nkept};
@@ -749,9 +749,12 @@ static int view_lower(void)
 
 /*
  * SCHED_FIFO 1 on one thread of the process that started the helper - in
- * vitrine, a thread of its view of the VM in front: the render thread, its
- * Wayland reader, the D-Bus listener, GLib's D-Bus worker - as that VM's
- * QEMU threads are.  The threads it starts inherit it.  Only a thread of
+ * vitrine, a thread of its view of the VM in front: the app's main thread,
+ * the render thread, its Wayland reader, the D-Bus listener, GLib's D-Bus
+ * worker - as that VM's QEMU threads are.  With SCHED_RESET_ON_FORK: what
+ * it starts begins ordinary, threads and processes alike - the app's main
+ * thread starts QEMU, pkexec and builds, and a new render thread must be
+ * ordinary for its driver threads to be found.  Only a thread of
  * that process, all of whose uids are the caller's, only with the fair
  * server's bound in place and a watched QEMU in front (its rt), and back to
  * SCHED_OTHER as soon as none is (view_check()).  Threads at SCHED_FIFO 1
@@ -815,8 +818,7 @@ void view_rt(const char *arg)
         return;
     }
     if (policy == SCHED_FIFO || policy == SCHED_RR || policy == SCHED_DEADLINE) {
-        /* this helper's (a thread started by one it made real-time), or
-           another's choice: as it is */
+        /* this helper's already, or another's choice: as it is */
         reply("ok view-rt %llu: real-time already", tid);
         close(taskfd);
         return;
@@ -835,7 +837,7 @@ void view_rt(const char *arg)
         return;
     }
     parent.rt_once = true;
-    err = set_thread((pid_t)tid, taskfd, name, SCHED_FIFO, 1);
+    err = set_thread((pid_t)tid, taskfd, name, SCHED_FIFO | SCHED_RESET_ON_FORK, 1);
     close(taskfd);
     if (err < 0) {
         reply("error view-rt %llu: %s", tid, strerror(-err));

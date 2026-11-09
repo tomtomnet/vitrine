@@ -425,6 +425,11 @@ private:
         }
         return out;
     }
+    /* a view thread view-rt made real-time, as schedOf() shows it */
+    static QString viewRealtimeSched()
+    {
+        return QString("%1 1 0").arg(SCHED_FIFO | SCHED_RESET_ON_FORK);
+    }
     /* What the fake kernel has for @tid: "policy priority nice", "" if untouched */
     QString schedOf(const QString &tid) const
     {
@@ -2815,10 +2820,11 @@ private slots:
         clearJournal();
         QCOMPARE(h.answer("view-rt " + view.tid(0)), QString("ok view-rt %1: real-time").arg(view.tid(0)));
         QCOMPARE(h.answer("view-rt " + view.tid(1)), QString("ok view-rt %1: real-time").arg(view.tid(1)));
-        QCOMPARE(schedOf(view.tid(0)), QString("1 1 0"));
-        QCOMPARE(schedOf(view.tid(1)), QString("1 1 0"));
+        /* SCHED_RESET_ON_FORK: what they start begins ordinary */
+        QCOMPARE(schedOf(view.tid(0)), viewRealtimeSched());
+        QCOMPARE(schedOf(view.tid(1)), viewRealtimeSched());
         QCOMPARE(schedOf(view.tid(2)), QString());
-        QVERIFY(journal().contains("sched " + view.tid(0) + " fifo 1"));
+        QVERIFY(journal().contains("sched " + view.tid(0) + " fifo 1 reset-on-fork"));
         QVERIFY(journal().contains(QString("log uid %1: SCHED_FIFO 1 on thread %2 of pid %3 (its "
                                            "view of the VM in front)")
                                        .arg(getuid()).arg(view.tid(0), me)));
@@ -2873,7 +2879,7 @@ private slots:
         QCOMPARE(h.answer("view-rt " + view.tid(0)), QString("ok view-rt %1: real-time").arg(view.tid(0)));
         /* another VM behind: the view stays */
         QVERIFY(h.answer("behind " + q2.pidText()).startsWith("ok behind "));
-        QCOMPARE(schedOf(view.tid(0)), QString("1 1 0"));
+        QCOMPARE(schedOf(view.tid(0)), viewRealtimeSched());
         /* the one in front behind: its view with it */
         QVERIFY(h.answer("behind " + q1.pidText()).startsWith("ok behind "));
         QCOMPARE(h.line(), QString("restored view-rt %1: 1 threads back to SCHED_OTHER").arg(me));
@@ -2935,6 +2941,7 @@ private slots:
         QCOMPARE(h.answer("view-rt " + view.tid(2)),
                  QString("skip view-rt %1: SCHED_IDLE, its own choice").arg(view.tid(2)));
         QCOMPARE(h.answer("view-rt " + view.tid(3)), QString("ok view-rt %1: real-time").arg(view.tid(3)));
+        QCOMPARE(schedOf(view.tid(3)), viewRealtimeSched());
         QVERIFY(readFile(path("/run/vitrine-helper/sched-" + QString::number(getpid()) + ".state"))
                     .endsWith(" rt 1 view 1 kept " + view.tid(0).toLatin1() + "\n"));
         /* the QEMU's threads, the QEMU itself, and what is not a thread id */
@@ -3030,7 +3037,7 @@ private slots:
             a.kill();
         }
         QVERIFY(stateExists("sched-" + me));
-        QCOMPARE(schedOf(view.tid(0)), QString("1 1 0"));
+        QCOMPARE(schedOf(view.tid(0)), viewRealtimeSched());
         Helper b(m_root);
         QStringList before;
         for (QString l = b.line(); !l.isNull() && !l.startsWith("ready"); l = b.line()) {

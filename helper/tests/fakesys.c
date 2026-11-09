@@ -636,11 +636,13 @@ struct sched_args {
     int policy, priority, nice;
 };
 
+/* the policy as the kernel keeps it, SCHED_RESET_ON_FORK too (the saved
+   file shows it); read as sched_getscheduler() is, through sys_getsched() */
 static void get_entry(struct sched_entry *e, void *data)
 {
     struct sched_args *a = data;
 
-    a->policy = e->policy;
+    a->policy = e->policy & ~SCHED_RESET_ON_FORK;
     a->priority = e->priority;
     a->nice = e->nice;
 }
@@ -676,7 +678,9 @@ int sys_setsched(pid_t tid, int policy, int priority)
     int err = sched_with(tid, true, set_policy, &a);
 
     if (!err) {
-        journal("sched %d %s %d", (int)tid, policy == SCHED_FIFO ? "fifo" : "other", priority);
+        journal("sched %d %s %d%s", (int)tid,
+                (policy & ~SCHED_RESET_ON_FORK) == SCHED_FIFO ? "fifo" : "other", priority,
+                policy & SCHED_RESET_ON_FORK ? " reset-on-fork" : "");
     }
     return err;
 }

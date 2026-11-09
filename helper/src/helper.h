@@ -86,7 +86,8 @@ const char *sys_root(void);
 int sys_read(const char *path, char *buf, size_t size);
 /* Writes @value to the attribute file @path in one write(2): 0 or -errno */
 int sys_write(const char *path, const char *value);
-/* A thread's scheduling policy and real-time priority: 0 or -errno */
+/* A thread's scheduling policy and real-time priority: 0 or -errno.  The
+   policy read is without SCHED_RESET_ON_FORK; the one set may have it */
 int sys_getsched(pid_t tid, int *policy, int *priority);
 int sys_setsched(pid_t tid, int policy, int priority);
 /* A thread's nice value: 0 or -errno */

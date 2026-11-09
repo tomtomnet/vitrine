@@ -154,14 +154,22 @@ How it fits GTK:
 
 With host tuning on, the GTK app has vitrine-helper make the view's threads
 SCHED_FIFO 1 while its VM is in front, as it does the VM's QEMU threads
-(`view-rt`, docs/host-tuning.md): the render thread (`vmview-render`), its
-Wayland reader (`vmview-events`), the listener (`dbus-listener`), GLib's
-D-Bus worker (`gdbus`, which carries the view's calls), and the threads the
-GL driver started for the render thread's context - Mesa's glthread and
-threaded context, which do the render thread's GL work (radeonsi's
-`<process>:gl0` and `:gdrv0`). Not GTK's own threads. Mesa names its threads
-after the process, alike for GTK's contexts, so the view tells its own apart
-by who started them (`viewthreads`): the render thread runs at SCHED_BATCH
+(`view-rt`, docs/host-tuning.md): the app's main thread, GTK's, which
+passes the keyboard and mouse to QEMU and draws the window (its frame
+clock); the render thread (`vmview-render`), its Wayland reader
+(`vmview-events`), the listener (`dbus-listener`) and GLib's D-Bus worker
+(`gdbus`, which carries the view's calls). Not GTK's other threads (GLib's
+pool workers, `gmain`, dconf's). What they start begins ordinary
+(SCHED_RESET_ON_FORK): the main thread starts QEMU and builds, and a new
+render thread must start ordinary for its driver threads to be found.
+The view also finds the threads the GL driver started for the render
+thread's context - Mesa's glthread and threaded context, which do the
+render thread's GL work (radeonsi's `<process>:gl0` and `:gdrv0`) - but
+makes them real-time only with `VITRINE_VIEW_RT=all`: on a B50 under a
+compile they did not help, and beside an ordinary main thread they made
+it worse (below). Mesa names its threads after the process, alike for
+GTK's contexts, so the view tells its own apart by who started them
+(`viewthreads`): the render thread runs at SCHED_BATCH
 while it creates its context and first makes it current, the threads it
 starts inherit that, and those that appeared at SCHED_BATCH with its nice
 value are its own (Mesa's low-priority queues, its disk cache writer and
@@ -171,9 +179,14 @@ the listener's from `Listener::Callbacks::threadStarted` (vmview's local
 changes). `VmDisplay::threads()` has the set, once the render thread's
 reader runs, and again after each full-screen switch, which makes the render
 thread, its reader and its context anew; VmConsole hands it to HostSettings.
-On a B50 under a compile, the copied full screen lost 0.57-1.13 frames a
-second with every thread of `vitrine-gtk-view` real-time, against 1.5-7.0
-(the research's bfs3, 2026-11-09).
+On a B50 under a compile, the copied full screen of a GNOME guest lost
+3.0 frames a second with the view's threads at normal priority (6 boots),
+0.9-1.5 with the render thread, its reader, the listener and GDBus's
+worker real-time (9, in two runs), 1.8 with the driver thread too (7),
+0.8 with the main thread as well (3) and 0.8 with every thread of
+`vitrine-gtk-view` (11); the default, all but the driver thread, was not
+run on its own (the research's bfs3, brt1, brt2 and brt4, 2026-11-09;
+every boot had 99-100 % of its frames on time).
 
 ## The nested desktop (`nesteddisplay`)
 
@@ -263,11 +276,11 @@ what vitrine ships:
   `--flips-wait-toggle SECONDS` turns it over while the view shows.
 - `VITRINE_VIEW_INHIBIT=0`: never asks for the desktop's shortcuts (above).
 - `VITRINE_VIEW_RT`: which of the view's threads the GTK app has made
-  real-time while its VM is in front (above): unset or `1`, all of them;
-  `named`, all but the driver threads (render, events, listener, gdbus);
-  `0`, none. Said on stderr once when set. `vitrine-gtk-view` makes none
-  real-time, whatever it says: a bench raises the threads of its thread
-  line (below).
+  real-time while its VM is in front (above): unset or `named`, all but
+  the driver threads (main, render, events, listener, gdbus); `all` or
+  `1`, all of them; `0`, none. Said on stderr once when set.
+  `vitrine-gtk-view` makes none real-time, whatever it says: a bench
+  raises the threads of its thread line (below).
 - `VITRINE_VIEW_COMPOSITE=1`: the pixel over the frames
   (`DisplaySurface::setOverlay`) whatever the guest, windowed too, so
   that the compositor composites the view instead of scanning its frames
@@ -281,7 +294,7 @@ The view, in the app and in `vitrine-gtk-view`, writes its threads to
 stderr as one line, for benches to raise exactly those (`chrt`):
 
 ```
-vitrine: display: threads: render=TID events=TID listener=TID gdbus=TID driver=TID:NAME ...
+vitrine: display: threads: main=TID render=TID events=TID listener=TID gdbus=TID driver=TID:NAME ...
 ```
 
 - One line per change of the set, once the render thread's set is complete
@@ -290,8 +303,9 @@ vitrine: display: threads: render=TID events=TID listener=TID gdbus=TID driver=T
   gdbus stay), and when the listener's thread shows after that. Never
   wrapped; nothing else on the line.
 - After the prefix `vitrine: display: threads:`, tokens separated by one
-  space: `render=TID`, `events=TID`, `listener=TID`, `gdbus=TID` in that
-  order, each left out when its thread is not there; then `driver=TID:NAME`
+  space: `main=TID` (the process's main thread, GTK's: its TID is the
+  process id), `render=TID`, `events=TID`, `listener=TID`, `gdbus=TID` in
+  that order, each left out when its thread is not there; then `driver=TID:NAME`
   for each thread the GL driver started for the render thread's context, by
   id. TID: a Linux thread id of the view's process (`/proc/PID/task/TID`),
   digits only, ended by a space or, for a driver thread, by the first `:`.
@@ -303,15 +317,19 @@ vitrine: display: threads: render=TID events=TID listener=TID gdbus=TID driver=T
 - Example (`vitrine-gtk-view` on a Radeon 780M, radeonsi):
 
   ```
-  vitrine: display: threads: render=3870319 events=3870327 listener=3869904 gdbus=3869892 driver=3870321:vitrine-:gdrv0 driver=3870322:vitrine-gt:gl0
+  vitrine: display: threads: main=3869880 render=3870319 events=3870327 listener=3869904 gdbus=3869892 driver=3870321:vitrine-:gdrv0 driver=3870322:vitrine-gt:gl0
   ```
 
-- Read in a shell:
+- Read in a shell, raised as the app raises them by default: not the
+  driver threads, and with SCHED_RESET_ON_FORK (`-R`), so that what they
+  start begins ordinary (a new render thread inheriting real time from
+  the main thread would hide its driver threads):
 
   ```
   line=$(grep '^vitrine: display: threads: ' view.log | tail -1)
   for tok in ${line#vitrine: display: threads: }; do
+      case $tok in driver=*) continue ;; esac
       tid=${tok#*=}; tid=${tid%%:*}
-      sudo chrt -f -p 1 "$tid"
+      sudo chrt -f -R -p 1 "$tid"
   done
   ```
