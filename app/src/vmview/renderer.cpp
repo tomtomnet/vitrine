@@ -117,6 +117,10 @@ struct Feedback {
     wl_callback *frame = nullptr;   // the compositor's frame callback for the same commit
     int64_t swapNs = 0;             // when the frame was handed to the compositor
     int64_t frameDoneNs = 0;        // when the compositor let us draw again
+    // the compositor lead goes to QEMU with the presentation: for the frames
+    // copied in full screen only, from which QEMU may estimate the host's
+    // deadline (x-vblank-deadline-callback); the others' targets are fixed
+    bool passLead = false;
 };
 
 class RenderState
@@ -137,7 +141,7 @@ public:
     void upload(const Scanout &s, const uint8_t *pixels, uint32_t stride);
     void draw(const Scanout *s, GLuint fbo, QSize view, GLuint target = 0);
     Feedback *requestFeedback(wl_surface *surface, int64_t recvNs, uint64_t serial,
-                              Replies *replies);
+                              Replies *replies, bool passLead);
     void dispatchWayland();
     void destroyCache();
     void presented(Feedback *d, int64_t t, uint32_t refresh);
@@ -282,7 +286,8 @@ void RenderState::presented(Feedback *d, int64_t t, uint32_t refresh)
     if (!sinkConn || sinkPath.isEmpty() || clockId != CLOCK_MONOTONIC) {
         return;
     }
-    int64_t compositorLead = d->frameDoneNs ? t - d->frameDoneNs : 0;
+    // 0, not known, but for a frame copied in full screen (Feedback::passLead)
+    int64_t compositorLead = d->passLead && d->frameDoneNs ? t - d->frameDoneNs : 0;
     int64_t swapLead = d->swapNs ? t - d->swapNs : 0;
     g_dbus_connection_call(sinkConn, nullptr, sinkPath.constData(),
                            "org.qemu.Display1.Presentation", "Presented",
@@ -687,7 +692,7 @@ void RenderState::finiWayland()
 }
 
 Feedback *RenderState::requestFeedback(wl_surface *surface, int64_t recvNs, uint64_t serial,
-                                       Replies *replies)
+                                       Replies *replies, bool passLead)
 {
     if (!presentation || !surface) {
         return nullptr;
@@ -695,6 +700,7 @@ Feedback *RenderState::requestFeedback(wl_surface *surface, int64_t recvNs, uint
     std::lock_guard g(lock);
     struct wp_presentation_feedback *fb = wp_presentation_feedback(presentation, surface);
     auto *d = new Feedback{this, recvNs, serial, {}, fb};
+    d->passLead = passLead;
     if (replies) {
         d->replies = std::move(*replies);
         replies->clear();
@@ -1134,8 +1140,10 @@ void Renderer::run()
                 gb = st.guestBuffer(*scanout);
             }
             if (gb) {
+                // zero copy, in a window or in full screen: no lead for QEMU
                 Feedback *fb = st.requestFeedback(m_wlSurface, recvNs, update,
-                                                  m_opts.replyOnPresent ? &deferred : nullptr);
+                                                  m_opts.replyOnPresent ? &deferred : nullptr,
+                                                  false);
                 wl_surface_attach(m_wlSurface, gb->buffer, 0, 0);
                 // all of it: the compositor may not have shown the guest's previous frame
                 wl_surface_damage_buffer(m_wlSurface, 0, 0, INT32_MAX, INT32_MAX);
@@ -1195,8 +1203,10 @@ void Renderer::run()
                     st.releaseAfterGpu(drawnInode);
                 }
             }
+            // copied: the lead for QEMU in full screen only
             Feedback *fb = st.requestFeedback(m_wlSurface, recvNs, update,
-                                              m_opts.replyOnPresent ? &deferred : nullptr);
+                                              m_opts.replyOnPresent ? &deferred : nullptr,
+                                              fullScreen);
             if (st.zcSupported) {
                 std::lock_guard g(st.lock);
                 st.attached = nullptr;   // our own buffer replaces the guest's on the surface

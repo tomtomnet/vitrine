@@ -390,7 +390,8 @@ private slots:
         QCOMPARE(paused("-display none\n"), 0);
     }
 
-    /* The swap targets of the 3D card, where vm.args leaves them out */
+    /* The swap targets of the 3D card, and the deadline it estimates, where
+       vm.args leaves them out */
     void computedProperties()
     {
         QStringList asked;
@@ -446,6 +447,51 @@ private slots:
                           "value=0\n-device virtio-vga-gl\n"),
                  "-global driver=virtio-gpu-gl-device,property=x-vblank-swap-target-zc,"
                  "value=0\n-device virtio-vga-gl,x-vblank-swap-target=6000\n");
+        /* the copied full screen's estimated deadline: GNOME's or another
+           desktop's in vitrine's window, with a QEMU that has all three */
+        const QStringList deadline = {"x-vblank-swap-target", "x-vblank-swap-target-zc",
+                                      "x-vblank-deadline", "x-vblank-deadline-callback",
+                                      "x-vblank-deadline-hold"};
+        const QString estimated = "x-vblank-deadline=on,x-vblank-deadline-callback=on,"
+                                  "x-vblank-deadline-hold=8";
+        QCOMPARE(computed("#guest linux,desktop=gnome\n-device virtio-vga-gl\n"
+                          "-display dbus,p2p=yes,gl=on\n", deadline),
+                 "#guest linux,desktop=gnome\n-device virtio-vga-gl,"
+                 "x-vblank-swap-target=6000,x-vblank-swap-target-zc=4500," + estimated + "\n"
+                 "-display dbus,p2p=yes,gl=on\n");
+        QCOMPARE(computed("-device virtio-gpu-gl-pci\n-display dbus,p2p=yes,gl=on\n", deadline),
+                 "-device virtio-gpu-gl-pci,x-vblank-swap-target=6000,"
+                 "x-vblank-swap-target-zc=4500," + estimated + "\n-display dbus,p2p=yes,gl=on\n");
+        /* not for KDE's, nor in QEMU's window */
+        QCOMPARE(computed("#guest linux,desktop=kde\n-device virtio-vga-gl\n"
+                          "-display dbus,p2p=yes,gl=on\n", deadline),
+                 "#guest linux,desktop=kde\n-device virtio-vga-gl,"
+                 "x-vblank-swap-target=4500,x-vblank-swap-target-zc=4500\n"
+                 "-display dbus,p2p=yes,gl=on\n");
+        QCOMPARE(computed("#guest linux,desktop=gnome\n-device virtio-vga-gl\n"
+                          "-display sdl,gl=on\n", deadline),
+                 "#guest linux,desktop=gnome\n-device virtio-vga-gl,"
+                 "x-vblank-swap-target=6000,x-vblank-swap-target-zc=3500\n"
+                 "-display sdl,gl=on\n");
+        /* none of the three with a QEMU that has x-vblank-deadline alone (an
+           older one), or where the user set one of them or the swap target */
+        QCOMPARE(computed("-device virtio-vga-gl\n-display dbus,p2p=yes,gl=on\n",
+                          {"x-vblank-swap-target", "x-vblank-deadline", "x-vblank-deadline-hold"}),
+                 "-device virtio-vga-gl,x-vblank-swap-target=6000\n"
+                 "-display dbus,p2p=yes,gl=on\n");
+        QCOMPARE(computed("-device virtio-vga-gl,x-vblank-deadline-hold=2\n"
+                          "-display dbus,p2p=yes,gl=on\n", deadline),
+                 "-device virtio-vga-gl,x-vblank-deadline-hold=2,x-vblank-swap-target=6000,"
+                 "x-vblank-swap-target-zc=4500\n-display dbus,p2p=yes,gl=on\n");
+        QCOMPARE(computed("-device virtio-vga-gl,x-vblank-swap-target=5000\n"
+                          "-display dbus,p2p=yes,gl=on\n", deadline),
+                 "-device virtio-vga-gl,x-vblank-swap-target=5000,x-vblank-swap-target-zc=4500\n"
+                 "-display dbus,p2p=yes,gl=on\n");
+        QCOMPARE(computed("-device virtio-vga-gl\n-display dbus,p2p=yes,gl=on\n"
+                          "-global virtio-gpu-gl-device.x-vblank-deadline=off\n", deadline),
+                 "-device virtio-vga-gl,x-vblank-swap-target=6000,x-vblank-swap-target-zc=4500\n"
+                 "-display dbus,p2p=yes,gl=on\n"
+                 "-global virtio-gpu-gl-device.x-vblank-deadline=off\n");
         /* a QEMU without them, or one whose properties are not known */
         QCOMPARE(computed("-device virtio-gpu-gl-pci,blob=on\n", {"blob"}),
                  "-device virtio-gpu-gl-pci,blob=on\n");

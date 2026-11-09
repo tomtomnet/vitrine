@@ -144,6 +144,22 @@ How it fits GTK:
   at `x-vblank-swap-target`, not at the direct scanout's
   `x-vblank-swap-target-zc`. In a window the compositor composites
   anyway: zero copy stays.
+- With each frame's presentation the view passes QEMU the compositor
+  lead (the presentation less the frame callback of the same commit),
+  for the frames it copies in full screen only; 0, not known, for the
+  others (`Feedback::passLead`). From it a QEMU with
+  `x-vblank-deadline-callback` estimates the host's deadline for those
+  frames: their target is then the host's lead plus 1 ms and its margin
+  (700 us), up at once and down after 8 calm windows
+  (`x-vblank-deadline-hold=8`), which vitrine sets for guests other than
+  KDE's in its window (`VmRunner::withComputedProperties`). The copied
+  full screen came 0.35 ms sooner than at the fixed 6 ms, as smoothly, on
+  a Radeon 780M and an Arc Pro B50 at rest and under CPU and GPU loads
+  (the research's lgt4 and bcb3, 2026-11-09); without the margin the
+  view's own copy came late under a GPU load on the 780M. A window of
+  presentations without a lead (144) drops the estimate, so the window
+  keeps the fixed 6 ms, and the direct scanout its own target. A user's
+  swap target in `vm.args` keeps it fixed.
 - The guest is told its screen's physical size with each size (UIInfo's
   `width_mm` and `height_mm`): the view's share of its monitor's, from
   GdkMonitor's width_mm and height_mm, through `core/physicalsize.h` as the Qt

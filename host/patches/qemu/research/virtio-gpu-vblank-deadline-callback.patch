@@ -1,0 +1,109 @@
+From afc48b7ee69e2e99a40749c22bf5980c22a8325c Mon Sep 17 00:00:00 2001
+From: tomtomnet <tompere8000@proton.me>
+Date: Mon, 9 Nov 2026 02:37:42 +0100
+Subject: [PATCH] virtio-gpu: x-vblank-deadline-callback, the host's deadline
+ estimated from its frame callbacks
+
+x-vblank-deadline follows the latching deadline the host compositor
+reports with each presentation (wp_presentation v3, a proposal; our host
+KWin sends it), but GNOME's Mutter sends none, and neither does the D-Bus
+display (vitrine's view). A nested KWin, a Wayland client of its host,
+has the same problem and estimates the deadline from each frame (KWin MR
+8261): the presentation minus the frame callback that followed the
+commit - the host made its frame that long before it - plus a
+millisecond for the host's paint. The displays already pass that
+interval with each presentation (the compositor lead).
+
+x-vblank-deadline-callback=on (with x-vblank-deadline=on): a presentation
+without a host deadline feeds the deadline window with compositor lead +
+1 ms, from frames that waited at least 0.5 ms for the host (an idle host
+takes a commit at once and its callback only echoes it). On a Radeon 780M
+at 4K 240 Hz under GNOME 51 the estimate per window was 5.2-8.2 ms
+(median 5.7-6.8) where a fixed 3.7 ms target left 76-95 % of the frames
+of a window drag a refresh late. Off by default.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ hw/display/virtio-gpu-base.c   | 28 ++++++++++++++++++++++++++++
+ hw/display/virtio-gpu.c        |  1 +
+ include/hw/virtio/virtio-gpu.h |  6 ++++++
+ 3 files changed, 35 insertions(+)
+
+diff --git a/hw/display/virtio-gpu-base.c b/hw/display/virtio-gpu-base.c
+index 4de689cc0f..98321e5f27 100644
+--- a/hw/display/virtio-gpu-base.c
++++ b/hw/display/virtio-gpu-base.c
+@@ -452,6 +452,28 @@ static void virtio_gpu_vblank_deadline(VirtIOGPUBase *g,
+     s->vblank_deadline_target_ns = target;
+ }
+ 
++/*
++ * x-vblank-deadline-callback: a host that sends no deadline of its own
++ * (GNOME's Mutter; KWin without our presentation-time v3 patch; vitrine's
++ * view, which passes none yet) has it estimated as a nested KWin estimates
++ * its host's (KWin MR 8261, WaylandOutput::framePresented): the
++ * presentation minus the frame callback that followed the commit - the host
++ * made its frame that long before it - plus a millisecond for the host's
++ * paint after its latch.  Only frames of a burst (presentations a refresh
++ * apart, as the regulator's) that waited for the host count: an idle host
++ * takes a commit at once, and its callback then only echoes the commit.  Up
++ * to three refreshes: Mutter 48+ triple-buffers once its estimate passes a
++ * refresh (it takes a frame at the vblank minus its max update time, 5-7 ms
++ * on the 780M at 4K 240).  The samples go through virtio_gpu_vblank_deadline
++ * as a host's own would (90th percentile of a window,
++ * x-vblank-deadline-margin, two windows to agree on a change).  On the 780M
++ * (GNOME 51, 2026-11-09, lgd1/lgd2) the estimate per window was 5.2-8.2 ms
++ * (median 5.7-6.8), where the fixed 3.7 ms left 76-95 % of the frames a
++ * refresh late.
++ */
++#define VBLANK_CALLBACK_PAINT_NS    SCALE_MS
++#define VBLANK_CALLBACK_WAIT_NS     (500 * SCALE_US)
++
+ /*
+  * The display switched between frames the host has to copy or composite and
+  * the guest's buffers going to the screen as they are (zero copy in full
+@@ -528,6 +550,12 @@ virtio_gpu_gl_presented(void *opaque, uint32_t head, int64_t when_ns,
+     if (g->vblank_deadline && deadline_ns > 0 && s->vblank_period_ns &&
+         deadline_ns < 2 * s->vblank_period_ns) {
+         virtio_gpu_vblank_deadline(g, s, head, deadline_ns);
++    } else if (g->vblank_deadline && g->vblank_deadline_callback && deadline_ns <= 0 &&
++               s->vblank_period_ns && compositor_lead_ns > 0 &&
++               s->vblank_in_a_row >= VBLANK_BURST_START &&
++               swap_lead_ns - compositor_lead_ns >= VBLANK_CALLBACK_WAIT_NS &&
++               compositor_lead_ns + VBLANK_CALLBACK_PAINT_NS < 3 * s->vblank_period_ns) {
++        virtio_gpu_vblank_deadline(g, s, head, compositor_lead_ns + VBLANK_CALLBACK_PAINT_NS);
+     }
+     if (g->vblank_lead_auto && g->vblank_lead_us && s->vblank_period_ns) {
+         virtio_gpu_vblank_lead_auto(g, s, head, when_ns, compositor_lead_ns,
+diff --git a/hw/display/virtio-gpu.c b/hw/display/virtio-gpu.c
+index 0ea1a82e71..b825f7dac2 100644
+--- a/hw/display/virtio-gpu.c
++++ b/hw/display/virtio-gpu.c
+@@ -2010,6 +2010,7 @@ static const Property virtio_gpu_properties[] = {
+     DEFINE_PROP_UINT32("x-vblank-swap-target-zc", VirtIOGPU, parent_obj.vblank_swap_target_zc_us, 0),
+     DEFINE_PROP_BOOL("x-vblank-deadline", VirtIOGPU, parent_obj.vblank_deadline, false),
+     DEFINE_PROP_UINT32("x-vblank-deadline-margin", VirtIOGPU, parent_obj.vblank_deadline_margin_us, 700),
++    DEFINE_PROP_BOOL("x-vblank-deadline-callback", VirtIOGPU, parent_obj.vblank_deadline_callback, false),
+ };
+ 
+ static void virtio_gpu_class_init(ObjectClass *klass, const void *data)
+diff --git a/include/hw/virtio/virtio-gpu.h b/include/hw/virtio/virtio-gpu.h
+index 089d7444a0..3bc7ae582a 100644
+--- a/include/hw/virtio/virtio-gpu.h
++++ b/include/hw/virtio/virtio-gpu.h
+@@ -254,6 +254,12 @@ struct VirtIOGPUBase {
+      */
+     bool vblank_deadline;
+     uint32_t vblank_deadline_margin_us;
++    /*
++     * ... and without one from the host, the deadline estimated from the
++     * host's frame callbacks, as a nested KWin does (see
++     * VBLANK_CALLBACK_PAINT_NS)
++     */
++    bool vblank_deadline_callback;
+     int enable;
+ 
+     MemoryRegion hostmem;
+-- 
+2.56.0
+
