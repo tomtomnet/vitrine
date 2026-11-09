@@ -37,9 +37,15 @@ class TestBuildComponents : public QObject
         return f.open(QIODevice::ReadOnly) ? f.readAll() : QByteArray();
     }
 
-    static QString run(const QStringList &args, int *status = nullptr)
+    /* bash with @args, @env's NAME=value pairs on top of this process's environment */
+    static QString run(const QStringList &args, int *status = nullptr, const QStringList &env = {})
     {
         QProcess p;
+        QProcessEnvironment e = QProcessEnvironment::systemEnvironment();
+        for (const QString &pair : env) {
+            e.insert(pair.section('=', 0, 0), pair.section('=', 1));
+        }
+        p.setProcessEnvironment(e);
         p.start("bash", args);
         p.waitForFinished(60000);
         if (status) {
@@ -184,7 +190,7 @@ private slots:
         }
         QCOMPARE(ids, QStringList({"virglrenderer", "rutabaga_gfx", "passt", "qemu", "tools", "mesa",
                                    "kwayland", "kwin", "proxy", "kpipewire", "qtbase", "ksvg",
-                                   "kirigami", "medium"}));
+                                   "kirigami", "mutter", "medium"}));
         QCOMPARE(find(all, "qemu").kind, Kind::Host);
         QCOMPARE(find(all, "qemu").title, "QEMU");
         QCOMPARE(find(all, "qemu").deps, QStringList({"virglrenderer", "rutabaga_gfx"}));
@@ -204,7 +210,7 @@ private slots:
         QCOMPARE(find(all, "medium").kind, Kind::Medium);
         QCOMPARE(find(all, "medium").deps,
                  QStringList({"tools", "mesa", "kwayland", "kwin", "proxy", "kpipewire", "qtbase",
-                              "ksvg", "kirigami"}));
+                              "ksvg", "kirigami", "mutter"}));
         /* KWin built against vitrine's KWayland, whose signals its nested desktop uses */
         QCOMPARE(find(all, "kwayland").kind, Kind::Package);
         QCOMPARE(find(all, "kwayland").title, "KWayland");
@@ -218,6 +224,13 @@ private slots:
         QVERIFY(find(all, "qtbase").heavy);
         QVERIFY(!find(all, "ksvg").heavy);
         QVERIFY(!find(all, "kirigami").heavy);
+        /* Mutter: Fedora 45's, for its GNOME guests */
+        QCOMPARE(find(all, "mutter").kind, Kind::Package);
+        QCOMPARE(find(all, "mutter").title, "Mutter");
+        QVERIFY(!find(all, "mutter").heavy);
+        QVERIFY(find(all, "mutter").deps.isEmpty());
+        QVERIFY(builtFor(find(all, "mutter"), "45"));
+        QVERIFY(!builtFor(find(all, "mutter"), "44"));
         QVERIFY(!find(all, "nothing").isValid());
 
         /* none of a folder that is not there; a package without its spec neither */
@@ -268,6 +281,14 @@ private slots:
         /* KWin's: KWayland's key last */
         QVERIFY(inputLines(find(all, "kwin"), all)
                     .endsWith("\ndep kwayland " + key(find(all, "kwayland"), all).toLatin1() + '\n'));
+        /* Mutter's, built for Fedora 45 only */
+        QVERIFY2(!inputs.contains("mutter "), qPrintable(inputs));
+        const QString inputs45 = run({places.guestDir + "/build-rpms.sh", "--print-inputs", "mutter"},
+                                     &status, {"FEDORA_RELEASE=45"});
+        QCOMPARE(status, 0);
+        QCOMPARE(inputs45, QString("mutter %1\n").arg(key(find(all, "mutter"), all)));
+        QCOMPARE(key(find(all, "mutter"), all),
+                 GuestToolsBuilder::inputsHash(places.guestDir, "mutter"));
         /* the medium's: its packages' keys and its script */
         const QByteArray medium = inputLines(find(all, "medium"), all);
         QVERIFY(medium.startsWith("dep tools " + key(find(all, "tools"), all).toLatin1() + '\n'));
@@ -324,6 +345,19 @@ private slots:
         for (const Patch &p : patches(c)) {
             QCOMPARE(p.origin, "Research");
         }
+
+        /* GNOME's macros: a development release's tilde is a dot in its tarball's name */
+        QVERIFY(write(dir + "/gnomefoo/gnome-foo.spec",
+                      "Name: gnome-foo\nVersion: 52~rc\nRelease: 1.1.x1%{?dist}\n"
+                      "Source0: http://download.gnome.org/sources/%{name}/%{gnome_major_version}/"
+                      "%{name}-%{gnome_tarball_version}.tar.xz\n"));
+        Component g;
+        g.id = "gnomefoo";
+        g.kind = Kind::Package;
+        g.dir = dir;
+        g.values = {{"spec", "gnomefoo/gnome-foo.spec"}};
+        QCOMPARE(source(g).archive, "gnome-foo-52.rc.tar.xz");
+        QCOMPARE(source(g).revision, "52~rc-1.1.x1");
     }
 
     /* A series file names the patches in its order; the folders otherwise */
@@ -471,6 +505,23 @@ private slots:
         QCOMPARE(subject(kwayland, kwaylandPatches[0]),
                  "client: the pointer and touch events of wl_seat versions 6 to 9");
         QVERIFY(QFileInfo::exists(kwayland.dir + '/' + kwaylandPatches[0].path));
+        /* Mutter: Fedora's spec as its source RPM has it (rpmautospec's header, no patches of
+           its own), the research's m1 as Patch1001 with the comment over it, its Subject
+           folded over two lines */
+        const Component mutter = find(all, "mutter");
+        const QList<Patch> mutterPatches = patches(mutter);
+        QCOMPARE(mutterPatches.size(), 1);
+        QCOMPARE(mutterPatches[0].number, "1001");
+        QCOMPARE(mutterPatches[0].origin, "Research");
+        QCOMPARE(mutterPatches[0].path,
+                 "mutter/0001-clutter-frame-clock-Seed-the-update-duration-estimat.patch");
+        QCOMPARE(subject(mutter, mutterPatches[0]),
+                 "clutter/frame-clock: Seed the update duration estimates with at most a refresh "
+                 "cycle");
+        QVERIFY2(mutterPatches[0].note.startsWith("A new frame clock seeded its update-duration "
+                                                  "estimates with its first presented frame"),
+                 qPrintable(mutterPatches[0].note));
+        QVERIFY(QFileInfo::exists(mutter.dir + '/' + mutterPatches[0].path));
         const QList<Patch> mesaPatches = patches(find(all, "mesa"));
         QCOMPARE(mesaPatches.size(), 5);
         QCOMPARE(subject(find(all, "mesa"), mesaPatches[2]),
@@ -584,6 +635,13 @@ private slots:
         const Source kirigami = source(find(all, "kirigami"));
         QCOMPARE(kirigami.archive, "kirigami-6.31.0.tar.xz");
         QCOMPARE(kirigami.revision, "6.31.0-1.1.f1");
+        /* GNOME's %{gnome_tarball_version}; the release set by hand in place of %autorelease */
+        const Source mutter = source(find(all, "mutter"));
+        QCOMPARE(mutter.archive, "mutter-51.1.tar.xz");
+        QCOMPARE(mutter.archiveHost, "download.gnome.org");
+        QCOMPARE(mutter.url, "http://www.gnome.org");
+        QCOMPARE(mutter.revision, "51.1-1.1.m1");
+        QCOMPARE(GuestToolsBuilder::version(find(all, "mutter").dir, "mutter"), "51.1");
         const Source tools = source(find(all, "tools"));
         QVERIFY(tools.archiveHost.isEmpty());
         QVERIFY(tools.revision.startsWith("0.1.0-"));

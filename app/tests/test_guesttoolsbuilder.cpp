@@ -334,7 +334,14 @@ private slots:
         QCOMPARE(GuestToolsBuilder::version(GUEST_SOURCE_DIR, "kwin"), "6.8.2");
         QCOMPARE(GuestToolsBuilder::packages(GUEST_SOURCE_DIR),
                  QStringList({"tools", "mesa", "kwayland", "kwin", "proxy", "kpipewire", "qtbase",
+                              "ksvg", "kirigami", "mutter"}));
+        /* the KDE packages Fedora 44's, Mutter Fedora 45's */
+        QCOMPARE(GuestToolsBuilder::packages(GUEST_SOURCE_DIR, "44"),
+                 QStringList({"tools", "mesa", "kwayland", "kwin", "proxy", "kpipewire", "qtbase",
                               "ksvg", "kirigami"}));
+        QCOMPARE(GuestToolsBuilder::packages(GUEST_SOURCE_DIR, "45"),
+                 QStringList({"tools", "mesa", "mutter"}));
+        QCOMPARE(GuestToolsBuilder::version(GUEST_SOURCE_DIR, "mutter"), "51.1");
         /* KWin's inputs: KWayland's key, which it is built against */
         QVERIFY(GuestToolsBuilder::inputLines(GUEST_SOURCE_DIR, "kwin")
                     .endsWith("\ndep kwayland " +

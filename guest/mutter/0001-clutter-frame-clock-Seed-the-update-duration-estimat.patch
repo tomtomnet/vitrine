@@ -1,0 +1,48 @@
+From b547b2905741111dceb8e7c8f9346cd947c2e9f6 Mon Sep 17 00:00:00 2001
+From: tomtomnet <tompere8000@proton.me>
+Date: Mon, 9 Nov 2026 14:07:12 +0100
+Subject: [PATCH] clutter/frame-clock: Seed the update duration estimates with
+ at most a refresh cycle
+
+The first presented frame of a new frame clock seeds both the maximum and
+the minimum update duration estimates. That frame is often the one that
+set the mode of a new or reconfigured output, and a mode set can take
+several refresh cycles: in a virtual machine whose display followed a
+window going from full screen to windowed, 36 ms. The estimates then
+start at the 3-refresh cap (12.5 ms at 240 Hz), the clock dispatches up
+to three cycles ahead, and since the estimates only decay as frames get
+presented, the first seconds of motion after the mode set skip refresh
+cycles (3 a second over a 30 s drag, against 0.7 for a session whose
+mode was set at login).
+
+Seed them with at most one refresh cycle. A frame really that slow
+raises the maximum again at once: an overshoot beyond the margin is
+taken whole.
+
+Assisted-by: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ clutter/clutter/clutter-frame-clock.c | 8 ++++++++
+ 1 file changed, 8 insertions(+)
+
+diff --git a/clutter/clutter/clutter-frame-clock.c b/clutter/clutter/clutter-frame-clock.c
+index 12f4c90..b77bd32 100644
+--- a/clutter/clutter/clutter-frame-clock.c
++++ b/clutter/clutter/clutter-frame-clock.c
+@@ -538,6 +538,14 @@ adjust_update_duration_estimates (ClutterFrameClock *frame_clock,
+ 
+   if (frame_clock->max_update_duration_us == 0)
+     {
++      /*
++       * The first frame of a new frame clock is often the one that sets the
++       * mode, which can take several refresh cycles; seeding the estimates
++       * with it makes the clock dispatch up to three cycles ahead, and they
++       * only decay as frames get presented. Start from at most one refresh
++       * cycle: a frame really that slow raises the maximum again at once.
++       */
++      update_duration_us = MIN (update_duration_us, refresh_interval_us);
+       frame_clock->max_update_duration_us = update_duration_us;
+       frame_clock->min_update_duration_us = update_duration_us;
+       return;
+-- 
+2.56.0
+
