@@ -253,6 +253,12 @@ static bool alive(qint64 pid)
            stat[end + 2] != 'X';
 }
 
+/* A thread of this process, still there: the view's threads end with it */
+static bool threadAlive(qint64 tid)
+{
+    return tid > 0 && QFileInfo::exists(QString("/proc/self/task/%1").arg(tid));
+}
+
 /* The calling process for pkcheck: pid, start time, uid (no pid reuse) */
 static QString subject()
 {
@@ -413,8 +419,10 @@ HostSettings::HostSettings(VmStore *store, QObject *parent)
             watchVm(vm);
         }
         connect(store, &VmStore::added, this, &HostSettings::watchVm);
-        connect(store, &VmStore::removed, this,
-                [this](const QString &id) { setUntuned(m_tuned.take(id), {}); });
+        connect(store, &VmStore::removed, this, [this](const QString &id) {
+            m_viewThreads.remove(id);
+            setUntuned(m_tuned.take(id), {});
+        });
     }
     /*
      * QEMU gets no privilege any more: the helper sets its threads'
@@ -550,8 +558,10 @@ void HostSettings::preferencesChanged()
             m_out = "release\n";
             flush();
         }
-        /* focus priority with it: the helper's release put the threads back */
+        /* focus priority with it: the helper's release put the threads back,
+           the view's too */
         m_frontPid = 0;
+        m_viewAsked.clear();
         updateWindowFocus();
         /* and nothing to show: off is the user's choice */
         if (!m_untuned.isEmpty()) {
@@ -578,6 +588,20 @@ void HostSettings::setFront(const QString &vmId)
 
     if (pid > 0 && enabled()) {
         setFrontPid(pid);
+    }
+}
+
+void HostSettings::setViewThreads(const QString &vmId, const QList<qint64> &tids)
+{
+    if (tids.isEmpty()) {
+        m_viewThreads.remove(vmId);
+    } else {
+        m_viewThreads.insert(vmId, tids);
+    }
+    /* the VM in front's: to its helper, running or starting */
+    if (m_frontPid > 0 && !vmId.isEmpty() && m_tuned.value(vmId) == m_frontPid) {
+        sendView();
+        flush();
     }
 }
 
@@ -617,8 +641,43 @@ void HostSettings::sendFront(qint64 pid)
             m_out += "behind " + QByteArray::number(other) + '\n';
         }
     }
+    /* the view of the VM in front before went back with it: the helper puts
+       a view's threads back once no VM is in front, at that behind or as
+       that QEMU ended */
+    m_viewAsked.clear();
     if (m_expected.contains(pid)) {
         m_out += "rt " + QByteArray::number(pid) + '\n';
+        sendView();
+    }
+}
+
+void HostSettings::sendView()
+{
+    QList<qint64> want;
+
+    /* the view of the VM in front, to the helper that watches its QEMU (the
+       helper refuses them while none is in front, or without the bound) */
+    if (enabled() && m_frontPid > 0 && m_expected.contains(m_frontPid)) {
+        for (auto it = m_tuned.cbegin(); it != m_tuned.cend(); ++it) {
+            if (it.value() == m_frontPid) {
+                want = m_viewThreads.value(it.key());
+            }
+        }
+    }
+    /* threads that ended are no longer the helper's to put back */
+    m_viewAsked.removeIf([](qint64 tid) { return !threadAlive(tid); });
+    /* one still there that is no longer the view's (its view gone: GDBus's
+       worker, which stays): all back, the others again */
+    if (std::any_of(m_viewAsked.cbegin(), m_viewAsked.cend(),
+                    [&want](qint64 tid) { return !want.contains(tid); })) {
+        m_out += "view-behind\n";
+        m_viewAsked.clear();
+    }
+    for (const qint64 tid : std::as_const(want)) {
+        if (!m_viewAsked.contains(tid) && threadAlive(tid)) {
+            m_out += "view-rt " + QByteArray::number(tid) + '\n';
+            m_viewAsked.insert(tid);
+        }
     }
 }
 
@@ -628,6 +687,8 @@ void HostSettings::qemuGone(qint64 pid)
 
     if (pid > 0 && pid == m_frontPid) {
         m_frontPid = 0;
+        /* its view's threads: the helper put them back as it ended */
+        m_viewAsked.clear();
     }
     if (m_frontPid > 0 && alive(m_frontPid)) {
         return;
@@ -863,6 +924,20 @@ void HostSettings::handleLine(const QString &line)
     } else if (line.startsWith("ok fair-server on") || line.startsWith("skip fair-server") ||
                line.startsWith("error fair-server")) {
         fairServerLine(line);
+    } else if (line == "error view-rt: unknown request" ||
+               line == "error view-behind: unknown request") {
+        /* a helper installed before vitrine raised its view's threads: the
+           VMs are tuned as before */
+        say(tr("Host tuning: the installed vitrine-helper is older than Vitrine and cannot make "
+               "its view of the VM in front real-time: install it again."));
+    } else if (line.startsWith("skip view-rt ") || line.startsWith("ok view-")) {
+        /* skipped: no bound (its line said why), or no VM in front any more */
+    } else if (line.startsWith("error view-rt ")) {
+        /* "error view-rt TID: why": a thread that ended meanwhile is no news */
+        if (threadAlive(line.section(' ', 2, 2).section(':', 0, 0).toLongLong())) {
+            say(tr("Host tuning: the threads of the VM view stay ordinary: %1.")
+                    .arg(line.section(':', 1).trimmed()));
+        }
     } else if (line.startsWith("skip rt ")) {
         /* no real-time threads without the fair server: its line said why */
     } else if ((line.startsWith("error rt ") || line.startsWith("error behind ")) &&
@@ -988,6 +1063,8 @@ void HostSettings::reap()
     m_out.clear();
     m_expected.clear();
     m_udmabufAsked.clear();
+    /* it put the view's threads back as it ended */
+    m_viewAsked.clear();
     emit helperFinished();
     if (!ran) {
         /* pkexec refused it, though polkit said yes, or it could not start:
@@ -1043,6 +1120,7 @@ void HostSettings::deny(const Status &status, QSet<qint64> pids, bool always)
     m_out.clear();
     m_expected.clear();
     m_udmabufAsked.clear();
+    m_viewAsked.clear();
     for (qint64 pid : std::as_const(pids)) {
         if (alive(pid)) {
             setUntuned(pid, status);

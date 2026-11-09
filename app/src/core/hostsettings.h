@@ -187,6 +187,17 @@ public:
      */
     void windowActivated(qint64 pid);
     /*
+     * The threads of @vmId's view in this process (the GTK app's VmDisplay:
+     * its render thread and Wayland reader, its D-Bus listener, GLib's D-Bus
+     * worker): real-time with that VM's QEMU while the VM is in front (the
+     * helper's view-rt), ordinary otherwise - the helper puts them back as
+     * the VM goes behind or stops, and view-behind those of a view that went.
+     * On a full-screen switch the view gets new threads: only those are
+     * asked for.  Empty: the view is gone.  Only with tuning on, through the
+     * helper that tunes the VM, as QEMU's threads.
+     */
+    void setViewThreads(const QString &vmId, const QList<qint64> &tids);
+    /*
      * A VM is tuned that shows in windows of QEMU's own (SDL, GTK, the
      * nested desktop's own window): which one is active is the desktop's to
      * tell, through windowActivated().  windowFocusWanted() when it changes.
@@ -285,8 +296,15 @@ private:
     void vmStateChanged(Vm *vm);
     /* The QEMU @pid in front: the others behind, then it real-time */
     void setFrontPid(qint64 pid);
-    /* Its requests queued: every other QEMU watched behind, then @pid rt */
+    /* Its requests queued: every other QEMU watched behind, then @pid rt,
+       then its view's threads */
     void sendFront(qint64 pid);
+    /*
+     * The requests for the view of the VM in front: view-rt for its threads
+     * not asked for yet; view-behind first when a thread asked for, still
+     * there, is no longer wanted (its view gone, GDBus's worker left)
+     */
+    void sendView();
     /* The QEMU @pid is gone, or no longer watched: no longer in front, and
        with none in front, the one VM left, if only one, comes to the front */
     void qemuGone(qint64 pid);
@@ -328,6 +346,8 @@ private:
     QHash<QString, qint64> m_tuned;     // VM id -> its QEMU's pid
     qint64 m_frontPid = 0;              // the QEMU in front: real-time; 0: none
     qint64 m_activePid = 0;             // the process of the desktop's active window
+    QHash<QString, QList<qint64>> m_viewThreads;   // VM id -> its view's threads here
+    QSet<qint64> m_viewAsked;           // view-rt sent to this helper, not put back since
     bool m_windowFocus = false;         // wantsWindowFocus() as last said
     QSet<qint64> m_expected;            // QEMUs asked to be watched, not ended
     Access m_access = Access::Unknown;
