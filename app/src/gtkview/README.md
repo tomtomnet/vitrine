@@ -136,7 +136,8 @@ How it fits GTK:
   the frames' corner (`DisplaySurface::setOverlay`, the default until
   then), 3-5 % of the 780M's frames came a refresh late. Under a compile
   the B50 still stuttered 1.5-7 times a second, 0.6-1.1 with the view's
-  threads real-time, which vitrine does not do yet. A guest whose flips
+  threads real-time, as the GTK app now makes them while the VM is in
+  front (below). A guest whose flips
   don't wait keeps the direct scanout. QEMU hears of a copy or a
   composite as of a window (`Presentation.ZeroCopy` false,
   `Renderer::setFullScreenComposited`): it then aims the guest's frames
@@ -148,6 +149,31 @@ How it fits GTK:
   GdkMonitor's width_mm and height_mm, through `core/physicalsize.h` as the Qt
   view does; none where the monitor does not say. QEMU puts it in the EDID,
   and a GNOME guest picks its scale from it (QEMU's 100 DPI without).
+
+## The view's threads, real-time while its VM is in front
+
+With host tuning on, the GTK app has vitrine-helper make the view's threads
+SCHED_FIFO 1 while its VM is in front, as it does the VM's QEMU threads
+(`view-rt`, docs/host-tuning.md): the render thread (`vmview-render`), its
+Wayland reader (`vmview-events`), the listener (`dbus-listener`), GLib's
+D-Bus worker (`gdbus`, which carries the view's calls), and the threads the
+GL driver started for the render thread's context - Mesa's glthread and
+threaded context, which do the render thread's GL work (radeonsi's
+`<process>:gl0` and `:gdrv0`). Not GTK's own threads. Mesa names its threads
+after the process, alike for GTK's contexts, so the view tells its own apart
+by who started them (`viewthreads`): the render thread runs at SCHED_BATCH
+while it creates its context and first makes it current, the threads it
+starts inherit that, and those that appeared at SCHED_BATCH with its nice
+value are its own (Mesa's low-priority queues, its disk cache writer and
+u_trace's, are SCHED_BATCH at nice 19 of their own: left alone). The
+render thread's and its reader's ids come from `RenderTarget::threadStarted`,
+the listener's from `Listener::Callbacks::threadStarted` (vmview's local
+changes). `VmDisplay::threads()` has the set, once the render thread's
+reader runs, and again after each full-screen switch, which makes the render
+thread, its reader and its context anew; VmConsole hands it to HostSettings.
+On a B50 under a compile, the copied full screen lost 0.57-1.13 frames a
+second with every thread of `vitrine-gtk-view` real-time, against 1.5-7.0
+(the research's bfs3, 2026-11-09).
 
 ## The nested desktop (`nesteddisplay`)
 
@@ -236,9 +262,56 @@ what vitrine ships:
   agent of a guest with `blob_flush_fence` 3 would, and
   `--flips-wait-toggle SECONDS` turns it over while the view shows.
 - `VITRINE_VIEW_INHIBIT=0`: never asks for the desktop's shortcuts (above).
+- `VITRINE_VIEW_RT`: which of the view's threads the GTK app has made
+  real-time while its VM is in front (above): unset or `1`, all of them;
+  `named`, all but the driver threads (render, events, listener, gdbus);
+  `0`, none. Said on stderr once when set. `vitrine-gtk-view` makes none
+  real-time, whatever it says: a bench raises the threads of its thread
+  line (below).
 - `VITRINE_VIEW_COMPOSITE=1`: the pixel over the frames
   (`DisplaySurface::setOverlay`) whatever the guest, windowed too, so
   that the compositor composites the view instead of scanning its frames
   out directly: GNOME's Mutter scans out only a topmost surface that
   covers the screen. `vitrine-gtk-view --stats` counts the frames scanned
   out ("direct"): with the pixel, none should be.
+
+### The thread line (a stable interface)
+
+The view, in the app and in `vitrine-gtk-view`, writes its threads to
+stderr as one line, for benches to raise exactly those (`chrt`):
+
+```
+vitrine: display: threads: render=TID events=TID listener=TID gdbus=TID driver=TID:NAME ...
+```
+
+- One line per change of the set, once the render thread's set is complete
+  (its Wayland reader started): at the view's start, after each full-screen
+  switch (a new render thread, reader and driver threads; the listener and
+  gdbus stay), and when the listener's thread shows after that. Never
+  wrapped; nothing else on the line.
+- After the prefix `vitrine: display: threads:`, tokens separated by one
+  space: `render=TID`, `events=TID`, `listener=TID`, `gdbus=TID` in that
+  order, each left out when its thread is not there; then `driver=TID:NAME`
+  for each thread the GL driver started for the render thread's context, by
+  id. TID: a Linux thread id of the view's process (`/proc/PID/task/TID`),
+  digits only, ended by a space or, for a driver thread, by the first `:`.
+  NAME: the thread's name as Linux has it (`/proc/PID/task/TID/comm`, 15
+  characters at most; Mesa's `<process>:<queue>N`), any character but
+  letters, digits and `._:/+$-` turned into `_`.
+- After a full-screen switch, the next line is the new set (its `render=`
+  is new); the last line printed is the set in use.
+- Example (`vitrine-gtk-view` on a Radeon 780M, radeonsi):
+
+  ```
+  vitrine: display: threads: render=3870319 events=3870327 listener=3869904 gdbus=3869892 driver=3870321:vitrine-:gdrv0 driver=3870322:vitrine-gt:gl0
+  ```
+
+- Read in a shell:
+
+  ```
+  line=$(grep '^vitrine: display: threads: ' view.log | tail -1)
+  for tok in ${line#vitrine: display: threads: }; do
+      tid=${tok#*=}; tid=${tid%%:*}
+      sudo chrt -f -p 1 "$tid"
+  done
+  ```

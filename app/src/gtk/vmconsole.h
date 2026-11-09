@@ -138,6 +138,9 @@ private:
     void setPage(Page page);
     void notifyChanged();
     void notifyScreenReady();
+    /* The screen's threads for real time with the VM in front (HostSettings),
+       none without a screen */
+    void sendViewThreads();
 
     QObject m_qt;
     QPointer<Vm> m_vm;
