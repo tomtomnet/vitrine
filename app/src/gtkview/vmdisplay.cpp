@@ -537,17 +537,17 @@ VmDisplay::FullScreenPath VmDisplay::fullScreenPath() const
     if (m_fullScreenZeroCopyEnv == 1) {
         return FullScreenPath::Direct;
     }
-    return m_flipsWait ? FullScreenPath::Composited : FullScreenPath::Direct;
+    return m_flipsWait ? FullScreenPath::Copied : FullScreenPath::Direct;
 }
 
 /*
  * The window's renderer and surface as fullScreenPath() says, at once.
- * Composited, the renderer tells QEMU as for a window that the guest's
- * buffers do not go to the screen as they are (Presentation.ZeroCopy
- * false): the swap target of composited frames, x-vblank-swap-target
- * (6000 us but for KDE guests), not the -zc one of frames
- * scanned out (4500 in vitrine's window), which gave a full-screen spell of
- * half rate in the research's gdl14.
+ * Copied or composited, the renderer tells QEMU as for a window that the
+ * guest's buffers do not go to the screen as they are
+ * (Presentation.ZeroCopy false): their frames take x-vblank-swap-target
+ * (6000 us but for KDE guests), not the -zc one of frames scanned out
+ * (4500 in vitrine's window), which gave a full-screen spell of half rate
+ * in the research's gdl14.
  */
 void VmDisplay::applyFullScreenPath()
 {

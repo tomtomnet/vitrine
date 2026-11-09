@@ -81,16 +81,18 @@ public:
     /*
      * Whether the guest's flips wait for the view to give back the buffer
      * shown before (GuestTools::flipsWaitForRelease()); true until set.
-     * In full screen the compositor then composites the guest's buffers
-     * (FullScreenPath::Composited) rather than scanning them out: a buffer
-     * on the screen comes back only after the compositor's next flip, too
-     * late for a guest drawing at every refresh (half rate at 240 Hz on an
-     * Arc Pro B50, the research's window drags of 2026-11-08), and the
-     * composite stuttered less than a copy (its gdl8 run: 0.24 against 2.10
-     * stutters a second at rest, 0.41 against 5.05 under a light GPU load,
-     * level under a compile).  VITRINE_VIEW_FULL_SCREEN_ZERO_COPY=0 copies
-     * instead and =1 scans them out (composited with
-     * VITRINE_VIEW_COMPOSITE=1 too), for A/B runs.
+     * Full screen then copies the guest's frames into the view's own
+     * buffers, which the compositor scans out (FullScreenPath::Copied), as
+     * it does QEMU's SDL window: a buffer of the guest's on the screen
+     * comes back only after the compositor's next flip, too late for a
+     * guest drawing at every refresh (half rate at 240 Hz, the research's
+     * drags of 2026-11-08).  Copied, at QEMU's 6 ms target, every frame
+     * was on time on an Arc Pro B50 and on a Radeon 780M at 4K 240, as in
+     * SDL's window, and keys were as quick; composited, 3-5 % of the
+     * 780M's came a refresh late (the research's lgd3, bfs2 and dvk3,
+     * 2026-11-09).  VITRINE_VIEW_FULL_SCREEN_ZERO_COPY=1 scans the guest's
+     * buffers out instead, VITRINE_VIEW_COMPOSITE=1 composites them, for
+     * A/B runs.
      */
     void setFlipsWaitForRelease(bool on);
     /* How full screen shows the guest's frames */

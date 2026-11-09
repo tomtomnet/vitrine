@@ -125,19 +125,24 @@ How it fits GTK:
   a guest whose flips wait (`blob_flush_fence` 1: any compositor but
   vitrine's KWin), and while the guest's agent has not said since the
   boot (`VmDisplay::setFlipsWaitForRelease`, which the console sets from
-  the agent's report), full screen puts a nearly transparent pixel over
-  the frames' corner (`DisplaySurface::setOverlay`): the compositor
-  composites the guest's buffer, as in a window, and gives it back
-  sooner. Of the ways that keep the full rate, that one stuttered least
-  in the research's drags (gdl8, a terminal dragged by its title bar on a
-  GNOME 51 host: 0.24 stutters a second at rest against 2.10 with a copy,
-  0.41 against 5.05 under a light host GPU load, level under a compile).
-  A guest whose flips don't wait keeps the direct scanout. QEMU is told
-  of the composite as of a window (`Renderer::setFullScreenComposited`):
-  it then aims the guest's frames at the compositor's latch for
-  composited frames (`x-vblank-swap-target`), not at the later one of a
-  direct scanout (`x-vblank-swap-target-zc`). In a window the compositor
-  composites anyway: zero copy stays.
+  the agent's report), full screen copies the guest's frames into the
+  view's own buffers, which the compositor scans out as it does QEMU's
+  SDL window, and the guest's buffer comes back at once. At QEMU's 6 ms
+  swap target every frame was on time that way on an Arc Pro B50 and on
+  a Radeon 780M at 4K 240, as in SDL's window, and keys reached the
+  screen as quickly (the research's runs of 2026-11-09, lgd3, bfs2 and
+  dvk3, GNOME 51 guests on GNOME 51.1 hosts: 0.2-2.4 stutters a second at
+  rest on the 780M). Composited, under a nearly transparent pixel over
+  the frames' corner (`DisplaySurface::setOverlay`, the default until
+  then), 3-5 % of the 780M's frames came a refresh late. Under a compile
+  the B50 still stuttered 1.5-7 times a second, 0.6-1.1 with the view's
+  threads real-time, which vitrine does not do yet. A guest whose flips
+  don't wait keeps the direct scanout. QEMU hears of a copy or a
+  composite as of a window (`Presentation.ZeroCopy` false,
+  `Renderer::setFullScreenComposited`): it then aims the guest's frames
+  at `x-vblank-swap-target`, not at the direct scanout's
+  `x-vblank-swap-target-zc`. In a window the compositor composites
+  anyway: zero copy stays.
 - The guest is told its screen's physical size with each size (UIInfo's
   `width_mm` and `height_mm`): the view's share of its monitor's, from
   GdkMonitor's width_mm and height_mm, through `core/physicalsize.h` as the Qt
@@ -222,11 +227,11 @@ what vitrine ships:
 - `VITRINE_VIEW_FULL_SCREEN_ZERO_COPY=1` or `0`: in full screen, the
   guest's buffers go on the frames' surface as they are, for the
   compositor to scan out (1), or are copied (0), whatever the guest's
-  driver says; unset, the compositor composites them for a guest whose
-  flips wait for the release (above). With `VITRINE_VIEW_COMPOSITE=1`
-  too, `1` composites them: the default's way for such a guest. The view
-  says on stderr which of the three full screen takes, and why, at its
-  start and at each change ("vitrine: display: full screen: ...").
+  driver says; unset, they are copied for a guest whose flips wait for
+  the release (above). `VITRINE_VIEW_COMPOSITE=1`, alone or with `1`,
+  has the compositor composite them under the pixel. The view says on
+  stderr which of the three full screen takes, and why, at its start and
+  at each change ("vitrine: display: full screen: ...").
   `vitrine-gtk-view` has no agent to ask: `--flips-wait 0` says what the
   agent of a guest with `blob_flush_fence` 3 would, and
   `--flips-wait-toggle SECONDS` turns it over while the view shows.
