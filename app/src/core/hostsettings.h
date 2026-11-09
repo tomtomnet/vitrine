@@ -188,10 +188,11 @@ public:
     void windowActivated(qint64 pid);
     /*
      * The threads of @vmId's view in this process (the GTK app's VmDisplay:
-     * its render thread and Wayland reader, its D-Bus listener, GLib's D-Bus
-     * worker): real-time with that VM's QEMU while the VM is in front (the
-     * helper's view-rt), ordinary otherwise - the helper puts them back as
-     * the VM goes behind or stops, and view-behind those of a view that went.
+     * the main thread, GTK's; the view's render thread and Wayland reader,
+     * its D-Bus listener, GLib's D-Bus worker): real-time with that VM's
+     * QEMU while the VM is in front (the helper's view-rt), ordinary
+     * otherwise - the helper puts them back as the VM goes behind or stops,
+     * and view-behind those of a view that went.
      * On a full-screen switch the view gets new threads: only those are
      * asked for.  Empty: the view is gone.  Only with tuning on, through the
      * helper that tunes the VM, as QEMU's threads.

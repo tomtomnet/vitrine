@@ -18,7 +18,7 @@
  * default context, which GTK's loop runs, as in the GTK app.
  *
  * The view's threads go to stderr as one line at its start and after each
- * full-screen switch ("vitrine: display: threads: render=TID ...", the
+ * full-screen switch ("vitrine: display: threads: main=TID render=TID ...", the
  * format in README.md): this program raises none of them - the GTK app has
  * vitrine-helper make them real-time while the VM is in front - and a bench
  * raises exactly those, by their ids.

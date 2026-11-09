@@ -139,7 +139,7 @@ public:
 
     /* A thread of the view, for real time while its VM is in front */
     struct Thread {
-        enum class Role { Render, Events, Listener, GDBus, Driver };
+        enum class Role { Main, Render, Events, Listener, GDBus, Driver };
         Role role;
         pid_t tid;
         std::string name;   // a driver thread's (Mesa's), as Linux has it
@@ -148,11 +148,12 @@ public:
     /*
      * The view's threads, once its render thread's are all there (its
      * Wayland reader started), and again after each full-screen switch,
-     * which makes them anew: the render thread, its reader, the listener's,
-     * GLib's D-Bus worker, and the threads the GL driver started for the
-     * render thread's context (ViewThreads); empty before.  Each change goes
-     * to stderr as one line, a stable interface for benches
-     * (src/gtkview/README.md), and to threadsChanged.
+     * which makes them anew: the app's main thread (GTK's: the input it
+     * passes to QEMU, the window's frame clock), the render thread, its
+     * reader, the listener's, GLib's D-Bus worker, and the threads the GL
+     * driver started for the render thread's context (ViewThreads); empty
+     * before.  Each change goes to stderr as one line, a stable interface
+     * for benches (src/gtkview/README.md), and to threadsChanged.
      */
     const std::vector<Thread> &threads() const { return m_threads; }
     /* Those for real time, as VITRINE_VIEW_RT says: all but the driver

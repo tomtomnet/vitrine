@@ -109,15 +109,16 @@ void retire(DBusDisplay *dbus, std::unique_ptr<Stats> stats)
 
 /*
  * The view's threads as a bench reads them, one line: "vitrine: display:
- * threads:", then " ROLE=TID" for each of render, events, listener and gdbus
- * that is there, then " driver=TID:NAME" for each driver thread, by id.  The
- * name is Linux's (15 characters at most), anything but letters, digits and
- * ._:/+$- turned into _: no spaces, no =.  Its format is fixed: benches parse
- * it (src/gtkview/README.md).
+ * threads:", then " ROLE=TID" for each of main, render, events, listener
+ * and gdbus that is there, then " driver=TID:NAME" for each driver thread,
+ * by id.  The name is Linux's (15 characters at most), anything but
+ * letters, digits and ._:/+$- turned into _: no spaces, no =.  Its format
+ * is fixed: benches parse it (src/gtkview/README.md).
  */
 std::string threadLine(const std::vector<VmDisplay::Thread> &threads)
 {
-    static const char *const kRoles[] = {"render", "events", "listener", "gdbus", "driver"};
+    static const char *const kRoles[] = {"main",     "render", "events",
+                                         "listener", "gdbus",  "driver"};
     std::string line = "vitrine: display: threads:";
 
     for (const VmDisplay::Thread &thread : threads) {
@@ -691,6 +692,7 @@ void VmDisplay::updateThreads()
             now.push_back({role, tid, role == Role::Driver ? ViewThreads::name(tid) : std::string()});
         }
     };
+    add(Role::Main, getpid());
     add(Role::Render, m_renderTid);
     add(Role::Events, m_eventsTid);
     add(Role::Listener, m_listenerTid);
