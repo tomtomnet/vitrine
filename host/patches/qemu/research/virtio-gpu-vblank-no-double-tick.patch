@@ -1,0 +1,62 @@
+From 0fd33b9fb3245d18347f9f1f31917a9b6b00f4a4 Mon Sep 17 00:00:00 2001
+From: tomtomnet <tompere8000@proton.me>
+Date: Mon, 9 Nov 2026 06:23:35 +0100
+Subject: [PATCH] virtio-gpu: never two vblank ticks in one period
+
+The host vblank tick is re-scheduled after each tick at the first point of
+the presentation grid after now, the grid's phase following each
+presentation. Behind vitrine's GTK view, a nested GNOME guest's Mutter
+dates its virtual monitor's frames 0.98-1.02 periods apart; when a
+presentation moves the phase later by more than the timer ran late, the
+first grid point after now is the tick just fired, moved a little, and
+the guest gets a second tick in the same period: 75-77 ticks a second at
+60 Hz (vitrine's run of 2026-11-09; a nested KWin guest kept 60.0, its
+presentations steady). A tick less than half a period after the last one
+now goes a period later: a later phase makes one period a little longer
+instead. Moves earlier (at most 400 us at once) are untouched.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ hw/display/virtio-gpu-base.c | 16 +++++++++++++++-
+ 1 file changed, 15 insertions(+), 1 deletion(-)
+
+diff --git a/hw/display/virtio-gpu-base.c b/hw/display/virtio-gpu-base.c
+index a6692932ce..f26db46103 100644
+--- a/hw/display/virtio-gpu-base.c
++++ b/hw/display/virtio-gpu-base.c
+@@ -223,10 +223,11 @@ static void virtio_gpu_vblank_tick(void *opaque)
+     struct virtio_gpu_scanout *s = opaque;
+     VirtIOGPUBase *g = s->vblank_g;
+     int64_t now = qemu_clock_get_ns(QEMU_CLOCK_REALTIME);
++    int64_t this_tick = s->vblank_next_ns ? s->vblank_next_ns : now;
+     int64_t next;
+ 
+     /* this tick's time on the grid (the timer may run a little late) */
+-    g->vblank_config[s->vblank_head] = cpu_to_le64(s->vblank_next_ns ? s->vblank_next_ns : now);
++    g->vblank_config[s->vblank_head] = cpu_to_le64(this_tick);
+     virtio_gpu_notify_event(g, 1u << (16 + s->vblank_head));
+     /* the next tick, one period on, on the presentation grid minus the lead */
+     virtio_gpu_vblank_next_lead(g, s, get_clock());
+@@ -239,6 +240,19 @@ static void virtio_gpu_vblank_tick(void *opaque)
+          */
+         next += ((now - next) / s->vblank_period_ns + 1) * s->vblank_period_ns;
+     }
++    /*
++     * Never two ticks in one period.  The phase follows each presentation,
++     * and a display whose presentations wobble (Mutter's virtual monitor
++     * behind vitrine's view dates its frames 0.98-1.02 periods apart) can
++     * move it later by more than this timer ran late: the first grid point
++     * after now is then this very tick's, moved - and the guest got 75-77
++     * ticks a second at 60 Hz (vitrine, 2026-11-09).  A later phase makes one
++     * period a little longer instead; an earlier one (the regulator moves
++     * the tick at most VBLANK_LEAD_LONGER_NS earlier at once) is kept.
++     */
++    if (next - this_tick < s->vblank_period_ns / 2) {
++        next += s->vblank_period_ns;
++    }
+     s->vblank_next_ns = next;
+     timer_mod_ns(s->vblank_timer, next);
+ }
+-- 
+2.56.0
+
