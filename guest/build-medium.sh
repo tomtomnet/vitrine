@@ -11,11 +11,11 @@
 #
 # In:  $RPMS_DIR [~/.local/share/vitrine/guest-tools/rpms/fcRELEASE]/PACKAGE/
 #      *.rpm, for the packages of the medium's deps in components.conf (tools
-#      needed; without Mesa, KWin, KPipeWire, Qt Base, KSvg or Kirigami the
-#      medium keeps the guest's own, without the proxy there is no nested
-#      desktop).  A package built against another (its deps=: KWin against
-#      KWayland) goes on the medium only with that one's packages of the build
-#      it was built against: else no medium
+#      needed; without Mesa, KWin, KPipeWire, Qt Base, KSvg, Kirigami or
+#      Mutter the medium keeps the guest's own, without the proxy there is no
+#      nested desktop).  A package built against another (its deps=: KWin
+#      against KWayland) goes on the medium only with that one's packages of
+#      the build it was built against: else no medium
 # Out: $OUT [~/.local/share/vitrine/guest-tools/vitrine-guest-tools-fcRELEASE.img]
 #      and its manifest beside it (.json: versions, packages, and the inputs
 #      of the packages and of this script, which tell vitrine whether the
@@ -152,6 +152,7 @@ proxy_evr=$(evr_of wl-cross-domain-proxy)
 qtbase_evr=$(evr_of qt6-qtbase)
 ksvg_evr=$(evr_of kf6-ksvg)
 kirigami_evr=$(evr_of kf6-kirigami)
+mutter_evr=$(evr_of mutter)
 
 say "phase: adding the installer"
 for f in install bootstrap; do
@@ -213,9 +214,20 @@ EOF
 	fi
 	[ -z "$ksvg_evr" ] || echo "- KSvg $ksvg_evr: Plasma's popups no longer upload their frames again at each opening"
 	[ -z "$kirigami_evr" ] || echo "- Kirigami $kirigami_evr: the same for the popups of Kirigami's apps and Plasma"
-	if [ -n "$qtbase_evr$ksvg_evr$kirigami_evr" ]; then
+	if [ -n "$mutter_evr" ]; then
+		echo "- Mutter $mutter_evr: the first seconds of motion after a new screen mode (the"
+		echo "  VM's screen resized, or out of full screen) no longer skip refreshes"
+	fi
+	following=()
+	for e in "$qtbase_evr" "$ksvg_evr" "$kirigami_evr" "$mutter_evr"; do
+		[ -z "$e" ] || following+=("$e")
+	done
+	if [ ${#following[@]} -gt 1 ]; then
 		echo "  Each of these in place of the guest's, all its packages, when the guest"
 		echo "  has the version it is built from"
+	elif [ ${#following[@]} = 1 ]; then
+		echo "  In place of the guest's, all its packages, when the guest has the"
+		echo "  version it is built from"
 	fi
 	if [ ${#locked[@]} -gt 0 ]; then
 		kept="are kept at those versions"
@@ -228,6 +240,7 @@ EOF
 		fi
 	fi
 	[ -z "$qtbase_evr" ] || unlocked+=("Qt Base without vitrine's KWin")
+	[ -z "$mutter_evr" ] || unlocked+=(Mutter)
 	if [ ${#unlocked[@]} -gt 0 ]; then
 		way="give way to Fedora's next build of them"
 		[ ${#unlocked[@]} -gt 1 ] || way="gives way to Fedora's next build of it"
@@ -252,6 +265,7 @@ KPIPEWIRE_VERSION=${kpipewire_evr%%-*}
 QTBASE_VERSION=${qtbase_evr%%-*}
 KSVG_VERSION=${ksvg_evr%%-*}
 KIRIGAMI_VERSION=${kirigami_evr%%-*}
+MUTTER_VERSION=${mutter_evr%%-*}
 EOF
 packages_json=$(awk '{ printf "%s{\"name\": \"%s\", \"evr\": \"%s\", \"arch\": \"%s\"}", (NR > 1 ? ", " : ""), $1, $2, $3 }' "$stage/packages.txt")
 # what it is made from: the inputs build-rpms.sh recorded for each package
@@ -278,6 +292,7 @@ cat > "$stage/manifest.json" <<EOF
   "qtbase": "$qtbase_evr",
   "ksvg": "$ksvg_evr",
   "kirigami": "$kirigami_evr",
+  "mutter": "$mutter_evr",
   "built": "$(date -u +%Y-%m-%dT%H:%M:%SZ)",
   "inputs": {$inputs_json},
   "packages": [$packages_json]
@@ -301,4 +316,5 @@ echo "$out: $((kib / 1024)) MiB, tools $tools_evr, medium $medium_id"
 echo "  Mesa: ${mesa_evr:-none}   KWin: ${kwin_evr:-none}   KWayland: ${kwayland_evr:-none}"
 echo "  KPipeWire: ${kpipewire_evr:-none}   proxy: ${proxy_evr:-none}"
 echo "  Qt Base: ${qtbase_evr:-none}   KSvg: ${ksvg_evr:-none}   Kirigami: ${kirigami_evr:-none}"
+echo "  Mutter: ${mutter_evr:-none}"
 say "built: $out"
