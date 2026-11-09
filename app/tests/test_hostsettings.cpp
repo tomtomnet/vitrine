@@ -33,6 +33,7 @@
 #include <fcntl.h>
 #include <grp.h>
 #include <pwd.h>
+#include <sched.h>
 #include <sys/file.h>
 #include <sys/prctl.h>
 #include <sys/xattr.h>
@@ -342,6 +343,12 @@ private:
         const QString text = QString::fromLatin1(readFile(m_root + kThp));
         const qsizetype open = text.indexOf('['), close = text.indexOf(']');
         return open >= 0 && close > open ? text.mid(open + 1, close - open - 1) : QString();
+    }
+    /* a view thread view-rt made real-time, as schedOf() shows it (with
+       SCHED_RESET_ON_FORK: what it starts begins ordinary) */
+    static QString viewRealtimeSched()
+    {
+        return QString("%1 1 0").arg(SCHED_FIFO | SCHED_RESET_ON_FORK);
     }
     /* What the fake kernel has for @tid: "policy priority nice", "" if untouched */
     QString schedOf(qint64 tid) const
@@ -1342,8 +1349,8 @@ private slots:
         QVERIFY(saw(lines, "ok view-rt " + viewOne.text(0) + ": real-time"));
         QVERIFY(lineOf(lines, QString("ok rt %1:").arg(one)) < lineOf(lines, "ok view-rt "));
         QTRY_VERIFY(saw(lines, QString("ok behind %1:").arg(two)));
-        QCOMPARE(schedOf(viewOne.tid(0)), QString("1 1 0"));
-        QCOMPARE(schedOf(viewOne.tid(1)), QString("1 1 0"));
+        QCOMPARE(schedOf(viewOne.tid(0)), viewRealtimeSched());
+        QCOMPARE(schedOf(viewOne.tid(1)), viewRealtimeSched());
 
         /* the view of a VM behind: kept for later */
         lines.clear();
@@ -1360,7 +1367,7 @@ private slots:
                 lineOf(lines, QString("ok rt %1:").arg(two)));
         QCOMPARE(schedOf(viewOne.tid(0)), QString("0 0 0"));
         QCOMPARE(schedOf(viewOne.tid(1)), QString("0 0 0"));
-        QCOMPARE(schedOf(viewTwo.tid(0)), QString("1 1 0"));
+        QCOMPARE(schedOf(viewTwo.tid(0)), viewRealtimeSched());
 
         /* a new thread in its view (a full-screen switch): that one alone; one
            that ended is forgotten, not put back */
@@ -1374,7 +1381,7 @@ private slots:
         QTRY_VERIFY(saw(lines, "ok view-rt " + switched.text(0) + ": real-time"));
         QVERIFY(!saw(lines, "ok view-rt " + viewTwo.text(0)));
         QVERIFY(!saw(lines, "ok view-behind"));
-        QCOMPARE(schedOf(switched.tid(0)), QString("1 1 0"));
+        QCOMPARE(schedOf(switched.tid(0)), viewRealtimeSched());
 
         /* the view gone: its threads still there back (GDBus's worker, in the app) */
         lines.clear();
@@ -1386,7 +1393,7 @@ private slots:
         lines.clear();
         hs.setViewThreads("two", {viewTwo.tid(0)});
         QTRY_VERIFY(saw(lines, "ok view-rt " + viewTwo.text(0) + ": real-time"));
-        QCOMPARE(schedOf(viewTwo.tid(0)), QString("1 1 0"));
+        QCOMPARE(schedOf(viewTwo.tid(0)), viewRealtimeSched());
 
         /* tuning off: everything back by the release, nothing asked while off */
         lines.clear();
@@ -1412,7 +1419,7 @@ private slots:
         const QList<qint64> raised = oneInFront ? QList<qint64>{viewOne.tid(0), viewOne.tid(1)}
                                                 : QList<qint64>{viewTwo.tid(0), switched.tid(0)};
         for (const qint64 tid : raised) {
-            QTRY_COMPARE(schedOf(tid), QString("1 1 0"));
+            QTRY_COMPARE(schedOf(tid), viewRealtimeSched());
         }
 
         /* the VMs end: the helper with them, the threads back */
