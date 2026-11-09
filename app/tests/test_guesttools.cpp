@@ -127,7 +127,8 @@ private:
                           "kpipewire": "6.7.5-1.1.fc%1",
                           "proxy": "0.1.0^gitc6ce1ca.r5799347-1.fc%1",
                           "qtbase": "6.11.2-3.1.q4.fc%1", "ksvg": "6.31.0-1.1.k2.fc%1",
-                          "kirigami": "6.31.0-1.1.f1.fc%1", "packages": [
+                          "kirigami": "6.31.0-1.1.f1.fc%1", "mutter": "51.1-1.1.m1.fc%1",
+                          "packages": [
                           {"name": "kwin", "evr": "6.7.5-1.21.fc%1", "arch": "x86_64"},
                           {"name": "vitrine-guest-tools", "evr": "0.1.0-1.fc%1", "arch": "noarch"}]})")
                            .arg(release, release == "44" ? QString("32fe6c83b34e87e8")
@@ -198,6 +199,7 @@ private slots:
         QCOMPARE(m.qtbase, "6.11.2-3.1.q4.fc44");
         QCOMPARE(m.ksvg, "6.31.0-1.1.k2.fc44");
         QCOMPARE(m.kirigami, "6.31.0-1.1.f1.fc44");
+        QCOMPARE(m.mutter, "51.1-1.1.m1.fc44");
         QCOMPARE(m.packages, QStringList({"kwin-6.7.5-1.21.fc44.x86_64",
                                           "vitrine-guest-tools-0.1.0-1.fc44.noarch"}));
         QVERIFY(!parseManifest("{}", image).isValid());
@@ -355,6 +357,12 @@ private slots:
         QVERIFY(r.vitrineBuilds.value("qt6-qtbase"));
         QVERIFY(r.vitrineBuilds.contains("kf6-ksvg") && !r.vitrineBuilds.value("kf6-ksvg"));
         QCOMPARE(r.packages.value("kf6-ksvg"), "6.32.0-1.fc44");
+        /* a GNOME guest's: vitrine's Mutter */
+        const Report gnome = parseReport(QJsonDocument::fromJson(
+            R"({"packages": {"gnome-shell": "51.1-1.fc45", "mutter": "51.1-1.1.m1.fc45"},
+                "vitrineBuilds": {"mutter": true}})").object());
+        QCOMPARE(gnome.packages.value("mutter"), "51.1-1.1.m1.fc45");
+        QVERIFY(gnome.vitrineBuilds.value("mutter"));
         QCOMPARE(r.preempt, "full");
         QVERIFY(!r.rebootNeeded);
         QVERIFY(!r.installing);
@@ -545,9 +553,10 @@ private slots:
         in.report.packages["kwin"] = "6.7.5-1.21.fc44";
         QCOMPARE(evaluate(in), State::Installed);
         in.report = parseMessage(kHello).report;
-        /* Fedora's next KSvg in the place of vitrine's, or its Qt and Kirigami: no fault */
+        /* Fedora's next KSvg in the place of vitrine's, or its Qt, Kirigami and Mutter: no
+           fault */
         in.report.vitrineBuilds = {{"qt6-qtbase", false}, {"kf6-ksvg", false},
-                                   {"kf6-kirigami", false}};
+                                   {"kf6-kirigami", false}, {"mutter", false}};
         QCOMPARE(evaluate(in), State::Installed);
         in.report.rebootNeeded = true;
         QCOMPARE(evaluate(in), State::RebootNeeded);

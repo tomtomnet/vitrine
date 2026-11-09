@@ -30,6 +30,12 @@ QString obstacle(Vm *vm, const GuestTools::Medium &medium);
 /* What the tools of @medium install in @vm, and how (rich text) */
 QString what(Vm *vm, const GuestTools::Medium &medium);
 /*
+ * Which Mutter the guest runs, as its agent said, in a sentence (rich
+ * text): vitrine's build or another one, as Fedora's next build takes the
+ * place of vitrine's; empty when it said none (no Mutter, an older agent)
+ */
+QString runningMutter(const GuestTools::Report &report);
+/*
  * What the banner of Install Guest Tools says of the medium of Fedora
  * @release (rich text): being built, failed to build, not built yet, out of
  * date; nothing while it is up to date.  @button: the banner's button (Show,
