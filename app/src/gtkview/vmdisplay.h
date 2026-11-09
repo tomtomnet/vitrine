@@ -155,8 +155,8 @@ public:
      * (src/gtkview/README.md), and to threadsChanged.
      */
     const std::vector<Thread> &threads() const { return m_threads; }
-    /* Those for real time, as VITRINE_VIEW_RT says: all of them (unset, 1),
-       all but the driver threads (named), none (0) */
+    /* Those for real time, as VITRINE_VIEW_RT says: all but the driver
+       threads (unset, named), all of them (all, 1), none (0) */
     std::vector<pid_t> realtimeThreads() const;
 
     /* grabbed(), grabState(), hasKeyboard() or inputEnabled() changed */
@@ -224,7 +224,7 @@ private:
     pid_t m_gdbusTid = 0;
     std::vector<Thread> m_threads;
     /* VITRINE_VIEW_RT */
-    enum class RealTime { All, Named, None } m_realTime = RealTime::All;
+    enum class RealTime { Named, All, None } m_realTime = RealTime::Named;
     QString m_grabState;
     /* what the guest said last, for a new window */
     QSize m_guestSize;

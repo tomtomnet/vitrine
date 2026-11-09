@@ -156,22 +156,24 @@ VmDisplay::VmDisplay() : m_alive(std::make_shared<bool>(true))
     }
     m_compositeEnv = qgetenv("VITRINE_VIEW_COMPOSITE") == "1";
     /* VITRINE_VIEW_RT: which of the view's threads go real-time while its VM
-       is in front (the GTK app's host tuning), for A/B runs: all of them
-       (unset, 1), the named ones and GDBus's worker but not the driver
-       threads (named), none (0).  Said once a run when set. */
+       is in front (the GTK app's host tuning), for A/B runs: all but the
+       driver threads (unset, named: on an Arc Pro B50 under a compile its
+       driver thread did not help, the research's brt2 and brt4), all of
+       them (all, 1), none (0).  Said once a run when set. */
     const QByteArray realTime = qgetenv("VITRINE_VIEW_RT");
-    m_realTime = realTime == "0"       ? RealTime::None
-                 : realTime == "named" ? RealTime::Named
-                                       : RealTime::All;
+    m_realTime = realTime == "0"                          ? RealTime::None
+                 : (realTime == "all" || realTime == "1") ? RealTime::All
+                                                          : RealTime::Named;
     static bool saidRealTime = false;
     if (!realTime.isEmpty() && !std::exchange(saidRealTime, true)) {
         fprintf(stderr, "vitrine: display: VITRINE_VIEW_RT=%s: %s\n", realTime.constData(),
-                m_realTime == RealTime::None    ? "none of the view's threads real-time"
-                : m_realTime == RealTime::Named ? "the view's named threads and GDBus's worker "
-                                                  "real-time, not the driver threads"
-                : realTime == "1"               ? "all of the view's threads real-time"
-                                                : "not 0, named or 1: all of the view's threads "
-                                                  "real-time");
+                m_realTime == RealTime::None  ? "none of the view's threads real-time"
+                : m_realTime == RealTime::All ? "all of the view's threads real-time, its "
+                                                "driver threads too"
+                : realTime == "named"         ? "the view's threads real-time but its driver "
+                                                "threads"
+                                              : "not 0, named, all or 1: the view's threads "
+                                                "real-time but its driver threads");
     }
     sayFullScreenPath();
     m_host = new Gtk::Box(Gtk::Orientation::VERTICAL);
