@@ -115,8 +115,9 @@ struct Feedback {
     Replies replies; // --reply-on-present
     struct wp_presentation_feedback *proxy = nullptr; // "struct": a request has the same name
     wl_callback *frame = nullptr;   // the compositor's frame callback for the same commit
+    int64_t requestNs = 0;          // when it was asked for, before the commit
     int64_t swapNs = 0;             // when the frame was handed to the compositor
-    int64_t frameDoneNs = 0;        // when the compositor let us draw again
+    int64_t frameDoneNs = 0;        // when the compositor let us draw again (RenderState::readNs)
     // the compositor lead goes to QEMU with the presentation: for the frames
     // copied in full screen only, from which QEMU may estimate the host's
     // deadline (x-vblank-deadline-callback); the others' targets are fixed
@@ -175,6 +176,10 @@ public:
     std::thread reader;
     std::atomic<bool> stopReader{false};
     int wakeFd = -1;    // eventfd: a fence to poll, or the end (wakeReader)
+    // while the reader dispatches what it read (under the lock): when its
+    // poll saw the display readable, by which time the events it read had
+    // come; 0 for the other dispatches
+    int64_t readNs = 0;
     RenderTarget *target = nullptr; // told when the reader thread starts
     wl_surface *surfaceWrapper = nullptr; // the window's surface, on our queue
     wl_surface *wrappedSurface = nullptr;
@@ -218,7 +223,15 @@ public:
 const wl_callback_listener kFrameListener = {
     [](void *data, wl_callback *cb, uint32_t) {
         auto *d = static_cast<Feedback *>(data);
-        d->frameDoneNs = nowNs();
+        // when it came, if the reader read it: not when it is dispatched, which
+        // a reader held up (the lock, GDK's reader of the same display, a
+        // load) makes later, and the lead QEMU estimates the host's deadline
+        // from shorter.  One that came during the read counts from the poll's
+        // wake, a little early (a lead a little long: a safe target), but
+        // never from before its frame was asked for; when dispatched
+        // otherwise, as late or later
+        const int64_t readNs = d->state->readNs;
+        d->frameDoneNs = readNs > d->requestNs ? readNs : nowNs();
         wl_callback_destroy(cb);
         d->frame = nullptr;
     },
@@ -550,8 +563,11 @@ void RenderState::readEvents()
             pfds.push_back({sfd, POLLIN, 0});
         }
         int r = poll(pfds.data(), pfds.size(), 100);
+        int64_t cameNs = 0;
         if (wlDisplay) {
             if (r > 0 && (pfds[0].revents & POLLIN)) {
+                // before the read, which waits for GDK's reader, and the lock
+                cameNs = nowNs();
                 wl_display_read_events(wlDisplay);
             } else {
                 wl_display_cancel_read(wlDisplay);
@@ -571,7 +587,9 @@ void RenderState::readEvents()
             }
         }
         if (wlDisplay) {
+            readNs = cameNs;
             wl_display_dispatch_queue_pending(wlDisplay, queue);
+            readNs = 0;
         }
     }
 }
@@ -700,6 +718,7 @@ Feedback *RenderState::requestFeedback(wl_surface *surface, int64_t recvNs, uint
     std::lock_guard g(lock);
     struct wp_presentation_feedback *fb = wp_presentation_feedback(presentation, surface);
     auto *d = new Feedback{this, recvNs, serial, {}, fb};
+    d->requestNs = nowNs();
     d->passLead = passLead;
     if (replies) {
         d->replies = std::move(*replies);
