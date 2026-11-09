@@ -14,6 +14,17 @@ A desktop VM stays smooth under host load when the host gives it a hand:
   script tells vitrine which window is active, while such VMs run. On
   other desktops vitrine cannot tell: such a VM goes behind as soon as
   another VM comes to the front, and comes back only when it is alone.
+- **Real-time view threads** for the VM in front, in the GTK app: the
+  threads that show its screen - the render thread and those the GPU
+  driver started for its OpenGL context, its Wayland reader and D-Bus
+  listener, GLib's D-Bus worker - go to SCHED_FIFO 1 with its QEMU's, and
+  back to ordinary when it goes behind. QEMU's own window does its copies
+  on QEMU's threads; vitrine's view runs inside the app, so only its own
+  threads are raised, not the app's main thread. On an Arc Pro B50 under
+  a 4-job compile, a GNOME guest's full screen lost 3.5 frames a second at
+  normal priority (6 boots) and 1.3 with every thread of the view
+  real-time (4 boots, the research, 2026-11-09); on a Radeon 780M the
+  compile cost it little either way.
 - **A shorter fair-server period**: the kernel keeps some CPU time for
   ordinary tasks while real-time ones run, 50 ms per second by default. An
   ordinary task stuck behind a real-time vCPU (a kernel worker pushing GPU
@@ -56,7 +67,7 @@ These need root. vitrine applies them through a small helper,
 after the last VM stops - crash included, and even if vitrine has quit
 while the VMs run on. There is no service: the helper runs only while VMs
 run. Nothing is applied while no VM runs. QEMU itself gets no privilege:
-the helper sets its threads' scheduling.
+the helper sets its threads' scheduling, and that of the view's threads.
 
 ## Allowing it without a password
 
@@ -401,6 +412,13 @@ configuring: `cmake --install --prefix` with another prefix is refused.
 ## When something looks wrong
 
 - `journalctl -t vitrine-helper` lists what the helper changed and put back.
+- `ps -L -o tid,cls,rtprio,comm -p $(pgrep -x vitrine-gtk)` lists the GTK
+  app's threads: with host tuning on, those of the view of the VM in front
+  show `FF 1` (SCHED_FIFO 1), the others `TS`. The view also writes their
+  ids to its output as they change ("vitrine: display: threads: ...").
+  A helper installed before the app could raise them answers
+  `unknown request`: the app then says once to install it again, and tunes
+  the VMs as before.
 - Preferences > Tune the host while VMs run says whether tuning is
   active, and the status bar's "Host tuning inactive" why the running VMs
   are not tuned.
