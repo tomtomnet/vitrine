@@ -324,6 +324,67 @@ the device is unplugged. A udev rule gives it for good, e.g. in
 `/etc/udev/rules.d/70-qemu-usb.rules`:
 `SUBSYSTEM=="usb", ATTR{idVendor}=="0781", ATTR{idProduct}=="5567", TAG+="uaccess"`.
 
+PCI passthrough: a VM's PCI Devices settings give it host devices - a
+graphics card, a USB controller, a disk controller (`-device
+vfio-pci,host=...` in `vm.args`). The VM drives the device itself, and the
+host cannot use it while the VM runs. This needs the IOMMU, turned on in
+the firmware settings: AMD-Vi (or IOMMU) on AMD, VT-d on Intel, where the
+kernel may also want `intel_iommu=on`
+(`sudo grubby --update-kernel=ALL --args=intel_iommu=on`, then restart).
+When such a VM starts, vitrine-helper gets the devices ready before QEMU,
+and puts everything back when QEMU ends, crash included:
+
+- every device of their IOMMU groups on vfio-pci, bridges left as they
+  are; a device of the group that the VM does not take keeps it from
+  starting (the settings check a card's functions together);
+- `/dev/vfio/<group>` yours while the VM runs;
+- vitrine's locked memory limit at the VM's memory and 1 GiB (this
+  computer's memory and 1 GiB at most), for the QEMU it starts: the
+  kernel pins all of a VM's memory for the device, so a VM with a PCI
+  device takes all its memory at its start, and none of it can be
+  swapped out.
+
+Devices already on vfio-pci (bound at boot, below) need no password for
+members of the vitrine group. Taking a device from this computer's driver
+asks for an administrator's password, which polkit keeps for a few
+minutes; so does a device on pci-stub or without a driver, which must go
+to vfio-pci too: nothing is taken from a driver or bound to vfio-pci
+without that password. Users outside the group get the password dialog
+for both. Host tuning off changes nothing to this. The helper refuses a
+device the host uses, and the start says why:
+
+- the GPU the computer started on, and a GPU with a display connected;
+- a device whose nodes a program has open: the desktop's compositor, a
+  game, another VM (the sound servers' hold on a card's sound does not
+  count: they let go of a card that goes);
+- a disk mounted, swapped on, or under an encrypted or LVM volume;
+- a network interface that is up (`sudo ip link set IF down` first);
+- bridges, the SMBus controller and the like.
+
+GNOME and KDE Plasma open every GPU they find, so a second GPU on its own
+driver is in use by gnome-shell (or kwin_wayland). A udev rule keeps GNOME
+away from one, from the next login, e.g. in
+`/etc/udev/rules.d/61-vm-gpu.rules`:
+`SUBSYSTEM=="drm", ENV{ID_PATH}=="pci-0000:6e:00.0", TAG+="mutter-device-ignore"`
+(then `sudo udevadm trigger --subsystem-match=drm`). On KDE Plasma,
+`KWIN_DRM_DEVICES` lists the GPUs KWin may use. Or bind the card to
+vfio-pci at boot, which also gives a VM a GPU with its own display: its
+IDs (`lspci -nn`) in `/etc/modprobe.d/vfio.conf`,
+`options vfio-pci ids=10de:2d59,10de:22eb` and
+`softdep snd_hda_intel pre: vfio-pci` (with a line for its own driver too,
+nouveau, amdgpu...), `force_drivers+=" vfio vfio_iommu_type1 vfio_pci "`
+in `/etc/dracut.conf.d/vfio.conf`, then `sudo dracut -f` and a restart. A
+device on vfio-pci whose node you can open, with a session whose locked
+memory limit is enough (`LimitMEMLOCK=infinity`), needs no helper at all.
+
+Some GPUs do not reset well after a VM (AMD cards before RDNA 2, which the
+out-of-tree vendor-reset module helps): one that its driver does not take
+back stays without a driver, vitrine says so, and a restart gives it back.
+A GPU may need its ROM from a file (`romfile=` on its `-device` line). If
+the helper is killed while a VM has a device, the device stays on
+vfio-pci until a helper starting later finds it free and gives it back,
+or a restart.
+
 Files: VMs in `~/.local/share/vitrine/vms/<id>/` (`vm.args`, a new VM's
 disk, `qemu.log`), or another folder chosen in Preferences, where vitrine
 lists every folder holding a `vm.args`; vitrine's QEMU and its passt in `~/.local/share/vitrine/stack/`, the
