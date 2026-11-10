@@ -26,11 +26,31 @@
  * (name:x:gid:members lines); the users are the real ones.  This build
  * refuses to run as root, and the installed helper has no test root at all.
  *
+ * The PCI bus plays the kernel's binding rules (see pci_bind): a device's
+ * driver is its folder's link, driver_override names the one driver that
+ * may take it, drivers_probe picks that one or the device's fake-native,
+ * vfio-pci makes /dev/vfio/<group> for the first device of a group and
+ * takes it away with the last, and an unbind of a vfio device whose group
+ * node is held - a stand-in QEMU's flock on it - would wait in the kernel:
+ * it fails here, the journal saying "WHILE IN USE".  Nodes are files with
+ * sidecars: <node>.owner ("uid gid mode", root's 0600 if none) and
+ * <node>.rdev ("MAJ:MIN", "b MAJ:MIN" for a block device).  The processes
+ * holding device nodes are <root>/users ("c|b MAJ:MIN PID COMM [EXE]"
+ * lines); modules load by making their driver's folder (modprobe.refuse:
+ * they do not); locked memory limits are <root>/memlock-<pid>, as real-time
+ * time limits are (memlock.refuse: a change fails); <root>/chown.refuse
+ * makes a node's owner change fail; a driver's unbind.slow (ms) makes its
+ * unbind take that long.  VITRINE_HELPER_TEST_VFIO_EXPIRY_MS shortens the
+ * wait of prepared groups for their QEMU.
+ *
  * VITRINE_HELPER_TEST_KILL_AT=N kills it (SIGKILL) right after its Nth
- * write (a latency request counts as one), as a crash or a kill in the
- * middle of a change would.
+ * write (a latency request, a module, a node's owner and a limit count as
+ * one), as a crash or a kill in the middle of a change would;
+ * VITRINE_HELPER_TEST_KILL_BEFORE=TEXT kills it right before its first
+ * write to a path holding TEXT.
  */
 #define _GNU_SOURCE
+#include <dirent.h>
 #include <errno.h>
 #include <fcntl.h>
 #include <limits.h>
@@ -42,6 +62,7 @@
 #include <string.h>
 #include <sys/file.h>
 #include <sys/resource.h>
+#include <sys/stat.h>
 #include <unistd.h>
 
 #include "../src/helper.h"
@@ -422,6 +443,233 @@ static int epp_write(const char *path, const char *value)
     return put(path, text);
 }
 
+/* --- the PCI bus: drivers, overrides, vfio's nodes --- */
+
+/* @addr's folder in the fake tree, and @rest under it */
+static void pci_dev(char *out, size_t size, const char *addr, const char *rest)
+{
+    snprintf(out, size, "%s" PCI_DIR "/devices/%s%s", root, addr, rest);
+}
+
+/* The first line of @path, "" when there is none */
+static void first_line(const char *path, char *out, size_t size)
+{
+    out[0] = '\0';
+    if (sys_read(path, out, size) < 0) {
+        out[0] = '\0';
+    }
+    out[strcspn(out, "\n")] = '\0';
+}
+
+/* The name of @addr's driver, "" for none */
+static void pci_driver(const char *addr, char *out, size_t size)
+{
+    char path[PATH_MAX], link[PATH_MAX];
+    ssize_t n;
+
+    out[0] = '\0';
+    pci_dev(path, sizeof(path), addr, "/driver");
+    if ((n = readlink(path, link, sizeof(link) - 1)) > 0) {
+        const char *base;
+        size_t len;
+
+        link[n] = '\0';
+        base = strrchr(link, '/') ? strrchr(link, '/') + 1 : link;
+        len = strlen(base) < size ? strlen(base) : size - 1;
+        memcpy(out, base, len);
+        out[len] = '\0';
+    }
+}
+
+static int pci_group(const char *addr)
+{
+    char path[PATH_MAX], link[PATH_MAX];
+    ssize_t n;
+
+    pci_dev(path, sizeof(path), addr, "/iommu_group");
+    if ((n = readlink(path, link, sizeof(link) - 1)) <= 0) {
+        return -1;
+    }
+    link[n] = '\0';
+    return atoi(strrchr(link, '/') ? strrchr(link, '/') + 1 : link);
+}
+
+/* /dev/vfio/@group of the fake tree, with @suffix (a sidecar's) */
+static void vfio_node(char *out, size_t size, int group, const char *suffix)
+{
+    snprintf(out, size, "%s" VFIO_DEV_DIR "/%d%s", root, group, suffix);
+}
+
+/* A device of @group but @addr is on vfio-pci */
+static bool group_on_vfio(int group, const char *addr)
+{
+    char dir[PATH_MAX], drv[64];
+    struct dirent *e;
+    bool found = false;
+    DIR *d;
+
+    snprintf(dir, sizeof(dir), "%s" IOMMU_GROUPS_DIR "/%d/devices", root, group);
+    if (!(d = opendir(dir))) {
+        return false;
+    }
+    while (!found && (e = readdir(d))) {
+        if (e->d_name[0] == '.' || strcmp(e->d_name, addr) == 0) {
+            continue;
+        }
+        pci_driver(e->d_name, drv, sizeof(drv));
+        found = strcmp(drv, "vfio-pci") == 0;
+    }
+    closedir(d);
+    return found;
+}
+
+/* A node some process has "open": a stand-in QEMU's lock on its file
+   (fakeqemu.c, FAKE_QEMU_HOLD) */
+static bool node_held(const char *path)
+{
+    int fd = open(path, O_RDONLY | O_CLOEXEC);
+    bool held;
+
+    if (fd < 0) {
+        return false;
+    }
+    held = flock(fd, LOCK_EX | LOCK_NB) < 0 && errno == EWOULDBLOCK;
+    close(fd);
+    return held;
+}
+
+/*
+ * drivers/@name/bind: @addr bound as the kernel binds it - not over
+ * another driver, only by the driver its driver_override names, and
+ * without one only by its own (its fake-native file; vfio-pci then takes
+ * it only through an override); <driver>/bind.refuse makes the probe fail.
+ * vfio-pci makes the group's node, root's at 0600.
+ */
+static int pci_bind(const char *name, const char *addr)
+{
+    char path[PATH_MAX], target[PATH_MAX], drv[64], wanted[64], node[PATH_MAX], text[32];
+    int group;
+
+    pci_dev(path, sizeof(path), addr, "");
+    if (access(path, F_OK) != 0) {
+        return -ENODEV;
+    }
+    snprintf(target, sizeof(target), "%s" PCI_DIR "/drivers/%s", root, name);
+    if (access(target, F_OK) != 0) {
+        return -ENOENT;
+    }
+    pci_driver(addr, drv, sizeof(drv));
+    if (drv[0]) {
+        return -EBUSY;
+    }
+    pci_dev(path, sizeof(path), addr, "/driver_override");
+    first_line(path, wanted, sizeof(wanted));
+    if (!wanted[0] || strcmp(wanted, "(null)") == 0) {
+        pci_dev(path, sizeof(path), addr, "/fake-native");
+        first_line(path, wanted, sizeof(wanted));
+    }
+    if (strcmp(wanted, name) != 0) {
+        return -ENODEV;
+    }
+    if (snprintf(path, sizeof(path), "%s/bind.refuse", target) < (int)sizeof(path) &&
+        access(path, F_OK) == 0) {
+        return -EINVAL;
+    }
+    pci_dev(path, sizeof(path), addr, "/driver");
+    if (symlink(target, path) < 0) {
+        return -errno;
+    }
+    if (strcmp(name, "vfio-pci") == 0 && (group = pci_group(addr)) >= 0) {
+        vfio_node(node, sizeof(node), group, "");
+        if (access(node, F_OK) != 0) {
+            snprintf(path, sizeof(path), "%s" VFIO_DEV_DIR, root);
+            mkdir(path, 0755);
+            put(node, "");
+            vfio_node(path, sizeof(path), group, ".owner");
+            put(path, "0 0 600\n");
+            vfio_node(path, sizeof(path), group, ".rdev");
+            snprintf(text, sizeof(text), "239:%d\n", group);
+            put(path, text);
+        }
+    }
+    return 0;
+}
+
+/*
+ * drivers/@name/unbind: @addr let go.  A vfio device whose group a
+ * process has open would wait in the kernel until it is closed: it fails
+ * here ("WHILE IN USE" in the journal), which the tests look for.  The last
+ * vfio device of a group takes its node with it.
+ */
+static int pci_unbind(const char *name, const char *addr)
+{
+    char path[PATH_MAX], drv[64], node[PATH_MAX], slow[32];
+    const int group = pci_group(addr);
+    const bool vfio = strcmp(name, "vfio-pci") == 0;
+
+    pci_driver(addr, drv, sizeof(drv));
+    if (strcmp(drv, name) != 0) {
+        return -ENODEV;
+    }
+    /* a driver that takes its time to let go */
+    snprintf(path, sizeof(path), "%s" PCI_DIR "/drivers/%s/unbind.slow", root, name);
+    first_line(path, slow, sizeof(slow));
+    if (slow[0]) {
+        usleep((useconds_t)atoi(slow) * 1000);
+    }
+    if (vfio && group >= 0) {
+        vfio_node(node, sizeof(node), group, "");
+        if (node_held(node)) {
+            journal("unbind %s %s WHILE IN USE", addr, name);
+            return -EBUSY;
+        }
+    }
+    pci_dev(path, sizeof(path), addr, "/driver");
+    if (unlink(path) < 0) {
+        return -errno;
+    }
+    if (vfio && group >= 0 && !group_on_vfio(group, addr)) {
+        vfio_node(node, sizeof(node), group, "");
+        unlink(node);
+        vfio_node(node, sizeof(node), group, ".owner");
+        unlink(node);
+        vfio_node(node, sizeof(node), group, ".rdev");
+        unlink(node);
+    }
+    return 0;
+}
+
+/* drivers_probe: the driver its override names, else its own */
+static int pci_probe(const char *addr)
+{
+    char path[PATH_MAX], drv[64], name[64];
+
+    pci_driver(addr, drv, sizeof(drv));
+    if (drv[0]) {
+        return 0;
+    }
+    pci_dev(path, sizeof(path), addr, "/driver_override");
+    first_line(path, name, sizeof(name));
+    if (!name[0] || strcmp(name, "(null)") == 0) {
+        pci_dev(path, sizeof(path), addr, "/fake-native");
+        first_line(path, name, sizeof(name));
+    }
+    /* as the kernel's: whatever came of the probe, the write is taken */
+    if (name[0]) {
+        pci_bind(name, addr);
+    }
+    return 0;
+}
+
+/* driver_override: a name, or none ("(null)" as sysfs shows it) */
+static int override_write(const char *path, const char *value)
+{
+    char text[160];
+
+    snprintf(text, sizeof(text), "%s\n", value[0] ? value : "(null)");
+    return put(path, text);
+}
+
 /* VITRINE_HELPER_TEST_KILL_AT=N: killed right after the Nth write */
 static void count_write(void)
 {
@@ -437,8 +685,14 @@ int sys_write(const char *path, const char *value)
 {
     const char *rel = path + strlen(root);
     const char *base = strrchr(path, '/') + 1;
+    const char *before = getenv("VITRINE_HELPER_TEST_KILL_BEFORE");
     char v[128];
     int err;
+
+    if (before && before[0] && strstr(rel, before)) {
+        journal("killed before %s", rel);
+        raise(SIGKILL);
+    }
 
     snprintf(v, sizeof(v), "%s", value);
     v[strcspn(v, "\n")] = '\0';
@@ -454,6 +708,17 @@ int sys_write(const char *path, const char *value)
         err = thp_write(path, v);
     } else if (strcmp(base, "energy_performance_preference") == 0) {
         err = epp_write(path, v);
+    } else if (strcmp(base, "driver_override") == 0) {
+        err = override_write(path, v);
+    } else if (strncmp(rel, PCI_DIR "/drivers/", sizeof(PCI_DIR "/drivers/") - 1) == 0 &&
+               (strcmp(base, "bind") == 0 || strcmp(base, "unbind") == 0)) {
+        const char *driver = rel + sizeof(PCI_DIR "/drivers/") - 1;
+        char name[64];
+
+        snprintf(name, sizeof(name), "%.*s", (int)strcspn(driver, "/"), driver);
+        err = strcmp(base, "bind") == 0 ? pci_bind(name, v) : pci_unbind(name, v);
+    } else if (strcmp(rel, PCI_DIR "/drivers_probe") == 0) {
+        err = pci_probe(v);
     } else {
         char stuck[PATH_MAX];
 
@@ -793,6 +1058,246 @@ int sys_setrttime(pid_t pid, rlim_t soft, rlim_t hard)
     close(fd);
     journal("rttime %d %s %s", (int)pid, sw, hw);
     return 0;
+}
+
+/*
+ * Locked memory limits, as real-time time limits: <root>/memlock-<pid>
+ * ("soft hard"), else the process's own; <root>/memlock.refuse makes a
+ * change fail with EPERM
+ */
+int sys_getmemlock(pid_t pid, rlim_t *soft, rlim_t *hard)
+{
+    char path[PATH_MAX], text[64], a[32], b[32];
+    struct rlimit own;
+    int fd;
+
+    snprintf(path, sizeof(path), "%s/memlock-%d", root, (int)pid);
+    if ((fd = open(path, O_RDONLY | O_CLOEXEC)) >= 0) {
+        ssize_t n = read(fd, text, sizeof(text) - 1);
+
+        close(fd);
+        text[n > 0 ? n : 0] = '\0';
+        if (sscanf(text, "%31s %31s", a, b) == 2 && rttime_parse(a, soft) && rttime_parse(b, hard)) {
+            return 0;
+        }
+        return -EIO;
+    }
+    if (prlimit(pid, RLIMIT_MEMLOCK, NULL, &own) < 0) {
+        return -errno;
+    }
+    *soft = own.rlim_cur;
+    *hard = own.rlim_max;
+    return 0;
+}
+
+int sys_setmemlock(pid_t pid, rlim_t soft, rlim_t hard)
+{
+    char path[PATH_MAX], a[32], b[32];
+    const char *sw = rttime_word(soft, a, sizeof(a)), *hw = rttime_word(hard, b, sizeof(b));
+    int fd;
+
+    if (kill(pid, 0) < 0 && errno == ESRCH) {
+        return -ESRCH;
+    }
+    snprintf(path, sizeof(path), "%s/memlock.refuse", root);
+    if (access(path, F_OK) == 0) {
+        return -EPERM;
+    }
+    snprintf(path, sizeof(path), "%s/memlock-%d", root, (int)pid);
+    fd = open(path, O_WRONLY | O_CREAT | O_TRUNC | O_CLOEXEC, 0600);
+    if (fd < 0) {
+        return -errno;
+    }
+    dprintf(fd, "%s %s\n", sw, hw);
+    close(fd);
+    journal("memlock %d %s %s", (int)pid, sw, hw);
+    count_write();
+    return 0;
+}
+
+/* A module: its driver's folder appears (with its bind and unbind) */
+int sys_load_module(const char *name, char *err, size_t size)
+{
+    char path[PATH_MAX], file[PATH_MAX + 16];
+
+    snprintf(path, sizeof(path), "%s/modprobe.refuse", root);
+    if (access(path, F_OK) == 0) {
+        snprintf(err, size, "modprobe: FATAL: Module %s not found", name);
+        journal("modprobe %s FAILED", name);
+        return -1;
+    }
+    snprintf(path, sizeof(path), "%s" PCI_DIR "/drivers/%s", root, name);
+    if (mkdir(path, 0755) < 0 && errno != EEXIST) {
+        snprintf(err, size, "%s", strerror(errno));
+        return -1;
+    }
+    snprintf(file, sizeof(file), "%s/bind", path);
+    put(file, "");
+    snprintf(file, sizeof(file), "%s/unbind", path);
+    put(file, "");
+    journal("modprobe %s", name);
+    count_write();
+    return 0;
+}
+
+/* A node's owner and mode: its <node>.owner, root's 0600 without one */
+int sys_node_get(const char *path, uid_t *uid, gid_t *gid, mode_t *mode)
+{
+    char side[PATH_MAX], text[64];
+    unsigned u, g, m;
+
+    if (access(path, F_OK) != 0) {
+        return -ENOENT;
+    }
+    snprintf(side, sizeof(side), "%s.owner", path);
+    if (sys_read(side, text, sizeof(text)) <= 0 || sscanf(text, "%u %u %o", &u, &g, &m) != 3) {
+        u = g = 0;
+        m = 0600;
+    }
+    *uid = (uid_t)u;
+    *gid = (gid_t)g;
+    *mode = (mode_t)m;
+    return 0;
+}
+
+int sys_node_set(const char *path, uid_t uid, gid_t gid, mode_t mode)
+{
+    char side[PATH_MAX], text[64];
+    int err;
+
+    if (access(path, F_OK) != 0) {
+        return -ENOENT;
+    }
+    snprintf(side, sizeof(side), "%s/chown.refuse", root);
+    if (access(side, F_OK) == 0) {
+        journal("chown %s FAILED", path + strlen(root));
+        return -EPERM;
+    }
+    snprintf(side, sizeof(side), "%s.owner", path);
+    snprintf(text, sizeof(text), "%u %u %o\n", (unsigned)uid, (unsigned)gid, (unsigned)mode);
+    err = put(side, text);
+    journal("chown %s %u %u %o%s", path + strlen(root), (unsigned)uid, (unsigned)gid,
+            (unsigned)mode, err ? " FAILED" : "");
+    count_write();
+    return err;
+}
+
+int sys_group_busy(const char *path)
+{
+    if (access(path, F_OK) != 0) {
+        return -ENOENT;
+    }
+    return node_held(path) ? 1 : 0;
+}
+
+/* A node's number: its <node>.rdev */
+int sys_rdev(const char *path, bool *block, unsigned *maj, unsigned *min)
+{
+    char side[PATH_MAX], text[64], kind;
+
+    snprintf(side, sizeof(side), "%s.rdev", path);
+    if (sys_read(side, text, sizeof(text)) <= 0) {
+        return -ENOENT;
+    }
+    if (sscanf(text, "%u:%u", maj, min) == 2) {
+        *block = false;
+        return 0;
+    }
+    if (sscanf(text, "%c %u:%u", &kind, maj, min) == 3) {
+        *block = kind == 'b';
+        return 0;
+    }
+    return -EINVAL;
+}
+
+/* The processes of <root>/users: "c|b MAJ:MIN PID COMM" for each node one has open */
+int sys_device_users(const struct devnum *devs, int ndevs, struct devuser *users, int max)
+{
+    char path[PATH_MAX], *text, *line, *save = NULL;
+    int n = 0;
+
+    snprintf(path, sizeof(path), "%s/users", root);
+    if (!(text = sys_read_all(path, 1 << 20))) {
+        return 0;
+    }
+    for (line = strtok_r(text, "\n", &save); line; line = strtok_r(NULL, "\n", &save)) {
+        bool other = false, sound = false;
+        char kind, comm[16], exe[128] = "";
+        unsigned maj, min;
+        int pid, j;
+
+        if (sscanf(line, "%c %u:%u %d %15s %127s", &kind, &maj, &min, &pid, comm, exe) < 5) {
+            continue;
+        }
+        for (int i = 0; i < ndevs; i++) {
+            if (devs[i].block == (kind == 'b') && devs[i].maj == maj &&
+                (devs[i].min == DEVNUM_ANY || devs[i].min == min)) {
+                sound |= devs[i].sound;
+                other |= !devs[i].sound;
+            }
+        }
+        if (!other && !sound) {
+            continue;
+        }
+        /* one entry per process */
+        for (j = 0; j < n && users[j].pid != (pid_t)pid; j++) {
+        }
+        if (j == n) {
+            if (n == max) {
+                continue;
+            }
+            users[n] = (struct devuser){.pid = (pid_t)pid};
+            snprintf(users[n].comm, sizeof(users[n].comm), "%s", comm);
+            snprintf(users[n].exe, sizeof(users[n].exe), "%s", exe);
+            n++;
+        }
+        users[j].other |= other;
+    }
+    free(text);
+    return n;
+}
+
+char *sys_read_all(const char *path, size_t max)
+{
+    int fd = open(path, O_RDONLY | O_CLOEXEC);
+    size_t len = 0, cap = 4096;
+    char *buf;
+
+    if (fd < 0) {
+        return NULL;
+    }
+    if (!(buf = malloc(cap + 1))) {
+        close(fd);
+        return NULL;
+    }
+    for (;;) {
+        ssize_t n;
+
+        if (len == cap) {
+            char *more;
+
+            if (cap >= max || !(more = realloc(buf, cap * 2 + 1))) {
+                break;
+            }
+            buf = more;
+            cap *= 2;
+        }
+        n = read(fd, buf + len, cap - len);
+        if (n <= 0) {
+            break;
+        }
+        len += (size_t)n;
+    }
+    close(fd);
+    buf[len] = '\0';
+    return buf;
+}
+
+int sys_vfio_expiry_ms(void)
+{
+    const char *ms = getenv("VITRINE_HELPER_TEST_VFIO_EXPIRY_MS");
+
+    return ms ? atoi(ms) : VFIO_EXPIRY_MS;
 }
 
 void sys_log(const char *fmt, ...)

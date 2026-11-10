@@ -7,7 +7,8 @@ add_executable(vitrine-helper
     src/main.c
     src/process.c
     src/settings.c
-    src/sys.c)
+    src/sys.c
+    src/vfio.c)
 set_target_properties(vitrine-helper PROPERTIES C_STANDARD 11 C_EXTENSIONS ON)
 target_compile_options(vitrine-helper PRIVATE -Wall -Wextra -fstack-protector-strong
     "$<$<NOT:$<CONFIG:Debug>>:-U_FORTIFY_SOURCE;-D_FORTIFY_SOURCE=2>")
@@ -42,6 +43,7 @@ if(BUILD_TESTING)
         src/main.c
         src/process.c
         src/settings.c
+        src/vfio.c
         tests/fakesys.c)
     set_target_properties(vitrine-helper-fake PROPERTIES C_STANDARD 11 C_EXTENSIONS ON)
     target_compile_options(vitrine-helper-fake PRIVATE -Wall -Wextra)

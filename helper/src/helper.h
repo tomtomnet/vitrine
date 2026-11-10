@@ -74,6 +74,25 @@
 #define DRM_DIR "/sys/class/drm"
 #define UDMABUF_DIR "/sys/module/udmabuf/parameters"
 #define STATE_DIR "/run/vitrine-helper"
+/*
+ * PCI devices handed to a VM (vfio.c): the IOMMU groups one helper holds at
+ * most, the devices of one request, and how long a group made ready waits
+ * for the QEMU that uses it (the next watch) before it goes back
+ */
+#define MAX_VFIO_GROUPS 8
+#define MAX_VFIO_DEVICES 32
+#define VFIO_EXPIRY_MS 60000
+#define PCI_DIR "/sys/bus/pci"
+#define IOMMU_GROUPS_DIR "/sys/kernel/iommu_groups"
+#define VFIO_DEV_DIR "/dev/vfio"
+
+/* What a session takes, from the verb that started it (main.c) */
+enum session_kind {
+    SESSION_TUNE,           /* session: the host settings while VMs run */
+    SESSION_DEVICES,        /* devices: PCI devices on vfio-pci already */
+    SESSION_DEVICES_BIND,   /* devices-bind: also taken from the host's drivers */
+};
+extern enum session_kind session_kind;
 
 /* --- system access: sys.c on the real system, tests/fakesys.c on a fake tree --- */
 
@@ -120,6 +139,50 @@ bool sys_group_has(const char *user, gid_t primary, gid_t gid);
 int sys_group_create(const char *name, char *err, size_t size);
 /* Adds @user to the members of the group @name: 0, or -1 with why in @err */
 int sys_group_add_user(const char *name, const char *user, char *err, size_t size);
+/*
+ * A process's locked memory limit (RLIMIT_MEMLOCK, in bytes, RLIM_INFINITY
+ * for none): what the IOMMU driver checks the guest memory QEMU pins for a
+ * PCI device against.  0 or -errno.
+ */
+int sys_getmemlock(pid_t pid, rlim_t *soft, rlim_t *hard);
+int sys_setmemlock(pid_t pid, rlim_t soft, rlim_t hard);
+/* The kernel module @name loaded (modprobe): 0, or -1 with why in @err */
+int sys_load_module(const char *name, char *err, size_t size);
+/* The character device node @path (under the root): its owner, group and
+   permission bits.  0 or -errno (-ENODEV: not a character device). */
+int sys_node_get(const char *path, uid_t *uid, gid_t *gid, mode_t *mode);
+int sys_node_set(const char *path, uid_t uid, gid_t gid, mode_t mode);
+/*
+ * The vfio group node @path is open somewhere: a vfio group opens once (the
+ * next open is EBUSY), and the files of its devices keep it open.  1, 0
+ * when it is free, or -errno (-ENOENT: no such node).
+ */
+int sys_group_busy(const char *path);
+/* The device number of the node @path (under the root): 0 or -errno
+   (-ENODEV: not a device) */
+int sys_rdev(const char *path, bool *block, unsigned *maj, unsigned *min);
+/* A device node, by number: @min DEVNUM_ANY for every one of @maj */
+struct devnum {
+    unsigned maj, min;
+    bool block;
+    bool sound;     /* an ALSA node: the sound servers let go of a card that goes */
+};
+#define DEVNUM_ANY 0xffffffffu
+/* A process holding some of them open */
+struct devuser {
+    pid_t pid;
+    char comm[16];
+    char exe[128];  /* the program it runs, "" if unknown */
+    bool other;     /* one of them that is no ALSA node */
+};
+/* The processes (but this one) that have one of @devs open, at most @max:
+   their count, or -errno */
+int sys_device_users(const struct devnum *devs, int ndevs, struct devuser *users, int max);
+/* All of @path (under the root), NUL terminated, at most @max bytes, in a
+   malloc'ed buffer; NULL when it cannot be read */
+char *sys_read_all(const char *path, size_t max);
+/* How long a group made ready waits for its QEMU, in ms: VFIO_EXPIRY_MS */
+int sys_vfio_expiry_ms(void);
 
 /* --- helpers shared by the files --- */
 
@@ -170,6 +233,34 @@ void udmabuf_check(void);
 /* Drops every setting this helper holds, restoring those it was the last
    one to hold */
 void settings_release(void);
+
+/*
+ * The shared holds and records of /run/vitrine-helper (see settings.c), for
+ * the other files' settings (vfio.c).  lock_all() around every change of a
+ * hold - never twice: hold_drop() takes it itself; hold_take() under it,
+ * *first telling whether no other helper holds @key (this one then has it
+ * alone until hold_share(), and restored first what a dead helper left
+ * under @key); hold_close() lets go without restoring (@last: the hold
+ * file goes too); hold_drop() restores when this helper held it last.
+ */
+struct hold;
+void lock_all(void);
+void unlock_all(void);
+struct hold *hold_find(const char *key);
+struct hold *hold_take(const char *key, const char *value, bool *first);
+void hold_share(struct hold *h);
+void hold_close(struct hold *h, bool last);
+void hold_drop(struct hold *h);
+/* Lets go of @h without restoring anything, under the lock it takes */
+void hold_let_go(struct hold *h);
+/* Under the lock: @fd, the hold file of @key locked LOCK_EX, this helper's
+   (shared from now on); NULL when no hold is free */
+struct hold *hold_adopt(const char *key, int fd);
+/* The record of @key: written whole (renamed into place), read back in a
+   malloc'ed string (NULL when there is none), removed */
+bool state_write(const char *key, const char *text);
+char *state_read(const char *key);
+void state_remove(const char *key);
 
 /* The record of a QEMU whose threads this helper made real-time or ordinary
    at nice BEHIND_NICE (rt- and behind-), or of the process that started it
@@ -254,6 +345,46 @@ void view_behind(void);
 /* After a QEMU went behind or exited: with none in front any more, the
    threads view-rt made real-time back to SCHED_OTHER */
 void view_check(void);
+/* That process, while it runs with all four uids the caller's: its pid and
+   start time; else why not in @why */
+bool parent_get(pid_t *pid, unsigned long long *start, const char **why);
+/* The process @pid is still the one that started at @start */
+bool process_started(pid_t pid, unsigned long long start);
+
+/* --- vfio.c: PCI devices handed to a VM --- */
+
+/*
+ * The protocol's vfio ADDRESSES MIB, before the VM's QEMU starts: the IOMMU
+ * groups of ADDRESSES (0000:6e:00.0, comma-separated) on vfio-pci, their
+ * /dev/vfio nodes the caller's, and the locked memory limit of the process
+ * that started the helper (which its QEMU inherits) at MIB at least.
+ * @bind: devices may be taken from the host's drivers (devices-bind).
+ */
+void vfio_request(const char *addresses, const char *mib, bool bind);
+/* A watch: the groups made ready and not taken yet are that QEMU's now, and
+   the parent's locked memory limit goes back */
+void vfio_claim(const struct watched *w);
+/* After watched QEMUs exited: the groups they had go back */
+void vfio_check(void);
+/* The ms until the next group waiting for its QEMU is due, -1 for none */
+int vfio_timeout(void);
+/* The groups no QEMU came for in time go back */
+void vfio_expire(void);
+/* The end: every group back that is free, the parent's limit too */
+void vfio_release(void);
+/*
+ * The record of @key given back as far as it can be: the devices that
+ * something still has open stay recorded.  Never under the lock: a driver
+ * may take its time.  The group's hold keeps other helpers out.
+ */
+void vfio_restore(const char *key);
+/* settings.c's restore of memlock-<pid>, for the last holder or a dead one */
+void memlock_restore(const char *key);
+/* The recovery (under the lock): the record of a dead helper, whose hold
+   @h this helper took, to give back after it (vfio_recover) */
+void vfio_adopt(const char *key, struct hold *h);
+/* Those records given back, after settings_init() */
+void vfio_recover(void);
 
 /* --- group.c: the vitrine group --- */
 

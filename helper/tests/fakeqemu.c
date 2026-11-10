@@ -6,7 +6,9 @@
  * SIGUSR1 makes it exec sleep, a program that is no QEMU.  With
  * FAKE_QEMU_RTTIME=US, it sets its own real-time time limit (RLIMIT_RTTIME)
  * to US first, as PipeWire's module-rt does in QEMU when RTKit gives its
- * audio thread real-time.
+ * audio thread real-time.  With FAKE_QEMU_HOLD=PATH it has PATH "open" as
+ * QEMU has its vfio group's node: a shared flock on it for as long as it
+ * runs, which the fake kernel (fakesys.c) takes for an open group.
  *
  * Its stdin is the pipe of the test's QProcess, whose write end only the
  * test holds: it ends when the test does, crash included, where the
@@ -19,6 +21,8 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <signal.h>
+#include <fcntl.h>
+#include <sys/file.h>
 #include <sys/resource.h>
 #include <unistd.h>
 
@@ -40,6 +44,7 @@ static void *idle(void *arg)
 int main(void)
 {
     const char *rttime = getenv("FAKE_QEMU_RTTIME");
+    const char *hold = getenv("FAKE_QEMU_HOLD");
     pthread_t t;
     ssize_t n;
     char c;
@@ -49,6 +54,14 @@ int main(void)
         const struct rlimit limit = {.rlim_cur = us, .rlim_max = us};
 
         setrlimit(RLIMIT_RTTIME, &limit);
+    }
+    if (hold) {
+        /* kept open, and locked, until it ends */
+        const int fd = open(hold, O_RDONLY);
+
+        if (fd < 0 || flock(fd, LOCK_SH) < 0) {
+            _exit(3);
+        }
     }
     signal(SIGUSR1, become_sleep);
     for (int i = 0; i < 3; i++) {

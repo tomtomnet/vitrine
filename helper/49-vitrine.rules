@@ -1,14 +1,23 @@
 // SPDX-License-Identifier: GPL-2.0-or-later
-// vitrine-helper's session without a password for members of the vitrine
-// group, from their local active session (not over ssh, not from a session
-// switched away).  Everyone else gets the policy's default: an
-// administrator's password, which vitrine never asks for at a VM start - it
-// runs the VM without the host settings instead.  Not setup-group
-// (org.vitrine.helper.setup-group): adding someone to the group always
-// takes an administrator.  See docs/host-tuning.md.
+// vitrine-helper without a password for members of the vitrine group, from
+// their local active session (not over ssh, not from a session switched
+// away): its session (org.vitrine.helper, the host settings while VMs run)
+// and devices (org.vitrine.helper.devices: PCI devices already set aside
+// for VMs on vfio-pci, their /dev/vfio nodes and the locked memory limit
+// while a VM runs).  Everyone else gets the policy's default: an
+// administrator's password, which vitrine never asks for host tuning - it
+// runs the VM without the host settings instead - and asks through polkit's
+// dialog for PCI devices.  Not devices-bind
+// (org.vitrine.helper.devices-bind: taking a device from this computer's
+// drivers), which wants an administrator's password from members too,
+// remembered a few minutes; the commented line below would grant it as
+// well.  Not setup-group (org.vitrine.helper.setup-group): adding someone
+// to the group always takes an administrator.  See docs/host-tuning.md.
 polkit.addRule(function(action, subject) {
-    if (action.id == "org.vitrine.helper" &&
-        subject.local && subject.active && subject.isInGroup("vitrine")) {
+    var granted = action.id == "org.vitrine.helper" ||
+                  action.id == "org.vitrine.helper.devices";
+    // granted = granted || action.id == "org.vitrine.helper.devices-bind";
+    if (granted && subject.local && subject.active && subject.isInGroup("vitrine")) {
         return polkit.Result.YES;
     }
 });
