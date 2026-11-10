@@ -875,8 +875,7 @@ void VmDisplay::updateHostActive()
     bool active = false;
 
     if (m_widget) {
-        auto *top = dynamic_cast<Gtk::Window *>(m_widget->get_root());
-        active = m_inputEnabled && m_widget->is_focus() && top && top->is_active();
+        active = m_inputEnabled && m_widget->hasKeyboard();
         m_widget->setHostActive(active);
     }
     if (active != m_hasKeyboard) {

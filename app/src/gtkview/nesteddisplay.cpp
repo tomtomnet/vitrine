@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: GPL-2.0-or-later
 #include "nesteddisplay.h"
 
+#include "focuswatch.h"
 #include "fullscreenorder.h"
 
 #include "nested/vmview.h"
@@ -64,6 +65,9 @@ public:
     bool position(int *x, int *y) const;
     /* The window's shortcut controllers off while the guest has the keys */
     void holdWindowShortcuts(bool hold);
+    /* The focus in the active window, as of GTK's last change of either
+       (FocusWatch: not from inside a focus change) */
+    bool hasKeyboard() const { return m_focus.hasKeyboard(); }
 
 protected:
     Gtk::SizeRequestMode get_request_mode_vfunc() const override;
@@ -93,7 +97,7 @@ private:
     GdkFrameClock *m_clock = nullptr;
     gulong m_layoutId = 0;
     Gtk::Window *m_root = nullptr;
-    sigc::connection m_activeWatch;
+    FocusWatch m_focus;
 };
 
 class GuestDesktop : public NestedDisplay
@@ -193,7 +197,8 @@ const wl_registry_listener kRegistry = {
 /* ---- DesktopWidget ---- */
 
 DesktopWidget::DesktopWidget(GuestDesktop *owner)
-    : Glib::ObjectBase("VitrineDesktop"), m_owner(owner)
+    : Glib::ObjectBase("VitrineDesktop"), m_owner(owner),
+      m_focus(GTK_WIDGET(gobj()), [this]() { m_owner->focusChanged(); })
 {
     set_focusable(true);
     set_hexpand(true);
@@ -205,12 +210,10 @@ DesktopWidget::DesktopWidget(GuestDesktop *owner)
     key->signal_key_released().connect(sigc::mem_fun(*this, &DesktopWidget::onKeyReleased));
     add_controller(key);
 
+    /* the keys down go with the focus (whether the guest still has the keys
+       is the FocusWatch's to say, once GTK stored the change) */
     auto focus = Gtk::EventControllerFocus::create();
-    focus->signal_enter().connect([this]() { m_owner->focusChanged(); });
-    focus->signal_leave().connect([this]() {
-        m_down.clear();
-        m_owner->focusChanged();
-    });
+    focus->signal_leave().connect([this]() { m_down.clear(); });
     add_controller(focus);
 
     /* a click beside the guest's window: the keys to it */
@@ -355,17 +358,13 @@ void DesktopWidget::on_realize()
     /* after GTK's own layout of the window, before its paint and commit */
     m_clock = GDK_FRAME_CLOCK(g_object_ref(gtk_widget_get_frame_clock(gobj())));
     m_layoutId = g_signal_connect_after(m_clock, "layout", G_CALLBACK(onLayout), this);
-    if ((m_root = dynamic_cast<Gtk::Window *>(get_root()))) {
-        m_activeWatch = m_root->property_is_active().signal_changed().connect(
-            [this]() { m_owner->focusChanged(); });
-    }
+    m_root = dynamic_cast<Gtk::Window *>(get_root());
 }
 
 void DesktopWidget::on_unrealize()
 {
     /* the window's shortcuts back while the window is still there */
     holdWindowShortcuts(false);
-    m_activeWatch.disconnect();
     m_root = nullptr;
     if (m_clock) {
         g_signal_handler_disconnect(m_clock, m_layoutId);
@@ -824,8 +823,7 @@ void GuestDesktop::updateKeyboard()
     if (m_inputEnabled && m_fullWindow) {
         want = m_fullWindow->is_active();
     } else if (m_inputEnabled) {
-        auto *root = dynamic_cast<Gtk::Window *>(m_embedded->get_root());
-        want = m_embedded->is_focus() && root && root->is_active();
+        want = m_embedded->hasKeyboard();
     }
     if (m_view) {
         vmview_set_keyboard_focus(m_view, want);

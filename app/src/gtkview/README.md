@@ -53,6 +53,7 @@ The rules:
 | `displaywidget` | the widget: places the frames' surface, input, cursor, grab, guest size |
 | `displaysurface` | the frames' own wl_surface, a desync subsurface of GTK's window that the render thread draws and commits |
 | `displayinput` | DisplayWindow's handling of keys, buttons, wheel and grab, without a toolkit |
+| `focuswatch` | whether a view's widget has the keyboard (the focus of the active window), known once GTK made the change |
 | `framestill` | the guest's frame as a GTK texture, for the widget while it is covered |
 | `fullscreenorder` | a full-screen window maps after the window the view leaves: the switch waits while that window is shown but not yet active |
 | `gtkclipboard` | the host clipboard shared with the guest, with GdkClipboard |
@@ -86,6 +87,14 @@ How it fits GTK:
   line says when the desktop keeps its shortcuts); the pointer lock and
   confinement are vitrine's own Wayland objects, on the window's main
   surface, and work without the inhibitor.
+- Whether the view has the keyboard (the focus in the active window)
+  comes from `focuswatch`, as the window's focus-widget and is-active
+  change, not from a focus controller: GTK 4.24 sends the controllers'
+  enter and leave before it stores the new focus, so a view given the
+  focus by a focus move (a VM chosen in the list, the Console view back)
+  read no focus there and took no grab until the window was deactivated
+  and active again (on GNOME the first Super opened the overview, and the
+  next reached the guest: nested GNOME 51.1, 2026-11-10).
 - GTK runs the window's capture-phase shortcut controllers (the
   application's accelerators, F10) before the focused widget: while the
   view has the keyboard they are off, as the Qt view takes every key before

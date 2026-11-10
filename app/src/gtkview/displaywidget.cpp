@@ -14,7 +14,6 @@
 #include <QRect>
 #include <QWindow>
 
-#include <gtkmm/eventcontrollerfocus.h>
 #include <gtkmm/eventcontrollerkey.h>
 #include <gtkmm/eventcontrollerlegacy.h>
 #include <gtkmm/eventcontrollermotion.h>
@@ -66,7 +65,8 @@ GdkTexture *cursorTexture(GdkCursor *, int, double scale, int *width, int *heigh
 
 DisplayWidget::DisplayWidget(DBusDisplay *display, DisplaySurface *surface, const Options &opts)
     : Glib::ObjectBase("VitrineDisplay"), m_display(display), m_surface(surface), m_opts(opts),
-      m_window(std::make_unique<QWindow>()), m_input(this, this)
+      m_window(std::make_unique<QWindow>()), m_input(this, this),
+      m_focus(GTK_WIDGET(gobj()), [this]() { focusChanged.emit(); })
 {
     set_focusable(true);
     set_overflow(Gtk::Overflow::HIDDEN);
@@ -92,11 +92,6 @@ DisplayWidget::DisplayWidget(DBusDisplay *display, DisplaySurface *surface, cons
     key->signal_key_pressed().connect(sigc::mem_fun(*this, &DisplayWidget::onKeyPressed), false);
     key->signal_key_released().connect(sigc::mem_fun(*this, &DisplayWidget::onKeyReleased));
     add_controller(key);
-
-    auto focus = Gtk::EventControllerFocus::create();
-    focus->signal_enter().connect([this]() { focusChanged.emit(); });
-    focus->signal_leave().connect([this]() { focusChanged.emit(); });
-    add_controller(focus);
 
     auto motion = Gtk::EventControllerMotion::create();
     motion->signal_enter().connect([this](double x, double y) {
@@ -212,10 +207,7 @@ void DisplayWidget::on_realize()
             }), this);
         }
     }
-    if ((m_root = dynamic_cast<Gtk::Window *>(get_root()))) {
-        m_activeWatch = m_root->property_is_active().signal_changed().connect(
-            [this]() { focusChanged.emit(); });
-    }
+    m_root = dynamic_cast<Gtk::Window *>(get_root());
     updateSize();
 }
 
@@ -231,7 +223,6 @@ void DisplayWidget::on_unrealize()
         m_constraints->setConfined(nullptr, false);
     }
     m_constraints.reset();
-    m_activeWatch.disconnect();
     m_root = nullptr;
     if (m_watched) {
         g_signal_handler_disconnect(m_watched, m_scaleId);
