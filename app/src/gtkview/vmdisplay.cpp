@@ -879,6 +879,9 @@ void VmDisplay::updateHostActive()
         m_widget->setHostActive(active);
     }
     if (active != m_hasKeyboard) {
+        qCDebug(lcGrab).noquote() << "screen of" << vmName()
+                                  << (active ? "has the keyboard" : "lost the keyboard") << "- input"
+                                  << (m_inputEnabled ? "on" : "off");
         m_hasKeyboard = active;
         m_grabState = grabState();
         grabChanged.emit();

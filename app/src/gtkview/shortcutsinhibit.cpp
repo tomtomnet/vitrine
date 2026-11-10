@@ -1,6 +1,8 @@
 // SPDX-License-Identifier: GPL-2.0-or-later
 #include "shortcutsinhibit.h"
 
+#include "displayinput.h"
+
 #include <gdk/gdk.h>
 #include <gio/gdesktopappinfo.h>
 
@@ -42,6 +44,14 @@ void set(GdkSurface *toplevel, const void *owner, bool on)
         owners = new Owners;
         g_object_set_data_full(G_OBJECT(toplevel), kOwners, owners,
                                [](gpointer p) { delete static_cast<Owners *>(p); });
+        /* the compositor's answer, once for the window (vitrine.grab) */
+        g_signal_connect(toplevel, "notify::shortcuts-inhibited",
+                         G_CALLBACK(+[](GObject *surface, GParamSpec *, gpointer) {
+            gboolean on = FALSE;
+            g_object_get(surface, "shortcuts-inhibited", &on, nullptr);
+            qCDebug(lcGrab) << "the compositor" << (on ? "inhibits" : "restores")
+                            << "the desktop's shortcuts";
+        }), nullptr);
     }
     const bool before = !owners->empty();
     if (on) {
@@ -51,6 +61,7 @@ void set(GdkSurface *toplevel, const void *owner, bool on)
     }
     const bool after = !owners->empty();
     if (after && !before) {
+        qCDebug(lcGrab) << "shortcuts inhibitor asked for";
         gdk_toplevel_inhibit_system_shortcuts(GDK_TOPLEVEL(toplevel), nullptr);
         /* now, not with the window's next frame: GDK flushes its connection
            once the main loop waits, after the frame GTK may be rendering for
@@ -59,6 +70,7 @@ void set(GdkSurface *toplevel, const void *owner, bool on)
            7.5 ms after a click that brought the window back, on GNOME */
         gdk_display_flush(gdk_surface_get_display(toplevel));
     } else if (before && !after) {
+        qCDebug(lcGrab) << "shortcuts inhibitor dropped";
         gdk_toplevel_restore_system_shortcuts(GDK_TOPLEVEL(toplevel));
     }
 }

@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: GPL-2.0-or-later
 #include "nesteddisplay.h"
 
+#include "displayinput.h"
 #include "focuswatch.h"
 #include "fullscreenorder.h"
 
@@ -833,6 +834,7 @@ void GuestDesktop::updateKeyboard()
         m_fullWidget->holdWindowShortcuts(want && m_fullWindow);
     }
     if (want != m_keyboard) {
+        qCDebug(lcGrab) << "nested desktop" << (want ? "has the keyboard" : "lost the keyboard");
         m_keyboard = want;
         keyboardChanged.emit();
     }

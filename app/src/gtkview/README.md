@@ -321,6 +321,11 @@ what vitrine ships:
   agent of a guest with `blob_flush_fence` 3 would, and
   `--flips-wait-toggle SECONDS` turns it over while the view shows.
 - `VITRINE_VIEW_INHIBIT=0`: never asks for the desktop's shortcuts (above).
+- `QT_LOGGING_RULES=vitrine.grab.debug=true`: a line on stderr at each
+  change of where the keys go - the grab on or off with what decided it,
+  the screen's and the nested desktop's keyboard, the inhibitor asked for
+  or dropped, the compositor's answer. `QT_MESSAGE_PATTERN="%{time
+  hh:mm:ss.zzz} %{message}"` gives each line its time.
 - `VITRINE_VIEW_RT`: which of the view's threads the GTK app has made
   real-time while its VM is in front (above): unset or `named`, all but
   the driver threads (main, render, events, listener, gdbus); `all` or

@@ -10,6 +10,8 @@
 #include <chrono>
 #include <utility>
 
+Q_LOGGING_CATEGORY(lcGrab, "vitrine.grab", QtWarningMsg)
+
 namespace {
 
 /* The keys of KWin's modifier + button window actions ([MouseBindings]
@@ -299,6 +301,11 @@ void DisplayInput::updateGrab()
         if (inhibit != m_inhibited) {
             m_askOpen = inhibit;
             m_askedMs = inhibit ? now() : 0;
+            qCDebug(lcGrab).nospace() << "grab " << (inhibit ? "on" : "off") << ": keyboard "
+                                      << m_hostActive << ", pointer on the screen " << m_pointerInside
+                                      << ", absolute " << absolute << ", Ctrl+Alt+G grab " << m_grab
+                                      << ", held off " << m_suppressAuto << ", automatic "
+                                      << m_autoGrabAllowed;
         }
         m_inhibited = inhibit;
         m_locked = lock;
