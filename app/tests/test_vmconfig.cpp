@@ -214,6 +214,26 @@ private slots:
                  "-device vfio-pci,host=0000:05:00.1\n");
     }
 
+    /* The memory QEMU pins for its PCI devices: the guest's and 1 GiB */
+    void lockedMemory()
+    {
+        QCOMPARE(lockedMemoryMiB(ArgsFile::parse("-m 4G\n-device qemu-xhci\n")), 0);
+        QCOMPARE(lockedMemoryMiB(ArgsFile::parse("-m 4G\n-device vfio-pci,host=03:00.0\n"
+                                                 "-device vfio-pci,host=03:00.1\n")),
+                 4096 + 1024);
+        /* the guest's memory as a memfd backend's size; QEMU's 128 MiB without -m */
+        QCOMPARE(lockedMemoryMiB(ArgsFile::parse("-machine q35,memory-backend=mem\n"
+                                                 "-object memory-backend-memfd,id=mem,size=8G\n"
+                                                 "-device vfio-pci,host=03:00.0\n")),
+                 8192 + 1024);
+        QCOMPARE(lockedMemoryMiB(ArgsFile::parse("-device vfio-pci,host=03:00.0\n")), 128 + 1024);
+        /* a virtual IOMMU: an address space, and its pinned copy, per device */
+        QCOMPARE(lockedMemoryMiB(ArgsFile::parse("-m 4G\n-device intel-iommu,caching-mode=on\n"
+                                                 "-device vfio-pci,host=03:00.0\n"
+                                                 "-device vfio-pci,host=04:00.0\n")),
+                 2 * 4096 + 1024);
+    }
+
     void files()
     {
         ArgsFile a = ArgsFile::parse(

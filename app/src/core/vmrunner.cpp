@@ -11,6 +11,7 @@
 #include <QJsonArray>
 #include <QJsonDocument>
 #include <QJsonObject>
+#include <QPointer>
 #include <QProcess>
 #include <QRegularExpression>
 #include <QSaveFile>
@@ -300,6 +301,7 @@ struct VmRunner::Private
     enum class Phase {
         Idle,       // stopped, or running with QMP ready
         Helpers,    // waiting for the sockets of virtiofsd
+        Devices,    // waiting for its PCI devices to be made ready (setDevicePreparer)
         Qemu,       // waiting for QMP
         Attach,     // connecting to a QEMU started earlier
         Exiting,    // QMP closed, waiting for QEMU to end
@@ -335,6 +337,8 @@ struct VmRunner::Private
     QString nestedSocket;
     int sandboxFd = -1;
     std::function<bool(const QString &, QString *)> nestedHost;
+    DevicePreparer devicePreparer;
+    quint64 devicesAsked = 0;   // the preparer's requests, the answer of the last counts
     qint64 pid = 0;             // QEMU
     QList<Helper> helpers;      // virtiofsd started for this run
     GuestAgent *agent = nullptr;    // asking what the guest runs, mounting the shares
@@ -396,6 +400,8 @@ struct VmRunner::Private
     void setSuspended(bool on);
     void fail(const QString &message);
     void cleanup();
+    /* its PCI devices made ready first, if it passes some through */
+    void prepareDevices();
     void launchQemu();
     void tick();
     void escalate();
@@ -657,6 +663,31 @@ void VmRunner::Private::cleanup()
     removeRuntimeFiles();
 }
 
+void VmRunner::Private::prepareDevices()
+{
+    const QStringList addresses = VmConfig::pciPassthrough(args);
+
+    if (addresses.isEmpty() || !devicePreparer) {
+        launchQemu();
+        return;
+    }
+    phase = Phase::Devices;
+    const quint64 asked = ++devicesAsked;
+    const QPointer<VmRunner> runner(q);
+    const auto done = [this, runner, asked](const QString &error) {
+        /* a start that ended meanwhile (Force Off), or another one since */
+        if (!runner || asked != devicesAsked || phase != Phase::Devices) {
+            return;
+        }
+        if (!error.isEmpty()) {
+            fail(error);
+            return;
+        }
+        launchQemu();
+    };
+    devicePreparer(addresses, VmConfig::lockedMemoryMiB(args), done);
+}
+
 void VmRunner::Private::launchQemu()
 {
     QString launchError;
@@ -683,6 +714,7 @@ void VmRunner::Private::launchQemu()
     }
     phase = Phase::Qemu;
     poll->start();
+    emit q->qemuLaunched(pid);
 }
 
 void VmRunner::Private::tick()
@@ -700,7 +732,7 @@ void VmRunner::Private::tick()
         }
         if (listening) {
             poll->stop();
-            launchQemu();
+            prepareDevices();
         } else if (clock.elapsed() > kHelperTimeoutMs) {
             fail(VmRunner::tr("virtiofsd did not open its socket:\n%1").arg(logTail(false)));
         }
@@ -1133,8 +1165,8 @@ VmRunner::VmRunner(const QString &id, const QString &dir, QObject *parent)
 VmRunner::~VmRunner()
 {
     /* QEMU runs on without the manager, but not virtiofsd waiting for a
-       QEMU that will never come */
-    if (d->phase == Private::Phase::Helpers) {
+       QEMU that will never come: its PCI devices being made ready included */
+    if (d->phase == Private::Phase::Helpers || d->phase == Private::Phase::Devices) {
         d->cleanup();
     }
     /* nor paused for a screen that will not come */
@@ -1735,6 +1767,11 @@ QString VmRunner::nestedSocket() const
                                                                      : QString();
 }
 
+void VmRunner::setDevicePreparer(const DevicePreparer &prepare)
+{
+    d->devicePreparer = prepare;
+}
+
 void VmRunner::setNestedHost(const std::function<bool(const QString &, QString *)> &serve)
 {
     d->nestedHost = serve;
@@ -1947,7 +1984,7 @@ void VmRunner::start(const ArgsFile &args)
         d->helpers << Private::Helper{pid, arguments.first()};
     }
     if (shares.isEmpty()) {
-        d->launchQemu();
+        d->prepareDevices();
     } else {
         d->phase = Private::Phase::Helpers;
         d->poll->start();
@@ -2059,7 +2096,7 @@ void VmRunner::reset()
 
 void VmRunner::forceOff()
 {
-    if (d->phase == Private::Phase::Helpers) {
+    if (d->phase == Private::Phase::Helpers || d->phase == Private::Phase::Devices) {
         /* QEMU is not running yet */
         d->stopRequested = true;
         d->cleanup();

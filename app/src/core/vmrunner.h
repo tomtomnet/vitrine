@@ -153,6 +153,21 @@ public:
      * fails, such a VM does not start.
      */
     void setNestedHost(const std::function<bool(const QString &socket, QString *error)> &serve);
+    /*
+     * PCI devices passed through (-device vfio-pci,host=...) need their IOMMU
+     * groups on vfio-pci, /dev/vfio/<group> open to the user and a locked
+     * memory limit as big as the guest's memory before QEMU starts, which
+     * opens them and pins the guest's memory as it creates them: start()
+     * asks @prepare (PciPassthrough), after virtiofsd, with the addresses and
+     * the memory to lock in MiB (VmConfig::lockedMemoryMiB), and waits for its
+     * @done, Starting meanwhile - QEMU then starts on "", and the start fails
+     * with the error otherwise.  Force Off meanwhile ends the start, and the
+     * answer comes to nothing.  Without it, QEMU starts as it is.
+     */
+    using DevicePreparer =
+        std::function<void(const QStringList &addresses, qint64 lockMiB,
+                           const std::function<void(const QString &error)> &done)>;
+    void setDevicePreparer(const DevicePreparer &prepare);
     /* The socket of the vitrine agent's port (guest tools), while active */
     QString agentSocket() const;
     /* The socket of the port of QEMU's guest agent (qemu-ga) that Shut Down
@@ -257,6 +272,8 @@ public:
 
 signals:
     void stateChanged(VmRunner::State state);
+    /* QEMU of the run started, as process @pid: before its QMP answers */
+    void qemuLaunched(qint64 pid);
     /* isSuspended() changed, which a pause of a suspended guest does
        without a state change */
     void suspendedChanged(bool suspended);

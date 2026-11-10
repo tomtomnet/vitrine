@@ -138,6 +138,14 @@ void setFile(ArgsFile &args, const FileRef &file, const QString &path);
 /* Host PCI devices passed through: -device vfio-pci,host=ADDRESS */
 QStringList pciPassthrough(const ArgsFile &args);
 void setPciPassthrough(ArgsFile &args, const QStringList &addresses);
+/*
+ * The memory QEMU locks for those devices, in MiB, which its locked memory
+ * limit must allow: the kernel pins all guest memory for their DMA, once
+ * per device with a virtual IOMMU (intel-iommu, amd-iommu, virtio-iommu:
+ * each gets an address space of its own), and some more for the rest - 1
+ * GiB, as libvirt counts.  0 without such devices.
+ */
+qint64 lockedMemoryMiB(const ArgsFile &args);
 
 /* Host USB devices passed through by ID: -device usb-host,vendorid=,productid= */
 struct UsbId {
