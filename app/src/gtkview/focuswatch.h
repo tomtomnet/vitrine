@@ -3,6 +3,7 @@
 
 #include <functional>
 
+typedef struct _GtkEventController GtkEventController;
 typedef struct _GtkWidget GtkWidget;
 typedef struct _GtkWindow GtkWindow;
 
@@ -18,8 +19,16 @@ typedef struct _GtkWindow GtkWindow;
  * and active again (GNOME's overview, opened by the first Super, did that:
  * the next Super reached the guest).
  *
+ * The window's activity comes sooner, through a focus controller of its
+ * own on the widget: GTK sends the controllers' enter and leave of an
+ * activation at once, with the window's state and focus stored, but
+ * notifies is-active later (2.5 ms after a click that brought the window
+ * back, on GNOME).  A keyboard gained in "enter", or lost in "leave", is
+ * the real one; a keyboard not gained in "enter" may be GTK's state in the
+ * middle of a focus move, and waits for the notification.
+ *
  * It follows the window the widget is realized in.  hasKeyboard() holds
- * the value as of the last notification: stable while GTK is between the
+ * the value as of the last change it saw: stable while GTK is between the
  * crossings and the change.
  */
 class FocusWatch
@@ -35,10 +44,12 @@ public:
 
 private:
     void watch(GtkWindow *window);
-    void update();
+    bool now() const;
+    void set(bool keyboard);
 
     GtkWidget *m_widget;
     std::function<void()> m_changed;
+    GtkEventController *m_controller;   // a reference of its own: the views drop theirs as they go
     GtkWindow *m_window = nullptr;      // weak: the widget's, while it is realized
     unsigned long m_realizeId = 0, m_unrealizeId = 0, m_focusId = 0, m_activeId = 0;
     bool m_keyboard = false;

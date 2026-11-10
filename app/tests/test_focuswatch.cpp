@@ -4,8 +4,10 @@
  * the window active), known once GTK made the change.  GTK 4 sends the
  * focus controllers' enter before it stores the new focus: a VM's screen
  * that decided there, given the focus by the list of VMs or by the Console
- * view coming back, took no grab.  On broadway, where no one sees the
- * windows, with plain focusable widgets for the views.
+ * view coming back, took no grab.  And the window's activity is known at
+ * once, from GTK's crossing, not from is-active's notification, which GTK
+ * sends later.  On broadway, where no one sees the windows, with plain
+ * focusable widgets for the views.
  */
 #include <gtkmm/box.h>
 #include <gtkmm/button.h>
@@ -174,6 +176,37 @@ private Q_SLOTS:
         other.set_visible(false);
         QVERIFY(shownActive(window));
         QTRY_VERIFY(watched.watch.hasKeyboard());
+        QCOMPARE(watched.said, std::vector<bool>({true, false, true}));
+        window.set_visible(false);
+    }
+
+    /* The window active again: known from GTK's crossing at once, not only
+       from is-active's notification, which GTK sends later (frozen here) */
+    void activationAtOnce()
+    {
+        Gtk::Window window, other;
+        Gtk::Button screen("screen");
+        window.set_child(screen);
+        Watched watched(screen);
+
+        if (!shownActive(window)) {
+            QSKIP("broadway did not make the window active");
+        }
+        screen.grab_focus();
+        QVERIFY(watched.watch.hasKeyboard());
+        if (!shownActive(other)) {
+            QSKIP("broadway did not make the second window active");
+        }
+        QTRY_VERIFY(!window.is_active());
+        QVERIFY(!watched.watch.hasKeyboard());
+
+        g_object_freeze_notify(G_OBJECT(window.gobj()));
+        other.set_visible(false);
+        window.present();
+        QTRY_VERIFY(window.is_active());
+        QVERIFY(watched.watch.hasKeyboard());
+        g_object_thaw_notify(G_OBJECT(window.gobj()));
+        QVERIFY(watched.watch.hasKeyboard());
         QCOMPARE(watched.said, std::vector<bool>({true, false, true}));
         window.set_visible(false);
     }

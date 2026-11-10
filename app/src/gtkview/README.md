@@ -88,13 +88,15 @@ How it fits GTK:
   confinement are vitrine's own Wayland objects, on the window's main
   surface, and work without the inhibitor.
 - Whether the view has the keyboard (the focus in the active window)
-  comes from `focuswatch`, as the window's focus-widget and is-active
-  change, not from a focus controller: GTK 4.24 sends the controllers'
-  enter and leave before it stores the new focus, so a view given the
-  focus by a focus move (a VM chosen in the list, the Console view back)
-  read no focus there and took no grab until the window was deactivated
-  and active again (on GNOME the first Super opened the overview, and the
-  next reached the guest: nested GNOME 51.1, 2026-11-10).
+  comes from `focuswatch`: a focus move once GTK has stored it (the
+  window's focus-widget notification), the window's activity at once from
+  GTK's crossing (its is-active notification comes 2.5 ms later). GTK 4.24
+  sends the focus controllers' enter and leave of a focus move before it
+  stores the new focus, so a view that decided there, given the focus by
+  a focus move (a VM chosen in the list, the Console view back), read no
+  focus and took no grab until the window was deactivated and active
+  again (on GNOME the first Super opened the overview, and the next
+  reached the guest: nested GNOME 51.1, 2026-11-10).
 - GTK runs the window's capture-phase shortcut controllers (the
   application's accelerators, F10) before the focused widget: while the
   view has the keyboard they are off, as the Qt view takes every key before
