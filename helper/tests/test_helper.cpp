@@ -143,7 +143,8 @@ private:
 class Helper
 {
 public:
-    /* vitrine-helper-fake session, or @program @arguments that runs it */
+    /* vitrine-helper-fake session (or the verb in @arguments), or @program
+       @arguments that runs it */
     Helper(const QString &root, const QStringList &extraEnv = {},
            const QString &program = HELPER_FAKE, const QStringList &arguments = {})
     {
@@ -156,7 +157,8 @@ public:
         }
         m_process.setProcessEnvironment(env);
         m_process.setProcessChannelMode(QProcess::SeparateChannels);
-        m_process.start(program, program == HELPER_FAKE ? QStringList{"session"} : arguments);
+        m_process.start(program, program == HELPER_FAKE && arguments.isEmpty() ? QStringList{"session"}
+                                                                               : arguments);
         m_process.waitForStarted();
     }
     ~Helper()
@@ -213,6 +215,12 @@ public:
     {
         const QStringList got = ask(request);
         return got.isEmpty() ? QString() : got.last();
+    }
+    /* Sends @request, its answer left to be read */
+    void send(const QString &request)
+    {
+        m_process.write((request + '\n').toUtf8());
+        m_process.waitForBytesWritten();
     }
     bool ready() { return waitFor("ready") == "ready 1"; }
     void closeInput() { m_process.closeWriteChannel(); }
@@ -467,6 +475,124 @@ private:
         }
         writeFile(path(QString(kCpu) + "/cpuidle/current_driver"), "acpi_idle\n");
         writeFile(path(kLatency), "");
+    }
+
+    /* A PCI device's folder in the fake tree */
+    QString pciDir(const QString &address) const { return path("/sys/devices/pci0000:00/" + address); }
+    /*
+     * A PCI device of the fake bus (fakesys.c): its folder and the bus's link
+     * to it, its driver (also the one drivers_probe binds), its IOMMU group
+     */
+    void pci(const QString &address, const QByteArray &cls, const QString &driver, int group)
+    {
+        const QString dir = pciDir(address);
+        writeFile(dir + "/class", cls + '\n');
+        writeFile(dir + "/vendor", "0x1002\n");
+        writeFile(dir + "/device", "0x164e\n");
+        writeFile(dir + "/driver_override", "(null)\n");
+        writeFile(dir + "/fake-native", driver.toLatin1() + '\n');
+        QDir().mkpath(path("/sys/bus/pci/devices"));
+        QFile::link(dir, path("/sys/bus/pci/devices/" + address));
+        if (!driver.isEmpty()) {
+            QDir().mkpath(path("/sys/bus/pci/drivers/" + driver));
+            QFile::link(path("/sys/bus/pci/drivers/" + driver), dir + "/driver");
+        }
+        if (group >= 0) {
+            const QString groupDir = path(QString("/sys/kernel/iommu_groups/%1").arg(group));
+            QDir().mkpath(groupDir + "/devices");
+            QFile::link(groupDir, dir + "/iommu_group");
+            QFile::link(dir, groupDir + "/devices/" + address);
+        }
+    }
+    /* A device node's folder: its number, its subsystem */
+    void devNode(const QString &dir, const QByteArray &number, const QString &subsystem)
+    {
+        writeFile(dir + "/dev", number + '\n');
+        QDir().mkpath(path("/sys/class/" + subsystem));
+        QFile::link(path("/sys/class/" + subsystem), dir + "/subsystem");
+    }
+    /*
+     * The fake PCI bus: group 21 a second GPU and its HDMI audio (amdgpu,
+     * snd_hda_intel); group 14 a GPU set aside at boot (vfio-pci, the
+     * laptop's RTX 5060), its node root's at 0600; group 2 a network card
+     * behind its root port; group 17 an NVMe disk; group 18 the GPU the
+     * computer started on; group 12 the SMBus and the ISA bridge; group 30
+     * a USB controller with a keyboard.  32 GB of memory, a btrfs root on
+     * another disk, the test's own locked memory limit (the helper's parent:
+     * vitrine) at Fedora's 8 MiB.
+     */
+    void pciTree()
+    {
+        const QString gpu = pciDir("0000:6e:00.0"), audio = pciDir("0000:6e:00.1");
+        pci("0000:6e:00.0", "0x030000", "amdgpu", 21);
+        writeFile(gpu + "/boot_vga", "0\n");
+        devNode(gpu + "/drm/card1", "226:1", "drm");
+        devNode(gpu + "/drm/renderD129", "226:129", "drm");
+        writeFile(gpu + "/drm/card1/card1-DP-1/status", "disconnected\n");
+        pci("0000:6e:00.1", "0x040300", "snd_hda_intel", 21);
+        devNode(audio + "/sound/card1/controlC1", "116:10", "sound");
+        devNode(audio + "/sound/card1/pcmC1D3p", "116:11", "sound");
+        pci("0000:01:00.0", "0x030000", "vfio-pci", 14);
+        pci("0000:01:00.1", "0x040300", "vfio-pci", 14);
+        writeFile(path("/dev/vfio/14"), "");
+        writeFile(path("/dev/vfio/14.owner"), "0 0 600\n");
+        writeFile(path("/dev/vfio/14.rdev"), "239:14\n");
+        pci("0000:00:01.1", "0x060400", "pcieport", 2);
+        pci("0000:02:00.0", "0x020000", "r8169", 2);
+        writeFile(pciDir("0000:02:00.0") + "/net/enp2s0/operstate", "down\n");
+        pci("0000:04:00.0", "0x010802", "nvme", 17);
+        const QString nvme = pciDir("0000:04:00.0") + "/nvme/nvme0";
+        devNode(nvme, "240:0", "nvme");
+        devNode(nvme + "/nvme0n1", "259:0", "block");
+        devNode(nvme + "/nvme0n1/nvme0n1p1", "259:1", "block");
+        devNode(nvme + "/nvme0n1/nvme0n1p2", "259:2", "block");
+        QDir().mkpath(nvme + "/nvme0n1/holders");
+        QDir().mkpath(nvme + "/nvme0n1/nvme0n1p1/holders");
+        QDir().mkpath(nvme + "/nvme0n1/nvme0n1p2/holders");
+        pci("0000:65:00.0", "0x030000", "amdgpu", 18);
+        writeFile(pciDir("0000:65:00.0") + "/boot_vga", "1\n");
+        pci("0000:00:14.0", "0x0c0500", "piix4_smbus", 12);
+        pci("0000:00:14.3", "0x060100", "", 12);
+        pci("0000:07:00.0", "0x0c0330", "xhci_hcd", 30);
+        devNode(pciDir("0000:07:00.0") + "/usb1/1-1/1-1:1.0/0003:046D:C52B.0001/input/input5/event5",
+                "13:69", "input");
+        QDir().mkpath(path("/sys/bus/pci/drivers/vfio-pci"));
+        writeFile(path("/sys/bus/pci/drivers_probe"), "");
+        writeFile(path("/proc/meminfo"), "MemTotal:       32768000 kB\nMemFree:          524288 kB\n");
+        writeFile(path("/proc/self/mountinfo"), "22 1 0:21 / / rw,relatime shared:1 - btrfs /dev/sda2 rw\n");
+        writeFile(path("/dev/sda2.rdev"), "b 8:2\n");
+        writeFile(path(QString("/memlock-%1").arg(getpid())), "8388608 8388608\n");
+    }
+    /* What the fake bus has @address bound to, "" for none */
+    QString driverOf(const QString &address) const
+    {
+        return QFileInfo(pciDir(address) + "/driver").symLinkTarget().section('/', -1);
+    }
+    QByteArray overrideOf(const QString &address) const
+    {
+        return readFile(pciDir(address) + "/driver_override").trimmed();
+    }
+    bool nodeExists(int group) const { return QFile::exists(path(QString("/dev/vfio/%1").arg(group))); }
+    /* "uid gid mode" of the fake /dev/vfio/@group */
+    QByteArray nodeOwner(int group) const { return value(QString("/dev/vfio/%1.owner").arg(group)); }
+    QByteArray nodeMine() const { return QByteArray::number(getuid()) + " 0 600"; }
+    /* the test's own locked memory limit, as the fake kernel has it */
+    QByteArray memlock() const { return value(QString("/memlock-%1").arg(getpid())); }
+    /* The answer of a devices-bind session to @request, which must change nothing */
+    QString refusal(const QString &request, const QString &verb = "devices-bind")
+    {
+        clearJournal();
+        Helper h(m_root, {}, HELPER_FAKE, {verb});
+        if (!h.ready()) {
+            return "not ready";
+        }
+        const QString got = h.answer(request);
+        h.closeInput();
+        h.finished();
+        if (!writes().isEmpty() || stateFiles() != QStringList({"lock"})) {
+            return "changed: " + writes().join("; ") + " / " + stateFiles().join("; ");
+        }
+        return got;
     }
 
 private slots:
@@ -3388,6 +3514,799 @@ private slots:
                  QString("error gpu-floor card1: 3200 MHz is outside 500-3150 MHz"));
     }
 
+    /*
+     * devices-bind: a GPU and its audio function taken from their drivers -
+     * the record first, then for each its driver_override, its driver's
+     * unbind, vfio-pci's bind - the group's node the caller's, the parent's
+     * locked memory limit raised; back to the parent's limit once its QEMU
+     * is watched, everything back when that QEMU ends
+     */
+    void vfioBindAndGiveBack()
+    {
+        pciTree();
+        const QString me = QString::number(getpid());
+        Helper h(m_root, {}, HELPER_FAKE, {"devices-bind"});
+        QVERIFY(h.ready());
+        QCOMPARE(h.answer("vfio 0000:6e:00.0,0000:6e:00.1 3072"),
+                 QString("ok vfio 0000:6e:00.0=amdgpu,0000:6e:00.1=snd_hda_intel: IOMMU group 21 on "
+                         "vfio-pci, /dev/vfio/21 for uid %1, locked memory 3072 MiB (was 8 MiB)")
+                     .arg(getuid()));
+        QCOMPARE(driverOf("0000:6e:00.0"), QString("vfio-pci"));
+        QCOMPARE(driverOf("0000:6e:00.1"), QString("vfio-pci"));
+        QCOMPARE(overrideOf("0000:6e:00.0"), QByteArray("vfio-pci"));
+        QCOMPARE(nodeOwner(21), nodeMine());
+        QCOMPARE(memlock(), QByteArray("3221225472 3221225472"));
+        QVERIFY(stateExists("vfio-21"));
+        QVERIFY(stateExists("memlock-" + me));
+        QCOMPARE(writes(), QStringList({"/sys/bus/pci/devices/0000:6e:00.0/driver_override vfio-pci",
+                                        "/sys/bus/pci/drivers/amdgpu/unbind 0000:6e:00.0",
+                                        "/sys/bus/pci/drivers/vfio-pci/bind 0000:6e:00.0",
+                                        "/sys/bus/pci/devices/0000:6e:00.1/driver_override vfio-pci",
+                                        "/sys/bus/pci/drivers/snd_hda_intel/unbind 0000:6e:00.1",
+                                        "/sys/bus/pci/drivers/vfio-pci/bind 0000:6e:00.1"}));
+        const QStringList j = journal();
+        QVERIFY(j.contains(QString("chown /dev/vfio/21 %1 0 600").arg(getuid())));
+        QVERIFY(j.contains(QString("memlock %1 3221225472 3221225472").arg(me)));
+        QVERIFY(!j.filter(QRegularExpression("^log uid \\d+: IOMMU group 21 on vfio-pci")).isEmpty());
+        /* the same again: nothing more */
+        clearJournal();
+        QCOMPARE(h.answer("vfio 0000:6e:00.0,0000:6e:00.1 3072"),
+                 QString("ok vfio 0000:6e:00.0,0000:6e:00.1: already"));
+        QVERIFY(writes().isEmpty());
+
+        /* its QEMU has a copy of the limit: the parent's goes back */
+        FakeQemu qemu;
+        QCOMPARE(h.answer("watch " + qemu.pidText()), "ok watch " + qemu.pidText());
+        QCOMPARE(h.line(), QString("restored memlock %1: 8 MiB").arg(me));
+        QCOMPARE(memlock(), QByteArray("8388608 8388608"));
+        QVERIFY(!stateExists("memlock-" + me));
+        QVERIFY(readFile(path("/run/vitrine-helper/vfio-21.state"))
+                    .contains(QString("\nqemu %1 ").arg(qemu.pid()).toLatin1()));
+
+        /* the VM ends: everything back, and the helper with it */
+        clearJournal();
+        const QString pid = qemu.pidText();
+        qemu.stop();
+        QCOMPARE(h.waitFor("exited"), "exited " + pid);
+        QCOMPARE(h.line(), QString("restored vfio 21: 0000:6e:00.0 back to amdgpu, 0000:6e:00.1 back "
+                                   "to snd_hda_intel"));
+        QCOMPARE(h.waitFor("bye"), QString("bye"));
+        QVERIFY(h.finished());
+        QCOMPARE(driverOf("0000:6e:00.0"), QString("amdgpu"));
+        QCOMPARE(driverOf("0000:6e:00.1"), QString("snd_hda_intel"));
+        QCOMPARE(overrideOf("0000:6e:00.0"), QByteArray("(null)"));
+        QCOMPARE(overrideOf("0000:6e:00.1"), QByteArray("(null)"));
+        QVERIFY(!nodeExists(21));
+        QCOMPARE(stateFiles(), QStringList({"lock"}));
+        QCOMPARE(writes(), QStringList({"/sys/bus/pci/drivers/vfio-pci/unbind 0000:6e:00.0",
+                                        "/sys/bus/pci/devices/0000:6e:00.0/driver_override ",
+                                        "/sys/bus/pci/drivers/amdgpu/bind 0000:6e:00.0",
+                                        "/sys/bus/pci/drivers/vfio-pci/unbind 0000:6e:00.1",
+                                        "/sys/bus/pci/devices/0000:6e:00.1/driver_override ",
+                                        "/sys/bus/pci/drivers/snd_hda_intel/bind 0000:6e:00.1"}));
+        QVERIFY(journal().contains(QString("chown /dev/vfio/21 0 0 600")));
+        QVERIFY(!journal().join('\n').contains("WHILE IN USE"));
+    }
+
+    /*
+     * devices: a group on vfio-pci already (bound at boot, as the laptop's
+     * RTX 5060 is): its node and the limit only, no driver touched, and it
+     * stays on vfio-pci after
+     */
+    void vfioAlreadyOnVfioPci()
+    {
+        pciTree();
+        Helper h(m_root, {}, HELPER_FAKE, {"devices"});
+        QVERIFY(h.ready());
+        QCOMPARE(h.answer("vfio 0000:01:00.0,0000:01:00.1 3072"),
+                 QString("ok vfio 0000:01:00.0=vfio-pci,0000:01:00.1=vfio-pci: IOMMU group 14 on "
+                         "vfio-pci, /dev/vfio/14 for uid %1, locked memory 3072 MiB (was 8 MiB)")
+                     .arg(getuid()));
+        QVERIFY(writes().isEmpty());
+        QCOMPARE(nodeOwner(14), nodeMine());
+        /* QEMU opens the group */
+        FakeQemu qemu(FAKE_QEMU, {"FAKE_QEMU_HOLD=" + path("/dev/vfio/14")});
+        h.answer("watch " + qemu.pidText());
+        QCOMPARE(h.line(), QString("restored memlock %1: 8 MiB").arg(getpid()));
+        const QString pid = qemu.pidText();
+        qemu.stop();
+        QCOMPARE(h.waitFor("exited"), "exited " + pid);
+        QCOMPARE(h.line(), QString("restored vfio 14: /dev/vfio/14 back to uid 0"));
+        QVERIFY(h.finished());
+        QCOMPARE(nodeOwner(14), QByteArray("0 0 600"));
+        QCOMPARE(driverOf("0000:01:00.0"), QString("vfio-pci"));
+        QCOMPARE(driverOf("0000:01:00.1"), QString("vfio-pci"));
+        QVERIFY(writes().isEmpty());
+        QCOMPARE(stateFiles(), QStringList({"lock"}));
+    }
+
+    /* devices takes no device from a driver: devices-bind does */
+    void vfioDevicesTakesNothing()
+    {
+        pciTree();
+        QCOMPARE(refusal("vfio 0000:6e:00.0,0000:6e:00.1 3072", "devices"),
+                 QString("error vfio 0000:6e:00.0: 0000:6e:00.0 is bound to amdgpu: taking it from this "
+                         "computer needs vitrine-helper devices-bind"));
+        /* nor binds one that has no driver */
+        pci("0000:09:00.0", "0x048000", "", 33);
+        QCOMPARE(refusal("vfio 0000:09:00.0 1024", "devices"),
+                 QString("error vfio 0000:09:00.0: 0000:09:00.0 has no driver: binding it to vfio-pci "
+                         "needs vitrine-helper devices-bind"));
+        QCOMPARE(memlock(), QByteArray("8388608 8388608"));
+        /* the tuning session takes none at all */
+        Helper h(m_root);
+        QVERIFY(h.ready());
+        QCOMPARE(h.answer("vfio 0000:01:00.0,0000:01:00.1 1024"),
+                 QString("error vfio: PCI devices go through vitrine-helper devices or devices-bind"));
+    }
+
+    /* What the host uses stays with it */
+    void vfioRefusesWhatTheHostUses()
+    {
+        pciTree();
+        QCOMPARE(refusal("vfio 0000:65:00.0 3072"),
+                 QString("error vfio 0000:65:00.0: 0000:65:00.0 is the GPU this computer started on "
+                         "(boot_vga)"));
+        writeFile(pciDir("0000:6e:00.0") + "/drm/card1/card1-DP-1/status", "connected\n");
+        QCOMPARE(refusal("vfio 0000:6e:00.0,0000:6e:00.1 3072"),
+                 QString("error vfio 0000:6e:00.0: a display is connected to 0000:6e:00.0 (DP-1)"));
+        writeFile(pciDir("0000:6e:00.0") + "/drm/card1/card1-DP-1/status", "disconnected\n");
+        /* the compositor holds the GPU, a browser its render node */
+        writeFile(path("/users"), "c 226:1 2345 gnome-shell\nc 226:129 2400 firefox\n");
+        QCOMPARE(refusal("vfio 0000:6e:00.0,0000:6e:00.1 3072"),
+                 QString("error vfio 0000:6e:00.0: 0000:6e:00.0 is in use by gnome-shell (pid 2345), "
+                         "firefox (pid 2400)"));
+        /* an ALSA client of its audio that is no sound server */
+        writeFile(path("/users"), "c 116:11 3002 audacity\n");
+        QCOMPARE(refusal("vfio 0000:6e:00.0,0000:6e:00.1 3072"),
+                 QString("error vfio 0000:6e:00.0: 0000:6e:00.1 is in use by audacity (pid 3002)"));
+        /* the keyboard on a USB controller: logind and the compositor have it */
+        writeFile(path("/users"), "c 13:69 812 systemd-logind\nc 13:69 2345 gnome-shell\n");
+        QCOMPARE(refusal("vfio 0000:07:00.0 1024"),
+                 QString("error vfio 0000:07:00.0: 0000:07:00.0 is in use by systemd-logind (pid 812), "
+                         "gnome-shell (pid 2345)"));
+        QFile::remove(path("/users"));
+        /* a network interface up */
+        writeFile(pciDir("0000:02:00.0") + "/net/enp2s0/operstate", "up\n");
+        QCOMPARE(refusal("vfio 0000:02:00.0 1024"),
+                 QString("error vfio 0000:02:00.0: the network interface enp2s0 of 0000:02:00.0 is up: "
+                         "take it down first (sudo ip link set enp2s0 down)"));
+        writeFile(pciDir("0000:02:00.0") + "/net/enp2s0/operstate", "down\n");
+        /* platform devices, a bridge */
+        QCOMPARE(refusal("vfio 0000:00:14.0 1024"),
+                 QString("error vfio 0000:00:14.0: 0000:00:14.0 is the SMBus controller: it stays with "
+                         "this computer"));
+        QCOMPARE(refusal("vfio 0000:00:01.1,0000:02:00.0 1024"),
+                 QString("error vfio 0000:00:01.1: 0000:00:01.1 is a bridge: it stays with this "
+                         "computer"));
+        /* the whole group or nothing: the GPU without its audio */
+        QCOMPARE(refusal("vfio 0000:6e:00.0 3072"),
+                 QString("error vfio 0000:6e:00.0: 0000:6e:00.1 shares IOMMU group 21 and is bound to "
+                         "snd_hda_intel: pass it through too"));
+        /* NVIDIA's own nodes, which sysfs does not list */
+        pci("0000:0a:00.0", "0x030000", "nvidia", 40);
+        writeFile(path("/proc/devices"), "Character devices:\n  1 mem\n195 nvidia\n195 nvidia-modeset\n"
+                                         "\nBlock devices:\n  8 sd\n");
+        writeFile(path("/users"), "c 195:255 4000 nvidia-smi\n");
+        QCOMPARE(refusal("vfio 0000:0a:00.0 1024"),
+                 QString("error vfio 0000:0a:00.0: 0000:0a:00.0 is in use by nvidia-smi (pid 4000)"));
+        QFile::remove(path("/users"));
+    }
+
+    /*
+     * The sound servers let go of a card that goes: theirs is no use that
+     * keeps it - told by the program they run, not by the name they give
+     */
+    void vfioSoundServersLetGo()
+    {
+        pciTree();
+        /* a program that calls itself pipewire */
+        writeFile(path("/users"), "c 116:10 3003 pipewire /home/someone/pipewire\n");
+        QCOMPARE(refusal("vfio 0000:6e:00.0,0000:6e:00.1 3072"),
+                 QString("error vfio 0000:6e:00.0: 0000:6e:00.1 is in use by pipewire (pid 3003)"));
+        writeFile(path("/users"), "c 116:10 3000 wireplumber /usr/bin/wireplumber\n"
+                                  "c 116:11 3001 pipewire /usr/bin/pipewire\n");
+        Helper h(m_root, {}, HELPER_FAKE, {"devices-bind"});
+        QVERIFY(h.ready());
+        QVERIFY(h.answer("vfio 0000:6e:00.0,0000:6e:00.1 3072").startsWith("ok vfio "));
+        QCOMPARE(driverOf("0000:6e:00.1"), QString("vfio-pci"));
+        h.ask("release");
+        QVERIFY(h.finished());
+        QCOMPARE(driverOf("0000:6e:00.1"), QString("snd_hda_intel"));
+    }
+
+    /* A disk mounted (by number, by source as btrfs's), swapped on, under LUKS */
+    void vfioRefusesDisksInUse()
+    {
+        pciTree();
+        const QString disk = pciDir("0000:04:00.0") + "/nvme/nvme0/nvme0n1";
+        writeFile(path("/proc/self/mountinfo"), "22 1 0:21 / / rw - btrfs /dev/sda2 rw\n"
+                                                "30 22 259:2 / /home rw - ext4 /dev/nvme0n1p2 rw\n");
+        QCOMPARE(refusal("vfio 0000:04:00.0 1024"),
+                 QString("error vfio 0000:04:00.0: nvme0n1p2 on 0000:04:00.0 is mounted on /home"));
+        writeFile(path("/proc/self/mountinfo"), "22 1 0:21 / / rw - btrfs /dev/sda2 rw\n"
+                                                "31 22 0:40 /@data /data rw - btrfs /dev/nvme0n1p1 rw\n");
+        writeFile(path("/dev/nvme0n1p1.rdev"), "b 259:1\n");
+        QCOMPARE(refusal("vfio 0000:04:00.0 1024"),
+                 QString("error vfio 0000:04:00.0: nvme0n1p1 on 0000:04:00.0 is mounted on /data"));
+        writeFile(path("/proc/self/mountinfo"), "22 1 0:21 / / rw - btrfs /dev/sda2 rw\n");
+        writeFile(path("/proc/swaps"), "Filename\t\t\t\tType\t\tSize\t\tUsed\t\tPriority\n"
+                                       "/dev/nvme0n1p2                          partition\t8388604\t\t0\t\t-2\n");
+        writeFile(path("/dev/nvme0n1p2.rdev"), "b 259:2\n");
+        QCOMPARE(refusal("vfio 0000:04:00.0 1024"),
+                 QString("error vfio 0000:04:00.0: nvme0n1p2 on 0000:04:00.0 is in use as swap"));
+        QFile::remove(path("/proc/swaps"));
+        writeFile(disk + "/nvme0n1p2/holders/dm-0", "");
+        QCOMPARE(refusal("vfio 0000:04:00.0 1024"),
+                 QString("error vfio 0000:04:00.0: nvme0n1p2 on 0000:04:00.0 is in use by dm-0 (an "
+                         "encrypted or LVM volume, RAID)"));
+        QFile::remove(disk + "/nvme0n1p2/holders/dm-0");
+        /* none of that: it goes */
+        Helper h(m_root, {}, HELPER_FAKE, {"devices-bind"});
+        QVERIFY(h.ready());
+        QVERIFY(h.answer("vfio 0000:04:00.0 1024").startsWith("ok vfio 0000:04:00.0=nvme: "));
+        h.ask("release");
+        QVERIFY(h.finished());
+        QCOMPARE(driverOf("0000:04:00.0"), QString("nvme"));
+    }
+
+    /* A group another VM has, or another program */
+    void vfioGroupInUse()
+    {
+        pciTree();
+        {
+            FakeQemu other(FAKE_QEMU, {"FAKE_QEMU_HOLD=" + path("/dev/vfio/14")});
+            QCOMPARE(refusal("vfio 0000:01:00.0,0000:01:00.1 3072", "devices"),
+                     QString("error vfio 0000:01:00.0: IOMMU group 14 is in use by another program"));
+            writeFile(path("/users"), QString("c 239:14 %1 qemu-system-x86\n").arg(other.pid()).toLatin1());
+            QCOMPARE(refusal("vfio 0000:01:00.0,0000:01:00.1 3072", "devices"),
+                     QString("error vfio 0000:01:00.0: IOMMU group 14 is in use by qemu-system-x86 (pid "
+                             "%1)").arg(other.pid()));
+            QFile::remove(path("/users"));
+        }
+        /* another VM of vitrine's starting, its helper holding the group */
+        Helper a(m_root, {}, HELPER_FAKE, {"devices"});
+        QVERIFY(a.ready());
+        QVERIFY(a.answer("vfio 0000:01:00.0,0000:01:00.1 3072").startsWith("ok vfio "));
+        Helper b(m_root, {}, HELPER_FAKE, {"devices"});
+        QVERIFY(b.ready());
+        QCOMPARE(b.answer("vfio 0000:01:00.0,0000:01:00.1 2048"),
+                 QString("error vfio 0000:01:00.0: IOMMU group 14 is in use by another VM"));
+        QCOMPARE(nodeOwner(14), nodeMine());
+        a.ask("release");
+        QVERIFY(a.finished());
+        QCOMPARE(nodeOwner(14), QByteArray("0 0 600"));
+        b.closeInput();
+        QVERIFY(b.finished());
+        QCOMPARE(stateFiles(), QStringList({"lock"}));
+    }
+
+    void vfioValidation()
+    {
+        pciTree();
+        Helper h(m_root, {}, HELPER_FAKE, {"devices-bind"});
+        QVERIFY(h.ready());
+        const QString addresses("error vfio: give the PCI addresses as 0000:00:00.0, separated by commas");
+        for (const char *bad : {"6e:00.0", "0000:6E:00.0", "0000:6e:20.0", "0000:6e:00.8",
+                                "0000:6e:00.0,", ",0000:6e:00.0", "0000:6e:00.0,,0000:6e:00.1",
+                                "../../../xx", "0000:6e:00.0/", "0000:6e:00.00", "00000:6e:00.0"}) {
+            QCOMPARE(h.answer(QString("vfio %1 1024").arg(bad)), addresses);
+        }
+        const QString memory("error vfio: give the memory to lock in MiB");
+        for (const char *bad : {"0", "-1", "abc", "01024", "1e3", "99999999999999999999"}) {
+            QCOMPARE(h.answer(QString("vfio 0000:6e:00.0,0000:6e:00.1 %1").arg(bad)), memory);
+        }
+        QCOMPARE(h.answer("vfio 0000:99:00.0 1024"), QString("error vfio 0000:99:00.0: no such PCI device"));
+        /* a device without an IOMMU group: the IOMMU is off */
+        writeFile(pciDir("0000:08:00.0") + "/class", "0x020000\n");
+        QFile::link(pciDir("0000:08:00.0"), path("/sys/bus/pci/devices/0000:08:00.0"));
+        QCOMPARE(h.answer("vfio 0000:08:00.0 1024"),
+                 QString("error vfio 0000:08:00.0: it has no IOMMU group: the IOMMU is off"));
+        QCOMPARE(h.answer("vfio 0000:6e:00.0"), QString("error vfio: unknown request"));
+        QCOMPARE(h.answer("vfio"), QString("error vfio: unknown request"));
+        /* the host settings are another session's */
+        QCOMPARE(h.answer("fair-server on"), QString("error fair-server: unknown request"));
+        QCOMPARE(h.answer("rt 1"), QString("error rt: unknown request"));
+        QVERIFY(writes().isEmpty());
+        QCOMPARE(stateFiles(), QStringList({"lock"}));
+        QCOMPARE(memlock(), QByteArray("8388608 8388608"));
+    }
+
+    /* No QEMU came in time: back, and the helper waits on for its input */
+    void vfioNoQemuCame()
+    {
+        pciTree();
+        Helper h(m_root, {"VITRINE_HELPER_TEST_VFIO_EXPIRY_MS=300"}, HELPER_FAKE, {"devices-bind"});
+        QVERIFY(h.ready());
+        QVERIFY(h.answer("vfio 0000:6e:00.0,0000:6e:00.1 3072").startsWith("ok vfio "));
+        QCOMPARE(h.waitFor("restored vfio"),
+                 QString("restored vfio 21: 0000:6e:00.0 back to amdgpu, 0000:6e:00.1 back to "
+                         "snd_hda_intel (no QEMU came for it)"));
+        QCOMPARE(h.line(), QString("restored memlock %1: 8 MiB").arg(getpid()));
+        QVERIFY(h.running());
+        QCOMPARE(driverOf("0000:6e:00.0"), QString("amdgpu"));
+        QCOMPARE(memlock(), QByteArray("8388608 8388608"));
+        QCOMPARE(stateFiles(), QStringList({"lock"}));
+        h.closeInput();
+        QVERIFY(h.finished());
+    }
+
+    /* The VM's start failed before its QEMU (or vitrine went): its input ends */
+    void vfioInputClosed()
+    {
+        pciTree();
+        Helper h(m_root, {}, HELPER_FAKE, {"devices-bind"});
+        QVERIFY(h.ready());
+        QVERIFY(h.answer("vfio 0000:6e:00.0,0000:6e:00.1 3072").startsWith("ok vfio "));
+        h.closeInput();
+        QVERIFY(h.finished());
+        const QStringList all = h.all();
+        QVERIFY2(all.contains("restored vfio 21: 0000:6e:00.0 back to amdgpu, 0000:6e:00.1 back to "
+                              "snd_hda_intel"), qPrintable(all.join('\n')));
+        QVERIFY(all.contains(QString("restored memlock %1: 8 MiB").arg(getpid())));
+        QCOMPARE(all.last(), QString("bye"));
+        QCOMPARE(driverOf("0000:6e:00.1"), QString("snd_hda_intel"));
+        QCOMPARE(memlock(), QByteArray("8388608 8388608"));
+        QCOMPARE(stateFiles(), QStringList({"lock"}));
+    }
+
+    /*
+     * Released while its QEMU has the group open: nothing unbound (it would
+     * wait in the kernel), the node root's again, the record kept; the next
+     * helper, of whatever verb, gives it back once it is free
+     */
+    void vfioReleasedWhileInUse()
+    {
+        pciTree();
+        FakeQemu qemu;
+        {
+            Helper h(m_root, {}, HELPER_FAKE, {"devices-bind"});
+            QVERIFY(h.ready());
+            QVERIFY(h.answer("vfio 0000:6e:00.0,0000:6e:00.1 3072").startsWith("ok vfio "));
+            FakeQemu holder(FAKE_QEMU, {"FAKE_QEMU_HOLD=" + path("/dev/vfio/21")});
+            h.answer("watch " + qemu.pidText());
+            clearJournal();
+            h.ask("release");
+            QVERIFY(h.finished());
+            const QStringList all = h.all();
+            QVERIFY2(all.contains("left vfio 21: IOMMU group 21 is in use by another program: it stays "
+                                  "on vfio-pci until a later vitrine-helper finds it free"),
+                     qPrintable(all.join('\n')));
+            QVERIFY(!journal().join('\n').contains("WHILE IN USE"));
+            QVERIFY(writes().isEmpty());
+            QCOMPARE(driverOf("0000:6e:00.0"), QString("vfio-pci"));
+            QCOMPARE(nodeOwner(21), QByteArray("0 0 600"));
+            QVERIFY(stateExists("vfio-21"));
+        }
+        /* free now: the next helper's start - a tuning session - gives it back */
+        Helper next(m_root);
+        QStringList before;
+        for (QString l = next.line(); !l.isNull() && !l.startsWith("ready"); l = next.line()) {
+            before << l;
+        }
+        QVERIFY2(before.contains("restored vfio 21: 0000:6e:00.0 back to amdgpu, 0000:6e:00.1 back to "
+                                 "snd_hda_intel"), qPrintable(before.join('\n')));
+        QCOMPARE(driverOf("0000:6e:00.0"), QString("amdgpu"));
+        QCOMPARE(driverOf("0000:6e:00.1"), QString("snd_hda_intel"));
+        QCOMPARE(stateFiles(), QStringList({"lock"}));
+        next.closeInput();
+        QVERIFY(next.finished());
+    }
+
+    /* Its QEMU ended, and something else has the group open: left, recorded */
+    void vfioHeldAfterItsQemu()
+    {
+        pciTree();
+        Helper h(m_root, {}, HELPER_FAKE, {"devices-bind"});
+        QVERIFY(h.ready());
+        QVERIFY(h.answer("vfio 0000:6e:00.0,0000:6e:00.1 3072").startsWith("ok vfio "));
+        FakeQemu qemu;
+        h.answer("watch " + qemu.pidText());
+        FakeQemu other(FAKE_QEMU, {"FAKE_QEMU_HOLD=" + path("/dev/vfio/21")});
+        writeFile(path("/users"), QString("c 239:21 %1 qemu-system-x86\n").arg(other.pid()).toLatin1());
+        qemu.stop();
+        QCOMPARE(h.waitFor("left vfio"),
+                 QString("left vfio 21: IOMMU group 21 is in use by qemu-system-x86 (pid %1): it stays "
+                         "on vfio-pci until a later vitrine-helper finds it free").arg(other.pid()));
+        QVERIFY(h.finished());
+        QCOMPARE(driverOf("0000:6e:00.0"), QString("vfio-pci"));
+        QVERIFY(stateExists("vfio-21"));
+        QVERIFY(!journal().join('\n').contains("WHILE IN USE"));
+    }
+
+    /* A driver that does not take its device back: said, its override as it was */
+    void vfioDriverDidNotComeBack()
+    {
+        pciTree();
+        Helper h(m_root, {}, HELPER_FAKE, {"devices-bind"});
+        QVERIFY(h.ready());
+        QVERIFY(h.answer("vfio 0000:6e:00.0,0000:6e:00.1 3072").startsWith("ok vfio "));
+        writeFile(path("/sys/bus/pci/drivers/amdgpu/bind.refuse"), "");
+        h.ask("release");
+        QVERIFY(h.finished());
+        const QStringList all = h.all();
+        QVERIFY2(all.contains("restored vfio 21: 0000:6e:00.1 back to snd_hda_intel"),
+                 qPrintable(all.join('\n')));
+        QVERIFY(all.contains("left vfio 21: 0000:6e:00.0 has no driver: amdgpu did not take it back"));
+        QCOMPARE(driverOf("0000:6e:00.0"), QString());
+        QCOMPARE(overrideOf("0000:6e:00.0"), QByteArray("(null)"));
+        /* not the kernel's choice: another driver could take it (radeon,
+           nouveau, vfio-pci by ids=) */
+        QVERIFY(writes().filter("drivers_probe").isEmpty());
+        QCOMPARE(stateFiles(), QStringList({"lock"}));
+
+        /* its module unloaded meanwhile: the kernel finds it one */
+        makeTree();
+        pciTree();
+        Helper again(m_root, {}, HELPER_FAKE, {"devices-bind"});
+        QVERIFY(again.ready());
+        QVERIFY(again.answer("vfio 0000:6e:00.0,0000:6e:00.1 3072").startsWith("ok vfio "));
+        QDir(path("/sys/bus/pci/drivers/amdgpu")).removeRecursively();
+        writeFile(pciDir("0000:6e:00.0") + "/fake-native", "amdgpu-next\n");
+        QDir().mkpath(path("/sys/bus/pci/drivers/amdgpu-next"));
+        clearJournal();
+        again.ask("release");
+        QVERIFY(again.finished());
+        QVERIFY(writes().contains("/sys/bus/pci/drivers_probe 0000:6e:00.0"));
+        QCOMPARE(driverOf("0000:6e:00.0"), QString("amdgpu-next"));
+        QVERIFY(again.all().contains("left vfio 21: 0000:6e:00.0 is on amdgpu-next: amdgpu did not "
+                                     "take it back"));
+    }
+
+    /* vfio-pci refuses a device: all of it back as it was, without a word of "restored" */
+    void vfioBindRefused()
+    {
+        pciTree();
+        writeFile(path("/sys/bus/pci/drivers/vfio-pci/bind.refuse"), "");
+        Helper h(m_root, {}, HELPER_FAKE, {"devices-bind"});
+        QVERIFY(h.ready());
+        QCOMPARE(h.answer("vfio 0000:6e:00.0,0000:6e:00.1 3072"),
+                 QString("error vfio 0000:6e:00.0: vfio-pci did not take 0000:6e:00.0: Invalid argument"));
+        QCOMPARE(driverOf("0000:6e:00.0"), QString("amdgpu"));
+        QCOMPARE(driverOf("0000:6e:00.1"), QString("snd_hda_intel"));
+        QCOMPARE(overrideOf("0000:6e:00.0"), QByteArray("(null)"));
+        QCOMPARE(memlock(), QByteArray("8388608 8388608"));
+        QCOMPARE(stateFiles(), QStringList({"lock"}));
+        h.ask("release");
+        QVERIFY(h.finished());
+        QVERIFY(h.all().filter("restored").isEmpty());
+    }
+
+    /* vfio-pci loaded when it is not; nothing done when it cannot be */
+    void vfioLoadsVfioPci()
+    {
+        pciTree();
+        QDir(path("/sys/bus/pci/drivers/vfio-pci")).removeRecursively();
+        {
+            Helper h(m_root, {}, HELPER_FAKE, {"devices-bind"});
+            QVERIFY(h.ready());
+            QVERIFY(h.answer("vfio 0000:6e:00.0,0000:6e:00.1 3072").startsWith("ok vfio "));
+            const QStringList j = journal().filter(QRegularExpression("^(modprobe|write) "));
+            QCOMPARE(j.first(), QString("modprobe vfio-pci"));
+            h.ask("release");
+            QVERIFY(h.finished());
+        }
+        makeTree();
+        pciTree();
+        QDir(path("/sys/bus/pci/drivers/vfio-pci")).removeRecursively();
+        writeFile(path("/modprobe.refuse"), "");
+        QCOMPARE(refusal("vfio 0000:6e:00.0,0000:6e:00.1 3072"),
+                 QString("error vfio: cannot load vfio-pci: modprobe: FATAL: Module vfio-pci not found"));
+        QCOMPARE(driverOf("0000:6e:00.0"), QString("amdgpu"));
+    }
+
+    /*
+     * Killed anywhere in the way: the next helper, of any verb, gives back
+     * what the records say - the devices, the node, the parent's limit
+     */
+    void vfioKilledHalfWay_data()
+    {
+        QTest::addColumn<int>("at");
+        /* each device's override, unbind and bind; the node's owner; the limit */
+        for (int at = 1; at <= 8; at++) {
+            QTest::addRow("write %d", at) << at;
+        }
+    }
+
+    void vfioKilledHalfWay()
+    {
+        QFETCH(int, at);
+        pciTree();
+        {
+            Helper h(m_root, {QString("VITRINE_HELPER_TEST_KILL_AT=%1").arg(at)}, HELPER_FAKE,
+                     {"devices-bind"});
+            QVERIFY(h.ready());
+            h.ask("vfio 0000:6e:00.0,0000:6e:00.1 3072");
+            QVERIFY(h.finished());
+        }
+        QVERIFY(journal().contains("killed"));
+        Helper next(m_root, {}, HELPER_FAKE, {"devices"});
+        QVERIFY(next.ready());
+        QCOMPARE(driverOf("0000:6e:00.0"), QString("amdgpu"));
+        QCOMPARE(driverOf("0000:6e:00.1"), QString("snd_hda_intel"));
+        QCOMPARE(overrideOf("0000:6e:00.0"), QByteArray("(null)"));
+        QCOMPARE(overrideOf("0000:6e:00.1"), QByteArray("(null)"));
+        QVERIFY(!nodeExists(21));
+        QCOMPARE(memlock(), QByteArray("8388608 8388608"));
+        QCOMPARE(stateFiles(), QStringList({"lock"}));
+        next.closeInput();
+        QVERIFY(next.finished());
+    }
+
+    /*
+     * Two VMs starting side by side raise the same parent's limit: the first
+     * one saves it, the higher value holds, the last one out puts it back
+     */
+    void vfioLimitShared()
+    {
+        pciTree();
+        Helper a(m_root, {}, HELPER_FAKE, {"devices"});
+        Helper b(m_root, {}, HELPER_FAKE, {"devices-bind"});
+        QVERIFY(a.ready());
+        QVERIFY(b.ready());
+        QVERIFY(a.answer("vfio 0000:01:00.0,0000:01:00.1 3072").endsWith(", locked memory 3072 MiB (was 8 MiB)"));
+        QVERIFY(b.answer("vfio 0000:07:00.0 5120").endsWith(", locked memory 5120 MiB (was 8 MiB)"));
+        QCOMPARE(memlock(), QByteArray("5368709120 5368709120"));
+        FakeQemu q1, q2;
+        QCOMPARE(a.answer("watch " + q1.pidText()), "ok watch " + q1.pidText());
+        /*
+         * One request more, answered once the watch before it is done: its
+         * reply comes before the limit's hold is let go, and the last helper
+         * out is the one that says it put the limit back
+         */
+        QCOMPARE(a.answer("watch " + q1.pidText()), "ok watch " + q1.pidText() + ": already");
+        /* the second VM's QEMU is not started yet: the limit stays */
+        QCOMPARE(memlock(), QByteArray("5368709120 5368709120"));
+        QCOMPARE(b.answer("watch " + q2.pidText()), "ok watch " + q2.pidText());
+        QCOMPARE(b.line(), QString("restored memlock %1: 8 MiB").arg(getpid()));
+        QCOMPARE(memlock(), QByteArray("8388608 8388608"));
+        a.ask("release");
+        b.ask("release");
+        QVERIFY(a.finished());
+        QVERIFY(b.finished());
+        QCOMPARE(stateFiles(), QStringList({"lock"}));
+        QCOMPARE(nodeOwner(14), QByteArray("0 0 600"));
+        QCOMPARE(driverOf("0000:07:00.0"), QString("xhci_hcd"));
+    }
+
+    /* More memory than the computer has, with a virtual IOMMU say: capped, and said */
+    void vfioLimitCapped()
+    {
+        pciTree();
+        Helper h(m_root, {}, HELPER_FAKE, {"devices"});
+        QVERIFY(h.ready());
+        QCOMPARE(h.answer("vfio 0000:01:00.0,0000:01:00.1 40000"),
+                 QString("ok vfio 0000:01:00.0=vfio-pci,0000:01:00.1=vfio-pci: IOMMU group 14 on "
+                         "vfio-pci, /dev/vfio/14 for uid %1, locked memory 33024 MiB (was 8 MiB), "
+                         "capped at this computer's memory and 1 GiB")
+                     .arg(getuid()));
+        QCOMPARE(memlock(), QByteArray::number(33024LL << 20) + ' ' + QByteArray::number(33024LL << 20));
+        h.ask("release");
+        QVERIFY(h.finished());
+        QCOMPARE(memlock(), QByteArray("8388608 8388608"));
+    }
+
+    /*
+     * The give-back checks it is the device it took: not one unplugged since,
+     * nor another one at its address
+     */
+    void vfioDeviceGoneOrAnother()
+    {
+        pciTree();
+        {
+            Helper h(m_root, {}, HELPER_FAKE, {"devices-bind"});
+            QVERIFY(h.ready());
+            QVERIFY(h.answer("vfio 0000:6e:00.0,0000:6e:00.1 3072").startsWith("ok vfio "));
+            /* unplugged */
+            QFile::remove(path("/sys/bus/pci/devices/0000:6e:00.0"));
+            QFile::remove(path("/sys/kernel/iommu_groups/21/devices/0000:6e:00.0"));
+            QDir(pciDir("0000:6e:00.0")).removeRecursively();
+            clearJournal();
+            h.ask("release");
+            QVERIFY(h.finished());
+            const QStringList all = h.all();
+            QVERIFY2(all.contains("left vfio 21: 0000:6e:00.0 is gone"), qPrintable(all.join('\n')));
+            QVERIFY(all.contains("restored vfio 21: 0000:6e:00.1 back to snd_hda_intel"));
+            QVERIFY(writes().filter("0000:6e:00.0").isEmpty());
+            QCOMPARE(stateFiles(), QStringList({"lock"}));
+        }
+        makeTree();
+        pciTree();
+        Helper h(m_root, {}, HELPER_FAKE, {"devices-bind"});
+        QVERIFY(h.ready());
+        QVERIFY(h.answer("vfio 0000:6e:00.0,0000:6e:00.1 3072").startsWith("ok vfio "));
+        /* another device at its address since (hot-plugged), left alone */
+        writeFile(pciDir("0000:6e:00.0") + "/device", "0x1234\n");
+        clearJournal();
+        h.ask("release");
+        QVERIFY(h.finished());
+        const QStringList all = h.all();
+        QVERIFY2(all.contains("left vfio 21: 0000:6e:00.0 is another device now (1002:1234, it was "
+                              "1002:164e): left as it is"),
+                 qPrintable(all.join('\n')));
+        QVERIFY(writes().filter("0000:6e:00.0").isEmpty());
+        QCOMPARE(driverOf("0000:6e:00.0"), QString("vfio-pci"));
+        QCOMPARE(driverOf("0000:6e:00.1"), QString("snd_hda_intel"));
+    }
+
+    /*
+     * A failure after the devices are on vfio-pci - the node's owner, the
+     * limit: all of it back, in the order it is given back (function 0
+     * first), without a word of "restored"
+     */
+    void vfioFailsLate()
+    {
+        pciTree();
+        for (const char *refuse : {"/chown.refuse", "/memlock.refuse"}) {
+            writeFile(path(refuse), "");
+            Helper h(m_root, {}, HELPER_FAKE, {"devices-bind"});
+            QVERIFY(h.ready());
+            const QString got = h.answer("vfio 0000:6e:00.0,0000:6e:00.1 3072");
+            QVERIFY2(got.startsWith(QString(refuse) == "/chown.refuse"
+                                        ? "error vfio: cannot give /dev/vfio/21 to uid "
+                                        : "error vfio: cannot raise the locked memory limit: "),
+                     qPrintable(got));
+            QCOMPARE(driverOf("0000:6e:00.0"), QString("amdgpu"));
+            QCOMPARE(driverOf("0000:6e:00.1"), QString("snd_hda_intel"));
+            QVERIFY(!nodeExists(21));
+            QCOMPARE(memlock(), QByteArray("8388608 8388608"));
+            QCOMPARE(stateFiles(), QStringList({"lock"}));
+            const QStringList w = writes();
+            const qsizetype gpu = w.indexOf("/sys/bus/pci/drivers/vfio-pci/unbind 0000:6e:00.0");
+            const qsizetype audio = w.indexOf("/sys/bus/pci/drivers/vfio-pci/unbind 0000:6e:00.1");
+            QVERIFY2(gpu >= 0 && audio > gpu, qPrintable(w.join('\n')));
+            h.ask("release");
+            QVERIFY(h.finished());
+            QVERIFY(h.all().filter("restored").isEmpty());
+            QFile::remove(path(refuse));
+            clearJournal();
+        }
+    }
+
+    /* A driver_override of its own and pci-stub: given back as they were */
+    void vfioOverrideAndStub()
+    {
+        pciTree();
+        writeFile(pciDir("0000:6e:00.0") + "/driver_override", "amdgpu\n");
+        pci("0000:0b:00.0", "0x0c0330", "pci-stub", 41);
+        Helper h(m_root, {}, HELPER_FAKE, {"devices-bind"});
+        QVERIFY(h.ready());
+        QCOMPARE(h.answer("vfio 0000:0b:00.0 1024"),
+                 QString("ok vfio 0000:0b:00.0=pci-stub: IOMMU group 41 on vfio-pci, /dev/vfio/41 "
+                         "for uid %1, locked memory 1024 MiB (was 8 MiB)").arg(getuid()));
+        QVERIFY(h.answer("vfio 0000:6e:00.0,0000:6e:00.1 3072").startsWith("ok vfio "));
+        QCOMPARE(driverOf("0000:0b:00.0"), QString("vfio-pci"));
+        QCOMPARE(overrideOf("0000:6e:00.0"), QByteArray("vfio-pci"));
+        h.ask("release");
+        QVERIFY(h.finished());
+        QCOMPARE(driverOf("0000:0b:00.0"), QString("pci-stub"));
+        QCOMPARE(overrideOf("0000:0b:00.0"), QByteArray("(null)"));
+        QCOMPARE(driverOf("0000:6e:00.0"), QString("amdgpu"));
+        QCOMPARE(overrideOf("0000:6e:00.0"), QByteArray("amdgpu"));
+        QCOMPARE(stateFiles(), QStringList({"lock"}));
+    }
+
+    /* Killed between the record and its first write: the next helper finds nothing to undo */
+    void vfioKilledBeforeAnyWrite()
+    {
+        pciTree();
+        {
+            Helper h(m_root, {"VITRINE_HELPER_TEST_KILL_BEFORE=driver_override"}, HELPER_FAKE,
+                     {"devices-bind"});
+            QVERIFY(h.ready());
+            h.ask("vfio 0000:6e:00.0,0000:6e:00.1 3072");
+            QVERIFY(h.finished());
+        }
+        QVERIFY(stateExists("vfio-21"));
+        QVERIFY(writes().isEmpty());
+        Helper next(m_root, {}, HELPER_FAKE, {"devices"});
+        QStringList before;
+        for (QString l = next.line(); !l.isNull() && !l.startsWith("ready"); l = next.line()) {
+            before << l;
+        }
+        QVERIFY2(before.contains("restored vfio 21: 0000:6e:00.0 back to amdgpu, 0000:6e:00.1 back to "
+                                 "snd_hda_intel"), qPrintable(before.join('\n')));
+        QCOMPARE(driverOf("0000:6e:00.0"), QString("amdgpu"));
+        QCOMPARE(overrideOf("0000:6e:00.0"), QByteArray("(null)"));
+        QCOMPARE(stateFiles(), QStringList({"lock"}));
+        next.closeInput();
+        QVERIFY(next.finished());
+    }
+
+    /*
+     * A second helper's raise that fails leaves the record saying what is in
+     * place: the last one out still puts the limit back
+     */
+    void vfioLimitRaiseFails()
+    {
+        pciTree();
+        Helper a(m_root, {}, HELPER_FAKE, {"devices"});
+        Helper b(m_root, {}, HELPER_FAKE, {"devices-bind"});
+        QVERIFY(a.ready());
+        QVERIFY(b.ready());
+        QVERIFY(a.answer("vfio 0000:01:00.0,0000:01:00.1 3072").startsWith("ok vfio "));
+        writeFile(path("/memlock.refuse"), "");
+        QCOMPARE(b.answer("vfio 0000:07:00.0 5120"),
+                 QString("error vfio: cannot raise the locked memory limit: Operation not permitted"));
+        QFile::remove(path("/memlock.refuse"));
+        QCOMPARE(memlock(), QByteArray("3221225472 3221225472"));
+        QCOMPARE(driverOf("0000:07:00.0"), QString("xhci_hcd"));
+        FakeQemu qemu;
+        QCOMPARE(a.answer("watch " + qemu.pidText()), "ok watch " + qemu.pidText());
+        /* answered once the watch before it is done */
+        QCOMPARE(a.answer("watch " + qemu.pidText()), "ok watch " + qemu.pidText() + ": already");
+        QCOMPARE(memlock(), QByteArray("3221225472 3221225472"));
+        b.closeInput();
+        QVERIFY(b.finished());
+        QVERIFY2(b.all().contains(QString("restored memlock %1: 8 MiB").arg(getpid())),
+                 qPrintable(b.all().join('\n')));
+        QCOMPARE(memlock(), QByteArray("8388608 8388608"));
+        a.ask("release");
+        QVERIFY(a.finished());
+    }
+
+    /*
+     * Its time up while something has the group open (its QEMU, the watch
+     * late): the group waits on, the parent's limit goes back at once
+     */
+    void vfioLimitBackAtExpiry()
+    {
+        pciTree();
+        Helper h(m_root, {"VITRINE_HELPER_TEST_VFIO_EXPIRY_MS=300"}, HELPER_FAKE, {"devices"});
+        QVERIFY(h.ready());
+        QVERIFY(h.answer("vfio 0000:01:00.0,0000:01:00.1 3072").startsWith("ok vfio "));
+        FakeQemu holder(FAKE_QEMU, {"FAKE_QEMU_HOLD=" + path("/dev/vfio/14")});
+        QCOMPARE(h.waitFor("restored memlock"), QString("restored memlock %1: 8 MiB").arg(getpid()));
+        QCOMPARE(memlock(), QByteArray("8388608 8388608"));
+        QVERIFY(stateExists("vfio-14"));
+        QCOMPARE(nodeOwner(14), nodeMine());
+        /* closed: the next time, it goes */
+        holder.stop();
+        QCOMPARE(h.waitFor("restored vfio"),
+                 QString("restored vfio 14: /dev/vfio/14 back to uid 0 (no QEMU came for it)"));
+        QCOMPARE(nodeOwner(14), QByteArray("0 0 600"));
+        h.closeInput();
+        QVERIFY(h.finished());
+    }
+
+    /*
+     * A driver slow to let go does not hold up the other helpers: the
+     * global lock is not held across the binding (the group's hold keeps
+     * them off the group)
+     */
+    void vfioBindingTakesNoLock()
+    {
+        pciTree();
+        writeFile(path("/sys/bus/pci/drivers/amdgpu/unbind.slow"), "3000\n");
+        FakeQemu qemu;
+        Helper a(m_root, {}, HELPER_FAKE, {"devices-bind"});
+        QVERIFY(a.ready());
+        a.send("vfio 0000:6e:00.0,0000:6e:00.1 3072");
+        /* well into amdgpu's unbind */
+        QTRY_VERIFY(journal().contains("write /sys/bus/pci/devices/0000:6e:00.0/driver_override "
+                                       "vfio-pci"));
+        QElapsedTimer clock;
+        clock.start();
+        Helper b(m_root);
+        QVERIFY(b.ready());
+        QCOMPARE(b.answer("watch " + qemu.pidText()), "ok watch " + qemu.pidText());
+        QVERIFY(b.answer("fair-server on").startsWith("ok fair-server on"));
+        QVERIFY2(clock.elapsed() < 2000, qPrintable(QString::number(clock.elapsed())));
+        /* another helper does not take the group meanwhile */
+        Helper c(m_root, {}, HELPER_FAKE, {"devices-bind"});
+        QVERIFY(c.ready());
+        QCOMPARE(c.answer("vfio 0000:6e:00.0,0000:6e:00.1 2048"),
+                 QString("error vfio 0000:6e:00.0: IOMMU group 21 is in use by another VM"));
+        QVERIFY(a.waitFor("ok vfio ").startsWith("ok vfio 0000:6e:00.0=amdgpu"));
+        a.ask("release");
+        b.ask("release");
+        c.closeInput();
+        QVERIFY(a.finished());
+        QVERIFY(b.finished());
+        QVERIFY(c.finished());
+        QCOMPARE(driverOf("0000:6e:00.0"), QString("amdgpu"));
+    }
+
     void polkitFiles()
     {
         QFile policy(HELPER_POLICY);
@@ -3420,25 +4339,39 @@ private slots:
          * verb
          */
         const QMap<QString, QString> verbs{{"org.vitrine.helper", "session"},
+                                           {"org.vitrine.helper.devices", "devices"},
+                                           {"org.vitrine.helper.devices-bind", "devices-bind"},
                                            {"org.vitrine.helper.setup-group", "setup-group"}};
         QCOMPARE(actions.keys(), verbs.keys());
         for (const QString &id : verbs.keys()) {
             const auto a = actions[id];
+            /* taking a device from the host: the password kept a few minutes */
+            const QString wanted = id.endsWith(".devices-bind") ? "auth_admin_keep" : "auth_admin";
             QCOMPARE(a.value("org.freedesktop.policykit.exec.path"), QString(HELPER_PATH));
             QCOMPARE(a.value("org.freedesktop.policykit.exec.argv1"), verbs[id]);
             for (const char *when : {"allow_any", "allow_inactive", "allow_active"}) {
-                QCOMPARE(a.value(when), QString("auth_admin"));
+                QCOMPARE(a.value(when), wanted);
             }
         }
-        /* the group's rule: the session, never setup-group (and no setcap,
-           which is gone: QEMU gets no capability) */
+        /*
+         * The group's rule: the session and devices; devices-bind only in a
+         * comment (the user's choice: taking a device wants a password);
+         * never setup-group (and no setcap, which is gone: QEMU gets no
+         * capability)
+         */
         const QByteArray rules = readFile(HELPER_RULES);
-        QVERIFY(rules.contains("if (action.id == \"org.vitrine.helper\" &&"));
+        QVERIFY(rules.contains("var granted = action.id == \"org.vitrine.helper\" ||\n"));
+        QVERIFY(rules.contains("action.id == \"org.vitrine.helper.devices\";\n"));
+        for (const QByteArray &line : rules.split('\n')) {
+            if (line.contains("\"org.vitrine.helper.devices-bind\"")) {
+                QVERIFY2(line.trimmed().startsWith("//"), line.constData());
+            }
+        }
+        QVERIFY(rules.contains("if (granted && subject.local && subject.active && "
+                               "subject.isInGroup(\"vitrine\"))"));
         QVERIFY(!rules.contains("\"org.vitrine.helper.setup-group\""));
         QVERIFY(!rules.contains("setcap"));
         QVERIFY(!rules.contains("indexOf") && !rules.contains("startsWith"));
-        QVERIFY(rules.contains("subject.isInGroup(\"vitrine\")"));
-        QVERIFY(rules.contains("subject.local && subject.active"));
     }
 };
 

@@ -43,6 +43,7 @@
 #include "core/hostsettings.h"
 #include "core/nesteddesktop.h"
 #include "core/paths.h"
+#include "core/pcipassthrough.h"
 #include "core/qemuinfo.h"
 #include "core/stackbuilder.h"
 #include "core/tasks.h"
@@ -227,6 +228,10 @@ MainWindow::MainWindow(VmStore *store, QWidget *parent)
        VMs run untuned; what it could not apply here, for a while */
     auto *host = new HostSettings(store, this);
     connect(host, &HostSettings::notice, this,
+            [this](const QString &text) { statusBar()->showMessage(text, 15000); });
+    /* PCI devices passed through, made ready at each start, tuning or not */
+    auto *passthrough = new PciPassthrough(store, this);
+    connect(passthrough, &PciPassthrough::notice, this,
             [this](const QString &text) { statusBar()->showMessage(text, 15000); });
     /* which window of QEMU's own is active, for focus priority: KWin's to
        say, while such VMs run tuned */

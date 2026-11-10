@@ -338,8 +338,8 @@ static QString clause(QString text)
  * Asks polkit whether this process may run the helper's @action without
  * anyone typing a password, and with the user database says why not
  */
-static void checkAction(const char *action, QObject *context,
-                        const std::function<void(const HostSettings::Status &)> &done)
+void HostSettings::checkAction(const QString &action, QObject *context,
+                               const std::function<void(const Status &)> &done)
 {
     using Problem = HostSettings::Problem;
 
@@ -370,7 +370,7 @@ static void checkAction(const char *action, QObject *context,
 
 void HostSettings::check(QObject *context, const std::function<void(const Status &)> &done)
 {
-    checkAction(kAction, context, done);
+    checkAction(QString::fromLatin1(kAction), context, done);
 }
 
 QStringList HostSettings::stripCapabilities(const QString &stack)

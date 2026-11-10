@@ -52,6 +52,8 @@ qt_add_library(vitrine_core STATIC
     src/core/guesttools.h
     src/core/guesttoolsbuilder.cpp
     src/core/guesttoolsbuilder.h
+    src/core/helpersession.cpp
+    src/core/helpersession.h
     src/core/hostdevices.cpp
     src/core/hostdevices.h
     src/core/hostgpus.cpp
@@ -76,6 +78,8 @@ qt_add_library(vitrine_core STATIC
     src/core/optionvalue.h
     src/core/paths.cpp
     src/core/paths.h
+    src/core/pcipassthrough.cpp
+    src/core/pcipassthrough.h
     src/core/perfstats.cpp
     src/core/perfstats.h
     src/core/physicalsize.h
@@ -482,6 +486,7 @@ if(BUILD_TESTING)
             managerinstance
             nesteddesktop
             optionvalue
+            pcipassthrough
             perfstats
             qemuinfo
             qmpclient
@@ -557,6 +562,12 @@ if(BUILD_TESTING)
         VITRINE_HELPER_PATH="${VITRINE_HELPER_PATH}"
         TEST_WORK_DIR="${CMAKE_CURRENT_BINARY_DIR}/test-work")
     add_dependencies(test_hostsettings vitrine-helper-fake fake-qemu)
+    # PCI devices made ready at a VM's start, through the same fake helper
+    target_compile_definitions(test_pcipassthrough PRIVATE
+        HELPER_FAKE="$<TARGET_FILE:vitrine-helper-fake>"
+        FAKE_QEMU="$<TARGET_FILE:fake-qemu>"
+        TEST_WORK_DIR="${CMAKE_CURRENT_BINARY_DIR}/test-work")
+    add_dependencies(test_pcipassthrough vitrine-helper-fake fake-qemu)
     # the scripts of guest/, against a stand-in for podman
     target_compile_definitions(test_guesttoolsbuilder PRIVATE
         GUEST_SOURCE_DIR="${PROJECT_SOURCE_DIR}/guest")

@@ -28,6 +28,10 @@
  * The CPU latency request is no hold: it is this helper's open file of
  * /dev/cpu_dma_latency, and the kernel itself takes the lowest of every
  * program's requests and drops each one with its file.
+ *
+ * vfio.c's records go through the same holds: an IOMMU group handed to a VM
+ * (vfio-<group>, one helper at a time) and the locked memory limit of the
+ * process that started the helpers (memlock-<pid>, shared).
  */
 #define _GNU_SOURCE
 #include <dirent.h>
@@ -50,31 +54,33 @@ static int lock_fd = -1;
 
 struct hold {
     char key[32];       /* fair-server, ext-server, gpu-floor-cardN, udmabuf,
-                           thp, epp, sched-<pid>; empty when free */
+                           thp, epp, vfio-<group>, memlock-<pid>,
+                           sched-<pid>; empty when free */
     int fd;             /* <key>.hold */
     char value[16];     /* what was asked: on, auto or MHz */
 };
 /* the fair and ext servers, the udmabuf limits, huge pages, the CPUs'
-   preference and eight cards; then the records of the QEMUs watched, and of
-   the process that started the helper (view-rt) */
+   preference, eight cards, the IOMMU groups of PCI devices handed to VMs
+   and the parent's locked memory limit (vfio.c); then the records of the
+   QEMUs watched, and of the process that started the helper (view-rt) */
 #define MAX_CARDS 8
-#define MAX_SETTINGS (5 + MAX_CARDS)
+#define MAX_SETTINGS (5 + MAX_CARDS + MAX_VFIO_GROUPS + 1)
 #define MAX_HOLDS (MAX_SETTINGS + MAX_WATCHED + 1)
 static struct hold holds[MAX_HOLDS];
 
-static void lock_all(void)
+void lock_all(void)
 {
     flock(lock_fd, LOCK_EX);
 }
 
-static void unlock_all(void)
+void unlock_all(void)
 {
     flock(lock_fd, LOCK_UN);
 }
 
 /* --- state files --- */
 
-static bool state_write(const char *key, const char *text)
+bool state_write(const char *key, const char *text)
 {
     char tmp[64], name[64];
     size_t len = strlen(text);
@@ -93,7 +99,7 @@ static bool state_write(const char *key, const char *text)
 }
 
 /* The state of @key in a malloc'ed string, or NULL when there is none */
-static char *state_read(const char *key)
+char *state_read(const char *key)
 {
     char name[64];
     struct stat st;
@@ -121,7 +127,7 @@ static char *state_read(const char *key)
     return text;
 }
 
-static void state_remove(const char *key)
+void state_remove(const char *key)
 {
     char name[64];
 
@@ -200,7 +206,7 @@ static const char *lockdown(void)
 
 /* --- holds --- */
 
-static struct hold *hold_find(const char *key)
+struct hold *hold_find(const char *key)
 {
     for (int i = 0; i < MAX_HOLDS; i++) {
         if (strcmp(holds[i].key, key) == 0) {
@@ -239,7 +245,7 @@ static struct hold *hold_free(const char *key)
  * helper holds it: this helper then changes the setting, keeping LOCK_EX
  * until hold_share().
  */
-static struct hold *hold_take(const char *key, const char *value, bool *first)
+struct hold *hold_take(const char *key, const char *value, bool *first)
 {
     struct hold *h = hold_free(key);
     char name[48];
@@ -271,7 +277,7 @@ static struct hold *hold_take(const char *key, const char *value, bool *first)
     return h;
 }
 
-static void hold_share(struct hold *h)
+void hold_share(struct hold *h)
 {
     /* no one else holds any lock on it: the conversion cannot lose it */
     flock(h->fd, LOCK_SH);
@@ -288,7 +294,7 @@ static void hold_remove(const char *key)
 }
 
 /* @last: this helper held it alone (LOCK_EX), the file goes too */
-static void hold_close(struct hold *h, bool last)
+void hold_close(struct hold *h, bool last)
 {
     if (last) {
         hold_remove(h->key);
@@ -298,8 +304,31 @@ static void hold_close(struct hold *h, bool last)
     h->key[0] = '\0';
 }
 
+void hold_let_go(struct hold *h)
+{
+    lock_all();
+    /* LOCK_EX only when no other helper holds a LOCK_SH: the last one */
+    hold_close(h, flock(h->fd, LOCK_EX | LOCK_NB) == 0);
+    unlock_all();
+}
+
+struct hold *hold_adopt(const char *key, int fd)
+{
+    struct hold *h = hold_free(key);
+
+    if (!h) {
+        return NULL;
+    }
+    /* nobody else has it (LOCK_EX was free): shared from now on, as a hold taken */
+    flock(fd, LOCK_SH);
+    snprintf(h->key, sizeof(h->key), "%s", key);
+    snprintf(h->value, sizeof(h->value), "on");
+    h->fd = fd;
+    return h;
+}
+
 /* Lets go of @h, restoring the setting when this helper was its last holder */
-static void hold_drop(struct hold *h)
+void hold_drop(struct hold *h)
 {
     bool last;
 
@@ -2399,6 +2428,15 @@ static void restore_key(const char *key)
         thp_restore();
     } else if (strcmp(key, "epp") == 0) {
         epp_restore();
+    } else if (strncmp(key, "vfio-", 5) == 0) {
+        /*
+         * Kept: PCI devices go back to their drivers outside the lock, as a
+         * driver may take its time to let go of one, or to take it back
+         * (vfio.c gives them back with the group's hold: group_drop() and,
+         * for a dead helper's record, the recovery's adoption)
+         */
+    } else if (strncmp(key, "memlock-", 8) == 0) {
+        memlock_restore(key);
     } else {
         state_remove(key);
     }
@@ -2438,6 +2476,13 @@ static void recover_pass(bool sched)
         /* LOCK_EX fails on a hold this helper has too: another open file */
         hfd = openat(state_fd, name, O_RDWR | O_CREAT | O_CLOEXEC | O_NOFOLLOW, 0600);
         if (hfd >= 0 && flock(hfd, LOCK_EX | LOCK_NB) == 0) {
+            struct hold *h;
+
+            /* PCI devices: this helper's to give back after the lock */
+            if (strncmp(key, "vfio-", 5) == 0 && (h = hold_adopt(key, hfd))) {
+                vfio_adopt(key, h);
+                continue;
+            }
             restore_key(key);
             hold_remove(key);
         }

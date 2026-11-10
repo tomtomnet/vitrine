@@ -607,6 +607,24 @@ QStringList pciPassthrough(const ArgsFile &args)
     return list;
 }
 
+qint64 lockedMemoryMiB(const ArgsFile &args)
+{
+    static const QStringList iommus = {"intel-iommu", "amd-iommu", "virtio-iommu-pci",
+                                       "virtio-iommu-pci-non-transitional", "virtio-iommu"};
+    const qsizetype devices = pciPassthrough(args).size();
+    /* QEMU's default without -m */
+    const qint64 guest = memoryMiB(args) > 0 ? memoryMiB(args) : 128;
+    bool iommu = false;
+
+    if (devices == 0) {
+        return 0;
+    }
+    for (int i : args.indexesOf("device")) {
+        iommu |= iommus.contains(args.valueAt(i).implied());
+    }
+    return guest * (iommu ? devices : 1) + 1024;
+}
+
 void setPciPassthrough(ArgsFile &args, const QStringList &addresses)
 {
     QStringList missing = addresses;

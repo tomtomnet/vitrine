@@ -15,14 +15,22 @@
     caller's QEMU threads (real-time for the VM in front) and of the
     caller's own view of that VM while vitrine's VMs run, all put back after
     the last one;
+  - devices: the PCI devices a VM passes through, on vfio-pci already (bound
+    at boot): their /dev/vfio nodes the caller's and the locked memory limit
+    raised, while that VM runs;
+  - devices-bind: the same, and devices taken from this computer's drivers
+    for vfio-pci while that VM runs, given back after;
   - setup-group: the caller in the vitrine group, created if need be.
 
-  An administrator's password by default.  49-vitrine.rules lets members of
-  the vitrine group run session without one, never setup-group: a lasting
-  change of /etc/group, which a rule granting the helper to more people (or
-  with auth_self) must not bring along.  vitrine asks polkit first and runs
-  session only when no password is wanted; setup-group only when the user
-  clicks Set Up.
+  An administrator's password by default; for devices-bind, polkit keeps it
+  a few minutes.  49-vitrine.rules lets members of the vitrine group run
+  session and devices without one, never devices-bind (taking a device from
+  the host) nor setup-group (a lasting change of /etc/group, which a rule
+  granting the helper to more people, or with auth_self, must not bring
+  along).  vitrine asks polkit first and runs session only when no password
+  is wanted; devices and devices-bind at the start of a VM that passes PCI
+  devices through, polkit's dialog asking whoever needs a password;
+  setup-group only when the user clicks Set Up.
 -->
 <policyconfig>
   <vendor>vitrine</vendor>
@@ -38,9 +46,31 @@
     <annotate key="org.freedesktop.policykit.exec.path">@VITRINE_HELPER_PATH@</annotate>
     <annotate key="org.freedesktop.policykit.exec.argv1">session</annotate>
   </action>
+  <action id="org.vitrine.helper.devices">
+    <description>Let a virtual machine use PCI devices set aside for it</description>
+    <message>Authentication is required to let your virtual machine use PCI devices already set aside for virtual machines (vfio-pci) while it runs</message>
+    <defaults>
+      <allow_any>auth_admin</allow_any>
+      <allow_inactive>auth_admin</allow_inactive>
+      <allow_active>auth_admin</allow_active>
+    </defaults>
+    <annotate key="org.freedesktop.policykit.exec.path">@VITRINE_HELPER_PATH@</annotate>
+    <annotate key="org.freedesktop.policykit.exec.argv1">devices</annotate>
+  </action>
+  <action id="org.vitrine.helper.devices-bind">
+    <description>Give a virtual machine PCI devices of this computer</description>
+    <message>Authentication is required to take PCI devices from this computer's drivers and give them to your virtual machine while it runs</message>
+    <defaults>
+      <allow_any>auth_admin_keep</allow_any>
+      <allow_inactive>auth_admin_keep</allow_inactive>
+      <allow_active>auth_admin_keep</allow_active>
+    </defaults>
+    <annotate key="org.freedesktop.policykit.exec.path">@VITRINE_HELPER_PATH@</annotate>
+    <annotate key="org.freedesktop.policykit.exec.argv1">devices-bind</annotate>
+  </action>
   <action id="org.vitrine.helper.setup-group">
     <description>Add you to the vitrine group</description>
-    <message>Authentication is required to add you to the vitrine group, whose members may tune the host without a password while virtual machines run</message>
+    <message>Authentication is required to add you to the vitrine group, whose members may tune the host, and give virtual machines the PCI devices set aside for them, without a password while those run</message>
     <defaults>
       <allow_any>auth_admin</allow_any>
       <allow_inactive>auth_admin</allow_inactive>

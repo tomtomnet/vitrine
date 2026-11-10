@@ -2057,6 +2057,107 @@ private slots:
         QCOMPARE(runner.state(), VmRunner::State::Stopped);
     }
 
+    /*
+     * A VM that passes PCI devices through: QEMU starts once the preparer
+     * (PciPassthrough) says they are ready, which got the addresses and the
+     * memory to lock; a refusal ends the start before QEMU, with its words;
+     * so does Force Off, the answer after it coming to nothing
+     */
+    void devicesBeforeQemu()
+    {
+        VmRunner runner(id, tmp.path());
+        QSignalSpy failed(&runner, &VmRunner::failed), launched(&runner, &VmRunner::qemuLaunched);
+        const QString ran = tmp.filePath("devices-ran");
+        QStringList asked;
+        qint64 askedMiB = 0;
+        std::function<void(const QString &)> answer;
+
+        QFile::remove(ran);
+        Paths::setQemuBinary(script("qemu-devices", "echo ran > " + ran.toUtf8()));
+        runner.setDevicePreparer([&](const QStringList &addresses, qint64 lockMiB,
+                                     const std::function<void(const QString &)> &done) {
+            asked = addresses;
+            askedMiB = lockMiB;
+            answer = done;
+        });
+        const ArgsFile args = ArgsFile::parse("-m 2G\n-device vfio-pci,host=6e:00.0\n"
+                                              "-device vfio-pci,host=0000:6e:00.1\n");
+        runner.start(args);
+        QCOMPARE(runner.state(), VmRunner::State::Starting);
+        QCOMPARE(asked, QStringList({"0000:6e:00.0", "0000:6e:00.1"}));
+        QCOMPARE(askedMiB, 2048 + 1024);
+        QTest::qWait(200);
+        QVERIFY(!QFileInfo::exists(ran));
+        QVERIFY(launched.isEmpty());
+        answer(QString());
+        QCOMPARE(launched.size(), 1);
+        QVERIFY(launched[0][0].toLongLong() > 0);
+        /* the stand-in ends at once: QEMU stopped */
+        QTRY_COMPARE_WITH_TIMEOUT(failed.size(), 1, 10000);
+        QCOMPARE(read(ran).trimmed(), "ran");
+
+        QFile::remove(ran);
+        failed.clear();
+        launched.clear();
+        runner.start(args);
+        answer("PCI passthrough: 0000:6e:00.0 is in use by gnome-shell (pid 2345).");
+        QCOMPARE(runner.state(), VmRunner::State::Stopped);
+        QCOMPARE(failed.size(), 1);
+        QCOMPARE(failed[0][0].toString(),
+                 QString("PCI passthrough: 0000:6e:00.0 is in use by gnome-shell (pid 2345)."));
+        QVERIFY(launched.isEmpty());
+
+        runner.start(args);
+        QCOMPARE(runner.state(), VmRunner::State::Starting);
+        runner.forceOff();
+        QCOMPARE(runner.state(), VmRunner::State::Stopped);
+        answer(QString());
+        QVERIFY(launched.isEmpty());
+        QCOMPARE(failed.size(), 1);
+        QTest::qWait(200);
+        QVERIFY(!QFileInfo::exists(ran));
+
+        /* none passed through: nothing asked */
+        asked.clear();
+        runner.start(ArgsFile::parse("-m 2G\n"));
+        QVERIFY(asked.isEmpty());
+        QCOMPARE(launched.size(), 1);
+        QTRY_COMPARE_WITH_TIMEOUT(runner.state(), VmRunner::State::Stopped, 10000);
+        Paths::setQemuBinary(testQemu());
+    }
+
+    /* The runner gone (vitrine quits) while the devices are made ready: virtiofsd goes too */
+    void devicesPhaseEndsVirtiofsd()
+    {
+        const QString pidFile = tmp.filePath("devices-virtiofsd.pid");
+        qint64 helper = 0;
+
+        QFile::remove(pidFile);
+        Paths::setVirtiofsd(script("devices-virtiofsd", "echo $$ > " + pidFile.toUtf8() +
+                                                            "\n: >\"${1#--socket-path=}\"\n"
+                                                            "while :; do sleep 0.1; done"));
+        {
+            VmRunner runner(id, tmp.path());
+            bool asked = false;
+
+            runner.setDevicePreparer([&asked](const QStringList &, qint64,
+                                              const std::function<void(const QString &)> &) {
+                asked = true;
+            });
+            runner.start(ArgsFile::parse("-machine q35,memory-backend=mem\n"
+                                         "-object memory-backend-memfd,id=mem,size=128M\n"
+                                         "#share tag=t,path=" + tmp.path().toUtf8() + "\n"
+                                         "-device vfio-pci,host=6e:00.0\n"));
+            /* past virtiofsd, its socket there: the devices asked for */
+            QTRY_VERIFY(asked);
+            helper = read(pidFile).trimmed().toLongLong();
+            QVERIFY(helper > 0);
+            QCOMPARE(runner.state(), VmRunner::State::Starting);
+        }
+        QTRY_VERIFY2(gone(helper), qPrintable(read(QString("/proc/%1/stat").arg(helper))));
+        Paths::setVirtiofsd({});
+    }
+
     void forceOffWhileWaitingForHelper()
     {
         VmRunner runner(id, tmp.path());

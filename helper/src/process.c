@@ -715,6 +715,32 @@ static bool parent_usable(const char **why)
     return true;
 }
 
+bool parent_get(pid_t *pid, unsigned long long *start, const char **why)
+{
+    if (!parent_usable(why)) {
+        return false;
+    }
+    *pid = parent.pid;
+    *start = parent.start;
+    return true;
+}
+
+bool process_started(pid_t pid, unsigned long long start)
+{
+    unsigned long long now;
+    char path[64];
+    int procfd;
+    bool same;
+
+    snprintf(path, sizeof(path), "/proc/%d", (int)pid);
+    if (pid <= 1 || (procfd = open(path, O_RDONLY | O_DIRECTORY | O_CLOEXEC)) < 0) {
+        return false;
+    }
+    same = start_time(procfd, &now) && now == start;
+    close(procfd);
+    return same;
+}
+
 /* A watched QEMU is in front: its rt was asked for */
 static bool any_front(void)
 {

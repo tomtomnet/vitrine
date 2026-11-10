@@ -77,6 +77,9 @@ public:
      * gets it in @context's thread, later or at once
      */
     static void check(QObject *context, const std::function<void(const Status &)> &done);
+    /* The same for another of the helper's actions: org.vitrine.helper.devices... */
+    static void checkAction(const QString &action, QObject *context,
+                            const std::function<void(const Status &)> &done);
 
     /* Tunes for the VMs of @store as they start or are found running; and
        takes back the capability an older vitrine gave its QEMU builds

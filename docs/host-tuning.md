@@ -74,6 +74,9 @@ while the VMs run on. There is no service: the helper runs only while VMs
 run. Nothing is applied while no VM runs. QEMU itself gets no privilege:
 the helper sets its threads' scheduling, and that of the view's threads.
 
+The same helper gets PCI devices ready for a VM that passes them through
+([below](#pci-devices-passed-through)), whether host tuning is on or not.
+
 ## Allowing it without a password
 
 The helper runs through polkit (`pkexec`). By default it would need an
@@ -136,11 +139,15 @@ for them. It does only this, for the user who started it:
 | `cpu-latency on` | A request on `/dev/cpu_dma_latency` for the wake-up time of the CPUs' first usable idle state (C1), held by the helper's open file | A watched QEMU; the value from cpuidle, at least 1 µs; nothing recorded: the kernel drops the request with the file |
 | `epp on` | Each online CPU's `cpufreq/energy_performance_preference` at `performance` | A watched QEMU; a fixed value; read back; all or nothing |
 | `setup-group` | The caller in the `vitrine` group, the group created (`groupadd --system`) if there is none | See below |
+| `vfio ADDRESSES MIB` (`devices`) | For IOMMU groups already on vfio-pci, before the VM's QEMU starts: `/dev/vfio/<group>` the caller's (owner read-write, mode kept), and the locked memory limit (`RLIMIT_MEMLOCK`) of the program that started the helper at MIB at least | Strict addresses (`0000:6e:00.0`) of devices that exist; every device of the group on vfio-pci, pci-stub or no driver, or a bridge; no device taken from a driver or bound to vfio-pci (a helper of any verb gives back, as it starts, what a killed one left); a group another helper holds, or that a program has open, refused; the limit raised only, to the computer's memory and 1 GiB at most, which the answer says |
+| `vfio ADDRESSES MIB` (`devices-bind`) | The same, and the devices taken from their drivers for vfio-pci first (`driver_override`, the driver's unbind, vfio-pci's bind, read back; vfio-pci loaded if need be) | Also refused: the GPU the computer started on (`boot_vga`), a GPU with a display connected, a device whose nodes a process has open (but the sound servers on its ALSA nodes: PipeWire, WirePlumber and PulseAudio, by the program they run, `/usr/bin/pipewire` and so on), a disk mounted, swapped on or with holders (dm, md), a network interface that is up, NVIDIA's driver while its nodes are open, platform devices (bridges, SMBus, the IOMMU, timers); the whole group or nothing; all of it recorded before the first change |
 
 The settings need a watched QEMU, and each value is put back only if it
 still holds what the helper wrote: another tool that changed it since keeps
 its change. The CPU latency request is the helper's own: no one else can
-change it, and it ends with the helper.
+change it, and it ends with the helper. `vfio` is the one request that
+comes before its QEMU, which opens the devices and pins the guest's memory
+as it creates them; see [below](#pci-devices-passed-through).
 
 What this amounts to:
 
@@ -161,6 +168,14 @@ What this amounts to:
   their own memory into a udmabuf. The limits only set how many pieces and bytes
   one udmabuf may have, and it is memory its owner has anyway. While they
   are raised, they are raised for every user of the host.
+- For PCI devices already set aside for VMs (on vfio-pci, bound at boot),
+  their `/dev/vfio` nodes while a VM of yours has them, and a locked memory
+  limit as big as that VM's memory, without a password. Taking a device
+  from the host's drivers (`devices-bind`) always takes an administrator's
+  password, from members too: it gives a program of yours the device
+  itself, a disk controller that is not mounted for one, its data
+  included. Without a password, a helper may give devices back to their
+  drivers: those a killed helper left on vfio-pci, as it starts.
 - Nothing for QEMU itself. Earlier versions gave vitrine's QEMU build the
   `cap_sys_nice` file capability, so that QEMU could switch its vCPUs
   itself; that also gave a guest that escaped into QEMU the scheduling of
@@ -199,9 +214,13 @@ Rename that group, or add yourself to it by hand if that is what you want.
 
 Each verb of the helper has a polkit action of its own, named by its
 first argument: `org.vitrine.helper` (`session`, the settings while VMs
-run) and `org.vitrine.helper.setup-group`. The group's rule grants the
-first only: setup-group always wants an administrator's password, from
-members too, and its dialog says it adds you to the vitrine group. A rule of your own that gives the helper to more
+run), `org.vitrine.helper.devices` (PCI devices already on vfio-pci),
+`org.vitrine.helper.devices-bind` (devices taken from the host's drivers)
+and `org.vitrine.helper.setup-group`. The group's rule grants the first two
+only: devices-bind wants an administrator's password from members too,
+which polkit keeps for a few minutes (`auth_admin_keep`; the rule has a
+commented line that would grant it as well), and setup-group always wants
+one, its dialog saying it adds you to the vitrine group. A rule of your own that gives the helper to more
 people, or lets them use their own password, does not bring a lasting
 change of `/etc/group` along unless it names setup-group's action.
 (pkexec takes the first action whose path matches and whose first
@@ -210,6 +229,58 @@ action names its argument, so exactly one matches, and the helper refuses
 to run without one, which pkexec would put under its generic action.)
 
 Give the group to the people you would give real-time priority to.
+
+## PCI devices passed through
+
+A VM's PCI devices (`-device vfio-pci,host=...`) must be ready before its
+QEMU starts: QEMU opens `/dev/vfio/<group>` and has the kernel pin all of
+the guest's memory for the device's DMA as it creates the device, before
+its guest runs, and the IOMMU driver checks the pinned pages against the
+locked memory limit QEMU started with (Fedora's: 8 MiB). So at such a VM's
+start, after virtiofsd and before QEMU, vitrine runs one helper for it -
+`vitrine-helper devices` when the devices are on vfio-pci already,
+`devices-bind` when one must change driver, from a host driver, pci-stub
+or none - and asks for `vfio` with the VM's devices and its memory and 1
+GiB (once per device with a virtual IOMMU in `vm.args`). `devices` never
+takes a device from a driver, but may give one back that an earlier helper
+left: when that leaves the VM's devices on their drivers again, vitrine
+asks once more, with `devices-bind` and its password. The helper raises
+vitrine's own limit, to this computer's memory and 1 GiB at most: QEMU,
+which vitrine starts next, inherits it. Then vitrine gives the helper the
+QEMU to watch, and the helper puts vitrine's limit back at once (QEMU has
+its own copy). When that QEMU ends, crash included, the helper gives
+everything back and ends: each device off vfio-pci, its `driver_override`
+as it was, its driver's bind, read back (the kernel's probe instead, where
+that driver is no longer loaded). A device on vfio-pci before stays there,
+its node going back to its owner and mode. If no QEMU comes - the start
+failed after, vitrine went - everything goes back when the helper's input
+closes, or after a minute, vitrine's limit then too, even while a group
+stays because something has it open. Loading vfio-pci, when `devices-bind`
+needs it and it is not loaded, also binds the devices that an `options
+vfio-pci ids=` line names, as at boot: they stay on it. vitrine waits a
+minute at most for the helper's answer once it runs (after the password
+dialog, if any).
+
+A group is given back only once nothing has it open: unbinding a vfio
+device that a process holds waits in the kernel until it lets go. One
+still open stays on vfio-pci, its node root's again, its record kept;
+the next helper to start, of whatever verb, gives it back once it is free.
+Each group has a record (`vfio-<group>` in `/run/vitrine-helper`, written
+before the first change, each device's vendor and device ID in it: a
+device gone, or another one at its address since, is left as it is) and
+one helper at a time: a group opens once, two VMs cannot share it. The
+helpers' lock on the other settings is not held while a driver lets go
+of a device or takes it back: a slow driver keeps only that group
+waiting. vitrine's limit has a record too (`memlock-<pid>`), shared by
+the helpers of VMs starting side by side: the first one saves it, the
+last one out puts it back, if it still reads what was written. A helper
+killed in the middle leaves records the next one follows.
+
+When everything is ready already - the devices bound at boot, a udev rule
+giving you the node, a limit of your session's - vitrine runs no helper.
+When a device does not go back to its driver (a GPU that does not reset
+well), it stays without one, the status bar says so, and a restart of the
+computer gives it back.
 
 ## The CPU ready to wake up
 

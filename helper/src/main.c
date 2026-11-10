@@ -7,17 +7,26 @@
  *
  *   vitrine-helper session        one session: requests on stdin, one per
  *                                 line (org.vitrine.helper)
+ *   vitrine-helper devices        a session for PCI devices passed through
+ *                                 that are on vfio-pci already: vfio, watch
+ *                                 and release only (org.vitrine.helper.devices)
+ *   vitrine-helper devices-bind   the same, and devices taken from the host's
+ *                                 drivers (org.vitrine.helper.devices-bind)
  *   vitrine-helper setup-group    the caller in the vitrine group (created if
  *                                 need be), then exit
  *                                 (org.vitrine.helper.setup-group)
  *
- * session: no password for members of the vitrine group in their local,
- * active session (49-vitrine.rules); vitrine asks polkit first and never
- * runs it when it would want one.  setup-group: an administrator's
- * password, always - vitrine runs it only when the user clicks Set Up.
- * Nothing is installed as a service and nothing stays applied once the VMs
- * are gone.  QEMU itself gets no privilege: the threads' scheduling is set
- * here.
+ * session and devices: no password for members of the vitrine group in
+ * their local, active session (49-vitrine.rules); vitrine asks polkit first
+ * and never runs session when it would want one.  devices-bind: an
+ * administrator's password, which polkit keeps a few minutes
+ * (auth_admin_keep); vitrine runs devices and devices-bind at the start of
+ * a VM that passes PCI devices through, with polkit's dialog for whoever
+ * needs a password.  setup-group: an administrator's password, always -
+ * vitrine runs it only when the user clicks Set Up.  Nothing is installed
+ * as a service and nothing stays applied once the VMs are gone.  QEMU
+ * itself gets no privilege: the threads' scheduling is set here, and PCI
+ * devices are made ready here before QEMU starts.
  *
  * Session requests, each answered by one line or more:
  *   watch PID              a QEMU of the caller's (same uids, qemu-system-*
@@ -54,11 +63,34 @@
  * ok, skip (cannot apply here: lockdown, no debugfs, no amdgpu, no udmabuf
  * module, no huge pages, no idle states, no preference...), error;
  * unprompted: exited PID, restored ..., left ... (changed by someone else
- * since, so not restored), bye.
+ * since, or still in use, so not restored), bye.
+ *
+ * devices and devices-bind sessions take, before the VM's QEMU starts:
+ *   vfio ADDRESSES MIB     the IOMMU groups of the PCI devices ADDRESSES
+ *                          (0000:6e:00.0, comma-separated) on vfio-pci, the
+ *                          whole group or nothing, its bridges as they are;
+ *                          /dev/vfio/<group> the caller's; and the locked
+ *                          memory limit of the process that started the
+ *                          helper (vitrine: its QEMU inherits it) at MIB at
+ *                          least.  devices takes groups already on vfio-pci
+ *                          only; devices-bind also takes devices from host
+ *                          drivers, never one the host uses (the GPU it
+ *                          started on, a display connected, device nodes a
+ *                          process holds, a disk mounted, a network
+ *                          interface up, a platform device).  Answers "ok
+ *                          vfio ADDRESS=DRIVER,...: ..." (the driver each
+ *                          one had).  Unlike the settings, it needs no
+ *                          watched QEMU: what it made ready waits for the
+ *                          next watch, which takes it, VFIO_EXPIRY_MS at
+ *                          most, and goes back with that QEMU - or with
+ *                          the helper, if no QEMU came.
+ * and watch PID, release.
  *
  * When the last watched QEMU exits, crash included, or stdin closes while
  * none is watched, everything is put back and the helper exits; with stdin
- * closed it keeps going while watched QEMUs run (they outlive vitrine).
+ * closed it keeps going while watched QEMUs run (they outlive vitrine).  A
+ * PCI device something still has open stays on vfio-pci, recorded: a later
+ * helper, whatever its verb, gives it back once it is free.
  */
 #define _GNU_SOURCE
 #include <errno.h>
@@ -187,6 +219,25 @@ static void sane_signals(void)
     sigprocmask(SIG_SETMASK, &none, NULL);
 }
 
+enum session_kind session_kind = SESSION_TUNE;
+
+/* A request of a devices or devices-bind session */
+static void devices_request(char **words, int n)
+{
+#define IS(verb, args) (strcmp(words[0], verb) == 0 && n == (args) + 1)
+    if (IS("watch", 1)) {
+        /* the QEMU that takes what vfio made ready */
+        if (watch(words[1])) {
+            vfio_claim(find_watched(words[1]));
+        }
+    } else if (IS("vfio", 2)) {
+        vfio_request(words[1], words[2], session_kind == SESSION_DEVICES_BIND);
+    } else {
+        reply("error %.32s: unknown request", words[0]);
+    }
+#undef IS
+}
+
 /* One request: false when it asks the helper to end */
 static bool request(char *line)
 {
@@ -213,6 +264,16 @@ static bool request(char *line)
 #define IS(verb, args) (strcmp(words[0], verb) == 0 && n == (args) + 1)
     if (IS("release", 0)) {
         return false;
+    }
+    if (session_kind != SESSION_TUNE) {
+        devices_request(words, n);
+        return true;
+    }
+    if (strcmp(words[0], "vfio") == 0) {
+        /* a polkit action of their own: taking a device from the host is more
+           than tuning it */
+        reply("error vfio: PCI devices go through vitrine-helper devices or devices-bind");
+        return true;
     }
     if (IS("watch", 1)) {
         watch(words[1]);
@@ -259,7 +320,7 @@ static bool request(char *line)
     return true;
 }
 
-static int session(void)
+static int session(enum session_kind kind)
 {
     char buf[MAX_LINE + 1];
     size_t len = 0;
@@ -267,6 +328,7 @@ static int session(void)
     sigset_t mask;
     int sfd;
 
+    session_kind = kind;
     sigemptyset(&mask);
     sigaddset(&mask, SIGTERM);
     sigaddset(&mask, SIGINT);
@@ -276,6 +338,9 @@ static int session(void)
         reply("error: %s", sfd < 0 ? strerror(errno) : "cannot use " STATE_DIR);
         return 1;
     }
+    /* PCI devices a dead helper left, given back outside the lock: any verb
+       gives back what an earlier one took, none takes one without its own */
+    vfio_recover();
     /* who started it, before any request can come */
     parent_init();
     reply("ready %d", HELPER_PROTOCOL);
@@ -291,12 +356,15 @@ static int session(void)
         for (int i = 0; i < nwatched; i++) {
             fds[nfds++] = (struct pollfd){.fd = watched[i].pidfd, .events = POLLIN};
         }
-        if (poll(fds, (nfds_t)nfds, -1) < 0) {
+        /* awake for the PCI devices that wait for their QEMU */
+        if (poll(fds, (nfds_t)nfds, vfio_timeout()) < 0) {
             if (errno == EINTR) {
                 continue;
             }
             break;
         }
+        /* those no QEMU came for in time go back */
+        vfio_expire();
         if (fds[0].revents) {
             /* SIGTERM (shutdown) or SIGINT: everything back first */
             break;
@@ -353,10 +421,12 @@ static int session(void)
             }
         }
         /* the udmabuf limits go with the last QEMU that asked for them, not
-           with the last QEMU; the view's threads with the QEMU in front */
+           with the last QEMU; the view's threads with the QEMU in front; PCI
+           devices with the QEMU that had them */
         if (ngone) {
             udmabuf_check();
             view_check();
+            vfio_check();
         }
         /* the last VM is gone, or vitrine with none left */
         if ((ever && !nwatched) || (!input && !nwatched)) {
@@ -364,8 +434,10 @@ static int session(void)
         }
     }
 end:
-    /* release, a signal, or the end: threads of QEMUs still running first */
+    /* release, a signal, or the end: threads of QEMUs still running first,
+       then PCI devices (those still open stay recorded) */
     rt_off_all();
+    vfio_release();
     settings_release();
     reply("bye");
     return 0;
@@ -389,13 +461,19 @@ int main(int argc, char **argv)
         return 1;
     }
     if (argc == 2 && strcmp(argv[1], "session") == 0) {
-        return session();
+        return session(SESSION_TUNE);
+    }
+    if (argc == 2 && strcmp(argv[1], "devices") == 0) {
+        return session(SESSION_DEVICES);
+    }
+    if (argc == 2 && strcmp(argv[1], "devices-bind") == 0) {
+        return session(SESSION_DEVICES_BIND);
     }
     /* no argument: the group and the user are not the caller's to choose */
     if (argc == 2 && strcmp(argv[1], "setup-group") == 0) {
         return setup_group();
     }
     /* none at all included: pkexec would run that under its generic action */
-    fprintf(stderr, "usage: vitrine-helper session | setup-group\n");
+    fprintf(stderr, "usage: vitrine-helper session | devices | devices-bind | setup-group\n");
     return 2;
 }
