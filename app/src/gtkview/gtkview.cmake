@@ -17,6 +17,7 @@ set(GTKVIEW_OWN_SOURCES
     src/gtkview/displayinput.cpp
     src/gtkview/displaysurface.cpp
     src/gtkview/displaywidget.cpp
+    src/gtkview/focuswatch.cpp
     src/gtkview/framestill.cpp
     src/gtkview/fullscreenorder.cpp
     src/gtkview/gtkclipboard.cpp
@@ -51,6 +52,7 @@ add_library(vitrine_gtkview STATIC
     src/gtkview/displayinput.h
     src/gtkview/displaysurface.h
     src/gtkview/displaywidget.h
+    src/gtkview/focuswatch.h
     src/gtkview/framestill.h
     src/gtkview/fullscreenorder.h
     src/gtkview/gtkclipboard.h
@@ -102,5 +104,16 @@ if(BUILD_TESTING)
     vitrine_test_env(fullscreenorder GDK_BACKEND=broadway GTK_A11Y=none GSETTINGS_BACKEND=memory
                      ADW_DISABLE_PORTAL=1 GDK_DEBUG=no-portals)
     set_property(TEST fullscreenorder PROPERTY ENVIRONMENT_MODIFICATION
+                 DISPLAY=unset: WAYLAND_DISPLAY=unset: DBUS_SESSION_BUS_ADDRESS=unset:)
+    # whether a view's widget has the keyboard, once GTK made the change: on
+    # broadway too, with plain widgets
+    add_executable(test_focuswatch tests/test_focuswatch.cpp tests/gtkdisplay.h)
+    target_link_libraries(test_focuswatch PRIVATE vitrine_gtkview Qt6::Test)
+    target_compile_definitions(test_focuswatch PRIVATE QT_NO_KEYWORDS)
+    target_compile_options(test_focuswatch PRIVATE -Wall -Wextra)
+    add_test(NAME focuswatch COMMAND test_focuswatch)
+    vitrine_test_env(focuswatch GDK_BACKEND=broadway GTK_A11Y=none GSETTINGS_BACKEND=memory
+                     ADW_DISABLE_PORTAL=1 GDK_DEBUG=no-portals)
+    set_property(TEST focuswatch PROPERTY ENVIRONMENT_MODIFICATION
                  DISPLAY=unset: WAYLAND_DISPLAY=unset: DBUS_SESSION_BUS_ADDRESS=unset:)
 endif()

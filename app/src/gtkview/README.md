@@ -53,6 +53,7 @@ The rules:
 | `displaywidget` | the widget: places the frames' surface, input, cursor, grab, guest size |
 | `displaysurface` | the frames' own wl_surface, a desync subsurface of GTK's window that the render thread draws and commits |
 | `displayinput` | DisplayWindow's handling of keys, buttons, wheel and grab, without a toolkit |
+| `focuswatch` | whether a view's widget has the keyboard (the focus of the active window), known once GTK made the change |
 | `framestill` | the guest's frame as a GTK texture, for the widget while it is covered |
 | `fullscreenorder` | a full-screen window maps after the window the view leaves: the switch waits while that window is shown but not yet active |
 | `gtkclipboard` | the host clipboard shared with the guest, with GdkClipboard |
@@ -86,6 +87,16 @@ How it fits GTK:
   line says when the desktop keeps its shortcuts); the pointer lock and
   confinement are vitrine's own Wayland objects, on the window's main
   surface, and work without the inhibitor.
+- Whether the view has the keyboard (the focus in the active window)
+  comes from `focuswatch`: a focus move once GTK has stored it (the
+  window's focus-widget notification), the window's activity at once from
+  GTK's crossing (its is-active notification comes 2.5 ms later). GTK 4.24
+  sends the focus controllers' enter and leave of a focus move before it
+  stores the new focus, so a view that decided there, given the focus by
+  a focus move (a VM chosen in the list, the Console view back), read no
+  focus and took no grab until the window was deactivated and active
+  again (on GNOME the first Super opened the overview, and the next
+  reached the guest: nested GNOME 51.1, 2026-11-10).
 - GTK runs the window's capture-phase shortcut controllers (the
   application's accelerators, F10) before the focused widget: while the
   view has the keyboard they are off, as the Qt view takes every key before
@@ -285,6 +296,14 @@ other desktops and a known app keep the automatic grab.
 `VITRINE_VIEW_INHIBIT=0` never asks at all, Ctrl+Alt+G included (scripted
 runs).
 
+Mutter keeps the shell's answer for the surface it was given for: a new
+request on the same window is answered at once, inside the request, so the
+grab's inhibitor can come and go with the pointer at no cost (Mutter 51.1,
+`meta-wayland-inhibit-shortcuts-dialog.c`). The shell's permission store
+is asked only for a window's first request - at the app's start, and for
+each full-screen window (3-6 ms). The view sends its request at once
+(`gdk_display_flush`), not with GTK's next frame.
+
 ## Switches for A/B runs
 
 Environment variables of the views, for measurements only; the defaults are
@@ -304,6 +323,11 @@ what vitrine ships:
   agent of a guest with `blob_flush_fence` 3 would, and
   `--flips-wait-toggle SECONDS` turns it over while the view shows.
 - `VITRINE_VIEW_INHIBIT=0`: never asks for the desktop's shortcuts (above).
+- `QT_LOGGING_RULES=vitrine.grab.debug=true`: a line on stderr at each
+  change of where the keys go - the grab on or off with what decided it,
+  the screen's and the nested desktop's keyboard, the inhibitor asked for
+  or dropped, the compositor's answer. `QT_MESSAGE_PATTERN="%{time
+  hh:mm:ss.zzz} %{message}"` gives each line its time.
 - `VITRINE_VIEW_RT`: which of the view's threads the GTK app has made
   real-time while its VM is in front (above): unset or `named`, all but
   the driver threads (main, render, events, listener, gdbus); `all` or

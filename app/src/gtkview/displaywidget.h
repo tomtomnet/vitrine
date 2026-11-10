@@ -17,6 +17,7 @@
 #include <vector>
 
 #include "displayinput.h"
+#include "focuswatch.h"
 #include "vmview/common.h"
 
 class DBusDisplay;
@@ -72,8 +73,11 @@ public:
        the user, per application ID, and may never) */
     QString grabState() const;
     void setGrab(bool on);
-    /* The keyboard is the guest's: the widget has the focus in the active
-       window, and input is on (the controller tells) */
+    /* The widget has the focus in the active window, as of GTK's last change
+       of either (FocusWatch: not from inside a focus change) */
+    bool hasKeyboard() const { return m_focus.hasKeyboard(); }
+    /* The keyboard is the guest's: hasKeyboard(), and input is on (the
+       controller tells) */
     void setHostActive(bool active);
     /* Off: no keys taken (they go to the window's shortcuts) */
     void setInputEnabled(bool on) { m_inputEnabled = on; }
@@ -90,7 +94,7 @@ public:
     sigc::signal<void()> grabChanged;
     /* Ctrl+Alt+F */
     sigc::signal<void()> fullScreenToggled;
-    /* The focus came or went, or the window became active or not */
+    /* hasKeyboard() changed */
     sigc::signal<void()> focusChanged;
     /* Shown or hidden: mapped and on the window */
     sigc::signal<void(bool)> exposedChanged;
@@ -166,7 +170,7 @@ private:
     GdkSurface *m_watched = nullptr;    // the window's surface: its scale, its monitor
     gulong m_scaleId = 0, m_enterMonitorId = 0, m_inhibitId = 0;
     Gtk::Window *m_root = nullptr;
-    sigc::connection m_activeWatch;
+    FocusWatch m_focus;
     sigc::connection m_uiInfoTimer;
     QMetaObject::Connection m_modeWatch;
     int m_width = 0, m_height = 0;

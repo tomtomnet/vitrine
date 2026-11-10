@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: GPL-2.0-or-later
 #pragma once
 
+#include <QLoggingCategory>
 #include <QSize>
 #include <QString>
 
@@ -28,6 +29,14 @@
  * down (Meta, Alt), the pointer is also confined, which keeps Meta + drag
  * for the guest (KWin runs them on the window otherwise).
  */
+/*
+ * QT_LOGGING_RULES=vitrine.grab.debug=true: a line on stderr at each change
+ * of where the keys go - the grab, the screen's keyboard, the inhibitor
+ * asked for and the compositor's answer, the nested desktop's keyboard
+ * (src/gtkview/README.md)
+ */
+Q_DECLARE_LOGGING_CATEGORY(lcGrab)
+
 class DisplayInput
 {
 public:

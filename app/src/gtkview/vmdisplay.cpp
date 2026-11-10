@@ -875,11 +875,13 @@ void VmDisplay::updateHostActive()
     bool active = false;
 
     if (m_widget) {
-        auto *top = dynamic_cast<Gtk::Window *>(m_widget->get_root());
-        active = m_inputEnabled && m_widget->is_focus() && top && top->is_active();
+        active = m_inputEnabled && m_widget->hasKeyboard();
         m_widget->setHostActive(active);
     }
     if (active != m_hasKeyboard) {
+        qCDebug(lcGrab).noquote() << "screen of" << vmName()
+                                  << (active ? "has the keyboard" : "lost the keyboard") << "- input"
+                                  << (m_inputEnabled ? "on" : "off");
         m_hasKeyboard = active;
         m_grabState = grabState();
         grabChanged.emit();
