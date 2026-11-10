@@ -39,6 +39,7 @@
 #include "core/firmwarefiles.h"
 #include "core/hostdevices.h"
 #include "core/paths.h"
+#include "core/pcipassthrough.h"
 #include "core/qemuinfo.h"
 #include "core/vmhardware.h"
 #include "core/vmrunner.h"
@@ -2717,7 +2718,10 @@ PciPage::PciPage(QWidget *parent)
                               "directly: this computer cannot use it while the VM runs. "
                               "The devices of an IOMMU group go together, and the "
                               "functions of a card, such as a graphics card and its "
-                              "sound, are checked together.")));
+                              "sound, are checked together. Vitrine sets them aside for "
+                              "the VM when it starts, and gives them back when it stops; "
+                              "taking a device from this computer's driver asks for an "
+                              "administrator's password.")));
     layout->addWidget(m_tree, 1);
 
     connect(m_tree, &QTreeWidget::itemChanged, this, [this](QTreeWidgetItem *item, int column) {
@@ -2747,6 +2751,8 @@ void PciPage::load(const ArgsFile &args)
 {
     const QList<PciDevice> devices = HostDevices::pciDevices();
     const qint64 memory = VmConfig::memoryMiB(args);
+    /* who holds which device node, once for every device */
+    const HostDevices::OpenNodes open = HostDevices::openNodes();
     QMap<int, QTreeWidgetItem *> groups;
     QStringList missing;
     const QSignalBlocker block(m_tree);
@@ -2756,10 +2762,10 @@ void PciPage::load(const ArgsFile &args)
     m_tree->clear();
 
     if (!HostDevices::iommuEnabled()) {
-        m_banner->setText(tr("The IOMMU is off, so no device can be passed through. Turn on "
-                             "VT-d (Intel) or AMD-Vi in the firmware settings of this "
-                             "computer, and add <code>intel_iommu=on</code> or "
-                             "<code>amd_iommu=on</code> to the kernel command line."));
+        m_banner->setText(tr("The IOMMU is off, so no device can be passed through. Turn it "
+                             "on in the firmware settings of this computer: AMD-Vi or IOMMU "
+                             "on AMD, VT-d on Intel, where the kernel may also want "
+                             "<code>intel_iommu=on</code> on its command line."));
         m_banner->show();
     } else if (devices.isEmpty()) {
         m_banner->setText(tr("No PCI devices were found."));
@@ -2782,10 +2788,8 @@ void PciPage::load(const ArgsFile &args)
             group->setFirstColumnSpanned(true);
         }
 
-        const QStringList problems = HostDevices::pciProblems(dev, memory);
-        auto *item = new QTreeWidgetItem(group, {dev.displayName(), dev.driver,
-                                                 problems.isEmpty() ? tr("Ready")
-                                                                    : problems.first()});
+        const PciPassthrough::Status status = PciPassthrough::status(dev, m_loaded, memory, open);
+        auto *item = new QTreeWidgetItem(group, {dev.displayName(), dev.driver, status.text});
         item->setData(0, Qt::UserRole, dev.address);
         item->setFlags(Qt::ItemIsEnabled | Qt::ItemIsSelectable | Qt::ItemIsUserCheckable);
         item->setCheckState(0, m_loaded.contains(dev.address) ? Qt::Checked : Qt::Unchecked);
@@ -2794,8 +2798,7 @@ void PciPage::load(const ArgsFile &args)
                                 .arg(dev.vendorId, 4, 16, QChar('0'))
                                 .arg(dev.deviceId, 4, 16, QChar('0'))
                                 .arg(dev.className));
-        item->setToolTip(2, problems.isEmpty() ? tr("Ready to be passed through")
-                                               : problems.join('\n'));
+        item->setToolTip(2, status.details);
         missing.removeAll(dev.address);
     }
     for (QTreeWidgetItem *group : std::as_const(groups)) {

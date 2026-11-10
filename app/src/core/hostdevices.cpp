@@ -2,14 +2,18 @@
 #include "hostdevices.h"
 
 #include <QDir>
+#include <QDirIterator>
 #include <QFile>
 #include <QFileInfo>
 #include <QHash>
 #include <QObject>
+#include <QSet>
 
 #include <algorithm>
 
 #include <sys/resource.h>
+#include <sys/stat.h>
+#include <sys/sysmacros.h>
 #include <unistd.h>
 
 QString PciDevice::displayName() const
@@ -185,6 +189,53 @@ PciDevice readPci(const QString &sysfs, const QString &address)
     return dev;
 }
 
+/* "c 226:1" for a character device's number, "b 259:2" for a block device's */
+QString nodeKey(bool block, const QString &number)
+{
+    return QString("%1 %2").arg(QLatin1Char(block ? 'b' : 'c'), number);
+}
+
+/* The number of the node @path, "" when it is none */
+QString nodeKeyOf(const QString &path)
+{
+    struct stat st;
+
+    if (::stat(QFile::encodeName(path).constData(), &st) != 0 ||
+        !(S_ISCHR(st.st_mode) || S_ISBLK(st.st_mode))) {
+        return {};
+    }
+    return nodeKey(S_ISBLK(st.st_mode),
+                   QString("%1:%2").arg(major(st.st_rdev)).arg(minor(st.st_rdev)));
+}
+
+/* "pipewire (pid 1234)": a sound server, which lets go of a card that goes */
+bool soundServer(const QString &holder)
+{
+    for (const char *server : {"pipewire (", "wireplumber (", "pipewire-pulse (", "pulseaudio ("}) {
+        if (holder.startsWith(QLatin1String(server))) {
+            return true;
+        }
+    }
+    return false;
+}
+
+/* What @cls makes a device of the platform's, which stays with the host; "" for another */
+QString platformDevice(quint32 cls)
+{
+    const quint32 base = cls >> 16, sub = (cls >> 8) & 0xff;
+
+    if (base == 0x06) {
+        return QObject::tr("a bridge");
+    }
+    if (base == 0x08 && (sub <= 0x03 || sub == 0x06)) {
+        return QObject::tr("a system peripheral of the platform");
+    }
+    if (base == 0x0c && sub == 0x05) {
+        return QObject::tr("the SMBus controller");
+    }
+    return {};
+}
+
 QString formatBytes(qint64 bytes)
 {
     return bytes >= (1LL << 30) ? QString("%1 GiB").arg(double(bytes) / (1LL << 30), 0, 'f', 1)
@@ -316,6 +367,203 @@ QStringList pciProblems(const PciDevice &dev, qint64 guestMiB, const QString &sy
                         .arg(formatBytes(limit), formatBytes(needed));
     }
     return problems;
+}
+
+OpenNodes openNodes(const QString &proc)
+{
+    OpenNodes open;
+    const QDir dir(proc);
+
+    for (const QString &pid : dir.entryList(QDir::Dirs | QDir::NoDotAndDotDot)) {
+        bool numeric = false;
+        const qint64 n = pid.toLongLong(&numeric);
+        const QString fds = dir.filePath(pid + "/fd");
+        QSet<QString> seen;
+
+        if (!numeric) {
+            continue;
+        }
+        const QString comm = readText(dir.filePath(pid + "/comm"));
+        for (const QString &fd : QDir(fds).entryList(QDir::AllEntries | QDir::System |
+                                                     QDir::NoDotAndDotDot)) {
+            /* nodes are under /dev: nothing else is looked at (a stat of a file on
+               a network file system may wait for its server) */
+            if (!QFile::symLinkTarget(fds + '/' + fd).startsWith("/dev/")) {
+                continue;
+            }
+            const QString key = nodeKeyOf(fds + '/' + fd);
+            if (!key.isEmpty() && !seen.contains(key)) {
+                seen.insert(key);
+                open[key] << QString("%1 (pid %2)").arg(comm).arg(n);
+            }
+        }
+    }
+    return open;
+}
+
+QStringList pciInUse(const PciDevice &dev, const OpenNodes &open, const QString &sysfs,
+                     const QString &proc)
+{
+    struct Node {
+        QString key;        // "c 226:1"
+        QString name;       // its folder: card1, nvme0n1p2
+        bool block = false;
+        bool sound = false;
+        QString holder;     // a block device's first holder: dm-0
+    };
+    const QString dir = sysfs + "/bus/pci/devices/" + dev.address;
+    const QString name = dev.address.mid(5);
+    QList<Node> nodes;
+    QStringList out, holders;
+    QString up;
+
+    if (readText(dir + "/boot_vga") == "1") {
+        out << QObject::tr("%1 is the GPU this computer started on: it keeps it for its own screen.")
+                   .arg(name);
+    }
+    const QDir::Filters dirs = QDir::Dirs | QDir::NoDotAndDotDot;
+    for (const QString &card : QDir(dir + "/drm").entryList({"card*"}, dirs)) {
+        if (card.contains('-')) {
+            continue;
+        }
+        const QDir connectors(dir + "/drm/" + card);
+        for (const QString &connector : connectors.entryList({card + "-*"}, dirs)) {
+            if (readText(connectors.filePath(connector) + "/status") == "connected") {
+                out << QObject::tr("A display is connected to %1 (%2).")
+                           .arg(name, connector.mid(card.size() + 1));
+            }
+        }
+    }
+    /* its device nodes, its disks, its network interfaces: real folders only */
+    QDirIterator it(dir, QDir::Dirs | QDir::NoDotAndDotDot | QDir::NoSymLinks,
+                    QDirIterator::Subdirectories);
+    while (it.hasNext()) {
+        const QString path = it.next();
+        const QFileInfo info(path);
+
+        if (info.dir().dirName() == "net") {
+            if (up.isEmpty() && readText(path + "/operstate") == "up") {
+                up = info.fileName();
+            }
+            continue;
+        }
+        const QString number = readText(path + "/dev");
+        if (number.isEmpty()) {
+            continue;
+        }
+        const QString subsystem = QFileInfo(QFileInfo(path + "/subsystem").symLinkTarget()).fileName();
+        Node node{nodeKey(subsystem == "block", number), info.fileName(), subsystem == "block",
+                  subsystem == "sound", {}};
+        if (node.block) {
+            node.holder = QDir(path + "/holders")
+                              .entryList(QDir::AllEntries | QDir::System | QDir::NoDotAndDotDot)
+                              .value(0);
+        }
+        nodes << node;
+    }
+    if (!up.isEmpty()) {
+        out << QObject::tr("Its network interface %1 is up: take it down first (sudo ip link set %1 "
+                           "down).").arg(up);
+    }
+    /* disks: built upon, mounted (by number, or by source: btrfs), swapped on */
+    const auto block = [&nodes](const QString &key) -> const Node * {
+        for (const Node &node : std::as_const(nodes)) {
+            if (node.block && node.key == key) {
+                return &node;
+            }
+        }
+        return nullptr;
+    };
+    for (const Node &node : std::as_const(nodes)) {
+        if (!node.holder.isEmpty()) {
+            out << QObject::tr("%1 on it is in use by %2 (an encrypted or LVM volume, RAID).")
+                       .arg(node.name, node.holder);
+        }
+    }
+    QFile mounts(proc + "/self/mountinfo");
+    if (std::any_of(nodes.cbegin(), nodes.cend(), [](const Node &n) { return n.block; }) &&
+        mounts.open(QIODevice::ReadOnly)) {
+        for (const QByteArray &raw : mounts.readAll().split('\n')) {
+            const QStringList f = QString::fromUtf8(raw).split(' ');
+            const qsizetype dash = f.indexOf("-");
+            const QString source = dash >= 0 ? f.value(dash + 2) : QString();
+            const Node *node = f.size() > 4 ? block(nodeKey(true, f[2])) : nullptr;
+
+            if (!node && source.startsWith("/dev/")) {
+                node = block(nodeKeyOf(source));
+            }
+            if (node) {
+                out << QObject::tr("%1 on it is mounted on %2: unmount it first.")
+                           .arg(node->name, f.value(4));
+            }
+        }
+    }
+    QFile swaps(proc + "/swaps");
+    if (swaps.open(QIODevice::ReadOnly)) {
+        for (const QByteArray &raw : swaps.readAll().split('\n')) {
+            const QString source = QString::fromUtf8(raw).simplified().section(' ', 0, 0);
+            if (const Node *node = source.startsWith("/dev/") ? block(nodeKeyOf(source)) : nullptr) {
+                out << QObject::tr("%1 on it is in use as swap.").arg(node->name);
+            }
+        }
+    }
+    /* processes holding its nodes, but the sound servers on ALSA's */
+    for (const Node &node : std::as_const(nodes)) {
+        for (const QString &who : open.value(node.key)) {
+            if (!(node.sound && soundServer(who)) && !holders.contains(who)) {
+                holders << who;
+            }
+        }
+    }
+    if (!holders.isEmpty()) {
+        out << QObject::tr("%1 is in use by %2.")
+                   .arg(name, holders.mid(0, 3).join(", ") +
+                                  (holders.size() > 3 ? QObject::tr(" and others") : QString()));
+    }
+    return out;
+}
+
+QStringList pciBlockers(const PciDevice &dev, const QStringList &named, const OpenNodes &open,
+                        const QString &sysfs, const QString &proc)
+{
+    /* drivers that take nothing from the host: none, vfio's, the stub's */
+    static const QStringList idle{"", "vfio-pci", "pci-stub"};
+    QStringList out;
+
+    if (dev.iommuGroup < 0) {
+        return {QObject::tr("The IOMMU is off: turn it on in the firmware settings of this "
+                            "computer (AMD-Vi or IOMMU on AMD, VT-d on Intel, where the kernel may "
+                            "also want intel_iommu=on).")};
+    }
+    if (const QString platform = platformDevice(dev.classCode); !platform.isEmpty()) {
+        return {QObject::tr("%1 is %2: it stays with this computer.")
+                    .arg(dev.address.mid(5), platform)};
+    }
+    /* the whole group goes to the guest, save bridges and free devices */
+    for (const QString &address : dev.groupPeers) {
+        const PciDevice peer = readPci(sysfs, address);
+
+        if ((peer.classCode >> 16) == 0x06 || idle.contains(peer.driver) || named.contains(address)) {
+            continue;
+        }
+        out << QObject::tr("%1 shares IOMMU group %2 and is bound to %3: pass it through too.")
+                   .arg(peer.displayName())
+                   .arg(dev.iommuGroup)
+                   .arg(peer.driver);
+    }
+    if (!idle.contains(dev.driver)) {
+        out << pciInUse(dev, open, sysfs, proc);
+    }
+    return out;
+}
+
+bool pciNodeOpen(const PciDevice &dev, const QString &sysfs)
+{
+    /* /dev next to /sys */
+    const QString node = QDir::cleanPath(QFileInfo(sysfs).absolutePath() + "/dev/vfio/" +
+                                         QString::number(dev.iommuGroup));
+
+    return dev.iommuGroup >= 0 && ::access(QFile::encodeName(node).constData(), R_OK | W_OK) == 0;
 }
 
 qint64 memlockLimit()

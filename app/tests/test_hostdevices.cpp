@@ -240,6 +240,130 @@ private slots:
         }
     }
 
+    /* What the host uses of a device: vitrine-helper does not take it from its driver */
+    void inUse()
+    {
+        const QString proc = tmp.filePath("proc");
+        const QString gpu = sys + "/devices/pci0000:00/0000:6e:00.0";
+        HostDevices::OpenNodes open;
+
+        pci("0000:6e:00.0", "0x1002", "0x164e", "0x030000", "amdgpu", 21);
+        /* fake numbers: no node of this computer's has them */
+        write(gpu + "/drm/card1/dev", "4000:1\n");
+        link(sys + "/class/drm", gpu + "/drm/card1/subsystem");
+        write(gpu + "/drm/card1/card1-DP-1/status", "disconnected\n");
+        write(gpu + "/boot_vga", "0\n");
+        const PciDevice dev = find("0000:6e:00.0");
+        QCOMPARE(HostDevices::pciInUse(dev, open, sys, proc), QStringList());
+
+        write(gpu + "/boot_vga", "1\n");
+        QCOMPARE(HostDevices::pciInUse(dev, open, sys, proc),
+                 QStringList({"6e:00.0 is the GPU this computer started on: it keeps it for its own "
+                              "screen."}));
+        write(gpu + "/boot_vga", "0\n");
+        write(gpu + "/drm/card1/card1-DP-1/status", "connected\n");
+        QCOMPARE(HostDevices::pciInUse(dev, open, sys, proc),
+                 QStringList({"A display is connected to 6e:00.0 (DP-1)."}));
+        write(gpu + "/drm/card1/card1-DP-1/status", "disconnected\n");
+        open.insert("c 4000:1", {"gnome-shell (pid 2345)", "firefox (pid 2400)"});
+        QCOMPARE(HostDevices::pciInUse(dev, open, sys, proc),
+                 QStringList({"6e:00.0 is in use by gnome-shell (pid 2345), firefox (pid 2400)."}));
+
+        /* an ALSA node: the sound servers let go of a card that goes */
+        pci("0000:6e:00.1", "0x1002", "0x1640", "0x040300", "snd_hda_intel", 21);
+        const QString audio = sys + "/devices/pci0000:00/0000:6e:00.1";
+        write(audio + "/sound/card1/controlC1/dev", "4000:10\n");
+        link(sys + "/class/sound", audio + "/sound/card1/controlC1/subsystem");
+        open.insert("c 4000:10", {"wireplumber (pid 3000)", "pipewire (pid 3001)"});
+        QCOMPARE(HostDevices::pciInUse(find("0000:6e:00.1"), open, sys, proc), QStringList());
+        open["c 4000:10"] << "audacity (pid 3002)";
+        QCOMPARE(HostDevices::pciInUse(find("0000:6e:00.1"), open, sys, proc),
+                 QStringList({"6e:00.1 is in use by audacity (pid 3002)."}));
+
+        /* a network interface up */
+        pci("0000:02:00.0", "0x10ec", "0x8168", "0x020000", "r8169", 22);
+        const QString nic = sys + "/devices/pci0000:00/0000:02:00.0";
+        write(nic + "/net/enp2s0/operstate", "up\n");
+        QCOMPARE(HostDevices::pciInUse(find("0000:02:00.0"), open, sys, proc),
+                 QStringList({"Its network interface enp2s0 is up: take it down first (sudo ip link "
+                              "set enp2s0 down)."}));
+        write(nic + "/net/enp2s0/operstate", "down\n");
+        QCOMPARE(HostDevices::pciInUse(find("0000:02:00.0"), open, sys, proc), QStringList());
+
+        /* a disk: mounted, under the device mapper */
+        pci("0000:04:00.0", "0x144d", "0xa808", "0x010802", "nvme", 23);
+        const QString part = sys + "/devices/pci0000:00/0000:04:00.0/nvme/nvme0/nvme0n1/nvme0n1p2";
+        write(part + "/dev", "4001:2\n");
+        link(sys + "/class/block", part + "/subsystem");
+        QDir().mkpath(part + "/holders");
+        write(proc + "/self/mountinfo", "30 22 4001:2 / /home rw - ext4 /dev/nvme0n1p2 rw\n");
+        QCOMPARE(HostDevices::pciInUse(find("0000:04:00.0"), open, sys, proc),
+                 QStringList({"nvme0n1p2 on it is mounted on /home: unmount it first."}));
+        write(proc + "/self/mountinfo", "");
+        write(part + "/holders/dm-0", "");
+        QCOMPARE(HostDevices::pciInUse(find("0000:04:00.0"), open, sys, proc),
+                 QStringList({"nvme0n1p2 on it is in use by dm-0 (an encrypted or LVM volume, RAID)."}));
+        QFile::remove(part + "/holders/dm-0");
+        QCOMPARE(HostDevices::pciInUse(find("0000:04:00.0"), open, sys, proc), QStringList());
+    }
+
+    /* The whole group goes to the VM; platform devices stay; no IOMMU, no VM */
+    void blockers()
+    {
+        const HostDevices::OpenNodes open;
+
+        pci("0000:31:00.0", "0x1002", "0x73df", "0x030000", "amdgpu", 31);
+        pci("0000:31:00.1", "0x1002", "0xab28", "0x040300", "snd_hda_intel", 31);
+        pci("0000:00:14.0", "0x1022", "0x790b", "0x0c0500", "piix4_smbus", 32);
+        const PciDevice gpu = find("0000:31:00.0");
+        const QStringList alone = HostDevices::pciBlockers(gpu, {"0000:31:00.0"}, open, sys);
+        QCOMPARE(alone.size(), 1);
+        QVERIFY2(alone[0].startsWith("31:00.1 ") && alone[0].endsWith(" shares IOMMU group 31 and is "
+                                                                       "bound to snd_hda_intel: pass "
+                                                                       "it through too."),
+                 qPrintable(alone[0]));
+        QVERIFY(HostDevices::pciBlockers(gpu, {"0000:31:00.0", "0000:31:00.1"}, open, sys).isEmpty());
+        QCOMPARE(HostDevices::pciBlockers(find("0000:00:14.0"), {"0000:00:14.0"}, open, sys),
+                 QStringList({"00:14.0 is the SMBus controller: it stays with this computer."}));
+        PciDevice off = gpu;
+        off.iommuGroup = -1;
+        const QStringList noIommu = HostDevices::pciBlockers(off, {"0000:31:00.0"}, open, sys);
+        QCOMPARE(noIommu.size(), 1);
+        QVERIFY(noIommu[0].startsWith("The IOMMU is off: "));
+        QVERIFY(!noIommu[0].contains("amd_iommu"));
+    }
+
+    /* /dev/vfio/<group> for this user */
+    void nodeOpen()
+    {
+        if (getuid() == 0) {
+            QSKIP("root can open anything");
+        }
+        const PciDevice gpu = find("0000:03:00.0");
+        QVERIFY(HostDevices::pciNodeOpen(gpu, sys));
+        QFile::setPermissions(tmp.filePath("dev/vfio/14"), QFileDevice::Permissions());
+        QVERIFY(!HostDevices::pciNodeOpen(gpu, sys));
+        QFile::setPermissions(tmp.filePath("dev/vfio/14"),
+                              QFileDevice::ReadOwner | QFileDevice::WriteOwner);
+        PciDevice none = gpu;
+        none.iommuGroup = 99;
+        QVERIFY(!HostDevices::pciNodeOpen(none, sys));
+    }
+
+    /* The nodes this user's processes hold: the test's own /dev/null among them */
+    void openNodes()
+    {
+        QFile null("/dev/null");
+        QVERIFY(null.open(QIODevice::ReadOnly));
+        QFile comm("/proc/self/comm");
+        QVERIFY(comm.open(QIODevice::ReadOnly));
+        const QString me = QString("%1 (pid %2)")
+                               .arg(QString::fromLocal8Bit(comm.readAll()).trimmed())
+                               .arg(getpid());
+        const HostDevices::OpenNodes open = HostDevices::openNodes();
+        QVERIFY2(open.value("c 1:3").contains(me), qPrintable(open.value("c 1:3").join(", ")));
+    }
+
     /* Bluetooth: a wireless controller, as a device or by its interfaces */
     void usbWireless()
     {

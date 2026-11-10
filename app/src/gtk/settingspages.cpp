@@ -11,6 +11,7 @@
 #include "core/hostdevices.h"
 #include "core/hostmemory.h"
 #include "core/paths.h"
+#include "core/pcipassthrough.h"
 #include "core/vmstore.h"
 #include "core/vmtemplate.h"
 #include "gtk/rows.h"
@@ -574,7 +575,10 @@ PciPage::PciPage()
       m_note(Gtk4::group({}, "A device passed through belongs to the VM, which drives it "
                              "directly: this computer cannot use it while the VM runs. The "
                              "devices of an IOMMU group go together, and the functions of a card, "
-                             "such as a graphics card and its sound, are checked together."))
+                             "such as a graphics card and its sound, are checked together. "
+                             "Vitrine sets them aside for the VM when it starts, and gives them "
+                             "back when it stops; taking a device from this computer's driver "
+                             "asks for an administrator's password."))
 {
     auto *page = ADW_PREFERENCES_PAGE(widget());
 
@@ -587,6 +591,8 @@ void PciPage::load(const ArgsFile &args)
     const Loading loading(m_loading);
     const QList<PciDevice> devices = HostDevices::pciDevices();
     const qint64 memory = VmConfig::memoryMiB(args);
+    /* who holds which device node, once for every device */
+    const HostDevices::OpenNodes open = HostDevices::openNodes();
     QMap<int, AdwPreferencesGroup *> groups;
     QStringList missing;
     auto *page = ADW_PREFERENCES_PAGE(widget());
@@ -601,9 +607,9 @@ void PciPage::load(const ArgsFile &args)
 
     if (!HostDevices::iommuEnabled()) {
         adw_banner_set_title(m_banner, "The IOMMU is off, so no device can be passed through. Turn "
-                                       "on VT-d (Intel) or AMD-Vi in the firmware settings of this "
-                                       "computer, and add intel_iommu=on or amd_iommu=on to the "
-                                       "kernel command line.");
+                                       "it on in the firmware settings of this computer: AMD-Vi "
+                                       "or IOMMU on AMD, VT-d on Intel, where the kernel may also "
+                                       "want intel_iommu=on on its command line.");
         adw_banner_set_revealed(m_banner, true);
     } else if (devices.isEmpty()) {
         adw_banner_set_title(m_banner, "No PCI devices were found.");
@@ -641,13 +647,12 @@ void PciPage::load(const ArgsFile &args)
             group = Gtk4::group(dev.iommuGroup < 0 ? QString("No IOMMU Group")
                                                    : QString("IOMMU Group %1").arg(dev.iommuGroup));
         }
-        const QStringList problems = HostDevices::pciProblems(dev, memory);
+        const PciPassthrough::Status status = PciPassthrough::status(dev, m_loaded, memory, open);
         GtkWidget *check;
         GtkWidget *row = checkRow(dev.displayName(),
                                   QStringList({dev.driver.isEmpty() ? QString("no driver")
                                                                     : dev.driver,
-                                               problems.isEmpty() ? QString("Ready")
-                                                                  : problems.first()})
+                                               status.text})
                                       .join(" · "),
                                   m_loaded.contains(dev.address), &check);
         gtk_widget_set_tooltip_text(
@@ -655,9 +660,7 @@ void PciPage::load(const ArgsFile &args)
                           .arg(dev.address)
                           .arg(dev.vendorId, 4, 16, QChar('0'))
                           .arg(dev.deviceId, 4, 16, QChar('0'))
-                          .arg(dev.className,
-                               problems.isEmpty() ? QString("Ready to be passed through")
-                                                  : problems.join('\n')))
+                          .arg(dev.className, status.details))
                      .constData());
         watch(check, dev.address);
         m_items << Item{dev.address, check};

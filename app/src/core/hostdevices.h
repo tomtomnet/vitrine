@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: GPL-2.0-or-later
 #pragma once
 
+#include <QHash>
 #include <QList>
 #include <QString>
 #include <QStringList>
@@ -68,6 +69,34 @@ QList<UsbDevice> usbDevices(const QString &sysfs = "/sys");
  */
 QStringList pciProblems(const PciDevice &dev, qint64 guestMiB,
                         const QString &sysfs = "/sys");
+/*
+ * The device nodes processes of this user hold open (/proc/PID/fd: other
+ * users' cannot be read), taken once for many devices: by number, "c
+ * 226:1" or "b 259:2", who - "gnome-shell (pid 2345)"
+ */
+using OpenNodes = QHash<QString, QStringList>;
+OpenNodes openNodes(const QString &proc = "/proc");
+/*
+ * What the host uses of @dev, as vitrine-helper refuses to take it from its
+ * driver (it checks again as root): the GPU this computer started on, a
+ * display connected to it, a process holding one of its nodes (@open; the
+ * sound servers' hold on ALSA nodes aside, as they let go of a card that
+ * goes), a disk on it mounted, swapped on or under the device mapper, a
+ * network interface of it that is up.  Sentences; empty when none.  @proc:
+ * where mountinfo and swaps are read (/proc but for tests).
+ */
+QStringList pciInUse(const PciDevice &dev, const OpenNodes &open, const QString &sysfs = "/sys",
+                     const QString &proc = "/proc");
+/*
+ * What keeps @dev from being handed to a VM that passes @named through:
+ * no IOMMU, a platform device (bridge, SMBus...), a device of its IOMMU
+ * group on a driver of the host's that is not passed through too, and for
+ * a device on a host driver pciInUse().  Sentences; empty when none.
+ */
+QStringList pciBlockers(const PciDevice &dev, const QStringList &named, const OpenNodes &open,
+                        const QString &sysfs = "/sys", const QString &proc = "/proc");
+/* /dev/vfio/<group> of @dev exists (the group is on vfio-pci) and this user opens it */
+bool pciNodeOpen(const PciDevice &dev, const QString &sysfs = "/sys");
 /* RLIMIT_MEMLOCK of this process in bytes, -1 for unlimited */
 qint64 memlockLimit();
 /* Whether the CPU of this computer has @flag, e.g. topoext */

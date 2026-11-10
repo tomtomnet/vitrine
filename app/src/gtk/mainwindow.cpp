@@ -13,6 +13,7 @@
 #include "core/hostsettings.h"
 #include "core/nesteddesktop.h"
 #include "core/paths.h"
+#include "core/pcipassthrough.h"
 #include "core/tasks.h"
 #include "core/vmconfig.h"
 #include "core/vmhardware.h"
@@ -152,6 +153,10 @@ MainWindow::MainWindow(GtkLoop *loop, VmStore *store)
     /* the host's settings while VMs run (vitrine-helper), what it could not apply said */
     auto *host = new HostSettings(store, m_qt.get());
     QObject::connect(host, &HostSettings::notice, m_qt.get(),
+                     [this](const QString &text) { notify(text, 15000); });
+    /* PCI devices passed through, made ready at each start, tuning or not */
+    auto *passthrough = new PciPassthrough(store, m_qt.get());
+    QObject::connect(passthrough, &PciPassthrough::notice, m_qt.get(),
                      [this](const QString &text) { notify(text, 15000); });
     /* Preferences, the notices of the running VMs, the tasks: mainwindowparts.cpp */
     createParts();

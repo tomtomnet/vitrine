@@ -10,6 +10,7 @@
 #include "core/hostdevices.h"
 #include "core/nesteddesktop.h"
 #include "core/paths.h"
+#include "core/pcipassthrough.h"
 #include "core/qemuinfo.h"
 #include "core/stackbuilder.h"
 #include "core/vmconfig.h"
@@ -257,6 +258,7 @@ QList<Section> details(const Vm *vm, const QemuInfo *info, GpuContexts::Status c
     QList<Row> pci;
     if (!pciAddresses.isEmpty()) {
         const QList<PciDevice> devices = HostDevices::pciDevices();
+        const PciPassthrough *passthrough = PciPassthrough::instance();
         for (const QString &address : pciAddresses) {
             QString name = tr("not found");
             for (const PciDevice &dev : devices) {
@@ -264,7 +266,16 @@ QList<Section> details(const Vm *vm, const QemuInfo *info, GpuContexts::Status c
                     name = QString("%1 %2").arg(dev.vendorName, dev.deviceName).simplified();
                 }
             }
-            pci << Row{address, name, {}, {}};
+            /* what this run took it from, given back when it stops */
+            const QString from = passthrough && vm->runner()->isActive()
+                                     ? passthrough->takenFrom(vm->id(), address)
+                                     : QString();
+            pci << Row{address, name,
+                       from.isEmpty() ? QString()
+                       : from == "none"
+                           ? tr("On vfio-pci until the VM stops")
+                           : tr("Taken from %1 until the VM stops").arg(from),
+                       {}};
         }
     }
     section(tr("PCI Devices"), pci);
