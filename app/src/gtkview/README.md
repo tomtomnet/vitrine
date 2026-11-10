@@ -294,6 +294,14 @@ other desktops and a known app keep the automatic grab.
 `VITRINE_VIEW_INHIBIT=0` never asks at all, Ctrl+Alt+G included (scripted
 runs).
 
+Mutter keeps the shell's answer for the surface it was given for: a new
+request on the same window is answered at once, inside the request, so the
+grab's inhibitor can come and go with the pointer at no cost (Mutter 51.1,
+`meta-wayland-inhibit-shortcuts-dialog.c`). The shell's permission store
+is asked only for a window's first request - at the app's start, and for
+each full-screen window (3-6 ms). The view sends its request at once
+(`gdk_display_flush`), not with GTK's next frame.
+
 ## Switches for A/B runs
 
 Environment variables of the views, for measurements only; the defaults are

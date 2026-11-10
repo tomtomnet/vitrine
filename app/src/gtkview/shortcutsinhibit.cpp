@@ -52,6 +52,12 @@ void set(GdkSurface *toplevel, const void *owner, bool on)
     const bool after = !owners->empty();
     if (after && !before) {
         gdk_toplevel_inhibit_system_shortcuts(GDK_TOPLEVEL(toplevel), nullptr);
+        /* now, not with the window's next frame: GDK flushes its connection
+           once the main loop waits, after the frame GTK may be rendering for
+           the same change (the window's activation repaint), and the
+           desktop's shortcuts stay until the compositor reads the request -
+           7.5 ms after a click that brought the window back, on GNOME */
+        gdk_display_flush(gdk_surface_get_display(toplevel));
     } else if (before && !after) {
         gdk_toplevel_restore_system_shortcuts(GDK_TOPLEVEL(toplevel));
     }
