@@ -381,5 +381,12 @@ This guide was checked in September 2026 against Mesa 26.2.3 and main
 Ubuntu's and Arch's Mesa packaging, RPM Fusion's mesa-freeworld,
 kisak-mesa, and the xe-native-context-enablement repository. The Fedora
 spec changes were tried up to the build, and the Xe patch on the files it
-changes. Not tried here: a whole Mesa build on each distribution, the
-32-bit builds, and hardware video through native context.
+changes. Not tried here: a whole Mesa build on each distribution, and the
+32-bit builds.
+
+In November 2026, hardware video through AMD native context was tried with
+Vitrine's guest Mesa (Fedora's 26.2.6 spec with `-Dvideo-codecs=all`) in a
+Fedora 45 guest: `vainfo` listed H.264 and H.265 decode and encode, and
+GStreamer's VA-API elements encoded and decoded clips of both. The same
+guest with RPM Fusion's freeworld packages beside that Mesa is the one
+described in [Video codecs](#video-codecs).
