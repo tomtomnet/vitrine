@@ -17,11 +17,13 @@
 
 #ifndef Q_MOC_RUN
 #include "core/paths.h"
+#include "core/usbguard.h"
 #include "core/usbhotplug.h"
 #include "core/vmrunner.h"
 #include "core/vmstore.h"
 #include "fakeusbqemu.h"
 #include "gtk/gtkloop.h"
+#include "gtk/notices.h"
 #include "gtk/usbdialog.h"
 #include "ui/usbchoices.h"
 #endif
@@ -32,7 +34,8 @@
  * never this computer's devices.  The devices of a running VM with their
  * states, a VM without a USB controller, giving a device and taking it
  * back, Keep for the Next Starts, the question before a keyboard goes, a
- * device plugged out, the VM stopping.
+ * device plugged out, a device another VM has, the notice of a program of
+ * this computer holding one (a fake /proc), the VM stopping.
  */
 
 static bool writeFile(const QString &path, const QByteArray &data)
@@ -74,6 +77,7 @@ public:
         m_process.kill();
         m_process.waitForFinished();
     }
+    qint64 pid() const { return m_process.processId(); }
 
     std::unique_ptr<FakeUsbQemu> qemu;
 
@@ -153,6 +157,15 @@ class TestGtkUsb : public QObject
             }
         }
         return false;
+    }
+    /* An alert's body, and the explanation under it (a long one's) */
+    static QString body(AdwAlertDialog *alert)
+    {
+        QString text = QString::fromUtf8(adw_alert_dialog_get_body(alert));
+        if (GtkWidget *extra = adw_alert_dialog_get_extra_child(alert); extra && GTK_IS_LABEL(extra)) {
+            text += QString::fromUtf8(gtk_label_get_label(GTK_LABEL(extra)));
+        }
+        return text;
     }
     /* The dialog of @id, once it knows what the VM has */
     std::unique_ptr<UsbDialog> open(const QString &id)
@@ -359,6 +372,82 @@ private slots:
         unplug("99-4");
         QTRY_VERIFY(entry(*dialog, "Intel") < 0);
         QVERIFY(entry(*dialog, "SanDisk") >= 0);
+    }
+
+    /* beta's by its rule, given to alpha all the same (the switch's own path): refused, naming beta */
+    void attachRefused()
+    {
+        UsbGuard guard(m_store.get());
+        auto dialog = open("alpha");
+        const qsizetype before = qemu("alpha")->executed("device_add").size();
+
+        dialog->toggle(dialog->shown()[entry(*dialog, "dead:beef")].device, true);
+        QTRY_VERIFY(alert("dead:beef was not given to alpha."));
+        QVERIFY(body(alert("dead:beef was not given to alpha."))
+                    .contains("beta has it: take it back there first."));
+        QCOMPARE(qemu("alpha")->executed("device_add").size(), before);
+    }
+
+    /* Two identical devices, which beta's rule takes either of: said so beside each */
+    void identicalDevices()
+    {
+        plug("99-6", 99, 7, "dead", "beef", {}, {}, "ff");
+        {
+            auto dialog = open("alpha");
+            int rows = 0;
+            for (qsizetype i = 0; i < dialog->shown().size(); i++) {
+                if (dialog->shown()[i].text != "dead:beef") {
+                    continue;
+                }
+                rows++;
+                GtkWidget *row = dialog->row(int(i));
+                QVERIFY(!gtk_widget_get_sensitive(row));
+                QVERIFY(QString::fromUtf8(adw_action_row_get_subtitle(ADW_ACTION_ROW(row)))
+                            .contains("beta passes devices with these IDs through: its QEMU may "
+                                      "take this one too."));
+            }
+            QCOMPARE(rows, 2);
+        }
+        unplug("99-6");
+    }
+
+    /* adb holds beta's device: the notice names it, its explanation has the fix; gone as it lets go */
+    void heldNotice()
+    {
+        const QString proc = m_tmp.filePath("proc");
+        QDir().mkpath(proc + "/4190021/fd");
+        QVERIFY(writeFile(proc + "/4190021/cmdline", QByteArray("adb\0fork-server\0server\0", 23)));
+        QVERIFY(writeFile(proc + "/4190021/comm", "adb\n"));
+        QVERIFY(QFile::link(m_dev + "/bus/usb/099/004", proc + "/4190021/fd/5"));
+        /* beta's QEMU holds none of it */
+        QDir().mkpath(proc + QString("/%1/fd").arg(m_qemus.value("beta")->pid()));
+
+        UsbGuard guard(m_store.get());
+        guard.setProcRoot(proc);
+        guard.setDelays(20, 100);
+        GtkWidget *window = gtk_window_new();
+        {
+            Notices notices(nullptr, m_store.get(), GTK_WINDOW(window), presenter());
+            guard.scanNow();
+            QTRY_VERIFY(notices.shown().contains(Notices::Kind::UsbHeld));
+            QCOMPARE(notices.title(Notices::Kind::UsbHeld),
+                     QString("USB Device in Use on This Computer"));
+            QCOMPARE(notices.text(Notices::Kind::UsbHeld),
+                     QString("adb (pid 4190021) holds dead:beef, which beta passes through."));
+            QVERIFY(gtk_widget_get_visible(notices.button()));
+            QVERIFY(QString::fromUtf8(gtk_widget_get_tooltip_text(notices.button()))
+                        .contains("USB Device in Use on This Computer"));
+
+            notices.explain(Notices::Kind::UsbHeld);
+            AdwAlertDialog *explained = alert("USB Device in Use on This Computer");
+            QVERIFY(explained);
+            QVERIFY(body(explained).contains("adb kill-server"));
+            QVERIFY(body(explained).contains("kill 4190021"));
+
+            QDir(proc + "/4190021").removeRecursively();
+            QTRY_VERIFY(!notices.shown().contains(Notices::Kind::UsbHeld));
+        }
+        gtk_window_destroy(GTK_WINDOW(window));
     }
 
     /* The VM stops while it shows */
