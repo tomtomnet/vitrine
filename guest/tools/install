@@ -284,8 +284,9 @@ if [ "$uninstall" = 1 ]; then
 	mkdir -p "$run" && touch "$run/reboot-needed"
 	echo "The guest tools are removed. Restart the guest to finish."
 	if [ -n "$freeworld" ]; then
-		echo "Fedora's Mesa has no H.264, H.265 or VC-1 video: RPM Fusion's ${freeworld% }, which"
-		echo "vitrine's Mesa replaced, would bring them back (rpmfusion.org/Howto/Multimedia)."
+		echo "Fedora's Mesa has no H.264, H.265 or VC-1 video. These packages of RPM Fusion, which"
+		echo "vitrine's Mesa replaced, would bring them back (rpmfusion.org/Howto/Multimedia):"
+		echo "    ${freeworld% }"
 	fi
 	[ "$reboot" = 1 ] && systemctl --no-block reboot
 	exit 0
