@@ -7,6 +7,7 @@
 
 #include "core/hostmemory.h"
 #include "core/udmabuf.h"
+#include "core/usbguard.h"
 #include "core/vmconfig.h"
 #include "core/vmrunner.h"
 #include "core/vmstore.h"
@@ -16,6 +17,7 @@
 #include "ui/hosttuningtext.h"
 #include "ui/memorytext.h"
 #include "ui/udmabuftext.h"
+#include "ui/usbguardtext.h"
 
 using Gtk4::utf8;
 
@@ -64,7 +66,7 @@ Notices::Notices(HostSettings *host, VmStore *store, GtkWindow *window,
       /* native context's guest windows copied for want of udmabuf: host
          tuning raises its limits, and says so first */
       m_udmabuf(new UdmabufWatch(store, host, &m_qt)), m_memoryTimer(new QTimer(&m_qt)),
-      m_button(gtk_menu_button_new()), m_popover(gtk_popover_new()),
+      m_usb(UsbGuard::instance()), m_button(gtk_menu_button_new()), m_popover(gtk_popover_new()),
       m_list(gtk_list_box_new())
 {
     GtkWidget *icon = gtk_image_new_from_icon_name("dialog-warning-symbolic");
@@ -98,6 +100,9 @@ Notices::Notices(HostSettings *host, VmStore *store, GtkWindow *window,
                          [this](const HostSettings::Status &status) { offerGroup(status); });
     }
     QObject::connect(m_udmabuf, &UdmabufWatch::changed, &m_qt, [this]() { updateUdmabuf(); });
+    if (m_usb) {
+        QObject::connect(m_usb, &UsbGuard::changed, &m_qt, [this]() { updateUsb(); });
+    }
     /* back from a terminal where the helper was installed, say */
     on<void(GParamSpec *)>(window, "notify::is-active", [this, window](GParamSpec *) {
         if (gtk_window_is_active(window) && m_host && m_host->untuned()) {
@@ -116,6 +121,7 @@ Notices::Notices(HostSettings *host, VmStore *store, GtkWindow *window,
 
     updateHost();
     updateUdmabuf();
+    updateUsb();
     refreshMemory();
 }
 
@@ -144,6 +150,9 @@ QList<Notices::Kind> Notices::shown() const
     if (!m_udmabufText.isEmpty()) {
         kinds << Kind::Udmabuf;
     }
+    if (!m_usbText.isEmpty()) {
+        kinds << Kind::UsbHeld;
+    }
     if (!m_memoryText.isEmpty()) {
         kinds << Kind::Memory;
     }
@@ -157,6 +166,8 @@ QString Notices::title(Kind kind) const
         return "Host Tuning Inactive";
     case Kind::Udmabuf:
         return m_udmabufTitle;
+    case Kind::UsbHeld:
+        return UsbGuardText::title();
     case Kind::Memory:
         return MemoryText::title();
     }
@@ -170,6 +181,8 @@ QString Notices::text(Kind kind) const
         return m_hostText;
     case Kind::Udmabuf:
         return m_udmabufText;
+    case Kind::UsbHeld:
+        return m_usbText;
     case Kind::Memory:
         return m_memoryText;
     }
@@ -222,6 +235,13 @@ void Notices::updateUdmabuf()
             }
         });
     }
+}
+
+void Notices::updateUsb()
+{
+    /* what holds them, a line each; the fixes in the explanation */
+    m_usbText = m_usb ? UsbGuardText::lines(m_usb->issues()) : QString();
+    update();
 }
 
 void Notices::refreshMemory()
@@ -302,6 +322,9 @@ void Notices::explain(Kind kind)
         break;
     case Kind::Udmabuf:
         explainUdmabuf();
+        break;
+    case Kind::UsbHeld:
+        explainUsb();
         break;
     case Kind::Memory:
         explainMemory();
@@ -446,6 +469,17 @@ void Notices::explainUdmabuf()
         }
     });
     m_present(dialog);
+}
+
+void Notices::explainUsb()
+{
+    const QList<UsbGuard::Issue> issues = m_usb ? m_usb->issues() : QList<UsbGuard::Issue>();
+
+    if (issues.isEmpty()) {
+        updateUsb();
+        return;
+    }
+    m_present(boxAlert({UsbGuardText::title(), UsbGuardText::explanation(issues)}));
 }
 
 void Notices::explainMemory()

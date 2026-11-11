@@ -12,6 +12,7 @@
 #include <functional>
 
 #include "core/hostsettings.h"
+#include "core/usbguard.h"
 
 class QTimer;
 class UdmabufWatch;
@@ -36,6 +37,9 @@ class VmStore;
  *    once per run its explanation comes by itself, with tuning on, when
  *    the limits or the device are in the way and still would be, unless
  *    the group's offer, which covers it, came up in this run.
+ *  - USB device in use (UsbGuard): a program of this computer holds a USB
+ *    device a running VM passes through (adb's server, gvfs's MTP mounts,
+ *    another QEMU), named, with the fix in its explanation.
  *  - Memory short: the running VMs could take more than the host has free.
  *
  * Not banners: a banner over the VM's screen resizes the guest's screen as
@@ -44,7 +48,7 @@ class VmStore;
 class Notices : public Gtk4::Guarded
 {
 public:
-    enum class Kind { HostTuning, Udmabuf, Memory };
+    enum class Kind { HostTuning, Udmabuf, UsbHeld, Memory };
 
     /* @present: the window's present(), which covers the VM's screen under an alert */
     Notices(HostSettings *host, VmStore *store, GtkWindow *window, Gtk4::Dialog::Presenter present);
@@ -77,6 +81,7 @@ public:
 private:
     void updateHost();
     void updateUdmabuf();
+    void updateUsb();
     /* The button, its tooltip and its popover, after a change of the notices */
     void update();
     /* The state asked again, then explainHostNow() */
@@ -84,6 +89,7 @@ private:
     void explainHostNow(const HostSettings::Status &status);
     void offerGroup(const HostSettings::Status &status);
     void explainUdmabuf();
+    void explainUsb();
     void explainMemory();
     void watch(Vm *vm);
 
@@ -97,7 +103,10 @@ private:
     QString m_hostText;
     QString m_udmabufTitle;
     QString m_udmabufText;
+    QString m_usbText;
     QString m_memoryText;
+    /* the app's, made before the window's parts (UsbGuard::instance()) */
+    QPointer<UsbGuard> m_usb;
     /* the udmabuf explanation came up by itself in this run of vitrine */
     bool m_explained = false;
     /* the udmabuf explanation open, if it is */

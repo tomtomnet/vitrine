@@ -168,6 +168,16 @@ public:
         std::function<void(const QStringList &addresses, qint64 lockMiB,
                            const std::function<void(const QString &error)> &done)>;
     void setDevicePreparer(const DevicePreparer &prepare);
+    /*
+     * Asked as start() begins, before anything runs (UsbGuard: a USB device
+     * another running VM has): why the VM may not start with @args, "" when
+     * it may.  start() fails with that, and refusedByCheck() says so until
+     * the next start.
+     */
+    using StartCheck = std::function<QString(const ArgsFile &args)>;
+    void setStartCheck(const StartCheck &check);
+    /* The last start() was refused by the start check: nothing ran, the log is of the run before */
+    bool refusedByCheck() const;
     /* The socket of the vitrine agent's port (guest tools), while active */
     QString agentSocket() const;
     /* The socket of the port of QEMU's guest agent (qemu-ga) that Shut Down

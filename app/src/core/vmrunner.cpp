@@ -339,6 +339,8 @@ struct VmRunner::Private
     std::function<bool(const QString &, QString *)> nestedHost;
     DevicePreparer devicePreparer;
     quint64 devicesAsked = 0;   // the preparer's requests, the answer of the last counts
+    StartCheck startCheck;
+    bool refusedByCheck = false;    // the last start() refused by it
     qint64 pid = 0;             // QEMU
     QList<Helper> helpers;      // virtiofsd started for this run
     GuestAgent *agent = nullptr;    // asking what the guest runs, mounting the shares
@@ -1772,6 +1774,16 @@ void VmRunner::setDevicePreparer(const DevicePreparer &prepare)
     d->devicePreparer = prepare;
 }
 
+void VmRunner::setStartCheck(const StartCheck &check)
+{
+    d->startCheck = check;
+}
+
+bool VmRunner::refusedByCheck() const
+{
+    return d->refusedByCheck;
+}
+
 void VmRunner::setNestedHost(const std::function<bool(const QString &, QString *)> &serve)
 {
     d->nestedHost = serve;
@@ -1839,6 +1851,7 @@ void VmRunner::start(const ArgsFile &args)
     }
 
     d->error.clear();
+    d->refusedByCheck = false;
     d->stopRequested = false;
     d->forceRequested = false;
     d->shutdownAsked = false;
@@ -1869,6 +1882,12 @@ void VmRunner::start(const ArgsFile &args)
     /* the GPU the VM chose, before QEMU refuses it in its own words */
     if (const QString problem = renderNodeProblem(args); !problem.isEmpty()) {
         d->fail(problem);
+        return;
+    }
+    /* what another running VM has: two QEMUs would race for it */
+    if (const QString why = d->startCheck ? d->startCheck(args) : QString(); !why.isEmpty()) {
+        d->refusedByCheck = true;
+        d->fail(why);
         return;
     }
     if (!shares.isEmpty()) {

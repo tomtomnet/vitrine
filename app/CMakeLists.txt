@@ -99,6 +99,8 @@ qt_add_library(vitrine_core STATIC
     src/core/udmabuf.h
     src/core/updatecheck.cpp
     src/core/updatecheck.h
+    src/core/usbguard.cpp
+    src/core/usbguard.h
     src/core/usbhotplug.cpp
     src/core/usbhotplug.h
     src/core/vmconfig.cpp
@@ -309,6 +311,8 @@ qt_add_library(vitrine_uishared STATIC
     src/ui/usbaccess.h
     src/ui/usbchoices.cpp
     src/ui/usbchoices.h
+    src/ui/usbguardtext.cpp
+    src/ui/usbguardtext.h
 )
 target_link_libraries(vitrine_uishared PUBLIC vitrine_core)
 target_compile_options(vitrine_uishared PRIVATE -Wall -Wextra)
@@ -496,6 +500,7 @@ if(BUILD_TESTING)
             tasks
             udmabuf
             updatecheck
+            usbguard
             usbhotplug
             vmcloner
             vmconfig
@@ -588,6 +593,10 @@ if(BUILD_TESTING)
     add_dependencies(test_consoleviews fake-qemu)
     target_compile_definitions(test_usbhotplug PRIVATE FAKE_QEMU="$<TARGET_FILE:fake-qemu>")
     add_dependencies(test_usbhotplug fake-qemu)
+    target_compile_definitions(test_usbguard PRIVATE FAKE_QEMU="$<TARGET_FILE:fake-qemu>")
+    add_dependencies(test_usbguard fake-qemu)
+    # and the notice's words, which both apps share
+    target_link_libraries(test_usbguard PRIVATE vitrine_uishared)
     target_compile_definitions(test_usbmenu PRIVATE FAKE_QEMU="$<TARGET_FILE:fake-qemu>")
     add_dependencies(test_usbmenu fake-qemu)
     target_compile_definitions(test_udmabuf PRIVATE FAKE_QEMU="$<TARGET_FILE:fake-qemu>")

@@ -47,6 +47,7 @@
 #include "core/qemuinfo.h"
 #include "core/stackbuilder.h"
 #include "core/tasks.h"
+#include "core/usbguard.h"
 #include "core/vmconfig.h"
 #include "core/vmhardware.h"
 #include "core/vmrunner.h"
@@ -232,6 +233,10 @@ MainWindow::MainWindow(VmStore *store, QWidget *parent)
     /* PCI devices passed through, made ready at each start, tuning or not */
     auto *passthrough = new PciPassthrough(store, this);
     connect(passthrough, &PciPassthrough::notice, this,
+            [this](const QString &text) { statusBar()->showMessage(text, 15000); });
+    /* a USB device for one VM at a time; what else holds one a VM has, for a while */
+    auto *usb = new UsbGuard(store, this);
+    connect(usb, &UsbGuard::notice, this,
             [this](const QString &text) { statusBar()->showMessage(text, 15000); });
     /* which window of QEMU's own is active, for focus priority: KWin's to
        say, while such VMs run tuned */
@@ -782,9 +787,11 @@ void MainWindow::failed(Vm *vm, const QString &error)
             title = tr("Cannot Start %1").arg(vm->name());
             text = tr("%1 could not start.").arg(vm->name());
             firmware = FirmwareRepair::named(vm, error);
-            /* start() refused it, to wait for Vitrine's QEMU, or for its GPU */
+            /* start() refused it, to wait for Vitrine's QEMU, or for its GPU, or
+               for a USB device of another VM */
             build = VmRunner::needsQemuBuild(vm->runner()->runArgs());
-            refused = build || !VmRunner::renderNodeProblem(vm->runner()->runArgs()).isEmpty();
+            refused = build || !VmRunner::renderNodeProblem(vm->runner()->runArgs()).isEmpty() ||
+                      vm->runner()->refusedByCheck();
         } else if (from != VmRunner::State::Stopped) {
             title = tr("%1 Stopped").arg(vm->name());
             text = tr("%1 stopped unexpectedly.").arg(vm->name());
@@ -1370,6 +1377,13 @@ void MainWindow::start()
     /* it waits for Vitrine's QEMU: start() refuses it, which failed()
        reports with the build at hand, before USB access is asked */
     if (VmRunner::needsQemuBuild(vm->args())) {
+        m_starting.insert(vm->id());
+        vm->runner()->start(vm->args());
+        return;
+    }
+    /* a USB device another running VM has: start() refuses it too, before the
+       access to the devices is asked for */
+    if (UsbGuard::instance() && !UsbGuard::startConflict(m_store, vm, vm->args()).isEmpty()) {
         m_starting.insert(vm->id());
         vm->runner()->start(vm->args());
         return;

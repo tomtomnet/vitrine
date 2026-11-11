@@ -108,6 +108,9 @@ private slots:
         usbInterface("1-1:1.0", "03");
         usbInterface("1-1:1.1", "03");
         usbInterface("1-1:1.2", "ff");
+        /* the keyboard on its driver, the mouse on none, the vendor's claimed by a program */
+        link(sys + "/bus/usb/drivers/usbhid", sys + "/devices/usb/1-1:1.0/driver");
+        link(sys + "/bus/usb/drivers/usbfs", sys + "/devices/usb/1-1:1.2/driver");
     }
 
     void pciDevices()
@@ -229,6 +232,7 @@ private slots:
         QCOMPARE(list[1].devNode(), "/dev/bus/usb/001/002");
         QCOMPARE(list[1].displayName(), "Logitech USB Receiver (046d:c52b)");
         QCOMPARE(list[1].interfaceClasses, QList<quint8>({0x03, 0x03, 0xff}));
+        QCOMPARE(list[1].interfaceDrivers, QStringList({"usbhid", "", "usbfs"}));
         QVERIFY(list[1].isInput());
         QVERIFY(!list[1].isWireless());
         QCOMPARE(list[2].port, "1-2");

@@ -58,6 +58,8 @@ public:
     };
     /* @error is empty on success, else why not, plainly */
     using Done = std::function<void(const QString &error)>;
+    /* Why @host may not go to this VM, "" when it may (UsbGuard: another VM has it) */
+    using AttachCheck = std::function<QString(const UsbDevice &host)>;
 
     /* The one of @runner, made the first time */
     static UsbHotplug *of(VmRunner *runner);
@@ -76,6 +78,8 @@ public:
     void refresh();
     /* @done once the VM has @host, or with why not */
     void attach(const UsbDevice &host, const Done &done);
+    /* Asked by attach() before QEMU is: its answer refuses the device */
+    void setAttachCheck(const AttachCheck &check);
     /* @done once the VM no longer has @host, or with why not */
     void detach(const UsbDevice &host, const Done &done);
 
@@ -91,6 +95,7 @@ public:
     /* The node of @host, under the /dev of setRoots() */
     static QString nodeOf(const UsbDevice &host);
     static QString devRoot();
+    static QString sysfsRoot();
     /* "/sys" and "/dev" elsewhere: a fake host, for tests */
     static void setRoots(const QString &sysfs, const QString &dev);
     /* How often the host's devices are checked for vitrine's own (ms), for tests */
@@ -126,4 +131,5 @@ private:
     Answer m_usbHost = Answer::Unknown;     // QEMU has usb-host (libusb)
     QTimer *m_watch;
     QSet<QString> m_taking;         // paths of own devices being taken back
+    AttachCheck m_attachCheck;
 };

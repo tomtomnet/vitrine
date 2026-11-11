@@ -15,6 +15,7 @@
 #include "core/paths.h"
 #include "core/pcipassthrough.h"
 #include "core/tasks.h"
+#include "core/usbguard.h"
 #include "core/vmconfig.h"
 #include "core/vmhardware.h"
 #include "core/vmstore.h"
@@ -157,6 +158,11 @@ MainWindow::MainWindow(GtkLoop *loop, VmStore *store)
     /* PCI devices passed through, made ready at each start, tuning or not */
     auto *passthrough = new PciPassthrough(store, m_qt.get());
     QObject::connect(passthrough, &PciPassthrough::notice, m_qt.get(),
+                     [this](const QString &text) { notify(text, 15000); });
+    /* a USB device for one VM at a time, and what else holds one a VM has: before
+       the notices, which show those */
+    auto *usb = new UsbGuard(store, m_qt.get());
+    QObject::connect(usb, &UsbGuard::notice, m_qt.get(),
                      [this](const QString &text) { notify(text, 15000); });
     /* Preferences, the notices of the running VMs, the tasks: mainwindowparts.cpp */
     createParts();
@@ -699,9 +705,11 @@ void MainWindow::failed(Vm *vm, const QString &error)
             title = QString("Cannot Start %1").arg(vm->name());
             text = QString("%1 could not start.").arg(vm->name());
             firmware = firmwareNamed(vm, error);
-            /* start() refused it, to wait for Vitrine's QEMU, or for its GPU */
+            /* start() refused it, to wait for Vitrine's QEMU, or for its GPU, or
+               for a USB device of another VM */
             refused = VmRunner::needsQemuBuild(vm->runner()->runArgs()) ||
-                      !VmRunner::renderNodeProblem(vm->runner()->runArgs()).isEmpty();
+                      !VmRunner::renderNodeProblem(vm->runner()->runArgs()).isEmpty() ||
+                      vm->runner()->refusedByCheck();
         } else if (from != VmRunner::State::Stopped) {
             title = QString("%1 Stopped").arg(vm->name());
             text = QString("%1 stopped unexpectedly.").arg(vm->name());
@@ -828,6 +836,13 @@ void MainWindow::start(const QString &snapshot)
     }
     /* it waits for Vitrine's QEMU: start() refuses it, which failed() reports */
     if (VmRunner::needsQemuBuild(vm->args())) {
+        m_starting.insert(vm->id());
+        vm->runner()->start(vm->args());
+        return;
+    }
+    /* a USB device another running VM has: start() refuses it too, before the
+       access to the devices is asked for */
+    if (UsbGuard::instance() && !UsbGuard::startConflict(m_store, vm, vm->args()).isEmpty()) {
         m_starting.insert(vm->id());
         vm->runner()->start(vm->args());
         return;

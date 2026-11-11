@@ -279,12 +279,14 @@ QList<UsbDevice> usbDevices(const QString &sysfs)
     const QStringList entries =
         dir.entryList(QDir::AllEntries | QDir::System | QDir::NoDotAndDotDot);
     QHash<QString, QList<quint8>> interfaces;
+    QHash<QString, QStringList> drivers;
 
     /* 1-2:1.0 is an interface of device 1-2 (configuration 1, interface 0) */
     for (const QString &name : entries) {
         if (name.contains(':')) {
             interfaces[name.section(':', 0, 0)]
                 << quint8(readHex(dir.filePath(name) + "/bInterfaceClass"));
+            drivers[name.section(':', 0, 0)] << linkName(dir.filePath(name) + "/driver");
         }
     }
     for (const QString &name : entries) {
@@ -305,6 +307,7 @@ QList<UsbDevice> usbDevices(const QString &sysfs)
         dev.deviceClass = quint8(readHex(path + "bDeviceClass"));
         dev.isHub = dev.deviceClass == 0x09;
         dev.interfaceClasses = interfaces.value(name);
+        dev.interfaceDrivers = drivers.value(name);
         if (dev.manufacturer.isEmpty()) {
             dev.manufacturer = names.vendors.value(dev.vendorId);
         }
