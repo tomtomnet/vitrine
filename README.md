@@ -198,7 +198,13 @@ files it changes, and the guest packages compile through ccache.
    Update… rebuilds only the packages whose sources changed, and VMs with
    older tools then offer Update….
 
-Keys: Ctrl+Alt+G gives the keyboard and mouse to the VM or takes them back,
+Keys: in the GTK app, the VM's screen takes the keys while the pointer is
+on it; elsewhere they are vitrine's and the desktop's (if Tab or the arrows
+moved the focus, click the screen to type in the VM again). A key can still
+reach both as the pointer arrives on the screen, or when the desktop keeps
+its shortcuts (GNOME's Deny). The Qt app gives the VM every key while its
+screen has the focus. Ctrl+Alt+G gives the keyboard and mouse to the VM
+wherever the pointer is, or takes them back,
 Ctrl+Alt+F toggles full screen, F9 collapses or expands the VM list, F10 or
 Alt with a menu's first letter opens the menus (not while the VM's screen has
 the keys: they go to the VM), Ctrl+H asks the guest to shut down, Ctrl+L shows
