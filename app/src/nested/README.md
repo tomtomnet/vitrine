@@ -72,8 +72,31 @@ do to vitrine:
 
 ## Local changes
 
-The files are the research's at edd07c4 but for this change, which
-`sha256sum -c UPSTREAM.sha256` shows (`vmview.cpp`):
+The files are the research's at edd07c4 but for these changes, which
+`sha256sum -c UPSTREAM.sha256` shows (`vmview.h`, `vmview.cpp`):
+
+- A `pointer` callback (2026-11-11, vitrine's view-keys stream): the
+  pointer came over the guest's window, or left it. vitrine gives the guest
+  the keys only while the pointer is over its window, or while the guest
+  captures the desktop's shortcuts: with the pointer elsewhere, the host
+  keeps its shortcuts and a key reached both (on the VM's screen, Super
+  opened both overviews; the same rule there, ../gtkview/README.md). The
+  research side may take it as it is. GTK cannot tell: GDK gets a leave
+  of vitrine's window as the pointer enters a guest surface, and passes
+  over the guest's surfaces (the change below). The change:
+  - `vmview.h`: `void (*pointer)(void *data, bool over)`, last in
+    `vmview_callbacks`;
+  - `vmview.cpp`: `View::setPointerFocus(Object *pointer, bool on)` sets a
+    guest pointer's `focus` (over a guest surface) and counts them
+    (`pointersOver`); the callback comes when that count goes from 0 to 1
+    or back (`pointerOver`), with a line under VMVIEW_DEBUG. The five
+    places of the event handler's `Role::Pointer` case that set `o->focus`
+    call it instead (enter on a guest surface: on; enter on one of the
+    app's surfaces outside a drag, leave, a leave whose frame brings no
+    enter, the release that ends a drag outside: off), and `hostDestroy`
+    calls it with off for a pointer (destroyed by the guest, or its
+    connection closed). A drag that leaves the guest's window keeps the
+    guest pointer's focus until its release, as before: it counts as over.
 
 - No user data on the library's host objects (2026-11-05, for the GTK app):
   `View::watch` gives `wl_proxy_add_dispatcher` a null user data instead of

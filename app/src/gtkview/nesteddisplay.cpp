@@ -4,6 +4,7 @@
 #include "displayinput.h"
 #include "focuswatch.h"
 #include "fullscreenorder.h"
+#include "keyowners.h"
 
 #include "nested/vmview.h"
 #include "shortcutsinhibit.h"
@@ -28,7 +29,6 @@
 #include <cmath>
 #include <cstring>
 #include <memory>
-#include <set>
 #include <utility>
 #include <vector>
 
@@ -45,9 +45,10 @@ class GuestDesktop;
  * The guest's window is not GTK's: it hangs from a surface of vitrine's
  * over the widget (GuestDesktop's), which takes no input, so the pointer
  * over it goes to the guest and beside it to the widget, whose click gives
- * the guest the keys.  The keys themselves reach both the guest (the
- * library reads the window's keyboard) and GTK: the widget takes them,
- * while the guest has them, before vitrine's shortcuts and widgets do.
+ * the guest the keyboard.  The keys themselves reach both the guest (the
+ * library reads the window's keyboard, while GuestDesktop lets it) and GTK:
+ * the widget takes them, while the guest has them, before vitrine's
+ * shortcuts and widgets do, and leaves the others to GTK.
  */
 class DesktopWidget : public Gtk::Widget
 {
@@ -92,8 +93,9 @@ private:
     bool m_mapped = false;
     bool m_covered = false;
     bool m_exposed = false;
-    /* the keys down: their repeats are not new presses */
-    std::set<guint> m_down;
+    /* the keys down, by keycode: the guest's (while the keys went to it at
+       their press) or the window's; their repeats are not new presses */
+    KeyOwners m_down;
     std::vector<GtkEventController *> m_heldShortcuts;
     GdkFrameClock *m_clock = nullptr;
     gulong m_layoutId = 0;
@@ -114,6 +116,7 @@ public:
     void setFullScreen(bool on) override;
     void setInputEnabled(bool on) override;
     bool hasKeyboard() const override { return m_keyboard; }
+    bool keysToGuest() const override { return m_keys; }
     void focus() override;
     int connections() const override { return m_connections; }
     bool isMapped() const override { return m_mapped; }
@@ -166,7 +169,9 @@ private:
     DesktopWidget *m_fullWidget = nullptr;
     bool m_inputEnabled = true;
     bool m_covered = false;
-    bool m_keyboard = false;
+    bool m_keyboard = false;                // the view has the keyboard (hasKeyboard)
+    bool m_pointerOver = false;             // over the guest's window (the library's pointer)
+    bool m_keys = false;                    // the guest gets the keys (keysToGuest)
     bool m_guestShortcuts = false;          // the guest asks for them (the library's shortcuts)
     GdkSurface *m_inhibited = nullptr;      // the toplevel they are inhibited on
     int m_connections = 0;
@@ -408,7 +413,13 @@ bool DesktopWidget::onKeyPressed(guint keyval, guint keycode, Gdk::ModifierType 
     if (!m_owner->inputEnabled()) {
         return false;
     }
-    const bool repeat = !m_down.insert(keycode).second;
+    /* the owner of its press: while the guest gets the keys (the library
+       gives them to it) the key is its, else the window's: its shortcuts, its
+       focus keys - and so are the key's repeats */
+    bool repeat = false;
+    if (m_down.press(keycode, m_owner->keysToGuest(), &repeat) == KeyOwners::Owner::Window) {
+        return false;
+    }
     /* the app's own keys (the console's views), in the full-screen window too */
     if (!repeat && ViewKeys::take(keyval, keycode, static_cast<GdkModifierType>(state))) {
         return true;
@@ -422,7 +433,7 @@ bool DesktopWidget::onKeyPressed(guint keyval, guint keycode, Gdk::ModifierType 
 
 void DesktopWidget::onKeyReleased(guint, guint keycode, Gdk::ModifierType)
 {
-    m_down.erase(keycode);
+    m_down.release(keycode);
 }
 
 bool DesktopWidget::onEvent(const Glib::RefPtr<const Gdk::Event> &event)
@@ -539,7 +550,15 @@ bool GuestDesktop::init(const QString &socket, QString *error)
     cb.shortcuts = [](void *data, bool captured) {
         static_cast<GuestDesktop *>(data)->later([captured](GuestDesktop *self) {
             self->m_guestShortcuts = captured;
-            self->updateShortcuts();
+            /* the capture, and the keys it holds for the guest */
+            self->updateKeyboard();
+        });
+    };
+    /* the pointer over the guest's window, which GTK never sees: the keys follow it */
+    cb.pointer = [](void *data, bool over) {
+        static_cast<GuestDesktop *>(data)->later([over](GuestDesktop *self) {
+            self->m_pointerOver = over;
+            self->updateKeyboard();
         });
     };
     m_view = vmview_new(m_display, m_surface, QFile::encodeName(socket).constData(), &cb);
@@ -816,29 +835,51 @@ void GuestDesktop::fullScreenKey()
     }
 }
 
-/* The keys to the guest while its view has GTK's focus in the active window, or is full screen and active */
+/*
+ * The view has the keyboard while it has GTK's focus in the active window,
+ * or is full screen and active, and input is on.  The keys go to the guest
+ * meanwhile as on the VM's screen (src/gtkview/README.md): while the pointer
+ * is over the guest's window (the library's pointer), or while the guest
+ * captures the desktop's shortcuts, which its proxy does with the pointer
+ * over its window by default, and its KWin while it locks the pointer
+ * (Ctrl+Alt+G).  Elsewhere the keys are the window's: the guest gets none,
+ * and the desktop keeps its shortcuts, so none reaches both.
+ * VITRINE_VIEW_KEYS=focus: the keys whenever the view has the keyboard.
+ */
 void GuestDesktop::updateKeyboard()
 {
-    bool want = false;
+    bool keyboard = false;
 
     if (m_inputEnabled && m_fullWindow) {
-        want = m_fullWindow->is_active();
+        keyboard = m_fullWindow->is_active();
     } else if (m_inputEnabled) {
-        want = m_embedded->hasKeyboard();
+        keyboard = m_embedded->hasKeyboard();
     }
+    const bool keyboardChange = keyboard != m_keyboard;
+    if (keyboardChange) {
+        qCDebug(lcGrab) << "nested desktop" << (keyboard ? "has the keyboard" : "lost the keyboard");
+        m_keyboard = keyboard;
+    }
+    /* the guest's capture on the window that has the keyboard (its grab) */
+    updateShortcuts();
+    const bool keys = keyboard && (ViewKeys::followFocus() || m_pointerOver || m_inhibited);
     if (m_view) {
-        vmview_set_keyboard_focus(m_view, want);
+        vmview_set_keyboard_focus(m_view, keys);
     }
-    m_embedded->holdWindowShortcuts(want && !m_fullWindow);
+    m_embedded->holdWindowShortcuts(keys && !m_fullWindow);
     if (m_fullWidget) {
-        m_fullWidget->holdWindowShortcuts(want && m_fullWindow);
+        m_fullWidget->holdWindowShortcuts(keys && m_fullWindow);
     }
-    if (want != m_keyboard) {
-        qCDebug(lcGrab) << "nested desktop" << (want ? "has the keyboard" : "lost the keyboard");
-        m_keyboard = want;
+    const bool keysChange = keys != m_keys;
+    if (keysChange) {
+        qCDebug(lcGrab).nospace() << "nested desktop: keys to " << (keys ? "the guest" : "the window")
+                                  << ": keyboard " << keyboard << ", pointer over its window "
+                                  << m_pointerOver << ", its capture " << (m_inhibited != nullptr);
+        m_keys = keys;
+    }
+    if (keyboardChange || keysChange) {
         keyboardChanged.emit();
     }
-    updateShortcuts();
 }
 
 /*

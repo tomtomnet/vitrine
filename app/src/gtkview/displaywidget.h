@@ -40,8 +40,10 @@ typedef struct _GtkEventController GtkEventController;
  *
  * The keyboard and the pointer come to the widget, as to any other of the
  * window, through GTK's event controllers, and go to the guest
- * (DisplayInput): every key while it has the focus and input is on, the
- * Ctrl+Alt+G and Ctrl+Alt+F hotkeys aside.
+ * (DisplayInput): the keys while it has the focus, input is on, and the
+ * pointer is on it or the grab holds (keysToGuest()), the Ctrl+Alt+G and
+ * Ctrl+Alt+F hotkeys aside; the others go on to GTK, the window's shortcuts
+ * and its focus keys.
  */
 class DisplayWidget : public Gtk::Widget, private DisplayInput::Sink,
                       private DisplayInput::Compositor
@@ -79,6 +81,9 @@ public:
     /* The keyboard is the guest's: hasKeyboard(), and input is on (the
        controller tells) */
     void setHostActive(bool active);
+    /* The keys go to the guest now: the keyboard is, and the pointer is on
+       the widget or the grab holds (DisplayInput::keysToGuest) */
+    bool keysToGuest() const { return m_input.keysToGuest(); }
     /* Off: no keys taken (they go to the window's shortcuts) */
     void setInputEnabled(bool on) { m_inputEnabled = on; }
     bool isExposed() const { return m_exposed; }
@@ -90,7 +95,7 @@ public:
     void setCovered(bool covered, GdkTexture *still = nullptr);
     bool isCovered() const { return m_covered; }
 
-    /* grabbed() or grabState() changed */
+    /* grabbed(), grabState() or keysToGuest() changed */
     sigc::signal<void()> grabChanged;
     /* Ctrl+Alt+F */
     sigc::signal<void()> fullScreenToggled;
@@ -160,7 +165,7 @@ private:
     bool m_inhibitActive = false;   // and granted by the compositor
     /* the hotkeys' keys down: their repeats and releases are not the guest's */
     std::set<guint> m_hotkeys;
-    /* the window's shortcut controllers off while the widget has the keyboard */
+    /* the window's shortcut controllers off while the guest has the keys */
     std::vector<GtkEventController *> m_heldShortcuts;
     GdkTexture *m_cursorTexture = nullptr;
     int m_cursorHotX = 0, m_cursorHotY = 0;

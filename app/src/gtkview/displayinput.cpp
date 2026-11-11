@@ -26,6 +26,7 @@ bool isWindowActionModifier(uint32_t qnum)
 DisplayInput::DisplayInput(Sink *sink, Compositor *compositor)
     : m_sink(sink), m_compositor(compositor)
 {
+    m_stateTold = grabState();
 }
 
 DisplayInput::Hotkey DisplayInput::hotkey(uint32_t keyval, bool ctrl, bool alt, bool shift,
@@ -43,30 +44,54 @@ DisplayInput::Hotkey DisplayInput::hotkey(uint32_t keyval, bool ctrl, bool alt, 
     return Hotkey::None;
 }
 
-bool DisplayInput::key(uint32_t evdev, bool down)
+DisplayInput::Key DisplayInput::key(uint32_t evdev, bool down)
 {
-    if (evdev >= linux_to_qnum.size() || !linux_to_qnum[evdev]) {
-        return false;
-    }
-    const uint32_t qnum = linux_to_qnum[evdev];
+    const uint32_t qnum = evdev < linux_to_qnum.size() ? linux_to_qnum[evdev] : 0;
     if (down) {
-        if (!m_pressed.insert(qnum).second) {
-            return false;   // the toolkit's repeat: the guest repeats on its own
+        /* the owner of its press: the guest's while the keys go to it */
+        bool repeat = false;
+        if (m_owners.press(evdev, keysToGuest(), &repeat) == KeyOwners::Owner::Window) {
+            return Key::Window;
+        }
+        /* the toolkit's repeat: the guest repeats on its own */
+        if (repeat || !qnum || !m_pressed.insert(qnum).second) {
+            return Key::Kept;
         }
         if (isWindowActionModifier(qnum)) {
             updateGrab();   // the confinement first: the button press may follow at once
         }
         m_sink->keyPress(qnum);
-    } else {
-        if (!m_pressed.erase(qnum)) {
-            return false;   // pressed before the view had the keyboard
-        }
-        if (isWindowActionModifier(qnum)) {
-            updateGrab();
-        }
-        m_sink->keyRelease(qnum);
+        return Key::Sent;
     }
-    return true;
+    switch (m_owners.release(evdev)) {
+    case KeyOwners::Owner::Window:
+        return Key::Window;
+    case KeyOwners::Owner::None:
+        /* pressed before the view had the keyboard: not the guest's */
+        return keysToGuest() ? Key::Kept : Key::Window;
+    case KeyOwners::Owner::Guest:
+        break;
+    }
+    /* released in the guest already, as the keys left it */
+    if (!qnum || !m_pressed.erase(qnum)) {
+        return Key::Kept;
+    }
+    if (isWindowActionModifier(qnum)) {
+        updateGrab();
+    }
+    m_sink->keyRelease(qnum);
+    return Key::Sent;
+}
+
+bool DisplayInput::keysToGuest() const
+{
+    return m_hostActive && (m_keysFollowFocus || m_grab || (m_pointerInside && !m_suppressAuto));
+}
+
+void DisplayInput::setKeysFollowFocus(bool on)
+{
+    m_keysFollowFocus = on;
+    updateGrab();
 }
 
 bool DisplayInput::keyDown(uint32_t evdev) const
@@ -139,6 +164,12 @@ bool DisplayInput::press(uint32_t button, double x, double y)
     if (!m_sink->mouseIsAbsolute() && !m_grab) {
         setGrab(true); // relative guests need the pointer locked
         return false;
+    }
+    /* a click on the display after Ctrl+Alt+G released it there: the keys
+       and the automatic grab again, as with the pointer back from outside */
+    if (m_suppressAuto) {
+        m_suppressAuto = false;
+        updateGrab();
     }
     motion(x, y);
     m_sink->mouseButton(button, true);
@@ -224,6 +255,8 @@ void DisplayInput::setHostActive(bool active)
     m_hostActive = active;
     if (!active) {
         releaseAllKeys();
+        /* the releases of the keys down go elsewhere now */
+        m_owners.clear();
         releaseAllButtons();
         /* the user's grab, unless this is the loss of the keyboard that the
            compositor's question about it causes: GNOME shows its "allow"
@@ -281,10 +314,24 @@ bool DisplayInput::cursorHidden() const
 void DisplayInput::updateGrab()
 {
     const bool absolute = m_sink->mouseIsAbsolute();
-    const QString before = grabState();
-    /* as QEMU's SDL display: an absolute pointer over the focused display
-       grabs the keyboard */
-    m_autoGrab = m_autoGrabAllowed && m_hostActive && m_pointerInside && absolute && !m_suppressAuto;
+    /* the keys first: those the guest has go up before the grab's requests
+       change (the confinement follows them) */
+    const bool keys = keysToGuest();
+    const bool keysChange = keys != m_keys;
+    if (keysChange) {
+        m_keys = keys;
+        if (!keys) {
+            releaseAllKeys();
+        }
+        qCDebug(lcGrab).nospace() << "keys to " << (keys ? "the guest" : "the window") << ": keyboard "
+                                  << m_hostActive << ", pointer on the screen " << m_pointerInside
+                                  << ", Ctrl+Alt+G grab " << m_grab << ", held off " << m_suppressAuto
+                                  << ", with the focus " << m_keysFollowFocus;
+    }
+    /* as QEMU's SDL display: the pointer over the focused display grabs the
+       keyboard - with a relative mouse too, whose lock waits for a click, so
+       that Super over GRUB is the guest's alone */
+    m_autoGrab = m_autoGrabAllowed && m_hostActive && m_pointerInside && !m_suppressAuto;
     const bool inhibit = m_grab || m_autoGrab;
     const bool lock = m_grab && !absolute;
     /* KWin runs its modifier + button window actions (Meta + left: move,
@@ -333,18 +380,29 @@ void DisplayInput::updateGrab()
             cursorChanged();
         }
     }
-    if (grabState() != before && grabChanged) {
-        grabChanged();
+    /* against the text last told: it follows the mouse's mode too */
+    if (grabState() != m_stateTold) {
+        m_stateTold = grabState();
+        if (grabChanged) {
+            grabChanged();
+        }
+    }
+    if (keysChange && keysChanged) {
+        keysChanged();
     }
 }
 
 QString DisplayInput::grabState() const
 {
+    const bool absolute = m_sink->mouseIsAbsolute();
     if (m_grab) {
-        return QStringLiteral("grabbed (Ctrl+Alt+G releases)");
+        return absolute ? QStringLiteral("grabbed (Ctrl+Alt+G releases)")
+                        : QStringLiteral("grabbed, the pointer locked (Ctrl+Alt+G releases)");
     }
     if (m_autoGrab) {
-        return QStringLiteral("grabbed while the pointer is on the VM (Ctrl+Alt+G releases)");
+        return absolute ? QStringLiteral("grabbed while the pointer is on the VM (Ctrl+Alt+G releases)")
+                        : QStringLiteral("grabbed while the pointer is on the VM (a click locks the "
+                                         "pointer, Ctrl+Alt+G releases)");
     }
     if (!m_autoGrabAllowed) {
         return QStringLiteral("not grabbed (Ctrl+Alt+G grabs; GNOME asks first)");

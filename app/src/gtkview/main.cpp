@@ -208,6 +208,12 @@ int main(int argc, char **argv)
             grab->set_text(view->hasKeyboard() ? view->grabState().toStdString() : "");
             fprintf(stderr, "vitrine-gtk-view: keyboard %d, %s\n", view->hasKeyboard(),
                     qPrintable(view->grabState()));
+            /* a line of its own: the lines above stay as benches know them */
+            static int keys = -1;
+            if (int(view->keysToGuest()) != keys) {
+                keys = view->keysToGuest();
+                fprintf(stderr, "vitrine-gtk-view: keys to the guest %d\n", keys);
+            }
         });
         view->fullScreenChanged.connect([](bool on) {
             fprintf(stderr, "vitrine-gtk-view: full screen %s\n", on ? "on" : "off");

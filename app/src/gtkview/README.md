@@ -57,6 +57,7 @@ The rules:
 | `framestill` | the guest's frame as a GTK texture, for the widget while it is covered |
 | `fullscreenorder` | a full-screen window maps after the window the view leaves: the switch waits while that window is shown but not yet active |
 | `gtkclipboard` | the host clipboard shared with the guest, with GdkClipboard |
+| `keyowners` | who each key held down belongs to, the guest or the window, until it is let go |
 | `nesteddisplay` | the nested desktop: the guest's KDE session through src/nested's library on GDK's connection, in the console's Desktop view or full screen (src/nested's NestedView, in GTK) |
 | `pointerconstraints` | pointer lock with relative motion, and confinement, on GTK's Wayland connection |
 | `shortcutsinhibit` | the window's one shortcuts inhibitor, shared by the screen's grab and the nested desktop |
@@ -79,7 +80,9 @@ How it fits GTK:
   imported by GTK and read back at once, `framestill`), or black when GTK
   cannot import it; the guest runs on. Toasts belong outside the display.
 - Keys come through the widget's key controller while it has the focus, as
-  evdev codes (Wayland's keycode - 8), and go to QEMU as its qnum codes; the
+  evdev codes (Wayland's keycode - 8), and go to QEMU as its qnum codes
+  while the pointer is on the screen or the grab holds (below: where the
+  keys go); the
   pointer through a motion controller, the buttons as they come (a legacy
   controller: a gesture would take drags for its own), the wheel through a
   scroll controller. The desktop's shortcuts go to the guest through GDK's
@@ -99,8 +102,9 @@ How it fits GTK:
   reached the guest: nested GNOME 51.1, 2026-11-10).
 - GTK runs the window's capture-phase shortcut controllers (the
   application's accelerators, F10) before the focused widget: while the
-  view has the keyboard they are off, as the Qt view takes every key before
-  the window's shortcuts. Input off (the VM paused), they are back, and the
+  guest has the keys they are off, as the Qt view takes every key before
+  the window's shortcuts. With the keys the window's (the pointer off the
+  screen, below), or input off (the VM paused), they are back; paused, the
   view keeps only Ctrl+Alt+F.
 - No input method while the view has the keyboard: its key controller has
   no GtkIMContext, so GTK never enables Wayland's text input for it (a text
@@ -187,6 +191,56 @@ How it fits GTK:
   view does; none where the monitor does not say. QEMU puts it in the EDID,
   and a GNOME guest picks its scale from it (QEMU's 100 DPI without).
 
+## Where the keys go
+
+A key goes to the guest only while the view has the keyboard (GTK's focus
+in the active window, input on) and the pointer is on the view, or while
+the grab holds (Ctrl+Alt+G, or a relative mouse's lock), wherever the
+pointer is. With the pointer elsewhere and no grab, the desktop keeps its
+shortcuts and the key is the window's: the view leaves it to GTK (the
+window's shortcuts, Tab and the arrows, which move the focus off the
+screen: a click on the screen gives it the keys again). Before 2026-11-11
+every key went to the guest while the view had the keyboard: with the
+pointer over the list of VMs, Super opened both GNOME's overview and the
+guest's, and Alt+Tab gave the guest its Alt.
+
+- Each key keeps the owner of its press until it is let go (`keyowners`):
+  when the keys leave the guest, it gets the release of those it had at
+  once (`releaseAllKeys`), and their repeats and release go nowhere; a key
+  pressed for the window never reaches the guest, even if the pointer comes
+  onto the screen before it is let go.
+- Ctrl+Alt+G and Ctrl+Alt+F are the screen's while it has the focus,
+  wherever the pointer is: Ctrl+Alt+G gives the guest the keys without
+  pointing at the screen. Released with the pointer on the screen, the grab
+  and the keys are held off until the pointer leaves or the screen is
+  clicked.
+- The automatic grab (the shortcuts inhibitor while the pointer is on the
+  screen) comes with a relative mouse too (firmware, GRUB, a guest without
+  a tablet), so that Super there is the guest's alone; the pointer's lock
+  still waits for a click.
+- Two cases still reach both, as with QEMU's own windows:
+  - a key pressed in the few milliseconds between the pointer's arrival on
+    the screen and the compositor's grant: the view asks as soon as GTK
+    hands it the pointer's motion, and GNOME takes Super at its press, so a
+    Super pressed as the pointer arrives opens both overviews;
+  - the desktop keeping its shortcuts with the pointer on the screen: GNOME
+    asked and the answer was Deny, GNOME does not know the app (only
+    Ctrl+Alt+G asks: "How GNOME asks" below), or `VITRINE_VIEW_INHIBIT=0`.
+    The keys still go to the guest there, so that typing works, and Super
+    reaches both; the grab line says so.
+- Full screen on one monitor, the pointer is always on the screen. With two
+  monitors and the pointer on the other one, the keys are the full-screen
+  window's (it has only the app's shortcuts) until the pointer is back or
+  Ctrl+Alt+G grabs.
+- The nested desktop follows the same rule (below).
+- `VITRINE_VIEW_KEYS=focus` keeps the rule before, for scripted runs whose
+  pointer may not be on the view (switches, below).
+- Send Key's state line says it: "Keys go to the VM while the pointer is on
+  it" when the screen has the keyboard and the keys are the window's; the
+  grab line (`grabState()`) says the grab's state, the lock's with a
+  relative mouse. `vitrine-gtk-view` writes "vitrine-gtk-view: keys to the
+  guest 0|1" on stderr at each change.
+
 ## The view's threads, real-time while its VM is in front
 
 With host tuning on, the GTK app has vitrine-helper make the view's threads
@@ -247,7 +301,13 @@ screen's own surface is (`displaysurface`).
   data (src/nested/README.md, Local changes).
 - The keys reach the guest through the library, which reads the window's
   keyboard, while the view has the focus in the active window and input is
-  on (`vmview_set_keyboard_focus`). GTK gets them too: the view takes them
+  on (`vmview_set_keyboard_focus`), and, as on the VM's screen (where the
+  keys go, above), the pointer is over the guest's window or the guest
+  captures the desktop's shortcuts: its proxy does while the pointer is
+  over its window (`CROSVM_DESKTOP_FOLLOW_POINTER=1`, the default), its
+  KWin while it locks the pointer (Ctrl+Alt+G). GTK never sees the pointer
+  over the guest's window: the library's `pointer` callback tells
+  (src/nested/README.md, Local changes). GTK gets them too: the view takes them
   before the window's shortcuts and widgets, holding the window's capture
   shortcut controllers meanwhile, as DisplayWidget does, with no input
   method. Ctrl+Alt+F is the guest's own once its window is there.
@@ -323,6 +383,13 @@ what vitrine ships:
   agent of a guest with `blob_flush_fence` 3 would, and
   `--flips-wait-toggle SECONDS` turns it over while the view shows.
 - `VITRINE_VIEW_INHIBIT=0`: never asks for the desktop's shortcuts (above).
+- `VITRINE_VIEW_KEYS=focus`: every key goes to the guest while the view
+  has the keyboard, wherever the pointer is, as before 2026-11-11 (the
+  research's key benches drive `vitrine-gtk-view` with injected keys, their
+  pointer not always on the view); the automatic grab still follows the
+  pointer. Both views, in vitrine-gtk and `vitrine-gtk-view`; any other
+  value, or unset: the keys follow the pointer (where the keys go, above).
+  Said once on stderr when set ("vitrine: display: keys: ...").
 - `QT_LOGGING_RULES=vitrine.grab.debug=true`: a line on stderr at each
   change of where the keys go - the grab on or off with what decided it,
   the screen's and the nested desktop's keyboard, the inhibitor asked for

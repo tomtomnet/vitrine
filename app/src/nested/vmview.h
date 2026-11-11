@@ -47,6 +47,11 @@ struct vmview_callbacks {
        surface with the keyboard focus, a window's main surface: an app whose PARENT is another
        surface takes the shortcuts of its window itself meanwhile (vitrine, 2026-10-15) */
     void (*shortcuts)(void *data, bool captured);
+    /* the pointer came over the guest's window (over), or left it; a drag that leaves it counts as over until its
+       release. The app's toolkit cannot tell: it passes over the guest's surfaces. The app may give the guest the
+       keyboard only then (vitrine, 2026-11-11: keys typed with the pointer elsewhere reached both the guest and
+       the host, whose shortcuts the guest does not capture then) */
+    void (*pointer)(void *data, bool over);
 };
 
 /* Serve SOCKET_PATH (created; an old socket there is replaced) and show the guest's window as a

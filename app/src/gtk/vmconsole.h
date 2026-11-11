@@ -76,8 +76,11 @@ public:
     void setFullScreen(bool on);
     /* Gives the keyboard to the guest, when the screen shows */
     void focusScreen();
-    /* The view shown takes the keys: the screen's or the guest's desktop's */
+    /* The view shown has the keyboard: the screen's or the guest's desktop's */
     bool hasKeyboard() const;
+    /* And a key typed now goes to the guest: the pointer is on the view, or
+       the screen's grab holds (else the key is the window's) */
+    bool keysToGuest() const;
     /* The view shown can take the keys now: there, and the VM takes input */
     bool takesInput() const;
     /* The screen's grab (Ctrl+Alt+G): the desktop's shortcuts go to the guest */

@@ -129,14 +129,21 @@ static QString inputText(const VmConsole *console)
         return "Paused";
     }
     if (console->desktopShown()) {
-        return console->hasKeyboard() ? "Keys go to the guest's desktop"
-                                      : "Click the desktop to type in the VM";
+        if (!console->hasKeyboard()) {
+            return "Click the desktop to type in the VM";
+        }
+        return console->keysToGuest() ? "Keys go to the guest's desktop"
+                                      : "Keys go to the guest's desktop while the pointer is on it";
     }
     if (console->grabbed()) {
         return "The VM has the keyboard · Ctrl+Alt+G releases";
     }
-    return console->hasKeyboard() ? "Keys go to the VM · Ctrl+Alt+G grabs"
-                                  : "Click the screen to type in the VM";
+    if (!console->hasKeyboard()) {
+        return "Click the screen to type in the VM";
+    }
+    /* the pointer elsewhere, or Ctrl+Alt+G released it there: the window's keys */
+    return console->keysToGuest() ? "Keys go to the VM · Ctrl+Alt+G grabs"
+                                  : "Keys go to the VM while the pointer is on it · Ctrl+Alt+G grabs";
 }
 
 static GtkWidget *iconButton(const char *icon, const char *tooltip, const char *action)

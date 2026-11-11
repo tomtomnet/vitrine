@@ -50,8 +50,12 @@ public:
     virtual void setFullScreen(bool on) = 0;
     /* Off: the guest gets no keys, and vitrine's shortcuts work */
     virtual void setInputEnabled(bool on) = 0;
-    /* The guest gets the keys now */
+    /* The view has the keyboard: its focus in the active window, or its
+       full-screen window active, and input on */
     virtual bool hasKeyboard() const = 0;
+    /* And a key typed now goes to the guest: the pointer is on the guest's
+       window, or the guest captured the desktop's shortcuts */
+    virtual bool keysToGuest() const { return hasKeyboard(); }
     /* GTK's focus to the view: the keys to the guest */
     virtual void focus() = 0;
     /* The guest's connections to the socket, and its window */
@@ -72,7 +76,7 @@ public:
     /* Ctrl+Alt+F while no guest window is there to ask */
     sigc::signal<void()> fullScreenToggled;
     sigc::signal<void(bool)> fullScreenChanged;
-    /* hasKeyboard() changed */
+    /* hasKeyboard() or keysToGuest() changed */
     sigc::signal<void()> keyboardChanged;
 
 protected:
