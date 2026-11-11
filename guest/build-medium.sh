@@ -196,7 +196,11 @@ What they install:
   GPU memory, full preemption, vblank interrupts kept on, a check of the
   driver) and the vitrine agent
 EOF
-	[ -z "$mesa_evr" ] || echo "- Mesa $mesa_evr with native context, in place of the Mesa installed"
+	if [ -n "$mesa_evr" ]; then
+		echo "- Mesa $mesa_evr with native context and every video codec (H.264,"
+		echo "  H.265 and VC-1 too), in place of the Mesa installed and of RPM Fusion's"
+		echo "  freeworld drivers"
+	fi
 	if [ -n "$kwin_evr" ] && [ -n "$kwayland_evr" ]; then
 		echo "- KWin $kwin_evr, only on Plasma ${kwin_evr%%-*} guests, with KWayland $kwayland_evr,"
 		echo "  which it is built against (the nested desktop's scrolling)"
