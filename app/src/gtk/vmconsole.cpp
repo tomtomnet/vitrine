@@ -185,6 +185,11 @@ bool VmConsole::hasKeyboard() const
     return desktopShown() ? m_nested->hasKeyboard() : m_display && m_display->hasKeyboard();
 }
 
+bool VmConsole::keysToGuest() const
+{
+    return desktopShown() ? m_nested->keysToGuest() : m_display && m_display->keysToGuest();
+}
+
 bool VmConsole::takesInput() const
 {
     if (desktopShown()) {
