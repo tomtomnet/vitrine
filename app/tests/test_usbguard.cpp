@@ -154,6 +154,19 @@ public:
     qint64 pid(const QString &name) const { return m_qemus.value(name)->pid(); }
     /* Its QEMU ends: the run with it */
     void stop(const QString &name) { m_qemus.remove(name); }
+    /* A QEMU of its again, with @devices, found running and read */
+    bool restart(const QString &name, const QList<FakeUsbQemu::Device> &devices)
+    {
+        Vm *each = vm(name);
+        auto standIn = std::make_shared<StandIn>(each->id());
+        standIn->qemu->devices = devices;
+        m_qemus.insert(name, standIn);
+        each->runner()->attach(each->args());
+        return QTest::qWaitFor([each]() {
+            return each->runner()->state() == VmRunner::State::Running &&
+                   UsbHotplug::of(each->runner())->isKnown();
+        }, 10000);
+    }
 
     std::unique_ptr<VmStore> store;
 
@@ -706,6 +719,53 @@ private slots:
         fleet.stop("fedora-gnome1");
         QTRY_VERIFY(!guard.listening());
         endProcess(qemu);
+    }
+
+    /*
+     * A VM stopped and found running again with another QEMU: its issue goes
+     * with the run, the scan of before says nothing of the new one, and a
+     * holder is told again in it
+     */
+    void restart()
+    {
+        Fleet fleet(++m_count);
+        FakeUsbQemu *gnome = fleet.add(
+            "fedora-gnome1", "-device qemu-xhci\n-device usb-host,vendorid=0x2d95,productid=0x6013\n",
+            true);
+        gnome->devices = {byIds(0x2d95, 0x6013)};
+        QVERIFY(fleet.open());
+        const qint64 first = fleet.pid("fedora-gnome1");
+        process(first, {FAKE_QEMU}, "qemu-system-x86", {node(99, 2)});
+        process(4190031, {"adb"}, "adb", {node(99, 2)});
+
+        UsbGuard guard(fleet.store.get());
+        QSignalSpy notices(&guard, &UsbGuard::notice);
+        guard.setProcRoot(m_proc);
+        guard.setDelays(60000, 60000);
+        guard.scanNow();
+        QCOMPARE(guard.issues().size(), 1);
+        QCOMPARE(notices.size(), 1);
+
+        fleet.stop("fedora-gnome1");
+        QTRY_VERIFY(guard.issues().isEmpty());
+        QVERIFY(fleet.restart("fedora-gnome1", {byIds(0x2d95, 0x6013)}));
+        const qint64 second = fleet.pid("fedora-gnome1");
+        QVERIFY(second != first);
+        /* nothing from the scan of the run before: its QEMU was a holder for this one */
+        QVERIFY(guard.issues().isEmpty());
+        QCOMPARE(notices.size(), 1);
+        /* the QEMU of before gone, the new one holding it: adb alone, told again */
+        endProcess(first);
+        process(second, {FAKE_QEMU}, "qemu-system-x86", {node(99, 2)});
+        guard.scanNow();
+        QCOMPARE(guard.issues().size(), 1);
+        QCOMPARE(guard.issues()[0].holders, QList<Holder>({Holder{4190031, "adb", Kind::Adb, {}, false}}));
+        QCOMPARE(notices.size(), 2);
+        /* adb ends: gone at the next look */
+        endProcess(4190031);
+        guard.scanNow();
+        QVERIFY(guard.issues().isEmpty());
+        endProcess(second);
     }
 
     /* None of this user's, an interface claimed: only once two looks in a row find it */

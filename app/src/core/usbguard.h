@@ -162,6 +162,8 @@ private:
     void scanned(const Scan &scan);
     /* issues() from the last scan, for the VMs as they are now */
     void update();
+    /* The issues of VMs that no longer run gone: a scan of before says nothing of a new run */
+    void prune();
 
     QPointer<VmStore> m_store;
     QString m_procRoot = QStringLiteral("/proc");

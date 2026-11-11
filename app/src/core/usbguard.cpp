@@ -524,13 +524,39 @@ void UsbGuard::vmsChanged()
     if (any) {
         settle();
     } else {
-        /* nothing passed through: nothing read */
+        /* nothing passed through: nothing read, nothing kept */
         m_settle->stop();
         m_recheck->stop();
+        m_last = {};
         m_unsure.clear();
         m_confirmed.clear();
     }
-    update();
+    prune();
+}
+
+void UsbGuard::prune()
+{
+    QSet<QString> running;
+    QSet<QString> told;
+
+    for (const Run &run : runs()) {
+        running.insert(run.id);
+    }
+    const qsizetype before = m_issues.size();
+    m_issues.removeIf([&running](const Issue &issue) { return !running.contains(issue.vmId); });
+    /* told again in a new run */
+    for (const QString &key : std::as_const(m_told)) {
+        if (running.contains(key.section(' ', 0, 0))) {
+            told.insert(key);
+        }
+    }
+    m_told = told;
+    if (m_issues.isEmpty()) {
+        m_recheck->stop();
+    }
+    if (m_issues.size() != before) {
+        emit changed();
+    }
 }
 
 QList<UsbGuard::Run> UsbGuard::runs() const
@@ -680,9 +706,16 @@ void UsbGuard::update()
     QList<Issue> now = issuesOf(runs(), m_last, UsbHotplug::devRoot(), qemus());
     QStringList keys, before;
 
+    /* those that ended since the scan hold nothing (a QEMU of a run before, adb stopped) */
+    for (Issue &issue : now) {
+        issue.holders.removeIf([this](const Holder &who) {
+            return !QFileInfo::exists(QString("%1/%2").arg(m_procRoot).arg(who.pid));
+        });
+    }
     now.removeIf([this](const Issue &issue) {
-        return issue.claimedElsewhere &&
-               !m_confirmed.contains(issue.vmId + ' ' + issue.device.devNode());
+        return issue.holders.isEmpty() &&
+               (!issue.claimedElsewhere ||
+                !m_confirmed.contains(issue.vmId + ' ' + issue.device.devNode()));
     });
     for (const Issue &issue : std::as_const(now)) {
         keys << keyOf(issue);
