@@ -7,7 +7,7 @@
 #          fix-ups and the vitrine agent (guest/tools/)
 #   mesa   Mesa 26.2.6 + the Xe native context, the iris upload fix, longer BO
 #          caches for radeonsi/iris over virtio and a floor of big buffers
-#          for iris's, RADV's virtio probe fix
+#          for iris's, RADV's virtio probe fix; every video codec
 #   kwayland  KWayland 6.8.2 (Fedora's 6.8.2-1) + the research's set w1 (the
 #          pointer events of wl_seat versions 6 to 9), which KWin is built against
 #   kwin   KWin 6.8.2 (Fedora's 6.8.2-3) + the research's guest set g28 (VM frame
