@@ -532,6 +532,8 @@ struct View {
     uint64_t seq = 0;
     bool mapped = false;
     bool shortcutsCaptured = false; // a guest's shortcuts inhibitor moved to the app's window exists
+    int pointersOver = 0;           // guest pointers over a guest surface (Object::focus)
+    bool pointerOver = false;       // pointersOver > 0, as the app was told
     // clipping to the view: our own compositor (regions) and viewporter (crops); without a viewporter, input only
     wl_proxy *ownCompositor = nullptr, *ownViewporter = nullptr;
     // the anchor: a transparent pixel of ours, a subsurface of the app's PARENT at the view's top-left. The guest's
@@ -588,6 +590,7 @@ struct View {
     void setMapped(bool on);
     void updateMapped();
     void setShortcutsCaptured(bool on);
+    void setPointerFocus(Object *pointer, bool on);
     // clipping the guest's surfaces to the view
     Geo &geoOf(Object *s);
     Object *rootOf(Conn &c);
@@ -929,6 +932,9 @@ void View::hostDestroy(Object *o)
         o->onAppWindow = false;
         setShortcutsCaptured(false);
     }
+    // and a pointer of the guest's is over nothing any more
+    if (o->role == Role::Pointer)
+        setPointerFocus(o, false);
     if (o->subsurface) {
         byProxy.erase(reinterpret_cast<wl_proxy *>(o->subsurface));
         wl_subsurface_destroy(o->subsurface);
@@ -1880,6 +1886,25 @@ void View::setShortcutsCaptured(bool on)
         cb.shortcuts(cb.data, on);
 }
 
+// A guest pointer is over one of the guest's surfaces, or no longer (a drag that left them keeps it until its
+// release): the app hears when the pointer comes over the guest's window and when it leaves it, which it cannot
+// tell itself (its toolkit passes over the guest's surfaces). vitrine gives the guest the keys only then
+// (2026-11-11: with the pointer elsewhere, Super reached both the guest and the host)
+void View::setPointerFocus(Object *pointer, bool on)
+{
+    if (pointer->focus == on)
+        return;
+    pointer->focus = on;
+    pointersOver += on ? 1 : -1;
+    if ((pointersOver > 0) == pointerOver)
+        return;
+    pointerOver = pointersOver > 0;
+    if (g_debug)
+        logf("the pointer %s the guest's window", pointerOver ? "is over" : "left");
+    if (cb.pointer)
+        cb.pointer(cb.data, pointerOver);
+}
+
 // ---- clipping the guest's surfaces to the view (see the types above) ----
 
 Geo &View::geoOf(Object *s)
@@ -2581,7 +2606,7 @@ int View::event(wl_proxy *p, uint32_t opcode, const wl_message *m, wl_argument *
                     o->grabOffset[0] = o->lastX - x;
                     o->grabOffset[1] = o->lastY - y;
                 } else {
-                    o->focus = false;
+                    setPointerFocus(o, false);
                 }
                 closeFds();
                 return 0;
@@ -2611,7 +2636,7 @@ int View::event(wl_proxy *p, uint32_t opcode, const wl_message *m, wl_argument *
                 }
                 o->buttonsHeld.clear();
             }
-            o->focus = true;
+            setPointerFocus(o, true);
             o->pointerSurface = surface;
             o->lastX = x;
             o->lastY = y;
@@ -2629,7 +2654,7 @@ int View::event(wl_proxy *p, uint32_t opcode, const wl_message *m, wl_argument *
                 closeFds();
                 return 0;
             }
-            o->focus = false;
+            setPointerFocus(o, false);
             o->pendingFrame = true;
             break;
         } else if (opcode == kPointerFrame) {
@@ -2638,7 +2663,7 @@ int View::event(wl_proxy *p, uint32_t opcode, const wl_message *m, wl_argument *
                 o->leaveUnmatched = false;
                 o->grabOutside = false;
                 o->buttonsHeld.clear();
-                o->focus = false;
+                setPointerFocus(o, false);
                 if (c.objects.count(o->pointerSurface)) {
                     OutMsg leave(o->id, kPointerLeave);
                     leave.u(o->leaveSerial);
@@ -2677,7 +2702,7 @@ int View::event(wl_proxy *p, uint32_t opcode, const wl_message *m, wl_argument *
             } else if (o->buttonsHeld.erase(args[2].u) > 0 && o->buttonsHeld.empty() && o->grabOutside) {
                 // the last one let go over the app's surface: the guest's leave after its release
                 o->grabOutside = false;
-                o->focus = false;
+                setPointerFocus(o, false);
                 if (c.objects.count(o->pointerSurface)) {
                     leaveAfter = o->pointerSurface;
                     leaveSerial = args[0].u;
