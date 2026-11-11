@@ -42,6 +42,9 @@ struct UsbDevice
     bool isHub = false;
     quint8 deviceClass = 0;         // bDeviceClass, 0 when its interfaces tell
     QList<quint8> interfaceClasses; // bInterfaceClass of each, e.g. 0x03 HID
+    /* the driver of each, "" for none: usbfs is a program's claim (libusb's,
+       QEMU's), as lsusb -t shows Driver=usbfs */
+    QStringList interfaceDrivers;
 
     /* /dev/bus/usb/001/004 */
     QString devNode() const;
