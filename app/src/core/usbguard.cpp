@@ -137,26 +137,23 @@ static QString logLine(const UsbGuard::Issue &issue)
     if (issue.holders.isEmpty()) {
         return UsbGuard::tr("USB: %1, at bus %2, address %3, has an interface claimed by a "
                             "program of another user or of the system (usbfs)")
-            .arg(described(d))
-            .arg(d.bus)
-            .arg(d.device);
+            .arg(described(d), QString::number(d.bus), QString::number(d.device));
     }
     for (const UsbGuard::Holder &h : issue.holders) {
         who << h.text();
     }
     return UsbGuard::tr("USB: %1, at bus %2, address %3, is held by %4 too")
-        .arg(described(d))
-        .arg(d.bus)
-        .arg(d.device)
-        .arg(who.join(", "));
+        .arg(described(d), QString::number(d.bus), QString::number(d.device), who.join(", "));
 }
 
+/* the names in one go: a "%2" in a program's or a VM's name stays as it is */
 QString UsbGuard::Holder::text() const
 {
     if (kind == Kind::Qemu && !vmName.isEmpty()) {
-        return tr("%1's QEMU (pid %2)").arg(vmName).arg(pid);
+        return tr("%1's QEMU (pid %2)").arg(vmName, QString::number(pid));
     }
-    return tr("%1 (pid %2)").arg(program.isEmpty() ? tr("a program") : program).arg(pid);
+    return tr("%1 (pid %2)").arg(program.isEmpty() ? tr("a program") : program,
+                                 QString::number(pid));
 }
 
 QString UsbGuard::Issue::text() const

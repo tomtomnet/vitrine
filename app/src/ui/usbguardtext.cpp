@@ -86,8 +86,7 @@ QString UsbGuardText::explanation(const QList<UsbGuard::Issue> &issues)
                     text += "<p>" +
                             tr("%1, a VM this Vitrine does not run, has it too (pid %2): stop "
                                "it, or take the device back there.")
-                                .arg(who.vmName.toHtmlEscaped())
-                                .arg(who.pid) +
+                                .arg(who.vmName.toHtmlEscaped(), QString::number(who.pid)) +
                             "</p>";
                 } else {
                     text += "<p>" +
@@ -100,8 +99,7 @@ QString UsbGuardText::explanation(const QList<UsbGuard::Issue> &issues)
             case Kind::Other:
                 text += "<p>" +
                         tr("Quit %1, or end it with <nobr>kill %2</nobr>.")
-                            .arg(who.program.toHtmlEscaped())
-                            .arg(who.pid) +
+                            .arg(who.program.toHtmlEscaped(), QString::number(who.pid)) +
                         "</p>";
                 break;
             }

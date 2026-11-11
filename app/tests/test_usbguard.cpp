@@ -556,6 +556,11 @@ private slots:
         QCOMPARE(onStick[0].text(), QString("handmade's QEMU (pid 4190003)"));
         QCOMPARE(s.held.size(), 2);
 
+        /* a name with a place marker of its own: kept as it is */
+        QCOMPARE((Holder{7, "odd%2name", Kind::Other, {}, false}).text(),
+                 QString("odd%2name (pid 7)"));
+        QCOMPARE((Holder{8, "qemu-system-x86_64", Kind::Qemu, "vm%2", false}).text(),
+                 QString("vm%2's QEMU (pid 8)"));
         QCOMPARE(UsbGuard::kindOf("gvfsd-gphoto2"), Kind::Gphoto2);
         QCOMPARE(UsbGuard::kindOf("gvfs-gphoto2-vo"), Kind::Gphoto2);
         QCOMPARE(UsbGuard::kindOf("gvfs-mtp-volume-monitor"), Kind::Mtp);
