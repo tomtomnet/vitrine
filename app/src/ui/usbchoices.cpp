@@ -8,6 +8,7 @@
 
 #include <unistd.h>
 
+#include "core/usbguard.h"
 #include "core/usbhotplug.h"
 #include "core/vmconfig.h"
 #include "core/vmrunner.h"
@@ -50,25 +51,9 @@ QString UsbChoices::key(const Vm *vm, const UsbDevice &dev)
 
 Vm *UsbChoices::holder(VmStore *store, const UsbDevice &dev, const Vm *vm)
 {
-    for (Vm *other : store->vms()) {
-        if (other == vm || !other->runner()->isActive()) {
-            continue;
-        }
-        const UsbHotplug *hotplug = UsbHotplug::of(other->runner());
-        if (hotplug->isKnown()) {
-            if (hotplug->has(dev)) {
-                return other;
-            }
-            continue;
-        }
-        /* not read yet (starting): what its arguments pass through */
-        for (const VmConfig::UsbId &id : VmConfig::usbPassthrough(other->runner()->runArgs())) {
-            if (id.vendor == dev.vendorId && id.product == dev.productId) {
-                return other;
-            }
-        }
-    }
-    return nullptr;
+    /* what it has, or before it is read (starting) what its arguments pass through:
+       as the attach and the start check it */
+    return UsbGuard::attachConflict(store, vm, dev);
 }
 
 /*
@@ -136,7 +121,9 @@ QList<UsbChoices::Entry> UsbChoices::entries(VmStore *store, Vm *vm, const QList
             const UsbDevice &dev = hosts[i];
             const QList<UsbHotplug::Device> own = hotplug->devicesFor(dev);
             const QString waiting = pending.value(key(vm, dev));
-            const Vm *other = own.isEmpty() ? holder(store, dev, vm) : nullptr;
+            QString otherWhy;
+            const Vm *other =
+                own.isEmpty() ? UsbGuard::attachConflict(store, vm, dev, &otherWhy, &hosts) : nullptr;
             const QString node = UsbHotplug::nodeOf(dev);
             QString right = idText(dev.vendorId, dev.productId);
             QStringList tip{tr("Bus %1, address %2, port %3").arg(dev.bus).arg(dev.device)
@@ -151,7 +138,7 @@ QList<UsbChoices::Entry> UsbChoices::entries(VmStore *store, Vm *vm, const QList
                 right = waiting;
             } else if (other) {
                 right = tr("in %1").arg(other->name());
-                tip << tr("%1 has it: take it back there first.").arg(other->name());
+                tip << otherWhy;
             } else if (e.checked && std::none_of(own.cbegin(), own.cend(),
                                                  [](const auto &d) { return d.attached; })) {
                 right = tr("not connected");

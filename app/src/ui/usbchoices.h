@@ -54,7 +54,7 @@ public:
     static QString nameOf(const UsbDevice &dev);
     /* @vm's own name for @dev in @pending: "VM/bus/device" */
     static QString key(const Vm *vm, const UsbDevice &dev);
-    /* The VM of @store other than @vm that has @dev, if any */
+    /* The VM of @store other than @vm that has @dev or would take it, if any (UsbGuard) */
     static Vm *holder(VmStore *store, const UsbDevice &dev, const Vm *vm);
     /*
      * The device IDs @vm would get at its next starts if kept now: those of
