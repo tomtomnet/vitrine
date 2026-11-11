@@ -10,6 +10,8 @@
 #include <set>
 #include <utility>
 
+#include "keyowners.h"
+
 /*
  * What src/vmview's DisplayWindow does with the keyboard and the pointer,
  * without a toolkit: the GTK widget (DisplayWidget) feeds it GTK's events,
@@ -20,14 +22,24 @@
  * its own.  The pointer comes in the widget's logical pixels and goes to
  * the guest's pixels through the letterbox the renderer draws (fitRect).
  *
- * The grab, as QEMU's SDL display has it: an absolute pointer over the
- * display with the keyboard on it takes the desktop's shortcuts (Alt+Tab,
- * Super...) for the guest; Ctrl+Alt+G takes them until it is pressed again,
- * and releasing that way holds off the automatic grab until the pointer
- * leaves; a guest without an absolute pointer locks the pointer at the
- * first click.  While the grab holds and a key of KWin's window actions is
- * down (Meta, Alt), the pointer is also confined, which keeps Meta + drag
- * for the guest (KWin runs them on the window otherwise).
+ * The keys go to the guest only while the display has the keyboard and the
+ * pointer is on it, or the grab holds (Ctrl+Alt+G, or a relative mouse's
+ * lock) wherever the pointer is: a key with the pointer elsewhere is the
+ * window's, never the guest's and the desktop's both (the user, 2026-11-11:
+ * Super opened both overviews).  Each key keeps the owner of its press
+ * (KeyOwners): when the keys leave the guest, it gets the release of those
+ * it had at once.  VITRINE_VIEW_KEYS=focus keeps the rule before: every key
+ * while the display has the keyboard (setKeysFollowFocus).
+ *
+ * The grab, as QEMU's SDL display has it: the pointer over the display with
+ * the keyboard on it takes the desktop's shortcuts (Alt+Tab, Super...) for
+ * the guest, with a relative mouse too (its lock waits for a click);
+ * Ctrl+Alt+G takes them until it is pressed again, and releasing that way
+ * holds off the automatic grab, and the keys, until the pointer leaves or
+ * the display is clicked; a guest without an absolute pointer locks the
+ * pointer at the first click.  While the grab holds and a key of KWin's
+ * window actions is down (Meta, Alt), the pointer is also confined, which
+ * keeps Meta + drag for the guest (KWin runs them on the window otherwise).
  */
 /*
  * QT_LOGGING_RULES=vitrine.grab.debug=true: a line on stderr at each change
@@ -79,21 +91,36 @@ public:
 
     /* grabbed() or grabState() changed */
     std::function<void()> grabChanged;
+    /* keysToGuest() changed */
+    std::function<void()> keysChanged;
     /* cursorHidden() changed */
     std::function<void()> cursorChanged;
 
     /* Ctrl+Alt+G, Ctrl+Alt+F: @keyval lower case (GDK_KEY_g = 'g') */
     static Hotkey hotkey(uint32_t keyval, bool ctrl, bool alt, bool shift, bool super);
-    /* A key down or up; false: not the guest's (no qnum code, or a repeat) */
-    bool key(uint32_t evdev, bool down);
+    /* What became of a key: sent to the guest; kept from everyone (the
+       guest's own repeat, a key with no qnum code, a key the guest had and
+       was given the release of); or the window's, which the widget leaves
+       to the toolkit (its shortcuts, its focus keys) */
+    enum class Key { Sent, Kept, Window };
+    /* A key down or up */
+    Key key(uint32_t evdev, bool down);
+    /* Down in the guest */
     bool keyDown(uint32_t evdev) const;
+    /* Whether a key pressed now goes to the guest: the display has the
+       keyboard, and the pointer is on it (not held off by Ctrl+Alt+G's
+       release) or the grab holds; with keysFollowFocus, the keyboard alone */
+    bool keysToGuest() const;
+    /* VITRINE_VIEW_KEYS=focus (ViewKeys::followFocus) */
+    void setKeysFollowFocus(bool on);
 
     /* The pointer, in the view's logical pixels */
     void pointerEnter(double x, double y);
     void pointerLeave();
     void motion(double x, double y);
     /* A button down at (x, y): true if it went to the guest (with a
-       relative mouse the first click grabs instead) */
+       relative mouse the first click grabs instead).  A click ends the hold
+       off of Ctrl+Alt+G's release: the keys are the guest's again */
     bool press(uint32_t button, double x, double y);
     void release(uint32_t button);
     /* The wheel, in 120ths of a notch: QEMU's wheel is in notches */
@@ -102,10 +129,11 @@ public:
     void relativeMotion(double dx, double dy);
     void setPointerLockActive(bool active);
 
-    /* Whether an absolute pointer over the focused view grabs on its own (as
-       QEMU's SDL display), or only Ctrl+Alt+G grabs: on GNOME for an app it
-       does not know, whose every new window it asks the user about
-       (ShortcutsInhibit::automatic()) */
+    /* Whether the pointer over the focused view grabs on its own (as QEMU's
+       SDL display, with a relative mouse too), or only Ctrl+Alt+G grabs: on
+       GNOME for an app it does not know, whose every new window it asks the
+       user about (ShortcutsInhibit::automatic()); the keys follow the
+       pointer either way */
     void setAutoGrab(bool allowed);
     /* The window around the view has the keyboard on it */
     void setHostActive(bool active);
@@ -132,6 +160,8 @@ public:
     void setGuestCursorVisible(bool visible);
     bool cursorHidden() const;
 
+    /* The keys down in the guest up, there; they stay the guest's (KeyOwners)
+       until let go: their repeats and release go nowhere */
     void releaseAllKeys();
     void releaseAllButtons();
     uint32_t buttonsDown() const { return m_buttons; }
@@ -152,11 +182,15 @@ private:
     bool m_cursorVisible = true;
     bool m_cursorHidden = false;    // as last told
     bool m_grab = false;            // Ctrl+Alt+G, or a click with a relative mouse
-    bool m_autoGrab = false;        // absolute pointer over the display
+    bool m_autoGrab = false;        // the pointer over the display
     bool m_autoGrabAllowed = true;  // setAutoGrab()
     bool m_suppressAuto = false;    // Ctrl+Alt+G released it until the pointer leaves
     bool m_pointerInside = false;
     bool m_hostActive = false;
+    bool m_keysFollowFocus = false;
+    bool m_keys = false;            // keysToGuest() as last told
+    QString m_stateTold;            // grabState() as last told
+    KeyOwners m_owners;             // by evdev code
     bool m_inhibited = false, m_locked = false, m_confined = false; // what the compositor was asked
     /* the last request of the shortcuts, and whether the loss of the keyboard its
        question may cause can still come (once, soon after it) */

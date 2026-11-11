@@ -547,6 +547,7 @@ void VmDisplay::destroyWindow()
     /* once the render thread is done with it, and off the window */
     m_surface.reset();
     m_hasKeyboard = false;
+    m_keysToGuest = false;
     /* its threads are gone: the next window's come with its render thread */
     m_renderTid = m_eventsTid = 0;
     m_driverTids.clear();
@@ -733,6 +734,11 @@ QString VmDisplay::grabState() const
     return m_widget ? m_widget->grabState() : QString();
 }
 
+bool VmDisplay::keysToGuest() const
+{
+    return m_widget && m_widget->keysToGuest();
+}
+
 void VmDisplay::setGrab(bool on)
 {
     if (m_widget) {
@@ -743,8 +749,9 @@ void VmDisplay::setGrab(bool on)
 
 void VmDisplay::checkGrab()
 {
-    if (grabState() != m_grabState) {
+    if (grabState() != m_grabState || keysToGuest() != m_keysToGuest) {
         m_grabState = grabState();
+        m_keysToGuest = keysToGuest();
         grabChanged.emit();
     }
 }
@@ -884,6 +891,7 @@ void VmDisplay::updateHostActive()
                                   << (m_inputEnabled ? "on" : "off");
         m_hasKeyboard = active;
         m_grabState = grabState();
+        m_keysToGuest = keysToGuest();
         grabChanged.emit();
     } else {
         /* losing the keyboard releases the grab */

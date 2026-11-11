@@ -56,6 +56,7 @@ add_library(vitrine_gtkview STATIC
     src/gtkview/framestill.h
     src/gtkview/fullscreenorder.h
     src/gtkview/gtkclipboard.h
+    src/gtkview/keyowners.h
     src/gtkview/nesteddisplay.h
     src/gtkview/pointerconstraints.h
     src/gtkview/qtgui/qtguicompat.h

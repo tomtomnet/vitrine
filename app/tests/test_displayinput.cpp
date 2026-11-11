@@ -3,14 +3,16 @@
  * The GTK view's keyboard and pointer (src/gtkview/displayinput): what the
  * Qt view's DisplayWindow does with keys, buttons, the wheel and the grab,
  * fed as the GTK widget feeds it, against stand-ins for QEMU's input calls
- * and for the compositor.  No display: the widget's GTK part is checked on
- * the nested KWin.
+ * and for the compositor, and where the keys go (the guest only while the
+ * pointer is on the view or the grab holds; KeyOwners).  No display: the
+ * widget's GTK part is checked on the nested GNOME and KWin.
  */
 #include <QTest>
 
 #include <utility>
 
 #include "gtkview/displayinput.h"
+#include "gtkview/keyowners.h"
 #include "gtkview/shortcutsinhibit.h"
 
 namespace {
@@ -61,7 +63,9 @@ private:
 };
 
 /* evdev codes (linux/input-event-codes.h) and their qnum codes */
-constexpr uint32_t KEY_A = 30, KEY_Q = 16, KEY_LEFTMETA = 125, KEY_LEFTALT = 56;
+constexpr uint32_t KEY_A = 30, KEY_Q = 16, KEY_LEFTMETA = 125, KEY_LEFTALT = 56, KEY_LEFTCTRL = 29;
+
+using Key = DisplayInput::Key;
 
 struct Fixture {
     Log log;
@@ -73,6 +77,14 @@ struct Fixture {
     {
         input.setGuestSize(QSize(1000, 1000));
         input.setView(QSize(1000, 1000), 1);
+    }
+    /* the window has the keyboard and the pointer is on the view: the keys
+       are the guest's, the automatic grab on */
+    void withKeys()
+    {
+        input.setHostActive(true);
+        input.pointerEnter(1, 1);
+        log.take();
     }
 };
 
@@ -87,19 +99,159 @@ private Q_SLOTS:
     void keys()
     {
         Fixture f;
-        QVERIFY(f.input.key(KEY_A, true));
-        QVERIFY(!f.input.key(KEY_A, true));     // a repeat
+        f.withKeys();
+        QCOMPARE(f.input.key(KEY_A, true), Key::Sent);
+        QCOMPARE(f.input.key(KEY_A, true), Key::Kept);      // a repeat
         QVERIFY(f.input.keyDown(KEY_A));
-        QVERIFY(f.input.key(KEY_Q, true));
-        QVERIFY(f.input.key(KEY_A, false));
-        QVERIFY(!f.input.key(KEY_A, false));    // up already
-        QVERIFY(!f.input.key(KEY_LEFTALT, false));  // down before the view had the keys
-        QVERIFY(!f.input.key(0, true));         // KEY_RESERVED: no qnum
-        QVERIFY(!f.input.key(100000, true));
+        QCOMPARE(f.input.key(KEY_Q, true), Key::Sent);
+        QCOMPARE(f.input.key(KEY_A, false), Key::Sent);
+        QCOMPARE(f.input.key(KEY_A, false), Key::Kept);     // up already
+        QCOMPARE(f.input.key(KEY_LEFTALT, false), Key::Kept);   // down before the view had the keys
+        QCOMPARE(f.input.key(0, true), Key::Kept);          // KEY_RESERVED: no qnum
+        QCOMPARE(f.input.key(100000, true), Key::Kept);
         QCOMPARE(f.log.take(), QStringList({"press 0x1e", "press 0x10", "release 0x1e"}));
         f.input.releaseAllKeys();
         QCOMPARE(f.log.take(), QStringList({"release 0x10"}));
         QVERIFY(!f.input.keyDown(KEY_Q));
+        QCOMPARE(f.input.key(KEY_Q, false), Key::Kept);     // released in the guest already
+        QCOMPARE(f.log.take(), QStringList());
+    }
+
+    /* Each key keeps the owner of its press until let go */
+    void keyOwners()
+    {
+        KeyOwners owners;
+        bool repeat = true;
+        QCOMPARE(owners.press(1, true, &repeat), KeyOwners::Owner::Guest);
+        QVERIFY(!repeat);
+        QCOMPARE(owners.press(1, false, &repeat), KeyOwners::Owner::Guest);  // its repeat
+        QVERIFY(repeat);
+        QCOMPARE(owners.press(2, false), KeyOwners::Owner::Window);
+        QCOMPARE(owners.press(2, true), KeyOwners::Owner::Window);
+        QVERIFY(owners.isDown(2));
+        QCOMPARE(owners.release(2), KeyOwners::Owner::Window);
+        QCOMPARE(owners.release(2), KeyOwners::Owner::None);
+        QVERIFY(!owners.isDown(2));
+        owners.clear();
+        QCOMPARE(owners.release(1), KeyOwners::Owner::None);
+    }
+
+    /* The keys go to the guest only while the pointer is on the view (the
+       user, 2026-11-11: with the pointer elsewhere, Super opened both the
+       desktop's overview and the guest's): elsewhere they are the window's,
+       and the keys the guest had go up in it at once */
+    void keysFollowThePointer()
+    {
+        Fixture f;
+        int changes = 0;
+        f.input.keysChanged = [&]() { changes++; };
+        f.input.setHostActive(true);
+        QVERIFY(!f.input.keysToGuest());
+        QCOMPARE(f.input.key(KEY_A, true), Key::Window);
+        QCOMPARE(f.input.key(KEY_A, true), Key::Window);    // its repeat
+        f.input.pointerEnter(1, 1);
+        QVERIFY(f.input.keysToGuest());
+        QCOMPARE(changes, 1);
+        /* a key pressed for the window stays the window's */
+        QCOMPARE(f.input.key(KEY_A, true), Key::Window);
+        QCOMPARE(f.input.key(KEY_A, false), Key::Window);
+        f.log.take();
+        QCOMPARE(f.input.key(KEY_Q, true), Key::Sent);
+        QCOMPARE(f.log.take(), QStringList({"press 0x10"}));
+        /* the pointer leaves with Q down: up in the guest at once, and its
+           repeats and release go nowhere */
+        f.input.pointerLeave();
+        QVERIFY(!f.input.keysToGuest());
+        QCOMPARE(changes, 2);
+        QCOMPARE(f.log.take(), QStringList({"release 0x10", "inhibit 0", "lock 0", "confine 0"}));
+        QCOMPARE(f.input.key(KEY_Q, true), Key::Kept);
+        f.input.pointerEnter(2, 2);                         // back before Q is let go
+        QCOMPARE(f.input.key(KEY_Q, true), Key::Kept);
+        QCOMPARE(f.input.key(KEY_Q, false), Key::Kept);
+        QCOMPARE(f.log.take(), QStringList({"inhibit 1", "lock 0", "confine 0", "abs 2 2"}));
+        /* the keyboard gone (another window), a key down: its release, if the
+           view gets it, is not the guest's */
+        QCOMPARE(f.input.key(KEY_A, true), Key::Sent);
+        f.input.setHostActive(false);
+        QVERIFY(!f.input.keysToGuest());
+        QCOMPARE(f.log.take(), QStringList({"press 0x1e", "release 0x1e", "inhibit 0", "lock 0", "confine 0"}));
+        QCOMPARE(f.input.key(KEY_A, false), Key::Window);
+        QCOMPARE(changes, 4);
+    }
+
+    /* Ctrl+Alt+G's grab gives the guest the keys wherever the pointer is;
+       its release with the pointer elsewhere takes them back */
+    void keysWithTheGrab()
+    {
+        Fixture f;
+        f.input.setHostActive(true);
+        /* Ctrl+Alt+G's Ctrl and Alt, pressed for the window (the widget takes the G) */
+        QCOMPARE(f.input.key(KEY_LEFTCTRL, true), Key::Window);
+        QCOMPARE(f.input.key(KEY_LEFTALT, true), Key::Window);
+        f.input.setGrab(true);
+        QVERIFY(f.input.keysToGuest());
+        QCOMPARE(f.input.key(KEY_LEFTALT, false), Key::Window);
+        QCOMPARE(f.input.key(KEY_LEFTCTRL, false), Key::Window);
+        QCOMPARE(f.log.take(), QStringList({"inhibit 1", "lock 0", "confine 0"}));
+        QCOMPARE(f.input.key(KEY_A, true), Key::Sent);
+        /* released with the pointer elsewhere: A goes up in the guest */
+        f.input.setGrab(false);
+        QVERIFY(!f.input.keysToGuest());
+        QCOMPARE(f.log.take(), QStringList({"press 0x1e", "release 0x1e", "inhibit 0", "lock 0", "confine 0"}));
+        QCOMPARE(f.input.key(KEY_A, false), Key::Kept);
+        QCOMPARE(f.input.key(KEY_Q, true), Key::Window);
+    }
+
+    /* Ctrl+Alt+G released with the pointer on the view holds off the grab and
+       the keys until the pointer leaves, or a click on the view */
+    void releaseHoldsTheKeysOff()
+    {
+        Fixture f;
+        f.withKeys();
+        QVERIFY(f.input.grabbed());
+        QCOMPARE(f.input.key(KEY_A, true), Key::Sent);
+        f.input.setGrab(!f.input.grabbed());               // Ctrl+Alt+G: released
+        QVERIFY(!f.input.grabbed());
+        QVERIFY(!f.input.keysToGuest());
+        QCOMPARE(f.log.take(), QStringList({"press 0x1e", "release 0x1e", "inhibit 0", "lock 0", "confine 0"}));
+        f.input.motion(5, 5);
+        QCOMPARE(f.input.key(KEY_Q, true), Key::Window);
+        /* a click: the grab and the keys again, then the button */
+        f.log.take();
+        QVERIFY(f.input.press(DisplayInput::Left, 6, 6));
+        QVERIFY(f.input.grabbed());
+        QVERIFY(f.input.keysToGuest());
+        QCOMPARE(f.log.take(), QStringList({"inhibit 1", "lock 0", "confine 0", "abs 6 6", "down 0"}));
+        f.input.release(DisplayInput::Left);
+        QCOMPARE(f.input.key(KEY_Q, false), Key::Window);   // pressed for the window
+        /* released again; the pointer out and back */
+        f.input.setGrab(false);
+        QVERIFY(!f.input.keysToGuest());
+        f.input.pointerLeave();
+        f.input.pointerEnter(7, 7);
+        QVERIFY(f.input.grabbed());
+        QVERIFY(f.input.keysToGuest());
+    }
+
+    /* VITRINE_VIEW_KEYS=focus: the keys go to the guest whenever the view has
+       the keyboard, as before 2026-11-11 (scripted runs) */
+    void keysFollowFocusSwitch()
+    {
+        Fixture f;
+        f.input.setKeysFollowFocus(true);
+        QVERIFY(!f.input.keysToGuest());
+        f.input.setHostActive(true);
+        QVERIFY(f.input.keysToGuest());
+        QVERIFY(!f.input.grabbed());                        // the grab still follows the pointer
+        QCOMPARE(f.input.key(KEY_A, true), Key::Sent);
+        f.input.pointerEnter(1, 1);
+        f.input.pointerLeave();
+        QVERIFY(f.input.keysToGuest());
+        QCOMPARE(f.input.key(KEY_A, false), Key::Sent);
+        QCOMPARE(f.log.take(), QStringList({"press 0x1e", "inhibit 1", "lock 0", "confine 0", "abs 1 1",
+                                            "inhibit 0", "lock 0", "confine 0", "release 0x1e"}));
+        f.input.setHostActive(false);
+        QVERIFY(!f.input.keysToGuest());
     }
 
     void hotkeys()
@@ -159,15 +311,21 @@ private Q_SLOTS:
         QVERIFY(!f.input.cursorHidden());
     }
 
-    /* A guest without a tablet: the first click locks the pointer, and
-       relative motion goes to the guest only while the compositor has it locked */
+    /* A guest without a tablet: the pointer over the view takes the
+       desktop's shortcuts and gives the guest the keys (Super over GRUB is
+       the guest's alone), the first click locks the pointer, and relative
+       motion goes to the guest only while the compositor has it locked */
     void relativePointer()
     {
         Fixture f;
         f.sink.absolute = false;
         f.input.setHostActive(true);
         f.input.pointerEnter(10, 10);
-        QCOMPARE(f.log.take(), QStringList());  // no automatic grab, no absolute moves
+        QCOMPARE(f.log.take(), QStringList({"inhibit 1", "lock 0", "confine 0"}));  // no absolute moves
+        QVERIFY(f.input.keysToGuest());
+        QCOMPARE(f.input.grabState(),
+                 QString("grabbed while the pointer is on the VM (a click locks the pointer, "
+                         "Ctrl+Alt+G releases)"));
 
         int cursorChanges = 0;
         f.input.cursorChanged = [&]() { cursorChanges++; };
@@ -176,6 +334,7 @@ private Q_SLOTS:
         QVERIFY(f.input.grabbed());
         QVERIFY(f.input.cursorHidden());
         QCOMPARE(cursorChanges, 1);
+        QCOMPARE(f.input.grabState(), QString("grabbed, the pointer locked (Ctrl+Alt+G releases)"));
 
         f.input.relativeMotion(1.5, 0);         // not locked yet
         f.input.setPointerLockActive(true);
@@ -192,10 +351,34 @@ private Q_SLOTS:
         f.input.release(DisplayInput::Right);
         QCOMPARE(f.log.take(), QStringList({"down 2", "up 2"}));
 
+        /* Ctrl+Alt+G: the pointer free, the keys the window's until the pointer leaves */
         f.input.setGrab(false);
         QCOMPARE(f.log.take(), QStringList({"inhibit 0", "lock 0", "confine 0"}));
         QVERIFY(!f.input.cursorHidden());
         QCOMPARE(cursorChanges, 2);
+        QVERIFY(!f.input.keysToGuest());
+        QCOMPARE(f.input.grabState(), QString("not grabbed (Ctrl+Alt+G grabs)"));
+        f.input.pointerLeave();
+        f.input.pointerEnter(10, 10);
+        QVERIFY(f.input.keysToGuest());
+        QCOMPARE(f.log.take(), QStringList({"inhibit 1", "lock 0", "confine 0"}));
+    }
+
+    /* The grab's text follows the mouse's mode, and is told again when the
+       guest's tablet driver makes the mouse absolute */
+    void grabTextFollowsTheMode()
+    {
+        Fixture f;
+        f.sink.absolute = false;
+        QStringList states;
+        f.input.grabChanged = [&]() { states << f.input.grabState(); };
+        f.withKeys();
+        f.sink.absolute = true;
+        f.input.mouseModeChanged();
+        QCOMPARE(states, QStringList({
+            "grabbed while the pointer is on the VM (a click locks the pointer, Ctrl+Alt+G releases)",
+            "grabbed while the pointer is on the VM (Ctrl+Alt+G releases)",
+        }));
     }
 
     /* As QEMU's SDL display: an absolute pointer over the focused view takes
@@ -397,19 +580,26 @@ private Q_SLOTS:
         f.input.setHostActive(true);
         f.input.pointerEnter(1, 1);
         f.log.take();
-        QVERIFY(f.input.key(KEY_LEFTMETA, true));
+        QCOMPARE(f.input.key(KEY_LEFTMETA, true), Key::Sent);
         QCOMPARE(f.log.take(), QStringList({"inhibit 1", "lock 0", "confine 1", "press 0xdb"}));
         QVERIFY(f.input.press(DisplayInput::Left, 5, 5));
         f.input.release(DisplayInput::Left);
-        QVERIFY(f.input.key(KEY_LEFTMETA, false));
+        QCOMPARE(f.input.key(KEY_LEFTMETA, false), Key::Sent);
         QCOMPARE(f.log.take(), QStringList({"abs 5 5", "down 0", "up 0", "inhibit 1", "lock 0",
                                             "confine 0", "release 0xdb"}));
 
-        /* without the grab nothing is confined */
+        /* without the grab nothing is confined: GNOME's unknown app, no grab of
+           its own, the keys the guest's while the pointer is on the view */
+        f.input.setAutoGrab(false);
+        f.log.take();
+        QCOMPARE(f.input.key(KEY_LEFTMETA, true), Key::Sent);
+        QCOMPARE(f.log.take(), QStringList({"press 0xdb"}));
+        /* the pointer elsewhere: not the guest's at all */
+        QCOMPARE(f.input.key(KEY_LEFTMETA, false), Key::Sent);
         f.input.pointerLeave();
         f.log.take();
-        QVERIFY(f.input.key(KEY_LEFTMETA, true));
-        QCOMPARE(f.log.take(), QStringList({"press 0xdb"}));
+        QCOMPARE(f.input.key(KEY_LEFTMETA, true), Key::Window);
+        QCOMPARE(f.log.take(), QStringList());
     }
 
     /* The guest's buttons go up when the pointer is taken away, the

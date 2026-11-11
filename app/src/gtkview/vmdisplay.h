@@ -111,9 +111,14 @@ public:
     bool grabbed() const;
     QString grabState() const;
     void setGrab(bool on);
-    /* Whether the keys go to the guest: the screen has the focus in the
-       active window, and input is on */
+    /* The screen has the keyboard: the focus in the active window, and input
+       on.  The keys go to the guest only while keysToGuest() */
     bool hasKeyboard() const { return m_hasKeyboard; }
+    /* Whether a key typed now goes to the guest: the screen has the
+       keyboard, and the pointer is on it or the grab holds (Ctrl+Alt+G, a
+       relative mouse's lock); else the key is the window's.  With
+       VITRINE_VIEW_KEYS=focus, hasKeyboard() alone */
+    bool keysToGuest() const;
     /* Off while QEMU drops input (the VM paused): no keys taken but the
        Ctrl+Alt+F hotkey, the others go to the window's shortcuts */
     void setInputEnabled(bool on);
@@ -160,7 +165,8 @@ public:
        threads (unset, named), all of them (all, 1), none (0) */
     std::vector<pid_t> realtimeThreads() const;
 
-    /* grabbed(), grabState(), hasKeyboard() or inputEnabled() changed */
+    /* grabbed(), grabState(), hasKeyboard(), keysToGuest() or inputEnabled()
+       changed */
     sigc::signal<void()> grabChanged;
     sigc::signal<void(bool)> fullScreenChanged;
     /* QEMU answered the first size and refresh rate given for the guest */
@@ -227,6 +233,7 @@ private:
     /* VITRINE_VIEW_RT */
     enum class RealTime { Named, All, None } m_realTime = RealTime::Named;
     QString m_grabState;
+    bool m_keysToGuest = false;     // as grabChanged last said
     /* what the guest said last, for a new window */
     QSize m_guestSize;
     std::unique_ptr<QImage> m_cursor;

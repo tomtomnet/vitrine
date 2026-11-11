@@ -3,6 +3,7 @@
 
 #include <gdk/gdk.h>
 
+#include <cstdio>
 #include <functional>
 #include <utility>
 
@@ -33,6 +34,27 @@ inline void setFilter(Filter f)
 inline bool take(guint keyval, guint keycode, GdkModifierType state)
 {
     return filter() && filter()(keyval, keycode, state);
+}
+
+/*
+ * Where the views' keys go: to the guest only while the view has the
+ * keyboard and the pointer is on it, or a grab holds (src/gtkview/README.md).
+ * VITRINE_VIEW_KEYS=focus keeps the rule before 2026-11-11 for scripted runs
+ * whose pointer may not be on the view (the research's key benches): every
+ * key goes to the guest while the view has the keyboard.  Said once on
+ * stderr when set.
+ */
+inline bool followFocus()
+{
+    static const bool focus = [] {
+        const bool on = g_strcmp0(g_getenv("VITRINE_VIEW_KEYS"), "focus") == 0;
+        if (on) {
+            fprintf(stderr, "vitrine: display: keys: to the guest whenever the view has the keyboard, "
+                            "wherever the pointer is (VITRINE_VIEW_KEYS=focus)\n");
+        }
+        return on;
+    }();
+    return focus;
 }
 
 }

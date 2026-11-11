@@ -82,7 +82,13 @@ DisplayWidget::DisplayWidget(DBusDisplay *display, DisplaySurface *surface, cons
     /* on GNOME for an app it does not know, Ctrl+Alt+G alone asks for the
        desktop's shortcuts (src/gtkview/README.md) */
     m_input.setAutoGrab(ShortcutsInhibit::automatic());
+    m_input.setKeysFollowFocus(ViewKeys::followFocus());
     m_input.grabChanged = [this]() { grabChanged.emit(); };
+    /* the window's shortcuts while the keys are not the guest's */
+    m_input.keysChanged = [this]() {
+        holdWindowShortcuts(m_input.keysToGuest());
+        grabChanged.emit();
+    };
     /* the guest's tablet driver switches the mouse to absolute after boot */
     m_modeWatch = QObject::connect(m_display, &DBusDisplay::mouseModeChanged,
                                    [this](bool) { m_input.mouseModeChanged(); });
@@ -475,18 +481,18 @@ void DisplayWidget::setGrab(bool on)
 void DisplayWidget::setHostActive(bool active)
 {
     m_input.setHostActive(active);
-    holdWindowShortcuts(active);
+    holdWindowShortcuts(m_input.keysToGuest());
 }
 
 /*
- * Every key to the guest while it has the keyboard, as the Qt view takes
- * them before the window's shortcuts (ShortcutOverride): GTK runs a
- * window's capture-phase shortcut controllers - the application's
- * accelerators, F10 for its primary menu, the shortcuts its widgets hand to
- * the window - before the focused widget sees the key.  Those of the
- * widget's window are off meanwhile, and back as it loses the keyboard
- * (input off, the focus elsewhere, the window not active); the bubble
- * phase's never get the keys the widget takes.
+ * Every key to the guest while it has the keys, as the Qt view takes them
+ * before the window's shortcuts (ShortcutOverride): GTK runs a window's
+ * capture-phase shortcut controllers - the application's accelerators, F10
+ * for its primary menu, the shortcuts its widgets hand to the window -
+ * before the focused widget sees the key.  Those of the widget's window are
+ * off meanwhile, and back as the keys leave the guest (the pointer off the
+ * screen, input off, the focus elsewhere, the window not active); the
+ * bubble phase's never get the keys the widget takes.
  */
 void DisplayWidget::holdWindowShortcuts(bool hold)
 {
@@ -556,9 +562,10 @@ bool DisplayWidget::onKeyPressed(guint keyval, guint keycode, Gdk::ModifierType 
         }
         return true;
     }
-    /* Wayland gives XKB keycodes: evdev + 8 */
-    m_input.key(keycode >= 8 ? keycode - 8 : 0, true);
-    return true;
+    /* Wayland gives XKB keycodes: evdev + 8.  A key that is not the guest's
+       (the pointer off the screen, no grab) goes on: the window's shortcuts,
+       its focus keys */
+    return m_input.key(keycode >= 8 ? keycode - 8 : 0, true) != DisplayInput::Key::Window;
 }
 
 void DisplayWidget::onKeyReleased(guint, guint keycode, Gdk::ModifierType)
