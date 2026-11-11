@@ -76,7 +76,7 @@ public:
     /* Ctrl+Alt+F while no guest window is there to ask */
     sigc::signal<void()> fullScreenToggled;
     sigc::signal<void(bool)> fullScreenChanged;
-    /* hasKeyboard() changed */
+    /* hasKeyboard() or keysToGuest() changed */
     sigc::signal<void()> keyboardChanged;
 
 protected:
