@@ -324,6 +324,20 @@ the device is unplugged. A udev rule gives it for good, e.g. in
 `/etc/udev/rules.d/70-qemu-usb.rules`:
 `SUBSYSTEM=="usb", ATTR{idVendor}=="0781", ATTR{idProduct}=="5567", TAG+="uaccess"`.
 
+A USB device goes to one running VM at a time: a VM does not start while
+another running VM has a device its USB settings would take, and USB Devices
+does not give a device that another running VM has or would take; both say
+which VM. The settings choose devices by their IDs, which cannot tell two
+identical devices apart: give one to each VM from USB Devices, which goes by
+the device's bus and address. While a VM has a device, a notice names the
+programs of this computer that hold it too, with the fix: adb's server
+(`adb kill-server`), the phone and camera mounts of GNOME's Files
+(`systemctl --user mask --now gvfs-mtp-volume-monitor gvfs-gphoto2-volume-monitor`,
+or a udev rule for that device alone), another QEMU. It looks at the VM's
+start, as a device is given, and as one connects again. Only your own
+programs can be seen: one of another user, or of the system, shows as an
+interface claimed through usbfs (`lsusb -t`: `Driver=usbfs`).
+
 PCI passthrough: a VM's PCI Devices settings give it host devices - a
 graphics card, a USB controller, a disk controller (`-device
 vfio-pci,host=...` in `vm.args`). The VM drives the device itself, and the
