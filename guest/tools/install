@@ -12,7 +12,8 @@
 #     fix-ups, and the agent that tells vitrine how the guest is doing
 #   - dkms and the kernel headers (Fedora's: the newest kernel comes along
 #     when the running one's headers are gone from the repositories)
-#   - vitrine's Mesa (native context) in place of each Mesa package installed
+#   - vitrine's Mesa (native context, every video codec) in place of each Mesa
+#     package installed, and of RPM Fusion's freeworld drivers
 #   - vitrine's KWin and KPipeWire, on a Plasma guest whose Plasma is the
 #     version they were built for, or Fedora's Plasma of an older version,
 #     which then moves to Fedora's Plasma of their version in the same
@@ -276,9 +277,16 @@ if [ "$uninstall" = 1 ]; then
 	names=$(for s in $sources; do from_source "$s"; done | cut -d' ' -f1 | sort -u)
 	# shellcheck disable=SC2086
 	[ -z "$names" ] || dnf -y distro-sync $names || die "dnf distro-sync failed: Fedora's repositories are needed"
+	# RPM Fusion's drivers that vitrine's Mesa replaced (the install recorded them)
+	freeworld=
+	[ ! -s "$state/freeworld" ] || freeworld=$(tr '\n' ' ' < "$state/freeworld")
 	rm -rf "$state"
 	mkdir -p "$run" && touch "$run/reboot-needed"
 	echo "The guest tools are removed. Restart the guest to finish."
+	if [ -n "$freeworld" ]; then
+		echo "Fedora's Mesa has no H.264, H.265 or VC-1 video: RPM Fusion's ${freeworld% }, which"
+		echo "vitrine's Mesa replaced, would bring them back (rpmfusion.org/Howto/Multimedia)."
+	fi
 	[ "$reboot" = 1 ] && systemctl --no-block reboot
 	exit 0
 fi
@@ -448,11 +456,21 @@ fi
 plasma_after=$plasma
 [ ${#plasma_move[@]} = 0 ] || plasma_after=$KWIN_VERSION
 
-# Mesa: the medium's build of each Mesa package installed (x86_64)
+# Mesa: the medium's build of each Mesa package installed (x86_64).  RPM
+# Fusion's freeworld drivers (its build of Fedora's Mesa with the codecs
+# Fedora leaves out, without native context) would take the place of
+# vitrine's: libva and the Vulkan loader look in their folder first, and their
+# libgallium comes first for EGL and GLX too.  vitrine's Mesa has the codecs
+# and its packages obsolete them (mesa-dri-drivers, which has the VA drivers,
+# mesa-vulkan-drivers and mesa-filesystem): those go in for them, in the same
+# transaction, also where RPM Fusion's took the place of Fedora's (its dnf swap
+# of mesa-vulkan-drivers).
 want=("$(medium_nevra vitrine-guest-tools)")
 [ -n "${want[0]}" ] || die "the medium has no vitrine-guest-tools package"
 mesa=()
 mesa32=$(rpm -qa --qf '%{NAME}.%{ARCH}\n' 'mesa-*' | grep '\.i686$' | tr '\n' ' ')
+mapfile -t freeworld < <(rpm -qa --qf '%{NAME} %{ARCH}\n' mesa-va-drivers-freeworld \
+	mesa-vulkan-drivers-freeworld mesa-vdpau-drivers-freeworld | awk '$2 == "x86_64" { print $1 }' | LC_ALL=C sort -u)
 if [ -n "$mesa32" ]; then
 	# dnf wants both architectures of a multilib package at one version, and
 	# the medium has no 32-bit build
@@ -460,10 +478,20 @@ if [ -n "$mesa32" ]; then
 	say "      ($mesa32) for 32-bit programs (Steam, Wine), and vitrine's Mesa is 64-bit only"
 else
 	for name in $(medium_names '^mesa-'); do
-		installed "$name" x86_64 && mesa+=("$(medium_nevra "$name")")
+		case "$name" in
+		mesa-dri-drivers) theirs="mesa-va-drivers-freeworld" ;;
+		mesa-vulkan-drivers) theirs="mesa-vulkan-drivers-freeworld" ;;
+		mesa-filesystem) theirs="mesa-vdpau-drivers-freeworld" ;;
+		*) theirs= ;;
+		esac
+		if installed "$name" x86_64 || { [ -n "$theirs" ] && installed "$theirs" x86_64; }; then
+			mesa+=("$(medium_nevra "$name")")
+		fi
 	done
 	if [ ${#mesa[@]} -gt 0 ]; then
 		say "Mesa: vitrine's build of ${#mesa[@]} packages"
+		[ ${#freeworld[@]} = 0 ] ||
+			say "      in place of RPM Fusion's ${freeworld[*]} too: it has their video codecs"
 	elif [ -z "$(medium_names '^mesa-')" ]; then
 		say "Mesa: none on this medium, the installed one stays"
 	else
@@ -794,6 +822,16 @@ else
 	rm -f "$state/kwin"
 fi
 printf '%s\n' "${want[@]}" > "$state/packages"
+# RPM Fusion's VA and Vulkan drivers that vitrine's Mesa replaced, which
+# --uninstall names: Fedora's Mesa has none of their codecs (VDPAU's are gone)
+replaced=()
+for p in "${freeworld[@]}"; do
+	[ "$p" = mesa-vdpau-drivers-freeworld ] || installed "$p" x86_64 || replaced+=("$p")
+done
+if [ ${#replaced[@]} -gt 0 ]; then
+	{ cat "$state/freeworld" 2> /dev/null; printf '%s\n' "${replaced[@]}"; } | LC_ALL=C sort -u > "$state/freeworld.new" &&
+		mv "$state/freeworld.new" "$state/freeworld"
+fi
 echo "$MEDIUM_ID" > "$state/medium"
 cat > "$state/state.json" <<EOF
 {"medium": "$MEDIUM_ID", "tools": "$TOOLS_EVR", "date": "$(date -Iseconds)", "kwin": $([ "$use_kwin" = 1 ] && echo true || echo false), "fence": $([ "$use_kwin" = 1 ] && echo 3 || echo 1), "driverBuilt": $([ -n "${driver_failed:-}" ] && echo false || echo true)}
