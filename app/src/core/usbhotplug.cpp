@@ -416,11 +416,17 @@ void UsbHotplug::attach(const UsbDevice &host, const Done &done)
         done({});
         return;
     }
+    const QString what = tr("%1 at bus %2, address %3")
+                             .arg(described(host)).arg(host.bus).arg(host.device);
+    /* another VM has it, or would take it */
+    if (const QString why = m_attachCheck ? m_attachCheck(host) : QString(); !why.isEmpty()) {
+        note(tr("USB: did not attach %1: %2").arg(what, why));
+        done(why);
+        return;
+    }
     const QString id = idFor(host);
     const QJsonObject arguments{{"driver", "usb-host"}, {"id", id}, {"hostbus", host.bus},
                                 {"hostaddr", host.device}};
-    const QString what = tr("%1 at bus %2, address %3")
-                             .arg(described(host)).arg(host.bus).arg(host.device);
     const QPointer<UsbHotplug> self(this);
     client->execute("device_add", arguments,
                     [self, what, id, done](const QJsonValue &, const QString &error) {
@@ -432,6 +438,11 @@ void UsbHotplug::attach(const UsbDevice &host, const Done &done)
         self->refresh();
         done(error.isEmpty() ? QString() : explain(error));
     });
+}
+
+void UsbHotplug::setAttachCheck(const AttachCheck &check)
+{
+    m_attachCheck = check;
 }
 
 void UsbHotplug::detach(const UsbDevice &host, const Done &done)
@@ -524,6 +535,11 @@ QString UsbHotplug::nodeOf(const UsbDevice &host)
 QString UsbHotplug::devRoot()
 {
     return s_dev;
+}
+
+QString UsbHotplug::sysfsRoot()
+{
+    return s_sysfs;
 }
 
 void UsbHotplug::setRoots(const QString &sysfs, const QString &dev)
