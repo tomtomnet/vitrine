@@ -82,7 +82,7 @@
 Name:           mesa
 Summary:        Mesa graphics libraries
 Version:        26.2.6
-Release:        1.xe%{?dist}
+Release:        2.xe%{?dist}
 License:        MIT AND BSD-3-Clause AND SGI-B-2.0
 URL:            https://mesa3d.org
 
@@ -237,6 +237,8 @@ Obsoletes:      mesa-omx-drivers < %{?epoch:%{epoch}:}%{version}-%{release}
 Obsoletes:      mesa-libd3d < %{?epoch:%{epoch}:}%{version}-%{release}
 Obsoletes:      mesa-libd3d-devel < %{?epoch:%{epoch}:}%{version}-%{release}
 Obsoletes:      mesa-vdpau-drivers < %{?epoch:%{epoch}:}%{version}-%{release}
+# RPM Fusion's VDPAU drivers, left from before Mesa dropped VDPAU (see dri-drivers)
+Obsoletes:      mesa-vdpau-drivers-freeworld
 
 %description filesystem
 %{summary}.
@@ -291,6 +293,12 @@ Obsoletes:      %{name}-va-drivers < 26.0.0-5
 Provides:       %{name}-va-drivers = %{?epoch:%{epoch}:}%{version}-%{release}
 Provides:       %{name}-va-drivers%{?_isa} = %{?epoch:%{epoch}:}%{version}-%{release}
 Obsoletes:      %{name}-vaapi-drivers < 22.2.0-5
+# RPM Fusion's freeworld drivers are its build of Fedora's Mesa with the codecs Fedora leaves out, without
+# native context.  Beside this Mesa they would take its place: libva and the Vulkan loader look in their
+# folder, /usr/lib64/dri-freeworld, first, and its ld.so.conf.d entry puts their libgallium before this
+# one for EGL and GLX too.  This build has the codecs, so they go when it goes in.
+# Unversioned: a guest with a newer Mesa gets this one as a downgrade, with freeworld drivers of its version.
+Obsoletes:      mesa-va-drivers-freeworld
 
 %description dri-drivers
 %{summary}.
@@ -365,6 +373,8 @@ Requires:       vulkan%{_isa}
 Requires:       %{name}-filesystem%{?_isa} = %{?epoch:%{epoch}:}%{version}-%{release}
 Obsoletes:      mesa-vulkan-devel < %{?epoch:%{epoch}:}%{version}-%{release}
 Obsoletes:      VK_hdr_layer < 1
+# RPM Fusion's, which takes the place of this package (see dri-drivers)
+Obsoletes:      mesa-vulkan-drivers-freeworld
 
 %description vulkan-drivers
 The drivers with support for the Vulkan API.
@@ -454,9 +464,13 @@ rewrite_wrap_file paste
 rewrite_wrap_file rustc-hash
 %endif
 
+# vitrine's options: the native context of AMD and Intel GPUs, and every video codec (2.xe).  Fedora
+# builds with Mesa's default, all_free, which leaves out H.264, H.265 and VC-1: AMD guests had no
+# hardware decode or encode of them.  RPM Fusion's builds have them, as Debian's and Arch's Mesa do.
 %meson \
   -Dintel-virtio-experimental=true \
   -Damdgpu-virtio=true \
+  -Dvideo-codecs=all \
   -Dplatforms=x11,wayland \
 %if 0%{?with_hardware}
   -Dgallium-drivers=llvmpipe,virgl,nouveau%{?with_r300:,r300}%{?with_crocus:,crocus}%{?with_i915:,i915}%{?with_iris:,iris}%{?with_vmware:,svga}%{?with_radeonsi:,radeonsi}%{?with_r600:,r600}%{?with_asahi:,asahi}%{?with_freedreno:,freedreno}%{?with_etnaviv:,etnaviv}%{?with_tegra:,tegra}%{?with_vc4:,vc4}%{?with_v3d:,v3d}%{?with_lima:,lima}%{?with_panfrost:,panfrost}%{?with_vulkan_hw:,zink}%{?with_d3d12:,d3d12}%{?with_teflon:,ethosu,rocket} \
@@ -773,4 +787,11 @@ ln -s libGLX_mesa.so.0 %{buildroot}%{_libdir}/libGLX_system.so.0
 %endif
 
 %changelog
-%autochangelog
+* Wed Nov 11 2026 vitrine <noreply@anthropic.com> - 26.2.6-2.xe
+- every video codec (video-codecs=all): H.264, H.265 and VC-1 too, which
+  Fedora's Mesa leaves out (Mesa's default, all_free), as RPM Fusion's
+  builds have them: hardware decode and encode of them over AMD native
+  context
+- takes the place of RPM Fusion's freeworld drivers (Obsoletes): beside
+  this Mesa, theirs, without native context, would be the ones libva, the
+  Vulkan loader, EGL and GLX load

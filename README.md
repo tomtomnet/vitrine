@@ -136,7 +136,9 @@ files it changes, and the guest packages compile through ccache.
    KWayland it is built against) and KPipeWire for Plasma 6.8.2, Qt Base
    6.11.2, KSvg and Kirigami 6.31.0, the nested desktop's session and proxy,
    an agent. Fedora 45's has the driver, Mesa, Mutter 51.1 and the agent, no
-   KDE packages yet: a Plasma guest keeps Fedora's KWin.
+   KDE packages yet: a Plasma guest keeps Fedora's KWin. Their Mesa has every
+   video codec, as RPM Fusion's builds have and Fedora's has not (H.264, H.265,
+   VC-1), and takes the place of RPM Fusion's freeworld drivers.
    The Builds window (also Build… in Machine > Install Guest Tools… and in
    Preferences) builds those of one release at a time, its "Guest tools for"
    choice (at first the newest one the VMs run; a VM's Install Guest Tools…

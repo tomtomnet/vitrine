@@ -230,13 +230,25 @@ only listed the five patent-encumbered codecs, and none was the default.
 
 **Fedora** builds with the default. RPM Fusion's
 `mesa-va-drivers-freeworld` and `mesa-vulkan-drivers-freeworld` add H.264,
-H.265 and VC-1. But they have no native context, and Fedora's libva looks
-in their folder, `/usr/lib64/dri-freeworld`, before its own. Your build has
-the codecs with `-Dvideo-codecs=all`, so go back to Fedora's packages
-before you install it:
+H.265 and VC-1. But they have no native context, and they take over from
+your build:
+
+- Fedora's libva and the Vulkan loader look in their folder,
+  `/usr/lib64/dri-freeworld`, before Fedora's.
+- Their file in `/etc/ld.so.conf.d` puts their own `libgallium` ahead of
+  yours when the two are of one Mesa version, so EGL and GLX load theirs
+  too.
+
+In a guest with both, EGL drew through virgl, Vulkan had only llvmpipe, and
+`vainfo` listed no codec at all. Your build has the codecs with
+`-Dvideo-codecs=all`, so go back to Fedora's packages before you install
+it:
 
     sudo dnf remove mesa-va-drivers-freeworld
     sudo dnf swap mesa-vulkan-drivers-freeworld mesa-vulkan-drivers
+
+Vitrine's guest tools build their Mesa with `-Dvideo-codecs=all`, and it
+takes the place of the freeworld packages when it goes in.
 
 **Debian** and **Ubuntu** already build with `-Dvideo-codecs="all"`, and so
 does kisak-mesa: keep that line of `debian/rules` as it is. **Arch**
@@ -369,5 +381,12 @@ This guide was checked in September 2026 against Mesa 26.2.3 and main
 Ubuntu's and Arch's Mesa packaging, RPM Fusion's mesa-freeworld,
 kisak-mesa, and the xe-native-context-enablement repository. The Fedora
 spec changes were tried up to the build, and the Xe patch on the files it
-changes. Not tried here: a whole Mesa build on each distribution, the
-32-bit builds, and hardware video through native context.
+changes. Not tried here: a whole Mesa build on each distribution, and the
+32-bit builds.
+
+In November 2026, hardware video through AMD native context was tried with
+Vitrine's guest Mesa (Fedora's 26.2.6 spec with `-Dvideo-codecs=all`) in a
+Fedora 45 guest: `vainfo` listed H.264 and H.265 decode and encode, and
+GStreamer's VA-API elements encoded and decoded clips of both. The same
+guest with RPM Fusion's freeworld packages beside that Mesa is the one
+described in [Video codecs](#video-codecs).

@@ -2,7 +2,7 @@
 # exact version, and dnf takes an installed one of the same version as done.
 Name:           vitrine-guest-tools
 Version:        0.1.0
-Release:        41%{?dist}
+Release:        42%{?dist}
 Summary:        vitrine guest tools: patched virtio-gpu driver, settings and agent
 
 # the driver's sources (dkms/vendor, dkms/patches) are the kernel's: MIT
@@ -183,6 +183,17 @@ fi
 %dir %{_sharedstatedir}/%{name}
 
 %changelog
+* Wed Nov 11 2026 vitrine <noreply@anthropic.com> - 0.1.0-42
+- with Mesa 26.2.6-2.xe, built with every video codec: H.264, H.265 and
+  VC-1 too, which Fedora's Mesa leaves out, so AMD guests get hardware
+  decode and encode of them over native context
+- the installer puts vitrine's Mesa in place of RPM Fusion's freeworld
+  drivers in the same transaction (its packages obsolete them), and
+  vitrine's mesa-vulkan-drivers in place of mesa-vulkan-drivers-freeworld:
+  beside vitrine's Mesa, theirs, without native context, were the drivers
+  libva, the Vulkan loader, EGL and GLX loaded.  --uninstall says when it
+  had replaced them, as Fedora's Mesa has none of their codecs
+
 * Mon Nov 09 2026 vitrine <noreply@anthropic.com> - 0.1.0-41
 - with Mutter 51.1-1.1.m1 on Fedora 45's medium, the research's set m1
   (83db562): a new frame clock seeds its update-duration estimates with
