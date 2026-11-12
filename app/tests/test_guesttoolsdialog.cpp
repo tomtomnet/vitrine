@@ -576,7 +576,14 @@ private slots:
                  qPrintable(text));
         QVERIFY2(text.contains("KSvg 6.31.0-1.1.k2.fc44 and Kirigami 6.31.0-1.1.f1.fc44"),
                  qPrintable(text));
-        QVERIFY2(text.contains("give way to Fedora's next build"), qPrintable(text));
+        /* locked with vitrine's KWin, the guest's frameworks held with them */
+        QVERIFY2(text.contains("so do Qt Base, KSvg, Kirigami, the guest's Plasma and its KDE "
+                               "Frameworks with vitrine's KWin: Fedora's updates of them wait "
+                               "for vitrine's next guest tools"),
+                 qPrintable(text));
+        QVERIFY2(text.contains("Without vitrine's KWin, KSvg, Kirigami and Qt Base give way to "
+                               "Fedora's next build"),
+                 qPrintable(text));
     }
 
     /* A medium without KDE's packages (Fedora 45's): Mesa alone stays at its version */
@@ -654,6 +661,18 @@ private slots:
         /* an agent that does not say which builds are vitrine's: not vitrine's */
         r.vitrineBuilds.clear();
         QCOMPARE(GuestToolsText::runningMutter(r), "Its Mutter is 51.2-1.fc45, not vitrine's build.");
+    }
+
+    /* What Fedora has moved past, as the agent found it: a newer vitrine ports it */
+    void saysWhatFedoraHasNewer()
+    {
+        GuestTools::Report r;
+        QVERIFY(GuestToolsText::fedoraNewer(r).isEmpty());
+        r.fedoraNewer = {{"KDE Frameworks", "6.31.0", "6.32.0"}, {"Plasma", "6.8.2", "6.8.3"}};
+        QCOMPARE(GuestToolsText::fedoraNewer(r),
+                 "vitrine's guest tools hold KDE Frameworks 6.31.0; Fedora has 6.32.0: a newer "
+                 "vitrine brings builds for it. vitrine's guest tools hold Plasma 6.8.2; Fedora "
+                 "has 6.8.3: a newer vitrine brings builds for it.");
     }
 
     /* Fedora 44's: KWin with the KWayland it is built against, both kept at their versions */

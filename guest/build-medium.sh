@@ -173,8 +173,6 @@ locked=() unlocked=()
 [ -z "$kwayland_evr" ] || locked+=(KWayland)
 [ -z "$kpipewire_evr" ] || locked+=(KPipeWire)
 [ -z "$proxy_evr" ] || locked+=("the proxy")
-[ -z "$ksvg_evr" ] || unlocked+=(KSvg)
-[ -z "$kirigami_evr" ] || unlocked+=(Kirigami)
 {
 	cat <<EOF
 vitrine guest tools $tools_evr for Fedora $release (x86_64)
@@ -233,23 +231,39 @@ EOF
 		echo "  In place of the guest's, all its packages, when the guest has the"
 		echo "  version it is built from"
 	fi
+	# with vitrine's KWin, Qt Base, KSvg and Kirigami are locked too, and
+	# Plasma and the KDE Frameworks held at their versions (install)
+	with=()
+	if [ -n "$kwin_evr" ]; then
+		[ -z "$qtbase_evr" ] || with+=("Qt Base (which that KWin is built against)")
+		[ -z "$ksvg_evr" ] || with+=(KSvg)
+		[ -z "$kirigami_evr" ] || with+=(Kirigami)
+		with+=("the guest's Plasma")
+		[ -z "$ksvg_evr$kirigami_evr" ] || with+=("its KDE Frameworks")
+	fi
 	if [ ${#locked[@]} -gt 0 ]; then
 		kept="are kept at those versions"
 		[ ${#locked[@]} -gt 1 ] || kept="is kept at that version"
-		if [ -n "$kwin_evr" ] && [ -n "$qtbase_evr" ]; then
-			echo "$(join "${locked[@]}") $kept (dnf versionlock, 64-bit only), and"
-			echo "so is Qt Base with vitrine's KWin, which is built against it."
+		if [ ${#with[@]} -gt 0 ]; then
+			echo "$(join "${locked[@]}") $kept (dnf versionlock, 64-bit only), and with" \
+				"vitrine's KWin so are $(join "${with[@]}"): Fedora's updates of them" \
+				"wait for the next guest tools." | fmt -w 78
 		else
 			echo "$(join "${locked[@]}") $kept (dnf versionlock, 64-bit only)."
 		fi
 	fi
-	[ -z "$qtbase_evr" ] || unlocked+=("Qt Base without vitrine's KWin")
-	[ -z "$mutter_evr" ] || unlocked+=(Mutter)
+	[ -z "$qtbase_evr" ] || unlocked+=("Qt Base")
+	[ -z "$ksvg_evr" ] || unlocked+=(KSvg)
+	[ -z "$kirigami_evr" ] || unlocked+=(Kirigami)
 	if [ ${#unlocked[@]} -gt 0 ]; then
 		way="give way to Fedora's next build of them"
 		[ ${#unlocked[@]} -gt 1 ] || way="gives way to Fedora's next build of it"
-		echo "$(join "${unlocked[@]}") $way: the next guest tools"
-		echo "bring vitrine's back."
+		echo "Without vitrine's KWin, $(join "${unlocked[@]}") $way: the next" \
+			"guest tools bring vitrine's back." | fmt -w 78
+	fi
+	if [ -n "$mutter_evr" ]; then
+		echo "Mutter gives way to Fedora's next build of it: the next guest tools bring"
+		echo "vitrine's back."
 	fi
 	echo "Secure Boot must be off: the driver is not signed."
 } > "$stage/README.txt"

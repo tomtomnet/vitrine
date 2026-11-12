@@ -175,15 +175,20 @@ files it changes, and the guest packages compile through ccache.
    built against Qt's private API, and so is the guest's Plasma, at the
    version that KWin is built for: Plasma's packages would otherwise update
    around it, and Plasma with a KWin of another version has no session at
-   all. A guest with Fedora's older Plasma (6.7.5, which the tools held
-   until 0.1.0-30) moves to Fedora's Plasma 6.8.2 in the transaction that
-   installs the tools' KWin, as long as Fedora's repositories still have
-   that Plasma; otherwise its KWin stays and its Plasma is no longer held.
-   Where a guest got a Plasma that does not match the tools' KWin, the VM's
-   Console and Details tabs say so, and installing the tools again repairs
-   it. KSvg, Kirigami, Mutter, and Qt Base without vitrine's KWin, are not
-   (a lock would keep Mutter at 51.1 while Fedora's GNOME Shell moved on, a
-   pair GNOME does not release): Fedora's next build of them replaces them
+   all. KSvg and Kirigami are locked with vitrine's KWin too, and the
+   guest's KDE Frameworks with them, at their version: frameworks of a
+   newer release around them are a mix KDE does not release. Fedora's next
+   KDE Frameworks, Plasma or Qt then waits for vitrine's next guest tools,
+   which bring builds for it. A guest with Fedora's older Plasma (6.7.5,
+   which the tools held until 0.1.0-30) moves to Fedora's Plasma 6.8.2 in
+   the transaction that installs the tools' KWin, as long as Fedora's
+   repositories still have that Plasma; otherwise its KWin stays and its
+   Plasma is no longer held. Where a guest got a Plasma that does not match
+   the tools' KWin, the VM's Console and Details tabs say so, and installing
+   the tools again repairs it. Mutter, and Qt Base, KSvg and Kirigami
+   without vitrine's KWin, are not (a lock would keep Mutter at 51.1 while
+   Fedora's GNOME Shell moved on, a pair GNOME does not release): Fedora's
+   next build of them replaces them
    with the rest of KDE Frameworks, of Qt or of GNOME, and the next guest
    tools bring vitrine's back. Install Guest Tools… says which Mutter the
    guest runs. `--uninstall` puts Fedora's builds of all of them back.

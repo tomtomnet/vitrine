@@ -58,6 +58,7 @@ static const char kHello[] =
     R"j("mesa-dri-drivers":"26.2.3-1.xe.fc44","kwin":"6.7.5-1.21.fc44",)j"
     R"j("qt6-qtbase":"6.11.2-3.1.q4.fc44","kf6-ksvg":"6.32.0-1.fc44"},"kwinPatched":true,)j"
     R"j("vitrineBuilds":{"qt6-qtbase":true,"kf6-ksvg":false},)j"
+    R"j("fedoraNewer":[{"what":"KDE Frameworks","held":"6.31.0","fedora":"6.32.0"},{"what":"Qt"}],)j"
     R"j("preempt":"full","rebootNeeded":false,"installed":{"medium":"32fe6c83b34e87e8",)j"
     R"j("tools":"0.1.0-1.fc44"},"installing":false}})j";
 
@@ -357,6 +358,11 @@ private slots:
         QVERIFY(r.vitrineBuilds.value("qt6-qtbase"));
         QVERIFY(r.vitrineBuilds.contains("kf6-ksvg") && !r.vitrineBuilds.value("kf6-ksvg"));
         QCOMPARE(r.packages.value("kf6-ksvg"), "6.32.0-1.fc44");
+        /* Fedora ahead of a locked build; an entry without its versions left out */
+        QCOMPARE(r.fedoraNewer.size(), 1);
+        QCOMPARE(r.fedoraNewer.first().what, "KDE Frameworks");
+        QCOMPARE(r.fedoraNewer.first().held, "6.31.0");
+        QCOMPARE(r.fedoraNewer.first().fedora, "6.32.0");
         /* a GNOME guest's: vitrine's Mutter */
         const Report gnome = parseReport(QJsonDocument::fromJson(
             R"({"packages": {"gnome-shell": "51.1-1.fc45", "mutter": "51.1-1.1.m1.fc45"},
