@@ -398,7 +398,8 @@ what vitrine ships:
 - `VITRINE_VIEW_RT`: which of the view's threads the GTK app has made
   real-time while its VM is in front (above): unset or `named`, all but
   the driver threads (main, render, events, listener, gdbus); `all` or
-  `1`, all of them; `0`, none. Said on stderr once when set.
+  `1`, all of them; `0`, none, the nested desktop's neither (below). Said
+  on stderr once when set.
   `vitrine-gtk-view` makes none real-time, whatever it says: a bench
   raises the threads of its thread line (below).
 - `VITRINE_VIEW_COMPOSITE=1`: the pixel over the frames
@@ -453,3 +454,25 @@ vitrine: display: threads: main=TID render=TID events=TID listener=TID gdbus=TID
       sudo chrt -f -R -p 1 "$tid"
   done
   ```
+
+### The nested desktop's thread line
+
+The nested desktop (`nesteddisplay.cpp`, on `src/nested`'s library) goes
+real-time with the VM's screen while the VM is in front: the library's own
+thread, which passes the guest's frames on to the compositor and its events
+back, and the main thread, GDK's reader of the display, which that thread's
+reads wait for (libwayland reads a display only once every thread that
+prepared to read it has). The library does not tell its thread: its
+callbacks run on it, and the first comes as the guest connects. Each change
+goes to stderr as one line, in the screen's format:
+
+```
+vitrine: desktop: threads: main=TID library=TID
+```
+
+- One line once the library's thread is known (the guest's first
+  connection), and again with each new view (the guest's reboot); never
+  wrapped, nothing else on the line. `VITRINE_VIEW_RT=0` leaves them
+  ordinary, the line comes all the same.
+- The console hands the screen's threads and these to the helper as one
+  set (`VmConsole::realtimeThreads()`), the main thread once.

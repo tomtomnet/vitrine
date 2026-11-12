@@ -39,6 +39,15 @@ A desktop VM stays smooth under host load when the host gives it a hand:
   medians alike). The GPU driver's threads did not help, and with the main
   thread ordinary they made it worse (1.8), so they stay ordinary. On a
   Radeon 780M the compile cost it little either way.
+  A KDE guest's nested desktop in vitrine's window (its Desktop view)
+  takes one more thread, in both apps: the nested library's, which passes
+  the guest's frames on to the desktop's compositor and its events back.
+  It goes real-time with the VM's QEMU too, and so do the app's other
+  readers of its Wayland connection, which that thread's reads wait for
+  (libwayland reads a connection only once every thread that prepared to
+  read it has): the GTK app's main thread, as above; in the Qt app, Qt's
+  two Wayland event threads and the screen's reader. Those of other VMs
+  stay as they are while their VMs are behind.
 - **A shorter fair-server period**: the kernel keeps some CPU time for
   ordinary tasks while real-time ones run, 50 ms per second by default. An
   ordinary task stuck behind a real-time vCPU (a kernel worker pushing GPU
@@ -156,7 +165,7 @@ for them. It does only this, for the user who started it:
 | `gpu-profile CARD on` | A dedicated AMD GPU's power profile at `3D_FULL_SCREEN` (`pp_power_profile_mode`) | `cardN` of vendor 0x1002 driven by amdgpu, not an APU; a fixed profile; only from `BOOTUP_DEFAULT` and in performance level `auto`; the profiles' numbers read from the file; recorded first, one write, read back, no retry |
 | `rt PID` | SCHED_FIFO 1 on every thread of a watched QEMU (the VM in front), its real-time time limit (`RLIMIT_RTTIME`) lifted first | Only once `fair-server on` holds; watched first, and checked again to be the caller's QEMU (it may have run another program since); never for more vCPUs than half of the online CPUs (its threads named as vCPUs, else its `-smp`): such a VM is lowered as by `behind` instead, and the answer is `skip`; no thread made real-time if the limit cannot be lifted; real-time threads it finds are left as they are; its child processes (passt) are not touched |
 | `behind PID` | The threads `rt` made real-time back to SCHED_OTHER, its vCPU threads (`CPU n/KVM`) at nice -5 (a VM behind the one in front) | The same checks as `rt`; nice -5 only while the fair server holds, and only for vCPUs at nice 0 |
-| `view-rt TID` | SCHED_FIFO 1, with SCHED_RESET_ON_FORK (what the thread starts begins ordinary, threads and processes alike), on one thread of the program that started the helper: vitrine's view of the VM in front (the app's main thread, the view's render thread, Wayland reader and D-Bus listener, GLib's D-Bus worker) | Only once `fair-server on` holds, and while a watched QEMU is in front (its `rt`); a thread of the helper's parent - the program that ran pkexec, taken at the start and held through a pidfd - whose uids are all the caller's; threads at SCHED_FIFO 1 before its first `view-rt`, other real-time ones and SCHED_IDLE ones are left as they are; recorded first, as for `rt` |
+| `view-rt TID` | SCHED_FIFO 1, with SCHED_RESET_ON_FORK (what the thread starts begins ordinary, threads and processes alike), on one thread of the program that started the helper: vitrine's view of the VM in front (the app's main thread, the view's render thread, Wayland reader and D-Bus listener, GLib's D-Bus worker; for the nested desktop the library's thread and the other readers of the app's Wayland connection) | Only once `fair-server on` holds, and while a watched QEMU is in front (its `rt`); a thread of the helper's parent - the program that ran pkexec, taken at the start and held through a pidfd - whose uids are all the caller's; threads at SCHED_FIFO 1 before its first `view-rt`, other real-time ones and SCHED_IDLE ones are left as they are; recorded first, as for `rt` |
 | `view-behind` | Those threads, and any other thread of that program at SCHED_FIFO 1 since, back to SCHED_OTHER | Only threads at SCHED_FIFO 1 that were not before the first `view-rt`; the helper also does it whenever no watched QEMU is in front any more (`behind` of the one in front, its exit), at `fair-server off` and at its end |
 | `udmabuf PID` | The udmabuf module's `list_limit` at 65536 and `size_limit_mb` at 2048, while that watched QEMU runs | A watched QEMU (its GPU is not checked: vitrine asks only for native-context ones and the nested desktop's); fixed values; raised only, a higher value stays; skipped when the module is not loaded; put back after the last QEMU that asked for it |
 | `thp on` | `/sys/kernel/mm/transparent_hugepage/shmem_enabled` at `advise` | A watched QEMU; a fixed value, written only over `never`; read back |

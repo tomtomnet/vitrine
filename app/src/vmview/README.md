@@ -23,6 +23,13 @@ org.qemu.Display1.Clipboard, with what goes where in
 `clipboardstate.{h,cpp}` (Qt Core only: the GTK view's clipboard,
 `src/gtkview`, shares it).
 
+`VmView::readerThread()` is the render thread's Wayland reader, which
+`ViewSurface` learns from the renderer (`RenderTarget::threadStarted`): one
+of the readers of the app's display, which the nested desktop's library
+waits for, real-time with it while the VM is in front
+(`../nested/README.md`). Each new one goes to stderr as `vitrine: display:
+threads: events=TID`, the GTK view's line with its reader alone.
+
 | file | what it does |
 |---|---|
 | `qmp` | QMP over a connected socket, with fd passing (`getfd`) |
