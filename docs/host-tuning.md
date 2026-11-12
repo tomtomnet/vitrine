@@ -494,6 +494,25 @@ the import off by itself. `KWIN_DISABLE_UDMABUF_IMPORT=0` in
 `CROSVM_DESKTOP_KWIN_ENV` of the guest's
 `/etc/vitrine-guest-tools/nested.conf` keeps it.
 
+## KWin's lone-frame lead
+
+The same generator gives this computer's KWin `KWIN_LONE_FRAME_LEAD_US=1500`
+at each login, unless the session has a value of its own. With it,
+vitrine's host KWin (the research's patch 0074) renders the first frame
+after an idle stretch (a key, a drag's first step, an animation's first
+frame) at once, and aims it at the next vblank when that is at least 1.5
+ms away, instead of when its render estimate plans it. Fedora's KWin
+ignores the variable. On an RX 6900 XT at 240 Hz, KWrite's keys showed 2.7
+ms sooner (10.0 ms instead of 12.7), the launcher's first frames 3 ms
+sooner, and the nested desktop in a window answered keys in 8.6 ms instead
+of 10.8, while KDE's animations stayed as long and as smooth (the
+research, 2026-11-12). It has not been measured on other GPUs, nor at 60
+or 120 Hz.
+
+`KWIN_LONE_FRAME_LEAD_US=` (empty) in a file of `~/.config/environment.d`
+turns it off from the next login, and
+`echo off > $XDG_RUNTIME_DIR/kwin-lone-frame` at once.
+
 ## The udmabuf limits without host tuning
 
 To have the udmabuf limits raised at every boot instead, with or without

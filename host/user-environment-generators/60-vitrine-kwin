@@ -1,14 +1,25 @@
 #!/bin/sh
 # SPDX-License-Identifier: GPL-2.0-or-later
 #
-# vitrine: KWin's settings for the GPU it composites on, at each login.  A
-# systemd user environment generator (systemd.environment-generator(7)):
-# its output goes into the session's environment, and it runs after the
-# environment.d files are read (30-systemd-environment-d-generator), so a
-# value of the user's own wins.  KWin reads it as it starts: from the next
-# login, with Fedora's KWin as with vitrine's.
+# vitrine: settings of this computer's KWin, at each login.  A systemd
+# user environment generator (systemd.environment-generator(7)): its output
+# goes into the session's environment, and it runs after the environment.d
+# files are read (30-systemd-environment-d-generator), so a value of the
+# user's own wins.  KWin reads them as it starts: from the next login.
 #
-# KWIN_DISABLE_UDMABUF_IMPORT=1 when that GPU is an AMD GPU with 4 GiB or
+# KWIN_LONE_FRAME_LEAD_US=1500, KWin's lone-frame lead (the research's
+# patch 0074, in vitrine's host KWin; Fedora's KWin ignores it): the first
+# frame after an idle stretch (a key, a drag's first step, an animation's
+# first frame) is rendered at once and aimed at the next vblank when that
+# is at least 1.5 ms away, instead of when KWin's render estimate plans it.
+# On an RX 6900 XT at 240 Hz KWrite's keys showed 2.7 ms sooner (12.7 ->
+# 10.0 ms), the launcher's first frames 3 ms sooner, and the nested desktop
+# in a window 10.8 -> 8.6 ms, KDE's animations as long and as smooth (the
+# research, 2026-11-12).  Not measured on other GPUs, nor at 60-120 Hz.
+# KWIN_LONE_FRAME_LEAD_US= (empty) in ~/.config/environment.d turns it off,
+# `echo off > $XDG_RUNTIME_DIR/kwin-lone-frame` at once.
+#
+# KWIN_DISABLE_UDMABUF_IMPORT=1 when KWin's GPU is an AMD GPU with 4 GiB or
 # more of memory of its own, or an Intel xe GPU (Arc).  KWin then uploads
 # the windows the CPU draws (wl_shm: Konsole, Qt Widgets and GTK apps) into
 # textures, instead of having the GPU read them from system memory at each
@@ -24,6 +35,7 @@
 # the computer started on (boot_vga), else the first card, as KWin picks
 # it.  KWIN_DISABLE_UDMABUF_IMPORT=0 in ~/.config/environment.d keeps the
 # import.  VITRINE_SYSFS names another /sys (the tests).
+[ -n "${KWIN_LONE_FRAME_LEAD_US+set}" ] || echo KWIN_LONE_FRAME_LEAD_US=1500
 [ -z "${KWIN_DISABLE_UDMABUF_IMPORT+set}" ] || exit 0
 sys=${VITRINE_SYSFS:-/sys}
 card=

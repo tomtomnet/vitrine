@@ -1880,51 +1880,65 @@ private slots:
 
     /*
      * KWin's settings at each login, with any KWin (host/user-environment-
-     * generators): its udmabuf import off when the GPU it composites on is
-     * an AMD GPU with 4 GiB or more of its own memory, or xe; on fake /sys
-     * trees.  Cards: "N:driver:VRAM bytes (0: none):boot_vga (-: none)".
+     * generators): its lone-frame lead 1500 us, and its udmabuf import off
+     * when the GPU it composites on is an AMD GPU with 4 GiB or more of its
+     * own memory, or xe, each unless the user set it; on fake /sys trees.
+     * Cards: "N:driver:VRAM bytes (0: none):boot_vga (-: none)".
      */
     void kwinEnvironment_data()
     {
         QTest::addColumn<QStringList>("cards");
         QTest::addColumn<QStringList>("env");   // VAR=value before it runs
         QTest::addColumn<bool>("off");          // it says KWIN_DISABLE_UDMABUF_IMPORT=1
+        QTest::addColumn<bool>("lead");         // it says KWIN_LONE_FRAME_LEAD_US=1500
         const QString dgpu = "17163091968", apu = "536870912";
         QTest::newRow("a dedicated AMD GPU") << QStringList{"1:amdgpu:" + dgpu + ":1"}
-                                             << QStringList{} << true;
+                                             << QStringList{} << true << true;
         QTest::newRow("4 GiB of its own") << QStringList{"1:amdgpu:4294967296:1"} << QStringList{}
-                                          << true;
-        QTest::newRow("an APU") << QStringList{"1:amdgpu:" + apu + ":1"} << QStringList{} << false;
-        QTest::newRow("Intel xe") << QStringList{"0:xe:0:1"} << QStringList{} << true;
-        QTest::newRow("Intel i915") << QStringList{"0:i915:0:1"} << QStringList{} << false;
-        QTest::newRow("NVIDIA") << QStringList{"0:nvidia:0:1"} << QStringList{} << false;
+                                          << true << true;
+        QTest::newRow("an APU") << QStringList{"1:amdgpu:" + apu + ":1"} << QStringList{} << false
+                                << true;
+        QTest::newRow("Intel xe") << QStringList{"0:xe:0:1"} << QStringList{} << true << true;
+        QTest::newRow("Intel i915") << QStringList{"0:i915:0:1"} << QStringList{} << false << true;
+        QTest::newRow("NVIDIA") << QStringList{"0:nvidia:0:1"} << QStringList{} << false << true;
         QTest::newRow("started on the APU, a dedicated GPU beside it")
             << QStringList{"1:amdgpu:" + apu + ":1", "2:amdgpu:" + dgpu + ":0"} << QStringList{}
-            << false;
+            << false << true;
         QTest::newRow("started on the dedicated GPU, an APU beside it")
             << QStringList{"1:amdgpu:" + apu + ":0", "2:amdgpu:" + dgpu + ":1"} << QStringList{}
-            << true;
+            << true << true;
         QTest::newRow("KWIN_DRM_DEVICES: the dedicated GPU first")
             << QStringList{"1:amdgpu:" + apu + ":1", "2:amdgpu:" + dgpu + ":0"}
-            << QStringList{"KWIN_DRM_DEVICES=/dev/dri/card2:/dev/dri/card1"} << true;
+            << QStringList{"KWIN_DRM_DEVICES=/dev/dri/card2:/dev/dri/card1"} << true << true;
         QTest::newRow("KWIN_DRM_DEVICES: the APU")
             << QStringList{"1:amdgpu:" + apu + ":0", "2:amdgpu:" + dgpu + ":1"}
-            << QStringList{"KWIN_DRM_DEVICES=/dev/dri/card1"} << false;
+            << QStringList{"KWIN_DRM_DEVICES=/dev/dri/card1"} << false << true;
         QTest::newRow("no boot_vga: the first card")
-            << QStringList{"1:amdgpu:" + dgpu + ":-", "2:i915:0:-"} << QStringList{} << true;
+            << QStringList{"1:amdgpu:" + dgpu + ":-", "2:i915:0:-"} << QStringList{} << true
+            << true;
         QTest::newRow("the user's own value: 0") << QStringList{"1:amdgpu:" + dgpu + ":1"}
                                                  << QStringList{"KWIN_DISABLE_UDMABUF_IMPORT=0"}
-                                                 << false;
+                                                 << false << true;
         QTest::newRow("the user's own value: empty") << QStringList{"1:amdgpu:" + dgpu + ":1"}
                                                      << QStringList{"KWIN_DISABLE_UDMABUF_IMPORT="}
-                                                     << false;
-        QTest::newRow("no GPU") << QStringList{} << QStringList{} << false;
+                                                     << false << true;
+        QTest::newRow("the user's own lead") << QStringList{"1:amdgpu:" + dgpu + ":1"}
+                                             << QStringList{"KWIN_LONE_FRAME_LEAD_US=2000"} << true
+                                             << false;
+        QTest::newRow("the user's lead off: empty")
+            << QStringList{"1:amdgpu:" + apu + ":1"} << QStringList{"KWIN_LONE_FRAME_LEAD_US="}
+            << false << false;
+        QTest::newRow("the user's own import, the lead")
+            << QStringList{"1:amdgpu:" + dgpu + ":1"}
+            << QStringList{"KWIN_DISABLE_UDMABUF_IMPORT=1"} << false << true;
+        QTest::newRow("no GPU") << QStringList{} << QStringList{} << false << true;
     }
     void kwinEnvironment()
     {
         QFETCH(QStringList, cards);
         QFETCH(QStringList, env);
         QFETCH(bool, off);
+        QFETCH(bool, lead);
         QTemporaryDir sys;
         for (const QString &c : cards) {
             const QStringList f = c.split(':');
@@ -1955,7 +1969,8 @@ private slots:
         QVERIFY(p.waitForFinished());
         QCOMPARE(p.exitCode(), 0);
         QCOMPARE(QString::fromLatin1(p.readAllStandardOutput()),
-                 off ? QString("KWIN_DISABLE_UDMABUF_IMPORT=1\n") : QString());
+                 QString(lead ? "KWIN_LONE_FRAME_LEAD_US=1500\n" : "") +
+                     (off ? "KWIN_DISABLE_UDMABUF_IMPORT=1\n" : ""));
         QCOMPARE(p.readAllStandardError(), QByteArray());
     }
 
