@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: GPL-2.0-or-later
 #pragma once
 
+#include <QList>
 #include <QObject>
 #include <QString>
 
@@ -35,6 +36,10 @@ public:
     /* The guest's connections to the socket, and its window */
     virtual int connections() const = 0;
     virtual bool isMapped() const = 0;
+    /* The threads of this process the guest's desktop goes through, for
+       real time while its VM is in front (VmConsole::realtimeThreads()):
+       NestedView's; none here */
+    virtual QList<qint64> threads() const { return {}; }
 
     /* Makes the console's views: NestedView::create() but in tests */
     using Factory = std::function<DesktopView *(const QString &socket, QString *error,
@@ -50,4 +55,6 @@ Q_SIGNALS:
     void fullScreenChanged(bool on);
     /* hasKeyboard() changed */
     void keyboardChanged();
+    /* threads() changed */
+    void threadsChanged();
 };

@@ -1,19 +1,20 @@
 The research's work on wl-cross-domain-proxy (virtio-gpu-desktop,
-src/wl-cross-domain-proxy at its commit fd4db41), as one diff against
+src/wl-cross-domain-proxy at its commit 456b1de), as one diff against
 upstream c6ce1ca89fb4, the commit it started from
 (patches/wl-cross-domain-proxy/BASE.md there).  What the nested desktop
-needs of the proxy beyond upstream: the presentation clock translated into
-the guest's, fence waits before a frame reaches the host, the host's pointer
-grab and shortcut capture, the clipboard following the window's focus, an
-opaque toplevel, resizes settled before they reach the guest, AMD DCC and
-Intel CCS modifiers left out of the dma-buf feedback (the host can scan the
-frames out then), statistics and their overlay, and the host's hang-up: an
-empty receive (the host end of the connection closed: the app serving
-QEMU's socket quit or crashed) ends that guest client instead of polling
-on, as the app's own close would: xdg_toplevel.close to each of its windows
-first (the nested KWin then quits as after a closed window, without its
-wrapper restarting it), its requests dropped, its connection closed once it
-disconnects or 3 s later (a client without a window: at once).
+needs of the proxy beyond upstream: the presentation clock and the input
+events' times translated into the guest's, fence waits before a frame
+reaches the host, the host's pointer grab and shortcut capture, the
+clipboard following the window's focus, an opaque toplevel, resizes settled
+before they reach the guest, AMD DCC and Intel CCS modifiers left out of the
+dma-buf feedback (the host can scan the frames out then), statistics and
+their overlay, and the host's hang-up: an empty receive (the host end of the
+connection closed: the app serving QEMU's socket quit or crashed) ends that
+guest client instead of polling on, as the app's own close would:
+xdg_toplevel.close to each of its windows first (the nested KWin then quits
+as after a closed window, without its wrapper restarting it), its requests
+dropped, its connection closed once it disconnects or 3 s later (a client
+without a window: at once).
 
 The grab: a host KWin 6.8 applies a pointer constraint, and its end, at the
 window's next commit, so the proxy commits the window itself after each
@@ -76,6 +77,16 @@ dropped" and the latencies) and nothing goes to the window title.  The
 rolling window's numbers are pruned at every tick without a title too:
 in that mode, and with the statistics off but a per-frame log, they kept
 every frame for the session.
+
+The input events' times reach the guest's clients in the guest's clock,
+as the presentation times do, by the same estimate of the host's offset
+(none before the first presented frame, none with --no-clock-translation):
+wl_pointer's motion, button, axis and axis_stop, wl_keyboard's key,
+wl_touch, the pointer gestures and the tablets (milliseconds, 32 bits that
+wrap), and zwp_relative_pointer_v1's relative motion (microseconds).  They
+carried the host compositor's monotonic clock, days ahead of the guest's:
+a wl_pointer.motion at 560151735 ms with the guest's clock at 1382680, and
+Firefox's event.timeStamp saturated.
 
 Licence: these changes are GPL-2.0-or-later (the research's, the user's
 choice of 2026-10-14); Victoria Brekenfeld's proxy stays MIT, with her
@@ -567,7 +578,7 @@ diff -ruN a/src/args.rs b/src/args.rs
 diff -ruN a/src/clock.rs b/src/clock.rs
 --- a/src/clock.rs
 +++ b/src/clock.rs
-@@ -0,0 +1,450 @@
+@@ -0,0 +1,559 @@
 +//! Translation of host presentation timestamps into the guest's clock domain.
 +//!
 +//! `wp_presentation_feedback.presented` carries the time at which the host
@@ -824,6 +835,34 @@ diff -ruN a/src/clock.rs b/src/clock.rs
 +        }
 +    }
 +
++    /// The host - guest offset applied to input event times (ns), once there is an estimate and translation is on.
++    /// Input event times (wl_pointer, wl_keyboard, wl_touch, gestures, tablets: milliseconds; relative pointer:
++    /// microseconds) are the host compositor's monotonic clock, the presentation clock's base on KWin and Mutter:
++    /// untranslated they reached the guest's apps days ahead of the guest's own clock (vitrine's session, 2026-11-12:
++    /// wl_pointer.motion 560151735 ms with the guest at 1382680; Firefox's event.timeStamp saturated).
++    fn input_offset_ns(&self) -> Option<i64> {
++        match (self.cfg.translate, self.estimator.estimate()) {
++            (true, Some(est)) => Some(est - self.cfg.inject_ns),
++            _ => None,
++        }
++    }
++
++    /// A host input time in milliseconds (32 bits that wrap) -> the guest's.
++    fn input_ms_to_guest(&self, host_ms: u32) -> u32 {
++        match self.input_offset_ns() {
++            Some(off) => (host_ms as i64 - (off as f64 / 1e6).round() as i64).rem_euclid(1 << 32) as u32,
++            None => host_ms,
++        }
++    }
++
++    /// The argument at INDEX of MSG, an input time in milliseconds, translated.
++    fn rewrite_input_ms<Fd>(&self, msg: &mut Message<u32, Fd>, index: usize) {
++        if let Some(Argument::Uint(t)) = msg.args.get(index) {
++            let t = self.input_ms_to_guest(*t);
++            msg.args[index] = Argument::Uint(t);
++        }
++    }
++
 +    /// Guest timestamp (ns) chosen by a client -> host timestamp (ns).
 +    pub fn guest_to_host(&mut self, guest_ns: i64) -> i64 {
 +        let est = if self.cfg.translate {
@@ -908,6 +947,34 @@ diff -ruN a/src/clock.rs b/src/clock.rs
 +                    msg.args[2] = Argument::Uint(nsec);
 +                }
 +            }
++            // input event times (milliseconds): the time first
++            ("wl_pointer", "motion" | "axis" | "axis_stop")
++            | ("wl_touch", "motion")
++            | ("zwp_pointer_gesture_swipe_v1", "update")
++            | ("zwp_pointer_gesture_pinch_v1", "update")
++            | ("zwp_tablet_tool_v2", "frame")
++            | ("zwp_tablet_pad_v2", "button")
++            | ("zwp_tablet_pad_ring_v2", "frame")
++            | ("zwp_tablet_pad_strip_v2", "frame")
++            | ("zwp_tablet_pad_dial_v2", "frame") => self.rewrite_input_ms(msg, 0),
++            // ... after a serial
++            ("wl_pointer", "button")
++            | ("wl_keyboard", "key")
++            | ("wl_touch", "down" | "up")
++            | ("zwp_pointer_gesture_swipe_v1", "begin" | "end")
++            | ("zwp_pointer_gesture_pinch_v1", "begin" | "end")
++            | ("zwp_pointer_gesture_hold_v1", "begin" | "end") => self.rewrite_input_ms(msg, 1),
++            ("zwp_relative_pointer_v1", "relative_motion") => {
++                // relative_motion(utime_hi, utime_lo, dx, dy, dx_unaccel, dy_unaccel): microseconds
++                if let (Some(off), [Argument::Uint(hi), Argument::Uint(lo), ..]) =
++                    (self.input_offset_ns(), msg.args.as_slice())
++                {
++                    let host_us = (((*hi as u64) << 32) | *lo as u64) as i64;
++                    let guest_us = (host_us - (off as f64 / 1e3).round() as i64).max(0) as u64;
++                    msg.args[0] = Argument::Uint((guest_us >> 32) as u32);
++                    msg.args[1] = Argument::Uint(guest_us as u32);
++                }
++            }
 +            _ => {}
 +        }
 +    }
@@ -936,6 +1003,59 @@ diff -ruN a/src/clock.rs b/src/clock.rs
 +    fn lag(i: u64) -> i64 {
 +        let x = i.wrapping_mul(6364136223846793005).wrapping_add(1442695040888963407);
 +        50_000 + ((x >> 33) % 3_000_000) as i64
++    }
++
++    fn msg(args: Vec<Argument<u32, i32>>) -> Message<u32, i32> {
++        Message { sender_id: 1, opcode: 0, args: args.into() }
++    }
++
++    fn uint(m: &Message<u32, i32>, i: usize) -> u32 {
++        match m.args[i] {
++            Argument::Uint(v) => v,
++            _ => panic!("argument {i} is not a uint"),
++        }
++    }
++
++    #[test]
++    fn input_times_follow_the_presentation_offset() {
++        for translate in [true, false] {
++            let mut c = ClockTranslator::new(ClockConfig { translate, inject_ns: 0, decay_ppm: 1000, log_interval_s: 0 });
++            // before any presentation sample: unchanged
++            let mut m = msg(vec![Argument::Uint(5_000), Argument::Fixed(0), Argument::Fixed(0)]);
++            c.filter_event("wl_pointer", "motion", &mut m);
++            assert_eq!(uint(&m, 0), 5_000);
++            // a frame presented by a host 6 days ahead: the estimate
++            let offset: i64 = 6 * 86_400 * NSEC_PER_SEC;
++            let host_now = now_ns(libc::CLOCK_MONOTONIC) + offset;
++            let (hi, lo, ns) = split_timestamp(host_now);
++            let mut p = msg(vec![
++                Argument::Uint(hi), Argument::Uint(lo), Argument::Uint(ns), Argument::Uint(4_166_666),
++                Argument::Uint(0), Argument::Uint(0), Argument::Uint(0),
++            ]);
++            c.filter_event("wp_presentation_feedback", "presented", &mut p);
++            let guest_ms = (now_ns(libc::CLOCK_MONOTONIC) / 1_000_000) as u32;
++            let host_ms = (host_now / 1_000_000) as u32; // 32 bits, wrapped
++            let want = if translate { guest_ms } else { host_ms };
++            let near = |t: u32| (t.wrapping_sub(want) as i32).abs() < 50;
++            // the time first (wl_pointer.motion), after a serial (wl_keyboard.key)
++            let mut m = msg(vec![Argument::Uint(host_ms), Argument::Fixed(0), Argument::Fixed(0)]);
++            c.filter_event("wl_pointer", "motion", &mut m);
++            assert!(near(uint(&m, 0)), "motion {} want ~{want}", uint(&m, 0));
++            let mut k = msg(vec![Argument::Uint(7), Argument::Uint(host_ms), Argument::Uint(30), Argument::Uint(1)]);
++            c.filter_event("wl_keyboard", "key", &mut k);
++            assert_eq!(uint(&k, 0), 7, "the serial stays");
++            assert!(near(uint(&k, 1)), "key {} want ~{want}", uint(&k, 1));
++            // relative_motion: microseconds in 64 bits
++            let host_us = host_now / 1_000;
++            let mut r = msg(vec![
++                Argument::Uint((host_us >> 32) as u32), Argument::Uint(host_us as u32),
++                Argument::Fixed(0), Argument::Fixed(0), Argument::Fixed(0), Argument::Fixed(0),
++            ]);
++            c.filter_event("zwp_relative_pointer_v1", "relative_motion", &mut r);
++            let us = ((uint(&r, 0) as i64) << 32) | uint(&r, 1) as i64;
++            let want_us = if translate { now_ns(libc::CLOCK_MONOTONIC) / 1_000 } else { host_us };
++            assert!((us - want_us).abs() < 50_000, "relative_motion {us} want ~{want_us}");
++        }
 +    }
 +
 +    #[test]

@@ -93,6 +93,14 @@ public:
     /* The guest's screen, e.g. 3840x2160; empty before its first frame */
     QSize guestSize() const;
     QString vmName() const;
+    /*
+     * The render thread's Wayland reader, once it runs (a new one with each
+     * full-screen switch); 0 before.  One of the readers of the app's
+     * display, which the nested desktop's library waits for: real-time with
+     * it while the VM is in front (VmConsole::realtimeThreads()).  Each one
+     * goes to stderr as "vitrine: display: threads: events=TID".
+     */
+    qint64 readerThread() const;
 
 Q_SIGNALS:
     /* grabbed(), grabState(), hasKeyboard() or inputEnabled() changed */
@@ -104,6 +112,8 @@ Q_SIGNALS:
      * attach().  A guest paused until then may run (VmRunner::displayReady).
      */
     void screenInfoApplied();
+    /* readerThread() changed */
+    void threadsChanged();
 
 protected:
     bool eventFilter(QObject *watched, QEvent *event) override;
@@ -160,4 +170,7 @@ private:
     int m_cursorHotY = 0;
     bool m_cursorVisible = true;
     int m_console = -1;
+    /* the reader of the window m_windowGeneration's renderer */
+    int m_windowGeneration = 0;
+    qint64 m_readerTid = 0;
 };

@@ -21,6 +21,8 @@
 #include <cstring>
 #include <utility>
 
+#include <unistd.h>
+
 Q_LOGGING_CATEGORY(lcViewSurface, "vitrine.viewsurface", QtWarningMsg)
 
 namespace {
@@ -360,6 +362,13 @@ void ViewSurface::swapBuffers(QOpenGLContext *ctx)
     auto *egl = ctx->nativeInterface<QNativeInterface::QEGLContext>();
     if (egl && m_eglSurface) {
         eglSwapBuffers(egl->display(), m_eglSurface);
+    }
+}
+
+void ViewSurface::threadStarted(Thread thread)
+{
+    if (thread == Thread::Reader) {
+        Q_EMIT readerStarted(qint64(gettid()));
     }
 }
 

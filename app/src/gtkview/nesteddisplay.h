@@ -8,6 +8,10 @@
 #include <QString>
 
 #include <functional>
+#include <string>
+#include <vector>
+
+#include <sys/types.h>
 
 typedef struct _GtkWidget GtkWidget;
 
@@ -69,6 +73,30 @@ public:
      */
     virtual void setCovered(bool on) = 0;
 
+    /* A thread of this process the guest's desktop goes through */
+    struct Thread {
+        enum class Role { Main, Library };
+        Role role;
+        pid_t tid;
+        bool operator==(const Thread &) const = default;
+    };
+    /*
+     * Those threads, for real time while the VM is in front
+     * (HostSettings::setViewThreads): the library's own (src/nested/vmview.h:
+     * the guest's requests to the compositor, its events back), known from
+     * its first callback, as the guest connects; and the app's main thread,
+     * GDK's reader of the display - libwayland reads a display only once
+     * every thread that prepared to read it has, so the library's reads wait
+     * for GDK's.  Empty until the library's thread is known.  Each change
+     * goes to stderr as threadLine() and to threadsChanged.
+     */
+    virtual std::vector<Thread> threads() const { return {}; }
+    /* Their ids, for real time: none with VITRINE_VIEW_RT=0 */
+    std::vector<pid_t> realtimeThreads() const;
+    /* "vitrine: desktop: threads:", then " main=TID" and " library=TID":
+       a stable line for benches (src/gtkview/README.md) */
+    static std::string threadLine(const std::vector<Thread> &threads);
+
     sigc::signal<void(int)> connectionsChanged;
     sigc::signal<void(bool)> mappedChanged;
     /* The guest asks for full screen, or a window (its Ctrl+Alt+F) */
@@ -78,6 +106,8 @@ public:
     sigc::signal<void(bool)> fullScreenChanged;
     /* hasKeyboard() or keysToGuest() changed */
     sigc::signal<void()> keyboardChanged;
+    /* threads() changed */
+    sigc::signal<void()> threadsChanged;
 
 protected:
     NestedDisplay() = default;

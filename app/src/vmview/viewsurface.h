@@ -57,6 +57,13 @@ public:
     bool makeCurrent(QOpenGLContext *ctx, QSize *size) override;
     void swapBuffers(QOpenGLContext *ctx) override;
     void done(QOpenGLContext *ctx) override;
+    /* RenderTarget, on the thread that starts: readerStarted() for its Wayland reader */
+    void threadStarted(Thread thread) override;
+
+Q_SIGNALS:
+    /* The render thread's Wayland reader started, as thread @tid of this
+       process (emitted on it): one of the readers of the app's display */
+    void readerStarted(qint64 tid);
 
 protected:
     bool eventFilter(QObject *watched, QEvent *event) override;

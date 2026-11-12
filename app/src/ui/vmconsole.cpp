@@ -12,6 +12,7 @@
 
 #include <utility>
 
+#include "core/hostsettings.h"
 #include "core/nesteddesktop.h"
 #include "core/vmconfig.h"
 #include "core/vmhardware.h"
@@ -350,6 +351,9 @@ bool VmConsole::serveNested(const QString &socket, QString *error)
     connect(nested, &DesktopView::connectionsChanged, this, &VmConsole::changed);
     connect(nested, &DesktopView::keyboardChanged, this, &VmConsole::changed);
     connect(nested, &DesktopView::fullScreenChanged, this, &VmConsole::changed);
+    /* its threads, real-time while the VM is in front: the library's shows
+       as the guest connects */
+    connect(nested, &DesktopView::threadsChanged, this, &VmConsole::sendViewThreads);
     /* the guest's Ctrl+Alt+F, or vitrine's while it has no window to ask */
     connect(nested, &DesktopView::fullScreenRequested, this, [this](bool on) {
         if (desktopShown()) {
@@ -392,8 +396,31 @@ void VmConsole::dropNested()
     }
     /* nestedView() is null while it goes */
     delete std::exchange(m_nested, nullptr);
+    /* the library's thread ended with it; Qt's readers and the screen's back */
+    sendViewThreads();
     m_views->powerOn();
     applyView();
+}
+
+QList<qint64> VmConsole::realtimeThreads() const
+{
+    QList<qint64> tids;
+
+    if (!m_nested || qgetenv("VITRINE_VIEW_RT") == "0") {
+        return tids;
+    }
+    tids = m_nested->threads();
+    if (m_view && m_view->readerThread() > 0 && !tids.contains(m_view->readerThread())) {
+        tids << m_view->readerThread();
+    }
+    return tids;
+}
+
+void VmConsole::sendViewThreads()
+{
+    if (HostSettings *host = HostSettings::instance(); host && m_vm) {
+        host->setViewThreads(m_vm->id(), realtimeThreads());
+    }
 }
 
 /*
@@ -596,6 +623,8 @@ void VmConsole::attach()
     view->setInputEnabled(runnerTakesInput(m_vm->runner()));
     connect(view, &VmView::grabChanged, this, &VmConsole::changed);
     connect(view, &VmView::fullScreenChanged, this, &VmConsole::changed);
+    /* its reader, one of the guest's desktop's threads (realtimeThreads()) */
+    connect(view, &VmView::threadsChanged, this, &VmConsole::sendViewThreads);
     /* a guest paused for its screen runs once QEMU has the screen's size and refresh rate */
     connect(view, &VmView::screenInfoApplied, this, [this]() {
         if (m_vm) {
@@ -622,6 +651,9 @@ void VmConsole::detach()
     /* view() is null while it goes: what it signals on its way out must
        not lead back to it */
     delete std::exchange(m_view, nullptr);
+    if (m_nested) {
+        sendViewThreads();
+    }
     emit statsChanged();
     emit changed();
 }

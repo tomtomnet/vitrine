@@ -69,6 +69,17 @@ public:
     void focus() override;
     int connections() const override;
     bool isMapped() const override;
+    /*
+     * The library's own thread (vmview.h: the guest's requests to the
+     * compositor, its events back), known from its first callback, as the
+     * guest connects; and Qt's readers of the display, its Wayland event
+     * threads - libwayland reads a display only once every thread that
+     * prepared to read it has, so the library's reads wait for theirs.
+     * Empty until the library's thread is known.  Each change goes to
+     * stderr as one line (README.md): "vitrine: desktop: threads:
+     * library=TID reader=TID ...".
+     */
+    QList<qint64> threads() const override;
     /* The guest's window's title: its session's live numbers */
     QString title() const;
 
@@ -93,6 +104,10 @@ private:
     void updateKeyboard();
     /* The host's shortcuts to the guest while it asks for them and has the keys */
     void updateShortcuts();
+    /* The library's thread is @tid (a callback came on it) */
+    void libraryThread(qint64 tid);
+    /* threads() from it, its line and signal if new */
+    void updateThreads();
 
     vmview *m_view = nullptr;
     QString m_socket;
@@ -117,4 +132,7 @@ private:
     int m_connections = 0;
     bool m_mapped = false;
     QString m_title;
+    qint64 m_libraryTid = 0;
+    QList<qint64> m_readers;            // Qt's Wayland event threads
+    QList<qint64> m_threads;
 };

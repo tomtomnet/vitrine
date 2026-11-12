@@ -45,6 +45,22 @@ vitrine's own code is `nestedview.{h,cpp}`: the Qt side of it (a surface of
 vitrine's that the guest's window hangs from, in the console or full
 screen, and the library's callbacks brought to the GUI thread).
 
+It also tells which threads the guest's desktop goes through, for real time
+while the VM is in front (the helper's `view-rt`, as for the GTK app's
+screen: ../../docs/host-tuning.md): the library's own, which passes the
+guest's frames on to the compositor and its events back, and the app's other
+readers of its Wayland connection, which that thread's reads wait for
+(libwayland reads a connection only once every thread that prepared to read
+it has). The library does not tell its thread: its callbacks
+run on it, and the first comes as the guest connects. In the Qt app the
+readers are Qt's two Wayland event threads (`QtWaylandClient`, Qt's
+default queue's and its frame callbacks'), and the screen's (src/vmview's
+`VmView::readerThread()`); the GTK app's (`../gtkview/nesteddisplay.cpp`)
+is its main thread. Each change goes to stderr as one line,
+`vitrine: desktop: threads: library=TID reader=TID ...` (the GTK app's:
+`main=TID library=TID`), and the console hands them to the helper
+(`VmConsole::realtimeThreads()`). `VITRINE_VIEW_RT=0`: none.
+
 The research's review of 2026-10-31 (its ca39424, 1eb4a6a, 4dd61fa,
 95ea57d, 45f062a, bb3b1f9, fae51db and e9a66da) changed what a guest can
 do to vitrine:
