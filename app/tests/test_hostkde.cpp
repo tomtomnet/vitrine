@@ -1877,6 +1877,98 @@ private slots:
         holder.waitForFinished();
         QVERIFY(m.clearCache(&error));
     }
+
+    /*
+     * KWin's settings at each login, with any KWin (host/user-environment-
+     * generators): its udmabuf import off when the GPU it composites on is
+     * an AMD GPU with 4 GiB or more of its own memory, or xe; on fake /sys
+     * trees.  Cards: "N:driver:VRAM bytes (0: none):boot_vga (-: none)".
+     */
+    void kwinEnvironment_data()
+    {
+        QTest::addColumn<QStringList>("cards");
+        QTest::addColumn<QStringList>("env");   // VAR=value before it runs
+        QTest::addColumn<bool>("off");          // it says KWIN_DISABLE_UDMABUF_IMPORT=1
+        const QString dgpu = "17163091968", apu = "536870912";
+        QTest::newRow("a dedicated AMD GPU") << QStringList{"1:amdgpu:" + dgpu + ":1"}
+                                             << QStringList{} << true;
+        QTest::newRow("4 GiB of its own") << QStringList{"1:amdgpu:4294967296:1"} << QStringList{}
+                                          << true;
+        QTest::newRow("an APU") << QStringList{"1:amdgpu:" + apu + ":1"} << QStringList{} << false;
+        QTest::newRow("Intel xe") << QStringList{"0:xe:0:1"} << QStringList{} << true;
+        QTest::newRow("Intel i915") << QStringList{"0:i915:0:1"} << QStringList{} << false;
+        QTest::newRow("NVIDIA") << QStringList{"0:nvidia:0:1"} << QStringList{} << false;
+        QTest::newRow("started on the APU, a dedicated GPU beside it")
+            << QStringList{"1:amdgpu:" + apu + ":1", "2:amdgpu:" + dgpu + ":0"} << QStringList{}
+            << false;
+        QTest::newRow("started on the dedicated GPU, an APU beside it")
+            << QStringList{"1:amdgpu:" + apu + ":0", "2:amdgpu:" + dgpu + ":1"} << QStringList{}
+            << true;
+        QTest::newRow("KWIN_DRM_DEVICES: the dedicated GPU first")
+            << QStringList{"1:amdgpu:" + apu + ":1", "2:amdgpu:" + dgpu + ":0"}
+            << QStringList{"KWIN_DRM_DEVICES=/dev/dri/card2:/dev/dri/card1"} << true;
+        QTest::newRow("KWIN_DRM_DEVICES: the APU")
+            << QStringList{"1:amdgpu:" + apu + ":0", "2:amdgpu:" + dgpu + ":1"}
+            << QStringList{"KWIN_DRM_DEVICES=/dev/dri/card1"} << false;
+        QTest::newRow("no boot_vga: the first card")
+            << QStringList{"1:amdgpu:" + dgpu + ":-", "2:i915:0:-"} << QStringList{} << true;
+        QTest::newRow("the user's own value: 0") << QStringList{"1:amdgpu:" + dgpu + ":1"}
+                                                 << QStringList{"KWIN_DISABLE_UDMABUF_IMPORT=0"}
+                                                 << false;
+        QTest::newRow("the user's own value: empty") << QStringList{"1:amdgpu:" + dgpu + ":1"}
+                                                     << QStringList{"KWIN_DISABLE_UDMABUF_IMPORT="}
+                                                     << false;
+        QTest::newRow("no GPU") << QStringList{} << QStringList{} << false;
+    }
+    void kwinEnvironment()
+    {
+        QFETCH(QStringList, cards);
+        QFETCH(QStringList, env);
+        QFETCH(bool, off);
+        QTemporaryDir sys;
+        for (const QString &c : cards) {
+            const QStringList f = c.split(':');
+            const QString card = sys.path() + "/class/drm/card" + f[0];
+            /* a connector beside it, which is no card */
+            QDir().mkpath(card + "-DP-1");
+            QDir().mkpath(card + "/device");
+            QDir().mkpath(sys.path() + "/bus/pci/drivers/" + f[1]);
+            QFile::link("../../../../bus/pci/drivers/" + f[1], card + "/device/driver");
+            if (f[2] != "0") {
+                write(card + "/device/mem_info_vram_total", f[2].toLatin1() + '\n');
+            }
+            if (f[3] != "-") {
+                write(card + "/device/boot_vga", f[3].toLatin1() + '\n');
+            }
+        }
+        /* as systemd runs it: what the earlier generators left, no more */
+        QProcessEnvironment e;
+        e.insert("PATH", "/usr/bin:/bin");
+        e.insert("VITRINE_SYSFS", sys.path());
+        for (const QString &v : env) {
+            e.insert(v.section('=', 0, 0), v.section('=', 1));
+        }
+        QProcess p;
+        p.setProcessEnvironment(e);
+        p.start("/bin/sh", {QStringLiteral(HOST_KDE_SOURCE_DIR
+                                           "/../user-environment-generators/60-vitrine-kwin")});
+        QVERIFY(p.waitForFinished());
+        QCOMPARE(p.exitCode(), 0);
+        QCOMPARE(QString::fromLatin1(p.readAllStandardOutput()),
+                 off ? QString("KWIN_DISABLE_UDMABUF_IMPORT=1\n") : QString());
+        QCOMPARE(p.readAllStandardError(), QByteArray());
+    }
+
+    /* Installed executable, where systemd looks for user environment generators */
+    void kwinEnvironmentInstalled()
+    {
+        const QString generator =
+            QStringLiteral(HOST_KDE_SOURCE_DIR "/../user-environment-generators/60-vitrine-kwin");
+        QVERIFY(QFileInfo(generator).isExecutable());
+        const QByteArray rules = read(QStringLiteral(HOST_KDE_SOURCE_DIR "/../CMakeLists.txt"));
+        QVERIFY(rules.contains("install(PROGRAMS user-environment-generators/60-vitrine-kwin\n"
+                               "    DESTINATION lib/systemd/user-environment-generators)"));
+    }
 };
 
 QTEST_GUILESS_MAIN(TestHostKde)

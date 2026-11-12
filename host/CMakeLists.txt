@@ -42,3 +42,8 @@ endif()
 install(CODE "file(REMOVE_RECURSE \"\$ENV{DESTDIR}${vitrine_awake}\")")
 install(DIRECTORY gpu-input-awake/ DESTINATION ${VITRINE_HOST_DESTINATION}/gpu-input-awake
     USE_SOURCE_PERMISSIONS)
+# KWin's settings for the GPU it composites on, at each login, with any KWin
+# (docs/host-tuning.md): a systemd user environment generator, where systemd
+# looks under the prefix (/usr/lib, /usr/local/lib)
+install(PROGRAMS user-environment-generators/60-vitrine-kwin
+    DESTINATION lib/systemd/user-environment-generators)

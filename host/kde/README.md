@@ -21,9 +21,10 @@ What the sets change (the research's measurements):
   every window the CPU draws from system memory at each frame (patch
   0075): with Fedora's KWin and the sets before `hl39y`, Konsole drags
   missed 47 % of the refreshes on an Arc Pro B50. `hl39-68` is the
-  research's set of 2026-10-08, without 0075 and the patches after it:
-  with an Intel xe GPU on Plasma 6.8.0, set `KWIN_DISABLE_UDMABUF_IMPORT=1`
-  (in `~/.config/environment.d`).
+  research's set of 2026-10-08, without 0075 and the patches after it.
+  Whichever KWin runs, vitrine sets `KWIN_DISABLE_UDMABUF_IMPORT=1` at each
+  login when KWin's GPU is an xe GPU or an AMD GPU with 4 GiB or more of its
+  own memory ([docs/host-tuning.md](../../docs/host-tuning.md#kwin-and-the-windows-the-cpu-draws)).
 - `h681zu` adds three patches to the research's earlier `h681a`:
   - 0090, on: big texture uploads go through one buffer that stays mapped.
     On the Arc Pro B50 at 4K and 240 Hz, the launcher opened after typing in

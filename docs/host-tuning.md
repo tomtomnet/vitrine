@@ -436,6 +436,37 @@ its GPU awake. It is not set by default:
 [host/gpu-input-awake](../host/gpu-input-awake/README.md) says how to try
 it.
 
+## KWin and the windows the CPU draws
+
+Not host tuning but a setting of the host's KWin, Fedora's or vitrine's,
+made at each login. KWin hands the windows the CPU draws (`wl_shm`:
+Konsole, Qt Widgets and GTK apps) to the GPU as udmabufs, which the GPU
+then reads from system memory at each frame. On a GPU with memory of its
+own that costs: on an RX 6900 XT a Konsole drag rendered in 3.2 ms instead
+of 0.4 ms, a maximize or restore in 3.9-4.1 ms instead of 0.5, with 6.3-7.5
+% of its frames a refresh late instead of 0.2-0.5 % (the research,
+2026-10-28); on an Arc Pro B50, Konsole drags missed 47 % of the refreshes.
+KWin skips the import by itself on NVIDIA and i915 only (vitrine's host KWin
+on xe too).
+
+vitrine installs a systemd user environment generator,
+`/usr/lib/systemd/user-environment-generators/60-vitrine-kwin`, which sets
+`KWIN_DISABLE_UDMABUF_IMPORT=1` at each login when the GPU KWin composites
+on is:
+
+- an AMD GPU with 4 GiB or more of its own memory (`mem_info_vram_total`):
+  a dedicated one, or an APU given that much by its firmware;
+- an Intel GPU on the xe driver (an Arc B-series card, say).
+
+KWin then uploads those windows into textures instead; other GPUs keep
+KWin's default. KWin's GPU is the first of `KWIN_DRM_DEVICES` if that is
+set, else the one the computer started on (`boot_vga`). It takes effect
+from the next login, and a change of GPU from the login after it. A value
+of your own wins: `KWIN_DISABLE_UDMABUF_IMPORT=0` in a file of
+`~/.config/environment.d` keeps the import.
+`systemctl --user show-environment | grep KWIN_DISABLE_UDMABUF_IMPORT`
+shows what the session has; other desktops ignore it.
+
 ## The udmabuf limits without host tuning
 
 To have the udmabuf limits raised at every boot instead, with or without

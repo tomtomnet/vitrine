@@ -425,9 +425,10 @@ sudo cmake --install build
 
 This installs `vitrine-gtk` ("Vitrine (GTK)" in the application menu) and
 `vitrine` ("Vitrine", the Qt app), `host/` for building its QEMU, `guest/`
-for building the guest tools, and the optional root helper with its polkit
+for building the guest tools, the optional root helper with its polkit
 files (polkit reads actions only from `/usr/share/polkit-1/actions`, hence
-the `/usr` prefix). The menu entries come with the install, not with the
+the `/usr` prefix), and a login-time setting for KWin on dedicated AMD and
+Intel xe GPUs ([docs/host-tuning.md](docs/host-tuning.md#kwin-and-the-windows-the-cpu-draws)). The menu entries come with the install, not with the
 build. To update: `git pull`, build and install again; vitrine then offers
 to update its QEMU and the guest tools if needed.
 
