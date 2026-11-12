@@ -36,3 +36,8 @@ list(REMOVE_DUPLICATES vitrine_guest_packages)
 # the installer and the agent keep their modes
 install(DIRECTORY ${vitrine_guest_packages} DESTINATION ${VITRINE_GUEST_DESTINATION}
     USE_SOURCE_PERMISSIONS)
+# the nested desktop session's KWin settings, for nested.conf as older guest
+# tools shipped it and as this tree does (tests/nested-session.sh)
+if(BUILD_TESTING)
+    add_test(NAME nestedsession COMMAND bash ${CMAKE_CURRENT_SOURCE_DIR}/tests/nested-session.sh)
+endif()
