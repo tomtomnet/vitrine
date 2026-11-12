@@ -409,7 +409,10 @@ launcher opened 8 times a second. Three things:
 - The VMs' KWin held a key's frame back longer than an xe host needs (its
   lone-frame lead). Guest tools 0.1.0-38 shorten it on xe hosts: to 1000
   µs instead of 1500 in the nested desktop, and to 1000 µs in a KDE
-  guest's own session, where it was unset.
+  guest's own session, where it was unset. Since guest tools 0.1.0-44 the
+  nested desktop's lead is 1000 µs on every host: on the 6900 XT keys came
+  1.5 ms sooner with it than with 2500, vitrine's earlier default there
+  (2026-11-12).
 - The GPU was asleep at each key. gpu-input-awake holds an xe GPU 20 ms
   after an input and an AMD GPU 0.3 s, so the 6900 XT was measured awake,
   with keys 0.3 s apart. Waking the B50 takes ~0.45 ms, during which a CPU

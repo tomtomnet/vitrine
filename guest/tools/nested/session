@@ -36,7 +36,7 @@ conf=/etc/vitrine-guest-tools/nested.conf
 : "${CROSVM_DESKTOP_DROP_DCC:=1}" "${CROSVM_DESKTOP_OPAQUE:=1}" "${CROSVM_DESKTOP_KWIN_UNSET:=}"
 : "${CROSVM_DESKTOP_NESTED_OVERLAYS:=0}" "${CROSVM_DESKTOP_CLIPBOARD:=focus}" "${CROSVM_DESKTOP_RESIZE_SETTLE_MS:=200}"
 : "${CROSVM_DESKTOP_OVERLAY_CHORD:=ctrl+alt+s}" "${CROSVM_DESKTOP_HOST_GPU:=auto}" "${CROSVM_DESKTOP_INPUT_METHOD:=0}"
-: "${CROSVM_DESKTOP_KWIN_ENV=KWIN_RENDER_JOURNAL_VARIANCE_TIME_MS=100 KWIN_WAYLAND_DEADLINE=1 KWIN_WAYLAND_COMMIT_TIMING=1 KWIN_STEADY_ANIMATION_CLOCK=1 KWIN_ANIMATION_START_STEP=1 KWIN_LONE_FRAME_LEAD_US=2500 KWIN_ASYNC_CURSOR_MOVES=1}"
+: "${CROSVM_DESKTOP_KWIN_ENV=KWIN_RENDER_JOURNAL_VARIANCE_TIME_MS=100 KWIN_WAYLAND_DEADLINE=1 KWIN_WAYLAND_COMMIT_TIMING=1 KWIN_STEADY_ANIMATION_CLOCK=1 KWIN_ANIMATION_START_STEP=1 KWIN_LONE_FRAME_LEAD_US=1000 KWIN_ASYNC_CURSOR_MOVES=1}"
 # the launcher's words for this boot: the kernel command line and QEMU's fw_cfg, merged at boot by
 # vitrine-nested-boot.service (a GRUB boot has them only in fw_cfg); /proc/cmdline before that unit
 launcher_words=/run/vitrine-nested/cmdline
@@ -87,7 +87,7 @@ fi
 # reports - what the guest's Mesa renders on: vitrine-virtio-gpu-check.service asks at boot
 # (/run/vitrine-guest-tools/host-gpu, its finding in that unit's journal), the helper itself where
 # that file is missing; CROSVM_DESKTOP_HOST_GPU (nested.conf) can name it instead. An Intel xe host
-# gets three settings (the research's on its Arc Pro B50, which it sets when it builds a guest for
+# gets two settings (the research's on its Arc Pro B50, which it sets when it builds a guest for
 # an Intel host); a value of your own in CROSVM_DESKTOP_KWIN_ENV wins:
 #  - KWIN_DISABLE_UDMABUF_IMPORT=1: the clients' shared-memory buffers are not imported as
 #    udmabufs of guest RAM, which reach the host's xe through x-guest-dmabuf: the VM's window
@@ -95,15 +95,15 @@ fi
 #    4K 240 (2026-10-23);
 #  - KWIN_WAYLAND_SCANOUT_BUFFERS=1: the output's buffers allocated for scanout, the only ones xe
 #    puts on a plane (the research's KWin 0073, in vitrine's KWin 6.8.2; its 6.7.5 allocated them
-#    so anyway and ignored the variable);
-#  - KWIN_LONE_FRAME_LEAD_US=1000 in place of the 2500 tuned on AMD hosts. With commit timing the
-#    nested KWin planned a key's frame two refreshes ahead, as its render estimate counts xe's
-#    0.3-0.8 ms per GPU job, and the frame's stamp held it there; the B50 host takes a lone commit
-#    up to ~1 ms before its vblank. Keys 7.8-10.2 -> 7.4-7.6 ms p50, bare KDE's 7.6-7.7 (one run in
-#    four still ~9.3), the launcher's start still without a repeated refresh (2026-11-06, the
-#    research's e152b8a). 1500, the xe value up to guest tools 0.1.0-37 (keys 11.4 -> 10.1-10.6 ms,
-#    2026-10-23), is replaced as well: a 1500 in CROSVM_DESKTOP_KWIN_ENV is most likely that advice,
-#    copied from these notes or nested.conf's.
+#    so anyway and ignored the variable).
+# Up to guest tools 0.1.0-43 it got KWIN_LONE_FRAME_LEAD_US=1000 as well, in place of the 2500 then
+# shipped for every host. With commit timing the nested KWin planned a key's frame two refreshes
+# ahead, as its render estimate counts xe's 0.3-0.8 ms per GPU job, and the frame's stamp held it
+# there; the B50 host takes a lone commit up to ~1 ms before its vblank. Keys 7.8-10.2 -> 7.4-7.6 ms
+# p50, bare KDE's 7.6-7.7 (one run in four still ~9.3), the launcher's start still without a
+# repeated refresh (2026-11-06, the research's e152b8a). Since 0.1.0-44 1000 is every host's lead
+# (the research's 9ecac74: on an RX 6900 XT at 240 Hz keys 1.5 ms sooner than with 2500, the
+# animations alike, 2026-11-12); below, what a nested.conf that an update kept gets.
 kwin_env_value() {   # the value VAR has in CROSVM_DESKTOP_KWIN_ENV; status 1 if it has none
     local kv
     for kv in $CROSVM_DESKTOP_KWIN_ENV; do
@@ -129,25 +129,26 @@ else
 fi
 if [ "$host_gpu" = xe ]; then
     xe_own=
-    xe_replaced=
-    for kv in KWIN_DISABLE_UDMABUF_IMPORT=1 KWIN_WAYLAND_SCANOUT_BUFFERS=1 KWIN_LONE_FRAME_LEAD_US=1000; do
-        # a value of your own stays; the lead's 2500 is the default, for AMD hosts, and its 1500 the
-        # xe value up to guest tools 0.1.0-37
+    for kv in KWIN_DISABLE_UDMABUF_IMPORT=1 KWIN_WAYLAND_SCANOUT_BUFFERS=1; do
+        # a value of your own stays
         if have=$(kwin_env_value "${kv%%=*}"); then
-            case "${kv%%=*}=$have" in
-            KWIN_LONE_FRAME_LEAD_US=2500) ;;
-            KWIN_LONE_FRAME_LEAD_US=1500) xe_replaced=" (the earlier shipped 1500 replaced)" ;;
-            *)
-                [ "$have" = "${kv#*=}" ] || xe_own="${xe_own:+$xe_own }${kv%%=*}=$have"
-                continue
-                ;;
-            esac
+            [ "$have" = "${kv#*=}" ] || xe_own="${xe_own:+$xe_own }${kv%%=*}=$have"
+            continue
         fi
         kwin_env_put "$kv"
     done
-    log "host GPU: Intel xe (from $host_gpu_from): this session's KWin gets KWIN_DISABLE_UDMABUF_IMPORT=$(kwin_env_value KWIN_DISABLE_UDMABUF_IMPORT) KWIN_WAYLAND_SCANOUT_BUFFERS=$(kwin_env_value KWIN_WAYLAND_SCANOUT_BUFFERS) KWIN_LONE_FRAME_LEAD_US=$(kwin_env_value KWIN_LONE_FRAME_LEAD_US)$xe_replaced${xe_own:+ (your own: $xe_own)}"
+    log "host GPU: Intel xe (from $host_gpu_from): this session's KWin gets KWIN_DISABLE_UDMABUF_IMPORT=$(kwin_env_value KWIN_DISABLE_UDMABUF_IMPORT) KWIN_WAYLAND_SCANOUT_BUFFERS=$(kwin_env_value KWIN_WAYLAND_SCANOUT_BUFFERS)${xe_own:+ (your own: $xe_own)}"
 else
     log "host GPU: ${host_gpu:-unknown} (from $host_gpu_from): none of the Intel xe settings"
+fi
+# vitrine: a nested.conf from guest tools 0.1.0-43 or older - one that had been changed, which an
+# update keeps as it is - has no CROSVM_DESKTOP_CONF_FROM, and the lone-frame lead of its time:
+# 2500, shipped then, or on an Intel xe host 1500, its notes' value up to 0.1.0-37. Either becomes
+# 1000, which the journal says; any other lead, and any in a newer nested.conf, is yours and stays.
+if [ -z "${CROSVM_DESKTOP_CONF_FROM:-}" ] && old_lead=$(kwin_env_value KWIN_LONE_FRAME_LEAD_US) &&
+    { [ "$old_lead" = 2500 ] || { [ "$old_lead" = 1500 ] && [ "$host_gpu" = xe ]; }; }; then
+    kwin_env_put KWIN_LONE_FRAME_LEAD_US=1000
+    log "$conf is from guest tools 0.1.0-43 or older (no CROSVM_DESKTOP_CONF_FROM): its lone-frame lead $old_lead, the earlier shipped value, replaced with 1000, the default since 0.1.0-44"
 fi
 
 rm -f "$sock" "$sock.lock"

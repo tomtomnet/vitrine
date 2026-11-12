@@ -2,7 +2,7 @@
 # exact version, and dnf takes an installed one of the same version as done.
 Name:           vitrine-guest-tools
 Version:        0.1.0
-Release:        43%{?dist}
+Release:        44%{?dist}
 Summary:        vitrine guest tools: patched virtio-gpu driver, settings and agent
 
 # the driver's sources (dkms/vendor, dkms/patches) are the kernel's: MIT
@@ -183,6 +183,22 @@ fi
 %dir %{_sharedstatedir}/%{name}
 
 %changelog
+* Thu Nov 12 2026 vitrine <noreply@anthropic.com> - 0.1.0-44
+- the nested desktop's KWin aims a lone frame (a key or a click after a
+  pause) at the next host refresh when that is at least 1 ms away, on
+  every host: KWIN_LONE_FRAME_LEAD_US=1000 in nested.conf, in place of
+  2500 (Intel xe hosts had 1000 since 0.1.0-38).  On an RX 6900 XT at
+  240 Hz keys reach the screen 1.5 ms sooner, the animations alike (the
+  research's 9ecac74)
+- a nested.conf an update kept because it had been changed, from 0.1.0-43
+  or older (without the new CROSVM_DESKTOP_CONF_FROM), gets 1000 in place
+  of its 2500, the value shipped then, and on an xe host of its 1500, as
+  before; the session's journal says so.  Any other lead, and any in a
+  newer nested.conf, stays
+- Fedora 44's medium brings wl-cross-domain-proxy at the research's
+  456b1de: input events reach the nested desktop's apps with their times
+  in the guest's clock, not the host's
+
 * Thu Nov 12 2026 vitrine <noreply@anthropic.com> - 0.1.0-43
 - with vitrine's KWin, the installer locks vitrine's KSvg and Kirigami too,
   as Qt Base, and holds Fedora's KDE Frameworks at their version with them,
