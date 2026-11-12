@@ -5,7 +5,7 @@ ConditionVirtualization=vm
 # it may lower blob_flush_fence before a compositor uses the GPU; the
 # options of a nested-desktop boot differ
 After=vitrine-nested-boot.service
-# and it writes KWin's lone-frame lead of an Intel xe host into
+# and it writes KWin's lone-frame lead for the guest's own sessions into
 # /run/environment.d before any user's systemd reads it as it starts: every
 # user@.service comes after systemd-user-sessions.service (systemd's login
 # barrier), for an automatic login, a lingering user and ssh alike

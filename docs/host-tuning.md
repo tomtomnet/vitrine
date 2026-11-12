@@ -412,7 +412,9 @@ launcher opened 8 times a second. Three things:
   guest's own session, where it was unset. Since guest tools 0.1.0-44 the
   nested desktop's lead is 1000 µs on every host: on the 6900 XT keys came
   1.5 ms sooner with it than with 2500, vitrine's earlier default there
-  (2026-11-12).
+  (2026-11-12). Since 0.1.0-45 a KDE guest's own session has it on every
+  host with a native context: on the 6900 XT in QEMU's window keys came
+  1.8 ms sooner than without it.
 - The GPU was asleep at each key. gpu-input-awake holds an xe GPU 20 ms
   after an input and an AMD GPU 0.3 s, so the 6900 XT was measured awake,
   with keys 0.3 s apart. Waking the B50 takes ~0.45 ms, during which a CPU

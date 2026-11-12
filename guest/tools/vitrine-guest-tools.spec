@@ -2,7 +2,7 @@
 # exact version, and dnf takes an installed one of the same version as done.
 Name:           vitrine-guest-tools
 Version:        0.1.0
-Release:        44%{?dist}
+Release:        45%{?dist}
 Summary:        vitrine guest tools: patched virtio-gpu driver, settings and agent
 
 # the driver's sources (dkms/vendor, dkms/patches) are the kernel's: MIT
@@ -183,6 +183,16 @@ fi
 %dir %{_sharedstatedir}/%{name}
 
 %changelog
+* Thu Nov 12 2026 vitrine <noreply@anthropic.com> - 0.1.0-45
+- a KDE guest's own session (Plasma on the VM's screen) gets KWin's
+  lone-frame lead of 1000 µs wherever the guest reaches the host's GPU
+  through a native context, not only on Intel xe hosts: the boot check
+  writes /run/environment.d/45-vitrine-lone-frame.conf for AMD hosts too.
+  On an RX 6900 XT at 240 Hz in QEMU's window, keys 9.1-9.5 -> 7.4-7.6 ms
+  p50, the animations alike (the research's 5a4f677); vitrine's view was
+  not measured.  A file of the same name in /etc/environment.d still turns
+  it off
+
 * Thu Nov 12 2026 vitrine <noreply@anthropic.com> - 0.1.0-44
 - the nested desktop's KWin aims a lone frame (a key or a click after a
   pause) at the next host refresh when that is at least 1 ms away, on

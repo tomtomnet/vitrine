@@ -5,8 +5,8 @@
 # the initramfs.  The taint field is the honest answer: O (out of tree), with
 # a parameter only vitrine's patches add (another out-of-tree virtio-gpu
 # taints O as well), is ours.  Then it asks what the host's GPU is (below),
-# gives the guest's own sessions KWin's lone-frame lead on an Intel xe host,
-# and sets the options of this boot: blob_flush_fence for the KWin installed,
+# gives the guest's own sessions KWin's lone-frame lead where the guest has a
+# native context, and sets the options of this boot: blob_flush_fence for the KWin installed,
 # and those of a nested-desktop boot.
 # Runs at boot, before the display manager; the
 # journal has its findings (journalctl -b -u vitrine-virtio-gpu-check).
@@ -86,38 +86,48 @@ if host_gpu=$(/usr/libexec/vitrine-guest-tools/host-gpu); then
 	context=$(printf '%s\n' "$host_gpu" | sed -n 's/^NATIVE_CONTEXT=//p')
 else
 	rm -f "$run/host-gpu"
-	echo "<4>could not ask the virtio GPU what the host's GPU is: the nested desktop's KWin gets no settings for it"
+	echo "<4>could not ask the virtio GPU what the host's GPU is: the nested desktop's KWin gets no settings for it, the guest's own sessions no lone-frame lead"
 fi
 
-# The guest's own sessions on an Intel xe host (Plasma on the VM's screen;
-# the nested desktop's KWin gets its settings from its session): KWin's
-# lone-frame lead 1000 us, through a file in /run/environment.d, which each
-# user's systemd reads as it starts.  This unit runs before the first one
+# The guest's own sessions (Plasma on the VM's screen; the nested desktop's
+# KWin gets its settings from its session), where the guest reaches the
+# host's GPU through a native context: KWin's lone-frame lead 1000 us,
+# through a file in /run/environment.d, which each user's systemd reads as
+# it starts.  This unit runs before the first one
 # (Before=systemd-user-sessions.service).  Unset, the lead is off, and the
 # guest's KWin held a key's frame up to ~2 ms to meet its own vblank, which
-# the host does not wait for: on the research's Arc Pro B50, keys 11.01 ->
-# 10.29 ms mean in QEMU's window, the guest's part 3.48 -> 2.44, animations
-# unchanged (2026-11-07, its ef7974d).  Written at each boot from the native
-# context alone: a VM moved to another host keeps no stale setting.  The
-# file is whole or absent (.new, then a rename; environment.d reads *.conf
-# only).  nested.md: "KWin's settings on Intel xe hosts".
+# the host does not wait for.  In QEMU's window, animations unchanged: keys
+# 11.01 -> 10.29 ms mean on the research's Arc Pro B50, the guest's part
+# 3.48 -> 2.44 (2026-11-07, its ef7974d: guest tools 0.1.0-38, Intel xe
+# hosts only); 9.1-9.5 -> 7.4-7.6 ms p50 on its RX 6900 XT at 240 Hz
+# (2026-11-12, its 5a4f677: every native context since 0.1.0-45).  None
+# without one (none: virgl alone, which nothing measured).  Written at each
+# boot from the native context alone: a VM moved to another host keeps no
+# stale setting.  The file is whole or absent (.new, then a rename;
+# environment.d reads *.conf only).  nested.md: "KWin's lone-frame lead".
 lead=/run/environment.d/45-vitrine-lone-frame.conf
-if [ "$context" = xe ]; then
+case $context in
+"" | none)
+	if [ -e "$lead" ]; then
+		rm -f "$lead" && echo "no native context: $lead removed"
+	fi
+	;;
+*)
 	if mkdir -p /run/environment.d && printf '%s\n' \
-		"# vitrine guest tools: written at boot by vitrine-virtio-gpu-check.service on an Intel" \
-		"# xe host, removed at a boot on another: KWin's lone-frame lead for the guest's own" \
-		"# sessions.  A file of yours in ~/.config/environment.d or /etc/environment.d whose" \
-		"# name sorts after this one's overrides it; one of this same name there replaces it" \
-		"# (empty: no lead).  More in /usr/share/doc/vitrine-guest-tools/nested.md." \
+		"# vitrine guest tools: written at boot by vitrine-virtio-gpu-check.service where the" \
+		"# guest reaches the host's GPU through a native context: KWin's lone-frame lead for" \
+		"# the guest's own sessions.  A file of yours in ~/.config/environment.d or" \
+		"# /etc/environment.d whose name sorts after this one's overrides it; one of this" \
+		"# same name there replaces it (empty: no lead).  More in" \
+		"# /usr/share/doc/vitrine-guest-tools/nested.md." \
 		KWIN_LONE_FRAME_LEAD_US=1000 > "$lead.new" && mv -f "$lead.new" "$lead"; then
-		echo "an Intel xe host: the guest's own sessions get KWIN_LONE_FRAME_LEAD_US=1000 ($lead)"
+		echo "the host's GPU through a native context ($context): the guest's own sessions get KWIN_LONE_FRAME_LEAD_US=1000 ($lead)"
 	else
 		rm -f "$lead.new"
 		echo "<4>could not write $lead: the guest's own sessions get no lone-frame lead"
 	fi
-elif [ -e "$lead" ]; then
-	rm -f "$lead" && echo "not an Intel xe host: $lead removed"
-fi
+	;;
+esac
 
 # blob_flush_fence: 3 with the KWin the installer put in (it waits for the
 # fence the driver puts on the buffers, KWIN_SWAPCHAIN_WAIT_READERS), else 1:
