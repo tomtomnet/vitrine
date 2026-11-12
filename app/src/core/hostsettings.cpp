@@ -167,6 +167,33 @@ QStringList HostSettings::amdCards(const QString &sysRoot, bool apus)
     return cards;
 }
 
+QStringList HostSettings::amdProfileCards(const QString &sysRoot)
+{
+    static const QRegularExpression name("^card[0-9]+$");
+    const QDir drm(sysRoot + "/class/drm");
+    QStringList cards;
+
+    for (const QString &card : drm.entryList(QDir::Dirs | QDir::NoDotAndDotDot, QDir::Name)) {
+        const QString device = drm.filePath(card) + "/device/";
+        QFile vendor(device + "vendor"), profiles(device + "pp_power_profile_mode"),
+            metrics(device + "gpu_metrics");
+
+        if (!name.match(card).hasMatch() || !vendor.open(QIODevice::ReadOnly) ||
+            vendor.readAll().trimmed() != "0x1002" || !profiles.open(QIODevice::ReadOnly) ||
+            !profiles.readAll().contains("3D_FULL_SCREEN")) {
+            continue;
+        }
+        /* not an APU (gpu_metrics_v2_x or v3_x, as amdCards() tells) */
+        const QByteArray header =
+            metrics.open(QIODevice::ReadOnly) ? metrics.read(4) : QByteArray();
+        if (header.size() >= 4 && (header[2] == 2 || header[2] == 3)) {
+            continue;
+        }
+        cards << card;
+    }
+    return cards;
+}
+
 /* "Real-time QEMU threads are off: @why." */
 static QString realtimeOffBecause(const QString &why)
 {
@@ -544,6 +571,14 @@ void HostSettings::queue(qint64 pid)
     for (const QString &card : amdCards(m_sysRoot, false)) {
         const QString value = floor != "auto" ? floor : apus.contains(card) ? "auto" : "off";
         m_out += QString("gpu-floor %1 %2\n").arg(card, value).toLatin1();
+    }
+    /* the dedicated AMD GPUs' 3D_FULL_SCREEN power profile, with the
+       floor's Automatic too (measured on an RX 6900 XT); Off or a fixed
+       floor: none */
+    for (const QString &card : amdProfileCards(m_sysRoot)) {
+        m_out += QString("gpu-profile %1 %2\n")
+                     .arg(card, floor == "auto" ? "on" : "off")
+                     .toLatin1();
     }
     if (m_udmabuf.contains(pid)) {
         m_out += ("udmabuf " + n + '\n').toLatin1();
@@ -996,6 +1031,13 @@ void HostSettings::handleLine(const QString &line)
         /* "skip cpu-latency: this kernel has no /dev/cpu_dma_latency" */
         say(tr("Host tuning: the CPU is not kept out of its deeper idle states: %1.")
                 .arg(line.section(':', 1).trimmed()));
+    } else if (line == "error gpu-profile: unknown request") {
+        /* a helper installed before vitrine set the power profile: worth
+           saying only when asked for (off is sent too) */
+        if (gpuFloor() == "auto") {
+            say(tr("Host tuning: the installed vitrine-helper is older than Vitrine and cannot "
+                   "set the GPU's power profile while VMs run: install it again."));
+        }
     } else if (line.startsWith("skip epp: ") || line.startsWith("error epp: ")) {
         /* "skip epp: acpi-cpufreq has no energy performance preference (...)" */
         say(tr("Host tuning: the CPU's energy performance preference stays as it is: %1.")

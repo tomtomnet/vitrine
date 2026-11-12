@@ -559,6 +559,46 @@ private slots:
         QCOMPARE(odTable(), od(2000, 2700).trimmed());
     }
 
+    /*
+     * A dedicated AMD GPU with power profiles: 3D_FULL_SCREEN while VMs run
+     * with the floor's Automatic, put back after; Off asks for none
+     */
+    void powerProfile()
+    {
+        const QString sys = m_root + "/sys";
+        const QString profiles = sys + "/class/drm/card2/device/pp_power_profile_mode";
+        const QByteArray table = " 0 BOOTUP_DEFAULT*:\n 1 3D_FULL_SCREEN :\n 5        COMPUTE :\n";
+        amdCard(sys, "card2", 1, false);
+        writeFile(profiles, table);
+        /* an APU's are left to its floor */
+        amdCard(sys, "card3", 2);
+        writeFile(sys + "/class/drm/card3/device/pp_power_profile_mode", table);
+        QCOMPARE(HostSettings::amdProfileCards(sys), QStringList({"card2"}));
+        QVERIFY(HostSettings::amdProfileCards(m_root + "/nothing").isEmpty());
+        {
+            FakeQemu qemu;
+            HostSettings hs(nullptr);
+            QSignalSpy lines(&hs, &HostSettings::helperLine),
+                finished(&hs, &HostSettings::helperFinished);
+            fake(hs);
+            hs.tune(qemu.pid());
+            QTRY_VERIFY(saw(lines, "ok gpu-profile card2 3D_FULL_SCREEN (was BOOTUP_DEFAULT)"));
+            QVERIFY(readFile(profiles).contains("3D_FULL_SCREEN*:"));
+            qemu.stop();
+            QTRY_COMPARE(finished.size(), 1);
+            QVERIFY(saw(lines, "restored gpu-profile card2: BOOTUP_DEFAULT"));
+            QCOMPARE(readFile(profiles), table.trimmed());
+        }
+        HostSettings::setGpuFloor("off");
+        FakeQemu qemu;
+        HostSettings hs(nullptr);
+        QSignalSpy lines(&hs, &HostSettings::helperLine);
+        fake(hs);
+        hs.tune(qemu.pid());
+        QTRY_VERIFY(saw(lines, "ok gpu-profile card2 off"));
+        QCOMPARE(readFile(profiles), table.trimmed());
+    }
+
     void disabled()
     {
         HostSettings::setEnabled(false);

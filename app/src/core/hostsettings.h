@@ -18,7 +18,8 @@ class VmStore;
 
 /*
  * The host settings that keep VMs smooth, for as long as they run: the
- * kernel's fair server at 10 ms / 1 ms, a GPU clock floor on AMD APUs,
+ * kernel's fair server at 10 ms / 1 ms, a GPU clock floor on AMD APUs and
+ * the 3D_FULL_SCREEN power profile on AMD's dedicated GPUs,
  * transparent huge pages for shared memory (the guests' memfd RAM), the
  * CPU ready to wake up (cpuLatency()), real-time QEMU threads for the VM
  * in front (with the fair server only), and for VMs whose GPU has native
@@ -91,7 +92,8 @@ public:
     /* Preferences: tuning, on by default */
     static bool enabled();
     static void setEnabled(bool on);
-    /* "auto" (the default: 1800 MHz on AMD APUs), "off" or a clock in MHz */
+    /* "auto" (the default: 1800 MHz on AMD APUs, the 3D_FULL_SCREEN power
+       profile on AMD's dedicated GPUs), "off" or a clock in MHz (no profile) */
     static QString gpuFloor();
     static void setGpuFloor(const QString &floor);
     /*
@@ -123,6 +125,12 @@ public:
      * @sysRoot: those with amdgpu's overdrive table, and only APUs if @apus
      */
     static QStringList amdCards(const QString &sysRoot, bool apus);
+    /*
+     * The dedicated AMD cards under @sysRoot whose power profiles have
+     * 3D_FULL_SCREEN: the helper's gpu-profile puts it in use while VMs run
+     * with the floor's Automatic (APUs get the floor instead)
+     */
+    static QStringList amdProfileCards(const QString &sysRoot);
 
     /*
      * Real-time threads need the kernel's fair server set (the bound on how

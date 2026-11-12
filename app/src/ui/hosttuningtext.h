@@ -61,6 +61,8 @@ public:
     static QString notActive(const HostSettings::Status &status);
     /* What keeping the CPU ready to wake up does, and costs */
     static QString cpuHint();
+    /* What the GPU clock floor's Automatic does, by GPU */
+    static QString floorHint();
     /* "@gpus: a clock floor does nothing on a dedicated GPU… It is installed and runs." */
     static QString awake(const QStringList &gpus, GpuInputAwake::Installed installed,
                          const QString &active);

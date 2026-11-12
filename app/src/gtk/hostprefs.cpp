@@ -49,7 +49,7 @@ HostPrefs::HostPrefs(Gtk4::Dialog::Presenter present)
     /* the GPU clock floor; gpu-input-awake for the dedicated GPUs */
     AdwPreferencesGroup *gpu = Gtk4::group("GPU");
     m_floor = Gtk4::comboRow("GPU Clock Floor", {"Automatic", "Off", "At Least"},
-                             "Automatic: 1800 MHz on AMD APUs, none on other GPUs");
+                             HostTuningPrefsText::floorHint());
     gtk_widget_set_name(m_floor, "gpu-floor");
     Gtk4::setSelected(m_floor, floor == "auto" ? Automatic : floor == "off" ? Off : AtLeast);
     m_mhz = Gtk4::spinRow("Lowest Clock", 200, 4000, 100);

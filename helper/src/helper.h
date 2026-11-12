@@ -202,6 +202,20 @@ struct od_table {
 };
 /* false when @text has no complete OD_SCLK and OD_RANGE SCLK */
 bool od_parse(const char *text, struct od_table *od);
+/* amdgpu's power profiles, from pp_power_profile_mode */
+#define MAX_PROFILES 16
+struct profiles {
+    struct profile {
+        char name[16];      /* BOOTUP_DEFAULT, 3D_FULL_SCREEN... */
+        int index;          /* its number, which a write takes */
+        size_t end;         /* where its name ends in the text */
+        long star;          /* where the '*' after it is, -1 for none */
+    } p[MAX_PROFILES];
+    int n;
+    int active;             /* the entry of the one in use, -1 for none */
+};
+/* false when @text lists no profile with its number */
+bool profiles_parse(const char *text, struct profiles *ps);
 
 /* Opens /run/vitrine-helper and restores what a crashed helper left; false
    when the state folder is unusable */
@@ -227,6 +241,9 @@ void epp_on(void);
 void epp_off(void);
 /* @card: "cardN"; @value: a clock in MHz, "auto" or "off" */
 void gpu_floor(const char *card, const char *value);
+/* @card: "cardN"; @value: "on" (amdgpu's 3D_FULL_SCREEN power profile, on
+   a dedicated GPU, from the default in performance level auto) or "off" */
+void gpu_profile(const char *card, const char *value);
 /* The protocol's udmabuf <pid>: the udmabuf limits raised while that
    watched QEMU runs */
 void udmabuf_on(const char *arg);
