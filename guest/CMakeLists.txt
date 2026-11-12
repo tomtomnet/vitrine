@@ -37,7 +37,10 @@ list(REMOVE_DUPLICATES vitrine_guest_packages)
 install(DIRECTORY ${vitrine_guest_packages} DESTINATION ${VITRINE_GUEST_DESTINATION}
     USE_SOURCE_PERMISSIONS)
 # the nested desktop session's KWin settings, for nested.conf as older guest
-# tools shipped it and as this tree does (tests/nested-session.sh)
+# tools shipped it and as this tree does (tests/nested-session.sh), and the
+# boot check's lone-frame lead for the guest's own sessions
+# (tests/gpu-check-lead.sh)
 if(BUILD_TESTING)
     add_test(NAME nestedsession COMMAND bash ${CMAKE_CURRENT_SOURCE_DIR}/tests/nested-session.sh)
+    add_test(NAME gpuchecklead COMMAND bash ${CMAKE_CURRENT_SOURCE_DIR}/tests/gpu-check-lead.sh)
 endif()
