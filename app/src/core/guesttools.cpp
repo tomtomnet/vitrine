@@ -399,6 +399,13 @@ Report parseReport(const QJsonObject &s)
     for (auto it = builds.begin(); it != builds.end(); ++it) {
         r.vitrineBuilds.insert(it.key(), it.value().toBool());
     }
+    for (const QJsonValue &v : s["fedoraNewer"].toArray()) {
+        const QJsonObject o = v.toObject();
+        const Held h{o["what"].toString(), o["held"].toString(), o["fedora"].toString()};
+        if (!h.what.isEmpty() && !h.held.isEmpty() && !h.fedora.isEmpty()) {
+            r.fedoraNewer << h;
+        }
+    }
     r.preempt = s["preempt"].toString();
     r.rebootNeeded = s["rebootNeeded"].toBool();
     r.installing = s["installing"].toBool();

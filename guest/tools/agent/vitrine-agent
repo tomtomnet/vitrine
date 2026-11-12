@@ -47,7 +47,9 @@ import select
 import struct
 import subprocess
 import sys
+import threading
 import time
+import tomllib
 
 AGENT_VERSION = "@VERSION@"
 PROTOCOL = 3
@@ -64,8 +66,16 @@ PACKAGES = ["vitrine-guest-tools", "mesa-dri-drivers", "mesa-vulkan-drivers", "m
             "gnome-shell", "kernel-core", "dkms", "kpipewire", "wl-cross-domain-proxy",
             "qt6-qtbase", "kf6-ksvg", "kf6-kirigami", "mutter"]
 # What the tools replace only while the guest has the version they are built
-# from: Fedora's next build takes their place, until the next guest tools
+# from: Fedora's next build takes their place, until the next guest tools -
+# but Qt Base, KSvg and Kirigami are locked with vitrine's KWin
 FOLLOWING = ["qt6-qtbase", "kf6-ksvg", "kf6-kirigami", "mutter"]
+# What the tools hold at a version, by the package that tells it: Fedora's
+# newer one is said (fedora_newer), asked of dnf at most once a day
+HELD = [("KDE Frameworks", "kf6-ksvg"), ("KDE Frameworks", "kf6-kirigami"), ("Plasma", "kwin"),
+        ("Qt", "qt6-qtbase")]
+FEDORA_CACHE = "/var/lib/vitrine-guest-tools/fedora-versions.json"
+FEDORA_EVERY = 24 * 3600
+LOCKFILE = "/etc/dnf/versionlock.toml"
 CAPSETS = {1: "virgl", 2: "virgl2", 3: "gfxstream-vulkan", 4: "venus", 5: "cross-domain",
            6: "drm"}
 # what the VM's own screen shows, looked at this often while the host listens
@@ -142,6 +152,102 @@ def vitrine_builds():
         if len(parts) == 3 and parts[2] != "i686":
             found[parts[0]] = parts[1] in put
     return found
+
+
+# the thread asking dnf, while it runs; whether the service may start one
+# (not vitrine-agent --status, which ends at once)
+fedora_check = None
+ask_fedora = False
+
+
+def online():
+    """A default route, IPv4 or IPv6 (but the loopback's)"""
+    try:
+        with open("/proc/net/route", encoding="ascii") as f:
+            if any(len(r) > 2 and r[1] == "00000000" for r in (l.split() for l in f)):
+                return True
+        with open("/proc/net/ipv6_route", encoding="ascii") as f:
+            return any(len(r) == 10 and r[0] == "0" * 32 and r[1] == "00" and r[9] != "lo"
+                       for r in (l.split() for l in f))
+    except OSError:
+        return False
+
+
+def fedora_query():
+    """The newest versions Fedora's repositories have of HELD's packages, into
+    FEDORA_CACHE: read-only, at idle priority (a dnf metadata refresh)"""
+    names = sorted({name for _, name in HELD})
+    out = run(["nice", "-n", "19", "ionice", "-c", "3", "dnf", "-q", "repoquery",
+               "--latest-limit=1", "--arch=x86_64,noarch", "--qf", "%{name} %{version}\n"]
+              + names, timeout=900)
+    versions = {}
+    for line in out.splitlines():
+        parts = line.split()
+        if len(parts) == 2 and parts[0] in names:
+            versions[parts[0]] = parts[1]
+    if not versions:
+        # no answer (dnf busy, the network gone): asked again next time
+        return
+    tmp = FEDORA_CACHE + ".new"
+    try:
+        with open(tmp, "w", encoding="utf-8") as f:
+            json.dump({"checked": int(time.time()), "versions": versions}, f)
+        os.replace(tmp, FEDORA_CACHE)
+    except OSError:
+        pass
+
+
+def fedora_versions(installing=False):
+    """{name: version} of HELD's packages in Fedora's repositories, as dnf
+    last said; asked again in the background once a day, with a network
+    route, and never while an install runs"""
+    global fedora_check
+    try:
+        age = time.time() - os.stat(FEDORA_CACHE).st_mtime
+        with open(FEDORA_CACHE, encoding="utf-8") as f:
+            versions = json.load(f).get("versions", {})
+    except (OSError, ValueError, AttributeError):
+        age, versions = None, {}
+    if (ask_fedora and not installing and (age is None or age > FEDORA_EVERY)
+            and not (fedora_check and fedora_check.is_alive())
+            and not os.path.exists(f"{RUN_DIR}/installer-active") and online()):
+        fedora_check = threading.Thread(target=fedora_query, daemon=True)
+        fedora_check.start()
+    return versions if isinstance(versions, dict) else {}
+
+
+def tools_locked():
+    """The names the tools lock (their entries of dnf's versionlock)"""
+    try:
+        with open(LOCKFILE, "rb") as f:
+            data = tomllib.load(f)
+    except (OSError, ValueError):
+        return set()
+    return {str(e.get("name")) for e in data.get("packages", [])
+            if str(e.get("comment", "")).startswith("vitrine-guest-tools")}
+
+
+def newer(a, b):
+    """Version @a is newer than @b, as rpm orders them"""
+    if not re.fullmatch(r"[0-9A-Za-z._+~^]+", a + b):
+        return False
+    return run(["rpm", "--eval", f"%{{lua: print(rpm.vercmp('{a}', '{b}'))}}"]).strip() == "1"
+
+
+def fedora_newer(installing=False):
+    """What the tools hold at a version that Fedora's repositories have moved
+    past: [{"what": "KDE Frameworks", "held": "6.31.0", "fedora": "6.32.0"}]"""
+    found = fedora_versions(installing)
+    locked = tools_locked()
+    out, said = [], set()
+    for what, name in HELD:
+        if what in said or name not in locked or name not in found:
+            continue
+        held = run(["rpm", "-q", "--qf", "%{VERSION}\n", name]).split()
+        if held and newer(found[name], held[0]):
+            out.append({"what": what, "held": held[0], "fedora": found[name]})
+            said.add(what)
+    return out
 
 
 def kernels():
@@ -445,6 +551,8 @@ def status(installing=False):
         "packages": pkgs,
         "kwinPatched": bool(tools_kwin) and installed_kwin == tools_kwin,
         "vitrineBuilds": vitrine_builds(),
+        # what the tools hold at a version Fedora has moved past (once dnf said)
+        "fedoraNewer": fedora_newer(installing),
         "preempt": preempt(),
         "rebootNeeded": os.path.exists(f"{RUN_DIR}/reboot-needed"),
         "installed": load("state.json"),
@@ -675,7 +783,10 @@ class ScreenWatch:
 
 
 def serve():
+    global ask_fedora
     port = Port()
+    # Fedora's versions asked for in the background, by the service only
+    ask_fedora = True
     install = None
     shown = ScreenWatch()
     started_with = os.stat(__file__).st_mtime

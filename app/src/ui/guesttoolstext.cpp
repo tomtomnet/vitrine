@@ -120,6 +120,10 @@ static QString forWhom(Vm *vm)
         if (const QString mutter = runningMutter(monitor->report()); !mutter.isEmpty()) {
             runs += ' ' + mutter;
         }
+        /* the locked builds Fedora has moved past: a newer vitrine ports them */
+        if (const QString newer = fedoraNewer(monitor->report()); !newer.isEmpty()) {
+            runs += ' ' + newer;
+        }
         return runs;
     }
     return text + ' ' +
@@ -198,16 +202,37 @@ QString what(Vm *vm, const GuestTools::Medium &medium)
                              !medium.qtbase.isEmpty() || !medium.ksvg.isEmpty() ||
                              !medium.kirigami.isEmpty();
     if (kdePackages) {
-        what += medium.kwayland.isEmpty()
-                    ? tr("<p>Mesa, KWin and KPipeWire then stay at these versions until the "
-                         "next guest tools, and so do Qt Base and the guest's Plasma with "
-                         "vitrine's KWin. ")
-                    : tr("<p>Mesa, KWin, KWayland and KPipeWire then stay at these versions "
-                         "until the next guest tools, and so do Qt Base and the guest's Plasma "
-                         "with vitrine's KWin. ");
-        what += tr("KSvg, Kirigami and Qt Base otherwise give way to Fedora's next build of "
-                   "them. The guest needs the network: dkms, the kernel headers and a newer "
-                   "Plasma come from Fedora.</p>");
+        /* with vitrine's KWin, Qt Base, KSvg and Kirigami too, and the
+           guest's Plasma and KDE Frameworks held at their versions */
+        QStringList held;
+        if (!medium.qtbase.isEmpty()) {
+            held << tr("Qt Base");
+        }
+        if (!medium.ksvg.isEmpty()) {
+            held << tr("KSvg");
+        }
+        if (!medium.kirigami.isEmpty()) {
+            held << tr("Kirigami");
+        }
+        held << tr("the guest's Plasma");
+        if (!medium.ksvg.isEmpty() || !medium.kirigami.isEmpty()) {
+            held << tr("its KDE Frameworks");
+        }
+        const QString heldList = held.size() == 1
+                                     ? held.first()
+                                     : tr("%1 and %2").arg(held.mid(0, held.size() - 1).join(", "),
+                                                           held.last());
+        what += (medium.kwayland.isEmpty()
+                     ? tr("<p>Mesa, KWin and KPipeWire then stay at these versions until the "
+                          "next guest tools, and so do %1 with vitrine's KWin: Fedora's "
+                          "updates of them wait for vitrine's next guest tools. ")
+                     : tr("<p>Mesa, KWin, KWayland and KPipeWire then stay at these versions "
+                          "until the next guest tools, and so do %1 with vitrine's KWin: "
+                          "Fedora's updates of them wait for vitrine's next guest tools. "))
+                    .arg(heldList);
+        what += tr("Without vitrine's KWin, KSvg, Kirigami and Qt Base give way to Fedora's next "
+                   "build of them. The guest needs the network: dkms, the kernel headers and a "
+                   "newer Plasma come from Fedora.</p>");
     } else if (!medium.mesa.isEmpty() && mutter) {
         what += tr("<p>Mesa then stays at this version until the next guest tools; Mutter gives "
                    "way to Fedora's next build of it. The guest needs the network: dkms and the "
@@ -240,6 +265,18 @@ QString runningMutter(const GuestTools::Report &report)
     return report.vitrineBuilds.value("mutter")
                ? tr("Its Mutter is vitrine's build, %1.").arg(mutter.toHtmlEscaped())
                : tr("Its Mutter is %1, not vitrine's build.").arg(mutter.toHtmlEscaped());
+}
+
+QString fedoraNewer(const GuestTools::Report &report)
+{
+    QStringList said;
+
+    for (const GuestTools::Held &h : report.fedoraNewer) {
+        said << tr("vitrine's guest tools hold %1 %2; Fedora has %3: a newer vitrine brings "
+                   "builds for it.")
+                    .arg(h.what.toHtmlEscaped(), h.held.toHtmlEscaped(), h.fedora.toHtmlEscaped());
+    }
+    return said.join(' ');
 }
 
 /* The Qt app's GuestToolsBuildBanner's words, in its translation context */

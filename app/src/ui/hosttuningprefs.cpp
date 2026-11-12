@@ -64,7 +64,7 @@ HostTuningPrefs::HostTuningPrefs(Form *form, QWidget *parent)
     m_floor->addItem(tr("Off"), "off");
     m_floor->addItem(tr("At least"), "mhz");
     m_floor->setCurrentIndex(floor == "auto" ? 0 : floor == "off" ? 1 : 2);
-    m_floor->setToolTip(tr("Automatic: 1800 MHz on AMD APUs, none on other GPUs"));
+    m_floor->setToolTip(HostTuningPrefsText::floorHint());
     m_mhz->setRange(200, 4000);
     m_mhz->setSingleStep(100);
     m_mhz->setSuffix(tr(" MHz"));

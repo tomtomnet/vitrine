@@ -1,0 +1,60 @@
+#!/bin/sh
+# SPDX-License-Identifier: GPL-2.0-or-later
+#
+# vitrine: KWin's settings for the GPU it composites on, at each login.  A
+# systemd user environment generator (systemd.environment-generator(7)):
+# its output goes into the session's environment, and it runs after the
+# environment.d files are read (30-systemd-environment-d-generator), so a
+# value of the user's own wins.  KWin reads it as it starts: from the next
+# login, with Fedora's KWin as with vitrine's.
+#
+# KWIN_DISABLE_UDMABUF_IMPORT=1 when that GPU is an AMD GPU with 4 GiB or
+# more of memory of its own, or an Intel xe GPU (Arc).  KWin then uploads
+# the windows the CPU draws (wl_shm: Konsole, Qt Widgets and GTK apps) into
+# textures, instead of having the GPU read them from system memory at each
+# frame through a udmabuf.  On an RX 6900 XT a Konsole drag rendered in 0.4
+# ms instead of 3.2, a maximize or restore in 0.5 ms instead of 3.9-4.1,
+# with 0.2-0.5 % of its frames a refresh late instead of 6.3-7.5 % (the
+# research, 2026-10-28); on an Arc Pro B50, Konsole drags missed 47 % of
+# the refreshes with the import (2026-10-26).  KWin skips the import by
+# itself on NVIDIA and i915 only, and vitrine's host KWin on xe too; APUs
+# (an AMD GPU of less memory: the system's) keep it.
+#
+# KWin's GPU: the first of KWIN_DRM_DEVICES if that is set, else the one
+# the computer started on (boot_vga), else the first card, as KWin picks
+# it.  KWIN_DISABLE_UDMABUF_IMPORT=0 in ~/.config/environment.d keeps the
+# import.  VITRINE_SYSFS names another /sys (the tests).
+[ -z "${KWIN_DISABLE_UDMABUF_IMPORT+set}" ] || exit 0
+sys=${VITRINE_SYSFS:-/sys}
+card=
+if [ -n "${KWIN_DRM_DEVICES:-}" ]; then
+	dev=${KWIN_DRM_DEVICES%%:*}
+	# a /dev/dri/cardN, or a link to one (/dev/dri/by-path)
+	dev=$(readlink -f -- "$dev" 2> /dev/null || printf '%s' "$dev")
+	case ${dev##*/} in
+	card[0-9]*) card=$sys/class/drm/${dev##*/} ;;
+	esac
+else
+	for c in "$sys"/class/drm/card[0-9]*; do
+		# not a connector (card1-DP-1)
+		case ${c##*/} in *-*) continue ;; esac
+		[ -e "$c/device" ] || continue
+		[ -n "$card" ] || card=$c
+		if [ "$(cat "$c/device/boot_vga" 2> /dev/null)" = 1 ]; then
+			card=$c
+			break
+		fi
+	done
+fi
+[ -n "$card" ] || exit 0
+driver=$(readlink -- "$card/device/driver" 2> /dev/null) || exit 0
+case ${driver##*/} in
+amdgpu)
+	vram=$(cat "$card/device/mem_info_vram_total" 2> /dev/null) || exit 0
+	case $vram in '' | *[!0-9]*) exit 0 ;; esac
+	[ "$vram" -ge 4294967296 ] || exit 0
+	;;
+xe) ;;
+*) exit 0 ;;
+esac
+echo KWIN_DISABLE_UDMABUF_IMPORT=1

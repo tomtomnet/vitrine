@@ -2,7 +2,7 @@
 # exact version, and dnf takes an installed one of the same version as done.
 Name:           vitrine-guest-tools
 Version:        0.1.0
-Release:        42%{?dist}
+Release:        43%{?dist}
 Summary:        vitrine guest tools: patched virtio-gpu driver, settings and agent
 
 # the driver's sources (dkms/vendor, dkms/patches) are the kernel's: MIT
@@ -183,6 +183,18 @@ fi
 %dir %{_sharedstatedir}/%{name}
 
 %changelog
+* Thu Nov 12 2026 vitrine <noreply@anthropic.com> - 0.1.0-43
+- with vitrine's KWin, the installer locks vitrine's KSvg and Kirigami too,
+  as Qt Base, and holds Fedora's KDE Frameworks at their version with them,
+  as it holds Plasma with KWin: Fedora's next KDE Frameworks waits for
+  vitrine's next guest tools, which bring KSvg and Kirigami for it, instead
+  of replacing their fix without a word.  Without vitrine's KWin, nothing
+  changes: they give way to Fedora's next build
+- the agent asks dnf, at most once a day, in the background and only with
+  a network route, for Fedora's newest KDE Frameworks, Plasma and Qt, and
+  its status says which of the builds the tools hold Fedora has moved
+  past: Install Guest Tools says so (read-only, at idle priority)
+
 * Wed Nov 11 2026 vitrine <noreply@anthropic.com> - 0.1.0-42
 - with Mesa 26.2.6-2.xe, built with every video codec: H.264, H.265 and
   VC-1 too, which Fedora's Mesa leaves out, so AMD guests get hardware

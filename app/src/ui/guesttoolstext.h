@@ -36,6 +36,13 @@ QString what(Vm *vm, const GuestTools::Medium &medium);
  */
 QString runningMutter(const GuestTools::Report &report);
 /*
+ * What the tools hold at a version Fedora has moved past, as the guest's
+ * agent found it (rich text): "vitrine's guest tools hold KDE Frameworks
+ * 6.31.0; Fedora has 6.32.0: a newer vitrine brings builds for it."; empty
+ * when Fedora has nothing newer, or the agent did not say
+ */
+QString fedoraNewer(const GuestTools::Report &report);
+/*
  * What the banner of Install Guest Tools says of the medium of Fedora
  * @release (rich text): being built, failed to build, not built yet, out of
  * date; nothing while it is up to date.  @button: the banner's button (Show,

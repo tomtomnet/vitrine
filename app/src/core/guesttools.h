@@ -173,6 +173,13 @@ struct Kernel {
     bool headers = false;
     QString driver;         // DKMS: installed, built, missing, no-headers
 };
+/* What the tools hold at a version that Fedora's repositories have moved
+   past, as the agent found it (once a day): KDE Frameworks 6.31.0, 6.32.0 */
+struct Held {
+    QString what;           // KDE Frameworks, Plasma, Qt
+    QString held;
+    QString fedora;
+};
 struct Report {
     QString tools;          // vitrine-guest-tools' version-release; empty if not installed
     QString agent;
@@ -193,6 +200,8 @@ struct Report {
        vitrine's build, or the guest's own (Fedora's next build, which is no
        fault) */
     QHash<QString, bool> vitrineBuilds;
+    /* Fedora ahead of what the tools hold; empty from an older agent */
+    QList<Held> fedoraNewer;
     QString preempt;
     bool rebootNeeded = false;
     bool installing = false;

@@ -14,7 +14,9 @@
  * among them, as the kernel does.  A CPU's cpufreq/energy_performance_
  * preference takes the drivers' words or a number up to 255, and a CPU
  * that the online list leaves out answers -EBUSY for its cpufreq files, as
- * an inactive policy does.  /dev/cpu_dma_latency's requests are files
+ * an inactive policy does.  An amdgpu card's pp_power_profile_mode takes a
+ * profile's number and moves the '*' there (see profile_write).
+ * /dev/cpu_dma_latency's requests are files
  * locked by their process (see sys_latency_request).  Other files (the
  * udmabuf module's parameters) take any value, as the kernel's int
  * parameters do.  Every write, request, scheduler and nice
@@ -443,6 +445,58 @@ static int epp_write(const char *path, const char *value)
     return put(path, text);
 }
 
+/*
+ * pp_power_profile_mode: amdgpu reads the first character written as a
+ * profile's number and puts that profile in use - here its '*' moves
+ * there (profiles_parse() finds the names and numbers).  EINVAL for a
+ * number no profile has, and, with <file>.manual beside it (amdgpu's older
+ * GPUs, powerplay's), in another performance level than manual;
+ * <file>.stuck takes the write without keeping it.
+ */
+static int profile_write(const char *path, const char *value)
+{
+    char text[8192], out[8200], level_path[PATH_MAX], level[32] = "", side[PATH_MAX];
+    struct profiles ps;
+    int e = -1;
+
+    if (value[0] < '0' || value[0] > '9' || sys_read(path, text, sizeof(text)) <= 0 ||
+        !profiles_parse(text, &ps)) {
+        return -EINVAL;
+    }
+    snprintf(side, sizeof(side), "%s.manual", path);
+    if (access(side, F_OK) == 0) {
+        sibling(level_path, sizeof(level_path), path, "power_dpm_force_performance_level");
+        sys_read(level_path, level, sizeof(level));
+        level[strcspn(level, "\n")] = '\0';
+        if (strcmp(level, "manual") != 0) {
+            return -EINVAL;
+        }
+    }
+    for (int i = 0; i < ps.n; i++) {
+        if (ps.p[i].index == value[0] - '0') {
+            e = i;
+        }
+    }
+    if (e < 0) {
+        return -EINVAL;
+    }
+    snprintf(side, sizeof(side), "%s.stuck", path);
+    if (access(side, F_OK) == 0 || ps.active == e) {
+        return 0;
+    }
+    /* the '*' off the one in use, and after the new one's name: in the
+       space there, else put in before what follows (a ':') */
+    if (ps.active >= 0) {
+        text[ps.p[ps.active].star] = ' ';
+    }
+    if (text[ps.p[e].end] == ' ') {
+        text[ps.p[e].end] = '*';
+        return put(path, text);
+    }
+    snprintf(out, sizeof(out), "%.*s*%s", (int)ps.p[e].end, text, text + ps.p[e].end);
+    return put(path, out);
+}
+
 /* --- the PCI bus: drivers, overrides, vfio's nodes --- */
 
 /* @addr's folder in the fake tree, and @rest under it */
@@ -708,6 +762,8 @@ int sys_write(const char *path, const char *value)
         err = thp_write(path, v);
     } else if (strcmp(base, "energy_performance_preference") == 0) {
         err = epp_write(path, v);
+    } else if (strcmp(base, "pp_power_profile_mode") == 0) {
+        err = profile_write(path, v);
     } else if (strcmp(base, "driver_override") == 0) {
         err = override_write(path, v);
     } else if (strncmp(rel, PCI_DIR "/drivers/", sizeof(PCI_DIR "/drivers/") - 1) == 0 &&

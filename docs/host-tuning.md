@@ -7,7 +7,16 @@ A desktop VM stays smooth under host load when the host gives it a hand:
   QEMU's display and I/O threads run before ordinary host tasks. The other
   VMs' threads stay ordinary, their vCPUs at nice -5, so that VMs busy in
   the background cannot take every CPU at real-time priority: one VM is
-  real-time at a time. A host window in front changes nothing; a VM alone
+  real-time at a time. A VM with more processors than half of the host's
+  online CPUs (9 or more on 16) never is, even in front: its threads stay
+  ordinary and its vCPUs at nice -5, as a VM behind. Its vCPUs at real-time
+  priority would hold most of the host while the guest is busy: on
+  2026-10-30 a 16-vCPU VM in front froze a desktop with 16 CPU threads, the
+  shorter fair-server period below notwithstanding. The helper counts the
+  vCPU threads QEMU names (`-name ...,debug-threads=on`, as vitrine's VMs
+  have), else the VM's `-smp`. Preferences > Host's state line gives this
+  computer's number, and the status bar says it when such a VM comes to the
+  front. A host window in front changes nothing; a VM alone
   is real-time, and so is the first one started or found running until
   another comes to the front. A VM in QEMU's own window (SDL, GTK) is in
   front when that window is the active one: on KDE Plasma a small KWin
@@ -47,6 +56,19 @@ A desktop VM stays smooth under host load when the host gives it a hand:
   On a dedicated GPU (Intel xe, an AMD card) a floor does nothing; there,
   the optional gpu-input-awake service wakes the GPU at each key or pointer
   event instead (below).
+- **A GPU power profile** (AMD's dedicated GPUs): amdgpu's `3D_FULL_SCREEN`
+  profile instead of its default, `BOOTUP_DEFAULT`. With the default, an RX
+  6900 XT stayed at about 550 MHz, 68 % busy, under a guest drawing on it,
+  and the VM's desktop repeated frames: its launcher 21.7 and 19.3 repeated
+  frames a second against 0.2 and 0.0 with `3D_FULL_SCREEN`, window
+  operations 171 and 146 repeated refreshes against 99 and 44, a 1080p60
+  video 38 % on cadence against 100 %; for the same power, 2 W less under
+  load and 1 W more at idle. Only from the default profile, in performance
+  level `auto`: a profile or level someone chose (by hand, or a tool such
+  as LACT or CoreCtrl) is left as it is, and the journal says so. The
+  Automatic of Preferences > Host > GPU Clock Floor covers both: the floor
+  on APUs, this profile on dedicated AMD GPUs; Off or a fixed floor, no
+  profile.
 - **Huge pages for VM memory**: shared memory's transparent huge pages go
   from `never` (Fedora's default) to `advise`. QEMU asks for them on the
   guest's memory (a memfd, which vitrine's QEMU aligns to 2 MiB): each
@@ -59,7 +81,8 @@ A desktop VM stays smooth under host load when the host gives it a hand:
   instead of 15.1-16.3 ms on a Ryzen 7 260 laptop, for about 2 W at
   idle; 7.49 ms instead of 10.09 ms on a desktop under GNOME, for 3.5 W.
   Preferences > Host turns it off ([below](#the-cpu-ready-to-wake-up)).
-- **Higher udmabuf limits** (VMs whose GPU has native context): QEMU
+- **Higher udmabuf limits** (VMs whose GPU has native context, the nested
+  desktop's included): QEMU
   hands the host GPU each guest buffer in guest memory as a udmabuf, one
   entry per contiguous piece of guest RAM. A maximized 4K window drawn by
   the CPU (Qt Widgets and GTK apps, cursors) is about 32 MB in 1,200 to
@@ -130,11 +153,12 @@ for them. It does only this, for the user who started it:
 | `watch PID` | Watches a QEMU until it exits | The process belongs to the caller (all its uids) and runs a `qemu-system-*` (or `qemu-kvm`) executable; held through a pidfd, so a reused pid cannot slip in |
 | `fair-server on` | 10 ms / 1 ms on every online CPU, read back; under sched_ext the ext server too | Fixed values; only `cpuN` folders; nothing to choose. All or nothing: a refused write puts the others back and says which CPU and why |
 | `gpu-floor CARD MHZ\|auto` | An AMD GPU's lowest gfx clock | `cardN` of vendor 0x1002 driven by amdgpu; the clock within the GPU's own overdrive range; only when its performance level is `auto` |
-| `rt PID` | SCHED_FIFO 1 on every thread of a watched QEMU (the VM in front), its real-time time limit (`RLIMIT_RTTIME`) lifted first | Only once `fair-server on` holds; watched first, and checked again to be the caller's QEMU (it may have run another program since); no thread made real-time if the limit cannot be lifted; real-time threads it finds are left as they are; its child processes (passt) are not touched |
+| `gpu-profile CARD on` | A dedicated AMD GPU's power profile at `3D_FULL_SCREEN` (`pp_power_profile_mode`) | `cardN` of vendor 0x1002 driven by amdgpu, not an APU; a fixed profile; only from `BOOTUP_DEFAULT` and in performance level `auto`; the profiles' numbers read from the file; recorded first, one write, read back, no retry |
+| `rt PID` | SCHED_FIFO 1 on every thread of a watched QEMU (the VM in front), its real-time time limit (`RLIMIT_RTTIME`) lifted first | Only once `fair-server on` holds; watched first, and checked again to be the caller's QEMU (it may have run another program since); never for more vCPUs than half of the online CPUs (its threads named as vCPUs, else its `-smp`): such a VM is lowered as by `behind` instead, and the answer is `skip`; no thread made real-time if the limit cannot be lifted; real-time threads it finds are left as they are; its child processes (passt) are not touched |
 | `behind PID` | The threads `rt` made real-time back to SCHED_OTHER, its vCPU threads (`CPU n/KVM`) at nice -5 (a VM behind the one in front) | The same checks as `rt`; nice -5 only while the fair server holds, and only for vCPUs at nice 0 |
 | `view-rt TID` | SCHED_FIFO 1, with SCHED_RESET_ON_FORK (what the thread starts begins ordinary, threads and processes alike), on one thread of the program that started the helper: vitrine's view of the VM in front (the app's main thread, the view's render thread, Wayland reader and D-Bus listener, GLib's D-Bus worker) | Only once `fair-server on` holds, and while a watched QEMU is in front (its `rt`); a thread of the helper's parent - the program that ran pkexec, taken at the start and held through a pidfd - whose uids are all the caller's; threads at SCHED_FIFO 1 before its first `view-rt`, other real-time ones and SCHED_IDLE ones are left as they are; recorded first, as for `rt` |
 | `view-behind` | Those threads, and any other thread of that program at SCHED_FIFO 1 since, back to SCHED_OTHER | Only threads at SCHED_FIFO 1 that were not before the first `view-rt`; the helper also does it whenever no watched QEMU is in front any more (`behind` of the one in front, its exit), at `fair-server off` and at its end |
-| `udmabuf PID` | The udmabuf module's `list_limit` at 65536 and `size_limit_mb` at 2048, while that watched QEMU runs | A watched QEMU (its GPU is not checked: vitrine asks only for native-context ones); fixed values; raised only, a higher value stays; skipped when the module is not loaded; put back after the last QEMU that asked for it |
+| `udmabuf PID` | The udmabuf module's `list_limit` at 65536 and `size_limit_mb` at 2048, while that watched QEMU runs | A watched QEMU (its GPU is not checked: vitrine asks only for native-context ones and the nested desktop's); fixed values; raised only, a higher value stays; skipped when the module is not loaded; put back after the last QEMU that asked for it |
 | `thp on` | `/sys/kernel/mm/transparent_hugepage/shmem_enabled` at `advise` | A watched QEMU; a fixed value, written only over `never`; read back |
 | `cpu-latency on` | A request on `/dev/cpu_dma_latency` for the wake-up time of the CPUs' first usable idle state (C1), held by the helper's open file | A watched QEMU; the value from cpuidle, at least 1 µs; nothing recorded: the kernel drops the request with the file |
 | `epp on` | Each online CPU's `cpufreq/energy_performance_preference` at `performance` | A watched QEMU; a fixed value; read back; all or nothing |
@@ -160,7 +184,8 @@ What this amounts to:
   ordinary tasks running beside them, and without it there is no
   real-time priority.
 - Host-wide settings changed while your VMs run, and put back after: the
-  fair server, a GPU clock floor, shared memory's huge pages and the CPUs'
+  fair server, a GPU clock floor or power profile, shared memory's huge
+  pages and the CPUs'
   energy performance preference; and a request that keeps the CPUs out of
   their deeper idle states while the helper runs.
 - Bigger udmabufs. `/dev/udmabuf` is open to the user at the desktop
@@ -412,6 +437,37 @@ its GPU awake. It is not set by default:
 [host/gpu-input-awake](../host/gpu-input-awake/README.md) says how to try
 it.
 
+## KWin and the windows the CPU draws
+
+Not host tuning but a setting of the host's KWin, Fedora's or vitrine's,
+made at each login. KWin hands the windows the CPU draws (`wl_shm`:
+Konsole, Qt Widgets and GTK apps) to the GPU as udmabufs, which the GPU
+then reads from system memory at each frame. On a GPU with memory of its
+own that costs: on an RX 6900 XT a Konsole drag rendered in 3.2 ms instead
+of 0.4 ms, a maximize or restore in 3.9-4.1 ms instead of 0.5, with 6.3-7.5
+% of its frames a refresh late instead of 0.2-0.5 % (the research,
+2026-10-28); on an Arc Pro B50, Konsole drags missed 47 % of the refreshes.
+KWin skips the import by itself on NVIDIA and i915 only (vitrine's host KWin
+on xe too).
+
+vitrine installs a systemd user environment generator,
+`/usr/lib/systemd/user-environment-generators/60-vitrine-kwin`, which sets
+`KWIN_DISABLE_UDMABUF_IMPORT=1` at each login when the GPU KWin composites
+on is:
+
+- an AMD GPU with 4 GiB or more of its own memory (`mem_info_vram_total`):
+  a dedicated one, or an APU given that much by its firmware;
+- an Intel GPU on the xe driver (an Arc B-series card, say).
+
+KWin then uploads those windows into textures instead; other GPUs keep
+KWin's default. KWin's GPU is the first of `KWIN_DRM_DEVICES` if that is
+set, else the one the computer started on (`boot_vga`). It takes effect
+from the next login, and a change of GPU from the login after it. A value
+of your own wins: `KWIN_DISABLE_UDMABUF_IMPORT=0` in a file of
+`~/.config/environment.d` keeps the import.
+`systemctl --user show-environment | grep KWIN_DISABLE_UDMABUF_IMPORT`
+shows what the session has; other desktops ignore it.
+
 ## The udmabuf limits without host tuning
 
 To have the udmabuf limits raised at every boot instead, with or without
@@ -453,7 +509,8 @@ a write of the same values from its own).
 `modprobe.d` options do nothing where udmabuf is built into the kernel, as
 in Fedora's.
 
-At each start of a VM whose GPU has native context, vitrine reads the
+At each start of a VM whose GPU has native context, or of a nested-desktop
+VM, vitrine reads the
 limits and opens `/dev/udmabuf` as QEMU does. When they are too low (under
 16384 entries or 128 MB) and host tuning will not raise them, or the
 device does not open, it writes a `vitrine:` note in the VM's `qemu.log`,
@@ -488,6 +545,11 @@ configuring: `cmake --install --prefix` with another prefix is refused.
 ## When something looks wrong
 
 - `journalctl -t vitrine-helper` lists what the helper changed and put back.
+- `ps -L -o tid,cls,rtprio,ni,comm -p PID` lists a QEMU's threads: those of
+  the VM in front show `FF 1`, those of a VM behind `TS`, its vCPUs at nice
+  -5. A VM in front with more processors than half of the host's online
+  CPUs shows `TS` too, as one behind; the journal says so once ("not made
+  real-time: 16 vCPUs, more than half of the 16 online cpus").
 - `ps -L -o tid,cls,rtprio,comm -p $(pgrep -x vitrine-gtk)` lists the GTK
   app's threads: with host tuning on, those of the view of the VM in front
   show `FF 1` (SCHED_FIFO 1), the others `TS`. The view also writes their
@@ -520,8 +582,12 @@ configuring: `cmake --install --prefix` with another prefix is refused.
   (before 7.0). Preferences says so ("Real-time QEMU threads are off:
   ..."), and the status bar at the first VM start.
 - GPUs other than AMD APUs get no automatic floor. A discrete AMD GPU needs
-  the overdrive bit of `amdgpu.ppfeaturemask` for any floor; gpu-input-awake
-  is what helps there (below).
+  the overdrive bit of `amdgpu.ppfeaturemask` for any floor; it gets the
+  `3D_FULL_SCREEN` power profile instead, and gpu-input-awake helps there
+  too (above). `grep -H '\*' /sys/class/drm/card*/device/pp_power_profile_mode`
+  shows each AMD GPU's profile in use (marked `*`). Older AMD GPUs (Polaris,
+  Vega) take a profile in performance level `manual` only: the helper
+  leaves them as they are, after one refused write that the journal shows.
 - `cat /sys/kernel/mm/transparent_hugepage/shmem_enabled` shows the huge
   pages' setting, in brackets; `grep ShmemPmdMapped /proc/PID/smaps_rollup`
   how much of a QEMU's memory has them.

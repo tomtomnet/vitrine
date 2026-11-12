@@ -18,7 +18,8 @@ class VmStore;
 
 /*
  * The host settings that keep VMs smooth, for as long as they run: the
- * kernel's fair server at 10 ms / 1 ms, a GPU clock floor on AMD APUs,
+ * kernel's fair server at 10 ms / 1 ms, a GPU clock floor on AMD APUs and
+ * the 3D_FULL_SCREEN power profile on AMD's dedicated GPUs,
  * transparent huge pages for shared memory (the guests' memfd RAM), the
  * CPU ready to wake up (cpuLatency()), real-time QEMU threads for the VM
  * in front (with the fair server only), and for VMs whose GPU has native
@@ -91,7 +92,8 @@ public:
     /* Preferences: tuning, on by default */
     static bool enabled();
     static void setEnabled(bool on);
-    /* "auto" (the default: 1800 MHz on AMD APUs), "off" or a clock in MHz */
+    /* "auto" (the default: 1800 MHz on AMD APUs, the 3D_FULL_SCREEN power
+       profile on AMD's dedicated GPUs), "off" or a clock in MHz (no profile) */
     static QString gpuFloor();
     static void setGpuFloor(const QString &floor);
     /*
@@ -123,6 +125,12 @@ public:
      * @sysRoot: those with amdgpu's overdrive table, and only APUs if @apus
      */
     static QStringList amdCards(const QString &sysRoot, bool apus);
+    /*
+     * The dedicated AMD cards under @sysRoot whose power profiles have
+     * 3D_FULL_SCREEN: the helper's gpu-profile puts it in use while VMs run
+     * with the floor's Automatic (APUs get the floor instead)
+     */
+    static QStringList amdProfileCards(const QString &sysRoot);
 
     /*
      * Real-time threads need the kernel's fair server set (the bound on how
@@ -140,6 +148,14 @@ public:
      * did), else as realtimeLimit() tells: for the host tuning state
      */
     QString realtimeOff() const;
+    /*
+     * The CPUs online under @sysRoot (devices/system/cpu/online's list,
+     * else every cpuN folder), at least 1.  A VM with more processors than
+     * half of them gets no real-time threads, in front too: the helper
+     * lowers it as a VM behind (its rt), since a 16-vCPU VM in front froze
+     * a 16-thread desktop.
+     */
+    static int onlineCpus(const QString &sysRoot = QStringLiteral("/sys"));
 
     /*
      * The QEMU builds under @stack (<stack>/<build>/bin/qemu-system-*) that
@@ -154,8 +170,9 @@ public:
 
     /*
      * What a VM start does, for the QEMU @pid; @udmabuf: its GPU has native
-     * context, which needs the host's udmabuf limits raised too
-     * (udmabufAnswered() says whether they will be)
+     * context, or is the nested desktop's card, which need the host's
+     * udmabuf limits raised too (VmConfig::Graphics::udmabuf();
+     * udmabufAnswered() says whether they will be)
      */
     void tune(qint64 pid, bool udmabuf = false);
     /*
@@ -180,7 +197,10 @@ public:
      * window is the active one already.  Where the desktop does
      * not say which window is active (not KWin), a VM in QEMU's own window
      * comes to the front only so, and goes behind for good once another one
-     * does.  Real-time only where the helper could set the fair server.
+     * does.  Real-time only where the helper could set the fair server,
+     * and never for a VM with more processors than half of the CPUs online
+     * (onlineCpus()): the helper keeps it as one behind, in front too, and
+     * notice() says so once.
      */
     void setFront(const QString &vmId);
     /*
@@ -340,6 +360,8 @@ private:
     void offerGroup(const Status &status);
     /* The requests that tune @pid, queued for the helper */
     void queue(qint64 pid);
+    /* The name of the VM whose QEMU is @pid, else "process PID" */
+    QString vmName(qint64 pid) const;
     /* Each VM running untuned tuned again (the group set up, say) */
     void retune();
     void say(const QString &text);

@@ -60,6 +60,13 @@ struct Graphics {
     QString display;
     /* Why it is Custom */
     QString custom;
+    /*
+     * Its guest buffers become udmabufs on the host, which the kernel's
+     * udmabuf limits may refuse: native context's, and the nested desktop's
+     * card's (its native context and guest dma-bufs) - a 4K window over
+     * scattered pages needs ~8,100 entries, against the default 1024
+     */
+    bool udmabuf() const { return nativeContext || kind == Nested; }
 };
 Graphics graphics(const ArgsFile &args);
 /*

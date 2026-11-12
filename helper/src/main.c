@@ -37,9 +37,16 @@
  *   gpu-floor CARD MHZ|auto|off
  *                          an amdgpu card's lowest gfx clock (auto: 1800 MHz on
  *                          APUs whose minimum is lower)
+ *   gpu-profile CARD on|off
+ *                          a dedicated amdgpu card's power profile at
+ *                          3D_FULL_SCREEN, from the default BOOTUP_DEFAULT in
+ *                          performance level auto only
  *   rt PID                 SCHED_FIFO 1 on every thread of a watched QEMU,
  *                          once the fair server is set and the process's
- *                          real-time time limit lifted: the VM in front
+ *                          real-time time limit lifted: the VM in front;
+ *                          one with more vCPUs (named, else its -smp) than
+ *                          half the online CPUs is lowered as by behind
+ *                          instead, and answered skip
  *   behind PID             those threads back to SCHED_OTHER, its vCPUs at
  *                          nice -5: a VM behind the one in front
  *   view-rt TID            SCHED_FIFO 1 on thread TID of the process that
@@ -287,11 +294,13 @@ static bool request(char *line)
         epp_off();
     } else if (IS("gpu-floor", 2) && strcmp(words[2], "off") == 0) {
         gpu_floor(words[1], words[2]);
+    } else if (IS("gpu-profile", 2) && strcmp(words[2], "off") == 0) {
+        gpu_profile(words[1], words[2]);
     } else if (IS("view-behind", 0)) {
         view_behind();
     } else if ((IS("fair-server", 1) || IS("thp", 1) || IS("cpu-latency", 1) || IS("epp", 1) ||
-                IS("gpu-floor", 2) || IS("rt", 1) || IS("behind", 1) || IS("udmabuf", 1) ||
-                IS("view-rt", 1)) &&
+                IS("gpu-floor", 2) || IS("gpu-profile", 2) || IS("rt", 1) || IS("behind", 1) ||
+                IS("udmabuf", 1) || IS("view-rt", 1)) &&
                !nwatched) {
         /* nothing applied while no VM runs */
         reply("error %s: watch a QEMU first", words[0]);
@@ -305,6 +314,8 @@ static bool request(char *line)
         epp_on();
     } else if (IS("gpu-floor", 2)) {
         gpu_floor(words[1], words[2]);
+    } else if (IS("gpu-profile", 2)) {
+        gpu_profile(words[1], words[2]);
     } else if (IS("rt", 1)) {
         rt_on(words[1]);
     } else if (IS("behind", 1)) {

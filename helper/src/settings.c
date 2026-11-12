@@ -1,8 +1,9 @@
 /* SPDX-License-Identifier: GPL-2.0-or-later */
 /*
  * The global settings: the kernel's fair server (and ext server), an AMD
- * GPU's clock floor, the udmabuf limits, shared memory's transparent huge
- * pages and the CPUs' energy performance preference; and the record of
+ * GPU's clock floor or power profile, the udmabuf limits, shared memory's
+ * transparent huge pages and the CPUs' energy performance preference; and
+ * the record of
  * each QEMU whose threads a helper made real-time or ordinary, and of the
  * process that started it, whose threads view-rt made real-time
  * (sched-<pid>).  The
@@ -53,18 +54,20 @@ static int state_fd = -1;
 static int lock_fd = -1;
 
 struct hold {
-    char key[32];       /* fair-server, ext-server, gpu-floor-cardN, udmabuf,
-                           thp, epp, vfio-<group>, memlock-<pid>,
-                           sched-<pid>; empty when free */
+    char key[32];       /* fair-server, ext-server, gpu-floor-cardN,
+                           gpu-profile-cardN, udmabuf, thp, epp,
+                           vfio-<group>, memlock-<pid>, sched-<pid>; empty
+                           when free */
     int fd;             /* <key>.hold */
     char value[16];     /* what was asked: on, auto or MHz */
 };
 /* the fair and ext servers, the udmabuf limits, huge pages, the CPUs'
-   preference, eight cards, the IOMMU groups of PCI devices handed to VMs
-   and the parent's locked memory limit (vfio.c); then the records of the
-   QEMUs watched, and of the process that started the helper (view-rt) */
+   preference, eight cards' floors and eight cards' profiles, the IOMMU
+   groups of PCI devices handed to VMs and the parent's locked memory limit
+   (vfio.c); then the records of the QEMUs watched, and of the process
+   that started the helper (view-rt) */
 #define MAX_CARDS 8
-#define MAX_SETTINGS (5 + MAX_CARDS + MAX_VFIO_GROUPS + 1)
+#define MAX_SETTINGS (5 + 2 * MAX_CARDS + MAX_VFIO_GROUPS + 1)
 #define MAX_HOLDS (MAX_SETTINGS + MAX_WATCHED + 1)
 static struct hold holds[MAX_HOLDS];
 
@@ -220,16 +223,18 @@ static void restore_key(const char *key);
 static void recover_pass(bool sched);
 
 /* A free hold for @key: the QEMUs' records apart from the settings, eight
-   cards at most among those */
+   cards' floors and eight cards' profiles at most among those */
 static struct hold *hold_free(const char *key)
 {
     const bool sched = strncmp(key, "sched-", 6) == 0;
-    int cards = 0;
+    int floors = 0, profiles = 0;
 
     for (int i = 0; i < MAX_SETTINGS; i++) {
-        cards += strncmp(holds[i].key, "gpu-floor-", 10) == 0;
+        floors += strncmp(holds[i].key, "gpu-floor-", 10) == 0;
+        profiles += strncmp(holds[i].key, "gpu-profile-", 12) == 0;
     }
-    if (!sched && strncmp(key, "gpu-floor-", 10) == 0 && cards >= MAX_CARDS) {
+    if (!sched && ((strncmp(key, "gpu-floor-", 10) == 0 && floors >= MAX_CARDS) ||
+                   (strncmp(key, "gpu-profile-", 12) == 0 && profiles >= MAX_CARDS))) {
         return NULL;
     }
     for (int i = sched ? MAX_SETTINGS : 0; i < (sched ? MAX_HOLDS : MAX_SETTINGS); i++) {
@@ -525,6 +530,25 @@ static void online_read(struct online *o)
 static bool online_has(const struct online *o, unsigned cpu)
 {
     return o->all || (cpu < 65536 && (o->bits[cpu / 8] >> (cpu % 8) & 1));
+}
+
+int online_cpus(void)
+{
+    static struct online o;
+    unsigned *ids = NULL;
+    int n = 0;
+
+    online_read(&o);
+    if (!o.all) {
+        for (size_t i = 0; i < sizeof(o.bits); i++) {
+            n += __builtin_popcount(o.bits[i]);
+        }
+        return n;
+    }
+    /* the list unknown: every CPU the kernel has a folder for */
+    n = cpu_dirs(CPU_DIR, &ids);
+    free(ids);
+    return n > 0 ? n : 1;
 }
 
 /* A sched_ext scheduler runs (or is starting or stopping): its tasks are
@@ -1078,8 +1102,8 @@ static bool card_is_apu(const char *card)
            ((unsigned char)buf[2] == 2 || (unsigned char)buf[2] == 3);
 }
 
-/* Why the floor cannot be set on @card, or NULL */
-static const char *card_unavailable(const char *card, struct od_table *od)
+/* Why @card is not an AMD GPU that amdgpu drives, or NULL */
+static const char *card_amdgpu(const char *card)
 {
     char path[PATH_MAX], full[PATH_MAX], link[PATH_MAX], vendor[16];
     const char *driver;
@@ -1101,6 +1125,17 @@ static const char *card_unavailable(const char *card, struct od_table *od)
     driver = strrchr(link, '/') ? strrchr(link, '/') + 1 : link;
     if (strcmp(driver, "amdgpu") != 0) {
         return "not driven by amdgpu";
+    }
+    return NULL;
+}
+
+/* Why the floor cannot be set on @card, or NULL */
+static const char *card_unavailable(const char *card, struct od_table *od)
+{
+    const char *why = card_amdgpu(card);
+
+    if (why) {
+        return why;
     }
     if (!card_od(card, od)) {
         return "no overdrive clock table (pp_od_clk_voltage)";
@@ -1334,6 +1369,312 @@ void gpu_floor(const char *card, const char *value)
     sys_log("uid %u: %s clock floor %u MHz (was %u MHz, level %s)", (unsigned)caller_uid, card,
             mhz, od.min, level);
     reply("ok gpu-floor %s %u MHz (was %u MHz, level %s)", card, mhz, od.min, level);
+}
+
+/* --- GPU power profile (amdgpu) --- */
+
+/*
+ * amdgpu's power profiles (pp_power_profile_mode): PROFILE_TARGET in use
+ * while VMs run, on dedicated GPUs (APUs get the clock floor).  With the
+ * default profile, an RX 6900 XT stayed at about 550 MHz, 68 % busy, under
+ * a guest drawing on it, and the VM's desktop repeated frames: its
+ * launcher 21.7 and 19.3 repeated frames a second against 0.2 and 0.0
+ * with 3D_FULL_SCREEN, window operations 171 and 146 repeated refreshes
+ * against 99 and 44, a 1080p60 video 38 % on cadence against 100 %; for
+ * the same power, 2 W less under load, 1 W more at idle (the research,
+ * 2026-10-14).  The file lists each profile with its number before its
+ * name and a '*' after the one in use - in rows (" 1 3D_FULL_SCREEN :",
+ * "  1 3D_FULL_SCREEN:", " 1 3D_FULL_SCREEN ") or across one line ("0
+ * BOOTUP_DEFAULT* 1 3D_FULL_SCREEN  2 ..."), then their parameters; a
+ * write of a number puts that profile in use (amdgpu reads one digit).
+ */
+#define PROFILE_TARGET "3D_FULL_SCREEN"
+#define PROFILE_DEFAULT "BOOTUP_DEFAULT"
+
+static const char *const profile_names[] = {"BOOTUP_DEFAULT", "3D_FULL_SCREEN", "POWER_SAVING",
+                                            "VIDEO",          "VR",             "COMPUTE",
+                                            "CUSTOM",         "WINDOW_3D",      "CAPPED",
+                                            "UNCAPPED",       NULL};
+
+static bool word_char(char c)
+{
+    return (c >= 'A' && c <= 'Z') || (c >= 'a' && c <= 'z') || (c >= '0' && c <= '9') || c == '_';
+}
+
+bool profiles_parse(const char *text, struct profiles *ps)
+{
+    ps->n = 0;
+    ps->active = -1;
+    for (const char *s = text; *s && ps->n < MAX_PROFILES; s++) {
+        for (int k = 0; profile_names[k]; k++) {
+            const size_t len = strlen(profile_names[k]);
+            const char *e = s + len, *q = s, *d;
+            bool known = false;
+
+            /* a profile's name, a word of its own */
+            if (strncmp(s, profile_names[k], len) != 0 || (s > text && word_char(s[-1])) ||
+                word_char(*e)) {
+                continue;
+            }
+            /* its number before it, on its line: one or two digits, spaces */
+            while (q > text && (q[-1] == ' ' || q[-1] == '\t')) {
+                q--;
+            }
+            for (d = q; d > text && d[-1] >= '0' && d[-1] <= '9'; d--) {
+            }
+            if (q == s || d == q || q - d > 2 || (d > text && word_char(d[-1]))) {
+                break;
+            }
+            for (int i = 0; i < ps->n; i++) {
+                known |= strcmp(ps->p[i].name, profile_names[k]) == 0;
+            }
+            if (!known) {
+                struct profile *p = &ps->p[ps->n];
+
+                snprintf(p->name, sizeof(p->name), "%s", profile_names[k]);
+                p->index = atoi(d);
+                p->end = (size_t)(e - text);
+                /* the one in use: a '*' after it, spaces apart at most */
+                for (q = e; *q == ' ' || *q == '\t'; q++) {
+                }
+                p->star = *q == '*' ? (long)(q - text) : -1;
+                if (p->star >= 0 && ps->active < 0) {
+                    ps->active = ps->n;
+                }
+                ps->n++;
+            }
+            s = e - 1;
+            break;
+        }
+    }
+    return ps->n > 0;
+}
+
+static bool card_profiles(const char *card, struct profiles *ps)
+{
+    char path[PATH_MAX], text[8192];
+
+    card_attr(path, sizeof(path), card, "pp_power_profile_mode");
+    return read_attr(path, text, sizeof(text)) > 0 && profiles_parse(text, ps);
+}
+
+static int profile_find(const struct profiles *ps, const char *name)
+{
+    for (int i = 0; i < ps->n; i++) {
+        if (strcmp(ps->p[i].name, name) == 0) {
+            return i;
+        }
+    }
+    return -1;
+}
+
+/* The name of the profile in use, "" when none reads so */
+static const char *profile_active(const struct profiles *ps)
+{
+    return ps->active >= 0 ? ps->p[ps->active].name : "";
+}
+
+/* @card's profile @name in use: its number written once, read back.  0,
+   or -errno (-EIO: taken, not kept; -ENOENT: no such profile) */
+static int profile_set(const char *card, const char *name)
+{
+    struct profiles ps;
+    char cmd[16];
+    int e, err;
+
+    if (!card_profiles(card, &ps) || (e = profile_find(&ps, name)) < 0 || ps.p[e].index > 9) {
+        return -ENOENT;
+    }
+    snprintf(cmd, sizeof(cmd), "%d\n", ps.p[e].index);
+    if ((err = card_write(card, "pp_power_profile_mode", cmd)) < 0) {
+        return err;
+    }
+    return card_profiles(card, &ps) && strcmp(profile_active(&ps), name) == 0 ? 0 : -EIO;
+}
+
+/* Under the lock, as the last holder or for a dead one: the profile there
+   was, if the one in use is still the one written */
+static void profile_restore(const char *card)
+{
+    char key[32], was[16], wrote[16];
+    struct profiles ps;
+    const char *now;
+    char *text;
+    int err;
+
+    snprintf(key, sizeof(key), "gpu-profile-%s", card);
+    if (!(text = state_read(key))) {
+        return;
+    }
+    /* "was NAME" and "wrote NAME" lines */
+    if (sscanf(text, "was %15s wrote %15s", was, wrote) != 2) {
+        free(text);
+        state_remove(key);
+        return;
+    }
+    free(text);
+    if (!card_profiles(card, &ps)) {
+        /* the GPU gone, or bound to another driver: amdgpu starts it again
+           at its default */
+        reply("left gpu-profile %s: its power profiles cannot be read now", card);
+        sys_log("%s: power profile not put back: pp_power_profile_mode cannot be read", card);
+        state_remove(key);
+        return;
+    }
+    now = profile_active(&ps);
+    if (strcmp(now, wrote) == 0) {
+        if ((err = profile_set(card, was)) < 0) {
+            /* recorded still: the next helper tries again */
+            reply("restored gpu-profile %s: %s could not be put back (%s; kept for later)", card,
+                  was, err == -EIO ? "it did not take" : strerror(-err));
+            sys_log("%s: power profile %s could not be put back", card, was);
+            return;
+        }
+        reply("restored gpu-profile %s: %s", card, was);
+        sys_log("%s: power profile back to %s", card, was);
+    } else if (strcmp(now, was) == 0) {
+        /* killed before writing it, or after putting it back */
+        reply("restored gpu-profile %s: %s already", card, was);
+    } else {
+        reply("left gpu-profile %s: changed by someone else since", card);
+        sys_log("%s: power profile left at %s: changed by someone else since", card,
+                now[0] ? now : "-");
+    }
+    state_remove(key);
+}
+
+/* Why the profile cannot be set on @card, or NULL */
+static const char *profile_unavailable(const char *card)
+{
+    const char *why = card_amdgpu(card);
+    struct profiles ps;
+    int e;
+
+    if (why) {
+        return why;
+    }
+    if (card_is_apu(card)) {
+        return "an APU, which gets a clock floor instead";
+    }
+    if (!card_profiles(card, &ps)) {
+        return "no power profiles (pp_power_profile_mode)";
+    }
+    if ((e = profile_find(&ps, PROFILE_TARGET)) < 0) {
+        return "no " PROFILE_TARGET " profile";
+    }
+    if (ps.p[e].index > 9) {
+        return PROFILE_TARGET "'s number has two digits, and amdgpu reads one";
+    }
+    return NULL;
+}
+
+void gpu_profile(const char *card, const char *value)
+{
+    struct profiles ps;
+    struct hold *h;
+    const char *why;
+    char key[32], level[32], text[96];
+    bool first, chosen = false;
+    int err;
+
+    if (!card_name_ok(card)) {
+        reply("error gpu-profile: give the card as cardN");
+        return;
+    }
+    snprintf(key, sizeof(key), "gpu-profile-%s", card);
+    h = hold_find(key);
+    if (strcmp(value, "off") == 0) {
+        if (h) {
+            hold_drop(h);
+        }
+        reply("ok gpu-profile %s off", card);
+        return;
+    }
+    if (strcmp(value, "on") != 0) {
+        reply("error gpu-profile %s: give on or off", card);
+        return;
+    }
+    if (h) {
+        reply("ok gpu-profile %s on: already", card);
+        return;
+    }
+    if ((why = profile_unavailable(card))) {
+        reply("skip gpu-profile %s: %s", card, why);
+        return;
+    }
+
+    lock_all();
+    if (!(h = hold_take(key, value, &first))) {
+        err = errno;
+        unlock_all();
+        reply("error gpu-profile %s: cannot take the hold: %s", card, strerror(err));
+        return;
+    }
+    if (!first) {
+        unlock_all();
+        reply("ok gpu-profile %s: set by another vitrine session", card);
+        return;
+    }
+    /* the hold's restore may have changed it: read again.  From the
+       default only, in level auto: anything else is someone's choice (by
+       hand, a tool such as LACT or CoreCtrl), left as it is */
+    if (!card_level(card, level, sizeof(level)) || !card_profiles(card, &ps)) {
+        why = "cannot read the GPU's power settings";
+    } else if (strcmp(level, "auto") != 0) {
+        snprintf(text, sizeof(text), "the performance level is %.32s, not auto", level);
+        why = text;
+        chosen = true;
+    } else if (ps.active < 0) {
+        why = "no profile reads as the one in use";
+    } else if (strcmp(profile_active(&ps), PROFILE_TARGET) == 0) {
+        hold_close(h, true);
+        unlock_all();
+        reply("ok gpu-profile %s on: already " PROFILE_TARGET ", left as it is", card);
+        return;
+    } else if (strcmp(profile_active(&ps), PROFILE_DEFAULT) != 0) {
+        snprintf(text, sizeof(text), "the power profile is %s, not " PROFILE_DEFAULT,
+                 profile_active(&ps));
+        why = text;
+        chosen = true;
+    }
+    if (why) {
+        hold_close(h, true);
+        unlock_all();
+        if (chosen) {
+            sys_log("%s: power profile left as it is, someone's choice: %s", card, text);
+        }
+        reply("skip gpu-profile %s: %s", card, why);
+        return;
+    }
+    /* recorded before anything is written */
+    if (!state_write(key, "was " PROFILE_DEFAULT "\nwrote " PROFILE_TARGET "\n")) {
+        err = errno;
+        hold_close(h, true);
+        unlock_all();
+        reply("error gpu-profile %s: %s", card, strerror(err));
+        return;
+    }
+    /* one write, never again: a refusal is the driver's (amdgpu's older
+       GPUs take a profile in performance level manual only) */
+    if ((err = profile_set(card, PROFILE_TARGET)) < 0) {
+        state_remove(key);
+        hold_close(h, true);
+        unlock_all();
+        sys_log("%s: power profile " PROFILE_TARGET " not set: %s", card,
+                err == -EIO ? "it did not take" : strerror(-err));
+        if (err == -EIO) {
+            reply("error gpu-profile %s: " PROFILE_TARGET " did not take", card);
+        } else {
+            reply("skip gpu-profile %s: the driver refuses " PROFILE_TARGET " (%s)", card,
+                  strerror(-err));
+        }
+        return;
+    }
+    hold_share(h);
+    unlock_all();
+    sys_log("uid %u: %s power profile " PROFILE_TARGET " (was " PROFILE_DEFAULT ")",
+            (unsigned)caller_uid, card);
+    reply("ok gpu-profile %s " PROFILE_TARGET " (was " PROFILE_DEFAULT ")", card);
 }
 
 /* --- udmabuf limits --- */
@@ -2422,6 +2763,8 @@ static void restore_key(const char *key)
         sched_state_restore(key);
     } else if (strncmp(key, "gpu-floor-", 10) == 0 && card_name_ok(key + 10)) {
         gpu_restore(key + 10);
+    } else if (strncmp(key, "gpu-profile-", 12) == 0 && card_name_ok(key + 12)) {
+        profile_restore(key + 12);
     } else if (strcmp(key, "udmabuf") == 0) {
         udmabuf_restore();
     } else if (strcmp(key, "thp") == 0) {

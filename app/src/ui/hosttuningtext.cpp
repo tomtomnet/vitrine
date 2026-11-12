@@ -24,7 +24,8 @@ QString HostTuningText::untuned(int count, const QString &why)
 QString HostTuningText::summary()
 {
     return tr("Real-time QEMU threads for the VM in front, a shorter kernel fair-server period, "
-              "a GPU clock floor, huge pages for VM memory, the CPU kept ready to wake up and, "
+              "a GPU clock floor or power profile, huge pages for VM memory, the CPU kept ready "
+              "to wake up and, "
               "for native-context VMs, higher udmabuf limits while VMs run, put back after the "
               "last one.");
 }
@@ -85,7 +86,8 @@ HostTuningText::Box HostTuningText::offer(const HostSettings::Status &status)
 
     return {tr("Tune the Host for VMs?"),
             "<p>" + tr("Vitrine can tune the host while VMs run: real-time QEMU threads, a shorter "
-                       "kernel fair-server period, a GPU clock floor, huge pages for VM memory, the "
+                       "kernel fair-server period, a GPU clock floor or power profile, huge pages "
+                       "for VM memory, the "
                        "CPU kept ready to wake up and higher udmabuf limits, without which "
                        "native-context VMs copy the windows of Qt Widgets and GTK apps. All of it is "
                        "put back after the last VM.") + "</p><p>" +
@@ -120,10 +122,26 @@ HostTuningText::Box HostTuningText::setUpDone(const HostSettings::Status &now)
                 "</p><p>" + fix(now) + "</p>"};
 }
 
-QString HostTuningPrefsText::active(const QString &realtime)
+QString HostTuningPrefsText::active(const QString &realtime, int cpus)
 {
-    return tr("Active: vitrine-helper may tune the host without a password.") +
-           (realtime.isEmpty() ? QString() : ' ' + realtime.toHtmlEscaped());
+    const QString text = tr("Active: vitrine-helper may tune the host without a password.");
+
+    if (!realtime.isEmpty()) {
+        return text + ' ' + realtime.toHtmlEscaped();
+    }
+    /* the helper's rule: more processors than half of the CPUs online, and a
+       busy guest would hold most of the computer at real-time priority */
+    if (cpus < 2) {
+        return text + ' ' + tr("With one CPU, VMs run without real-time threads.");
+    }
+    return text + ' ' +
+           (cpus / 2 == 1 ? tr("VMs with more than 1 processor, half of this computer's %1, run "
+                               "without real-time threads.")
+                                .arg(cpus)
+                          : tr("VMs with more than %1 processors, half of this computer's %2, run "
+                               "without real-time threads.")
+                                .arg(cpus / 2)
+                                .arg(cpus));
 }
 
 QString HostTuningPrefsText::notActive(const HostSettings::Status &status)
@@ -145,6 +163,12 @@ QString HostTuningPrefsText::cpuHint()
               "idle on a laptop (a Ryzen 7 260, a VM idle in front) "
               "and 3.5 W on a desktop (a Ryzen 7 7800X3D), and ends "
               "when the last VM stops.");
+}
+
+QString HostTuningPrefsText::floorHint()
+{
+    return tr("Automatic: 1800 MHz on AMD APUs, the 3D_FULL_SCREEN power profile on dedicated "
+              "AMD GPUs, nothing on other GPUs");
 }
 
 QString HostTuningPrefsText::awake(const QStringList &gpus, GpuInputAwake::Installed installed,

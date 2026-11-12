@@ -30,8 +30,9 @@
 #     longer skip refreshes), each where the guest has the version it is
 #     built from, all of its packages or none
 # then keeps Mesa, KWin, KWayland, KPipeWire and the proxy at those versions
-# (dnf versionlock), and Qt Base with vitrine's KWin, which is built against
-# its private API.  With vitrine's KWin, Fedora's Plasma stays at the version
+# (dnf versionlock), and with vitrine's KWin Qt Base (that KWin is built
+# against its private API), KSvg and Kirigami (as the research's dev install
+# keeps them).  With vitrine's KWin, Fedora's Plasma stays at the version
 # that KWin is built for too (its packages installed at that version):
 # Plasma's packages require an unversioned kwin, so dnf would update the
 # rest of Plasma around the locked KWin (Fedora 44's Plasma 6.8.2,
@@ -43,10 +44,15 @@
 # medium's KWin, the installed KWin stays and Plasma is no longer held.
 # Where vitrine's KWin, KWayland or KPipeWire of earlier tools no longer
 # matches the guest's Plasma (updated before these tools), Fedora's go back in
-# until then.  KSvg and Kirigami are not locked, nor Qt Base without
-# vitrine's KWin: Fedora's next build of them (a new version, or a rebuild)
-# replaces them together with the rest of KDE's frameworks or of Qt, and the
-# next guest tools bring vitrine's back.  Nor is Mutter: Fedora updates it
+# until then.  With vitrine's KSvg and Kirigami locked, Fedora's KDE
+# Frameworks stay at their version too (the kf6 packages installed at it),
+# as Plasma does with KWin: a framework of a newer release beside them is a
+# mix KDE does not release.  Fedora's next KDE Frameworks then waits for
+# vitrine's next guest tools, which bring KSvg and Kirigami for it.  Without
+# vitrine's KWin, KSvg, Kirigami and Qt Base are not locked: Fedora's next
+# build of them (a new version, or a rebuild) replaces them together with
+# the rest of KDE's frameworks or of Qt, and the next guest tools bring
+# vitrine's back.  Nor is Mutter: Fedora updates it
 # together with GNOME Shell, which asks only for Mutter 51.0 or newer; a
 # lock would keep Mutter and its fixes at 51.1 while the Shell moved on, a
 # pair GNOME does not release.  Fedora's next Mutter takes its place.  Mesa
@@ -58,8 +64,8 @@
 # there.
 #
 # Options: --reboot     reboot at the end if needed
-#          --no-kwin    keep the installed KWin and KWayland (and Qt Base
-#                       and Plasma unlocked)
+#          --no-kwin    keep the installed KWin and KWayland (and Qt Base,
+#                       KSvg, Kirigami, Plasma and KDE Frameworks unlocked)
 #          --force      install again what is installed already
 #          --yes        ask nothing (the default off a terminal)
 #          --uninstall  remove the tools, back to Fedora's Mesa, KWin,
@@ -159,8 +165,9 @@ secure_boot() {
 # each package NAME=EVR, that EVR (dnf wants the architectures of a
 # multilib package at one version anyway: a 32-bit build of the same
 # version would pass).  The entries are told by their comment, which says
-# whether the package is a build of the medium's or Fedora's Plasma kept
-# with vitrine's KWin; the user's own stay.
+# whether the package is a build of the medium's, Fedora's Plasma kept with
+# vitrine's KWin or Fedora's KDE Frameworks kept with vitrine's KSvg and
+# Kirigami (a kf6 package); the user's own stay.
 versionlock() {  # versionlock NAME=EVR... (none: only remove the tools' entries)
 	python3 - "$lockfile" "$packages_txt" "$@" <<'EOF'
 import json, os, sys, tomllib
@@ -179,7 +186,12 @@ except FileNotFoundError:
 entries = [e for e in data.get("packages", []) if not str(e.get("comment", "")).startswith(tag)]
 for pair in pairs:
     name, evr = pair.split("=", 1)
-    what = "vitrine's build" if ours is None or name in ours else "Fedora's Plasma, kept with vitrine's KWin"
+    if ours is None or name in ours:
+        what = "vitrine's build"
+    elif name.startswith("kf6-"):
+        what = "Fedora's KDE Frameworks, kept with vitrine's KSvg and Kirigami"
+    else:
+        what = "Fedora's Plasma, kept with vitrine's KWin"
     entries.append({"name": name, "comment": f"{tag}: {what}",
                     "conditions": [{"key": "evr", "comparator": "=", "value": evr}]})
 q = json.dumps
@@ -647,21 +659,40 @@ take_source kf6-ksvg kf6-ksvg KSvg
 ksvg_pkgs=("${source_pkgs[@]}")
 take_source kf6-kirigami kf6-kirigami Kirigami
 kirigami_pkgs=("${source_pkgs[@]}")
+# KSvg and Kirigami locked with vitrine's KWin too, as the research's dev
+# install keeps them (Fedora's next build would undo their fix without a
+# word), and with them Fedora's KDE Frameworks at their version (kf_version):
+# frameworks of a newer release around them are a mix KDE does not release,
+# as Plasma around vitrine's KWin.  Without vitrine's KWin they are not
+# locked: Fedora's next KDE Frameworks takes their place
+kf_locked=() kf_version=
+if [ ${#ksvg_pkgs[@]} -gt 0 ] || [ ${#kirigami_pkgs[@]} -gt 0 ]; then
+	if [ "$use_kwin" = 1 ]; then
+		kf_locked=("${ksvg_pkgs[@]}" "${kirigami_pkgs[@]}")
+		if [ ${#ksvg_pkgs[@]} -gt 0 ]; then kf_version=$KSVG_VERSION; else kf_version=$KIRIGAMI_VERSION; fi
+		say "KSvg and Kirigami: locked with vitrine's KWin, and so is KDE Frameworks $kf_version: Fedora's"
+		say "         next KDE Frameworks waits for vitrine's next guest tools"
+	else
+		say "KSvg and Kirigami: not locked (no vitrine's KWin here): Fedora's next KDE Frameworks takes their place"
+	fi
+fi
 # GNOME's compositor (Fedora 45's medium): never locked, as said above
 take_source mutter mutter Mutter
 mutter_pkgs=("${source_pkgs[@]}")
 want+=("${mesa[@]}" "${kwin_pkgs[@]}" "${kwayland_pkgs[@]}" "${kpipewire_pkgs[@]}" "${proxy_pkgs[@]}" \
        "${qt_pkgs[@]}" "${ksvg_pkgs[@]}" "${kirigami_pkgs[@]}" "${mutter_pkgs[@]}")
 
-# vitrine's builds of this medium locked at the versions installed (Qt Base
-# only with vitrine's KWin, KWayland with it; KSvg, Kirigami and Mutter
+# vitrine's builds of this medium locked at the versions installed (Qt Base,
+# KSvg and Kirigami only with vitrine's KWin, KWayland with it; Mutter
 # never), and with vitrine's KWin, Fedora's Plasma: the packages installed
-# at KWin's version (all of Plasma's share it), at the versions installed
+# at KWin's version (all of Plasma's share it), at the versions installed;
+# with vitrine's KSvg and Kirigami, Fedora's KDE Frameworks: the kf6
+# packages installed at their version (held_kf)
 lock_installed() {
 	local p names
-	locks=() held=()
+	locks=() held=() held_kf=()
 	for p in "${mesa[@]}" "${kwin_pkgs[@]}" "${kwayland_pkgs[@]}" "${kpipewire_pkgs[@]}" "${proxy_pkgs[@]}" \
-	         "${qt_locked[@]}"; do
+	         "${qt_locked[@]}" "${kf_locked[@]}"; do
 		locks+=("$(rpm -q --qf '%{NAME}=%{EPOCHNUM}:%{VERSION}-%{RELEASE}' "$p")")
 	done
 	if [ "$use_kwin" = 1 ]; then
@@ -671,7 +702,14 @@ lock_installed() {
 		done < <(rpm -qa --qf '%{NAME}=%{EPOCHNUM}:%{VERSION}-%{RELEASE} %{VERSION}\n' |
 			awk -v v="$KWIN_VERSION" '$2 == v { print $1 }' | LC_ALL=C sort -u)
 	fi
-	versionlock "${locks[@]}" "${held[@]}"
+	if [ -n "$kf_version" ]; then
+		names=" ${locks[*]%%=*} ${held[*]%%=*} "
+		while read -r p; do
+			[[ $names == *" ${p%%=*} "* ]] || held_kf+=("$p")
+		done < <(rpm -qa --qf '%{NAME}=%{EPOCHNUM}:%{VERSION}-%{RELEASE} %{VERSION}\n' |
+			awk -v v="$kf_version" '$2 == v && $1 ~ /^kf6-/ { print $1 }' | LC_ALL=C sort -u)
+	fi
+	versionlock "${locks[@]}" "${held[@]}" "${held_kf[@]}"
 }
 
 # nothing to do when what this medium installs is all there
@@ -757,6 +795,8 @@ lock_installed || die "cannot edit $lockfile"
 unlocked=
 [ ${#locks[@]} -gt 0 ] && say "version locks: ${locks[*]%%=*}"
 [ ${#held[@]} -gt 0 ] && say "and Fedora's Plasma $KWIN_VERSION with vitrine's KWin: ${#held[@]} packages"
+[ ${#held_kf[@]} -gt 0 ] &&
+	say "and Fedora's KDE Frameworks $kf_version with vitrine's KSvg and Kirigami: ${#held_kf[@]} packages"
 installed dkms || die "dkms is not installed"
 newest=$(rpm -q --qf '%{VERSION}-%{RELEASE}.%{ARCH}\n' kernel-core | sort -V | tail -1)
 if [ -n "$newest" ] && ! rpm -q "kernel-devel-$newest" > /dev/null 2>&1; then

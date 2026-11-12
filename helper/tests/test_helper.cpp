@@ -68,7 +68,9 @@ static QByteArray od(int min, int max, int lo = 800, int hi = 2700)
 class FakeQemu
 {
 public:
-    FakeQemu(const QString &program = FAKE_QEMU, const QStringList &extraEnv = {})
+    /* @arguments: its command line, which only /proc shows (an -smp) */
+    FakeQemu(const QString &program = FAKE_QEMU, const QStringList &extraEnv = {},
+             const QStringList &arguments = {})
     {
         if (!extraEnv.isEmpty()) {
             QProcessEnvironment env = QProcessEnvironment::systemEnvironment();
@@ -77,7 +79,7 @@ public:
             }
             m_process.setProcessEnvironment(env);
         }
-        m_process.start(program, program.endsWith("sleep") ? QStringList{"300"} : QStringList{});
+        m_process.start(program, program.endsWith("sleep") ? QStringList{"300"} : arguments);
         m_process.waitForStarted();
         /* its threads */
         QTest::qWait(50);
@@ -401,6 +403,92 @@ private:
         writeFile(card + "/pp_od_clk_voltage", od(800, 2700));
         /* gpu_metrics header: size 120, format 2 (an APU's), content 1 */
         writeFile(card + "/gpu_metrics", QByteArray("\x78\x00\x02\x01", 4) + QByteArray(116, 0));
+        QFile::link("../../../../bus/pci/drivers/amdgpu", card + "/driver");
+    }
+    /*
+     * pp_power_profile_mode as amdgpu writes it, profile @active in use, in
+     * the kernel's own formats: "rows" (swsmu's: an RX 6900 XT's
+     * sienna_cichlid, RDNA3 and RDNA4 alike), "header" (smu 13.0.7's,
+     * across one line), "vega10", "smu7" (Polaris) and "apu" (Van Gogh's
+     * list)
+     */
+    static QByteArray profileTable(const QString &format, int active)
+    {
+        static const char *const names[] = {"BOOTUP_DEFAULT", "3D_FULL_SCREEN", "POWER_SAVING",
+                                            "VIDEO",          "VR",             "COMPUTE",
+                                            "CUSTOM",         "WINDOW_3D"};
+        static const char *const clocks[] = {"GFXCLK", "SOCCLK", "MEMCLK"};
+        QString t;
+
+        if (format == "rows") {
+            t = QString::asprintf("%16s %s %s %s %s %s %s %s %s %s %s\n", "PROFILE_INDEX(NAME)",
+                                  "CLOCK_TYPE(NAME)", "FPS", "MinFreqType", "MinActiveFreqType",
+                                  "MinActiveFreq", "BoosterFreqType", "BoosterFreq",
+                                  "PD_Data_limit_c", "PD_Data_error_coeff",
+                                  "PD_Data_error_rate_coeff");
+            for (int i = 0; i <= 6; i++) {
+                t += QString::asprintf("%2d %14s%s:\n", i, names[i], i == active ? "*" : " ");
+                for (int c = 0; c < 3; c++) {
+                    t += QString::asprintf("%19s %d(%13s) %7d %7d %7d %7d %7d %7d %7d %7d %7d\n",
+                                           " ", c, clocks[c], 0, 5, 1, 0, 4, 1800, 0, 0, 0);
+                }
+            }
+        } else if (format == "header") {
+            t = QString(30, ' ');
+            for (int i = 0; i <= 7; i++) {
+                t += QString::asprintf("%d %-14s%s", i, names[i], i == active ? "* " : "  ");
+            }
+            t += '\n';
+            for (const char *row : {"Gfx_ActiveHystLimit", "Gfx_IdleHystLimit", "Gfx_FPS"}) {
+                t += QString::asprintf("%-30s", row);
+                for (int i = 0; i <= 7; i++) {
+                    t += QString::asprintf("%-18d", 5);
+                }
+                t += '\n';
+            }
+        } else if (format == "vega10") {
+            t = QString::asprintf("%s %16s %s %s %s %s\n", "NUM", "MODE_NAME", "BUSY_SET_POINT",
+                                  "FPS", "USE_RLC_BUSY", "MIN_ACTIVE_LEVEL");
+            for (int i = 0; i <= 6; i++) {
+                t += QString::asprintf("%3d %14s%s: %14d %3d %10d %14d\n", i, names[i],
+                                       i == active ? "*" : " ", 70, 60, 0, 0);
+            }
+        } else if (format == "smu7") {
+            t = QString::asprintf("%s %16s %16s %16s %16s %16s %16s %16s\n", "NUM", "MODE_NAME",
+                                  "SCLK_UP_HYST", "SCLK_DOWN_HYST", "SCLK_ACTIVE_LEVEL",
+                                  "MCLK_UP_HYST", "MCLK_DOWN_HYST", "MCLK_ACTIVE_LEVEL");
+            for (int i = 0; i <= 6; i++) {
+                t += i == active ? QString::asprintf("%3d %14s %s: %8d %16d %16d %16d %16d %16d\n",
+                                                     i, names[i], "*", 0, 100, 30, 0, 100, 10)
+                                 : QString::asprintf("%3d %16s: %8d %16d %16d %16d %16d %16d\n",
+                                                     i, names[i], 0, 100, 30, 0, 100, 10);
+            }
+        } else {
+            for (int i = 0; i <= 6; i++) {
+                t += QString::asprintf("%2d %14s %s\n", i, names[i], i == active ? "*" : " ");
+            }
+        }
+        return t.toLatin1();
+    }
+    QString profileFile(int card) const
+    {
+        return path(QString("/sys/class/drm/card%1/device/pp_power_profile_mode").arg(card));
+    }
+    /* The profile in use: the name a '*' follows */
+    QString activeProfile(int card) const
+    {
+        static const QRegularExpression star("([A-Z0-9_]+)[ \\t]*\\*");
+        return star.match(QString::fromLatin1(readFile(profileFile(card)))).captured(1);
+    }
+    /* cardN: a dedicated AMD GPU (gpu_metrics format 1) without an
+       overdrive table, its power profiles in @format, BOOTUP_DEFAULT in use */
+    void amdDgpu(int n, const QString &format = "rows") const
+    {
+        const QString card = path(QString("/sys/class/drm/card%1/device").arg(n));
+        writeFile(card + "/vendor", "0x1002\n");
+        writeFile(card + "/power_dpm_force_performance_level", "auto\n");
+        writeFile(card + "/gpu_metrics", QByteArray("\x78\x00\x01\x01", 4) + QByteArray(116, 0));
+        writeFile(profileFile(n), profileTable(format, 0));
         QFile::link("../../../../bus/pci/drivers/amdgpu", card + "/driver");
     }
     void setExt(int cpu, qint64 period, qint64 runtime) const
@@ -852,11 +940,12 @@ private slots:
         QVERIFY(h.answer("rt " + qemu.pidText()).startsWith("skip rt "));
     }
 
-    /* Offline CPUs run nothing, and the kernel refuses their writes: left out */
+    /* Offline CPUs run nothing, and the kernel refuses their writes: left out
+       (one vCPU: real-time on the three left) */
     void offlineCpus()
     {
         writeFile(path("/sys/devices/system/cpu/online"), "0-1,3\n");
-        FakeQemu qemu;
+        FakeQemu qemu(FAKE_QEMU, {"FAKE_QEMU_VCPUS=1"});
         Helper h(m_root);
         QVERIFY(h.ready());
         h.answer("watch " + qemu.pidText());
@@ -1301,6 +1390,102 @@ private slots:
     }
 
     /*
+     * More vCPUs than half the online CPUs: never real-time, in front too
+     * (a 16-vCPU VM froze a 16-thread desktop), but lowered as a VM behind:
+     * its vCPUs at nice -5, said once in the journal.  Half of them is
+     * real-time.  What rt made real-time goes back when it is capped again.
+     */
+    void realtimeCap()
+    {
+        setOnline("0-2");
+        FakeQemu qemu;
+        Helper h(m_root);
+        QVERIFY(h.ready());
+        h.answer("watch " + qemu.pidText());
+        QVERIFY(h.answer("fair-server on").startsWith("ok fair-server on"));
+        const QStringList cpus = vcpus(qemu.pid());
+        QCOMPARE(cpus.size(), 2);
+        const QString capped = QString("skip rt %1: 2 vCPUs, more than half of the 3 online cpus: "
+                                       "behind instead (%2 threads ordinary, %3 vCPUs at nice -5)")
+                                   .arg(qemu.pid());
+        QCOMPARE(h.answer("rt " + qemu.pidText()), capped.arg(0).arg(2));
+        for (const QString &tid : tids(qemu.pid())) {
+            QCOMPARE(schedOf(tid), cpus.contains(tid) ? QString("0 0 -5") : QString());
+        }
+        /* asked again (its window in front again): nothing more, logged once */
+        QCOMPARE(h.answer("rt " + qemu.pidText()), capped.arg(0).arg(0));
+        QCOMPARE(journal().filter("not made real-time: 2 vCPUs, more than half of the 3 online "
+                                  "cpus").size(), 1);
+        /* a CPU online again: 2 of 4, real-time */
+        setOnline("0-3");
+        QCOMPARE(h.answer("rt " + qemu.pidText()),
+                 QString("ok rt %1: 4 of 4 threads real-time").arg(qemu.pid()));
+        /* and offline: what rt made real-time back, the vCPUs at nice -5 still */
+        setOnline("0-2");
+        QCOMPARE(h.answer("rt " + qemu.pidText()), capped.arg(4).arg(0));
+        for (const QString &tid : tids(qemu.pid())) {
+            QCOMPARE(schedOf(tid), QString("0 0 %1").arg(cpus.contains(tid) ? -5 : 0));
+        }
+        QCOMPARE(journal().filter("not made real-time").size(), 2);
+        h.ask("release");
+        QVERIFY(h.finished());
+        QVERIFY(h.all().contains(QString("restored rt %1: 0 threads back to SCHED_OTHER, vCPUs back "
+                                         "to nice 0").arg(qemu.pid())));
+        for (const QString &tid : tids(qemu.pid())) {
+            QCOMPARE(schedOf(tid), QString("0 0 0"));
+        }
+        QCOMPARE(stateFiles(), QStringList({"lock"}));
+    }
+
+    /*
+     * No thread named as a vCPU (QEMU without debug-threads=on): its -smp
+     * counts, as QEMU works it out.  Capped, nothing is made real-time, and
+     * no thread gets the nice: none is known to be a vCPU.
+     */
+    void realtimeCapBySmp_data()
+    {
+        QTest::addColumn<QStringList>("arguments");
+        QTest::addColumn<int>("count");    // 0: real-time
+        QTest::newRow("its count first") << QStringList{"-smp", "3,sockets=1,cores=3,threads=1"} << 3;
+        QTest::newRow("cpus=") << QStringList{"-smp", "cpus=3"} << 3;
+        QTest::newRow("the levels' product") << QStringList{"-smp", "sockets=1,cores=2,threads=2"}
+                                             << 4;
+        QTest::newRow("maxcpus= without cpus=") << QStringList{"-smp", "maxcpus=3"} << 3;
+        QTest::newRow("the last one") << QStringList{"-smp", "1", "--smp", "3"} << 3;
+        QTest::newRow("half") << QStringList{"-smp", "2,maxcpus=8"} << 0;
+        QTest::newRow("no -smp: one") << QStringList{"-m", "1G"} << 0;
+    }
+    void realtimeCapBySmp()
+    {
+        QFETCH(QStringList, arguments);
+        QFETCH(int, count);
+        FakeQemu qemu(FAKE_QEMU, {"FAKE_QEMU_UNNAMED=1"}, arguments);
+        QVERIFY(vcpus(qemu.pid()).isEmpty());
+        Helper h(m_root);
+        QVERIFY(h.ready());
+        h.answer("watch " + qemu.pidText());
+        QVERIFY(h.answer("fair-server on").startsWith("ok fair-server on"));
+        const QString rt = h.answer("rt " + qemu.pidText());
+        if (!count) {
+            QCOMPARE(rt, QString("ok rt %1: 4 of 4 threads real-time").arg(qemu.pid()));
+            return;
+        }
+        QCOMPARE(rt, QString("skip rt %1: %2 vCPUs, more than half of the 4 online cpus: behind "
+                             "instead (0 threads ordinary, 0 vCPUs at nice -5)")
+                         .arg(qemu.pid())
+                         .arg(count));
+        for (const QString &tid : tids(qemu.pid())) {
+            QCOMPARE(schedOf(tid), QString());
+        }
+        QVERIFY(journal().join('\n').contains(
+            QString("not made real-time: %1 vCPUs (its -smp), more than half of the 4 online cpus")
+                .arg(count)));
+        h.ask("release");
+        QVERIFY(h.finished());
+        QCOMPARE(stateFiles(), QStringList({"lock"}));
+    }
+
+    /*
      * vitrine restarted while its VMs run: the old helper goes on (its input
      * closed) with the VM it made real-time, and the new one sends that VM
      * behind - from the old one's record, which tells its threads made
@@ -1672,6 +1857,222 @@ private slots:
         QVERIFY(b.ready());
         QCOMPARE(level(), QString("auto"));
         QCOMPARE(odTable(), od(800, 2700));
+        b.closeInput();
+        QVERIFY(b.finished());
+    }
+
+    /*
+     * The 3D_FULL_SCREEN power profile on a dedicated AMD GPU while VMs
+     * run, from the default, put back after the last one, whatever way
+     * amdgpu lists the profiles: their numbers are read, never assumed
+     */
+    void gpuProfile_data()
+    {
+        QTest::addColumn<QString>("format");
+        QTest::newRow("rows (swsmu)") << "rows";
+        QTest::newRow("one line (smu 13.0.7)") << "header";
+        QTest::newRow("vega10") << "vega10";
+        QTest::newRow("smu7") << "smu7";
+        QTest::newRow("a list") << "apu";
+    }
+    void gpuProfile()
+    {
+        QFETCH(QString, format);
+        amdDgpu(2, format);
+        FakeQemu qemu;
+        Helper h(m_root);
+        QVERIFY(h.ready());
+        h.answer("watch " + qemu.pidText());
+        QCOMPARE(h.answer("gpu-profile card2 on"),
+                 QString("ok gpu-profile card2 3D_FULL_SCREEN (was BOOTUP_DEFAULT)"));
+        QCOMPARE(activeProfile(2), QString("3D_FULL_SCREEN"));
+        QCOMPARE(writes(), QStringList({"/sys/class/drm/card2/device/pp_power_profile_mode 1"}));
+        QCOMPARE(readFile(path("/run/vitrine-helper/gpu-profile-card2.state")),
+                 QByteArray("was BOOTUP_DEFAULT\nwrote 3D_FULL_SCREEN\n"));
+        QCOMPARE(h.answer("gpu-profile card2 on"), QString("ok gpu-profile card2 on: already"));
+        qemu.stop();
+        QCOMPARE(h.waitFor("restored"), QString("restored gpu-profile card2: BOOTUP_DEFAULT"));
+        QVERIFY(h.finished());
+        QCOMPARE(activeProfile(2), QString("BOOTUP_DEFAULT"));
+        QCOMPARE(writes().last(), QString("/sys/class/drm/card2/device/pp_power_profile_mode 0"));
+        QVERIFY(journal().join('\n').contains(": card2 power profile 3D_FULL_SCREEN (was "
+                                              "BOOTUP_DEFAULT)"));
+        QVERIFY(journal().join('\n').contains("log card2: power profile back to BOOTUP_DEFAULT"));
+        QCOMPARE(stateFiles(), QStringList({"lock"}));
+    }
+
+    /* Where it does not apply, or someone chose another level or profile
+       (said in the journal): nothing written */
+    void gpuProfileSkips()
+    {
+        amdDgpu(2);
+        amdDgpu(3);
+        QFile::remove(profileFile(3));
+        FakeQemu qemu;
+        Helper h(m_root);
+        QVERIFY(h.ready());
+        QCOMPARE(h.answer("gpu-profile card2 on"),
+                 QString("error gpu-profile: watch a QEMU first"));
+        QCOMPARE(h.answer("gpu-profile card2 off"), QString("ok gpu-profile card2 off"));
+        h.answer("watch " + qemu.pidText());
+        QCOMPARE(h.answer("gpu-profile ../card2 on"),
+                 QString("error gpu-profile: give the card as cardN"));
+        QCOMPARE(h.answer("gpu-profile card2 3D_FULL_SCREEN"),
+                 QString("error gpu-profile card2: give on or off"));
+        QCOMPARE(h.answer("gpu-profile card7 on"), QString("skip gpu-profile card7: no such card"));
+        QCOMPARE(h.answer("gpu-profile card0 on"),
+                 QString("skip gpu-profile card0: not an AMD GPU"));
+        QCOMPARE(h.answer("gpu-profile card1 on"),
+                 QString("skip gpu-profile card1: an APU, which gets a clock floor instead"));
+        QCOMPARE(h.answer("gpu-profile card3 on"),
+                 QString("skip gpu-profile card3: no power profiles (pp_power_profile_mode)"));
+        writeFile(profileFile(3), " 0 BOOTUP_DEFAULT*:\n 2   POWER_SAVING :\n");
+        QCOMPARE(h.answer("gpu-profile card3 on"),
+                 QString("skip gpu-profile card3: no 3D_FULL_SCREEN profile"));
+        const QString level = path("/sys/class/drm/card2/device/power_dpm_force_performance_level");
+        writeFile(level, "manual\n");
+        QCOMPARE(h.answer("gpu-profile card2 on"),
+                 QString("skip gpu-profile card2: the performance level is manual, not auto"));
+        writeFile(level, "auto\n");
+        writeFile(profileFile(2), profileTable("rows", 5));
+        QCOMPARE(h.answer("gpu-profile card2 on"),
+                 QString("skip gpu-profile card2: the power profile is COMPUTE, not "
+                         "BOOTUP_DEFAULT"));
+        writeFile(profileFile(2), profileTable("rows", 1));
+        QCOMPARE(h.answer("gpu-profile card2 on"),
+                 QString("ok gpu-profile card2 on: already 3D_FULL_SCREEN, left as it is"));
+        QVERIFY(writes().isEmpty());
+        QCOMPARE(journal().filter("someone's choice").size(), 2);
+        QVERIFY(journal().join('\n').contains("log card2: power profile left as it is, someone's "
+                                              "choice: the power profile is COMPUTE, not "
+                                              "BOOTUP_DEFAULT"));
+        qemu.stop();
+        QVERIFY(h.finished());
+        QCOMPARE(activeProfile(2), QString("3D_FULL_SCREEN"));
+        QCOMPARE(stateFiles(), QStringList({"lock"}));
+    }
+
+    /* The driver refuses it (amdgpu's older GPUs, outside level manual), or
+       keeps another: one write, no record, a journal line */
+    void gpuProfileRefused()
+    {
+        amdDgpu(2, "vega10");
+        writeFile(profileFile(2) + ".manual", "");
+        FakeQemu qemu;
+        Helper h(m_root);
+        QVERIFY(h.ready());
+        h.answer("watch " + qemu.pidText());
+        QCOMPARE(h.answer("gpu-profile card2 on"),
+                 QString("skip gpu-profile card2: the driver refuses 3D_FULL_SCREEN (Invalid "
+                         "argument)"));
+        QCOMPARE(writes(),
+                 QStringList({"/sys/class/drm/card2/device/pp_power_profile_mode 1 FAILED"}));
+        QVERIFY(journal().join('\n').contains("log card2: power profile 3D_FULL_SCREEN not set: "
+                                              "Invalid argument"));
+        QVERIFY(!stateExists("gpu-profile-card2"));
+        QCOMPARE(activeProfile(2), QString("BOOTUP_DEFAULT"));
+        /* taken, not kept */
+        QFile::remove(profileFile(2) + ".manual");
+        writeFile(profileFile(2) + ".stuck", "");
+        QCOMPARE(h.answer("gpu-profile card2 on"),
+                 QString("error gpu-profile card2: 3D_FULL_SCREEN did not take"));
+        QVERIFY(!stateExists("gpu-profile-card2"));
+        QCOMPARE(writes().size(), 2);
+        qemu.stop();
+        QVERIFY(h.finished());
+        QCOMPARE(stateFiles(), QStringList({"lock"}));
+    }
+
+    /* Changed by someone else meanwhile: left as they chose */
+    void gpuProfileLeft()
+    {
+        amdDgpu(2);
+        FakeQemu qemu;
+        Helper h(m_root);
+        QVERIFY(h.ready());
+        h.answer("watch " + qemu.pidText());
+        QVERIFY(h.answer("gpu-profile card2 on").startsWith("ok gpu-profile card2 3D_FULL_SCREEN"));
+        writeFile(profileFile(2), profileTable("rows", 3));
+        qemu.stop();
+        QCOMPARE(h.waitFor("left"),
+                 QString("left gpu-profile card2: changed by someone else since"));
+        QVERIFY(h.finished());
+        QCOMPARE(activeProfile(2), QString("VIDEO"));
+        QVERIFY(journal().join('\n').contains("log card2: power profile left at VIDEO: changed by "
+                                              "someone else since"));
+        QCOMPARE(stateFiles(), QStringList({"lock"}));
+    }
+
+    /* Off while VMs run (the floor's preference changed): back at once */
+    void gpuProfileOff()
+    {
+        amdDgpu(2);
+        FakeQemu qemu;
+        Helper h(m_root);
+        QVERIFY(h.ready());
+        h.answer("watch " + qemu.pidText());
+        QVERIFY(h.answer("gpu-profile card2 on").startsWith("ok gpu-profile card2 3D_FULL_SCREEN"));
+        QCOMPARE(h.ask("gpu-profile card2 off"),
+                 QStringList({"restored gpu-profile card2: BOOTUP_DEFAULT",
+                              "ok gpu-profile card2 off"}));
+        QCOMPARE(activeProfile(2), QString("BOOTUP_DEFAULT"));
+        QVERIFY(!stateExists("gpu-profile-card2"));
+    }
+
+    /* Two vitrine sessions: the second joins, the last one out puts it back */
+    void gpuProfileTwoSessions()
+    {
+        amdDgpu(2);
+        FakeQemu q1, q2;
+        Helper a(m_root), b(m_root);
+        QVERIFY(a.ready());
+        QVERIFY(b.ready());
+        a.answer("watch " + q1.pidText());
+        b.answer("watch " + q2.pidText());
+        QVERIFY(a.answer("gpu-profile card2 on").startsWith("ok gpu-profile card2 3D_FULL_SCREEN"));
+        QCOMPARE(b.answer("gpu-profile card2 on"),
+                 QString("ok gpu-profile card2: set by another vitrine session"));
+        q1.stop();
+        QVERIFY(a.finished());
+        QCOMPARE(activeProfile(2), QString("3D_FULL_SCREEN"));
+        q2.stop();
+        QCOMPARE(b.waitFor("restored"), QString("restored gpu-profile card2: BOOTUP_DEFAULT"));
+        QVERIFY(b.finished());
+        QCOMPARE(activeProfile(2), QString("BOOTUP_DEFAULT"));
+        QCOMPARE(stateFiles(), QStringList({"lock"}));
+    }
+
+    /* Killed before its write or after it: the next helper puts it back */
+    void gpuProfileCrash_data()
+    {
+        QTest::addColumn<QString>("kill");
+        QTest::addColumn<QString>("restored");
+        QTest::newRow("before the write")
+            << "VITRINE_HELPER_TEST_KILL_BEFORE=pp_power_profile_mode"
+            << "restored gpu-profile card2: BOOTUP_DEFAULT already";
+        QTest::newRow("after the write") << "VITRINE_HELPER_TEST_KILL_AT=1"
+                                         << "restored gpu-profile card2: BOOTUP_DEFAULT";
+    }
+    void gpuProfileCrash()
+    {
+        QFETCH(QString, kill);
+        QFETCH(QString, restored);
+        amdDgpu(2);
+        {
+            FakeQemu qemu;
+            Helper a(m_root, {kill});
+            QVERIFY(a.ready());
+            a.answer("watch " + qemu.pidText());
+            a.send("gpu-profile card2 on");
+            QVERIFY(a.finished());
+        }
+        QVERIFY(journal().join('\n').contains("killed"));
+        QVERIFY(stateExists("gpu-profile-card2"));
+        Helper b(m_root);
+        QCOMPARE(b.line(), restored);
+        QVERIFY(b.ready());
+        QCOMPARE(activeProfile(2), QString("BOOTUP_DEFAULT"));
+        QCOMPARE(stateFiles(), QStringList({"lock"}));
         b.closeInput();
         QVERIFY(b.finished());
     }

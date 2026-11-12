@@ -202,6 +202,20 @@ struct od_table {
 };
 /* false when @text has no complete OD_SCLK and OD_RANGE SCLK */
 bool od_parse(const char *text, struct od_table *od);
+/* amdgpu's power profiles, from pp_power_profile_mode */
+#define MAX_PROFILES 16
+struct profiles {
+    struct profile {
+        char name[16];      /* BOOTUP_DEFAULT, 3D_FULL_SCREEN... */
+        int index;          /* its number, which a write takes */
+        size_t end;         /* where its name ends in the text */
+        long star;          /* where the '*' after it is, -1 for none */
+    } p[MAX_PROFILES];
+    int n;
+    int active;             /* the entry of the one in use, -1 for none */
+};
+/* false when @text lists no profile with its number */
+bool profiles_parse(const char *text, struct profiles *ps);
 
 /* Opens /run/vitrine-helper and restores what a crashed helper left; false
    when the state folder is unusable */
@@ -212,6 +226,9 @@ void fair_server_on(void);
 void fair_server_off(void);
 /* That bound is in place, held by this helper; else why not in @why */
 bool settings_bound(const char **why);
+/* The CPUs online now (CPUS_ONLINE's list; every cpuN folder if it cannot
+   be read), at least 1 */
+int online_cpus(void);
 /* Shared memory's transparent huge pages on madvise (THP_SHMEM), and back */
 void thp_on(void);
 void thp_off(void);
@@ -224,6 +241,9 @@ void epp_on(void);
 void epp_off(void);
 /* @card: "cardN"; @value: a clock in MHz, "auto" or "off" */
 void gpu_floor(const char *card, const char *value);
+/* @card: "cardN"; @value: "on" (amdgpu's 3D_FULL_SCREEN power profile, on
+   a dedicated GPU, from the default in performance level auto) or "off" */
+void gpu_profile(const char *card, const char *value);
 /* The protocol's udmabuf <pid>: the udmabuf limits raised while that
    watched QEMU runs */
 void udmabuf_on(const char *arg);
@@ -298,6 +318,7 @@ struct watched {
     bool behind; /* its vCPUs were set to BEHIND_NICE */
     bool held;   /* sched_hold() holds its record */
     bool udmabuf; /* udmabuf was asked for it */
+    bool capped; /* rt found more vCPUs than half the online CPUs (logged once) */
     bool view;   /* not a QEMU: the process that started the helper (view-rt) */
     pid_t kept[MAX_KEPT];   /* threads at SCHED_FIFO 1 before its first rt */
     int nkept;
@@ -310,7 +331,8 @@ extern int nwatched;
 bool watch(const char *arg);
 /* The watched process with this pid, or NULL */
 struct watched *find_watched(const char *arg);
-/* The protocol's rt <pid>: the VM in front */
+/* The protocol's rt <pid>: the VM in front - as behind, when its vCPUs are
+   more than half of the online CPUs */
 void rt_on(const char *arg);
 /* The protocol's behind <pid>: a VM behind the one in front */
 void behind(const char *arg);
