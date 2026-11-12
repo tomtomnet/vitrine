@@ -208,6 +208,13 @@ files it changes, and the guest packages compile through ccache.
    Update… rebuilds only the packages whose sources changed, and VMs with
    older tools then offer Update….
 
+   On a screen faster than 60 Hz, GTK 4 apps (Ptyxis, Nautilus, GNOME's
+   apps) answer keys later in a Fedora 44 guest than in a Fedora 45 one: by
+   about 3 ms at the median and up to 12 ms at 240 Hz. After a frame-clock
+   cycle that draws nothing, Fedora 44's GTK 4.22 waits as if the screen ran
+   at 60 Hz. A Fedora 44 desktop without a VM does the same; Fedora 45's
+   GTK 4.24 does not.
+
 Keys: in the GTK app, the VM's screen takes the keys while the pointer is
 on it; elsewhere they are vitrine's and the desktop's (if Tab or the arrows
 moved the focus, click the screen to type in the VM again). A key can still
