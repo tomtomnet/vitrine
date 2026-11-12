@@ -205,7 +205,7 @@ void MainWindow::undoSettingsUpdate(Vm *vm)
         "Undo the Update?",
         QString("These settings go back as they were before the update of %1: %2. The other "
                 "lines of vm.args stay as they are now.")
-            .arg(last.time.toString("d MMMM, HH:mm"), titles.join(", ")),
+            .arg(last.time.toString("d MMMM, HH:mm"), SettingsUpdates::listed(titles)),
         {{"cancel", "_Cancel"}, {"undo", "_Undo"}}, "undo");
     QPointer<Vm> guard(vm);
     Gtk4::onResponse(alert, [this, guard, last](const QString &response) {
@@ -226,7 +226,7 @@ void MainWindow::undoSettingsUpdate(Vm *vm)
                     "Some Settings Stay as They Are",
                     QString("Their lines changed since the update, and were left as they are: "
                             "%1. vm.args as it was before the update is %2, in the VM's folder.")
-                        .arg(failed.join(", "), last.backup)));
+                        .arg(SettingsUpdates::listed(failed), last.backup)));
             } else {
                 notify(QString("%1: the update of its settings is undone").arg(guard->name()));
             }

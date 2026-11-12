@@ -74,6 +74,12 @@ struct Check {
 QStringList ids();
 /* Its title, by its id; empty for an unknown one */
 QString title(const QString &id);
+/*
+ * @titles as a list in running text: "no HPET timer, a 16 GiB window for
+ * GPU memory", the first one's capital kept when @capitalized (a sentence
+ * of its own), acronyms (KDE, DRM, GPU) kept as they are
+ */
+QString listed(const QStringList &titles, bool capitalized = false);
 
 /* What @text, a vm.args, lacks */
 Check check(const QString &text, const Context &context);

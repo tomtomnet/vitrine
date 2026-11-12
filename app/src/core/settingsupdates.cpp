@@ -646,9 +646,9 @@ static const QList<Rule> &rules()
         {"guest-kde", QT_TRANSLATE_NOOP("SettingsUpdates", "KDE Plasma as the guest's desktop"),
          QT_TRANSLATE_NOOP("SettingsUpdates",
                            "The guest said it runs KDE Plasma, which this VM's settings do not "
-                           "say. Vitrine times a KDE guest's frames of its own: they show 1.5 ms "
-                           "sooner, and in QEMU's own window without a copy. Also the General "
-                           "page's Desktop."),
+                           "say. Vitrine gives a KDE guest timings of its own: its frames show "
+                           "1.5 ms sooner in vitrine's window, and without a copy in QEMU's own "
+                           "window. Also the General page's Desktop."),
          QDate(2026, 10, 3),
          [](const ArgsFile &args, const Context &c) {
              if (!isLinux(args, c) || VmConfig::guest(args).desktop == "kde" ||
@@ -803,6 +803,22 @@ QString title(const QString &id)
         }
     }
     return {};
+}
+
+QString listed(const QStringList &titles, bool capitalized)
+{
+    QStringList out;
+
+    for (qsizetype i = 0; i < titles.size(); i++) {
+        QString title = titles[i];
+        const QString first = title.section(' ', 0, 0);
+        const bool acronym = first.size() > 1 && first == first.toUpper();
+        if (!title.isEmpty() && !acronym && !(capitalized && i == 0)) {
+            title[0] = title[0].toLower();
+        }
+        out << title;
+    }
+    return out.join(", ");
 }
 
 /* The options the rules read, which they cannot read in JSON */

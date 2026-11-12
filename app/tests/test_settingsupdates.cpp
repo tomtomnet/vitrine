@@ -183,6 +183,13 @@ private slots:
             QVERIFY(!title(id).isEmpty());
         }
         QVERIFY(title("unknown").isEmpty());
+        /* in running text: lower case but for acronyms; a sentence of its own starts with one */
+        const QStringList all = {title("hpet-off"), title("hostmem-16g"), title("guest-kde"),
+                                 title("native-context")};
+        QCOMPARE(listed(all), "no HPET timer, a 16 GiB window for GPU memory, KDE Plasma as the "
+                              "guest's desktop, DRM native context");
+        QCOMPARE(listed(all.mid(0, 2), true), "No HPET timer, a 16 GiB window for GPU memory");
+        QCOMPARE(listed({}), QString());
     }
 
     /* The first hour: a guest nobody said is Linux gets nothing */

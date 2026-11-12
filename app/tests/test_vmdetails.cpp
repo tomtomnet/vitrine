@@ -120,8 +120,8 @@ private slots:
         SettingsUpdatesBanner home(SettingsUpdatesBanner::Place::Home);
         details.setVm(vm);
         home.setVm(vm);
-        QCOMPARE(details.offerText(), "This VM lacks 2 settings that new VMs get: No HPET timer, "
-                                      "A 16 GiB window for GPU memory.");
+        QCOMPARE(details.offerText(), "This VM lacks 2 settings that new VMs get: no HPET timer, "
+                                      "a 16 GiB window for GPU memory.");
         QCOMPARE(home.offerText(), "This VM lacks 2 settings that new VMs get.");
         QVERIFY(home.notNowButton());
         QVERIFY(!details.notNowButton());
@@ -136,7 +136,7 @@ private slots:
         QCOMPARE(dialog.declined(), QStringList{"hostmem-16g"});
         /* nothing checked to take */
         QVERIFY(!dialog.applyButton()->isEnabled());
-        QCOMPARE(details.offerText(), "This VM lacks a setting that new VMs get: No HPET timer.");
+        QCOMPARE(details.offerText(), "This VM lacks a setting that new VMs get: no HPET timer.");
         dialog.askAgain("hostmem-16g");
         QCOMPARE(dialog.offered(), QStringList({"hpet-off", "hostmem-16g"}));
         QVERIFY(!dialog.checkBox("hpet-off")->isChecked());
@@ -153,7 +153,7 @@ private slots:
         QVERIFY(details.offerText().isEmpty());
         QVERIFY(home.offerText().isEmpty());
         QVERIFY(details.updateText().startsWith("Settings updated on "));
-        QVERIFY(details.updateText().contains("No HPET timer, A 16 GiB window for GPU memory"));
+        QVERIFY(details.updateText().contains("no HPET timer, a 16 GiB window for GPU memory"));
         QVERIFY(details.undoButton()->isEnabled());
 
         /* undone: offered again; Not Now hides the Console's banner, not the Details' */

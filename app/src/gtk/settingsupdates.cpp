@@ -74,8 +74,9 @@ SettingsUpdatesStatus::SettingsUpdatesStatus()
         }
     });
 
+    /* kept while out of the group's header (update()) */
+    g_object_ref_sink(m_review);
     gtk_widget_add_css_class(m_review, "flat");
-    adw_preferences_group_set_header_suffix(m_details, m_review);
     on<void()>(m_review, "clicked", [this]() {
         if (m_vm && review) {
             review(m_vm);
@@ -89,6 +90,7 @@ SettingsUpdatesStatus::SettingsUpdatesStatus()
 SettingsUpdatesStatus::~SettingsUpdatesStatus()
 {
     stopCallbacks();
+    g_object_unref(m_review);
     g_object_unref(m_details);
     g_object_unref(m_home);
 }
@@ -142,7 +144,7 @@ void SettingsUpdatesStatus::update()
                                          : QString("This VM lacks %1 settings that new VMs get")
                                                .arg(offered.size());
         Gtk4::setTitle(m_homeRow, m_homeText);
-        Gtk4::setSubtitle(m_homeRow, titles(offered).join(", "));
+        Gtk4::setSubtitle(m_homeRow, SettingsUpdates::listed(titles(offered), true));
     }
     gtk_widget_set_visible(m_home, !m_homeText.isEmpty());
 
@@ -162,8 +164,8 @@ void SettingsUpdatesStatus::update()
         const QString title =
             QString("Updated on %1").arg(last.time.toString("d MMMM yyyy, HH:mm"));
         GtkWidget *row = Gtk4::actionRow(
-            title, QString("%1. vm.args as it was before: %2").arg(titles(last).join(", "),
-                                                                    last.backup));
+            title, QString("%1. vm.args as it was before: %2")
+                       .arg(SettingsUpdates::listed(titles(last), true), last.backup));
         GtkWidget *button =
             Gtk4::rowTextButton("_Undo…", blocked ? QString("Shut the VM down first") : QString());
         adw_action_row_set_subtitle_lines(ADW_ACTION_ROW(row), 0);
@@ -205,7 +207,11 @@ void SettingsUpdatesStatus::update()
     }
     adw_preferences_group_set_description(
         m_details, description.isEmpty() ? nullptr : utf8(description.toHtmlEscaped()).constData());
-    gtk_widget_set_visible(m_review, !offered.isEmpty() || !declined.isEmpty());
+    /* in the header only when it shows: a hidden one left marks in the group's header */
+    const bool reviewing = !offered.isEmpty() || !declined.isEmpty();
+    if (reviewing != (adw_preferences_group_get_header_suffix(m_details) != nullptr)) {
+        adw_preferences_group_set_header_suffix(m_details, reviewing ? m_review : nullptr);
+    }
     gtk_widget_set_visible(GTK_WIDGET(m_details), !m_rows.isEmpty());
 }
 
@@ -218,6 +224,8 @@ static GtkWidget *linesOf(const Change &change)
             return;
         }
         GtkWidget *label = Gtk4::label(lines.join('\n'), true);
+        /* a long line wraps where it reaches the edge: not at a hyphen, which reads as a break */
+        gtk_label_set_wrap_mode(GTK_LABEL(label), PANGO_WRAP_CHAR);
         gtk_widget_add_css_class(label, "monospace");
         gtk_box_append(GTK_BOX(box), Gtk4::caption(heading));
         gtk_box_append(GTK_BOX(box), label);

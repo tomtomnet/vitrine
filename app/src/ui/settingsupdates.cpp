@@ -6,6 +6,9 @@
 #include <QFontDatabase>
 #include <QHBoxLayout>
 #include <QLabel>
+#include <QPlainTextEdit>
+#include <QResizeEvent>
+#include <QTextLayout>
 #include <QMessageBox>
 #include <QPushButton>
 #include <QScreen>
@@ -13,6 +16,7 @@
 #include <QScrollBar>
 #include <QToolButton>
 #include <QVBoxLayout>
+#include <QtMath>
 
 #include <memory>
 
@@ -24,6 +28,104 @@
 
 using SettingsUpdates::Change;
 using SettingsUpdates::Record;
+
+namespace {
+
+/*
+ * Argument lines, as written, in a box that wraps them anywhere and is as
+ * tall as they are once wrapped at the width it has: no scrolling to see
+ * them.  Its height for its width, in its layout, laid out as the box lays
+ * them out: a count from the widths of the lines' characters could miss
+ * by a line, as it did by a pixel.
+ */
+class LinesBox : public QPlainTextEdit
+{
+public:
+    LinesBox()
+    {
+        QSizePolicy policy = sizePolicy();
+
+        setReadOnly(true);
+        setFont(QFontDatabase::systemFont(QFontDatabase::FixedFont));
+        setWordWrapMode(QTextOption::WrapAtWordBoundaryOrAnywhere);
+        /* never needed, and its width would wrap the lines otherwise */
+        setVerticalScrollBarPolicy(Qt::ScrollBarAlwaysOff);
+        /* as tall as its lines, never more (sizeHint()) */
+        policy.setVerticalPolicy(QSizePolicy::Maximum);
+        policy.setHeightForWidth(true);
+        setSizePolicy(policy);
+    }
+
+    bool hasHeightForWidth() const override { return true; }
+
+    int heightForWidth(int width) const override
+    {
+        const qreal margin = document()->documentMargin();
+        /* as QPlainTextDocumentLayout lays out its blocks, whole pixels a line */
+        const qreal room = width - 2 * frameWidth() - 2 * margin;
+        qreal height = 0;
+
+        for (const QString &line : toPlainText().split('\n')) {
+            QTextLayout layout(line, font());
+            layout.setTextOption(document()->defaultTextOption());
+            layout.beginLayout();
+            for (QTextLine l = layout.createLine(); l.isValid(); l = layout.createLine()) {
+                l.setLeadingIncluded(true);
+                l.setLineWidth(room);
+                height += l.height() + (l.leading() < 0 ? qCeil(l.leading()) : 0);
+            }
+            layout.endLayout();
+        }
+        /* and a pixel: QPlainTextEdit sees a line as hidden unless the
+           lines and the margins leave one (adjustScrollbars()) */
+        return qCeil(height + 2 * margin) + 1 + 2 * frameWidth();
+    }
+
+    /* As high as its lines at the width it has */
+    QSize sizeHint() const override
+    {
+        return QSize(QPlainTextEdit::sizeHint().width(),
+                     heightForWidth(qMax(width(), minimumWidth())));
+    }
+
+    /* At least as high as its lines unwrapped, not a scroll area's least */
+    QSize minimumSizeHint() const override
+    {
+        return QSize(QPlainTextEdit::minimumSizeHint().width(), heightForWidth(QWIDGETSIZE_MAX / 2));
+    }
+
+    /*
+     * @lines, as wide as the longest (the card's) where @maxWidth allows:
+     * the window may still be narrower, and lines wrap then
+     */
+    void setLines(const QStringList &lines, int maxWidth)
+    {
+        ensurePolished();
+        const QFontMetrics fm(font());
+        const int margins = 2 * (frameWidth() + qCeil(document()->documentMargin()));
+        const int room = qMax(fm.averageCharWidth() * 40, maxWidth - margins);
+        int widest = 0;
+
+        for (const QString &line : lines) {
+            widest = qMax(widest, fm.horizontalAdvance(line));
+        }
+        setPlainText(lines.join('\n'));
+        setMinimumWidth(qMin(widest + fm.averageCharWidth(), room) + margins);
+        updateGeometry();
+    }
+
+protected:
+    /* another width, maybe another height: the layout asks again */
+    void resizeEvent(QResizeEvent *event) override
+    {
+        QPlainTextEdit::resizeEvent(event);
+        if (event->size().width() != event->oldSize().width()) {
+            updateGeometry();
+        }
+    }
+};
+
+}
 
 /* "its line 12 is no option: ..." as a sentence of its own */
 static QString sentence(const QString &text)
@@ -164,13 +266,13 @@ void SettingsUpdatesBanner::update()
         offer = (offered.size() == 1 ? tr("This VM lacks a setting that new VMs get: %1.")
                                      : tr("This VM lacks %1 settings that new VMs get: %2.")
                                            .arg(offered.size()))
-                    .arg(titles(offered).join(", ").toHtmlEscaped());
+                    .arg(SettingsUpdates::listed(titles(offered)).toHtmlEscaped());
         if (!off) {
             offer += ' ' + tr("Shut it down to apply them.").toHtmlEscaped();
         }
     } else if (!declined.isEmpty()) {
         offer = tr("Not asked again for this VM: %1.")
-                    .arg(titles(declined).join(", ").toHtmlEscaped());
+                    .arg(SettingsUpdates::listed(titles(declined)).toHtmlEscaped());
     }
     m_offerText = offer;
     m_offer->setText(offer);
@@ -181,7 +283,8 @@ void SettingsUpdatesBanner::update()
         const Record &last = records.last();
         updated = tr("Settings updated on %1: %2. vm.args as it was before is %3.")
                       .arg(last.time.toString("d MMMM yyyy, HH:mm"),
-                           titles(last).join(", ").toHtmlEscaped(), last.backup.toHtmlEscaped());
+                           SettingsUpdates::listed(titles(last)).toHtmlEscaped(),
+                           last.backup.toHtmlEscaped());
         m_updated->button()->setEnabled(off);
     }
     m_updateText = updated;
@@ -190,7 +293,7 @@ void SettingsUpdatesBanner::update()
 
     QString problem;
     if (m_place == Place::Details && !monitor->problem().isEmpty()) {
-        problem = tr("Vitrine cannot check this VM's settings for newer ones: %1")
+        problem = tr("Vitrine cannot check this VM's settings for newer ones. %1")
                       .arg(sentence(monitor->problem()).toHtmlEscaped());
     }
     m_problemText = problem;
@@ -200,26 +303,31 @@ void SettingsUpdatesBanner::update()
     setVisible(!offer.isEmpty() || !updated.isEmpty() || !problem.isEmpty());
 }
 
-/* What a change does to vm.args, its lines as they are and as they become: rich text */
-static QString linesOf(const Change &change)
+/*
+ * What a change does to vm.args, its lines as they are and as they become,
+ * wrapped within @width: a line of vm.args has no spaces to wrap at
+ */
+static QWidget *linesOf(const Change &change, int width)
 {
-    const auto part = [](const QString &heading, const QStringList &lines) {
-        QStringList escaped;
-        for (const QString &line : lines) {
-            escaped << line.toHtmlEscaped();
-        }
-        return QString("<p style=\"margin:0\">%1</p><pre style=\"margin:0 0 6px 0\">%2</pre>")
-            .arg(heading.toHtmlEscaped(), escaped.join('\n'));
+    auto *box = new QWidget;
+    auto *column = new QVBoxLayout(box);
+    const auto part = [column, width](const QString &heading, const QStringList &lines) {
+        auto *text = new LinesBox;
+        column->addWidget(Widgets::hint(heading.toHtmlEscaped()));
+        text->setLines(lines, width);
+        column->addWidget(text);
     };
 
+    column->setContentsMargins(0, 0, 0, 0);
     if (change.before.isEmpty()) {
-        return part(SettingsUpdatesDialog::tr("Added to vm.args:"), change.after);
+        part(SettingsUpdatesDialog::tr("Added to vm.args:"), change.after);
+    } else if (change.after.isEmpty()) {
+        part(SettingsUpdatesDialog::tr("Taken out of vm.args:"), change.before);
+    } else {
+        part(SettingsUpdatesDialog::tr("In vm.args now:"), change.before);
+        part(SettingsUpdatesDialog::tr("Then:"), change.after);
     }
-    if (change.after.isEmpty()) {
-        return part(SettingsUpdatesDialog::tr("Taken out of vm.args:"), change.before);
-    }
-    return part(SettingsUpdatesDialog::tr("In vm.args now:"), change.before) +
-           part(SettingsUpdatesDialog::tr("Then:"), change.after);
+    return box;
 }
 
 void SettingsUpdatesDialog::run(QWidget *from, Vm *vm)
@@ -252,7 +360,7 @@ void SettingsUpdatesDialog::undo(QWidget *from, Vm *vm)
         QMessageBox::Question, tr("Undo the Update"),
         tr("These settings go back as they were before the update of %1: %2. The other lines of "
            "vm.args stay as they are now.")
-            .arg(last.time.toString("d MMMM, HH:mm"), titles(last).join(", ")),
+            .arg(last.time.toString("d MMMM, HH:mm"), SettingsUpdates::listed(titles(last))),
         QMessageBox::NoButton, window));
     QPointer<Vm> guard(vm);
     QPushButton *undoButton = box->addButton(tr("&Undo"), QMessageBox::AcceptRole);
@@ -274,7 +382,7 @@ void SettingsUpdatesDialog::undo(QWidget *from, Vm *vm)
         Widgets::inform(window, tr("Some Settings Stay as They Are"),
                         tr("Their lines changed since the update, and were left as they are: %1. "
                            "vm.args as it was before the update is %2, in the VM's folder.")
-                            .arg(failed.join(", "), last.backup));
+                            .arg(SettingsUpdates::listed(failed), last.backup));
     }
 }
 
@@ -297,6 +405,8 @@ SettingsUpdatesDialog::SettingsUpdatesDialog(Vm *vm, QWidget *parent)
     scroll->setWidget(m_list);
     scroll->setWidgetResizable(true);
     scroll->setFrameShape(QFrame::NoFrame);
+    /* everything in it wraps: as wide as the dialog */
+    scroll->setHorizontalScrollBarPolicy(Qt::ScrollBarAlwaysOff);
     QPushButton *apply = m_buttons->addButton(tr("&Apply"), QDialogButtonBox::AcceptRole);
     m_buttons->addButton(tr("&Not Now"), QDialogButtonBox::RejectRole);
     apply->setDefault(true);
@@ -387,7 +497,6 @@ void SettingsUpdatesDialog::rebuild()
         delete item;
     }
 
-    const QFont fixed = QFontDatabase::systemFont(QFontDatabase::FixedFont);
     if (offered.isEmpty()) {
         QLabel *nothing = Widgets::note(tr("Nothing left to take."));
         nothing->setTextFormat(Qt::PlainText);
@@ -399,7 +508,7 @@ void SettingsUpdatesDialog::rebuild()
         auto *check = new QCheckBox(c.title);
         QLabel *reason = Widgets::hint(c.reason);
         auto *toggle = new QToolButton;
-        QLabel *lines = Widgets::note(linesOf(c));
+        QWidget *lines = linesOf(c, Widgets::em(this) * 36);
         auto *since =
             new QLabel(tr("New VMs have it since %1.").arg(c.since.toString("d MMMM yyyy")));
         auto *declineButton = new QPushButton(tr("Don't Ask Again"));
@@ -416,8 +525,6 @@ void SettingsUpdatesDialog::rebuild()
         m_checks.insert(id, check);
         reason->setTextFormat(Qt::PlainText);
         reason->setContentsMargins(Widgets::em(this) * 3 / 2, 0, 0, 0);
-        lines->setTextFormat(Qt::RichText);
-        lines->setFont(fixed);
         lines->setContentsMargins(Widgets::em(this) * 3 / 2, 0, 0, 0);
         lines->hide();
         since->setTextFormat(Qt::PlainText);
@@ -434,6 +541,7 @@ void SettingsUpdatesDialog::rebuild()
             since->setVisible(on);
         });
         declineButton->setObjectName("decline-" + id);
+        declineButton->setFlat(true);
         declineButton->setToolTip(tr("Not suggested again for this VM: Review… on its Details "
                                      "shows it again, with Ask Again"));
         connect(declineButton, &QPushButton::clicked, this, [this, id]() { decline(id); });
