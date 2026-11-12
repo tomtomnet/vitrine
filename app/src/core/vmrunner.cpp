@@ -266,6 +266,24 @@ static QList<std::pair<QString, QString>> globalProperties(const ArgsFile &args)
     return out;
 }
 
+/*
+ * The GPU of @gpus a rutabaga card of @args renders on: its x-render-node,
+ * the card line's, else -global's (QEMU applies -global first: the line's
+ * wins), else the one virglrenderer takes by itself
+ */
+static std::optional<HostGpu> rutabagaGpu(const ArgsFile &args, const QList<HostGpu> &gpus)
+{
+    if (const QString node = NestedDesktop::renderNode(args); !node.isEmpty()) {
+        return HostGpus::find(gpus, node);
+    }
+    for (const auto &[property, value] : globalProperties(args)) {
+        if (property == "x-render-node") {
+            return HostGpus::find(gpus, value);
+        }
+    }
+    return HostGpus::rendererChoice(gpus);
+}
+
 /* KEY=on, or KEY alone, which QEMU takes for on */
 static bool isOn(const OptionValue &v, const QString &key)
 {
@@ -1387,13 +1405,6 @@ QStringList VmRunner::Private::commandLine(const ArgsFile &args, const QString &
     if (!patNote.isEmpty() && problems) {
         *problems << patNote;
     }
-    /* the nested desktop's socket and the words its guest session reads at boot */
-    if (const NestedDesktop::Mode mode = NestedDesktop::mode(args);
-        mode != NestedDesktop::Mode::Off) {
-        const QString name = VmConfig::name(args);
-        hostArgs = NestedDesktop::withRunArgs(hostArgs, nestedSocketFor(mode),
-                                              name.isEmpty() ? id : name);
-    }
     const auto propertiesOf = [&qemu, problems](const QString &driver) {
         QString error;
         const QStringList names = QemuInfo::probeProperties(qemu, driver, &error);
@@ -1408,8 +1419,32 @@ QStringList VmRunner::Private::commandLine(const ArgsFile &args, const QString &
         return names;
     };
     /* the GPU of a rutabaga card that chose none: the desktop's, with several (Automatic) */
-    if (hostArgs.indexOfDevice(NestedDesktop::isRutabagaCard) >= 0) {
-        hostArgs = withRenderNode(hostArgs, HostGpus::automaticNode(), propertiesOf);
+    const bool rutabaga = hostArgs.indexOfDevice(NestedDesktop::isRutabagaCard) >= 0;
+    const QString automatic = rutabaga ? HostGpus::automaticNode() : QString();
+    /* the nested desktop's socket and the words its guest session reads at boot */
+    if (const NestedDesktop::Mode mode = NestedDesktop::mode(args);
+        mode != NestedDesktop::Mode::Off) {
+        const QString name = VmConfig::name(args);
+        const QString label = name.isEmpty() ? id : name;
+        /* the guest's KWin imports the apps' windows where the card's GPU gains from it */
+        const std::optional<HostGpu> gpu =
+            rutabagaGpu(withRenderNode(hostArgs, automatic, propertiesOf), HostGpus::list());
+        const bool guestImport = NestedDesktop::guestImportGains(gpu);
+        const ArgsFile withImport =
+            NestedDesktop::withRunArgs(hostArgs, nestedSocketFor(mode), label);
+        hostArgs = NestedDesktop::withRunArgs(hostArgs, nestedSocketFor(mode), label, guestImport);
+        if (problems && gpu && hostArgs.toText() != withImport.toText()) {
+            *problems << VmRunner::tr("the nested desktop's KWin uploads the apps' "
+                                      "shared-memory windows instead of importing them (no "
+                                      "crosvm_desktop_guest_dmabuf=1): the card renders on %1, "
+                                      "an AMD GPU with %2 GiB of its own memory, which would "
+                                      "read them over PCIe at each frame")
+                             .arg(gpu->name())
+                             .arg(gpu->vram >> 30);
+        }
+    }
+    if (rutabaga) {
+        hostArgs = withRenderNode(hostArgs, automatic, propertiesOf);
     }
     /* the GPU of QEMU's EGL, which the main line's 3D follows: Automatic's, as above */
     const QList<int> displays = hostArgs.indexesOf("display");

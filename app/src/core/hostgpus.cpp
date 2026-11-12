@@ -149,6 +149,7 @@ QList<HostGpu> list()
         gpu.vendorName = pci.vendorName;
         gpu.deviceName = pci.deviceName;
         gpu.bootVga = readText(device + "/boot_vga") == "1";
+        gpu.vram = readText(device + "/mem_info_vram_total").toLongLong();
         gpus << gpu;
     }
     std::sort(gpus.begin(), gpus.end(), [](const HostGpu &a, const HostGpu &b) {

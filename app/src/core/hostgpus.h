@@ -41,6 +41,12 @@ struct HostGpu
     QString deviceName;
     /* The firmware's screen was on it (boot_vga) */
     bool bootVga = false;
+    /*
+     * Its own memory in bytes, where its driver says (amdgpu's
+     * mem_info_vram_total), else 0.  An AMD APU's is the part of the
+     * system's memory its firmware sets aside.
+     */
+    qint64 vram = 0;
 
     /* What a VM keeps when it is chosen: byPath, else node */
     QString path() const;

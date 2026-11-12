@@ -749,6 +749,107 @@ private slots:
     }
 
     /*
+     * The guest's KWin imports the apps' shared-memory windows (the word
+     * crosvm_desktop_guest_dmabuf=1) but where the card renders on an AMD
+     * GPU with 4 GiB or more of its own memory: Automatic's GPU, the VM's
+     * choice, -global's, else the renderer's own.  The card keeps its
+     * x-guest-dmabuf; the run's log says why the word is not there.
+     */
+    void guestImportOnCommandLine()
+    {
+        QTemporaryDir hosts;
+        const QString qemu =
+            script("import-qemu", "case \"$2\" in\n"
+                                  "virtio-vga-rutabaga,help) cat <<EOF\n"
+                                  "virtio-vga-rutabaga options:\n"
+                                  "  cross-domain=<bool>    - on/off (default: off)\n"
+                                  "  x-drm=<bool>           - on/off (default: off)\n"
+                                  "  x-guest-dmabuf=<bool>  - on/off (default: on)\n"
+                                  "  x-render-node=<str>\n"
+                                  "EOF\n;;\nesac");
+        const QString nested = "#qemu " + qemu + "\n-vga none\n"
+                               "-device virtio-vga-rutabaga,x-drm=on,cross-domain=on,"
+                               "x-guest-dmabuf=on\n-display dbus,p2p=yes,gl=on\n";
+        const VmRunner runner(id, tmp.path());
+        /* fw_cfg's words have the import's; the card its x-guest-dmabuf=on */
+        const auto imports = [&runner](const QString &args) {
+            const QStringList c = runner.commandLine(ArgsFile::parse(args));
+            const QString words = c.value(c.indexOf("-fw_cfg") + 1);
+            if (!words.contains("string=crosvm_desktop=1") ||
+                !c.value(c.indexOf("-device") + 1).contains("x-guest-dmabuf=on")) {
+                return std::optional<bool>();
+            }
+            return std::optional<bool>(words.contains("crosvm_desktop_guest_dmabuf=1"));
+        };
+        const auto restore = qScopeGuard([this]() {
+            FakeGpus(tmp.filePath("no-gpus")).use();
+            HostGpus::setDesktopDevice(std::nullopt);
+        });
+
+        /* the laptop's APU */
+        FakeGpus laptop(hosts.filePath("laptop"));
+        laptop.laptop();
+        laptop.use();
+        QCOMPARE(imports(nested), true);
+
+        /* an RX 6900 XT, the firmware's screen, beside the processor's own GPU */
+        FakeGpus amd(hosts.filePath("amd"));
+        amd.gpu("0000:03:00.0", "0x1002", "0x73bf", "amdgpu", true, 0, 128);
+        amd.vram("0000:03:00.0", 16LL << 30);
+        amd.gpu("0000:7a:00.0", "0x1002", "0x164e", "amdgpu", false, 1, 129);
+        amd.vram("0000:7a:00.0", 512LL << 20);
+        amd.use();
+        /* Automatic: the desktop's, the 6900 XT */
+        QCOMPARE(imports(nested), false);
+        /* the VM's choice, or -global's: the iGPU */
+        QString chosen = nested;
+        chosen.replace("x-guest-dmabuf=on\n",
+                       "x-guest-dmabuf=on,x-render-node=/dev/dri/by-path/pci-0000:7a:00.0-render\n");
+        QCOMPARE(imports(chosen), true);
+        QCOMPARE(imports(nested + "-global virtio-vga-rutabaga.x-render-node=/dev/dri/renderD129\n"),
+                 true);
+        /* the card line's choice before -global's, as QEMU applies them */
+        QCOMPARE(imports(chosen + "-global virtio-vga-rutabaga.x-render-node=/dev/dri/renderD128\n"),
+                 true);
+
+        /* the 6900 XT alone, with a QEMU that takes no x-render-node: the renderer's choice */
+        FakeGpus one(hosts.filePath("one"));
+        one.gpu("0000:03:00.0", "0x1002", "0x73bf", "amdgpu", true, 0, 128);
+        one.vram("0000:03:00.0", 16LL << 30);
+        one.use();
+        QString older = nested;
+        older.replace(qemu, script("older-import-qemu",
+                                   "case \"$2\" in\n"
+                                   "virtio-vga-rutabaga,help) cat <<EOF\n"
+                                   "virtio-vga-rutabaga options:\n"
+                                   "  cross-domain=<bool>    - on/off (default: off)\n"
+                                   "  x-drm=<bool>           - on/off (default: off)\n"
+                                   "  x-guest-dmabuf=<bool>  - on/off (default: on)\n"
+                                   "EOF\n;;\nesac"));
+        QCOMPARE(imports(older), false);
+
+        /* the run's log says why, a run on the laptop nothing */
+        const auto logOf = [this](const QString &args) {
+            VmRunner run(id, tmp.path());
+            run.start(ArgsFile::parse(args));
+            [&run]() { QTRY_COMPARE(run.state(), VmRunner::State::Stopped); }();
+            return read(run.logPath());
+        };
+        const QString note = "vitrine: the nested desktop's KWin uploads the apps' shared-memory "
+                             "windows instead of importing them (no "
+                             "crosvm_desktop_guest_dmabuf=1): the card renders on ";
+        amd.use();
+        QString log = logOf(nested);
+        QVERIFY2(log.contains(note) && log.contains(", an AMD GPU with 16 GiB of its own memory, "
+                                                    "which would read them over PCIe at each "
+                                                    "frame\n"),
+                 qPrintable(log));
+        laptop.use();
+        log = logOf(nested);
+        QVERIFY2(log.startsWith("vitrine: ") && !log.contains(note), qPrintable(log));
+    }
+
+    /*
      * A GPU chosen that cannot be used here: the VM does not start, and says
      * why in plain words, before QEMU would in its own
      */

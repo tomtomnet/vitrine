@@ -7,6 +7,7 @@
 #include <optional>
 
 #include "core/argsfile.h"
+#include "core/hostgpus.h"
 
 /*
  * The nested desktop: the guest's KDE session through a KWin of its own,
@@ -100,20 +101,34 @@ bool moveToOneCard(ArgsFile &args);
 int screenConsole(const ArgsFile &args);
 
 /*
+ * Whether the guest's KWin should import the apps' shared-memory buffers
+ * (wl_shm: Konsole, KWrite...) as udmabufs, which the host's GPU then
+ * reads from the guest's memory at each frame, when the card renders on
+ * @gpu (none: not known).  Not on an AMD GPU with 4 GiB or more of its own
+ * memory, which reads them over PCIe: on an RX 6900 XT KWrite's keys took
+ * 0.8 ms longer, and nothing was quicker (the research, 2026-11-12).  The
+ * rule of this computer's KWin (60-vitrine-kwin) and of the research's
+ * launcher.  The guest's session gives an Intel xe host none by itself.
+ */
+bool guestImportGains(const std::optional<HostGpu> &gpu);
+/*
  * The words the guest's nested session reads at boot, as the research's
  * UEFI boot passes them through fw_cfg: crosvm_desktop=1,
- * crosvm_desktop_guest_dmabuf=1 when the card has x-guest-dmabuf on, and
- * crosvm_desktop_label=@label, the VM's name before the window's title
- * (one word: its spaces become no-break spaces)
+ * crosvm_desktop_guest_dmabuf=1 when the card has x-guest-dmabuf on and
+ * @guestImport (guestImportGains()): the session gives its KWin
+ * KWIN_DISABLE_UDMABUF_IMPORT=1 without it, unless nested.conf sets that
+ * itself; and crosvm_desktop_label=@label, the VM's name before the
+ * window's title (one word: its spaces become no-break spaces)
  */
-QString bootWords(const ArgsFile &args, const QString &label);
+QString bootWords(const ArgsFile &args, const QString &label, bool guestImport = true);
 /*
  * @args with what the runner adds at start for the nested desktop: the
  * socket QEMU's cross-domain connects to (wayland-socket-path= on the card,
  * unless the line sets one) and bootWords() in fw_cfg's
  * opt/org.drm-native-context/cmdline (unless the VM has that entry)
  */
-ArgsFile withRunArgs(const ArgsFile &args, const QString &socket, const QString &label);
+ArgsFile withRunArgs(const ArgsFile &args, const QString &socket, const QString &label,
+                     bool guestImport = true);
 /* QEMU's: SDL's renderer through Vulkan, as its OpenGL one clashes with rutabaga's */
 QStringList environment(const ArgsFile &args);
 

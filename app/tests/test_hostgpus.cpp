@@ -54,6 +54,8 @@ private slots:
         QCOMPARE(g.vendorId, 0x1002);
         QCOMPARE(g.deviceId, 0x1900);
         QVERIFY(g.bootVga);
+        /* an APU's: the part of the system's memory its firmware set aside */
+        QCOMPARE(g.vram, 512LL << 20);
         QVERIFY(g.hasNativeContext());
         if (QFileInfo::exists("/usr/share/hwdata/pci.ids")) {
             QVERIFY2(g.name().startsWith("AMD "), qPrintable(g.name()));
@@ -86,6 +88,11 @@ private slots:
         QCOMPARE(gpus[0].byPath, "/dev/dri/by-path/pci-0000:03:00.0-render");
         QVERIFY(!gpus[0].bootVga);
         QVERIFY(gpus[1].bootVga);
+        /* no mem_info_vram_total (xe has none; nor did this iGPU's fixture) */
+        QCOMPARE(gpus[0].vram, 0);
+        QCOMPARE(gpus[1].vram, 0);
+        host.vram("0000:7a:00.0", 16LL << 30);
+        QCOMPARE(HostGpus::list()[1].vram, 16LL << 30);
 
         /* not known: boot_vga's */
         QCOMPARE(HostGpus::desktop(gpus)->address, "0000:7a:00.0");

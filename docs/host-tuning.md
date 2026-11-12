@@ -482,6 +482,18 @@ of your own wins: `KWIN_DISABLE_UDMABUF_IMPORT=0` in a file of
 `systemctl --user show-environment | grep KWIN_DISABLE_UDMABUF_IMPORT`
 shows what the session has; other desktops ignore it.
 
+The nested desktop's KWin in a guest imports the guest's windows the same
+way, and this computer's GPU then reads them from the guest's memory at
+each frame. On an RX 6900 XT that made KWrite's keys 0.8 ms slower in the
+nested desktop, and nothing quicker (the research, 2026-11-12). So when
+the VM's card renders on an AMD GPU with 4 GiB or more of its own memory,
+vitrine leaves out the boot word that turns the import on
+(`crosvm_desktop_guest_dmabuf=1`), and the VM's log says so; the card
+keeps its `x-guest-dmabuf`. On an Intel xe host the guest's session turns
+the import off by itself. `KWIN_DISABLE_UDMABUF_IMPORT=0` in
+`CROSVM_DESKTOP_KWIN_ENV` of the guest's
+`/etc/vitrine-guest-tools/nested.conf` keeps it.
+
 ## The udmabuf limits without host tuning
 
 To have the udmabuf limits raised at every boot instead, with or without

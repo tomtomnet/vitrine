@@ -222,13 +222,18 @@ int screenConsole(const ArgsFile &args)
     return g.kind == VmConfig::Graphics::Nested && g.device != kCard ? 1 : 0;
 }
 
-QString bootWords(const ArgsFile &args, const QString &label)
+bool guestImportGains(const std::optional<HostGpu> &gpu)
+{
+    return !gpu || gpu->driver != "amdgpu" || gpu->vram < (4LL << 30);
+}
+
+QString bootWords(const ArgsFile &args, const QString &label, bool guestImport)
 {
     QStringList words{"crosvm_desktop=1"};
     const int line = cardLine(args);
     QString name = label.simplified();
 
-    if (line >= 0 && isOn(args.valueAt(line), "x-guest-dmabuf")) {
+    if (guestImport && line >= 0 && isOn(args.valueAt(line), "x-guest-dmabuf")) {
         words << "crosvm_desktop_guest_dmabuf=1";
     }
     /* the guest's session takes the word up to the next space */
@@ -239,7 +244,8 @@ QString bootWords(const ArgsFile &args, const QString &label)
     return words.join(' ');
 }
 
-ArgsFile withRunArgs(const ArgsFile &args, const QString &socket, const QString &label)
+ArgsFile withRunArgs(const ArgsFile &args, const QString &socket, const QString &label,
+                     bool guestImport)
 {
     ArgsFile out = args;
     const int line = cardLine(out);
@@ -259,7 +265,7 @@ ArgsFile withRunArgs(const ArgsFile &args, const QString &socket, const QString 
     }
     OptionValue words;
     words.set("name", kFwCfgName);
-    words.set("string", bootWords(args, label));
+    words.set("string", bootWords(args, label, guestImport));
     ArgsFile::Line fwCfg;
     fwCfg.kind = ArgsFile::Line::Option;
     fwCfg.name = "fw_cfg";

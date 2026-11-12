@@ -372,6 +372,33 @@ private slots:
                      ArgsFile::parse("-device virtio-gpu-rutabaga-pci,cross-domain=on,"
                                      "x-guest-dmabuf=off\n"), {}),
                  "crosvm_desktop=1");
+        /* a GPU the import does not suit: the card's x-guest-dmabuf as it is, no word */
+        QCOMPARE(NestedDesktop::bootWords(nested, "f44", false),
+                 "crosvm_desktop=1 crosvm_desktop_label=f44");
+    }
+
+    /*
+     * The guest's KWin imports the apps' shared-memory windows, but where
+     * the card renders on an AMD GPU with 4 GiB or more of its own memory
+     */
+    void guestImportGains()
+    {
+        const auto gpu = [](const QString &driver, qint64 vram) {
+            HostGpu g;
+            g.driver = driver;
+            g.vram = vram;
+            return std::optional<HostGpu>(g);
+        };
+
+        QVERIFY(NestedDesktop::guestImportGains(std::nullopt));
+        /* an APU: the system's memory, the firmware's share of it */
+        QVERIFY(NestedDesktop::guestImportGains(gpu("amdgpu", 512LL << 20)));
+        QVERIFY(NestedDesktop::guestImportGains(gpu("amdgpu", (4LL << 30) - (1 << 20))));
+        QVERIFY(!NestedDesktop::guestImportGains(gpu("amdgpu", 4LL << 30)));
+        QVERIFY(!NestedDesktop::guestImportGains(gpu("amdgpu", 16LL << 30)));
+        /* the session gives xe hosts none by itself; i915 has no udmabuf cost measured */
+        QVERIFY(NestedDesktop::guestImportGains(gpu("xe", 16LL << 30)));
+        QVERIFY(NestedDesktop::guestImportGains(gpu("i915", 0)));
     }
 
     /* The socket and fw_cfg's words, unless the VM has them */
@@ -389,6 +416,13 @@ private slots:
                      QChar(0x00a0) + "VM");
         /* as QEMU will read it */
         QCOMPARE(a.argv().filter("wayland-socket-path").size(), 1);
+        /* without the import: the card as it is, fw_cfg without its word */
+        const ArgsFile b = NestedDesktop::withRunArgs(ArgsFile::parse(kNested),
+                                                      "/run/x/nested.sock", "n", false);
+        QCOMPARE(b.lines[card].value, a.lines[card].value);
+        QCOMPARE(b.lines[card + 1].value,
+                 "name=opt/org.drm-native-context/cmdline,string=crosvm_desktop=1 "
+                 "crosvm_desktop_label=n");
 
         a = NestedDesktop::withRunArgs(
             ArgsFile::parse("-device virtio-gpu-rutabaga-pci,cross-domain=on,"

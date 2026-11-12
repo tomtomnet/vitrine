@@ -87,6 +87,13 @@ public:
         }
     }
 
+    /* The GPU at @address has @bytes of its own memory, as amdgpu says it */
+    void vram(const QString &address, qint64 bytes) const
+    {
+        write(sys + "/devices/pci0000:00/" + address + "/mem_info_vram_total",
+              QByteArray::number(bytes) + "\n");
+    }
+
     /* vgem: a render node of a device on no bus of hardware */
     void vgem(int render) const
     {
@@ -97,8 +104,12 @@ public:
         node(dir, "card" + QString::number(render - 128), render - 128);
     }
 
-    /* This laptop: the Radeon 780M alone, card1 and renderD128 */
-    void laptop() const { gpu("0000:65:00.0", "0x1002", "0x1900", "amdgpu", true, 1, 128); }
+    /* This laptop: the Radeon 780M alone, card1 and renderD128, its firmware's 512 MiB */
+    void laptop() const
+    {
+        gpu("0000:65:00.0", "0x1002", "0x1900", "amdgpu", true, 1, 128);
+        vram("0000:65:00.0", 512LL << 20);
+    }
 
     /*
      * The user's desktop with its integrated GPU on: an Arc Pro B50 (xe,
