@@ -112,6 +112,14 @@ static QString commitTiming()
               "for you.");
 }
 
+/* What its switch for Night Light (patch 0089) changes, in a sentence */
+static QString nightLight()
+{
+    return tr("With Night Light on, KWin no longer composites every window, so keys stay as fast "
+              "as by day; saturated colours get the classic tint of KWin 5 and GNOME instead of "
+              "Plasma 6.8's colour adaptation, and white and greys look the same.");
+}
+
 QString installText(const Status &status, const QStringList &packages)
 {
     const bool kwin = status.target.package == "kwin";
@@ -126,7 +134,7 @@ QString installText(const Status &status, const QStringList &packages)
                 tr("The set's run-time switches go on for every user of this computer "
                    "(/etc/user-tmpfiles.d/vitrine-host-kwin.conf, whose comments say what each "
                    "does); another KWin ignores them.") +
-                "</li><li>" + commitTiming() + "</li>";
+                "</li><li>" + nightLight() + "</li><li>" + commitTiming() + "</li>";
     }
     html += "<li>" +
             (kwin ? tr("Revert… puts the distribution's KWin back, from your repositories, and "
@@ -230,7 +238,7 @@ QString installAllText(const QList<Status> &statuses)
                 tr("KWin's run-time switches go on for every user of this computer "
                    "(/etc/user-tmpfiles.d/vitrine-host-kwin.conf, whose comments say what each "
                    "does); another KWin ignores them.") +
-                "</li><li>" + commitTiming() + "</li>";
+                "</li><li>" + nightLight() + "</li><li>" + commitTiming() + "</li>";
     }
     html += "<li>" +
             tr("Revert… puts the distribution's packages back, from your repositories, one "

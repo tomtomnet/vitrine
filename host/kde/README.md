@@ -30,7 +30,7 @@ What the sets change (the research's measurements):
     On the Arc Pro B50 at 4K and 240 Hz, the launcher opened after typing in
     Firefox repeated 16 refreshes in ten openings instead of 95, and no
     longer stutters for nine refreshes. `KWIN_UPLOAD_BUFFER=0` turns it off.
-  - 0089, off: Night Light after blending (the switches, below).
+  - 0089, on: Night Light after blending (the switches, below).
   - 0083: a file `$XDG_RUNTIME_DIR/kwin-udmabuf-import` holding 0 or 1
     decides the udmabuf import of shared-memory windows in a running
     session; with no file, nothing changes.
@@ -115,26 +115,31 @@ How:
   the user installing, at once). To turn one off, remove its line there.
   Reverting KWin removes the file. Damage-free layers (patch 0082) stay off
   since 2026-11-01: with a host window over a VM, Firefox in the guest froze.
-- Night Light after blending (patch 0089) is written there off (the
-  research's `kwin-night-light-after-blending.conf`, 0). Plasma 6.8's Night
-  Light composites every window, which costs 3.3-3.9 ms per key on the Arc
-  Pro B50. With the switch on, windows keep their planes at night and keys
-  are as fast as by day; white and greys stay exactly the same, but
-  saturated colours get the classic per-channel tint instead of 6.8's
-  colour adaptation (pure green stays green, darker; KWin 5 and GNOME
-  looked like that). To try it in a session, write 1 and turn Night Light
-  off and on (KWin reads the file at each colour change):
+- Night Light after blending (patch 0089) is written there on, as in the
+  research's host session since 2026-11-12 (its
+  `kwin-night-light-after-blending.conf`, 1; installs before then wrote 0).
+  Plasma 6.8's Night Light composites every window, which costs 3.3-3.9 ms
+  per key on the Arc Pro B50 and 3.1-4.1 ms on an RX 6900 XT. With the switch
+  on, windows keep their planes at night and keys are as fast as by day;
+  white and greys stay exactly the same, but saturated colours get the
+  classic per-channel tint instead of 6.8's colour adaptation (pure green
+  stays green, darker; KWin 5 and GNOME look like that). Side by side at
+  the same temperature, the tint looked fine. HDR, an ICC profile and
+  "Prefer color accuracy" keep 6.8's Night Light. For 6.8's in a session,
+  write 0 and turn Night Light off and on (KWin reads the file at each
+  colour change):
 
   ```sh
-  echo 1 > "$XDG_RUNTIME_DIR/kwin-night-light-after-blending"
+  echo 0 > "$XDG_RUNTIME_DIR/kwin-night-light-after-blending"
   ```
 
-  To keep it on at every login, a file of your own whose name sorts before
-  `vitrine-host-kwin.conf` wins over that line:
+  To keep 6.8's at every login, a file of your own whose name sorts before
+  `vitrine-host-kwin.conf` wins over that line (with 1 instead, it turns the
+  switch on over an older install's 0):
 
   ```sh
   mkdir -p ~/.config/user-tmpfiles.d
-  echo 'f %t/kwin-night-light-after-blending 0644 - - - 1' > ~/.config/user-tmpfiles.d/kwin-night-light.conf
+  echo 'f %t/kwin-night-light-after-blending 0644 - - - 0' > ~/.config/user-tmpfiles.d/kwin-night-light.conf
   ```
 - From Plasma 6.8.2, KWin offers commit timing to programs only with
   `KWIN_WAYLAND_SUPPORT_COMMIT_TIMING_V1=1`. Upstream turned it off by
@@ -195,8 +200,8 @@ sudo rm -f /etc/user-tmpfiles.d/vitrine-host-kwin.conf /etc/environment.d/vitrin
 ## `research/`: the research's recipe, pinned
 
 A copy of what `kde-rpms.sh` reads in the research's repository
-(virtio-gpu-desktop) at commit `4ee46dd6c4e6d456efe4a31c84a91a55c7f9db30`
-(2026-11-07), in its layout (the container mounts the folder as `/repo`),
+(virtio-gpu-desktop) at commit `81d91258c16d342b9e84848e5bfdef24b9950906`
+(2026-11-12), in its layout (the container mounts the folder as `/repo`),
 byte for byte and with its files' modes: the scripts, the host sets of the
 four packages (`kde_set_for host ...` in `setup/versions.sh`) and the
 patches they name, and the run-time switches of KWin's patches
@@ -271,7 +276,7 @@ installing.
 | `19cf4324887903cc1185fc8dc83d38bb9e97176a36ef8ed9506611be4f6e1ddf` | `src/host-config/kwin-active-window-candidate.conf` |
 | `cf647e7f955d60ec6cae1ee58196b94d939996df44697f9e479023921bbe1f91` | `src/host-config/kwin-animation-start-step.conf` |
 | `ebb40936ea5b94c0970194727a29954e954780bc5b7817421e79fc5ee9d04911` | `src/host-config/kwin-empty-render-not-content.conf` |
-| `4d95be9e131077102159769046807e96d2d0c0625ced3b7813dd1d023f5b51fc` | `src/host-config/kwin-night-light-after-blending.conf` |
+| `9ab936055a5eede144ec4b51aeaf41562a9b038e66877b46ff33ec58db8355a8` | `src/host-config/kwin-night-light-after-blending.conf` |
 | `c28ab03912079127f981603c228443ecfcdf030e7fc0170728f3e400735d2d93` | `src/host-config/kwin-scanout-variance-cap.conf` |
 | `ac0cb19c913e350f76be6c0f5c129dfc77eb7c25b3a717205efaa57aaca46541` | `src/host-config/kwin-skip-empty-layer-render.conf` |
 
@@ -281,7 +286,7 @@ When the research's recipe moves (`r` its repository, `c` the commit, `v`
 this folder), take it again as it is, the sets' patches with it:
 
 ```sh
-r=~/Documents/virtio-gpu-desktop c=4ee46dd v=~/Documents/vitrine/host/kde/research
+r=~/Documents/virtio-gpu-desktop c=81d9125 v=~/Documents/vitrine/host/kde/research
 rm -rf "$v" && mkdir -p "$v/setup/tools" "$v/src/host-config"
 for f in setup/lib.sh setup/paths.sh setup/versions.sh setup/tools/kde-rpms.sh \
 	setup/tools/build-patched-rpm.sh \

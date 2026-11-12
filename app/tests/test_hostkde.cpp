@@ -545,7 +545,7 @@ private slots:
         QCOMPARE(q4.size(), 1);
         QCOMPARE(q4.first().name(), "qtbase-wayland-shm-reuse-pools-v3.patch");
         QVERIFY(Builds::subject(Builds::find(all, "host-qtbase"), q4.first()).startsWith("Qt Wayland: a resized window"));
-        QCOMPARE(Builds::source(svg).revision, "4ee46dd6c4e6d456efe4a31c84a91a55c7f9db30");
+        QCOMPARE(Builds::source(svg).revision, "81d91258c16d342b9e84848e5bfdef24b9950906");
     }
 
     void parsing()
@@ -1259,15 +1259,15 @@ private slots:
         QVERIFY(switches.contains("\nf %t/kwin-scanout-variance-cap 0644 - - - 500\n"));
         /* 0082's stays off: Firefox froze in a VM under a host window */
         QVERIFY(!switches.contains("kwin-skip-empty-layer-render"));
-        /* 0089's written off: it changes saturated colours under Night Light, each user decides */
-        QVERIFY(switches.contains("\nf %t/kwin-night-light-after-blending 0644 - - - 0\n"));
+        /* 0089's written on: windows keep their planes under Night Light */
+        QVERIFY(switches.contains("\nf %t/kwin-night-light-after-blending 0644 - - - 1\n"));
         QVERIFY(out.contains("vitrine-kde: step: writing the set's run-time switches"));
         QVERIFY2(read(m_state + "/runuser").contains(" -- env XDG_RUNTIME_DIR=" + runDir().toUtf8() +
                                                      " systemd-tmpfiles --user --create "),
                  read(m_state + "/runuser").constData());
         QCOMPARE(read(runDir() + "/kwin-scanout-variance-cap"), "500");
         QVERIFY(!QFileInfo::exists(runDir() + "/kwin-skip-empty-layer-render"));
-        QCOMPARE(read(runDir() + "/kwin-night-light-after-blending"), "0");
+        QCOMPARE(read(runDir() + "/kwin-night-light-after-blending"), "1");
         QCOMPARE(QDir(runDir()).entryList(QDir::Files).size(), 5);
         /* commit timing for every user, a value of their own first; the installing user's
            session manager reads it now */

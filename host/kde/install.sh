@@ -35,8 +35,8 @@
 # user's login, and are made at once for the user who installs (pkexec's
 # PKEXEC_UID): a login soon after a logout may find their session manager
 # still running, and its tmpfiles not read again.  Each file's value is the
-# research's: night-light-after-blending's 0 leaves it off, for each user to
-# turn on.  Another KWin ignores the files.
+# research's (night-light-after-blending's 1 since 2026-11-12, 0 before).
+# Another KWin ignores the files.
 #
 # KWin's commit timing: from Plasma 6.8.2, KWin offers commit timing to
 # programs (wp_commit_timing_manager_v1) only with
@@ -75,8 +75,9 @@ commit_timing=KWIN_WAYLAND_SUPPORT_COMMIT_TIMING_V1
 # window over a VM, the host reported the guest's frames discarded and
 # Firefox in the guest froze (the research's findings/
 # firefox-webgl-freeze-composited-vm-2026-11-01.md).
-# night-light-after-blending (0089) is written 0, off: it changes saturated
-# colours under Night Light, which each user decides.
+# night-light-after-blending (0089) is written 1, on, since 2026-11-12, as
+# in the research's host session: windows keep their planes under Night
+# Light, and saturated colours get the classic tint (README.md).
 kwin_switches=(
 	active-window-candidate
 	animation-start-step
