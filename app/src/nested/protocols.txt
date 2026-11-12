@@ -1,11 +1,14 @@
 # SPDX-License-Identifier: GPL-2.0-or-later
 # SPDX-FileCopyrightText: 2026 tomtomnet
-# Protocols the forwarder knows (wayland-protocols paths, or absolute). Only interfaces from these files
+# Protocols the forwarder knows (wayland-protocols paths, ./ for this folder's copies, or absolute). Only interfaces from these files
 # can cross; a host global whose interface is not here is never shown to the guest. Core wayland.xml
 # is always in (its interfaces come from libwayland-client itself).
 stable/xdg-shell/xdg-shell.xml
 stable/linux-dmabuf/linux-dmabuf-v1.xml
-stable/presentation-time/presentation-time.xml
+# presentation-time v3 (content_update_deadline, wayland-protocols MR 454), the copy the host KWin's 0012 builds:
+# from wayland-protocols' v2 the forwarder offered v2 only, and the nested KWin's commit deadline (guest 0029)
+# never got the host's deadline (vitrine's Desktop view, 2026-11-12)
+./protocols/presentation-time.xml
 stable/viewporter/viewporter.xml
 stable/tablet/tablet-v2.xml
 staging/fractional-scale/fractional-scale-v1.xml

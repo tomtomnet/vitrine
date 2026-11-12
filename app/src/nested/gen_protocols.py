@@ -15,7 +15,9 @@ for line in pathlib.Path(protocols_txt).read_text().splitlines():
     line = line.strip()
     if line and not line.startswith("#"):
         p = pathlib.Path(line)
-        files.append(p if p.is_absolute() else pathlib.Path(protocols_dir) / p)
+        # ./NAME: this folder's own copy (protocols.txt's folder)
+        files.append(pathlib.Path(protocols_txt).parent / p if line.startswith("./") else
+                     p if p.is_absolute() else pathlib.Path(protocols_dir) / p)
 
 rows, externs = [], []
 for f in files:

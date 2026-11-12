@@ -236,10 +236,15 @@ set(NESTED_DIR ${CMAKE_CURRENT_SOURCE_DIR}/src/nested)
 set(NESTED_GEN_DIR ${CMAKE_CURRENT_BINARY_DIR}/nested-protocols)
 file(STRINGS ${NESTED_DIR}/protocols.txt NESTED_PROTOCOL_LINES REGEX "^[^#].*\\.xml$")
 set(NESTED_PROTOCOL_SOURCES)
+set(NESTED_PROTOCOL_XML)
 foreach(xml ${NESTED_PROTOCOL_LINES})
-    if(NOT IS_ABSOLUTE ${xml})
+    # ./NAME: the library's own copy (src/nested/protocols: presentation-time v3)
+    if(xml MATCHES "^\\./")
+        set(xml ${NESTED_DIR}/${xml})
+    elseif(NOT IS_ABSOLUTE ${xml})
         set(xml ${WAYLAND_PROTOCOLS_DIR}/${xml})
     endif()
+    list(APPEND NESTED_PROTOCOL_XML ${xml})
     get_filename_component(name ${xml} NAME_WE)
     add_custom_command(OUTPUT ${NESTED_GEN_DIR}/${name}-protocol.c
         COMMAND ${CMAKE_COMMAND} -E make_directory ${NESTED_GEN_DIR}
@@ -251,7 +256,14 @@ add_custom_command(OUTPUT ${NESTED_GEN_DIR}/protocols_table.cpp
     COMMAND ${CMAKE_COMMAND} -E make_directory ${NESTED_GEN_DIR}
     COMMAND Python3::Interpreter ${NESTED_DIR}/gen_protocols.py ${WAYLAND_XML_DIR}/wayland.xml
             ${WAYLAND_PROTOCOLS_DIR} ${NESTED_DIR}/protocols.txt ${NESTED_GEN_DIR}/protocols_table.cpp
-    DEPENDS ${NESTED_DIR}/gen_protocols.py ${NESTED_DIR}/protocols.txt)
+    DEPENDS ${NESTED_DIR}/gen_protocols.py ${NESTED_DIR}/protocols.txt ${NESTED_PROTOCOL_XML})
+# The library's presentation-time is version 3 (the host's content-update deadline for the guest), the views'
+# (vitrine_wlprotocols) version 2: their listeners know three events, and a view bound at 3 would get a fourth.
+# One program has one symbol of each name, so the library's v3 interfaces get names of their own in the two
+# generated files that define and use them; vmview.cpp's own feedback (version 1) keeps the shared v2 ones.
+set_source_files_properties(${NESTED_GEN_DIR}/presentation-time-protocol.c ${NESTED_GEN_DIR}/protocols_table.cpp
+    PROPERTIES COMPILE_DEFINITIONS
+    "wp_presentation_interface=vmview_v3_wp_presentation_interface;wp_presentation_feedback_interface=vmview_v3_wp_presentation_feedback_interface")
 add_library(nestedvmview STATIC
     src/nested/protocols.h
     src/nested/vmview.cpp

@@ -4,10 +4,11 @@ The nested desktop in vitrine's window: the guest's KDE session (its nested
 KWin, over virtio-gpu cross-domain) shown as part of the window, beside the
 VM's own screen.
 
-`vmview.{h,cpp}`, `protocols.{h,txt}`, `gen_protocols.py` and `LICENSE` are
-the research side's vmview library (`src/vmview` of the virtio-gpu-desktop
-repository, commit a6ca435, which has vitrine's changes up to 0327fe9;
-its 9240dd0 took those of 776a6f2, 4a8e155, cbb9ebc and 175aa1a). QEMU's
+`vmview.{h,cpp}`, `protocols.{h,txt}`, `protocols/presentation-time.xml`,
+`gen_protocols.py` and `LICENSE` are the research side's vmview library
+(`src/vmview` of the virtio-gpu-desktop repository, commit 3770e96, which
+has vitrine's changes up to 0327fe9; its 9240dd0 took those of 776a6f2,
+4a8e155, cbb9ebc and 175aa1a). QEMU's
 cross-domain connects to a socket the
 library serves; the guest's Wayland protocol goes on to the host compositor
 over vitrine's own connection, and the guest's window becomes a subsurface
@@ -18,7 +19,21 @@ the changes vitrine needs before the research side has them are under Local
 changes below, to make again after a copy. Not taken: the library's
 CMakeLists.txt (app/CMakeLists.txt builds it the same way: a static
 library, its protocol code generated with wayland-scanner and
-`gen_protocols.py` from wayland-protocols), its demo, tools and README.
+`gen_protocols.py` from wayland-protocols, `./` lines of protocols.txt from
+this folder), its demo, tools and README.
+
+presentation-time is the library's own copy at version 3 (its 3770e96): the
+host KWin's content-update deadline (vitrine's host KWin, patch 0012) reaches
+the guest's nested KWin (its 0029). From wayland-protocols' version 2 the
+library offered the guest version 2 only, and the guest's commits were paced
+without the host's deadline (2026-11-12). vitrine's views use version 2 for
+their own feedback (`vitrine_wlprotocols`: their listeners know three events,
+and a view bound at version 3 would be sent a fourth). One program has one
+symbol of each name, so app/CMakeLists.txt compiles the two generated files of
+the library that define and use its v3 interfaces with
+`wp_presentation_interface` and `wp_presentation_feedback_interface` renamed
+(`vmview_v3_...`); the names on the wire stay the same, and vmview.cpp's own
+feedback (version 1) keeps the shared version 2 interfaces.
 
 The library is under the GNU General Public License, version 2 or later, as
 `LICENSE` says; the `../../LICENSE` it names is the research repository's
@@ -73,8 +88,8 @@ do to vitrine:
 
 ## Local changes
 
-None now: the files are the research's at a6ca435, which took the two
-changes below from vitrine (`sha256sum -c UPSTREAM.sha256` passes). They
+None now: the files are the research's at 3770e96 (`sha256sum -c
+UPSTREAM.sha256` passes); its a6ca435 took the two changes below from vitrine. They
 stay described here, for a copy of an older version:
 
 - A `pointer` callback (2026-11-11, vitrine's view-keys stream): the
