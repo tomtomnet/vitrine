@@ -224,8 +224,15 @@ static GtkWidget *linesOf(const Change &change)
             return;
         }
         GtkWidget *label = Gtk4::label(lines.join('\n'), true);
-        /* a long line wraps where it reaches the edge: not at a hyphen, which reads as a break */
+        PangoAttrList *attributes = pango_attr_list_new();
+        /*
+         * A long line wraps where it reaches the edge, not at a hyphen, which
+         * reads as a break, and without one added where it breaks a word
+         */
         gtk_label_set_wrap_mode(GTK_LABEL(label), PANGO_WRAP_CHAR);
+        pango_attr_list_insert(attributes, pango_attr_insert_hyphens_new(false));
+        gtk_label_set_attributes(GTK_LABEL(label), attributes);
+        pango_attr_list_unref(attributes);
         gtk_widget_add_css_class(label, "monospace");
         gtk_box_append(GTK_BOX(box), Gtk4::caption(heading));
         gtk_box_append(GTK_BOX(box), label);
