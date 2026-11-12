@@ -22,6 +22,7 @@
 #include "gtk/gtkloop.h"
 #include "gtk/mainwindowbuilds.h"
 #include "gtk/settingsdialog.h"
+#include "gtk/settingsupdates.h"
 #include "gtk/vmconsole.h"
 #include "gtk/vmpage.h"
 #include "gtk/vmsummary.h"
@@ -148,8 +149,18 @@ MainWindow::MainWindow(GtkLoop *loop, VmStore *store)
     buildWindow();
     createActions();
     createConsoleActions();
+    /*
+     * The settings newer VMs get: on the home page under the guest tools'
+     * row (each widget goes right after the error), in the Details after
+     * their group
+     */
+    m_settingsUpdates = std::make_unique<SettingsUpdatesStatus>();
+    m_settingsUpdates->review = [this](Vm *vm) { reviewSettings(vm); };
+    m_settingsUpdates->undo = [this](Vm *vm) { undoSettingsUpdate(vm); };
+    m_page->addHomeWidget(m_settingsUpdates->homeWidget());
     /* before the VMs: its groups come first in their Details */
     m_builds = std::make_unique<MainWindowBuilds>(this);
+    m_page->addDetailsGroup(m_settingsUpdates->detailsGroup());
 
     /* the host's settings while VMs run (vitrine-helper), what it could not apply said */
     auto *host = new HostSettings(store, m_qt.get());
@@ -772,6 +783,7 @@ void MainWindow::currentChanged()
     if (m_builds) {
         m_builds->setVm(vm);
     }
+    m_settingsUpdates->setVm(vm);
     updateActions();
     /* once the page shows the console: an unmapped widget takes no focus */
     focusScreenLater(FocusCause::Switched);

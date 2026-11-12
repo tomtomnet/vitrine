@@ -15,6 +15,7 @@
 #include "gtk/logdialog.h"
 #include "gtk/newvmdialog.h"
 #include "gtk/settingsdialog.h"
+#include "gtk/settingsupdates.h"
 #include "gtk/snapshotsdialog.h"
 #include "gtk/textdialog.h"
 #include "gtk/widgets.h"
@@ -163,6 +164,75 @@ VmCloner *MainWindow::startClone(Vm *source, const QString &name)
     /* its task's details: this window's (mainwindowparts.cpp) */
     followClone(cloner, id);
     return cloner;
+}
+
+void MainWindow::confirmSettings(Vm *vm, std::function<void(bool go)> go, const QString &question)
+{
+    if (m_settings && m_settings->vm() == vm && m_settings->isModified()) {
+        m_settings->confirmChanges(question, std::move(go));
+        return;
+    }
+    go(true);
+}
+
+void MainWindow::reviewSettings(Vm *vm)
+{
+    if (!vm || !m_window) {
+        return;
+    }
+    auto *dialog = new SettingsUpdatesDialog(
+        vm, presenter(), [this](Vm *vm, std::function<void(bool go)> go) {
+            confirmSettings(vm, std::move(go), "Apply them before the newer settings?");
+        });
+    present(dialog->dialog());
+}
+
+void MainWindow::undoSettingsUpdate(Vm *vm)
+{
+    if (!vm || !m_window) {
+        return;
+    }
+    const QList<SettingsUpdates::Record> records = SettingsUpdatesMonitor::of(vm)->records();
+    if (records.isEmpty()) {
+        return;
+    }
+    const SettingsUpdates::Record last = records.last();
+    QStringList titles;
+    for (const SettingsUpdates::Record::Applied &applied : last.changes) {
+        titles << SettingsUpdates::title(applied.id);
+    }
+    AdwDialog *alert = Gtk4::alert(
+        "Undo the Update?",
+        QString("These settings go back as they were before the update of %1: %2. The other "
+                "lines of vm.args stay as they are now.")
+            .arg(last.time.toString("d MMMM, HH:mm"), SettingsUpdates::listed(titles)),
+        {{"cancel", "_Cancel"}, {"undo", "_Undo"}}, "undo");
+    QPointer<Vm> guard(vm);
+    Gtk4::onResponse(alert, [this, guard, last](const QString &response) {
+        if (response != "undo" || !guard) {
+            return;
+        }
+        confirmSettings(guard, [this, guard, last](bool go) {
+            QStringList failed;
+            QString error;
+
+            if (!go || !guard) {
+                return;
+            }
+            if (!SettingsUpdatesMonitor::of(guard)->undo(&failed, &error)) {
+                present(Gtk4::alert("Cannot Undo the Update", error));
+            } else if (!failed.isEmpty()) {
+                present(Gtk4::alert(
+                    "Some Settings Stay as They Are",
+                    QString("Their lines changed since the update, and were left as they are: "
+                            "%1. vm.args as it was before the update is %2, in the VM's folder.")
+                        .arg(SettingsUpdates::listed(failed), last.backup)));
+            } else {
+                notify(QString("%1: the update of its settings is undone").arg(guard->name()));
+            }
+        }, "Apply them before undoing the update?");
+    });
+    present(alert);
 }
 
 void MainWindow::showSnapshots()

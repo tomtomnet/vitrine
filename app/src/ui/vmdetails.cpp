@@ -30,6 +30,7 @@
 #include "ui/guesttoolsdialog.h"
 #include "ui/icons.h"
 #include "ui/qemudocs.h"
+#include "ui/settingsupdates.h"
 #include "ui/uiconfig.h"
 
 /* How to build a guest Mesa with native context, in the repository */
@@ -127,6 +128,7 @@ VmDetails::VmDetails(QWidget *parent)
     layout->addWidget(m_error);
     layout->addWidget(m_contextsNote);
     layout->addWidget(new GuestToolsBanner(this));
+    layout->addWidget(new SettingsUpdatesBanner(SettingsUpdatesBanner::Place::Details, this));
     layout->addWidget(m_text, 1);
 
     connect(m_error->button(), &QPushButton::clicked, this, &VmDetails::showLog);
@@ -154,6 +156,7 @@ void VmDetails::setVm(Vm *vm)
     }
     m_vm = vm;
     findChild<GuestToolsBanner *>()->setVm(vm);
+    findChild<SettingsUpdatesBanner *>()->setVm(vm);
     refresh();
 }
 

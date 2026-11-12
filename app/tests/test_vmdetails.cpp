@@ -1,5 +1,7 @@
 // SPDX-License-Identifier: GPL-2.0-or-later
 #include <QAbstractTextDocumentLayout>
+#include <QCheckBox>
+#include <QDir>
 #include <QFile>
 #include <QStandardPaths>
 #include <QTemporaryDir>
@@ -8,9 +10,12 @@
 #include <QTextDocument>
 #include <QTextFrame>
 #include <QTextTable>
+#include <QPushButton>
 
 #include "core/paths.h"
+#include "core/settingsupdates.h"
 #include "core/vmstore.h"
+#include "ui/settingsupdates.h"
 #include "ui/vmdetails.h"
 
 /* The Details tab as the pane shows it, offscreen */
@@ -82,6 +87,89 @@ private slots:
         const qreal x1 = layout->blockBoundingRect(memory.firstCursorPosition().block()).x();
         const qreal x2 = layout->blockBoundingRect(graphics.firstCursorPosition().block()).x();
         QCOMPARE(x1, x2);
+    }
+
+    /*
+     * The settings newer VMs get, on a VM of October: the Details' banner
+     * and the Console's, Review with Don't Ask Again and Ask Again, Apply,
+     * the update with Undo, Not Now
+     */
+    void newerSettings()
+    {
+        if (Paths::hostArch() != "x86_64") {
+            QSKIP("the changes for a PC");
+        }
+        QTemporaryDir dir;
+        QVERIFY(QDir().mkpath(dir.filePath("newer")));
+        QFile args(dir.filePath("newer/vm.args"));
+        QVERIFY(args.open(QIODevice::WriteOnly));
+        args.write("-name Newer,debug-threads=on\n"
+                   "#guest linux,desktop=kde\n"
+                   "-machine q35,memory-backend=mem,dump-guest-core=off\n"
+                   "-accel kvm,honor-guest-pat=auto\n"
+                   "-object memory-backend-memfd,id=mem,size=2G,share=on\n"
+                   "-device virtio-vga-gl,hostmem=4G,blob=on,drm_native_context=on,"
+                   "x-host-vblank=on,x-vblank-lead=3000,x-vblank-lead-auto=on\n"
+                   "-display dbus,p2p=yes,gl=on\n");
+        args.close();
+        VmStore store(dir.path());
+        Vm *vm = store.find("newer");
+        QVERIFY(vm);
+        SettingsUpdatesMonitor *monitor = SettingsUpdatesMonitor::of(vm);
+        SettingsUpdatesBanner details(SettingsUpdatesBanner::Place::Details);
+        SettingsUpdatesBanner home(SettingsUpdatesBanner::Place::Home);
+        details.setVm(vm);
+        home.setVm(vm);
+        QCOMPARE(details.offerText(), "This VM lacks 2 settings that new VMs get: no HPET timer, "
+                                      "a 16 GiB window for GPU memory.");
+        QCOMPARE(home.offerText(), "This VM lacks 2 settings that new VMs get.");
+        QVERIFY(home.notNowButton());
+        QVERIFY(!details.notNowButton());
+        QVERIFY(details.updateText().isEmpty());
+        QVERIFY(details.problemText().isEmpty());
+
+        SettingsUpdatesDialog dialog(vm);
+        QCOMPARE(dialog.offered(), QStringList({"hpet-off", "hostmem-16g"}));
+        QVERIFY(dialog.applyButton()->isEnabled());
+        dialog.checkBox("hpet-off")->setChecked(false);
+        dialog.decline("hostmem-16g");
+        QCOMPARE(dialog.declined(), QStringList{"hostmem-16g"});
+        /* nothing checked to take */
+        QVERIFY(!dialog.applyButton()->isEnabled());
+        QCOMPARE(details.offerText(), "This VM lacks a setting that new VMs get: no HPET timer.");
+        dialog.askAgain("hostmem-16g");
+        QCOMPARE(dialog.offered(), QStringList({"hpet-off", "hostmem-16g"}));
+        QVERIFY(!dialog.checkBox("hpet-off")->isChecked());
+        QVERIFY(dialog.checkBox("hostmem-16g")->isChecked());
+        dialog.checkBox("hpet-off")->setChecked(true);
+        QVERIFY(dialog.note().isEmpty());
+        dialog.accept();
+        QCOMPARE(dialog.result(), int(QDialog::Accepted));
+        QString text;
+        QString error;
+        QVERIFY(SettingsUpdates::readText(vm->argsPath(), &text, &error));
+        QVERIFY(text.contains("dump-guest-core=off,hpet=off\n"));
+        QVERIFY(text.contains(",hostmem=16G,"));
+        QVERIFY(details.offerText().isEmpty());
+        QVERIFY(home.offerText().isEmpty());
+        QVERIFY(details.updateText().startsWith("Settings updated on "));
+        QVERIFY(details.updateText().contains("no HPET timer, a 16 GiB window for GPU memory"));
+        QVERIFY(details.undoButton()->isEnabled());
+
+        /* undone: offered again; Not Now hides the Console's banner, not the Details' */
+        QStringList failed;
+        QVERIFY(monitor->undo(&failed, &error));
+        QCOMPARE(home.offerText(), "This VM lacks 2 settings that new VMs get.");
+        monitor->setNotNow();
+        QVERIFY(home.offerText().isEmpty());
+        QVERIFY(!details.offerText().isEmpty());
+
+        /* on the Details page */
+        VmDetails page;
+        page.setVm(vm);
+        auto *banner = page.findChild<SettingsUpdatesBanner *>();
+        QVERIFY(banner);
+        QCOMPARE(banner->offerText(), details.offerText());
     }
 };
 

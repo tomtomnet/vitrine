@@ -14,6 +14,8 @@
 #include "gtkdisplay.h"
 
 #ifndef Q_MOC_RUN
+#include "core/paths.h"
+#include "core/settingsupdates.h"
 #include "core/vmcloner.h"
 #include "core/vmconfig.h"
 #include "core/vmhardware.h"
@@ -29,6 +31,7 @@
 #include "gtk/newvmdialog.h"
 #include "gtk/settingsdialog.h"
 #include "gtk/settingspages.h"
+#include "gtk/settingsupdates.h"
 #include "gtk/sharespage.h"
 #include "gtk/snapshotsdialog.h"
 #include "gtk/storagepage.h"
@@ -410,6 +413,87 @@ private slots:
         args->check();
         QVERIFY(args->problems().join('\n').contains("Line 5"));
         delete settings;
+    }
+
+    /*
+     * The settings newer VMs get, on a VM of October: the home page's row
+     * and the Details, Review with Don't Ask Again and Ask Again, vm.args
+     * edited meanwhile, Apply, the update with Undo, Not Now
+     */
+    void newerSettings()
+    {
+        if (Paths::hostArch() != "x86_64") {
+            QSKIP("the changes for a PC");
+        }
+        const QString october = "-name Newer,debug-threads=on\n"
+                                "#guest linux,desktop=kde\n"
+                                "-machine q35,memory-backend=mem,dump-guest-core=off\n"
+                                "-accel kvm,honor-guest-pat=auto\n"
+                                "-object memory-backend-memfd,id=mem,size=2G,share=on\n"
+                                "-device virtio-vga-gl,hostmem=4G,blob=on,drm_native_context=on,"
+                                "x-host-vblank=on,x-vblank-lead=3000,x-vblank-lead-auto=on\n"
+                                "-display dbus,p2p=yes,gl=on\n";
+        QTemporaryDir dir;
+        QVERIFY(addVm(dir.path(), "newer", october));
+        VmStore store(dir.path());
+        Vm *vm = store.find("newer");
+        SettingsUpdatesMonitor *monitor = SettingsUpdatesMonitor::of(vm);
+        SettingsUpdatesStatus status;
+        status.setVm(vm);
+        QCOMPARE(status.homeText(), "This VM lacks 2 settings that new VMs get");
+        QCOMPARE(status.detailsRows(),
+                 QStringList({"No HPET timer", "A 16 GiB window for GPU memory"}));
+
+        auto *dialog = new SettingsUpdatesDialog(vm, presenter());
+        QCOMPARE(dialog->offered(), QStringList({"hpet-off", "hostmem-16g"}));
+        QVERIFY(dialog->canApply());
+        dialog->setChecked("hostmem-16g", false);
+        QVERIFY(!dialog->isChecked("hostmem-16g"));
+        dialog->setChecked("hpet-off", false);
+        QVERIFY(!dialog->canApply());
+        dialog->setChecked("hpet-off", true);
+        /* not asked again: in the Details with Ask Again, out of the home page's count */
+        dialog->decline("hostmem-16g");
+        QCOMPARE(dialog->offered(), QStringList{"hpet-off"});
+        QCOMPARE(dialog->declined(), QStringList{"hostmem-16g"});
+        QVERIFY(dialog->note().isEmpty());
+        QCOMPARE(status.homeText(), "This VM lacks a setting that new VMs get");
+        QCOMPARE(status.detailsRows(),
+                 QStringList({"No HPET timer", "A 16 GiB window for GPU memory"}));
+        dialog->askAgain("hostmem-16g");
+        QCOMPARE(dialog->offered(), QStringList({"hpet-off", "hostmem-16g"}));
+        /* vm.args edited meanwhile: the list again, which says so */
+        QVERIFY(addVm(dir.path(), "newer",
+                      QString(october).replace("dump-guest-core=off\n",
+                                               "dump-guest-core=off,hpet=off\n")));
+        monitor->refresh();
+        QCOMPARE(dialog->offered(), QStringList{"hostmem-16g"});
+        QVERIFY(dialog->note().contains("changed meanwhile"));
+
+        /* applied: vm.args with its line changed, the update in the Details */
+        bool closed = false;
+        Gtk4::connect<void()>(dialog->dialog(), "closed", [&closed]() { closed = true; });
+        dialog->apply();
+        QVERIFY(closed);
+        QString text;
+        QString error;
+        QVERIFY(SettingsUpdates::readText(vm->argsPath(), &text, &error));
+        QVERIFY(text.contains(",hostmem=16G,"));
+        QVERIFY(text.contains("dump-guest-core=off,hpet=off\n"));
+        QCOMPARE(monitor->records().size(), 1);
+        QVERIFY(status.homeText().isEmpty());
+        QCOMPARE(status.detailsRows().size(), 1);
+        QVERIFY(status.detailsRows().first().startsWith("Updated on "));
+
+        /* undone: offered again; Not Now hides the home page's row, not the Details */
+        QStringList failed;
+        QVERIFY(monitor->undo(&failed, &error));
+        QVERIFY(failed.isEmpty());
+        QCOMPARE(status.homeText(), "This VM lacks a setting that new VMs get");
+        monitor->setNotNow();
+        QVERIFY(status.homeText().isEmpty());
+        QCOMPARE(status.detailsRows(), QStringList{"A 16 GiB window for GPU memory"});
+        QTest::qWait(50);
     }
 
     /* The copy, its end closing the dialog, the clone a VM with its own disk */

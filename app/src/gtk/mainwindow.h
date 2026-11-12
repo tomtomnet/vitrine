@@ -22,6 +22,7 @@ class MainWindowBuilds;
 class Notices;
 class PreferencesDialog;
 class SettingsDialog;
+class SettingsUpdatesStatus;
 class StatsButton;
 class Task;
 class TaskButton;
@@ -113,6 +114,12 @@ public:
     StatsButton *stats() const;
     /* USB Devices… of the selected VM, while it runs: the dialog shown */
     UsbDialog *showUsbDevices();
+    /* The settings newer VMs get that the VM shown lacks: its home page's row, its Details */
+    SettingsUpdatesStatus *settingsUpdates() const { return m_settingsUpdates.get(); }
+    /* Review…: the dialog of @vm's newer settings, shown */
+    void reviewSettings(Vm *vm);
+    /* Undo… of @vm's latest update of its settings, asked first */
+    void undoSettingsUpdate(Vm *vm);
 
 private:
     /* the builds and the guest tools: mainwindowbuilds.cpp */
@@ -264,6 +271,10 @@ private:
     FocusCause m_focusCause = FocusCause::Shown;
     /* The settings, while they show */
     SettingsDialog *m_settings = nullptr;
+    /* Before vm.args changes from elsewhere: the settings' changes not applied yet first */
+    void confirmSettings(Vm *vm, std::function<void(bool go)> go, const QString &question);
+    /* The settings newer VMs get that the VM shown lacks */
+    std::unique_ptr<SettingsUpdatesStatus> m_settingsUpdates;
     /* The copies of clones going on, by the VM copied; the dialog showing one */
     QHash<QString, QPointer<VmCloner>> m_clones;
     CloneDialog *m_cloneDialog = nullptr;
