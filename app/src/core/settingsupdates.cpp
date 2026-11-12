@@ -335,7 +335,8 @@ static int findText(const ArgsFile &args, const QString &text, int index)
 
 static bool revertKey(ArgsFile &args, const Edit &e)
 {
-    const int i = findLine(args, e, [&e](const OptionValue &v) { return hasValue(v, e.key, e.after); });
+    const int i =
+        findLine(args, e, [&e](const OptionValue &v) { return hasValue(v, e.key, e.after); });
 
     if (i < 0) {
         /* put back by hand already */
@@ -895,7 +896,7 @@ QString revert(const QString &text, const Record &record, QStringList *failed)
 {
     ArgsFile args = ArgsFile::parse(text);
 
-    /* the latest change first, and in each the keys first, then the lines it added, then those it took */
+    /* the latest change first; in each the keys, then the lines it added, then those it took */
     for (auto c = record.changes.crbegin(); c != record.changes.crend(); ++c) {
         bool ok = true;
         for (auto e = c->edits.crbegin(); e != c->edits.crend(); ++e) {

@@ -381,6 +381,8 @@ qt_add_library(vitrine_ui STATIC
     src/ui/shutdownnotice.h
     src/ui/settingspages.cpp
     src/ui/settingspages.h
+    src/ui/settingsupdates.cpp
+    src/ui/settingsupdates.h
     src/ui/sidebar.cpp
     src/ui/sidebar.h
     src/ui/snapshotview.cpp

@@ -12,10 +12,12 @@
 #include "gtkdisplay.h"
 
 #ifndef Q_MOC_RUN
+#include "core/paths.h"
 #include "core/vmrunner.h"
 #include "core/vmstore.h"
 #include "gtk/gtkloop.h"
 #include "gtk/mainwindow.h"
+#include "gtk/settingsupdates.h"
 #endif
 
 /*
@@ -153,6 +155,36 @@ private slots:
         QCOMPARE(titles(window), QStringList({"First"}));
         QVERIFY(window.current());
         QVERIFY(enabled(window, "start"));
+    }
+
+    /* The settings newer VMs get follow the VM selected: its home page's row, its Details */
+    void newerSettings()
+    {
+        if (Paths::hostArch() != "x86_64") {
+            QSKIP("the changes for a PC");
+        }
+        QTemporaryDir dir;
+        QVERIFY(addVm(dir.path(), "plain", "Plain"));
+        QFile old(dir.filePath("old/vm.args"));
+        QVERIFY(QDir().mkpath(dir.filePath("old")) && old.open(QIODevice::WriteOnly));
+        old.write("-name Old\n#guest linux,desktop=kde\n"
+                  "-machine q35,memory-backend=mem,dump-guest-core=off\n"
+                  "-object memory-backend-memfd,id=mem,size=1G,share=on\n"
+                  "-device virtio-vga-gl,hostmem=4G,blob=on,drm_native_context=on,"
+                  "x-host-vblank=on,x-vblank-lead=3000,x-vblank-lead-auto=on\n"
+                  "-display dbus,p2p=yes,gl=on\n");
+        old.close();
+        VmStore store(dir.path());
+        MainWindow window(m_loop, &store);
+
+        window.select("old");
+        QVERIFY(window.settingsUpdates());
+        QCOMPARE(window.settingsUpdates()->vm(), window.current());
+        /* no debug-threads either: an older -name */
+        QCOMPARE(window.settingsUpdates()->homeText(), "This VM lacks 3 settings that new VMs get");
+        window.select("plain");
+        QVERIFY(window.settingsUpdates()->homeText().isEmpty());
+        QVERIFY(window.settingsUpdates()->detailsRows().isEmpty());
     }
 
     /* What a VM that is off allows */

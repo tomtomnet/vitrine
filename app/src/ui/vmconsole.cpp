@@ -21,6 +21,7 @@
 #include "ui/banner.h"
 #include "ui/guesttoolsdialog.h"
 #include "ui/icons.h"
+#include "ui/settingsupdates.h"
 #include "ui/vmdetails.h"
 #include "vmview/vmview.h"
 
@@ -111,6 +112,10 @@ VmConsole::VmConsole(Vm *vm, QWidget *parent)
         auto *tools = new GuestToolsBanner;
         tools->setVm(vm);
         column->addWidget(tools);
+        /* the settings newer VMs get: one line, Not Now hides it */
+        auto *updates = new SettingsUpdatesBanner(SettingsUpdatesBanner::Place::Home);
+        updates->setVm(vm);
+        column->addWidget(updates);
         column->addSpacing(16);
         column->addWidget(m_start, 0, Qt::AlignLeft);
         column->addSpacing(16);

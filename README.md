@@ -129,8 +129,11 @@ files it changes, and the guest packages compile through ccache.
 2. **Create a VM.** File > New… (Ctrl+N): name, system, memory, processors,
    disk, and optionally an ISO to install from. Machine > Start (Ctrl+Return)
    starts it. Each VM is its QEMU command line, which Machine > Settings
-   (Ctrl+S) edits. A Linux VM whose 3D card lacks what new VMs get (native
-   context, the host vblank timing) offers Update… on its Details tab.
+   (Ctrl+S) edits. A VM keeps the defaults of the day it was made: its
+   Details tab lists the settings new VMs get that it lacks (no HPET timer,
+   a 16 GiB window for GPU memory, the guest's desktop...), and Review…
+   applies those you pick, while the VM is off, after saving a dated copy of
+   `vm.args` beside it. Undo puts the lines back.
 3. **Guest tools** for Fedora 44 and 45 x86-64 guests, a medium for each
    release. Fedora 44's: virtio-gpu driver, Mesa 26.2.6, KWin (with the
    KWayland it is built against) and KPipeWire for Plasma 6.8.2, Qt Base

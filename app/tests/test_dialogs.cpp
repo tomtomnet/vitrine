@@ -18,6 +18,7 @@
 #include "ui/guesttoolsbuildbanner.h"
 #include "ui/guesttoolsdialog.h"
 #include "ui/newvmdialog.h"
+#include "ui/settingsupdates.h"
 #include "ui/buildswindow.h"
 #include "ui/textdialog.h"
 
@@ -87,6 +88,11 @@ class TestDialogs : public QObject
             {"Guest tools", [this]() {
                  GuestToolsDialog::run(nullptr, vm());
                  return opened("GuestToolsDialog");
+             }},
+            /* the VM's card and machine of before: several settings of new VMs to list */
+            {"Newer settings", [this]() {
+                 SettingsUpdatesDialog::run(nullptr, vm());
+                 return opened("SettingsUpdatesDialog");
              }},
         };
         for (const auto &[name, make] : dialogs) {
