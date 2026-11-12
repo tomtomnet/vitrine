@@ -269,7 +269,7 @@ void UdmabufWatch::stateChanged(Vm *vm)
         (state == VmRunner::State::Running || state == VmRunner::State::Paused)) {
         it->pid = pid;
         it->checked = true;
-        if (VmConfig::graphics(vm->runner()->runArgs()).nativeContext) {
+        if (VmConfig::graphics(vm->runner()->runArgs()).udmabuf()) {
             check(vm, *it);
         }
     }

@@ -25,6 +25,7 @@
 #include "core/hostsettings.h"
 #include "core/paths.h"
 #include "core/udmabuf.h"
+#include "core/vmhardware.h"
 #include "core/vmrunner.h"
 #include "core/vmstore.h"
 
@@ -118,6 +119,10 @@ private:
 static const QByteArray kNative = "-device virtio-vga-gl,blob=on,drm_native_context=on\n"
                                   "-display dbus,p2p=yes\n";
 static const QByteArray kVirgl = "-device virtio-vga-gl\n-display dbus,p2p=yes\n";
+/* the nested desktop's card (NestedDesktop::set) */
+static const QByteArray kNested = "-vga none\n"
+                                  "-device virtio-vga-rutabaga,x-drm=on,x-virgl2=on,cross-domain=on,"
+                                  "hostmem=16G,x-guest-dmabuf=on\n-display dbus,p2p=yes\n";
 
 /* From a refused 4K window (QEMU with vitrine's patches, amdgpu native context) */
 static const QByteArray kRefusal =
@@ -531,6 +536,31 @@ private slots:
                  QString("vitrine: /dev/udmabuf does not exist: the kernel has no udmabuf driver, "
                          "or its module is not loaded: QEMU will refuse guest windows drawn by the "
                          "CPU (Qt Widgets and GTK apps, cursors), which the guest then copies\n"));
+    }
+
+    /* The nested desktop's card: its guest buffers are udmabufs too, checked as native context's */
+    void watchNested()
+    {
+        QTemporaryDir runtime(QDir::tempPath() + "/vu-XXXXXX");
+        QTemporaryDir vms;
+        QVERIFY(runtime.isValid() && vms.isValid());
+        qputenv("XDG_RUNTIME_DIR", runtime.path().toLocal8Bit());
+        FakeVm nested(vms.path(), "nested", kNested), virgl(vms.path(), "virgl", kVirgl);
+        VmStore store(vms.path());
+        QVERIFY(VmConfig::graphics(store.find("nested")->args()).udmabuf());
+        UdmabufWatch watch(&store, nullptr);
+        watch.setSysRoot(m_sys);
+        watch.setDevice(m_device);
+        watch.setPollInterval(100000);
+        for (Vm *vm : store.vms()) {
+            vm->runner()->attach(vm->args());
+        }
+        QTRY_COMPARE(store.find("nested")->runner()->state(), VmRunner::State::Running);
+        QTRY_COMPARE(store.find("virgl")->runner()->state(), VmRunner::State::Running);
+        QTRY_COMPARE(watch.issues().size(), 1);
+        QCOMPARE(watch.issues().first().vmId, QString("nested"));
+        QVERIFY(watch.issues().first().limitsLow);
+        QCOMPARE(watch.issues().first().notRaised, QString("host tuning is off"));
     }
 };
 

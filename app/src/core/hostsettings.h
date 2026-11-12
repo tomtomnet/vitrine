@@ -170,8 +170,9 @@ public:
 
     /*
      * What a VM start does, for the QEMU @pid; @udmabuf: its GPU has native
-     * context, which needs the host's udmabuf limits raised too
-     * (udmabufAnswered() says whether they will be)
+     * context, or is the nested desktop's card, which need the host's
+     * udmabuf limits raised too (VmConfig::Graphics::udmabuf();
+     * udmabufAnswered() says whether they will be)
      */
     void tune(qint64 pid, bool udmabuf = false);
     /*

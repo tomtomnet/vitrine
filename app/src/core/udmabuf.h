@@ -154,7 +154,7 @@ private:
         qint64 offset = 0;          // read up to there
         QByteArray head;            // the log's first bytes: another log after a Clear
         QByteArray partial;         // a line not ended yet
-        bool checked = false;       // the start check done (native context only)
+        bool checked = false;       // the start check done (native context, the nested desktop)
         bool noted = false;         // the note on the limits written (in this run of QEMU)
         /* Host tuning does not hold the limits for it, why: they were high
            enough at its start check (another VM's hold, say), and are read

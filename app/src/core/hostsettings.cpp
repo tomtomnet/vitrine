@@ -523,7 +523,7 @@ void HostSettings::vmStateChanged(Vm *vm)
                pid > 0 && m_tuned.value(vm->id()) != pid) {
         /* a new run, started here or found running: tuned once */
         m_tuned[vm->id()] = pid;
-        tune(pid, VmConfig::graphics(vm->runner()->runArgs()).nativeContext);
+        tune(pid, VmConfig::graphics(vm->runner()->runArgs()).udmabuf());
         updateWindowFocus();
     }
 }

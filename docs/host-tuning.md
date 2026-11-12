@@ -81,7 +81,8 @@ A desktop VM stays smooth under host load when the host gives it a hand:
   instead of 15.1-16.3 ms on a Ryzen 7 260 laptop, for about 2 W at
   idle; 7.49 ms instead of 10.09 ms on a desktop under GNOME, for 3.5 W.
   Preferences > Host turns it off ([below](#the-cpu-ready-to-wake-up)).
-- **Higher udmabuf limits** (VMs whose GPU has native context): QEMU
+- **Higher udmabuf limits** (VMs whose GPU has native context, the nested
+  desktop's included): QEMU
   hands the host GPU each guest buffer in guest memory as a udmabuf, one
   entry per contiguous piece of guest RAM. A maximized 4K window drawn by
   the CPU (Qt Widgets and GTK apps, cursors) is about 32 MB in 1,200 to
@@ -157,7 +158,7 @@ for them. It does only this, for the user who started it:
 | `behind PID` | The threads `rt` made real-time back to SCHED_OTHER, its vCPU threads (`CPU n/KVM`) at nice -5 (a VM behind the one in front) | The same checks as `rt`; nice -5 only while the fair server holds, and only for vCPUs at nice 0 |
 | `view-rt TID` | SCHED_FIFO 1, with SCHED_RESET_ON_FORK (what the thread starts begins ordinary, threads and processes alike), on one thread of the program that started the helper: vitrine's view of the VM in front (the app's main thread, the view's render thread, Wayland reader and D-Bus listener, GLib's D-Bus worker) | Only once `fair-server on` holds, and while a watched QEMU is in front (its `rt`); a thread of the helper's parent - the program that ran pkexec, taken at the start and held through a pidfd - whose uids are all the caller's; threads at SCHED_FIFO 1 before its first `view-rt`, other real-time ones and SCHED_IDLE ones are left as they are; recorded first, as for `rt` |
 | `view-behind` | Those threads, and any other thread of that program at SCHED_FIFO 1 since, back to SCHED_OTHER | Only threads at SCHED_FIFO 1 that were not before the first `view-rt`; the helper also does it whenever no watched QEMU is in front any more (`behind` of the one in front, its exit), at `fair-server off` and at its end |
-| `udmabuf PID` | The udmabuf module's `list_limit` at 65536 and `size_limit_mb` at 2048, while that watched QEMU runs | A watched QEMU (its GPU is not checked: vitrine asks only for native-context ones); fixed values; raised only, a higher value stays; skipped when the module is not loaded; put back after the last QEMU that asked for it |
+| `udmabuf PID` | The udmabuf module's `list_limit` at 65536 and `size_limit_mb` at 2048, while that watched QEMU runs | A watched QEMU (its GPU is not checked: vitrine asks only for native-context ones and the nested desktop's); fixed values; raised only, a higher value stays; skipped when the module is not loaded; put back after the last QEMU that asked for it |
 | `thp on` | `/sys/kernel/mm/transparent_hugepage/shmem_enabled` at `advise` | A watched QEMU; a fixed value, written only over `never`; read back |
 | `cpu-latency on` | A request on `/dev/cpu_dma_latency` for the wake-up time of the CPUs' first usable idle state (C1), held by the helper's open file | A watched QEMU; the value from cpuidle, at least 1 µs; nothing recorded: the kernel drops the request with the file |
 | `epp on` | Each online CPU's `cpufreq/energy_performance_preference` at `performance` | A watched QEMU; a fixed value; read back; all or nothing |
@@ -508,7 +509,8 @@ a write of the same values from its own).
 `modprobe.d` options do nothing where udmabuf is built into the kernel, as
 in Fedora's.
 
-At each start of a VM whose GPU has native context, vitrine reads the
+At each start of a VM whose GPU has native context, or of a nested-desktop
+VM, vitrine reads the
 limits and opens `/dev/udmabuf` as QEMU does. When they are too low (under
 16384 entries or 128 MB) and host tuning will not raise them, or the
 device does not open, it writes a `vitrine:` note in the VM's `qemu.log`,

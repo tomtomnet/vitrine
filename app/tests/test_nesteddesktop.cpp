@@ -157,6 +157,8 @@ private slots:
         QCOMPARE(a.toText(), QString(kNested));
         QVERIFY(VmConfig::graphics(a).kind == VmConfig::Graphics::Nested);
         QCOMPARE(VmConfig::graphics(a).hostmemMiB, 16384);
+        /* its guest buffers are udmabufs too: host tuning raises their limits */
+        QVERIFY(VmConfig::graphics(a).udmabuf());
         QVERIFY(NestedDesktop::mode(a) == Mode::Integrated);
         /* on again: nothing more */
         NestedDesktop::set(a, true);
