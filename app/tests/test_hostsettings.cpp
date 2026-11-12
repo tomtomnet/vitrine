@@ -1572,6 +1572,60 @@ private slots:
         QVERIFY(hs.helperRunning());
     }
 
+    /*
+     * The nested desktop's threads with the screen's, as a console hands
+     * them over: the library's thread and the readers of the app's display
+     * real-time with the VM in front; at the guest's reboot its library's
+     * thread ends and the new view's comes, asked for alone; the desktop
+     * gone, its readers back, the screen's again
+     */
+    void viewThreadsNestedDesktop()
+    {
+        RunningVms vms({"one"});
+        Threads screen(2), readers(2), library2(1);
+        VmStore store(vms.path());
+        HostSettings hs(&store);
+        QSignalSpy lines(&hs, &HostSettings::helperLine), notices(&hs, &HostSettings::notice);
+        fake(hs);
+        store.find("one")->runner()->attach(store.find("one")->args());
+        QTRY_VERIFY(saw(lines, QString("ok rt %1:").arg(vms.pid(0))));
+        {
+            Threads library(1);
+            hs.setViewThreads("one", {screen.tid(0), screen.tid(1), readers.tid(0), readers.tid(1),
+                                      library.tid(0)});
+            QTRY_VERIFY(saw(lines, "ok view-rt " + library.text(0) + ": real-time"));
+            for (const qint64 tid : {screen.tid(0), screen.tid(1), readers.tid(0), readers.tid(1),
+                                     library.tid(0)}) {
+                QCOMPARE(schedOf(tid), viewRealtimeSched());
+            }
+        }
+
+        /* the reboot: a new view, a new library's thread */
+        lines.clear();
+        hs.setViewThreads("one", {screen.tid(0), screen.tid(1), readers.tid(0), readers.tid(1),
+                                  library2.tid(0)});
+        QTRY_VERIFY(saw(lines, "ok view-rt " + library2.text(0) + ": real-time"));
+        QVERIFY(!saw(lines, "ok view-behind"));
+        QVERIFY(!saw(lines, "ok view-rt " + screen.text(0)));
+        QCOMPARE(schedOf(library2.tid(0)), viewRealtimeSched());
+
+        /* the desktop gone (the Qt app: none of the screen's then either) */
+        lines.clear();
+        hs.setViewThreads("one", {});
+        QTRY_VERIFY(saw(lines, "ok view-behind: 5 threads ordinary"));
+        for (const qint64 tid : {screen.tid(0), screen.tid(1), readers.tid(0), readers.tid(1),
+                                 library2.tid(0)}) {
+            QCOMPARE(schedOf(tid), QString("0 0 0"));
+        }
+        /* the GTK app keeps the screen's: those again */
+        lines.clear();
+        hs.setViewThreads("one", {screen.tid(0), screen.tid(1)});
+        QTRY_VERIFY(saw(lines, "ok view-rt " + screen.text(1) + ": real-time"));
+        QCOMPARE(schedOf(screen.tid(0)), viewRealtimeSched());
+        QCOMPARE(schedOf(readers.tid(0)), QString("0 0 0"));
+        QVERIFY(notices.isEmpty());
+    }
+
     /* Two VMs started at once, each in QEMU's own window, without KWin: one
        real-time, the other behind - never both, as before */
     void ownWindowsNeverBothRealtime()
