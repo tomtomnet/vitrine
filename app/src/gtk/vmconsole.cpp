@@ -3,6 +3,7 @@
 
 #include <QTimer>
 
+#include <algorithm>
 #include <utility>
 
 #include "core/guesttools.h"
@@ -323,6 +324,9 @@ bool VmConsole::serveNested(const QString &socket, QString *error)
     nested->connectionsChanged.connect([this](int) { notifyChanged(); });
     nested->keyboardChanged.connect([this]() { notifyChanged(); });
     nested->fullScreenChanged.connect([this](bool) { notifyChanged(); });
+    /* its threads, real-time while the VM is in front: the library's shows
+       as the guest connects */
+    nested->threadsChanged.connect([this]() { sendViewThreads(); });
     /* the guest's Ctrl+Alt+F, or vitrine's while it has no window to ask */
     nested->fullScreenRequested.connect([this](bool on) {
         if (desktopShown()) {
@@ -369,6 +373,8 @@ void VmConsole::dropNested()
     WidgetRelease::unfocus(nested->widget());
     gtk_box_remove(GTK_BOX(m_desktopBox), nested->widget());
     delete nested;
+    /* the library's thread ended with it */
+    sendViewThreads();
     m_views->powerOn();
     applyView();
 }
@@ -551,12 +557,31 @@ void VmConsole::detach()
        not lead back to it */
     VmDisplay *display = std::exchange(m_display, nullptr);
     /* its threads end with it: the main thread and GDBus's worker, which
-       stay, back first */
+       stay, back first (the main thread stays real-time for the guest's
+       desktop, if it is there) */
     sendViewThreads();
     WidgetRelease::unfocus(GTK_WIDGET(display->widget()->gobj()));
     gtk_box_remove(GTK_BOX(m_screenBox), GTK_WIDGET(display->widget()->gobj()));
     delete display;
     notifyChanged();
+}
+
+std::vector<pid_t> VmConsole::realtimeThreads() const
+{
+    std::vector<pid_t> tids;
+
+    if (m_display) {
+        tids = m_display->realtimeThreads();
+    }
+    /* the main thread is in both */
+    if (m_nested) {
+        for (const pid_t tid : m_nested->realtimeThreads()) {
+            if (std::find(tids.cbegin(), tids.cend(), tid) == tids.cend()) {
+                tids.push_back(tid);
+            }
+        }
+    }
+    return tids;
 }
 
 void VmConsole::sendViewThreads()
@@ -567,10 +592,8 @@ void VmConsole::sendViewThreads()
     if (!host || !m_vm) {
         return;
     }
-    if (m_display) {
-        for (const pid_t tid : m_display->realtimeThreads()) {
-            tids << tid;
-        }
+    for (const pid_t tid : realtimeThreads()) {
+        tids << tid;
     }
     host->setViewThreads(m_vm->id(), tids);
 }

@@ -10,6 +10,7 @@
 
 #include <functional>
 #include <optional>
+#include <vector>
 
 #include "core/consoleviews.h"
 #include "vmview/stats.h"
@@ -120,6 +121,13 @@ public:
     bool serveNested(const QString &socket, QString *error);
     /* Tests: their stand-in for the guest's desktop; empty for NestedDisplay::create() */
     static void setNestedFactory(const NestedDisplay::Factory &factory);
+    /*
+     * The threads of its views for real time while the VM is in front
+     * (HostSettings::setViewThreads): the screen's (VmDisplay) and the
+     * guest's desktop's (NestedDisplay: the library's, and GDK's reader its
+     * reads wait for), each once
+     */
+    std::vector<pid_t> realtimeThreads() const;
 
     /* The page, the screen, its grab or keyboard focus, full screen, or the view changed */
     std::function<void()> changed;
@@ -141,8 +149,7 @@ private:
     void setPage(Page page);
     void notifyChanged();
     void notifyScreenReady();
-    /* The screen's threads for real time with the VM in front (HostSettings),
-       none without a screen */
+    /* realtimeThreads() to HostSettings */
     void sendViewThreads();
 
     QObject m_qt;

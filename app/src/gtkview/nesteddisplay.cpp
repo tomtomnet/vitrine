@@ -9,9 +9,11 @@
 #include "nested/vmview.h"
 #include "shortcutsinhibit.h"
 #include "viewkeys.h"
+#include "viewthreads.h"
 #include "widgetrelease.h"
 
 #include <QFile>
+#include <QtGlobal>
 
 #include <gtkmm/application.h>
 #include <gtkmm/eventcontrollerfocus.h>
@@ -27,6 +29,7 @@
 #include <algorithm>
 #include <cerrno>
 #include <cmath>
+#include <cstdio>
 #include <cstring>
 #include <memory>
 #include <utility>
@@ -121,6 +124,7 @@ public:
     int connections() const override { return m_connections; }
     bool isMapped() const override { return m_mapped; }
     void setCovered(bool on) override;
+    std::vector<Thread> threads() const override { return m_threads; }
 
     /* the widgets' */
     bool inputEnabled() const { return m_inputEnabled; }
@@ -146,6 +150,10 @@ private:
     void updateShortcuts();
     /* @fn on the GUI thread, from the library's, unless the view is gone by then */
     void later(std::function<void(GuestDesktop *)> fn);
+    /* The library's thread is @tid (a callback came on it) */
+    void libraryThread(pid_t tid);
+    /* threads() from it, its line and signal if new */
+    void updateThreads();
 
     vmview *m_view = nullptr;
     QString m_socket;
@@ -177,6 +185,8 @@ private:
     int m_connections = 0;
     bool m_mapped = false;
     QString m_title;
+    pid_t m_libraryTid = 0;
+    std::vector<Thread> m_threads;
     /* what the library's thread queued for this one: done only while it lives */
     std::shared_ptr<bool> m_alive = std::make_shared<bool>(true);
     std::weak_ptr<bool> m_weak = m_alive;
@@ -526,7 +536,10 @@ bool GuestDesktop::init(const QString &socket, QString *error)
         });
     };
     cb.connection = [](void *data, int count) {
-        static_cast<GuestDesktop *>(data)->later([count](GuestDesktop *self) {
+        /* the library's thread, which the callbacks run on: the first comes as the guest connects */
+        const pid_t tid = ViewThreads::self();
+        static_cast<GuestDesktop *>(data)->later([count, tid](GuestDesktop *self) {
+            self->libraryThread(tid);
             if (count != self->m_connections) {
                 self->m_connections = count;
                 self->connectionsChanged.emit(count);
@@ -623,6 +636,31 @@ void GuestDesktop::later(std::function<void(GuestDesktop *)> fn)
         }
         return G_SOURCE_REMOVE;
     }, new Call{m_weak, this, std::move(fn)}, [](gpointer data) { delete static_cast<Call *>(data); });
+}
+
+void GuestDesktop::libraryThread(pid_t tid)
+{
+    if (tid != m_libraryTid) {
+        m_libraryTid = tid;
+        updateThreads();
+    }
+}
+
+void GuestDesktop::updateThreads()
+{
+    std::vector<Thread> now;
+
+    /* GDK's reader first, as on the screen's line */
+    if (m_libraryTid > 0 && ViewThreads::alive(m_libraryTid)) {
+        now.push_back({Thread::Role::Main, getpid()});
+        now.push_back({Thread::Role::Library, m_libraryTid});
+    }
+    if (now == m_threads) {
+        return;
+    }
+    m_threads = std::move(now);
+    fprintf(stderr, "%s\n", threadLine(m_threads).c_str());
+    threadsChanged.emit();
 }
 
 void GuestDesktop::exposedChanged(DesktopWidget *widget)
@@ -919,4 +957,29 @@ NestedDisplay *NestedDisplay::create(const QString &socket, QString *error)
         return nullptr;
     }
     return display;
+}
+
+std::vector<pid_t> NestedDisplay::realtimeThreads() const
+{
+    std::vector<pid_t> tids;
+
+    /* VITRINE_VIEW_RT=0, as for the screen (VmDisplay): none */
+    if (qgetenv("VITRINE_VIEW_RT") == "0") {
+        return tids;
+    }
+    for (const Thread &thread : threads()) {
+        tids.push_back(thread.tid);
+    }
+    return tids;
+}
+
+std::string NestedDisplay::threadLine(const std::vector<Thread> &threads)
+{
+    std::string line = "vitrine: desktop: threads:";
+
+    for (const Thread &thread : threads) {
+        line += thread.role == Thread::Role::Main ? " main=" : " library=";
+        line += std::to_string(thread.tid);
+    }
+    return line;
 }

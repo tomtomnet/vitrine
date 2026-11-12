@@ -10,6 +10,9 @@
 #include <QTest>
 
 #include <memory>
+#include <vector>
+
+#include <unistd.h>
 
 #include "gtkdisplay.h"
 
@@ -66,6 +69,13 @@ public:
         m_mapped = on;
         mappedChanged(on);
     }
+    /* Its library's thread showed, as the guest connected */
+    void libraryThread(pid_t tid)
+    {
+        m_threads = {{Thread::Role::Main, getpid()}, {Thread::Role::Library, tid}};
+        threadsChanged();
+    }
+    std::vector<Thread> threads() const override { return m_threads; }
 
     bool full = false;
     bool input = true;
@@ -77,6 +87,7 @@ private:
     GtkWidget *m_widget;
     int m_connections = 0;
     bool m_mapped = false;
+    std::vector<Thread> m_threads;
 };
 #endif
 
@@ -252,6 +263,39 @@ private slots:
         }
         /* the console gone, its view with it (the guest's session ends) */
         QCOMPARE(s_alive, 0);
+    }
+
+    /*
+     * The guest's desktop's threads with the screen's, for real time while
+     * the VM is in front: none until its library's thread shows, none with
+     * VITRINE_VIEW_RT=0, the new view's after a reboot; their line
+     */
+    void threads()
+    {
+        Vm *vm = m_store->find("alpha");
+        QString error;
+        VmConsole console(vm);
+
+        QVERIFY(console.realtimeThreads().empty());
+        QVERIFY(console.serveNested(m_tmp.filePath("threads.sock"), &error));
+        QVERIFY(console.realtimeThreads().empty());
+        s_last->libraryThread(4242);
+        QVERIFY(console.realtimeThreads() == (std::vector<pid_t>{getpid(), 4242}));
+        qputenv("VITRINE_VIEW_RT", "0");
+        QVERIFY(console.realtimeThreads().empty());
+        qunsetenv("VITRINE_VIEW_RT");
+        QVERIFY(console.realtimeThreads() == (std::vector<pid_t>{getpid(), 4242}));
+
+        /* a reboot: a new view, its own library's thread */
+        Q_EMIT vm->runner()->guestReset();
+        QVERIFY(console.realtimeThreads().empty());
+        s_last->libraryThread(4343);
+        QVERIFY(console.realtimeThreads() == (std::vector<pid_t>{getpid(), 4343}));
+
+        QCOMPARE(QString::fromStdString(NestedDisplay::threadLine(s_last->threads())),
+                 QString("vitrine: desktop: threads: main=%1 library=4343").arg(getpid()));
+        QCOMPARE(QString::fromStdString(NestedDisplay::threadLine({})),
+                 QString("vitrine: desktop: threads:"));
     }
 
     /* Ctrl+Alt+1/2 by the key's place, whatever character the layout gives it */
