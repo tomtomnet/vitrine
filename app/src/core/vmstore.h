@@ -31,6 +31,11 @@ public:
     const ArgsFile &args() const { return m_args; }
     /* Writes vm.args atomically */
     bool save(const ArgsFile &args, QString *error = nullptr);
+    /*
+     * Writes @text as vm.args atomically, byte for byte: save() writes every
+     * line as ArgsFile writes it, this keeps those a caller left untouched
+     */
+    bool saveText(const QString &text, QString *error = nullptr);
     VmRunner *runner() const { return m_runner; }
 
 signals:

@@ -89,6 +89,8 @@ qt_add_library(vitrine_core STATIC
     src/core/qmpclient.h
     src/core/quitsignals.cpp
     src/core/quitsignals.h
+    src/core/settingsupdates.cpp
+    src/core/settingsupdates.h
     src/core/snapshots.cpp
     src/core/snapshots.h
     src/core/stackbuilder.cpp
@@ -507,6 +509,7 @@ if(BUILD_TESTING)
             qemuinfo
             qmpclient
             quitsignals
+            settingsupdates
             snapshots
             stackbuilder
             tasks

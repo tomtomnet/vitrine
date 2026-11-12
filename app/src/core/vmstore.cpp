@@ -14,6 +14,7 @@
 #include "core/paths.h"
 #include "core/vmconfig.h"
 #include "core/guesttools.h"
+#include "core/settingsupdates.h"
 #include "core/vmrunner.h"
 
 static const char kArgsFile[] = "vm.args";
@@ -62,6 +63,21 @@ bool Vm::save(const ArgsFile &args, QString *error)
         return false;
     }
     m_args = args;
+    emit changed();
+    return true;
+}
+
+bool Vm::saveText(const QString &text, QString *error)
+{
+    QSaveFile f(argsPath());
+
+    if (!f.open(QIODevice::WriteOnly) || f.write(text.toUtf8()) < 0 || !f.commit()) {
+        if (error) {
+            *error = f.errorString();
+        }
+        return false;
+    }
+    m_args = ArgsFile::parse(text);
     emit changed();
     return true;
 }
@@ -270,6 +286,8 @@ bool VmStore::remove(Vm *vm, QString *error)
     }
     m_watcher->removePath(vm->argsPath());
     m_vms.removeOne(vm);
+    /* what the user said of its settings' updates, and their records */
+    SettingsUpdates::forget(vm->id());
     emit removed(vm->id());
     vm->deleteLater();
     return true;
