@@ -212,6 +212,9 @@ void fair_server_on(void);
 void fair_server_off(void);
 /* That bound is in place, held by this helper; else why not in @why */
 bool settings_bound(const char **why);
+/* The CPUs online now (CPUS_ONLINE's list; every cpuN folder if it cannot
+   be read), at least 1 */
+int online_cpus(void);
 /* Shared memory's transparent huge pages on madvise (THP_SHMEM), and back */
 void thp_on(void);
 void thp_off(void);
@@ -298,6 +301,7 @@ struct watched {
     bool behind; /* its vCPUs were set to BEHIND_NICE */
     bool held;   /* sched_hold() holds its record */
     bool udmabuf; /* udmabuf was asked for it */
+    bool capped; /* rt found more vCPUs than half the online CPUs (logged once) */
     bool view;   /* not a QEMU: the process that started the helper (view-rt) */
     pid_t kept[MAX_KEPT];   /* threads at SCHED_FIFO 1 before its first rt */
     int nkept;
@@ -310,7 +314,8 @@ extern int nwatched;
 bool watch(const char *arg);
 /* The watched process with this pid, or NULL */
 struct watched *find_watched(const char *arg);
-/* The protocol's rt <pid>: the VM in front */
+/* The protocol's rt <pid>: the VM in front - as behind, when its vCPUs are
+   more than half of the online CPUs */
 void rt_on(const char *arg);
 /* The protocol's behind <pid>: a VM behind the one in front */
 void behind(const char *arg);

@@ -140,6 +140,14 @@ public:
      * did), else as realtimeLimit() tells: for the host tuning state
      */
     QString realtimeOff() const;
+    /*
+     * The CPUs online under @sysRoot (devices/system/cpu/online's list,
+     * else every cpuN folder), at least 1.  A VM with more processors than
+     * half of them gets no real-time threads, in front too: the helper
+     * lowers it as a VM behind (its rt), since a 16-vCPU VM in front froze
+     * a 16-thread desktop.
+     */
+    static int onlineCpus(const QString &sysRoot = QStringLiteral("/sys"));
 
     /*
      * The QEMU builds under @stack (<stack>/<build>/bin/qemu-system-*) that
@@ -180,7 +188,10 @@ public:
      * window is the active one already.  Where the desktop does
      * not say which window is active (not KWin), a VM in QEMU's own window
      * comes to the front only so, and goes behind for good once another one
-     * does.  Real-time only where the helper could set the fair server.
+     * does.  Real-time only where the helper could set the fair server,
+     * and never for a VM with more processors than half of the CPUs online
+     * (onlineCpus()): the helper keeps it as one behind, in front too, and
+     * notice() says so once.
      */
     void setFront(const QString &vmId);
     /*
@@ -340,6 +351,8 @@ private:
     void offerGroup(const Status &status);
     /* The requests that tune @pid, queued for the helper */
     void queue(qint64 pid);
+    /* The name of the VM whose QEMU is @pid, else "process PID" */
+    QString vmName(qint64 pid) const;
     /* Each VM running untuned tuned again (the group set up, say) */
     void retune();
     void say(const QString &text);

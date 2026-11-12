@@ -7,7 +7,16 @@ A desktop VM stays smooth under host load when the host gives it a hand:
   QEMU's display and I/O threads run before ordinary host tasks. The other
   VMs' threads stay ordinary, their vCPUs at nice -5, so that VMs busy in
   the background cannot take every CPU at real-time priority: one VM is
-  real-time at a time. A host window in front changes nothing; a VM alone
+  real-time at a time. A VM with more processors than half of the host's
+  online CPUs (9 or more on 16) never is, even in front: its threads stay
+  ordinary and its vCPUs at nice -5, as a VM behind. Its vCPUs at real-time
+  priority would hold most of the host while the guest is busy: on
+  2026-10-30 a 16-vCPU VM in front froze a desktop with 16 CPU threads, the
+  shorter fair-server period below notwithstanding. The helper counts the
+  vCPU threads QEMU names (`-name ...,debug-threads=on`, as vitrine's VMs
+  have), else the VM's `-smp`. Preferences > Host's state line gives this
+  computer's number, and the status bar says it when such a VM comes to the
+  front. A host window in front changes nothing; a VM alone
   is real-time, and so is the first one started or found running until
   another comes to the front. A VM in QEMU's own window (SDL, GTK) is in
   front when that window is the active one: on KDE Plasma a small KWin
@@ -130,7 +139,7 @@ for them. It does only this, for the user who started it:
 | `watch PID` | Watches a QEMU until it exits | The process belongs to the caller (all its uids) and runs a `qemu-system-*` (or `qemu-kvm`) executable; held through a pidfd, so a reused pid cannot slip in |
 | `fair-server on` | 10 ms / 1 ms on every online CPU, read back; under sched_ext the ext server too | Fixed values; only `cpuN` folders; nothing to choose. All or nothing: a refused write puts the others back and says which CPU and why |
 | `gpu-floor CARD MHZ\|auto` | An AMD GPU's lowest gfx clock | `cardN` of vendor 0x1002 driven by amdgpu; the clock within the GPU's own overdrive range; only when its performance level is `auto` |
-| `rt PID` | SCHED_FIFO 1 on every thread of a watched QEMU (the VM in front), its real-time time limit (`RLIMIT_RTTIME`) lifted first | Only once `fair-server on` holds; watched first, and checked again to be the caller's QEMU (it may have run another program since); no thread made real-time if the limit cannot be lifted; real-time threads it finds are left as they are; its child processes (passt) are not touched |
+| `rt PID` | SCHED_FIFO 1 on every thread of a watched QEMU (the VM in front), its real-time time limit (`RLIMIT_RTTIME`) lifted first | Only once `fair-server on` holds; watched first, and checked again to be the caller's QEMU (it may have run another program since); never for more vCPUs than half of the online CPUs (its threads named as vCPUs, else its `-smp`): such a VM is lowered as by `behind` instead, and the answer is `skip`; no thread made real-time if the limit cannot be lifted; real-time threads it finds are left as they are; its child processes (passt) are not touched |
 | `behind PID` | The threads `rt` made real-time back to SCHED_OTHER, its vCPU threads (`CPU n/KVM`) at nice -5 (a VM behind the one in front) | The same checks as `rt`; nice -5 only while the fair server holds, and only for vCPUs at nice 0 |
 | `view-rt TID` | SCHED_FIFO 1, with SCHED_RESET_ON_FORK (what the thread starts begins ordinary, threads and processes alike), on one thread of the program that started the helper: vitrine's view of the VM in front (the app's main thread, the view's render thread, Wayland reader and D-Bus listener, GLib's D-Bus worker) | Only once `fair-server on` holds, and while a watched QEMU is in front (its `rt`); a thread of the helper's parent - the program that ran pkexec, taken at the start and held through a pidfd - whose uids are all the caller's; threads at SCHED_FIFO 1 before its first `view-rt`, other real-time ones and SCHED_IDLE ones are left as they are; recorded first, as for `rt` |
 | `view-behind` | Those threads, and any other thread of that program at SCHED_FIFO 1 since, back to SCHED_OTHER | Only threads at SCHED_FIFO 1 that were not before the first `view-rt`; the helper also does it whenever no watched QEMU is in front any more (`behind` of the one in front, its exit), at `fair-server off` and at its end |
@@ -488,6 +497,11 @@ configuring: `cmake --install --prefix` with another prefix is refused.
 ## When something looks wrong
 
 - `journalctl -t vitrine-helper` lists what the helper changed and put back.
+- `ps -L -o tid,cls,rtprio,ni,comm -p PID` lists a QEMU's threads: those of
+  the VM in front show `FF 1`, those of a VM behind `TS`, its vCPUs at nice
+  -5. A VM in front with more processors than half of the host's online
+  CPUs shows `TS` too, as one behind; the journal says so once ("not made
+  real-time: 16 vCPUs, more than half of the 16 online cpus").
 - `ps -L -o tid,cls,rtprio,comm -p $(pgrep -x vitrine-gtk)` lists the GTK
   app's threads: with host tuning on, those of the view of the VM in front
   show `FF 1` (SCHED_FIFO 1), the others `TS`. The view also writes their

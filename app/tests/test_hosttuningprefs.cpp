@@ -1,8 +1,8 @@
 // SPDX-License-Identifier: GPL-2.0-or-later
 /*
  * Preferences > Host: gpu-input-awake on the GPU clock floor's row of a
- * dedicated GPU, Install… and Remove… run as the app runs them, and the
- * CPU kept ready to wake up, on a fake
+ * dedicated GPU, Install… and Remove… run as the app runs them, the CPU
+ * kept ready to wake up and the state line's words, on a fake
  * host (its GPUs, a fake root for /usr and /etc) with stand-ins for pkexec,
  * id and systemctl.  Nothing here touches this computer's /usr or /etc,
  * nor asks polkit.
@@ -26,6 +26,7 @@
 #include "core/hostsettings.h"
 #include "fakegpus.h"
 #include "ui/hosttuningprefs.h"
+#include "ui/hosttuningtext.h"
 #include "ui/widgets.h"
 
 static const char kFakePkexec[] = R"sh(#!/bin/bash
@@ -268,6 +269,23 @@ private slots:
         Prefs p;
         QVERIFY(p.awake());
         QTRY_VERIFY(p.awake()->text().endsWith("It is not installed."));
+    }
+
+    /* The state line: which VMs get no real-time threads, or why none do */
+    void activeState()
+    {
+        const QString active = "Active: vitrine-helper may tune the host without a password. ";
+        QCOMPARE(HostTuningPrefsText::active({}, 16),
+                 active + "VMs with more than 8 processors, half of this computer's 16, run "
+                          "without real-time threads.");
+        QCOMPARE(HostTuningPrefsText::active({}, 3),
+                 active + "VMs with more than 1 processor, half of this computer's 3, run without "
+                          "real-time threads.");
+        QCOMPARE(HostTuningPrefsText::active({}, 1),
+                 active + "With one CPU, VMs run without real-time threads.");
+        const QString off = "Real-time QEMU threads are off: the kernel's lockdown (Secure Boot) "
+                            "blocks the fair server.";
+        QCOMPARE(HostTuningPrefsText::active(off, 16), active + off);
     }
 };
 

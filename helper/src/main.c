@@ -39,7 +39,10 @@
  *                          APUs whose minimum is lower)
  *   rt PID                 SCHED_FIFO 1 on every thread of a watched QEMU,
  *                          once the fair server is set and the process's
- *                          real-time time limit lifted: the VM in front
+ *                          real-time time limit lifted: the VM in front;
+ *                          one with more vCPUs (named, else its -smp) than
+ *                          half the online CPUs is lowered as by behind
+ *                          instead, and answered skip
  *   behind PID             those threads back to SCHED_OTHER, its vCPUs at
  *                          nice -5: a VM behind the one in front
  *   view-rt TID            SCHED_FIFO 1 on thread TID of the process that

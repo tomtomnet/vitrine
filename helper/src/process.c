@@ -398,6 +398,106 @@ static bool unnice_vcpu(pid_t tid, int taskfd, const char *name, struct pass *p)
     return false;
 }
 
+/* counts: [0] vCPU threads, by the names QEMU gives them */
+static bool count_vcpu(pid_t tid, int taskfd, const char *name, struct pass *p)
+{
+    (void)tid;
+    p->counts[0] += is_vcpu(taskfd, name);
+    return false;
+}
+
+/*
+ * The count of an -smp value - "16,sockets=1,cores=8,threads=2",
+ * "cpus=16", "sockets=2,cores=4" - as QEMU works it out: cpus= (or the
+ * number it starts with), else maxcpus=, else the product of the levels
+ * given (1 for the others)
+ */
+static unsigned long long smp_value(const char *value)
+{
+    static const char *const levels[] = {"drawers", "books", "sockets", "dies", "clusters",
+                                         "modules", "cores", "threads", NULL};
+    unsigned long long cpus = 0, maxcpus = 0, product = 1, v;
+    char buf[256], *save = NULL;
+
+    snprintf(buf, sizeof(buf), "%s", value);
+    for (char *t = strtok_r(buf, ",", &save); t; t = strtok_r(NULL, ",", &save)) {
+        char *eq = strchr(t, '=');
+
+        if (!eq) {
+            if (t == buf && parse_uint(t, 65535, &v)) {
+                cpus = v;
+            }
+            continue;
+        }
+        *eq = '\0';
+        if (!parse_uint(eq + 1, 65535, &v) || v == 0) {
+            continue;
+        }
+        if (strcmp(t, "cpus") == 0) {
+            cpus = v;
+        } else if (strcmp(t, "maxcpus") == 0) {
+            maxcpus = v;
+        } else {
+            for (int i = 0; levels[i]; i++) {
+                if (strcmp(t, levels[i]) == 0) {
+                    product = product * v > 65535 ? 65535 : product * v;
+                }
+            }
+        }
+    }
+    return cpus ? cpus : maxcpus ? maxcpus : product;
+}
+
+/* The count of the last -smp of the command line of the process of
+   @procfd; 1, QEMU's default, without one; 0 when it cannot be read */
+static unsigned long long smp_vcpus(int procfd)
+{
+    const size_t max = 1 << 20;
+    char *buf = malloc(max + 1);
+    const char *smp = NULL;
+    unsigned long long count;
+    size_t len = 0;
+    ssize_t n;
+    int fd;
+
+    if (!buf || (fd = openat(procfd, "cmdline", O_RDONLY | O_CLOEXEC)) < 0) {
+        free(buf);
+        return 0;
+    }
+    while (len < max && (n = read(fd, buf + len, max - len)) > 0) {
+        len += (size_t)n;
+    }
+    close(fd);
+    buf[len] = '\0';
+    /* its arguments, each ended by a NUL; the value after -smp (or --smp) */
+    for (size_t i = 0; i < len; i += strlen(buf + i) + 1) {
+        const size_t alen = strlen(buf + i);
+
+        if ((strcmp(buf + i, "-smp") == 0 || strcmp(buf + i, "--smp") == 0) && i + alen + 1 < len) {
+            smp = buf + i + alen + 1;
+        }
+    }
+    count = len == 0 ? 0 : !smp ? 1 : smp_value(smp);
+    free(buf);
+    return count;
+}
+
+/* Its vCPUs: the threads QEMU names as vCPUs (debug-threads=on), else the
+   count of its -smp; @named says which */
+static int vcpu_count(struct watched *w, bool *named)
+{
+    struct pass p = {0};
+    unsigned long long smp;
+
+    each_thread(w->procfd, count_vcpu, &p);
+    *named = p.counts[0] > 0;
+    if (*named) {
+        return p.counts[0];
+    }
+    smp = smp_vcpus(w->procfd);
+    return smp > 65535 ? 65535 : (int)smp;
+}
+
 /* Still the caller's QEMU: it may have exec'ed something else since watch,
    a setuid program for one */
 static bool still_qemu(struct watched *w)
@@ -469,13 +569,18 @@ static int rttime_lift(struct watched *w)
  * without which a real-time vCPU that spins keeps kernel workers off its
  * CPU for up to 950 ms, and without a real-time time limit on the process
  * (rttime_lift), which would end QEMU the first time the guest is busy.
+ * Never for more vCPUs than half the online CPUs: such a VM is lowered as
+ * behind() does, in front too.
  */
+static void lower(struct watched *w, int *ordinary, int *vcpus);
+
 void rt_on(const char *arg)
 {
     struct watched *w = find_watched(arg);
     struct pass changes = {0}, total = {0};
     const char *why;
-    int passes, err;
+    int passes, err, vcpus, online;
+    bool named;
 
     if (!w) {
         reply("error rt: watch the process first");
@@ -489,6 +594,34 @@ void rt_on(const char *arg)
         reply("skip rt %d: the fair server is not set: %s", (int)w->pid, why);
         return;
     }
+    /*
+     * More vCPUs than half the online CPUs: a busy guest would hold more
+     * than half of every CPU's time at real-time priority, and the fair
+     * server's share was not enough - a 16-vCPU VM in front froze a
+     * 16-thread desktop under load (2026-10-30, "DL replenish lagged too
+     * much").  Such a VM stays as a VM behind, in front too: no thread of
+     * it real-time, its vCPUs at nice -5 where they are named.  Its vCPUs
+     * by their names, else by its -smp.
+     */
+    vcpus = vcpu_count(w, &named);
+    online = online_cpus();
+    if (vcpus * 2 > online) {
+        int ordinary, niced;
+
+        lower(w, &ordinary, &niced);
+        if (!w->capped) {
+            sys_log("uid %u: pid %d not made real-time: %d vCPUs%s, more than half of the %d "
+                    "online cpus", (unsigned)caller_uid, (int)w->pid, vcpus,
+                    named ? "" : " (its -smp)", online);
+        }
+        w->capped = true;
+        reply("skip rt %d: %d vCPUs, more than half of the %d online cpus: behind instead (%d "
+              "threads ordinary, %d vCPUs at nice %d)", (int)w->pid, vcpus, online, ordinary,
+              niced, BEHIND_NICE);
+        view_check();
+        return;
+    }
+    w->capped = false;
     if ((err = rttime_lift(w)) < 0) {
         reply("error rt %d: its real-time time limit cannot be lifted, which would end it: %s",
               (int)w->pid, strerror(-err));
@@ -547,22 +680,15 @@ void rt_on(const char *arg)
  * real-time threads run (the bound in place), its vCPUs at nice
  * BEHIND_NICE, a little ahead of ordinary tasks still.  The nice needs a
  * record (it is put back at the end); taking privilege away needs none.
+ * @ordinary and @vcpus get how many threads went back, how many vCPUs got
+ * the nice.
  */
-void behind(const char *arg)
+static void lower(struct watched *w, int *ordinary, int *vcpus)
 {
-    struct watched *w = find_watched(arg);
     struct pass others = {.kept = NULL}, niced = {0};
     const char *why;
     bool nice = false;
 
-    if (!w) {
-        reply("error behind: watch the process first");
-        return;
-    }
-    if (!still_qemu(w)) {
-        reply("error behind %d: no longer a QEMU of uid %u", (int)w->pid, (unsigned)caller_uid);
-        return;
-    }
     w->rt = false;
     /*
      * Another helper's record of it (vitrine restarted while it runs, the
@@ -596,8 +722,26 @@ void behind(const char *arg)
     if (nice) {
         each_thread(w->procfd, behind_vcpu, &niced);
     }
-    reply("ok behind %d: %d threads ordinary, %d vCPUs at nice %d", (int)w->pid,
-          others.counts[0], niced.counts[0], BEHIND_NICE);
+    *ordinary = others.counts[0];
+    *vcpus = niced.counts[0];
+}
+
+void behind(const char *arg)
+{
+    struct watched *w = find_watched(arg);
+    int ordinary, vcpus;
+
+    if (!w) {
+        reply("error behind: watch the process first");
+        return;
+    }
+    if (!still_qemu(w)) {
+        reply("error behind %d: no longer a QEMU of uid %u", (int)w->pid, (unsigned)caller_uid);
+        return;
+    }
+    lower(w, &ordinary, &vcpus);
+    reply("ok behind %d: %d threads ordinary, %d vCPUs at nice %d", (int)w->pid, ordinary, vcpus,
+          BEHIND_NICE);
     /* the VM in front gone behind: its view's threads with it */
     view_check();
 }

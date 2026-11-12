@@ -418,6 +418,9 @@ private slots:
         }
         writeFile(m_root + kCpu + "/cpuidle/current_driver", "acpi_idle\n");
         writeFile(m_root + kLatency, "");
+        /* four CPUs online, of which two are in the tree: the stand-in's two
+           vCPUs are half of them, real-time in front */
+        writeFile(m_root + kCpu + "/online", "0-3\n");
         qputenv("VITRINE_HELPER_TEST_ROOT", m_root.toLocal8Bit());
     }
 
@@ -982,6 +985,59 @@ private slots:
         hs.tune(qemu.pid());
         QTRY_VERIFY(saw(lines, QString("ok rt %1").arg(qemu.pid())));
         QCOMPARE(hs.realtimeOff(), QString());
+    }
+
+    /*
+     * More processors than half of the CPUs online: the helper lowers the
+     * VM in front as one behind, and the app says so once per VM
+     */
+    void realtimeCapped()
+    {
+        writeFile(m_root + kCpu + "/online", "0-2\n");
+        FakeQemu q1, q2;
+        HostSettings hs(nullptr);
+        QSignalSpy lines(&hs, &HostSettings::helperLine), notices(&hs, &HostSettings::notice);
+        const auto capped = [&lines](qint64 pid) {
+            const QString start = QString("skip rt %1: 2 vCPUs, more than half of the 3 online "
+                                          "cpus: behind instead").arg(pid);
+            return int(std::count_if(lines.cbegin(), lines.cend(),
+                                     [&start](const QList<QVariant> &l) {
+                                         return l.first().toString().startsWith(start);
+                                     }));
+        };
+        const QString said = "Host tuning: process %1 has 2 processors, more than half of this "
+                             "computer's 3: it runs without real-time threads, even in front.";
+        fake(hs);
+        hs.tune(q1.pid());
+        QTRY_COMPARE(capped(q1.pid()), 1);
+        QCOMPARE(fifoThreads(q1.pid()), 0);
+        QCOMPARE(notices.size(), 1);
+        QCOMPARE(notices.first().first().toString(), said.arg(q1.pid()));
+        hs.tune(q2.pid());
+        QTRY_VERIFY(saw(lines, QString("ok behind %1:").arg(q2.pid())));
+        /* the other one in front, then this one again: said once each */
+        hs.windowActivated(q2.pid());
+        QTRY_COMPARE(capped(q2.pid()), 1);
+        hs.windowActivated(q1.pid());
+        QTRY_COMPARE(capped(q1.pid()), 2);
+        QCOMPARE(notices.size(), 2);
+        QCOMPARE(notices.last().first().toString(), said.arg(q2.pid()));
+        QCOMPARE(fifoThreads(q1.pid()) + fifoThreads(q2.pid()), 0);
+        QCOMPARE(hs.realtimeOff(), QString());
+    }
+
+    void onlineCpus()
+    {
+        const QString sys = m_root + "/sys";
+        QCOMPARE(HostSettings::onlineCpus(sys), 4);
+        writeFile(sys + "/devices/system/cpu/online", "0-1,3,8-11\n");
+        QCOMPARE(HostSettings::onlineCpus(sys), 7);
+        /* unreadable or not a list: the cpuN folders (two here) */
+        writeFile(sys + "/devices/system/cpu/online", "0-x\n");
+        QCOMPARE(HostSettings::onlineCpus(sys), 2);
+        QFile::remove(sys + "/devices/system/cpu/online");
+        QCOMPARE(HostSettings::onlineCpus(sys), 2);
+        QCOMPARE(HostSettings::onlineCpus(m_root + "/nothing"), 1);
     }
 
     /* What can be told without root, before any VM ran */

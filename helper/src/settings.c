@@ -527,6 +527,25 @@ static bool online_has(const struct online *o, unsigned cpu)
     return o->all || (cpu < 65536 && (o->bits[cpu / 8] >> (cpu % 8) & 1));
 }
 
+int online_cpus(void)
+{
+    static struct online o;
+    unsigned *ids = NULL;
+    int n = 0;
+
+    online_read(&o);
+    if (!o.all) {
+        for (size_t i = 0; i < sizeof(o.bits); i++) {
+            n += __builtin_popcount(o.bits[i]);
+        }
+        return n;
+    }
+    /* the list unknown: every CPU the kernel has a folder for */
+    n = cpu_dirs(CPU_DIR, &ids);
+    free(ids);
+    return n > 0 ? n : 1;
+}
+
 /* A sched_ext scheduler runs (or is starting or stopping): its tasks are
    the ext server's, not the fair server's */
 static bool sched_ext_active(void)

@@ -68,7 +68,9 @@ static QByteArray od(int min, int max, int lo = 800, int hi = 2700)
 class FakeQemu
 {
 public:
-    FakeQemu(const QString &program = FAKE_QEMU, const QStringList &extraEnv = {})
+    /* @arguments: its command line, which only /proc shows (an -smp) */
+    FakeQemu(const QString &program = FAKE_QEMU, const QStringList &extraEnv = {},
+             const QStringList &arguments = {})
     {
         if (!extraEnv.isEmpty()) {
             QProcessEnvironment env = QProcessEnvironment::systemEnvironment();
@@ -77,7 +79,7 @@ public:
             }
             m_process.setProcessEnvironment(env);
         }
-        m_process.start(program, program.endsWith("sleep") ? QStringList{"300"} : QStringList{});
+        m_process.start(program, program.endsWith("sleep") ? QStringList{"300"} : arguments);
         m_process.waitForStarted();
         /* its threads */
         QTest::qWait(50);
@@ -852,11 +854,12 @@ private slots:
         QVERIFY(h.answer("rt " + qemu.pidText()).startsWith("skip rt "));
     }
 
-    /* Offline CPUs run nothing, and the kernel refuses their writes: left out */
+    /* Offline CPUs run nothing, and the kernel refuses their writes: left out
+       (one vCPU: real-time on the three left) */
     void offlineCpus()
     {
         writeFile(path("/sys/devices/system/cpu/online"), "0-1,3\n");
-        FakeQemu qemu;
+        FakeQemu qemu(FAKE_QEMU, {"FAKE_QEMU_VCPUS=1"});
         Helper h(m_root);
         QVERIFY(h.ready());
         h.answer("watch " + qemu.pidText());
@@ -1297,6 +1300,102 @@ private slots:
         for (const QString &tid : tids(qemu.pid())) {
             QCOMPARE(schedOf(tid), QString("0 0 0"));
         }
+        QCOMPARE(stateFiles(), QStringList({"lock"}));
+    }
+
+    /*
+     * More vCPUs than half the online CPUs: never real-time, in front too
+     * (a 16-vCPU VM froze a 16-thread desktop), but lowered as a VM behind:
+     * its vCPUs at nice -5, said once in the journal.  Half of them is
+     * real-time.  What rt made real-time goes back when it is capped again.
+     */
+    void realtimeCap()
+    {
+        setOnline("0-2");
+        FakeQemu qemu;
+        Helper h(m_root);
+        QVERIFY(h.ready());
+        h.answer("watch " + qemu.pidText());
+        QVERIFY(h.answer("fair-server on").startsWith("ok fair-server on"));
+        const QStringList cpus = vcpus(qemu.pid());
+        QCOMPARE(cpus.size(), 2);
+        const QString capped = QString("skip rt %1: 2 vCPUs, more than half of the 3 online cpus: "
+                                       "behind instead (%2 threads ordinary, %3 vCPUs at nice -5)")
+                                   .arg(qemu.pid());
+        QCOMPARE(h.answer("rt " + qemu.pidText()), capped.arg(0).arg(2));
+        for (const QString &tid : tids(qemu.pid())) {
+            QCOMPARE(schedOf(tid), cpus.contains(tid) ? QString("0 0 -5") : QString());
+        }
+        /* asked again (its window in front again): nothing more, logged once */
+        QCOMPARE(h.answer("rt " + qemu.pidText()), capped.arg(0).arg(0));
+        QCOMPARE(journal().filter("not made real-time: 2 vCPUs, more than half of the 3 online "
+                                  "cpus").size(), 1);
+        /* a CPU online again: 2 of 4, real-time */
+        setOnline("0-3");
+        QCOMPARE(h.answer("rt " + qemu.pidText()),
+                 QString("ok rt %1: 4 of 4 threads real-time").arg(qemu.pid()));
+        /* and offline: what rt made real-time back, the vCPUs at nice -5 still */
+        setOnline("0-2");
+        QCOMPARE(h.answer("rt " + qemu.pidText()), capped.arg(4).arg(0));
+        for (const QString &tid : tids(qemu.pid())) {
+            QCOMPARE(schedOf(tid), QString("0 0 %1").arg(cpus.contains(tid) ? -5 : 0));
+        }
+        QCOMPARE(journal().filter("not made real-time").size(), 2);
+        h.ask("release");
+        QVERIFY(h.finished());
+        QVERIFY(h.all().contains(QString("restored rt %1: 0 threads back to SCHED_OTHER, vCPUs back "
+                                         "to nice 0").arg(qemu.pid())));
+        for (const QString &tid : tids(qemu.pid())) {
+            QCOMPARE(schedOf(tid), QString("0 0 0"));
+        }
+        QCOMPARE(stateFiles(), QStringList({"lock"}));
+    }
+
+    /*
+     * No thread named as a vCPU (QEMU without debug-threads=on): its -smp
+     * counts, as QEMU works it out.  Capped, nothing is made real-time, and
+     * no thread gets the nice: none is known to be a vCPU.
+     */
+    void realtimeCapBySmp_data()
+    {
+        QTest::addColumn<QStringList>("arguments");
+        QTest::addColumn<int>("count");    // 0: real-time
+        QTest::newRow("its count first") << QStringList{"-smp", "3,sockets=1,cores=3,threads=1"} << 3;
+        QTest::newRow("cpus=") << QStringList{"-smp", "cpus=3"} << 3;
+        QTest::newRow("the levels' product") << QStringList{"-smp", "sockets=1,cores=2,threads=2"}
+                                             << 4;
+        QTest::newRow("maxcpus= without cpus=") << QStringList{"-smp", "maxcpus=3"} << 3;
+        QTest::newRow("the last one") << QStringList{"-smp", "1", "--smp", "3"} << 3;
+        QTest::newRow("half") << QStringList{"-smp", "2,maxcpus=8"} << 0;
+        QTest::newRow("no -smp: one") << QStringList{"-m", "1G"} << 0;
+    }
+    void realtimeCapBySmp()
+    {
+        QFETCH(QStringList, arguments);
+        QFETCH(int, count);
+        FakeQemu qemu(FAKE_QEMU, {"FAKE_QEMU_UNNAMED=1"}, arguments);
+        QVERIFY(vcpus(qemu.pid()).isEmpty());
+        Helper h(m_root);
+        QVERIFY(h.ready());
+        h.answer("watch " + qemu.pidText());
+        QVERIFY(h.answer("fair-server on").startsWith("ok fair-server on"));
+        const QString rt = h.answer("rt " + qemu.pidText());
+        if (!count) {
+            QCOMPARE(rt, QString("ok rt %1: 4 of 4 threads real-time").arg(qemu.pid()));
+            return;
+        }
+        QCOMPARE(rt, QString("skip rt %1: %2 vCPUs, more than half of the 4 online cpus: behind "
+                             "instead (0 threads ordinary, 0 vCPUs at nice -5)")
+                         .arg(qemu.pid())
+                         .arg(count));
+        for (const QString &tid : tids(qemu.pid())) {
+            QCOMPARE(schedOf(tid), QString());
+        }
+        QVERIFY(journal().join('\n').contains(
+            QString("not made real-time: %1 vCPUs (its -smp), more than half of the 4 online cpus")
+                .arg(count)));
+        h.ask("release");
+        QVERIFY(h.finished());
         QCOMPARE(stateFiles(), QStringList({"lock"}));
     }
 

@@ -2,8 +2,11 @@
 /*
  * A stand-in for QEMU in the tests: named qemu-system-x86_64, a few idle
  * threads - two named as QEMU names its vCPUs with debug-threads=on, "CPU
- * 0/KVM" and "CPU 1/KVM" - runs until signalled or until its stdin ends;
- * SIGUSR1 makes it exec sleep, a program that is no QEMU.  With
+ * 0/KVM" and "CPU 1/KVM" (FAKE_QEMU_VCPUS=N: N of them), and a worker -
+ * runs until signalled or until its stdin ends; SIGUSR1 makes it exec
+ * sleep, a program that is no QEMU.  FAKE_QEMU_UNNAMED=1 names no thread,
+ * as QEMU without debug-threads=on; its arguments (an -smp) are only for
+ * /proc/PID/cmdline.  With
  * FAKE_QEMU_RTTIME=US, it sets its own real-time time limit (RLIMIT_RTTIME)
  * to US first, as PipeWire's module-rt does in QEMU when RTKit gives its
  * audio thread real-time.  With FAKE_QEMU_HOLD=PATH it has PATH "open" as
@@ -20,6 +23,7 @@
 #include <pthread.h>
 #include <stdio.h>
 #include <stdlib.h>
+#include <string.h>
 #include <signal.h>
 #include <fcntl.h>
 #include <sys/file.h>
@@ -45,6 +49,9 @@ int main(void)
 {
     const char *rttime = getenv("FAKE_QEMU_RTTIME");
     const char *hold = getenv("FAKE_QEMU_HOLD");
+    const char *vcpus = getenv("FAKE_QEMU_VCPUS");
+    const char *unnamed = getenv("FAKE_QEMU_UNNAMED");
+    const int nvcpus = vcpus ? atoi(vcpus) : 2;
     pthread_t t;
     ssize_t n;
     char c;
@@ -64,14 +71,16 @@ int main(void)
         }
     }
     signal(SIGUSR1, become_sleep);
-    for (int i = 0; i < 3; i++) {
+    for (int i = 0; i <= nvcpus; i++) {
         char name[16];
 
         pthread_create(&t, NULL, idle, NULL);
-        snprintf(name, sizeof(name), i < 2 ? "CPU %d/KVM" : "worker", i);
-        pthread_setname_np(t, name);
+        snprintf(name, sizeof(name), i < nvcpus ? "CPU %d/KVM" : "worker", i);
+        if (!unnamed || strcmp(unnamed, "1") != 0) {
+            pthread_setname_np(t, name);
+        }
     }
-    /* on the main thread: the tests count 4 threads */
+    /* on the main thread: the tests count 4 threads (2 + 2) */
     for (;;) {
         n = read(STDIN_FILENO, &c, 1);
         if (n == 0 || (n < 0 && errno != EINTR)) {

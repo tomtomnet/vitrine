@@ -231,6 +231,35 @@ QString HostSettings::realtimeOff() const
     return m_realtimeKnown ? m_realtimeOff : realtimeLimit(m_sysRoot);
 }
 
+int HostSettings::onlineCpus(const QString &sysRoot)
+{
+    static const QRegularExpression range("^(\\d+)(?:-(\\d+))?$");
+    static const QRegularExpression cpu("^cpu\\d+$");
+    QFile f(sysRoot + "/devices/system/cpu/online");
+    const QString list = f.open(QIODevice::ReadOnly) ? QString::fromLatin1(f.readAll()).trimmed()
+                                                     : QString();
+    int n = 0;
+
+    /* "0-3,8-11", as the helper reads it */
+    for (const QString &part : list.split(',', Qt::SkipEmptyParts)) {
+        const QRegularExpressionMatch m = range.match(part);
+        const int first = m.captured(1).toInt();
+        const int last = m.captured(2).isEmpty() ? first : m.captured(2).toInt();
+        if (!m.hasMatch() || last < first) {
+            n = 0;
+            break;
+        }
+        n += last - first + 1;
+    }
+    if (n == 0) {
+        for (const QString &entry :
+             QDir(sysRoot + "/devices/system/cpu").entryList(QDir::Dirs | QDir::NoDotAndDotDot)) {
+            n += cpu.match(entry).hasMatch();
+        }
+    }
+    return qMax(n, 1);
+}
+
 /*
  * QEMU shows the VM in windows of its own: SDL's or GTK's, or the nested
  * desktop's own windows (QEMU's cross-domain is their Wayland client).
@@ -878,6 +907,8 @@ void HostSettings::handleLine(const QString &line)
 {
     static const QStringList protocol{"ready", "ok",       "skip", "error",
                                       "exited", "restored", "left", "bye"};
+    static const QRegularExpression capped(
+        "^skip rt (\\d+): (\\d+) vCPUs, more than half of the (\\d+) online cpus");
     const QString word = line.section(' ', 0, 0);
 
     emit helperLine(line);
@@ -898,15 +929,9 @@ void HostSettings::handleLine(const QString &line)
         /* a VM that ended at once is no news; one the helper would not take
            (another program than QEMU) runs untuned */
         if (word == "error" && alive(pid)) {
-            QString name = tr("process %1").arg(pid);
-            for (Vm *vm : m_store ? m_store->vms() : QList<Vm *>()) {
-                if (m_tuned.value(vm->id()) == pid) {
-                    name = vm->name();
-                }
-            }
             setUntuned(pid, {Problem::Failed,
                              tr("vitrine-helper does not take %1: %2")
-                                 .arg(name, line.section(':', 1).trimmed())});
+                                 .arg(vmName(pid), line.section(':', 1).trimmed())});
         }
         m_expected.remove(pid);
         /* no longer in front; a VM left alone comes to the front */
@@ -938,6 +963,12 @@ void HostSettings::handleLine(const QString &line)
             say(tr("Host tuning: the threads of the VM view stay ordinary: %1.")
                     .arg(line.section(':', 1).trimmed()));
         }
+    } else if (const QRegularExpressionMatch m = capped.match(line); m.hasMatch()) {
+        /* more processors than half of the CPUs: the helper lowered it as
+           a VM behind, in front too */
+        say(tr("Host tuning: %1 has %2 processors, more than half of this computer's %3: it runs "
+               "without real-time threads, even in front.")
+                .arg(vmName(m.captured(1).toLongLong()), m.captured(2), m.captured(3)));
     } else if (line.startsWith("skip rt ")) {
         /* no real-time threads without the fair server: its line said why */
     } else if ((line.startsWith("error rt ") || line.startsWith("error behind ")) &&
@@ -973,6 +1004,16 @@ void HostSettings::handleLine(const QString &line)
         /* "skip gpu-floor card1: no overdrive clock table (pp_od_clk_voltage)" */
         say(tr("Host tuning: %1").arg(line.section(' ', 1)));
     }
+}
+
+QString HostSettings::vmName(qint64 pid) const
+{
+    for (Vm *vm : m_store ? m_store->vms() : QList<Vm *>()) {
+        if (m_tuned.value(vm->id()) == pid) {
+            return vm->name();
+        }
+    }
+    return tr("process %1").arg(pid);
 }
 
 void HostSettings::udmabufLine(const QString &line)

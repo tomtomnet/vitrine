@@ -120,10 +120,26 @@ HostTuningText::Box HostTuningText::setUpDone(const HostSettings::Status &now)
                 "</p><p>" + fix(now) + "</p>"};
 }
 
-QString HostTuningPrefsText::active(const QString &realtime)
+QString HostTuningPrefsText::active(const QString &realtime, int cpus)
 {
-    return tr("Active: vitrine-helper may tune the host without a password.") +
-           (realtime.isEmpty() ? QString() : ' ' + realtime.toHtmlEscaped());
+    const QString text = tr("Active: vitrine-helper may tune the host without a password.");
+
+    if (!realtime.isEmpty()) {
+        return text + ' ' + realtime.toHtmlEscaped();
+    }
+    /* the helper's rule: more processors than half of the CPUs online, and a
+       busy guest would hold most of the computer at real-time priority */
+    if (cpus < 2) {
+        return text + ' ' + tr("With one CPU, VMs run without real-time threads.");
+    }
+    return text + ' ' +
+           (cpus / 2 == 1 ? tr("VMs with more than 1 processor, half of this computer's %1, run "
+                               "without real-time threads.")
+                                .arg(cpus)
+                          : tr("VMs with more than %1 processors, half of this computer's %2, run "
+                               "without real-time threads.")
+                                .arg(cpus / 2)
+                                .arg(cpus));
 }
 
 QString HostTuningPrefsText::notActive(const HostSettings::Status &status)
