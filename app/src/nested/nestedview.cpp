@@ -22,10 +22,14 @@
 
 #include <wayland-client.h>
 
+#include <algorithm>
 #include <cerrno>
+#include <cstdio>
+#include <cstdlib>
 #include <cstring>
 #include <utility>
 
+#include <dirent.h>
 #include <sys/mman.h>
 #include <unistd.h>
 
@@ -86,6 +90,42 @@ wl_surface *qtSurface(QWindow *window)
     auto *w = window ? window->nativeInterface<QNativeInterface::Private::QWaylandWindow>()
                      : nullptr;
     return w ? w->surface() : nullptr;
+}
+
+/* A thread of this process, still there */
+bool threadAlive(qint64 tid)
+{
+    return tid > 0 && access(("/proc/self/task/" + QByteArray::number(tid)).constData(), F_OK) == 0;
+}
+
+/*
+ * Qt's readers of its display, by id: QtWaylandClient's event threads (the
+ * default queue's, whose events the GUI thread then dispatches, and the
+ * frame callbacks' queue's), which Qt names after their class - Linux keeps
+ * its first 15 characters
+ */
+QList<qint64> qtWaylandReaders()
+{
+    QList<qint64> tids;
+    DIR *dir = opendir("/proc/self/task");
+
+    if (!dir) {
+        return tids;
+    }
+    while (const dirent *entry = readdir(dir)) {
+        char *end = nullptr;
+        const long long tid = strtoll(entry->d_name, &end, 10);
+        if (tid <= 0 || *end) {
+            continue;
+        }
+        QFile comm(QString("/proc/self/task/%1/comm").arg(tid));
+        if (comm.open(QIODevice::ReadOnly) && comm.readAll().trimmed() == "QtWaylandClient") {
+            tids << tid;
+        }
+    }
+    closedir(dir);
+    std::sort(tids.begin(), tids.end());
+    return tids;
 }
 
 /* Ctrl+Alt+F, as on the VM's screen */
@@ -186,7 +226,10 @@ bool NestedView::init(const QString &socket, QString *error)
     };
     cb.connection = [](void *data, int count) {
         auto *self = static_cast<NestedView *>(data);
-        QMetaObject::invokeMethod(self, [self, count]() {
+        /* the library's thread, which the callbacks run on: the first comes as the guest connects */
+        const qint64 tid = gettid();
+        QMetaObject::invokeMethod(self, [self, count, tid]() {
+            self->libraryThread(tid);
             if (count != self->m_connections) {
                 self->m_connections = count;
                 Q_EMIT self->connectionsChanged(count);
@@ -394,6 +437,46 @@ bool NestedView::isMapped() const
 QString NestedView::title() const
 {
     return m_title;
+}
+
+QList<qint64> NestedView::threads() const
+{
+    return m_threads;
+}
+
+void NestedView::libraryThread(qint64 tid)
+{
+    if (tid == m_libraryTid) {
+        return;
+    }
+    m_libraryTid = tid;
+    /* Qt's, there since its display was made */
+    m_readers = qtWaylandReaders();
+    updateThreads();
+}
+
+void NestedView::updateThreads()
+{
+    QList<qint64> now;
+    QByteArray line = "vitrine: desktop: threads:";
+
+    if (threadAlive(m_libraryTid)) {
+        now << m_libraryTid;
+        line += " library=" + QByteArray::number(m_libraryTid);
+        for (const qint64 tid : std::as_const(m_readers)) {
+            if (threadAlive(tid)) {
+                now << tid;
+                line += " reader=" + QByteArray::number(tid);
+            }
+        }
+    }
+    if (now == m_threads) {
+        return;
+    }
+    m_threads = now;
+    /* as it is, for benches: not through Qt's message pattern */
+    fprintf(stderr, "%s\n", line.constData());
+    Q_EMIT threadsChanged();
 }
 
 /*

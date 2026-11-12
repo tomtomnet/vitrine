@@ -99,11 +99,19 @@ public:
         m_mapped = on;
         Q_EMIT mappedChanged(on);
     }
+    /* Its library's thread showed, as the guest connected: with Qt's two readers */
+    void libraryThread(qint64 tid)
+    {
+        m_threads = {tid, 77, 78};
+        Q_EMIT threadsChanged();
+    }
+    QList<qint64> threads() const override { return m_threads; }
 
 private:
     QString m_socket;
     QWidget *m_widget;
     bool m_mapped = false;
+    QList<qint64> m_threads;
 };
 
 /* XKB's keycodes of the keys 1, 2, 3 above the letters, and of A, F, KP_1, KP_3 */
@@ -259,6 +267,14 @@ private slots:
         auto *desktop = qobject_cast<StandInDesktop *>(console.nestedView());
         QVERIFY(desktop);
         QCOMPARE(console.currentView(), View::Screen);
+        /* its threads for real time with the VM in front, once its library's
+           thread shows; none with VITRINE_VIEW_RT=0 */
+        QVERIFY(console.realtimeThreads().isEmpty());
+        desktop->libraryThread(4242);
+        QCOMPARE(console.realtimeThreads(), (QList<qint64>{4242, 77, 78}));
+        qputenv("VITRINE_VIEW_RT", "0");
+        QVERIFY(console.realtimeThreads().isEmpty());
+        qunsetenv("VITRINE_VIEW_RT");
         /* the one card's console */
         QCOMPARE(NestedDesktop::screenConsole(vm->runner()->runArgs()), 0);
         QTRY_VERIFY(peer);
@@ -294,6 +310,10 @@ private slots:
         desktop = qobject_cast<StandInDesktop *>(console.nestedView());
         QVERIFY(desktop);
         QCOMPARE(desktop->socket(), runDir + "/nested.sock");
+        /* the new view's threads only, once its library's thread shows */
+        QVERIFY(console.realtimeThreads().isEmpty());
+        desktop->libraryThread(4343);
+        QCOMPARE(console.realtimeThreads(), (QList<qint64>{4343, 77, 78}));
         /* the next boot's session, then a logout: its login screen */
         desktop->guestMaps(true);
         QCOMPARE(console.currentView(), View::Desktop);

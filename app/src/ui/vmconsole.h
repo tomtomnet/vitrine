@@ -91,6 +91,14 @@ public:
     bool serveNested(const QString &socket, QString *error);
     /* Tests: their stand-in for the guest's desktop's view; empty for NestedView */
     static void setDesktopViewFactory(const DesktopView::Factory &factory);
+    /*
+     * The threads of its views for real time while the VM is in front
+     * (HostSettings::setViewThreads), while the guest's desktop is served:
+     * the desktop's (NestedView: the library's, Qt's readers of the display)
+     * and the screen's reader, another reader its reads wait for; none with
+     * VITRINE_VIEW_RT=0, nor without the desktop
+     */
+    QList<qint64> realtimeThreads() const;
 
 signals:
     void startRequested();
@@ -114,6 +122,8 @@ private:
     void renewNested();
     /* The view of m_views: its page, the keys */
     void applyView();
+    /* realtimeThreads() to HostSettings */
+    void sendViewThreads();
     void showMessage(const QString &title, const QString &text, const QString &button = {});
     void setPage(Page page);
 

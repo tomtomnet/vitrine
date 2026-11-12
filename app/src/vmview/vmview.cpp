@@ -30,6 +30,7 @@
 #include <QWidget>
 
 #include <cerrno>
+#include <cstdio>
 #include <cstring>
 #include <utility>
 #include <vector>
@@ -326,6 +327,11 @@ QWidget *VmView::widget() const
     return m_host;
 }
 
+qint64 VmView::readerThread() const
+{
+    return m_readerTid;
+}
+
 bool VmView::isFullScreen() const
 {
     return m_fullScreen;
@@ -340,6 +346,17 @@ void VmView::createWindow(bool fullScreen)
        elsewhere they go to the window's own, as the research client has them) */
     if (m_wayland) {
         m_surface = ViewSurface::create(m_window);
+    }
+    /* its renderer's reader, as it starts (not one of a window gone since) */
+    if (m_surface) {
+        connect(m_surface, &ViewSurface::readerStarted, this,
+                [this, window = ++m_windowGeneration](qint64 tid) {
+            if (window == m_windowGeneration && tid != m_readerTid) {
+                m_readerTid = tid;
+                fprintf(stderr, "vitrine: display: threads: events=%lld\n", tid);
+                Q_EMIT threadsChanged();
+            }
+        }, Qt::QueuedConnection);
     }
     if (!m_guestSize.isEmpty()) {
         m_window->setGuestSize(uint32_t(m_guestSize.width()), uint32_t(m_guestSize.height()));
