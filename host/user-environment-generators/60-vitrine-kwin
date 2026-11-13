@@ -15,7 +15,8 @@
 # On an RX 6900 XT at 240 Hz KWrite's keys showed 2.7 ms sooner (12.7 ->
 # 10.0 ms), the launcher's first frames 3 ms sooner, and the nested desktop
 # in a window 10.8 -> 8.6 ms, KDE's animations as long and as smooth (the
-# research, 2026-11-12).  Not measured on other GPUs, nor at 60-120 Hz.
+# research, 2026-11-12); on an Arc Pro B50 KWrite 1.6 ms sooner, nothing
+# worse (2026-11-13).  Not measured on other GPUs, nor at 60-120 Hz.
 # KWIN_LONE_FRAME_LEAD_US= (empty) in ~/.config/environment.d turns it off,
 # `echo off > $XDG_RUNTIME_DIR/kwin-lone-frame` at once.
 #

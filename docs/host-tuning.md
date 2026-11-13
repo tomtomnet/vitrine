@@ -509,8 +509,11 @@ ignores the variable. On an RX 6900 XT at 240 Hz, KWrite's keys showed 2.7
 ms sooner (10.0 ms instead of 12.7), the launcher's first frames 3 ms
 sooner, and the nested desktop in a window answered keys in 8.6 ms instead
 of 10.8, while KDE's animations stayed as long and as smooth (the
-research, 2026-11-12). It has not been measured on other GPUs, nor at 60
-or 120 Hz.
+research, 2026-11-12). On an Arc Pro B50 at 240 Hz it does less, and
+nothing measured got worse: KWrite's keys 1.6 ms sooner, the launcher's
+opening 1-2 ms sooner, the nested desktop in a window 0.4 ms at most, KDE's
+animations alike (2026-11-13). It has not been measured on other GPUs, nor
+at 60 or 120 Hz.
 
 `KWIN_LONE_FRAME_LEAD_US=` (empty) in a file of `~/.config/environment.d`
 turns it off from the next login, and
