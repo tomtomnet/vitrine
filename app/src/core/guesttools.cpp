@@ -30,8 +30,8 @@ const int kStatsProtocol = 2;
 
 QStringList releases()
 {
-    /* Fedora 45's medium has the tools and Mesa; the KDE packages are Fedora
-       44's for now (guest/components.conf's releases=) */
+    /* Each one's medium has the tools, Mesa and the KDE packages; Mutter is
+       Fedora 45's (guest/components.conf's releases=) */
     return {QStringLiteral("44"), QStringLiteral("45")};
 }
 

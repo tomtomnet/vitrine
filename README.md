@@ -135,24 +135,24 @@ files it changes, and the guest packages compile through ccache.
    applies those you pick, while the VM is off, after saving a dated copy of
    `vm.args` beside it. Undo puts the lines back.
 3. **Guest tools** for Fedora 44 and 45 x86-64 guests, a medium for each
-   release. Fedora 44's: virtio-gpu driver, Mesa 26.2.6, KWin (with the
-   KWayland it is built against) and KPipeWire for Plasma 6.8.2, Qt Base
-   6.11.2, KSvg and Kirigami 6.31.0, the nested desktop's session and proxy,
-   an agent. Fedora 45's has the driver, Mesa, Mutter 51.1 and the agent, no
-   KDE packages yet: a Plasma guest keeps Fedora's KWin. Their Mesa has every
-   video codec, as RPM Fusion's builds have and Fedora's has not (H.264, H.265,
-   VC-1), and takes the place of RPM Fusion's freeworld drivers.
+   release, for GNOME and KDE Plasma guests alike: each guest installs the
+   packages of its desktop. Both have the virtio-gpu driver, Mesa 26.2.6, KWin
+   (with the KWayland it is built against) and KPipeWire for Plasma 6.8.2, Qt
+   Base 6.11.2, KSvg and Kirigami 6.31.0, the nested desktop's session and
+   proxy, and an agent; Fedora 45's also has Mutter 51.1 (Fedora 44's GNOME
+   has Mutter 50, which the research's set is not made for). Their Mesa has
+   every video codec, as RPM Fusion's builds have and Fedora's has not (H.264,
+   H.265, VC-1), and takes the place of RPM Fusion's freeworld drivers.
    The Builds window (also Build… in Machine > Install Guest Tools… and in
    Preferences) shows the guest tools of one release in full (at first the
    newest one the VMs run; a VM's Install Guest Tools… its own) and the other
    releases by their medium: selecting one shows that release's instead. It
    builds those of the release shown, in a Fedora container of that release
    with rootless podman, then makes the medium VMs install them from: 40 to
-   70 minutes the first time for Fedora 44 (Mesa ~15-25 min, Qt Base ~15,
-   KWin ~10, Kirigami ~3, the proxy, KWayland, KPipeWire and KSvg ~2 each,
-   tools ~1), 15 to 30 for Fedora 45 (Mutter ~3), up to 10 GiB of memory.
-   Mesa, Qt Base and KWin wait until that much is free, unless told to
-   build anyway.
+   70 minutes the first time (Mesa ~15-25 min, Qt Base ~15, KWin ~10,
+   Kirigami ~3, Mutter ~3 for Fedora 45, the proxy, KWayland, KPipeWire and
+   KSvg ~2 each, tools ~1), up to 10 GiB of memory. Mesa, Qt Base and KWin
+   wait until that much is free, unless told to build anyway.
    `guest/build-rpms.sh` then `guest/build-medium.sh`, with
    `FEDORA_RELEASE=45` for Fedora 45, do the same by hand, which vitrine
    takes in the same way.

@@ -20,8 +20,8 @@
 # A package is a folder of guest/ with its spec; components.conf gives
 # their order (the app's Builds window shows them from there), and with a
 # releases= line the Fedora releases a package is built for (every one
-# without it): the KDE packages are Fedora 44's for now, Mutter Fedora
-# 45's.  A deps= line names the packages it is built against: their
+# without it): Mutter is Fedora 45's (Fedora 44 has Mutter 50), the
+# others every release's.  A deps= line names the packages it is built against: their
 # packages of this run's builds go into its container before its build
 # requirements, and their keys into its inputs (a "dep PACKAGE HASH" line
 # each, as host/build.sh's), so that a new build of one builds it again;

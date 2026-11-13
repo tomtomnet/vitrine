@@ -165,13 +165,18 @@ private slots:
             }
             return ids;
         };
-        /* the KDE packages are Fedora 44's, Mutter Fedora 45's (guest/components.conf) */
+        /* the KDE packages every release's, Mutter Fedora 45's (guest/components.conf) */
         places.guestRelease = "45";
         m.setPlaces(places);
         QCOMPARE(m.guestRelease(), "45");
-        QCOMPARE(guestIds(), QStringList({"tools", "mesa", "mutter", "medium"}));
-        QCOMPARE(m.component("medium").deps, QStringList({"tools", "mesa", "mutter"}));
-        QCOMPARE(m.plan({"medium"}), QStringList({"tools", "mesa", "mutter", "medium"}));
+        QCOMPARE(guestIds(), QStringList({"tools", "mesa", "kwayland", "kwin", "proxy", "kpipewire",
+                                          "qtbase", "ksvg", "kirigami", "mutter", "medium"}));
+        QCOMPARE(m.component("medium").deps,
+                 QStringList({"tools", "mesa", "kwayland", "kwin", "proxy", "kpipewire", "qtbase",
+                              "ksvg", "kirigami", "mutter"}));
+        QCOMPARE(m.plan({"medium"}),
+                 QStringList({"tools", "mesa", "kwayland", "kwin", "proxy", "kpipewire", "qtbase",
+                              "ksvg", "kirigami", "mutter", "medium"}));
 
         QSignalSpy changed(&m, &BuildManager::guestReleaseChanged);
         QVERIFY(m.setGuestRelease("44"));

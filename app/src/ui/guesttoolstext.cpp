@@ -197,7 +197,8 @@ QString what(Vm *vm, const GuestTools::Medium &medium)
     }
     what += tr("<li>the vitrine agent, which tells vitrine how the guest is "
                                  "doing</li></ul>");
-    /* what stays at its version: of what the medium has (Fedora 45's has no KDE packages) */
+    /* what stays at its version: of what the medium has (an older one may have no KDE
+       packages) */
     const bool kdePackages = !medium.kwin.isEmpty() || !medium.kpipewire.isEmpty() ||
                              !medium.qtbase.isEmpty() || !medium.ksvg.isEmpty() ||
                              !medium.kirigami.isEmpty();
