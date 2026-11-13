@@ -27,12 +27,14 @@ class BuildManager;
  *    QEMU: virglrenderer, rutabaga_gfx, passt, QEMU; the guest tools of a
  *    Fedora release: their packages and the medium; the host's desktop,
  *    where offered: KWin, KSvg, Kirigami, Qt base), each with its state,
- *    a spinner while it builds;
+ *    a spinner while it builds; the guest tools of the other releases
+ *    beside, the newest first, each by its medium alone: selecting it
+ *    shows that release's instead (not during a run);
  *  - the Overview: the run (what builds, how far, Stop) or what there is
  *    to build (Update All), each group's components with their state and
  *    when they were built, the group's Build (and the host desktop's
- *    Install All…), the guest tools' Fedora release, what the host lacks
- *    for the builds, the build cache and Clear…;
+ *    Install All…), the other releases' media, what the host lacks for
+ *    the builds, the build cache and Clear…;
  *  - a component: Build or Update, Stop, a host package's Install… and
  *    Revert…, Build from Scratch, its output folder; its Overview (its state
  *    and why, where it comes from), its patches by origin (their text on
@@ -100,7 +102,14 @@ private:
         AdwPreferencesGroup *box;
         GtkWidget *build;
         GtkWidget *install;     // the host desktop's Install All…
-        GtkWidget *release;     // the guest tools' Fedora release
+    };
+    /* The guest tools of another release, by their medium */
+    struct Release {
+        QString release;
+        AdwSidebarSection *section;
+        GtkWidget *state;       // beside the section's title
+        AdwPreferencesGroup *box;
+        Row row;                // on the Overview
     };
 
     void buildSidebar();
@@ -109,9 +118,15 @@ private:
     void createActions();
     /* The components again, as the sources or the guest tools' release have them */
     void fill();
+    /* Another release's guest tools, at @at of the Overview */
+    void addRelease(const QString &release, int &at);
+    /* The guest tools of Fedora @release shown instead, then @component ("" the Overview);
+       refused during a run */
+    void showRelease(const QString &release, const QString &component);
     void showSelected();
     void refreshAll();
     void refreshItem(const QString &id);
+    void refreshReleases();
     void refreshRun();
     void refreshMemory();
     void refreshMissing();
@@ -139,6 +154,7 @@ private:
     QList<Item> m_items;
     QHash<QString, Row> m_rows;
     QList<GroupBox> m_groupBoxes;
+    QList<Release> m_releases;
     QHash<QString, qint64> m_sizes;
     qint64 m_cacheSize = -1;
     gint64 m_detailsShown = 0;

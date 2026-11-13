@@ -33,6 +33,14 @@ Group groupNamed(const QString &id);
 QString groupTitle(Group group, const QString &guestRelease);
 /* The groups that have components, in build order */
 QList<Group> groups(const BuildManager &m);
+/*
+ * The guest tools of another release than the one whose components show
+ * (BuildManager::otherGuestReleases()), by their medium: the id of its item
+ * ("release:44"), and back ("44"; empty for any other id); how it stands,
+ * when it was made
+ */
+QString releaseId(const QString &release);
+QString releaseOf(const QString &id);
 QStringList componentsOf(const BuildManager &m, Group group);
 
 /* "QEMU 11.1.50", "Mesa 26.2.3": what is built, else what its sources make; the medium's title */
@@ -56,8 +64,10 @@ struct Status {
     double fraction = -1;   // while it builds and tells how far, 0 to 1
 };
 Status status(const BuildManager &m, const QString &id);
+Status releaseStatus(const BuildManager &m, const QString &release);
 /* When what is built was: a short date, and a long one with the time; empty if none */
 QString built(const BuildManager &m, const QString &id, bool longFormat = false);
+QString releaseBuilt(const BuildManager &m, const QString &release, bool longFormat = false);
 /* A group's: Building, Failed, Up to date, Not built, Out of date; the Host Desktop's
    what Vitrine installed of it, else Optional */
 QString groupStatus(const BuildManager &m, Group group);

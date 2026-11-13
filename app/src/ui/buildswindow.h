@@ -11,7 +11,6 @@
 
 class Banner;
 class BuildManager;
-class QComboBox;
 namespace Builds {
 struct Component;
 }
@@ -26,13 +25,15 @@ class QTreeWidgetItem;
 /*
  * The builds of what Vitrine builds (BuildManager), in one window, not
  * modal: Vitrine's QEMU (virglrenderer, rutabaga_gfx, passt, QEMU), the guest
- * tools (their packages and the medium) and, optional, the host's desktop
- * (the host's KWin, KSvg, Kirigami and Qt base), each with its state and
- * why, when it was built and how long a build of it takes; the selected
- * one's source, patches by origin (their text on demand) and log.  Build
- * for the selected one, Update All for what is out of date, Stop; Install…
- * and Revert… for a host package; the cache's size, and Clear.  The builds
- * go on when it closes.
+ * tools of a Fedora release (their packages and the medium) and, optional,
+ * the host's desktop (the host's KWin, KSvg, Kirigami and Qt base), each
+ * with its state and why, when it was built and how long a build of it
+ * takes; the selected one's source, patches by origin (their text on
+ * demand) and log.  The guest tools of the other releases beside, the
+ * newest first, each in a row of its medium's state: selected, that
+ * release's show instead (not during a run).  Build for the selected one,
+ * Update All for what is out of date, Stop; Install… and Revert… for a host
+ * package; the cache's size, and Clear.  The builds go on when it closes.
  */
 class BuildsWindow : public QDialog
 {
@@ -81,6 +82,8 @@ private:
     void refreshItems();
     void refreshItem(const QString &id);
     void refreshGroup(const QString &group);
+    /* The rows of the other releases' guest tools */
+    void refreshReleases();
     void showDetails();
     void showSource();
     void showPatches();
@@ -111,8 +114,6 @@ private:
     Banner *m_memory;
     QLabel *m_header;
     QLabel *m_missing;
-    /* the Fedora release of the guest tools shown (BuildManager::guestRelease()) */
-    QComboBox *m_release;
     QTreeWidget *m_tree;
     QTabWidget *m_tabs;
     QLabel *m_source;
@@ -132,6 +133,8 @@ private:
     QStringList m_installIds;
     QHash<QString, QTreeWidgetItem *> m_items;
     QHash<QString, QTreeWidgetItem *> m_groups;
+    /* the other releases' rows, by release */
+    QHash<QString, QTreeWidgetItem *> m_releases;
     QString m_shownPatches;
     QString m_shownLog;
     QHash<QString, qint64> m_sizes;

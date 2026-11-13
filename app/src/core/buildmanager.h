@@ -9,9 +9,9 @@
 #include <QStringList>
 
 #include "core/buildcomponents.h"
+#include "core/guesttoolsbuilder.h"
 #include "core/tasks.h"
 
-class GuestToolsBuilder;
 class HostKdeBuilder;
 class StackBuilder;
 
@@ -82,6 +82,19 @@ public:
      */
     QString guestRelease() const;
     bool setGuestRelease(const QString &release);
+    /*
+     * The guest tools of the other releases, besides guestRelease()'s: the
+     * newest first; none when there are no guest tools to build.  Each is
+     * known by its medium, whichever release the components are of: how it
+     * stands (GuestToolsBuilder::state(), read again with the components)
+     * and when it was made.  The media of the releases are side by side,
+     * each named by its release (GuestToolsBuilder::mediumImage()).
+     */
+    QStringList otherGuestReleases() const;
+    GuestToolsBuilder::State guestToolsState(const QString &release) const;
+    QDateTime guestToolsBuilt(const QString &release) const;
+    /* The packages of Fedora @release's guest tools: those of guest/ built for it */
+    QStringList guestPackages(const QString &release) const;
 
     QList<Builds::Component> components() const;
     /* What HostKde makes of the host package of component @id now (Builds::Places::system) */
@@ -184,6 +197,9 @@ private:
     mutable bool m_loaded = false;
     mutable QList<Builds::Component> m_components;
     mutable QHash<QString, Builds::Status> m_status;
+    /* each release's medium: how it stands, when it was made */
+    mutable QHash<QString, GuestToolsBuilder::State> m_releaseStates;
+    mutable QHash<QString, QDateTime> m_releaseBuilt;
 
     bool m_running = false;
     bool m_cancelled = false;

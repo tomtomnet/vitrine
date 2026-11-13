@@ -476,15 +476,54 @@ Status status(const BuildManager &m, const QString &id)
     return s;
 }
 
-QString built(const BuildManager &m, const QString &id, bool longFormat)
+/* A short date, or a long one with the time; empty if none */
+static QString whenText(const QDateTime &when, bool longFormat)
 {
-    const Builds::Status status = m.status(id);
-
-    if (!status.built.isValid()) {
+    if (!when.isValid()) {
         return {};
     }
-    return longFormat ? QLocale().toString(status.built.toLocalTime(), QLocale::LongFormat)
-                      : QLocale().toString(status.built.toLocalTime().date(), QLocale::ShortFormat);
+    return longFormat ? QLocale().toString(when.toLocalTime(), QLocale::LongFormat)
+                      : QLocale().toString(when.toLocalTime().date(), QLocale::ShortFormat);
+}
+
+QString built(const BuildManager &m, const QString &id, bool longFormat)
+{
+    return whenText(m.status(id).built, longFormat);
+}
+
+QString releaseBuilt(const BuildManager &m, const QString &release, bool longFormat)
+{
+    return whenText(m.guestToolsBuilt(release), longFormat);
+}
+
+QString releaseId(const QString &release)
+{
+    return "release:" + release;
+}
+
+QString releaseOf(const QString &id)
+{
+    return id.startsWith("release:") ? id.mid(8) : QString();
+}
+
+Status releaseStatus(const BuildManager &m, const QString &release)
+{
+    const GuestToolsBuilder::State state = m.guestToolsState(release);
+    Status s;
+
+    s.text = BuildTexts::releaseState(state);
+    switch (state) {
+    case GuestToolsBuilder::State::UpToDate:
+        s.look = Look::UpToDate;
+        break;
+    case GuestToolsBuilder::State::NoSources:
+        s.look = Look::Warning;
+        break;
+    default:
+        s.look = Look::ToBuild;
+        break;
+    }
+    return s;
 }
 
 QString groupStatus(const BuildManager &m, Group group)

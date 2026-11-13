@@ -5,6 +5,7 @@
 #include <QDir>
 #include <QDirIterator>
 #include <QFile>
+#include <QFileInfo>
 #include <QJsonArray>
 #include <QJsonDocument>
 #include <QJsonObject>
@@ -31,6 +32,17 @@ using Builds::Kind;
 static const int kHistory = 5;
 /* A component's log kept in memory, from its end: Mesa's alone is some 25 MB */
 static const qsizetype kMaxLog = 2 << 20;
+
+/* The medium of the guest tools of Fedora @release in @places: beside theirs, named by its
+   release as GuestToolsBuilder::mediumImage() names it */
+static QString mediumOf(const Builds::Places &places, const QString &release)
+{
+    if (release == places.guestRelease) {
+        return places.mediumImage;
+    }
+    return QFileInfo(places.mediumImage).absolutePath() + '/' +
+           QFileInfo(GuestToolsBuilder::mediumImage(release)).fileName();
+}
 
 static bool isFinal(BuildManager::State state)
 {
@@ -105,7 +117,11 @@ bool BuildManager::setGuestRelease(const QString &release)
         return false;
     }
     m_guestRelease = release;
-    /* the tests' places: the same folders, the components of the release */
+    /* the tests' places: the same folders, the components of the release, its medium beside
+       the other's */
+    if (m_placesSet) {
+        m_places.mediumImage = mediumOf(m_places, release);
+    }
     m_places.guestRelease = release;
     emit guestReleaseChanged();
     refresh();
@@ -149,9 +165,51 @@ QList<Component> BuildManager::components() const
         for (const Component &c : std::as_const(m_components)) {
             m_status.insert(c.id, Builds::status(c, m_components, places));
         }
+        /* the medium of every release: the others are shown by theirs */
+        m_releaseStates.clear();
+        m_releaseBuilt.clear();
+        for (const QString &release : GuestTools::releases()) {
+            const QString image = mediumOf(places, release);
+            m_releaseStates.insert(release,
+                                   GuestToolsBuilder::state(places.guestDir, image, release));
+            m_releaseBuilt.insert(release, GuestToolsBuilder::made(image).built);
+        }
         m_loaded = true;
     }
     return m_components;
+}
+
+QStringList BuildManager::otherGuestReleases() const
+{
+    QStringList others;
+
+    /* none without the guest tools' components: nothing to build them from */
+    if (!component("medium").isValid()) {
+        return others;
+    }
+    for (const QString &release : GuestTools::releases()) {
+        if (release != guestRelease()) {
+            others.prepend(release);
+        }
+    }
+    return others;
+}
+
+GuestToolsBuilder::State BuildManager::guestToolsState(const QString &release) const
+{
+    components();
+    return m_releaseStates.value(release, GuestToolsBuilder::State::NoSources);
+}
+
+QDateTime BuildManager::guestToolsBuilt(const QString &release) const
+{
+    components();
+    return m_releaseBuilt.value(release);
+}
+
+QStringList BuildManager::guestPackages(const QString &release) const
+{
+    return GuestToolsBuilder::packages(places().guestDir, release);
 }
 
 Component BuildManager::component(const QString &id) const

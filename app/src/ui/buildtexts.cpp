@@ -98,7 +98,47 @@ QString BuildTexts::duration(qint64 ms)
     return tr("%1 h %2 min").arg(minutes / 60).arg(minutes % 60);
 }
 
-QString BuildTexts::groupAbout(const QString &group, const QString &guestRelease)
+QString BuildTexts::releaseContents(const QStringList &packages)
+{
+    QStringList parts;
+
+    parts << (packages.contains("mesa") ? tr("the virtio-gpu driver and Mesa for every guest")
+                                        : tr("the virtio-gpu driver for every guest"));
+    if (packages.contains("mutter")) {
+        parts << tr("Mutter for GNOME guests");
+    }
+    if (packages.contains("kwin")) {
+        parts << tr("KWin with its libraries for KDE Plasma guests");
+    }
+    if (parts.size() == 1) {
+        return parts.first();
+    }
+    return tr("%1 and %2").arg(parts.mid(0, parts.size() - 1).join(", "), parts.last());
+}
+
+QString BuildTexts::otherReleaseAbout(const QString &release, const QStringList &packages)
+{
+    return tr("<p>For Fedora %1 guests: %2. Select them to see their packages.</p>")
+        .arg(release, releaseContents(packages));
+}
+
+QString BuildTexts::releaseState(GuestToolsBuilder::State state)
+{
+    switch (state) {
+    case GuestToolsBuilder::State::NoSources:
+        return tr("No sources");
+    case GuestToolsBuilder::State::NotBuilt:
+        return tr("Not built");
+    case GuestToolsBuilder::State::Outdated:
+        return tr("Out of date");
+    case GuestToolsBuilder::State::UpToDate:
+        return tr("Up to date");
+    }
+    return {};
+}
+
+QString BuildTexts::groupAbout(const QString &group, const QString &guestRelease,
+                               const QStringList &guestPackages)
 {
     return group == "host"
            ? tr("<p><b>Vitrine's QEMU</b>: upstream QEMU, virglrenderer, rutabaga_gfx "
@@ -114,10 +154,16 @@ QString BuildTexts::groupAbout(const QString &group, const QString &guestRelease
                 "pointer grab inside Vitrine's Desktop view, popups and resizes that cost "
                 "less. Vitrine builds each only when asked, and installs it only with the "
                 "administrator's password.</p>")
-           : tr("<p><b>The guest tools for Fedora %1</b>: the packages Fedora %1 guests "
+           : guestPackages.isEmpty()
+           ? tr("<p><b>The guest tools for Fedora %1</b>: the packages Fedora %1 guests "
                 "install from the medium, built in a Fedora %1 container with podman, "
                 "and the medium itself. Each Fedora release has its own: %2.</p>")
-                 .arg(guestRelease, GuestTools::supportedSystems());
+                 .arg(guestRelease, GuestTools::supportedSystems())
+           : tr("<p><b>The guest tools for Fedora %1</b>: the packages Fedora %1 guests "
+                "install from the medium, built in a Fedora %1 container with podman, "
+                "and the medium itself: %3. Each Fedora release has its own: %2.</p>")
+                 .arg(guestRelease, GuestTools::supportedSystems(),
+                      releaseContents(guestPackages));
 }
 
 /* What a host package is, and what the research's set changes and measured */

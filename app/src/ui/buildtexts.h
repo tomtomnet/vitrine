@@ -3,6 +3,7 @@
 
 #include <QCoreApplication>
 #include <QString>
+#include <QStringList>
 
 #include "core/guesttoolsbuilder.h"
 #include "core/hostkde.h"
@@ -32,9 +33,20 @@ public:
     /*
      * What a group of the Builds window makes, and of what: "host" (Vitrine's
      * QEMU), "system" (the host's desktop), else the guest tools of Fedora
-     * @guestRelease; rich text
+     * @guestRelease, made of @guestPackages (BuildManager::guestPackages());
+     * rich text
      */
-    static QString groupAbout(const QString &group, const QString &guestRelease);
+    static QString groupAbout(const QString &group, const QString &guestRelease,
+                              const QStringList &guestPackages = {});
+    /* What the guest tools of a release bring, by desktop, from their @packages (tools,
+       mesa, kwin, mutter...): "the virtio-gpu driver and Mesa for every guest, Mutter for
+       GNOME guests and KWin with its libraries for KDE Plasma guests" */
+    static QString releaseContents(const QStringList &packages);
+    /* Another release's guest tools, which the Builds window shows by their medium: what
+       they bring, and that selecting them shows their packages; rich text */
+    static QString otherReleaseAbout(const QString &release, const QStringList &packages);
+    /* How a release's guest tools stand, in a few words: "Out of date" */
+    static QString releaseState(GuestToolsBuilder::State state);
     /* What a host package is, and what the research's set changes and measured */
     static QString systemAbout(const HostKde::Target &target);
     /*

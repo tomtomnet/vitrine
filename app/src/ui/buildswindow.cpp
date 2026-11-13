@@ -3,7 +3,6 @@
 
 #include <QApplication>
 #include <QClipboard>
-#include <QComboBox>
 #include <QDesktopServices>
 #include <QDialogButtonBox>
 #include <QDirIterator>
@@ -22,6 +21,7 @@
 #include <QSettings>
 #include <QStyledItemDelegate>
 #include <QTabWidget>
+#include <QTimer>
 #include <QTreeWidget>
 #include <QTreeWidgetItemIterator>
 #include <QUrl>
@@ -73,6 +73,17 @@ QString groupOf(Kind kind)
     default:
         return QStringLiteral("guest");
     }
+}
+
+/* The row of another release's guest tools: "release:44"; and back, "" for any other id */
+QString releaseId(const QString &release)
+{
+    return "release:" + release;
+}
+
+QString releaseOf(const QString &id)
+{
+    return id.startsWith("release:") ? id.mid(8) : QString();
 }
 
 /* The guest tools' with their Fedora release */
@@ -278,8 +289,7 @@ BuildsWindow *BuildsWindow::present(QWidget *from, const QString &component,
 
 BuildsWindow::BuildsWindow(QWidget *parent)
     : QDialog(parent), m_manager(BuildManager::instance()), m_memory(new Banner(Banner::Warning)),
-      m_header(Widgets::note()), m_missing(Widgets::note()), m_release(new QComboBox),
-      m_tree(new QTreeWidget),
+      m_header(Widgets::note()), m_missing(Widgets::note()), m_tree(new QTreeWidget),
       m_tabs(new QTabWidget), m_source(Widgets::note()), m_patches(new QTreeWidget),
       m_patchText(new QPlainTextEdit), m_log(new QPlainTextEdit), m_background(Widgets::hint()),
       m_cache(new QLabel), m_clear(new QPushButton(tr("C&lear…"))), m_build(new QPushButton),
@@ -308,20 +318,6 @@ BuildsWindow::BuildsWindow(QWidget *parent)
     m_missing->setTextInteractionFlags(Qt::TextBrowserInteraction);
     m_missing->hide();
     layout->addWidget(m_missing);
-
-    /* the guest tools of one Fedora release at a time: each has its medium */
-    auto *releaseRow = new QHBoxLayout;
-    auto *releaseLabel = new QLabel(tr("&Guest tools for:"));
-    m_release->setObjectName("guestRelease");
-    for (const QString &r : GuestTools::releases()) {
-        m_release->addItem(tr("Fedora %1").arg(r), r);
-    }
-    m_release->setCurrentIndex(m_release->findData(m_manager->guestRelease()));
-    releaseLabel->setBuddy(m_release);
-    releaseRow->addWidget(releaseLabel);
-    releaseRow->addWidget(m_release);
-    releaseRow->addStretch(1);
-    layout->addLayout(releaseRow);
 
     /* the components, by what they make */
     m_tree->setObjectName("components");
@@ -432,14 +428,25 @@ BuildsWindow::BuildsWindow(QWidget *parent)
     connect(m_revert, &QPushButton::clicked, this,
             [this]() { HostKdeDialog::revert(this, {selected()}); });
     connect(m_clear, &QPushButton::clicked, this, &BuildsWindow::clearCache);
-    connect(m_release, &QComboBox::activated, this, [this]() {
-        /* refused during a run: back to the release it builds */
-        if (!m_manager->setGuestRelease(m_release->currentData().toString())) {
-            m_release->setCurrentIndex(m_release->findData(m_manager->guestRelease()));
+    /* another release's guest tools: shown instead (refused during a run, when their rows are
+       off: back to what was shown); not from within the tree's own signal */
+    connect(m_tree, &QTreeWidget::currentItemChanged, this,
+            [this](QTreeWidgetItem *current, QTreeWidgetItem *previous) {
+        const QString release =
+            current ? releaseOf(current->data(NameColumn, IdRole).toString()) : QString();
+        if (release.isEmpty()) {
+            return;
         }
+        const QString back = previous ? previous->data(NameColumn, IdRole).toString() : QString();
+        QTimer::singleShot(0, this, [this, release, back]() {
+            if (m_manager->setGuestRelease(release)) {
+                select("guest");
+            } else {
+                select(back);
+            }
+        });
     });
     connect(m_manager, &BuildManager::guestReleaseChanged, this, [this]() {
-        m_release->setCurrentIndex(m_release->findData(m_manager->guestRelease()));
         fill();
         showDetails();
         updateButtons();
@@ -595,6 +602,7 @@ void BuildsWindow::fill()
     m_tree->clear();
     m_items.clear();
     m_groups.clear();
+    m_releases.clear();
     for (const Component &c : components) {
         const QString group = groupOf(c.kind);
         QTreeWidgetItem *parent = m_groups.value(group);
@@ -610,6 +618,23 @@ void BuildsWindow::fill()
         auto *item = new QTreeWidgetItem(parent);
         item->setData(NameColumn, IdRole, c.id);
         m_items.insert(c.id, item);
+    }
+    /* the guest tools of the other releases around this one's, the newest first */
+    if (QTreeWidgetItem *guest = m_groups.value("guest")) {
+        const QStringList releases = GuestTools::releases();
+        const qsizetype shown = releases.indexOf(m_manager->guestRelease());
+        int older = 0;
+        for (const QString &r : m_manager->otherGuestReleases()) {
+            auto *item = new QTreeWidgetItem;
+            const int at = m_tree->indexOfTopLevelItem(guest);
+            item->setText(NameColumn, groupTitle("guest", r));
+            item->setData(NameColumn, IdRole, releaseId(r));
+            QFont bold = item->font(NameColumn);
+            bold.setBold(true);
+            item->setFont(NameColumn, bold);
+            m_tree->insertTopLevelItem(releases.indexOf(r) > shown ? at : at + 1 + older++, item);
+            m_releases.insert(r, item);
+        }
     }
     m_tree->expandAll();
     refreshItems();
@@ -633,10 +658,15 @@ void BuildsWindow::refreshItems()
     std::sort(shown.begin(), shown.end());
     QStringList sorted = ids;
     std::sort(sorted.begin(), sorted.end());
-    if (sorted != shown) {
+    QStringList releases = m_releases.keys();
+    std::sort(releases.begin(), releases.end());
+    QStringList others = m_manager->otherGuestReleases();
+    std::sort(others.begin(), others.end());
+    if (sorted != shown || releases != others) {
         fill();
         return;
     }
+    refreshReleases();
     for (const QString &id : std::as_const(ids)) {
         const Component c = m_manager->component(id);
         const Builds::Status status = m_manager->status(id);
@@ -744,6 +774,38 @@ void BuildsWindow::refreshItem(const QString &id)
                                                            QLocale::LongFormat)
                                       : QString());
     refreshGroup(groupOf(c.kind));
+}
+
+void BuildsWindow::refreshReleases()
+{
+    /* the release shown changes only between runs */
+    const bool running = m_manager->isRunning();
+
+    for (auto it = m_releases.cbegin(); it != m_releases.cend(); ++it) {
+        QTreeWidgetItem *item = it.value();
+        const QString release = it.key();
+        const GuestToolsBuilder::State state = m_manager->guestToolsState(release);
+        const QDateTime built = m_manager->guestToolsBuilt(release);
+        using Tools = GuestToolsBuilder::State;
+        const StatusState look = state == Tools::UpToDate   ? StatusState::UpToDate
+                                 : state == Tools::Outdated ? StatusState::Outdated
+                                 : state == Tools::NotBuilt ? StatusState::NotBuilt
+                                                            : StatusState::NoSources;
+
+        item->setText(StatusColumn, BuildTexts::releaseState(state));
+        item->setIcon(NameColumn, stateIcon(State::Idle, look));
+        item->setText(BuiltColumn, built.isValid()
+                                       ? QLocale().toString(built.toLocalTime().date(),
+                                                            QLocale::ShortFormat)
+                                       : QString());
+        item->setToolTip(BuiltColumn, built.isValid() ? QLocale().toString(built.toLocalTime(),
+                                                                           QLocale::LongFormat)
+                                                      : QString());
+        item->setToolTip(NameColumn, running ? tr("Shown once the build is over")
+                                             : BuildTexts::otherReleaseAbout(
+                                                   release, m_manager->guestPackages(release)));
+        item->setDisabled(running);
+    }
 }
 
 void BuildsWindow::refreshGroup(const QString &group)
@@ -869,7 +931,7 @@ QStringList BuildsWindow::selectedComponents() const
         }
         return ids;
     }
-    return id.isEmpty() ? QStringList() : QStringList{id};
+    return id.isEmpty() || !releaseOf(id).isEmpty() ? QStringList() : QStringList{id};
 }
 
 void BuildsWindow::showDetails()
@@ -909,7 +971,10 @@ void BuildsWindow::showSource()
             parts << group->child(i)->text(NameColumn).toHtmlEscaped() + ": " +
                          group->child(i)->text(StatusColumn).toHtmlEscaped();
         }
-        html = BuildTexts::groupAbout(id, m_manager->guestRelease());
+        html = BuildTexts::groupAbout(id, m_manager->guestRelease(),
+                                      id == "guest"
+                                          ? m_manager->guestPackages(m_manager->guestRelease())
+                                          : QStringList());
         html += "<ul><li>" + parts.join("</li><li>") + "</li></ul>";
         m_source->setText(html);
         return;
@@ -1230,7 +1295,6 @@ void BuildsWindow::updateButtons()
                      : built && !todo.isEmpty() ? tr("&Update %1").arg(title)
                                                 : tr("&Build %1").arg(title));
     m_build->setEnabled(!running && !todo.isEmpty());
-    m_release->setEnabled(!running);
     const QStringList plan = todo.isEmpty() ? QStringList() : m_manager->plan(todo);
     QStringList titles;
     for (const QString &c : plan) {
@@ -1631,7 +1695,7 @@ void BuildsWindow::contextMenu(const QPoint &at)
     QTreeWidgetItem *item = m_tree->itemAt(at);
     QMenu menu(this);
 
-    if (!item) {
+    if (!item || !releaseOf(item->data(NameColumn, IdRole).toString()).isEmpty()) {
         return;
     }
     m_tree->setCurrentItem(item);

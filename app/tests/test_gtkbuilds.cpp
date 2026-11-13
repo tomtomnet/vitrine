@@ -225,7 +225,7 @@ private slots:
 
         window->present();
         QCOMPARE(window->items(), QStringList({"", "virglrenderer", "rutabaga_gfx", "passt", "qemu",
-                                               "tools", "mesa", "medium"}));
+                                               "tools", "mesa", "medium", "release:44"}));
         QCOMPARE(window->runText(), QString("%1 components to build.").arg(m.outdated().size()));
         QCOMPARE(window->itemSubtitle("qemu"), "Not built");
         QVERIFY(window->memoryText().isEmpty());
@@ -241,6 +241,17 @@ private slots:
         /* a group: the Overview, which shows them */
         window->select("guest");
         QCOMPARE(window->selected(), "");
+        /* another release's guest tools, by their medium: selected, they show instead, from
+           their medium; those shown before come after them, as the older ones */
+        QCOMPARE(window->itemSubtitle("release:44"), "Not built");
+        window->select("release:44");
+        QTRY_COMPARE(m.guestRelease(), "44");
+        QTRY_COMPARE(window->selected(), "medium");
+        QCOMPARE(window->items(), QStringList({"", "virglrenderer", "rutabaga_gfx", "passt", "qemu",
+                                               "release:45", "tools", "mesa", "medium"}));
+        window->select("release:45");
+        QTRY_COMPARE(m.guestRelease(), "45");
+        QTRY_COMPARE(window->selected(), "medium");
         window->select("qemu");
 
         /* a run: its state as it goes, the log as it comes */
@@ -252,6 +263,11 @@ private slots:
         QCOMPARE(window->itemSubtitle("virglrenderer"), "Built");
         QCOMPARE(window->runText(), "Building QEMU (4 of 4).");
         QVERIFY(!window->canBuild());
+        /* the release shown stays until the run is over */
+        window->select("release:44");
+        QTest::qWait(100);
+        QCOMPARE(m.guestRelease(), "45");
+        QCOMPARE(window->selected(), "qemu");
         QTRY_VERIFY2(window->logText().contains("[2/4] cc r.c"), qPrintable(window->logText()));
         QVERIFY(write(m_tmp.filePath("window/go"), "\n"));
         QVERIFY(finished.wait(10000));

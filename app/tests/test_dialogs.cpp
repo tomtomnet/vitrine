@@ -8,9 +8,11 @@
 #include <QPushButton>
 #include <QStyleFactory>
 #include <QTemporaryDir>
+#include <QTreeWidget>
 
 #include <algorithm>
 
+#include "core/buildmanager.h"
 #include "core/paths.h"
 #include "core/vmstore.h"
 #include "scales.h"
@@ -233,6 +235,43 @@ private slots:
         window->close();
         dialog->close();
         QTRY_VERIFY(!opened("BuildsWindow") && !opened("GuestToolsDialog"));
+    }
+
+    /* The other release's guest tools in a row of their medium: selected, they show instead */
+    void buildsReleases()
+    {
+        BuildManager *m = BuildManager::instance();
+        QVERIFY(m->setGuestRelease("45"));
+        BuildsWindow window;
+        window.show();
+        auto *tree = window.findChild<QTreeWidget *>("components");
+        QVERIFY(tree);
+        const auto titles = [tree]() {
+            QStringList list;
+            for (int i = 0; i < tree->topLevelItemCount(); i++) {
+                list << tree->topLevelItem(i)->text(0);
+            }
+            return list;
+        };
+        /* Fedora 44's after Fedora 45's, the older one; its medium not built here */
+        const qsizetype guest = titles().indexOf("Guest tools for Fedora 45");
+        QVERIFY2(guest >= 0, qPrintable(titles().join(", ")));
+        QCOMPARE(titles().value(guest + 1), "Guest tools for Fedora 44");
+        QTreeWidgetItem *other = tree->topLevelItem(int(guest + 1));
+        QCOMPARE(other->childCount(), 0);
+        QCOMPARE(other->text(1), "Not built");
+        QVERIFY(!other->isDisabled());
+
+        tree->setCurrentItem(other);
+        QTRY_COMPARE(m->guestRelease(), "44");
+        QTRY_COMPARE(window.selected(), "guest");
+        /* Fedora 45's now a row before Fedora 44's group */
+        const qsizetype newer = titles().indexOf("Guest tools for Fedora 45");
+        QVERIFY(newer >= 0);
+        QCOMPARE(titles().value(newer + 1), "Guest tools for Fedora 44");
+        QCOMPARE(tree->topLevelItem(int(newer))->childCount(), 0);
+        QVERIFY(tree->topLevelItem(int(newer + 1))->childCount() > 0);
+        QVERIFY(m->setGuestRelease("45"));
     }
 
     void buttons_data()

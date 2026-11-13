@@ -367,7 +367,13 @@ void BuildsWindow::buildSidebar()
         const auto *id = item ? static_cast<const char *>(
                                     g_object_get_data(G_OBJECT(item), "vitrine-id"))
                               : nullptr;
-        m_selected = id ? QString::fromUtf8(id) : QString();
+        const QString chosen = id ? QString::fromUtf8(id) : QString();
+        /* another release's guest tools: shown instead, from their medium */
+        if (const QString release = BuildsModel::releaseOf(chosen); !release.isEmpty()) {
+            showRelease(release, "medium");
+            return;
+        }
+        m_selected = chosen;
         showSelected();
     });
     /* narrow: the page of what was chosen */
@@ -555,12 +561,19 @@ void BuildsWindow::fill()
 {
     const QString was = m_selected;
     const QString release = m_manager->guestRelease();
+    const QStringList releases = GuestTools::releases();
+    const QStringList others = m_manager->otherGuestReleases();
 
     m_filling = true;
     for (AdwSidebarSection *section : std::as_const(m_sections)) {
         adw_sidebar_remove(m_sidebar, section);
     }
     m_sections.clear();
+    for (const Release &r : std::as_const(m_releases)) {
+        adw_sidebar_remove(m_sidebar, r.section);
+        adw_preferences_page_remove(m_overview, r.box);
+    }
+    m_releases.clear();
     m_items.erase(m_items.begin() + 1, m_items.end());
     for (const GroupBox &box : std::as_const(m_groupBoxes)) {
         adw_preferences_page_remove(m_overview, box.box);
@@ -570,10 +583,18 @@ void BuildsWindow::fill()
 
     int at = 2;     // after the run and what is missing
     for (const Group group : BuildsModel::groups(*m_manager)) {
+        /* the guest tools of the other releases around this one's, the newest first */
+        if (group == Group::Guest) {
+            for (const QString &r : others) {
+                if (releases.indexOf(r) > releases.indexOf(release)) {
+                    addRelease(r, at);
+                }
+            }
+        }
         const QString groupId = BuildsModel::groupId(group);
         const QString groupTitle = BuildsModel::groupTitle(group, release);
         AdwSidebarSection *section = adw_sidebar_section_new();
-        GroupBox box{group, Gtk4::group(groupTitle), nullptr, nullptr, nullptr};
+        GroupBox box{group, Gtk4::group(groupTitle), nullptr, nullptr};
         GtkWidget *buttons = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 6);
 
         adw_sidebar_section_set_title(section, utf8(groupTitle).constData());
@@ -585,7 +606,10 @@ void BuildsWindow::fill()
 
         /* what the group makes, its Build, the host desktop's Install All… */
         adw_preferences_group_set_description(
-            box.box, utf8(Markup::pango(BuildTexts::groupAbout(groupId, release))).constData());
+            box.box, utf8(Markup::pango(BuildTexts::groupAbout(
+                         groupId, release,
+                         group == Group::Guest ? m_manager->guestPackages(release)
+                                               : QStringList()))).constData());
         gtk_widget_set_name(GTK_WIDGET(box.box), utf8("group-" + groupId).constData());
         box.build = gtk_button_new_with_mnemonic("_Build");
         gtk_widget_set_valign(box.build, GTK_ALIGN_CENTER);
@@ -604,17 +628,6 @@ void BuildsWindow::fill()
         }
         gtk_box_append(GTK_BOX(buttons), box.build);
         adw_preferences_group_set_header_suffix(box.box, buttons);
-        /* the guest tools of one Fedora release at a time: each has its medium */
-        if (group == Group::Guest) {
-            QStringList releases;
-            for (const QString &r : GuestTools::releases()) {
-                releases << QString("Fedora %1").arg(r);
-            }
-            box.release = Gtk4::comboRow("Fedora Release", releases);
-            gtk_widget_set_name(box.release, "release");
-            Gtk4::setSelected(box.release, int(GuestTools::releases().indexOf(release)));
-            adw_preferences_group_add(box.box, box.release);
-        }
 
         for (const QString &id : BuildsModel::componentsOf(*m_manager, group)) {
             const Component c = m_manager->component(id);
@@ -652,30 +665,71 @@ void BuildsWindow::fill()
         m_sections << section;
         adw_preferences_page_insert(m_overview, box.box, at++);
         m_groupBoxes << box;
-    }
-    /* the release chosen: its components, its medium (refused during a run: back to its own) */
-    for (const GroupBox &box : std::as_const(m_groupBoxes)) {
-        if (box.release) {
-            GtkWidget *combo = box.release;
-            on<void(GParamSpec *)>(combo, "notify::selected", [this, combo](GParamSpec *) {
-                if (m_filling) {
-                    return;
+        if (group == Group::Guest) {
+            for (const QString &r : others) {
+                if (releases.indexOf(r) < releases.indexOf(release)) {
+                    addRelease(r, at);
                 }
-                const QString chosen = GuestTools::releases().value(Gtk4::selected(combo));
-                if (chosen.isEmpty() || chosen == m_manager->guestRelease()) {
-                    return;
-                }
-                /* not from within the combo's own signal: the window changes under it */
-                QTimer::singleShot(0, &m_qt, [this, chosen]() {
-                    if (!m_manager->setGuestRelease(chosen)) {
-                        refreshButtons();
-                    }
-                });
-            });
+            }
         }
     }
     m_filling = false;
     select(was);
+}
+
+void BuildsWindow::addRelease(const QString &release, int &at)
+{
+    const QString id = BuildsModel::releaseId(release);
+    const QString title = BuildsModel::groupTitle(Group::Guest, release);
+    const QString medium = m_manager->component("medium").title;
+    Release r{release, adw_sidebar_section_new(), gtk_label_new(nullptr), Gtk4::group(title), {}};
+    AdwSidebarItem *item = adw_sidebar_item_new(utf8(medium).constData());
+
+    /* the sidebar: the section of its medium alone */
+    adw_sidebar_section_set_title(r.section, utf8(title).constData());
+    gtk_widget_add_css_class(r.state, "dim-label");
+    gtk_widget_add_css_class(r.state, "caption");
+    adw_sidebar_section_set_suffix(r.section, r.state);
+    adw_sidebar_item_set_icon_name(item, kindIcon(Kind::Medium));
+    g_object_set_data_full(G_OBJECT(item), "vitrine-id", g_strdup(utf8(id).constData()), g_free);
+    adw_sidebar_section_append(r.section, item);
+    adw_sidebar_append(m_sidebar, r.section);
+    m_items << Item{id, item, -1};
+
+    /* the Overview: what they bring, and their medium, which shows them all */
+    adw_preferences_group_set_description(
+        r.box, utf8(Markup::pango(BuildTexts::otherReleaseAbout(
+                   release, m_manager->guestPackages(release)))).constData());
+    gtk_widget_set_name(GTK_WIDGET(r.box), utf8("group-" + id).constData());
+    r.row.row = adw_action_row_new();
+    gtk_widget_set_name(r.row.row, utf8("row-" + id).constData());
+    gtk_list_box_row_set_activatable(GTK_LIST_BOX_ROW(r.row.row), true);
+    Gtk4::setTitle(r.row.row, medium);
+    r.row.icon = gtk_image_new();
+    adw_action_row_add_prefix(ADW_ACTION_ROW(r.row.row), r.row.icon);
+    r.row.progress = nullptr;
+    r.row.built = gtk_label_new(nullptr);
+    gtk_widget_add_css_class(r.row.built, "dim-label");
+    adw_action_row_add_suffix(ADW_ACTION_ROW(r.row.row), r.row.built);
+    adw_action_row_add_suffix(ADW_ACTION_ROW(r.row.row),
+                              gtk_image_new_from_icon_name("go-next-symbolic"));
+    on<void()>(r.row.row, "activated", [this, release]() { showRelease(release, QString()); });
+    adw_preferences_group_add(r.box, r.row.row);
+    adw_preferences_page_insert(m_overview, r.box, at++);
+    m_releases << r;
+}
+
+void BuildsWindow::showRelease(const QString &release, const QString &component)
+{
+    /* not from within the signal of its item or row: the window changes under it */
+    QTimer::singleShot(0, &m_qt, [this, release, component]() {
+        /* refused during a run (they are off then): back to what was shown */
+        if (!m_manager->setGuestRelease(release)) {
+            select(m_selected);
+            return;
+        }
+        select(component);
+    });
 }
 
 void BuildsWindow::present(const QString &component)
@@ -706,6 +760,11 @@ void BuildsWindow::select(const QString &component)
     /* a group: the Overview, which shows them */
     if (BuildsModel::isGroupId(id)) {
         id.clear();
+    }
+    /* another release's guest tools: shown instead, from their medium */
+    if (const QString release = BuildsModel::releaseOf(id); !release.isEmpty()) {
+        showRelease(release, "medium");
+        return;
     }
     for (const Item &item : std::as_const(m_items)) {
         if (item.id == id) {
@@ -775,16 +834,21 @@ void BuildsWindow::refreshAll()
         ids << c.id;
     }
     for (const Item &item : std::as_const(m_items)) {
-        if (!item.id.isEmpty()) {
+        if (!item.id.isEmpty() && BuildsModel::releaseOf(item.id).isEmpty()) {
             shown << item.id;
         }
     }
-    if (ids != shown && !m_filling) {
+    QStringList releases;
+    for (const Release &r : std::as_const(m_releases)) {
+        releases << r.release;
+    }
+    if ((ids != shown || releases != m_manager->otherGuestReleases()) && !m_filling) {
         fill();
     }
     for (const QString &id : std::as_const(ids)) {
         refreshItem(id);
     }
+    refreshReleases();
     refreshRun();
     refreshMemory();
     if (!m_selected.isEmpty()) {
@@ -843,6 +907,43 @@ void BuildsWindow::refreshItem(const QString &id)
             gtk_label_set_text(GTK_LABEL(label),
                                utf8(BuildsModel::groupStatus(*m_manager, group)).constData());
         }
+    }
+}
+
+void BuildsWindow::refreshReleases()
+{
+    /* the release shown changes only between runs */
+    const bool running = m_manager->isRunning();
+    const QString later = "Shown once the build is over";
+    const QString medium = m_manager->component("medium").title;
+
+    for (const Release &r : std::as_const(m_releases)) {
+        const QString id = BuildsModel::releaseId(r.release);
+        const BuildsModel::Status status = BuildsModel::releaseStatus(*m_manager, r.release);
+
+        gtk_label_set_text(GTK_LABEL(r.state), utf8(status.text).constData());
+        for (Item &item : m_items) {
+            if (item.id != id) {
+                continue;
+            }
+            if (int(status.look) != item.look) {
+                GtkWidget *suffix = gtk_image_new();
+                item.look = int(status.look);
+                setLook(suffix, status.look);
+                adw_sidebar_item_set_suffix(item.item, suffix);
+            }
+            adw_sidebar_item_set_subtitle(item.item, utf8(status.text).constData());
+            adw_sidebar_item_set_tooltip(
+                item.item, utf8(running ? later : medium + " — " + status.text).constData());
+            adw_sidebar_item_set_enabled(item.item, !running);
+        }
+        Gtk4::setSubtitle(r.row.row, status.text);
+        setLook(r.row.icon, status.look);
+        gtk_label_set_text(GTK_LABEL(r.row.built),
+                           utf8(BuildsModel::releaseBuilt(*m_manager, r.release)).constData());
+        setTip(r.row.built, BuildsModel::releaseBuilt(*m_manager, r.release, true));
+        gtk_widget_set_sensitive(r.row.row, !running);
+        setTip(r.row.row, running ? later : QString());
     }
 }
 
@@ -945,13 +1046,6 @@ void BuildsWindow::refreshButtons()
             const BuildsModel::Action all = BuildsModel::install(*m_manager, "system");
             setTip(box.install, all.tooltip);
             gtk_widget_set_sensitive(box.install, all.enabled);
-        }
-        if (box.release) {
-            gtk_widget_set_sensitive(box.release, !running);
-            m_filling = true;
-            Gtk4::setSelected(box.release,
-                              int(GuestTools::releases().indexOf(m_manager->guestRelease())));
-            m_filling = false;
         }
     }
 }

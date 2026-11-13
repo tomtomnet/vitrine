@@ -13,6 +13,7 @@
 #include "core/tasks.h"
 #include "gtk/buildsmodel.h"
 #include "gtk/markup.h"
+#include "ui/buildtexts.h"
 
 #include "buildstandins.h"
 
@@ -152,6 +153,27 @@ private slots:
                  QStringList({"tools", "mesa", "medium"}));
         QCOMPARE(BuildsModel::groupTitle(Group::Guest, "45"), "Guest Tools for Fedora 45");
         QCOMPARE(BuildsModel::groupTitle(Group::Host, "45"), "Vitrine's QEMU");
+        /* the other release's guest tools, by their medium */
+        QCOMPARE(m.otherGuestReleases(), QStringList({"44"}));
+        QCOMPARE(BuildsModel::releaseId("44"), "release:44");
+        QCOMPARE(BuildsModel::releaseOf("release:44"), "44");
+        QVERIFY(BuildsModel::releaseOf("medium").isEmpty());
+        const BuildsModel::Status other = BuildsModel::releaseStatus(m, "44");
+        QCOMPARE(other.text, "Not built");
+        QCOMPARE(other.look, Look::ToBuild);
+        QVERIFY(BuildsModel::releaseBuilt(m, "44").isEmpty());
+        /* what a release's tools bring, by desktop */
+        QCOMPARE(BuildTexts::releaseContents({"tools", "mesa", "medium"}),
+                 "the virtio-gpu driver and Mesa for every guest");
+        QCOMPARE(BuildTexts::releaseContents({"tools", "mesa", "kwayland", "kwin", "mutter"}),
+                 "the virtio-gpu driver and Mesa for every guest, Mutter for GNOME guests and "
+                 "KWin with its libraries for KDE Plasma guests");
+        QCOMPARE(BuildTexts::releaseContents({"tools", "mesa", "kwin"}),
+                 "the virtio-gpu driver and Mesa for every guest and KWin with its libraries for "
+                 "KDE Plasma guests");
+        QVERIFY(BuildTexts::groupAbout("guest", "45", {"tools", "mesa", "mutter"})
+                    .contains("and the medium itself: the virtio-gpu driver and Mesa for every "
+                              "guest and Mutter for GNOME guests. Each Fedora release"));
         QCOMPARE(BuildsModel::title(m, "mesa"), "Mesa 26.2.3");
         QCOMPARE(BuildsModel::title(m, "medium"), "Guest tools medium");
 

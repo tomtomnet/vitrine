@@ -5,6 +5,7 @@
 #include <QPointer>
 #include <QSignalSpy>
 #include <QTemporaryDir>
+#include <QTimeZone>
 #include <QTest>
 
 #include <algorithm>
@@ -183,6 +184,74 @@ private slots:
         QVERIFY(!m.setGuestRelease("43"));
         QCOMPARE(m.guestRelease(), "44");
         QCOMPARE(changed.size(), 1);
+    }
+
+    /* The other releases' guest tools, known by their medium beside the one shown */
+    void otherReleases()
+    {
+        BuildManager m;
+        Builds::Places places = setUp(m, "others");
+        QVERIFY(!places.guestDir.isEmpty());
+        const QString media = m_tmp.filePath("others/media");
+        places.guestRelease = "45";
+        places.mediumImage = media + "/vitrine-guest-tools-fc45.img";
+        m.setPlaces(places);
+
+        QCOMPARE(m.otherGuestReleases(), QStringList({"44"}));
+        QCOMPARE(m.guestToolsState("44"), GuestToolsBuilder::State::NotBuilt);
+        QCOMPARE(m.guestToolsState("45"), GuestToolsBuilder::State::NotBuilt);
+        QVERIFY(!m.guestToolsBuilt("44").isValid());
+        /* each release's packages, as guest/components.conf builds them */
+        for (const char *release : {"44", "45"}) {
+            QCOMPARE(m.guestPackages(release),
+                     GuestToolsBuilder::packages(places.guestDir, release));
+        }
+
+        /* 44's medium, made of other sources than these, then of these */
+        const QStringList packages = m.guestPackages("44");
+        const auto manifest = [&](bool current) {
+            QStringList inputs;
+            for (const QString &p : packages) {
+                inputs << QString(R"("%1": "%2")")
+                              .arg(p, current ? GuestToolsBuilder::inputsHash(places.guestDir, p)
+                                              : QString("old"));
+            }
+            inputs << QString(R"("medium": "%1")")
+                          .arg(GuestToolsBuilder::mediumHash(places.guestDir));
+            return QString(R"({"mediumId": "a", "fedora": "44", "tools": "0.1.0-15.fc44",
+                               "built": "2026-11-05T09:58:00Z", "inputs": {%1}})")
+                .arg(inputs.join(", "))
+                .toUtf8();
+        };
+        const QDateTime built(QDate(2026, 11, 5), QTime(9, 58), QTimeZone::utc());
+        QVERIFY(write(media + "/vitrine-guest-tools-fc44.img", "image\n"));
+        QVERIFY(write(media + "/vitrine-guest-tools-fc44.json", manifest(false)));
+        /* read again with the components */
+        QCOMPARE(m.guestToolsState("44"), GuestToolsBuilder::State::NotBuilt);
+        m.refresh();
+        QCOMPARE(m.guestToolsState("44"), GuestToolsBuilder::State::Outdated);
+        QCOMPARE(m.guestToolsBuilt("44"), built);
+        QVERIFY(write(media + "/vitrine-guest-tools-fc44.json", manifest(true)));
+        m.refresh();
+        QCOMPARE(m.guestToolsState("44"), GuestToolsBuilder::State::UpToDate);
+        QCOMPARE(m.guestToolsState("45"), GuestToolsBuilder::State::NotBuilt);
+        QVERIFY(!m.status("medium").built.isValid());
+
+        /* 44's shown: its own medium, 45 the other */
+        QVERIFY(m.setGuestRelease("44"));
+        QCOMPARE(m.otherGuestReleases(), QStringList({"45"}));
+        QCOMPARE(m.status("medium").built, built);
+        QCOMPARE(m.guestToolsState("44"), GuestToolsBuilder::State::UpToDate);
+        QCOMPARE(m.guestToolsState("45"), GuestToolsBuilder::State::NotBuilt);
+        QVERIFY(m.setGuestRelease("45"));
+        QVERIFY(!m.status("medium").built.isValid());
+
+        /* none without guest tools to build: no guest/ (GuestToolsBuilder::guestDir() empty) */
+        BuildManager none;
+        places.guestDir.clear();
+        none.setPlaces(places);
+        QVERIFY(!none.component("medium").isValid());
+        QVERIFY(none.otherGuestReleases().isEmpty());
     }
 
     /* What a build of some takes: what they need that is not built, the
