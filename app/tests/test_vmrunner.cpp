@@ -812,6 +812,26 @@ private slots:
         QCOMPARE(imports(chosen + "-global virtio-vga-rutabaga.x-render-node=/dev/dri/renderD128\n"),
                  true);
 
+        /* an Arc Pro B50 beside the processor's AMD GPU, the firmware's screen */
+        FakeGpus desktop(hosts.filePath("desktop"));
+        desktop.desktop();
+        desktop.use();
+        QCOMPARE(imports(nested), true);
+        /* the desktop on the B50: Automatic takes it */
+        HostGpus::setDesktopDevice(makedev(226, 0));
+        QCOMPARE(imports(nested), false);
+        HostGpus::setDesktopDevice(std::nullopt);
+        QString b50 = nested;
+        b50.replace("x-guest-dmabuf=on\n",
+                    "x-guest-dmabuf=on,x-render-node=/dev/dri/by-path/pci-0000:03:00.0-render\n");
+        QCOMPARE(imports(b50), false);
+
+        /* Intel's GPU in the processor, alone: the renderer's choice */
+        FakeGpus intel(hosts.filePath("intel"));
+        intel.gpu("0000:00:02.0", "0x8086", "0x7d51", "xe", true, 0, 128);
+        intel.use();
+        QCOMPARE(imports(nested), true);
+
         /* the 6900 XT alone, with a QEMU that takes no x-render-node: the renderer's choice */
         FakeGpus one(hosts.filePath("one"));
         one.gpu("0000:03:00.0", "0x1002", "0x73bf", "amdgpu", true, 0, 128);
@@ -844,6 +864,13 @@ private slots:
                                                     "which would read them over PCIe at each "
                                                     "frame\n"),
                  qPrintable(log));
+        desktop.use();
+        HostGpus::setDesktopDevice(makedev(226, 0));
+        log = logOf(nested);
+        QVERIFY2(log.contains(note) && log.contains(", a dedicated Intel GPU, which would read them "
+                                                    "over PCIe at each frame\n"),
+                 qPrintable(log));
+        HostGpus::setDesktopDevice(std::nullopt);
         laptop.use();
         log = logOf(nested);
         QVERIFY2(log.startsWith("vitrine: ") && !log.contains(note), qPrintable(log));

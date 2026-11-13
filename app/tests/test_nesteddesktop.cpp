@@ -383,10 +383,12 @@ private slots:
      */
     void guestImportGains()
     {
-        const auto gpu = [](const QString &driver, qint64 vram) {
+        const auto gpu = [](const QString &driver, qint64 vram,
+                            const QString &address = "0000:03:00.0") {
             HostGpu g;
             g.driver = driver;
             g.vram = vram;
+            g.address = address;
             return std::optional<HostGpu>(g);
         };
 
@@ -396,9 +398,17 @@ private slots:
         QVERIFY(NestedDesktop::guestImportGains(gpu("amdgpu", (4LL << 30) - (1 << 20))));
         QVERIFY(!NestedDesktop::guestImportGains(gpu("amdgpu", 4LL << 30)));
         QVERIFY(!NestedDesktop::guestImportGains(gpu("amdgpu", 16LL << 30)));
-        /* the session gives xe hosts none by itself; i915 has no udmabuf cost measured */
-        QVERIFY(NestedDesktop::guestImportGains(gpu("xe", 16LL << 30)));
-        QVERIFY(NestedDesktop::guestImportGains(gpu("i915", 0)));
+        /* Intel's cards, whatever their driver says of their memory (xe nothing) */
+        QVERIFY(!NestedDesktop::guestImportGains(gpu("xe", 0)));
+        QVERIFY(!NestedDesktop::guestImportGains(gpu("i915", 0)));
+        QVERIFY(!NestedDesktop::guestImportGains(gpu("xe", 0, "0000:00:02.1")));
+        /* the processor's own, on either driver */
+        QVERIFY(NestedDesktop::guestImportGains(gpu("xe", 0, "0000:00:02.0")));
+        QVERIFY(NestedDesktop::guestImportGains(gpu("i915", 0, "0000:00:02.0")));
+        /* nor AMD's at that address: its memory decides */
+        QVERIFY(!NestedDesktop::guestImportGains(gpu("amdgpu", 16LL << 30, "0000:00:02.0")));
+        /* others keep it: nothing measured */
+        QVERIFY(NestedDesktop::guestImportGains(gpu("nouveau", 8LL << 30)));
     }
 
     /* The socket and fw_cfg's words, unless the VM has them */

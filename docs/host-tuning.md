@@ -484,13 +484,16 @@ shows what the session has; other desktops ignore it.
 
 The nested desktop's KWin in a guest imports the guest's windows the same
 way, and this computer's GPU then reads them from the guest's memory at
-each frame. On an RX 6900 XT that made KWrite's keys 0.8 ms slower in the
-nested desktop, and nothing quicker (the research, 2026-11-12). So when
-the VM's card renders on an AMD GPU with 4 GiB or more of its own memory,
-vitrine leaves out the boot word that turns the import on
-(`crosvm_desktop_guest_dmabuf=1`), and the VM's log says so; the card
-keeps its `x-guest-dmabuf`. On an Intel xe host the guest's session turns
-the import off by itself. `KWIN_DISABLE_UDMABUF_IMPORT=0` in
+each frame. A dedicated GPU reads them over PCIe: KWrite's keys in the
+nested desktop came 0.8 ms later on an RX 6900 XT (the research,
+2026-11-12) and 1.3 ms later on an Arc Pro B50 (2026-11-13), and nothing
+was quicker. So when the VM's card renders on an AMD GPU with 4 GiB or
+more of its own memory, or on an Intel GPU anywhere but `00:02.0` (where
+Intel's processors have theirs), vitrine leaves out the boot word that
+turns the import on (`crosvm_desktop_guest_dmabuf=1`), and the VM's log
+says so; the card keeps its `x-guest-dmabuf`. Other GPUs, integrated ones
+among them, keep the import (not measured), but on any Intel xe host the
+guest's session turns it off by itself. `KWIN_DISABLE_UDMABUF_IMPORT=0` in
 `CROSVM_DESKTOP_KWIN_ENV` of the guest's
 `/etc/vitrine-guest-tools/nested.conf` keeps it.
 

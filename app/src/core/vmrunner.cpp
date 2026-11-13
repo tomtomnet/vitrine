@@ -1434,13 +1434,15 @@ QStringList VmRunner::Private::commandLine(const ArgsFile &args, const QString &
             NestedDesktop::withRunArgs(hostArgs, nestedSocketFor(mode), label);
         hostArgs = NestedDesktop::withRunArgs(hostArgs, nestedSocketFor(mode), label, guestImport);
         if (problems && gpu && hostArgs.toText() != withImport.toText()) {
+            const QString what =
+                gpu->driver == "amdgpu"
+                    ? VmRunner::tr("an AMD GPU with %1 GiB of its own memory").arg(gpu->vram >> 30)
+                    : VmRunner::tr("a dedicated Intel GPU");
             *problems << VmRunner::tr("the nested desktop's KWin uploads the apps' "
                                       "shared-memory windows instead of importing them (no "
                                       "crosvm_desktop_guest_dmabuf=1): the card renders on %1, "
-                                      "an AMD GPU with %2 GiB of its own memory, which would "
-                                      "read them over PCIe at each frame")
-                             .arg(gpu->name())
-                             .arg(gpu->vram >> 30);
+                                      "%2, which would read them over PCIe at each frame")
+                             .arg(gpu->name(), what);
         }
     }
     if (rutabaga) {

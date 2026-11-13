@@ -224,7 +224,18 @@ int screenConsole(const ArgsFile &args)
 
 bool guestImportGains(const std::optional<HostGpu> &gpu)
 {
-    return !gpu || gpu->driver != "amdgpu" || gpu->vram < (4LL << 30);
+    if (!gpu) {
+        return true;
+    }
+    if (gpu->driver == "amdgpu") {
+        return gpu->vram < (4LL << 30);
+    }
+    /* Intel's processors have their GPU at 00:02.0; a card sits elsewhere (xe has no size of
+       its memory in sysfs) */
+    if (gpu->driver == "xe" || gpu->driver == "i915") {
+        return gpu->address == "0000:00:02.0";
+    }
+    return true;
 }
 
 QString bootWords(const ArgsFile &args, const QString &label, bool guestImport)
