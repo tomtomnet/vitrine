@@ -448,12 +448,16 @@ private slots:
         /* a plain diff's description: its first line */
         const Component virgl = find(all, "virglrenderer");
         const QList<Patch> virglPatches = patches(virgl);
-        QCOMPARE(virglPatches.size(), 4);
-        QCOMPARE(virglPatches[0].origin, "Research");
-        QCOMPARE(virglPatches[3].origin, "Vitrine");
+        QCOMPARE(virglPatches.size(), 3);
+        for (const Patch &p : virglPatches) {
+            QCOMPARE(p.origin, "Research");
+        }
         QCOMPARE(subject(virgl, virglPatches[1]),
                  "amdgpu: force write-combining for host-visible blob mappings");
-        QCOMPARE(subject(virgl, virglPatches[3]), "xe: sync-only execs (no batch buffer) pass again");
+        /* the Xe native context passes the exec without a batch buffer, which Mesa sends to wait
+           for a queue to go idle (Vitrine's own patch until the research's 0001 took it over) */
+        QCOMPARE(virglPatches[0].name(), "0001-xe-native-context.patch");
+        QVERIFY(text(virgl, virglPatches[0]).contains("+   if (req->num_batch_buffer > 1) {\n"));
 
         /* the research's diff, under a description of Vitrine's */
         const Component ffi = find(all, "rutabaga_gfx");

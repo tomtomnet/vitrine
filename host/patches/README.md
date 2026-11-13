@@ -159,11 +159,10 @@ Vitrine's own, on top, for the research side to take over:
 
 ## virglrenderer (upstream at `aafa9bd2`)
 
-The research's virglrenderer: the commit and the patches at the top of
+The research's virglrenderer: the commit and the patches of
 `virglrenderer/` are those of its `patches/virglrenderer/main/` (the
-`virglrenderer.spec` there, commit `5f7e6af`), byte-identical;
-`virglrenderer/vitrine/` holds Vitrine's own, applied after them. Until
-2026-10-14 Vitrine had `cf6c62da` (main of 2026-09-06) with the research
+`virglrenderer.spec` there, commit `ace3f98`, release 2), byte-identical.
+Until 2026-10-14 Vitrine had `cf6c62da` (main of 2026-09-06) with the research
 export's copies, whose 0003 called a function `aafa9bd2` renamed
 (`vrend_get_iovec_size`, now `virgl_get_iovec_size`); the commits between
 are fixes (i915 native context's checks of the guest's input, fences
@@ -171,17 +170,16 @@ exported before the sync thread takes them).
 
 | sha256 | patch |
 |---|---|
-| `515120f1b7ddd08c8101acbf8d02c4fc52c147505f1010894ae99246992a98ed` | `0001-xe-native-context.patch`: cmspam's Intel Xe native context, rebased on main; single-batch exec only (2026-10-04: with more batches the kernel reads the guest's `address` as a pointer into QEMU) |
+| `41f039ecff1258aeef711c2eb822fca630d9d808d5c4ed4b0863835631d83d62` | `0001-xe-native-context.patch`: cmspam's Intel Xe native context, rebased on main; no exec with more than one batch buffer (2026-10-04: the kernel would read the guest's `address` as a pointer into QEMU), and the one with none, the kernel's wait for a queue to go idle, with `address` 0 (2026-11-13) |
 | `0f629fef2724244d1900c707e24218eb91bd97dabd3d42dcfc3658a64fb6bcc5` | `0002-amdgpu-force-wc.patch`: write-combined mappings for host-visible amdgpu blobs |
 | `57bcf33419a68ae0523a12c7d66c8e84e9d4e8f87fc1d3ed3356fe75e896beaa` | `0003-guest-dmabuf-api.patch`: `virgl_renderer_resource_set_guest_dmabuf()`, for QEMU's zero copy of guest dma-bufs |
 
-### `virglrenderer/vitrine/`
-
-Vitrine's own, on top, for the research side to take over:
-
-| sha256 | patch |
-|---|---|
-| `88c80b43864f8b875f83b631e68092d34b462762c5e713fa092f2353aa8e0323` | `0001-xe-sync-only-execs-pass-again.patch`: Xe execs without a batch buffer pass again (0001's check refused them too): Mesa sends them to wait for a queue to go idle, and ANV loses its device when they fail |
+Vitrine's own patches would go in `virglrenderer/vitrine/`, applied after
+these. It had one until 2026-11-13, when the research's 0001 took it over:
+0001 refused the execs without a batch buffer too, which Mesa sends to
+wait for a queue to go idle (before destroying it, and for
+`vkQueueWaitIdle`); refused, ANV loses its device and iris destroys a
+queue the GPU may still use.
 
 ## rutabaga_gfx (upstream at `4fb9f320`)
 
