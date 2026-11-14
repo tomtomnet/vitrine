@@ -1056,12 +1056,12 @@ void BuildsWindow::showSource()
     case Kind::Flatpak: {
         QStringList parts;
         for (const Builds::FlatpakBranch &b : Builds::flatpakBranches(c)) {
-            parts << tr("Mesa %1 for the runtimes %2 (commit %3)")
+            parts << tr("Mesa %1 for runtime %2 (commit %3)")
                          .arg(b.mesa.toHtmlEscaped(), b.branch.toHtmlEscaped(),
                               "<code>" + b.commit.left(12).toHtmlEscaped() + "</code>");
         }
         rows += row(tr("Source:"),
-                    tr("<a href=\"%1\">%2</a>'s recipe, the one of Flathub's: %3")
+                    tr("<a href=\"%1\">%2</a>, the recipe of Flathub's: %3")
                         .arg(source.url.toHtmlEscaped(), shortUrl(source.url).toHtmlEscaped(),
                              parts.join(", ")));
         break;

@@ -253,8 +253,8 @@ private slots:
         QCOMPARE(labels(d), QStringList({"Source", "Patches"}));
         QCOMPARE(d.properties[0].link, "https://gitlab.com/freedesktop-sdk/freedesktop-sdk");
         QCOMPARE(Markup::plain(d.properties[0].value),
-                 "gitlab.com/freedesktop-sdk/freedesktop-sdk's recipe, the one of Flathub's: "
-                 "Mesa 26.2.7 for the runtimes 25.08 (commit 279b0ea50eb4)");
+                 "gitlab.com/freedesktop-sdk/freedesktop-sdk, the recipe of Flathub's: "
+                 "Mesa 26.2.7 for runtime 25.08 (commit 279b0ea50eb4)");
         const BuildsModel::Details medium = BuildsModel::details(m, "medium", unknownSize);
         QCOMPARE(labels(medium).value(0), "Made of");
         QCOMPARE(Markup::plain(medium.properties[0].value),

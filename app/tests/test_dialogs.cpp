@@ -271,10 +271,10 @@ private slots:
         QTRY_COMPARE(window.selected(), "flatpak");
         auto *source = window.findChild<QLabel *>("source");
         QVERIFY(source);
-        QVERIFY2(source->text().contains("freedesktop-sdk</a>'s recipe, the one of Flathub's: "),
+        QVERIFY2(source->text().contains("freedesktop-sdk</a>, the recipe of Flathub's: "),
                  qPrintable(source->text()));
         for (const Builds::FlatpakBranch &b : branches) {
-            const QString runtime = QString("Mesa %1 for the runtimes %2 (commit <code>%3</code>)")
+            const QString runtime = QString("Mesa %1 for runtime %2 (commit <code>%3</code>)")
                                         .arg(b.mesa, b.branch, b.commit.left(12));
             QVERIFY2(source->text().contains(runtime), qPrintable(source->text()));
         }

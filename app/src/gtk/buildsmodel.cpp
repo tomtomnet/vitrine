@@ -865,11 +865,11 @@ Details details(const BuildManager &m, const QString &id,
     case Kind::Flatpak: {
         QStringList parts;
         for (const Builds::FlatpakBranch &b : Builds::flatpakBranches(c)) {
-            parts << QString("Mesa %1 for the runtimes %2 (commit %3)")
+            parts << QString("Mesa %1 for runtime %2 (commit %3)")
                          .arg(escaped(b.mesa), escaped(b.branch), code(b.commit.left(12)));
         }
         d.properties << Property{"Source",
-                                 QString("%1's recipe, the one of Flathub's: %2")
+                                 QString("%1, the recipe of Flathub's: %2")
                                      .arg(escaped(shortUrl(source.url)), parts.join(", ")),
                                  source.url, {}};
         break;
