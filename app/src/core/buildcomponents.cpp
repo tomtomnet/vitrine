@@ -109,6 +109,7 @@ Places Places::defaults(const QString &guestRelease)
     places.guestRelease = guestRelease.isEmpty() ? GuestTools::newestRelease() : guestRelease;
     places.rpmsDir = GuestToolsBuilder::rpmsDir(places.guestRelease);
     places.mediumImage = GuestToolsBuilder::mediumImage(places.guestRelease);
+    places.flatpakDir = GuestToolsBuilder::flatpakDir();
 
     /* the builds as they are now, the system as last read */
     for (const HostKde::Status &s : monitor->statuses()) {
@@ -174,15 +175,19 @@ QList<Component> load(const Places &places)
             c.title = values.value("title", id);
             c.dir = dir;
             c.values = values;
-            c.kind = values.value("kind") == "system" ? Kind::System
-                     : host                             ? Kind::Host
-                     : values.value("kind") == "medium" ? Kind::Medium
-                                                         : Kind::Package;
+            c.kind = values.value("kind") == "system"    ? Kind::System
+                     : host                                ? Kind::Host
+                     : values.value("kind") == "medium"    ? Kind::Medium
+                     : values.value("kind") == "flatpak"   ? Kind::Flatpak
+                                                            : Kind::Package;
             c.deps = values.value("deps").split(' ', Qt::SkipEmptyParts);
             c.runs = values.value("runs").split(' ', Qt::SkipEmptyParts);
             c.heavy = values.value("heavy") == "1";
-            /* a package is its spec */
+            /* a package is its spec; the Mesa for Flatpak apps, its branches */
             if (c.kind == Kind::Package && !QFileInfo(dir + '/' + values.value("spec")).isFile()) {
+                continue;
+            }
+            if (c.kind == Kind::Flatpak && !QFileInfo(dir + '/' + id + "/branches.conf").isFile()) {
                 continue;
             }
             /* the guest tools of one release: its packages, its medium of them */
@@ -429,6 +434,9 @@ Source source(const Component &c)
     } else if (c.kind == Kind::System) {
         /* the research's recipe, at its commit; the source RPM is the host's */
         s.revision = c.values.value("research");
+    } else if (c.kind == Kind::Flatpak) {
+        /* freedesktop-sdk's recipe, at a commit of each branch (flatpakBranches()) */
+        s.url = QStringLiteral("https://gitlab.com/freedesktop-sdk/freedesktop-sdk");
     } else if (c.kind == Kind::Package) {
         const QString spec =
             readLines(QString::fromUtf8(readFile(c.dir + '/' + c.values.value("spec"))));
@@ -495,6 +503,21 @@ QList<Patch> patches(const Component &c)
     QStringList paths;
     QList<Patch> list;
 
+    if (c.kind == Kind::Flatpak) {
+        /* each once, in the order the branches apply them */
+        for (const FlatpakBranch &b : flatpakBranches(c)) {
+            for (const QString &path : b.patches) {
+                if (std::none_of(list.begin(), list.end(),
+                                 [&path](const Patch &p) { return p.path == path; })) {
+                    Patch p;
+                    p.path = path;
+                    p.origin = c.values.value("origin");
+                    list << p;
+                }
+            }
+        }
+        return list;
+    }
     if (where.isEmpty() || c.kind == Kind::Medium) {
         return {};
     }
@@ -545,6 +568,26 @@ QList<Patch> patches(const Component &c)
         p.origin = sub.isEmpty() ? c.values.value("origin")
                                  : c.values.value("origin." + sub, sub);
         list << p;
+    }
+    return list;
+}
+
+QList<FlatpakBranch> flatpakBranches(const Component &c)
+{
+    static const QRegularExpression blanks("\\s+");
+    QList<FlatpakBranch> list;
+
+    if (c.kind != Kind::Flatpak) {
+        return {};
+    }
+    for (const auto &[branch, values] : parseConf(readFile(c.dir + '/' + c.id + "/branches.conf"))) {
+        FlatpakBranch b;
+        b.branch = branch;
+        b.commit = values.value("commit");
+        b.image = values.value("image");
+        b.mesa = values.value("mesa");
+        b.patches = values.value("patches").split(blanks, Qt::SkipEmptyParts);
+        list << b;
     }
     return list;
 }
@@ -641,6 +684,8 @@ QByteArray inputLines(const Component &c, const QList<Component> &all)
     }
     case Kind::Package:
         return GuestToolsBuilder::inputLines(c.dir, c.id);
+    case Kind::Flatpak:
+        return GuestToolsBuilder::flatpakLines(c.dir);
     case Kind::System: {
         /* build.sh's inputs_lines: build.sh, the recipe's scripts and the
            package's patches, in the C order of their paths, hidden files too */
@@ -741,7 +786,8 @@ static Change fileChange(const Component &c, const QString &path, Change::How ho
 
     change.how = how;
     change.name = path;
-    if (path == "build.sh" || path == "rpm-build-inside.sh" || path == "build-medium.sh") {
+    if (path == "build.sh" || path == "rpm-build-inside.sh" || path == "build-medium.sh" ||
+        path == "build-flatpak.sh") {
         change.what = Change::What::Script;
     } else if (path.endsWith(".spec")) {
         change.what = Change::What::Spec;
@@ -1043,6 +1089,46 @@ static Status packageStatus(const Component &c, const QList<Component> &all,
     return s;
 }
 
+/* "Mesa 26.2.7 for 25.08, 26.2.6 for 26.08": what build-flatpak.sh records in branches */
+static QString flatpakVersion(const QString &dir)
+{
+    QStringList parts;
+
+    for (const QByteArray &raw : readFile(dir + "/branches").split('\n')) {
+        const QStringList f = QString::fromUtf8(raw).split(' ', Qt::SkipEmptyParts);
+        if (f.size() >= 2) {
+            parts << tr("%1 for %2").arg(f.at(1), f.at(0));
+        }
+    }
+    return parts.isEmpty() ? QString() : tr("Mesa %1").arg(parts.join(", "));
+}
+
+static Status flatpakStatus(const Component &c, const QList<Component> &all, const Places &places)
+{
+    const QByteArray now = inputLines(c, all);
+    const QString dir = places.flatpakDir;
+    const QString built = GuestToolsBuilder::builtFlatpak(dir);
+    Status s;
+
+    if (now.isEmpty()) {
+        return s;
+    }
+    s.state = Status::State::NotBuilt;
+    if (dir.isEmpty() || built.isEmpty()) {
+        return s;
+    }
+    s.output = dir;
+    s.built = QFileInfo(dir + "/.inputs").lastModified();
+    s.version = flatpakVersion(dir);
+    if (built == key(c, all)) {
+        s.state = Status::State::UpToDate;
+        return s;
+    }
+    s.state = Status::State::Outdated;
+    s.changes = changes(c, all, readFile(dir + "/.inputs.list"), now);
+    return s;
+}
+
 static Status mediumStatus(const Component &c, const QList<Component> &all, const Places &places)
 {
     const QByteArray now = inputLines(c, all);
@@ -1135,6 +1221,8 @@ Status status(const Component &c, const QList<Component> &all, const Places &pla
         return packageStatus(c, all, places);
     case Kind::Medium:
         return mediumStatus(c, all, places);
+    case Kind::Flatpak:
+        return flatpakStatus(c, all, places);
     }
     return {};
 }

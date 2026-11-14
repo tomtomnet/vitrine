@@ -190,7 +190,7 @@ private slots:
         }
         QCOMPARE(ids, QStringList({"virglrenderer", "rutabaga_gfx", "passt", "qemu", "tools", "mesa",
                                    "kwayland", "kwin", "proxy", "kpipewire", "qtbase", "ksvg",
-                                   "kirigami", "mutter", "medium"}));
+                                   "kirigami", "mutter", "flatpak", "medium"}));
         QCOMPARE(find(all, "qemu").kind, Kind::Host);
         QCOMPARE(find(all, "qemu").title, "QEMU");
         QCOMPARE(find(all, "qemu").deps, QStringList({"virglrenderer", "rutabaga_gfx"}));
@@ -210,7 +210,31 @@ private slots:
         QCOMPARE(find(all, "medium").kind, Kind::Medium);
         QCOMPARE(find(all, "medium").deps,
                  QStringList({"tools", "mesa", "kwayland", "kwin", "proxy", "kpipewire", "qtbase",
-                              "ksvg", "kirigami", "mutter"}));
+                              "ksvg", "kirigami", "mutter", "flatpak"}));
+        /* the Mesa for Flatpak apps, on every release's medium: freedesktop-sdk's
+           recipe for each runtime, with the Xe patch for its Mesa and guest/mesa's */
+        const Component flatpak = find(all, "flatpak");
+        QCOMPARE(flatpak.kind, Kind::Flatpak);
+        QCOMPARE(flatpak.title, "Mesa for Flatpak apps");
+        QVERIFY(flatpak.heavy);
+        QVERIFY(builtFor(flatpak, "44") && builtFor(flatpak, "45"));
+        const QList<FlatpakBranch> branches = flatpakBranches(flatpak);
+        QCOMPARE(branches.size(), 2);
+        QCOMPARE(branches[0].branch, "25.08");
+        QCOMPARE(branches[1].branch, "26.08");
+        for (const FlatpakBranch &b : branches) {
+            QCOMPARE(b.commit.size(), 40);
+            QVERIFY(b.image.startsWith("bst2:"));
+            QCOMPARE(b.patches.size(), 5);
+            QVERIFY2(b.patches.first().contains("xe-native-context"), qPrintable(b.patches.first()));
+            for (const QString &patch : b.patches) {
+                QVERIFY2(QFileInfo(flatpak.dir + '/' + patch).isFile(), qPrintable(patch));
+            }
+        }
+        /* each once: the two Xe patches, the four others of guest/mesa */
+        QCOMPARE(patches(flatpak).size(), 6);
+        QCOMPARE(patches(flatpak).first().origin, "Research");
+        QCOMPARE(source(flatpak).url, "https://gitlab.com/freedesktop-sdk/freedesktop-sdk");
         /* KWin built against vitrine's KWayland, whose signals its nested desktop uses */
         QCOMPARE(find(all, "kwayland").kind, Kind::Package);
         QCOMPARE(find(all, "kwayland").title, "KWayland");
@@ -289,10 +313,144 @@ private slots:
         QCOMPARE(inputs45, QString("mutter %1\n").arg(key(find(all, "mutter"), all)));
         QCOMPARE(key(find(all, "mutter"), all),
                  GuestToolsBuilder::inputsHash(places.guestDir, "mutter"));
+        /* the Mesa for Flatpak apps' */
+        QCOMPARE(run({places.guestDir + "/build-flatpak.sh", "--print-inputs"}, &status),
+                 QString("flatpak %1\n").arg(key(find(all, "flatpak"), all)));
+        QCOMPARE(status, 0);
+        QCOMPARE(key(find(all, "flatpak"), all), GuestToolsBuilder::flatpakHash(places.guestDir));
         /* the medium's: its packages' keys and its script */
         const QByteArray medium = inputLines(find(all, "medium"), all);
         QVERIFY(medium.startsWith("dep tools " + key(find(all, "tools"), all).toLatin1() + '\n'));
         QVERIFY(medium.endsWith("  build-medium.sh\n"));
+        QVERIFY(medium.contains("\ndep flatpak " + key(find(all, "flatpak"), all).toLatin1() + '\n'));
+    }
+
+    /*
+     * The Mesa for Flatpak apps: its branches and patches, its inputs as
+     * build-flatpak.sh has them (hidden files too, links not: find -type f),
+     * its status by the inputs its build recorded, and the medium's
+     */
+    void flatpakComponent()
+    {
+        const QString guest = m_tmp.filePath("flatpak-guest");
+        Places places;
+        places.guestDir = guest;
+        places.flatpakDir = m_tmp.filePath("flatpak-out/flatpak");
+        places.mediumImage = m_tmp.filePath("flatpak-media/vitrine-guest-tools-fc44.img");
+        QVERIFY(QDir().mkpath(guest));
+        QVERIFY(QFile::copy(GuestToolsBuilder::guestDir() + "/build-flatpak.sh",
+                            guest + "/build-flatpak.sh"));
+        QVERIFY(write(guest + "/build-medium.sh", "#!/bin/bash\n"));
+        QVERIFY(write(guest + "/components.conf",
+                      "[flatpak]\ntitle=Mesa for Flatpak apps\nkind=flatpak\norigin=Research\n"
+                      "heavy=1\n[medium]\nkind=medium\ndeps=flatpak\n"));
+        const QString commit(40, 'a');
+        const QString image = "bst2:" + QString(40, 'b');
+        QVERIFY(write(guest + "/flatpak/branches.conf",
+                      QString("# two runtimes\n[25.08]\ncommit=%1\nimage=%2\nmesa=26.2.7\n"
+                              "patches=flatpak/xe.patch mesa/b.patch\n\n[26.08]\ncommit=%1\n"
+                              "image=%2\nmesa=26.2.6\npatches = mesa/a.patch   mesa/b.patch\n")
+                          .arg(commit, image)
+                          .toUtf8()));
+        QVERIFY(write(guest + "/flatpak/xe.patch", "xe\n"));
+        QVERIFY(write(guest + "/flatpak/.hidden", "h\n"));
+        QVERIFY(QFile::link("xe.patch", guest + "/flatpak/link.patch"));
+        QVERIFY(write(guest + "/mesa/a.patch", "a\n"));
+        QVERIFY(write(guest + "/mesa/b.patch", "b\n"));
+        QVERIFY(write(guest + "/mesa/unused.patch", "u\n"));
+        const auto statusOf = [&places](const char *id) {
+            const QList<Component> all = load(places);
+            return status(find(all, id), all, places);
+        };
+
+        QList<Component> all = load(places);
+        const Component c = find(all, "flatpak");
+        QCOMPARE(c.kind, Kind::Flatpak);
+        QVERIFY(c.heavy);
+        QCOMPARE(GuestToolsBuilder::flatpakId(guest), "flatpak");
+        const QList<FlatpakBranch> branches = flatpakBranches(c);
+        QCOMPARE(branches.size(), 2);
+        QCOMPARE(branches[0].branch, "25.08");
+        QCOMPARE(branches[0].commit, commit);
+        QCOMPARE(branches[0].image, image);
+        QCOMPARE(branches[0].mesa, "26.2.7");
+        QCOMPARE(branches[0].patches, QStringList({"flatpak/xe.patch", "mesa/b.patch"}));
+        QCOMPARE(branches[1].mesa, "26.2.6");
+        QCOMPARE(branches[1].patches, QStringList({"mesa/a.patch", "mesa/b.patch"}));
+        QStringList paths;
+        for (const Patch &p : patches(c)) {
+            paths << p.path;
+        }
+        QCOMPARE(paths, QStringList({"flatpak/xe.patch", "mesa/b.patch", "mesa/a.patch"}));
+        QVERIFY(flatpakBranches(find(all, "medium")).isEmpty());
+
+        const QByteArray lines = inputLines(c, all);
+        QStringList names;
+        for (const QByteArray &line : lines.split('\n')) {
+            if (!line.isEmpty()) {
+                names << QString::fromUtf8(line.mid(66));
+            }
+        }
+        QCOMPARE(names, QStringList({"build-flatpak.sh", "flatpak/.hidden", "flatpak/branches.conf",
+                                     "flatpak/xe.patch", "mesa/a.patch", "mesa/b.patch"}));
+        int status = -1;
+        QCOMPARE(run({guest + "/build-flatpak.sh", "--print-inputs"}, &status),
+                 QString("flatpak %1\n").arg(key(c, all)));
+        QCOMPARE(status, 0);
+        QCOMPARE(key(c, all), GuestToolsBuilder::flatpakHash(guest));
+        QCOMPARE(GuestToolsBuilder::flatpakLines(guest), lines);
+
+        /* built from these sources, then from others */
+        QCOMPARE(statusOf("flatpak").state, Status::State::NotBuilt);
+        QVERIFY(write(places.flatpakDir + "/.inputs", key(c, all).toUtf8() + '\n'));
+        QVERIFY(write(places.flatpakDir + "/.inputs.list", lines));
+        QVERIFY(write(places.flatpakDir + "/branches",
+                      "25.08 26.2.7 " + commit.toUtf8() + "\n26.08 26.2.6 " + commit.toUtf8() + '\n'));
+        Status built = statusOf("flatpak");
+        QCOMPARE(built.state, Status::State::UpToDate);
+        QCOMPARE(built.version, "Mesa 26.2.7 for 25.08, 26.2.6 for 26.08");
+        QCOMPARE(built.output, places.flatpakDir);
+        QVERIFY(built.built.isValid());
+        QCOMPARE(GuestToolsBuilder::builtFlatpak(places.flatpakDir), key(c, all));
+        /* a patch no branch names is none of its inputs */
+        QVERIFY(write(guest + "/mesa/unused.patch", "u2\n"));
+        QCOMPARE(statusOf("flatpak").state, Status::State::UpToDate);
+        QVERIFY(write(guest + "/mesa/b.patch", "b2\n"));
+        QVERIFY(write(guest + "/build-flatpak.sh", read(guest + "/build-flatpak.sh") + "true\n", true));
+        built = statusOf("flatpak");
+        QCOMPARE(built.state, Status::State::Outdated);
+        QStringList said;
+        for (const Change &change : built.changes) {
+            said << describe(change);
+        }
+        QCOMPARE(said, QStringList({"Its build script build-flatpak.sh changed",
+                                    "Patch b.patch changed"}));
+
+        /* the medium, made without it, then with it */
+        all = load(places);
+        const QByteArray script = QCryptographicHash::hash(read(guest + "/build-medium.sh"),
+                                                           QCryptographicHash::Sha256).toHex();
+        QVERIFY(write(places.mediumImage, "image\n"));
+        const auto manifest = [&](const QString &inputs) {
+            return write(GuestToolsBuilder::manifestOf(places.mediumImage),
+                         QString(R"({"mediumId": "m", "fedora": "44", "tools": "0.1.0-15.fc44",
+                                     "built": "2026-11-14T10:00:00Z", "inputs": {%1}})")
+                             .arg(inputs)
+                             .toUtf8());
+        };
+        QVERIFY(manifest(QString("\"medium\": \"%1\"").arg(QString::fromLatin1(script))));
+        Status medium = statusOf("medium");
+        QCOMPARE(medium.state, Status::State::Outdated);
+        QCOMPARE(describe(medium.changes.last()), "Built without Mesa for Flatpak apps");
+        QVERIFY(manifest(QString("\"flatpak\": \"%1\", \"medium\": \"%2\"")
+                             .arg(key(find(all, "flatpak"), all), QString::fromLatin1(script))));
+        QCOMPARE(statusOf("medium").state, Status::State::UpToDate);
+
+        /* no branches: no Mesa for Flatpak apps */
+        QVERIFY(QFile::remove(guest + "/flatpak/branches.conf"));
+        QVERIFY(!find(load(places), "flatpak").isValid());
+        QVERIFY(GuestToolsBuilder::flatpakId(guest).isEmpty());
+        QVERIFY(GuestToolsBuilder::flatpakLines(guest).isEmpty());
     }
 
     /*

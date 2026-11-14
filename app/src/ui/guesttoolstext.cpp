@@ -195,6 +195,16 @@ QString what(Vm *vm, const GuestTools::Medium &medium)
                    "screen mode no longer skip refreshes), if the guest's Mutter is %2</li>")
                     .arg(medium.mutter.toHtmlEscaped(), medium.mutter.section('-', 0, 0));
     }
+    /* Flathub's GL extension of the Flatpak runtimes, vitrine's in its place */
+    QStringList runtimes;
+    for (const QString &branch : medium.flatpak.split(' ', Qt::SkipEmptyParts)) {
+        runtimes << tr("Mesa %1 for %2").arg(branch.section(':', 1), branch.section(':', 0, 0));
+    }
+    if (!runtimes.isEmpty()) {
+        what += tr("<li>vitrine's Mesa for Flatpak apps (%1), in place of Flathub's for the "
+                   "runtimes the guest has and those it installs later</li>")
+                    .arg(runtimes.join(", ").toHtmlEscaped());
+    }
     what += tr("<li>the vitrine agent, which tells vitrine how the guest is "
                                  "doing</li></ul>");
     /* what stays at its version: of what the medium has (an older one may have no KDE

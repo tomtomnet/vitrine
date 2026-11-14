@@ -100,6 +100,10 @@ public:
     static QString mediumImage(const QString &release);
     /* The manifest beside @image */
     static QString manifestOf(const QString &image);
+    /* build-flatpak.sh's output, the Mesa for Flatpak apps of every release:
+       <data>/guest-tools/flatpak; and its cache, <cache>/flatpak-build */
+    static QString flatpakDir();
+    static QString flatpakCacheDir();
 
     /* The packages @guestDir builds, those of its components.conf that it
        has a spec for: tools, mesa, kwin; for @release, those built for it
@@ -116,6 +120,16 @@ public:
        then "dep PACKAGE HASH" for each package it is built against (its
        deps= in components.conf) */
     static QByteArray inputLines(const QString &guestDir, const QString &package);
+    /* The Mesa for Flatpak apps of @guestDir (components.conf's kind=flatpak), if any */
+    static QString flatpakId(const QString &guestDir);
+    /* What build-flatpak.sh's inputs_lines prints: sha256sum's lines for
+       build-flatpak.sh, the files of its folder and the patches its
+       branches.conf names, in the C locale's order of their paths; empty if
+       one cannot be read, or without it */
+    static QByteArray flatpakLines(const QString &guestDir);
+    static QString flatpakHash(const QString &guestDir);
+    /* The inputs of the build in @flatpakDir, empty if none */
+    static QString builtFlatpak(const QString &flatpakDir);
     /* What build-medium.sh records of itself */
     static QString mediumHash(const QString &guestDir);
     /* The inputs @package's last build in @rpmsDir was made from; empty if none */
@@ -126,10 +140,12 @@ public:
     /* Of guestDir()'s tools for Fedora @release */
     static State releaseState(const QString &release);
     /* The steps a build takes now: the packages for @release not built from
-       @guestDir's sources in @rpmsDir, then the medium */
+       @guestDir's sources in @rpmsDir, the Mesa for Flatpak apps where the
+       medium carries it and @flatpakDir (flatpakDir() when empty) has not it
+       so, then the medium */
     static QList<Step> plan(const QString &guestDir, const QString &rpmsDir,
-                            const QString &release = {});
-    /* The step that builds @name, a package or "medium" */
+                            const QString &release = {}, const QString &flatpakDir = {});
+    /* The step that builds @name, a package, the Mesa for Flatpak apps or "medium" */
     static Step step(const QString &guestDir, const QString &name);
 
     /* The commands the scripts need that are not in PATH */
@@ -158,6 +174,9 @@ public:
     void setRpmsDir(const QString &dir) { m_rpmsDir = dir; }
     void setCacheDir(const QString &dir) { m_cacheDir = dir; }
     void setMediumImage(const QString &image) { m_image = image; }
+    /* Defaults: flatpakDir(), flatpakCacheDir() */
+    void setFlatpakDir(const QString &dir) { m_flatpakDir = dir; }
+    void setFlatpakCacheDir(const QString &dir) { m_flatpakCacheDir = dir; }
     void setMeminfo(const QString &path) { m_meminfo = path; }
     /* How often a build waiting for memory looks again */
     void setMemoryPoll(int ms);
@@ -254,6 +273,8 @@ private:
     QString m_rpmsDir;
     QString m_cacheDir;
     QString m_image;
+    QString m_flatpakDir;
+    QString m_flatpakCacheDir;
     QString m_meminfo;
 
     bool m_running = false;

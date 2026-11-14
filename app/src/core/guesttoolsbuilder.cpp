@@ -173,6 +173,16 @@ QString GuestToolsBuilder::manifestOf(const QString &image)
     return (image.endsWith(".img") ? image.chopped(4) : image) + ".json";
 }
 
+QString GuestToolsBuilder::flatpakDir()
+{
+    return GuestTools::dataDir() + "/flatpak";
+}
+
+QString GuestToolsBuilder::flatpakCacheDir()
+{
+    return Paths::cacheDir() + "/flatpak-build";
+}
+
 QStringList GuestToolsBuilder::packages(const QString &guestDir, const QString &release)
 {
     Builds::Places places;
@@ -296,6 +306,69 @@ QString GuestToolsBuilder::inputsHash(const QString &guestDir, const QString &pa
                                  QCryptographicHash::hash(lines, QCryptographicHash::Sha256).toHex());
 }
 
+QString GuestToolsBuilder::flatpakId(const QString &guestDir)
+{
+    Builds::Places places;
+
+    if (guestDir.isEmpty()) {
+        return {};
+    }
+    places.guestDir = guestDir;
+    for (const Builds::Component &c : Builds::load(places)) {
+        if (c.kind == Builds::Kind::Flatpak) {
+            return c.id;
+        }
+    }
+    return {};
+}
+
+QByteArray GuestToolsBuilder::flatpakLines(const QString &guestDir)
+{
+    const QString id = flatpakId(guestDir);
+    QList<QByteArray> files = {"build-flatpak.sh"};
+    QByteArray lines;
+
+    if (id.isEmpty() || !listFiles(guestDir, id, files)) {
+        return {};
+    }
+    Builds::Places places;
+    places.guestDir = guestDir;
+    for (const Builds::FlatpakBranch &b :
+         Builds::flatpakBranches(Builds::find(Builds::load(places), id))) {
+        for (const QString &patch : b.patches) {
+            files << QFile::encodeName(patch);
+        }
+    }
+    /* sort -zu */
+    std::sort(files.begin(), files.end());
+    files.erase(std::unique(files.begin(), files.end()), files.end());
+    for (const QByteArray &name : std::as_const(files)) {
+        QFile file(guestDir + '/' + QFile::decodeName(name));
+        QCryptographicHash hash(QCryptographicHash::Sha256);
+
+        if (!file.open(QIODevice::ReadOnly) || !hash.addData(&file)) {
+            return {};
+        }
+        lines += hash.result().toHex() + "  " + name + '\n';
+    }
+    return lines;
+}
+
+QString GuestToolsBuilder::flatpakHash(const QString &guestDir)
+{
+    const QByteArray lines = flatpakLines(guestDir);
+
+    return lines.isEmpty() ? QString()
+                           : QString::fromLatin1(
+                                 QCryptographicHash::hash(lines, QCryptographicHash::Sha256).toHex());
+}
+
+QString GuestToolsBuilder::builtFlatpak(const QString &flatpakDir)
+{
+    return flatpakDir.isEmpty() ? QString()
+                                : QString::fromLatin1(readFile(flatpakDir + "/.inputs")).trimmed();
+}
+
 QString GuestToolsBuilder::mediumHash(const QString &guestDir)
 {
     QFile script(guestDir + "/build-medium.sh");
@@ -335,6 +408,12 @@ GuestToolsBuilder::State GuestToolsBuilder::state(const QString &guestDir, const
             return State::Outdated;
         }
     }
+    /* and the Mesa for Flatpak apps, which the medium carries */
+    if (const QString id = flatpakId(guestDir);
+        !id.isEmpty() && componentOf(guestDir, "medium").deps.contains(id) &&
+        made.inputs.value(id) != flatpakHash(guestDir)) {
+        return State::Outdated;
+    }
     return made.inputs.value("medium") == mediumHash(guestDir) ? State::UpToDate
                                                                 : State::Outdated;
 }
@@ -360,7 +439,8 @@ GuestToolsBuilder::Step GuestToolsBuilder::step(const QString &guestDir, const Q
 
 QList<GuestToolsBuilder::Step> GuestToolsBuilder::plan(const QString &guestDir,
                                                        const QString &rpmsDir,
-                                                       const QString &release)
+                                                       const QString &release,
+                                                       const QString &flatpakDir)
 {
     QList<Step> steps;
 
@@ -368,6 +448,15 @@ QList<GuestToolsBuilder::Step> GuestToolsBuilder::plan(const QString &guestDir,
         const QString built = builtInputs(rpmsDir, package);
         if (built.isEmpty() || built != inputsHash(guestDir, package)) {
             steps << step(guestDir, package);
+        }
+    }
+    /* the Mesa for Flatpak apps, which the medium carries */
+    if (const QString id = flatpakId(guestDir);
+        !id.isEmpty() && componentOf(guestDir, "medium").deps.contains(id)) {
+        const QString built =
+            builtFlatpak(flatpakDir.isEmpty() ? GuestToolsBuilder::flatpakDir() : flatpakDir);
+        if (built.isEmpty() || built != flatpakHash(guestDir)) {
+            steps << step(guestDir, id);
         }
     }
     steps << step(guestDir, "medium");
@@ -484,7 +573,8 @@ void GuestToolsBuilder::start()
     const QString guest = m_guestDir.isEmpty() ? guestDir() : m_guestDir;
 
     if (!m_running) {
-        begin(plan(guest, m_rpmsDir.isEmpty() ? rpmsDir(m_release) : m_rpmsDir, m_release));
+        begin(plan(guest, m_rpmsDir.isEmpty() ? rpmsDir(m_release) : m_rpmsDir, m_release,
+                   m_flatpakDir));
     }
 }
 
@@ -646,19 +736,27 @@ void GuestToolsBuilder::run()
     const QString rpms = m_rpmsDir.isEmpty() ? rpmsDir(m_runRelease) : m_rpmsDir;
     const QString cache = m_cacheDir.isEmpty() ? cacheDir(m_runRelease) : m_cacheDir;
     const QString image = m_image.isEmpty() ? mediumImage(m_runRelease) : m_image;
+    const QString flatpak = m_flatpakDir.isEmpty() ? flatpakDir() : m_flatpakDir;
+    const bool isFlatpak = componentOf(m_guest, step.name).kind == Builds::Kind::Flatpak;
     const QString bash = QStandardPaths::findExecutable("bash");
     QProcessEnvironment env = QProcessEnvironment::systemEnvironment();
     QStringList args;
 
     if (step.name == "medium") {
         args << m_guest + "/build-medium.sh";
+    } else if (isFlatpak) {
+        args << m_guest + "/build-flatpak.sh" << "--verbose";
     } else {
         args << m_guest + "/build-rpms.sh" << "--verbose" << step.name;
     }
-    /* where the app looks for them, whatever the scripts' defaults */
+    /* where the app looks for them, whatever the scripts' defaults; the
+       Mesa for Flatpak apps keeps a cache of its own */
     env.insert("RPMS_DIR", rpms);
-    env.insert("CACHE_DIR", cache);
+    env.insert("CACHE_DIR", !isFlatpak                  ? cache
+                            : m_flatpakCacheDir.isEmpty() ? flatpakCacheDir()
+                                                          : m_flatpakCacheDir);
     env.insert("OUT", image);
+    env.insert("FLATPAK_DIR", flatpak);
     env.insert("FEDORA_RELEASE", m_runRelease);
 
     m_process = new QProcess(this);
@@ -690,8 +788,8 @@ void GuestToolsBuilder::run()
         stepDone(code, status == QProcess::CrashExit);
     });
 
-    append(QString("$ FEDORA_RELEASE=%1 RPMS_DIR=%2 CACHE_DIR=%3 OUT=%4 bash %5\n")
-               .arg(m_runRelease, rpms, cache, image, args.join(' ')));
+    append(QString("$ FEDORA_RELEASE=%1 RPMS_DIR=%2 CACHE_DIR=%3 OUT=%4 FLATPAK_DIR=%5 bash %6\n")
+               .arg(m_runRelease, rpms, env.value("CACHE_DIR"), image, flatpak, args.join(' ')));
     m_process->start(bash.isEmpty() ? QStringLiteral("/bin/bash") : bash, args);
     /* gone already if bash could not start */
     if (m_process) {

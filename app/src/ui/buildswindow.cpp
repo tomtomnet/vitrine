@@ -675,7 +675,9 @@ void BuildsWindow::refreshItems()
         if (c.kind == Kind::Package && version.isEmpty()) {
             version = Builds::source(c).revision.section('-', 0, 0);
         }
-        m_items.value(id)->setText(NameColumn, c.kind == Kind::Medium || version.isEmpty()
+        /* the Mesa for Flatpak apps: one for each runtime, in its Source */
+        m_items.value(id)->setText(NameColumn, c.kind == Kind::Medium || c.kind == Kind::Flatpak ||
+                                                       version.isEmpty()
                                                    ? c.title
                                                    : c.title + ' ' + version);
         refreshItem(id);
@@ -1051,15 +1053,33 @@ void BuildsWindow::showSource()
                                                  shortUrl(source.url).toHtmlEscaped()));
         }
         break;
+    case Kind::Flatpak: {
+        QStringList parts;
+        for (const Builds::FlatpakBranch &b : Builds::flatpakBranches(c)) {
+            parts << tr("Mesa %1 for the runtimes %2 (commit %3)")
+                         .arg(b.mesa.toHtmlEscaped(), b.branch.toHtmlEscaped(),
+                              "<code>" + b.commit.left(12).toHtmlEscaped() + "</code>");
+        }
+        rows += row(tr("Source:"),
+                    tr("<a href=\"%1\">%2</a>'s recipe, the one of Flathub's: %3")
+                        .arg(source.url.toHtmlEscaped(), shortUrl(source.url).toHtmlEscaped(),
+                             parts.join(", ")));
+        break;
+    }
     case Kind::Medium: {
         QStringList parts;
+        QStringList others;
         for (const QString &dep : c.deps) {
             const Component d = m_manager->component(dep);
             if (d.isValid()) {
-                parts << d.title.toHtmlEscaped();
+                (d.kind == Kind::Flatpak ? others : parts) << d.title.toHtmlEscaped();
             }
         }
-        rows += row(tr("Made of:"), tr("the packages %1, and the installer").arg(parts.join(", ")));
+        rows += row(tr("Made of:"),
+                    others.isEmpty()
+                        ? tr("the packages %1, and the installer").arg(parts.join(", "))
+                        : tr("the packages %1; %2 and the installer")
+                              .arg(parts.join(", "), others.join(", ")));
         break;
     }
     case Kind::System:

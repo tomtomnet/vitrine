@@ -218,6 +218,49 @@ private slots:
         QVERIFY(BuildsModel::patchGroups(m, "virglrenderer").isEmpty());
     }
 
+    /*
+     * The Mesa for Flatpak apps (a guest/ with flatpak/): one of the guest
+     * tools, before the medium, which a build of it brings; its title alone,
+     * its runtimes in its source, and the medium made of it too
+     */
+    void flatpakMesa()
+    {
+        BuildManager m;
+        const Builds::Places places = setUp(m, "flatpak");
+        QVERIFY(!places.guestDir.isEmpty());
+        QVERIFY(write(places.guestDir + "/flatpak/branches.conf",
+                      "[25.08]\ncommit=279b0ea50eb42917af81a28d4582f11a5d18a39c\nmesa=26.2.7\n"
+                      "patches=mesa/fix.patch\n"));
+        QVERIFY(write(places.guestDir + "/mesa/fix.patch", "--- a\n+++ b\n"));
+        QVERIFY(write(places.guestDir + "/build-flatpak.sh", "#!/bin/bash\n", true));
+        m.refresh();
+
+        QCOMPARE(BuildsModel::componentsOf(m, Group::Guest),
+                 QStringList({"tools", "mesa", "flatpak", "medium"}));
+        QCOMPARE(m.component("flatpak").kind, Builds::Kind::Flatpak);
+        QCOMPARE(BuildsModel::title(m, "flatpak"), "Mesa for Flatpak apps");
+        QCOMPARE(m.plan({"flatpak"}), QStringList({"flatpak", "medium"}));
+        /* built: its Mesa versions, which its title does not show */
+        Builds::Places built = places;
+        built.flatpakDir = m_tmp.filePath("flatpak/data/flatpak");
+        QVERIFY(write(built.flatpakDir + "/.inputs", "other\n"));
+        QVERIFY(write(built.flatpakDir + "/branches", "25.08 26.2.7 279b0ea5\n"));
+        m.setPlaces(built);
+        QCOMPARE(m.status("flatpak").version, "Mesa 26.2.7 for 25.08");
+        QCOMPARE(BuildsModel::title(m, "flatpak"), "Mesa for Flatpak apps");
+        m.setPlaces(places);
+        const BuildsModel::Details d = BuildsModel::details(m, "flatpak", unknownSize);
+        QCOMPARE(labels(d), QStringList({"Source", "Patches"}));
+        QCOMPARE(d.properties[0].link, "https://gitlab.com/freedesktop-sdk/freedesktop-sdk");
+        QCOMPARE(Markup::plain(d.properties[0].value),
+                 "gitlab.com/freedesktop-sdk/freedesktop-sdk's recipe, the one of Flathub's: "
+                 "Mesa 26.2.7 for the runtimes 25.08 (commit 279b0ea50eb4)");
+        const BuildsModel::Details medium = BuildsModel::details(m, "medium", unknownSize);
+        QCOMPARE(labels(medium).value(0), "Made of");
+        QCOMPARE(Markup::plain(medium.properties[0].value),
+                 "the packages vitrine-guest-tools, Mesa; Mesa for Flatpak apps and the installer");
+    }
+
     /* During a run: each component's part, how far the compiler is, the run's words */
     void duringARun()
     {

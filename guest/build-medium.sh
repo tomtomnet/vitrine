@@ -15,7 +15,10 @@
 #      Mutter the medium keeps the guest's own, without the proxy there is no
 #      nested desktop).  A package built against another (its deps=: KWin
 #      against KWayland) goes on the medium only with that one's packages of
-#      the build it was built against: else no medium
+#      the build it was built against: else no medium.
+#      $FLATPAK_DIR [~/.local/share/vitrine/guest-tools/flatpak]: the Mesa for
+#      Flatpak apps of build-flatpak.sh (a dep of kind=flatpak), every
+#      release's: without it Flatpak apps keep Flathub's
 # Out: $OUT [~/.local/share/vitrine/guest-tools/vitrine-guest-tools-fcRELEASE.img]
 #      and its manifest beside it (.json: versions, packages, and the inputs
 #      of the packages and of this script, which tell vitrine whether the
@@ -32,6 +35,7 @@ here=$(cd -- "$(dirname -- "$(readlink -f "${BASH_SOURCE[0]}")")" && pwd)
 release=${FEDORA_RELEASE:-44}
 data=${XDG_DATA_HOME:-$HOME/.local/share}/vitrine/guest-tools
 rpms=${RPMS_DIR:-$data/rpms/fc$release}
+flatpak=${FLATPAK_DIR:-$data/flatpak}
 out=${OUT:-$data/vitrine-guest-tools-fc$release.img}
 label=VITRINETOOL
 
@@ -74,6 +78,13 @@ for_release() {
 		}
 		END { exit found && !ok }' "$here/components.conf"
 }
+# What the section @1 is: its kind= ("" for a package)
+kind_of() {
+	[ -f "$here/components.conf" ] || return 0
+	awk -v p="$1" '
+		/^[[:space:]]*\[/ { s = $0; gsub(/^[[:space:]]*\[|\][[:space:]]*$/, "", s); next }
+		s == p && /^kind=/ { sub(/^kind=/, ""); print; exit }' "$here/components.conf"
+}
 # The packages @1 is built against: its section's deps= (as build-rpms.sh's)
 deps_of() {
 	[ -f "$here/components.conf" ] || return 0
@@ -88,12 +99,25 @@ read -r -a deps < <(awk '/^[[:space:]]*\[/ { s = $0 }
 	s ~ /^[[:space:]]*\[medium\]/ && /^deps=/ { sub(/^deps=/, ""); print; exit }' "$here/components.conf" 2> /dev/null) || true
 [ ${#deps[@]} -gt 0 ] || deps=(tools mesa kwin)
 medium_packages=()
+flatpak_id=
 for t in "${deps[@]}"; do
-	! for_release "$t" || medium_packages+=("$t")
+	if [ "$(kind_of "$t")" = flatpak ]; then
+		flatpak_id=$t
+	elif for_release "$t"; then
+		medium_packages+=("$t")
+	fi
 done
-# not while build-rpms.sh replaces the packages
+# not while build-rpms.sh replaces the packages, nor build-flatpak.sh its own
 exec 9> "$rpms/.lock"
 flock -n 9 || die "a build of the guest tools is running into $rpms"
+if [ -n "$flatpak_id" ]; then
+	if [ -d "$(dirname "$flatpak")" ]; then
+		exec 8> "$flatpak.lock"
+		flock -s -n 8 || die "a build of the Mesa for Flatpak apps is running into $flatpak"
+	fi
+	[ -s "$flatpak/.inputs" ] && [ -d "$flatpak/repo" ] ||
+		say "warning: no Mesa for Flatpak apps in $flatpak (guest/build-flatpak.sh): Flatpak apps keep Flathub's"
+fi
 for t in "${medium_packages[@]}"; do
 	[ "$t" = tools ] || ls "$rpms/$t"/*.rpm > /dev/null 2>&1 ||
 		say "warning: no $t packages in $rpms/$t (guest/build-rpms.sh $t): the medium keeps the guest's own"
@@ -114,6 +138,15 @@ for t in "${medium_packages[@]}"; do
 done
 
 stage=$(mktemp -d)
+# the Mesa for Flatpak apps: its OSTree repository, its branches
+flatpak_key=
+flatpak_branches=()
+if [ -n "$flatpak_id" ] && [ -s "$flatpak/.inputs" ] && [ -d "$flatpak/repo" ]; then
+	flatpak_key=$(head -c 64 "$flatpak/.inputs")
+	while read -r b m _; do
+		[ -z "$b" ] || flatpak_branches+=("$b:$m")
+	done < "$flatpak/branches"
+fi
 img=$out.new
 manifest=${out%.img}.json.new
 # stopped (Ctrl+C, vitrine's Stop): no half-made medium; the last one stays
@@ -128,6 +161,14 @@ for t in "${medium_packages[@]}"; do
 	find "$rpms/$t" -maxdepth 1 -name '*.rpm' 2> /dev/null || true
 done |
 	grep -Ev -- '-(debuginfo|debugsource|doc)-' | while read -r f; do cp "$f" "$stage/repo/"; done
+if [ -n "$flatpak_key" ]; then
+	say "phase: adding the Mesa for Flatpak apps"
+	mkdir -p "$stage/flatpak"
+	# not its temporary files, nor its lock
+	cp -r "$flatpak/repo" "$stage/flatpak/repo"
+	rm -rf "$stage/flatpak/repo/tmp" "$stage/flatpak/repo/.lock"
+	cp "$flatpak/branches" "$stage/flatpak/branches"
+fi
 
 say "phase: making the repository"
 if command -v createrepo_c > /dev/null; then
@@ -220,6 +261,16 @@ EOF
 		echo "- Mutter $mutter_evr: the first seconds of motion after a new screen mode (the"
 		echo "  VM's screen resized, or out of full screen) no longer skip refreshes"
 	fi
+	if [ ${#flatpak_branches[@]} -gt 0 ]; then
+		parts=()
+		for e in "${flatpak_branches[@]}"; do
+			parts+=("${e#*:} for ${e%%:*}")
+		done
+		echo "- Mesa for Flatpak apps: vitrine's Mesa with native context in place of"
+		echo "  Flathub's GL extension (org.freedesktop.Platform.GL.default) of the runtimes"
+		echo "  the guest has, Mesa $(join "${parts[@]}"); for runtimes installed later"
+		echo "  too. Flatpak updates keep it; --uninstall brings Flathub's back"
+	fi
 	following=()
 	for e in "$qtbase_evr" "$ksvg_evr" "$kirigami_evr" "$mutter_evr"; do
 		[ -z "$e" ] || following+=("$e")
@@ -269,8 +320,8 @@ EOF
 } > "$stage/README.txt"
 
 # the medium's identity: what it would install, and how
-medium_id=$(cat "$stage/packages.txt" "$stage/install" "$stage/bootstrap" "$stage/vitrine-agent" |
-	sha256sum | cut -c1-16)
+medium_id=$({ cat "$stage/packages.txt" "$stage/install" "$stage/bootstrap" "$stage/vitrine-agent"
+	[ -z "$flatpak_key" ] || echo "flatpak $flatpak_key"; } | sha256sum | cut -c1-16)
 cat > "$stage/medium.env" <<EOF
 TOOLS_VERSION=$tools_version
 TOOLS_EVR=$tools_evr
@@ -284,6 +335,7 @@ QTBASE_VERSION=${qtbase_evr%%-*}
 KSVG_VERSION=${ksvg_evr%%-*}
 KIRIGAMI_VERSION=${kirigami_evr%%-*}
 MUTTER_VERSION=${mutter_evr%%-*}
+FLATPAK_GL="${flatpak_branches[*]}"
 EOF
 packages_json=$(awk '{ printf "%s{\"name\": \"%s\", \"evr\": \"%s\", \"arch\": \"%s\"}", (NR > 1 ? ", " : ""), $1, $2, $3 }' "$stage/packages.txt")
 # what it is made from: the inputs build-rpms.sh recorded for each package
@@ -294,6 +346,7 @@ for t in "${medium_packages[@]}"; do
 		inputs_json+="\"$t\": \"$(head -c 64 "$rpms/$t/.inputs")\", "
 	fi
 done
+[ -z "$flatpak_key" ] || inputs_json+="\"$flatpak_id\": \"$flatpak_key\", "
 inputs_json+="\"medium\": \"$(sha256sum < "$here/build-medium.sh" | cut -d' ' -f1)\""
 cat > "$stage/manifest.json" <<EOF
 {
@@ -311,6 +364,7 @@ cat > "$stage/manifest.json" <<EOF
   "ksvg": "$ksvg_evr",
   "kirigami": "$kirigami_evr",
   "mutter": "$mutter_evr",
+  "flatpak": "${flatpak_branches[*]}",
   "built": "$(date -u +%Y-%m-%dT%H:%M:%SZ)",
   "inputs": {$inputs_json},
   "packages": [$packages_json]
@@ -334,5 +388,5 @@ echo "$out: $((kib / 1024)) MiB, tools $tools_evr, medium $medium_id"
 echo "  Mesa: ${mesa_evr:-none}   KWin: ${kwin_evr:-none}   KWayland: ${kwayland_evr:-none}"
 echo "  KPipeWire: ${kpipewire_evr:-none}   proxy: ${proxy_evr:-none}"
 echo "  Qt Base: ${qtbase_evr:-none}   KSvg: ${ksvg_evr:-none}   Kirigami: ${kirigami_evr:-none}"
-echo "  Mutter: ${mutter_evr:-none}"
+echo "  Mutter: ${mutter_evr:-none}   Flatpak: ${flatpak_branches[*]:-none}"
 say "built: $out"

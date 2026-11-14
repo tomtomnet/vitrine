@@ -2,7 +2,7 @@
 # exact version, and dnf takes an installed one of the same version as done.
 Name:           vitrine-guest-tools
 Version:        0.1.0
-Release:        45%{?dist}
+Release:        46%{?dist}
 Summary:        vitrine guest tools: patched virtio-gpu driver, settings and agent
 
 # the driver's sources (dkms/vendor, dkms/patches) are the kernel's: MIT
@@ -45,9 +45,11 @@ host it gives the guest's own sessions KWin's shorter lone-frame lead), the
 nested desktop's session (a boot with the VM's Nested desktop box logs
 Plasma into a window of the host's desktop, with KWin's settings for the
 host's GPU), and the vitrine agent, which tells vitrine the state of the
-guest tools and installs their updates.  vitrine's Mesa, KWin with the
-KWayland it is built against, KPipeWire, the nested desktop's proxy, Qt Base,
-KSvg, Kirigami and Mutter come from the same tools medium.
+guest tools and installs their updates; and vitrine's Mesa for Flatpak apps
+in place of Flathub's GL extension, for the runtimes installed later too.
+vitrine's Mesa, KWin with the KWayland it is built against, KPipeWire, the
+nested desktop's proxy, Qt Base, KSvg, Kirigami, Mutter and the Mesa for
+Flatpak apps come from the same tools medium.
 
 %prep
 %autosetup
@@ -65,9 +67,12 @@ install -Dm 0644 depmod.d/vitrine-virtio-gpu.conf %{buildroot}%{_prefix}/lib/dep
 install -Dm 0644 modprobe.d/vitrine-virtio-gpu.conf %{buildroot}%{_prefix}/lib/modprobe.d/vitrine-virtio-gpu.conf
 install -Dm 0644 environment.d/60-vitrine-kwin.conf %{buildroot}%{_prefix}/lib/environment.d/60-vitrine-kwin.conf
 install -Dm 0644 udev/90-vitrine-agent.rules %{buildroot}%{_udevrulesdir}/90-vitrine-agent.rules
-for f in systemd/*.service; do
+for f in systemd/*.service systemd/*.path; do
 	sed 's/@VERSION@/%{version}/' "$f" > tmp && install -Dm 0644 tmp %{buildroot}%{_unitdir}/$(basename "$f")
 done
+# vitrine's Mesa for Flatpak apps (libexec/flatpak-gl): flatpak runs the
+# trigger after its transactions, for the runtimes installed later
+install -Dm 0755 flatpak/vitrine-gl.trigger %{buildroot}%{_datadir}/flatpak/triggers/vitrine-gl.trigger
 install -Dm 0644 systemd/80-vitrine-guest-tools.preset %{buildroot}%{_presetdir}/80-vitrine-guest-tools.preset
 # the nested desktop (nested/: the research's session, nested/README.md): the
 # session, its settings, its entry for the login screen (found only in a
@@ -101,7 +106,7 @@ install -d %{buildroot}%{_sharedstatedir}/%{name}
 install -d %{buildroot}%{_sysconfdir}/modprobe.d
 touch %{buildroot}%{_sysconfdir}/modprobe.d/vitrine-virtio-gpu.conf
 
-%global units vitrine-agent.service vitrine-mtrr-hostmem-wb.service vitrine-virtio-gpu-check.service vitrine-kernel-settings.service vitrine-nested-boot.service
+%global units vitrine-agent.service vitrine-mtrr-hostmem-wb.service vitrine-virtio-gpu-check.service vitrine-kernel-settings.service vitrine-nested-boot.service vitrine-flatpak-gl.path vitrine-flatpak-gl.service
 
 %post
 %systemd_post %{units}
@@ -162,6 +167,9 @@ fi
 %{_unitdir}/vitrine-virtio-gpu-check.service
 %{_unitdir}/vitrine-kernel-settings.service
 %{_unitdir}/vitrine-nested-boot.service
+%{_unitdir}/vitrine-flatpak-gl.path
+%{_unitdir}/vitrine-flatpak-gl.service
+%{_datadir}/flatpak/triggers/vitrine-gl.trigger
 %dir %{_unitdir}/plasmalogin.service.d
 %{_unitdir}/plasmalogin.service.d/vitrine-nested.conf
 %dir %{_userunitdir}/spice-vdagent.service.d
@@ -183,6 +191,17 @@ fi
 %dir %{_sharedstatedir}/%{name}
 
 %changelog
+* Sat Nov 14 2026 vitrine <noreply@anthropic.com> - 0.1.0-46
+- vitrine's Mesa for Flatpak apps: the medium carries freedesktop-sdk's
+  GL extension (org.freedesktop.Platform.GL.default, the one Flathub
+  ships) built with vitrine's Mesa patches and the Intel and AMD native
+  contexts, for the runtimes 25.08 and 26.08; the installer puts it in
+  place of Flathub's for the runtimes the guest has (libexec/flatpak-gl,
+  the flatpak remote vitrine-gl), and for those installed later: flatpak's
+  trigger with vitrine-flatpak-gl.path after the transactions of apps, and
+  vitrine-flatpak-gl.service at boot.  flatpak update keeps it;
+  --uninstall brings Flathub's back
+
 * Thu Nov 12 2026 vitrine <noreply@anthropic.com> - 0.1.0-45
 - a KDE guest's own session (Plasma on the VM's screen) gets KWin's
   lone-frame lead of 1000 µs wherever the guest reaches the host's GPU

@@ -1,5 +1,6 @@
-# The guest tools: what builds them (build-rpms.sh, build-medium.sh) and the
-# sources of their packages, installed where the app looks for them
+# The guest tools: what builds them (build-rpms.sh, build-flatpak.sh,
+# build-medium.sh) and the sources of their packages and of the Mesa for
+# Flatpak apps (flatpak/), installed where the app looks for them
 # (share/vitrine/guest); a build tree's app uses the source tree's guest/
 include(GNUInstallDirs)
 set(VITRINE_GUEST_DESTINATION ${CMAKE_INSTALL_DATADIR}/vitrine/guest)
@@ -15,7 +16,7 @@ else()
     set(vitrine_guest "\${CMAKE_INSTALL_PREFIX}/${VITRINE_GUEST_DESTINATION}")
 endif()
 install(CODE "file(REMOVE_RECURSE \"\$ENV{DESTDIR}${vitrine_guest}\")")
-install(PROGRAMS build-rpms.sh build-medium.sh rpm-build-inside.sh
+install(PROGRAMS build-rpms.sh build-flatpak.sh build-medium.sh rpm-build-inside.sh
     DESTINATION ${VITRINE_GUEST_DESTINATION})
 install(FILES components.conf DESTINATION ${VITRINE_GUEST_DESTINATION})
 # Every package's folder, as components.conf names them (spec=FOLDER/...): a
@@ -32,6 +33,9 @@ foreach(spec IN LISTS vitrine_guest_specs)
     endif()
     list(APPEND vitrine_guest_packages ${folder})
 endforeach()
+# the Mesa for Flatpak apps' (kind=flatpak), whose patches are guest/mesa's
+# and its own
+list(APPEND vitrine_guest_packages flatpak)
 list(REMOVE_DUPLICATES vitrine_guest_packages)
 # the installer and the agent keep their modes
 install(DIRECTORY ${vitrine_guest_packages} DESTINATION ${VITRINE_GUEST_DESTINATION}
@@ -39,8 +43,10 @@ install(DIRECTORY ${vitrine_guest_packages} DESTINATION ${VITRINE_GUEST_DESTINAT
 # the nested desktop session's KWin settings, for nested.conf as older guest
 # tools shipped it and as this tree does (tests/nested-session.sh), and the
 # boot check's lone-frame lead for the guest's own sessions
-# (tests/gpu-check-lead.sh)
+# (tests/gpu-check-lead.sh), and vitrine's Mesa for Flatpak apps in place of
+# Flathub's and back (tests/flatpak-gl.sh)
 if(BUILD_TESTING)
     add_test(NAME nestedsession COMMAND bash ${CMAKE_CURRENT_SOURCE_DIR}/tests/nested-session.sh)
     add_test(NAME gpuchecklead COMMAND bash ${CMAKE_CURRENT_SOURCE_DIR}/tests/gpu-check-lead.sh)
+    add_test(NAME flatpakgl COMMAND bash ${CMAKE_CURRENT_SOURCE_DIR}/tests/flatpak-gl.sh)
 endif()

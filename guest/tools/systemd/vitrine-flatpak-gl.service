@@ -1,0 +1,15 @@
+# vitrine's Mesa for Flatpak apps (the tools medium's, kept in
+# /var/lib/vitrine-guest-tools/flatpak-gl) for each runtime branch the guest
+# has: started by vitrine-flatpak-gl.path after flatpak's transactions of
+# apps, and at each boot for a runtime installed alone (flatpak runs its
+# triggers for apps only).
+[Unit]
+Description=vitrine: vitrine's Mesa for the Flatpak runtimes
+ConditionPathExists=/var/lib/vitrine-guest-tools/flatpak-gl/branches
+
+[Service]
+Type=oneshot
+ExecStart=/usr/libexec/vitrine-guest-tools/flatpak-gl sync
+
+[Install]
+WantedBy=multi-user.target

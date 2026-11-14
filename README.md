@@ -151,8 +151,10 @@ files it changes, and the guest packages compile through ccache.
    with rootless podman, then makes the medium VMs install them from: 40 to
    70 minutes the first time (Mesa ~15-25 min, Qt Base ~15, KWin ~10,
    Kirigami ~3, Mutter ~3 for Fedora 45, the proxy, KWayland, KPipeWire and
-   KSvg ~2 each, tools ~1), up to 10 GiB of memory. Mesa, Qt Base and KWin
-   wait until that much is free, unless told to build anyway.
+   KSvg ~2 each, tools ~1; the Mesa for Flatpak apps, below, once for every
+   release: its downloads, then ~5-10 per runtime), up to 10 GiB of memory.
+   Mesa, Qt Base, KWin and the Mesa for Flatpak apps wait until that much is
+   free, unless told to build anyway.
    `guest/build-rpms.sh` then `guest/build-medium.sh`, with
    `FEDORA_RELEASE=45` for Fedora 45, do the same by hand, which vitrine
    takes in the same way.
@@ -197,6 +199,32 @@ files it changes, and the guest packages compile through ccache.
    with the rest of KDE Frameworks, of Qt or of GNOME, and the next guest
    tools bring vitrine's back. Install Guest Tools… says which Mutter the
    guest runs. `--uninstall` puts Fedora's builds of all of them back.
+
+   Flatpak apps bring their own Mesa: their runtime's GL extension from
+   Flathub (org.freedesktop.Platform.GL.default), which has AMD's native
+   context from runtime 26.08 on, and Intel's in none. The guest tools carry
+   vitrine's Mesa for Flatpak apps in its place: that extension built from
+   freedesktop-sdk's own recipe, the one Flathub ships, at pinned commits of
+   runtimes 25.08 and 26.08 (`guest/flatpak/branches.conf`), with the guest
+   Mesa's patches and both native contexts. The installer adds it as the
+   flatpak remote vitrine-gl and puts it in place of Flathub's for the
+   runtimes the guest has (the GNOME and KDE runtimes take the one of the
+   freedesktop runtime they are built on), and for those installed later:
+   after each install or update of an app (flatpak's trigger), and at the
+   next boot for a runtime installed alone. `flatpak update` keeps it. The
+   installer takes `FLATPAK_GL_DRIVERS=mesa-git` out of `/etc/environment`,
+   which would give apps Flathub's mesa-git extension instead; `--uninstall`
+   puts Flathub's extensions back, and that line where the mesa-git
+   extension is installed for every runtime the guest has (it enables that
+   extension alone: a runtime without it has no GPU driver at all).
+   Per-user Flatpak installations keep Flathub's. It is built once for every release, with
+   BuildStream in freedesktop-sdk's container: everything but Mesa comes
+   built from freedesktop-sdk's cache, about 17 GB the first time in
+   `~/.cache/vitrine/flatpak-build` (Clear Cache removes it, the next build
+   downloads it again), plus 3.4 GB of container images; then Mesa builds,
+   5 to 10 minutes per runtime. It adds about 290 MB to each medium and to
+   the disk of each guest that has flatpak. `guest/build-flatpak.sh` does
+   the same by hand.
 
    A VM's Console and Details tabs offer them only once its guest has said
    it runs Fedora 44 or 45: QEMU's guest agent tells at each boot (Fedora

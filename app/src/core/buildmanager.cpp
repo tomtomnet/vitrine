@@ -250,9 +250,10 @@ QStringList BuildManager::plan(const QStringList &ids) const
     for (const QString &id : ids) {
         add(id);
     }
-    /* a package reaches the VMs on the medium */
+    /* a package reaches the VMs on the medium, as the Mesa for Flatpak apps does */
     const bool package = std::any_of(wanted.begin(), wanted.end(), [&all](const QString &id) {
-        return Builds::find(all, id).kind == Kind::Package;
+        const Kind kind = Builds::find(all, id).kind;
+        return kind == Kind::Package || kind == Kind::Flatpak;
     });
     for (const Component &c : all) {
         if (package && c.kind == Kind::Medium && !wanted.contains(c.id)) {
@@ -794,10 +795,12 @@ void BuildManager::saveLog(const QString &id)
 
 QStringList BuildManager::cacheDirs() const
 {
-    /* every Fedora release's of the guest tools; the host packages' work
-       folder, and an older Vitrine's of its KWin */
+    /* every Fedora release's of the guest tools, and BuildStream's of the
+       Mesa for Flatpak apps (freedesktop-sdk's builds); the host packages'
+       work folder, and an older Vitrine's of its KWin */
     return m_cacheDirs.isEmpty() ? QStringList{StackBuilder::workDir(),
                                                Paths::cacheDir() + "/guest-build",
+                                               GuestToolsBuilder::flatpakCacheDir(),
                                                HostKde::workDir(), HostKde::oldWorkDir()}
                                  : m_cacheDirs;
 }
@@ -847,11 +850,15 @@ bool BuildManager::clearCache(QString *error)
         lockFiles << dir + "/.lock";
     }
     lockFiles << places.rpmsDir + "/.lock";
-    /* and those of the other Fedora releases' guest tools */
+    /* and those of the other Fedora releases' guest tools, and
+       build-flatpak.sh's beside its output */
     if (!m_placesSet) {
         for (const QString &r : GuestTools::releases()) {
             lockFiles << GuestToolsBuilder::rpmsDir(r) + "/.lock";
         }
+    }
+    if (!places.flatpakDir.isEmpty()) {
+        lockFiles << places.flatpakDir + ".lock";
     }
     /* host/kde/build.sh's, in each package's output (and its work folder's, above) */
     for (const QString &out : places.systemOut) {

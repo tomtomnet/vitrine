@@ -1,0 +1,13 @@
+# A Flatpak runtime installed after the guest tools gets vitrine's Mesa for
+# Flatpak apps too: flatpak runs vitrine-gl.trigger after each transaction
+# of its system installation that installs, updates or removes an app,
+# which writes this mark.
+[Unit]
+Description=vitrine: Flatpak runtimes installed, for vitrine's Mesa
+
+[Path]
+PathChanged=/var/lib/flatpak/.vitrine-gl-changed
+Unit=vitrine-flatpak-gl.service
+
+[Install]
+WantedBy=multi-user.target

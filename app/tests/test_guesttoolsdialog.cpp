@@ -644,6 +644,21 @@ private slots:
         const QString plasma = GuestToolsText::what(vm(), kde);
         QVERIFY2(!plasma.contains("Mutter") && plasma.contains("Mesa then stays at this version"),
                  qPrintable(plasma));
+        /* no Mesa for Flatpak apps on it: none said */
+        QVERIFY2(!plasma.contains("Flatpak"), qPrintable(plasma));
+        /* a medium with it: for both desktops, its Mesa for each runtime */
+        kde.flatpak = "25.08:26.2.7 26.08:26.2.6";
+        for (Vm *guest : {vm(), gnomeVm()}) {
+            const QString text = GuestToolsText::what(guest, kde);
+            QVERIFY2(text.contains("<li>vitrine's Mesa for Flatpak apps (Mesa 26.2.7 for 25.08, "
+                                   "Mesa 26.2.6 for 26.08), in place of Flathub's"),
+                     qPrintable(text));
+        }
+        QCOMPARE(GuestTools::parseManifest(R"({"mediumId": "m", "tools": "0.1.0-46.fc45",
+                                                "flatpak": "25.08:26.2.7 26.08:26.2.6"})",
+                                           "x.img")
+                     .flatpak,
+                 "25.08:26.2.7 26.08:26.2.6");
     }
 
     /* Which Mutter the guest runs, as its agent said: the guard of the user's test of m1 */

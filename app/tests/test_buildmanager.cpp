@@ -171,9 +171,11 @@ private slots:
         QCOMPARE(m.guestRelease(), "45");
         QCOMPARE(guestIds(), QStringList({"tools", "mesa", "kwayland", "kwin", "proxy", "kpipewire",
                                           "qtbase", "ksvg", "kirigami", "mutter", "medium"}));
+        /* the Mesa for Flatpak apps too, which this guest/ has not (no flatpak/) */
         QCOMPARE(m.component("medium").deps,
                  QStringList({"tools", "mesa", "kwayland", "kwin", "proxy", "kpipewire", "qtbase",
-                              "ksvg", "kirigami", "mutter"}));
+                              "ksvg", "kirigami", "mutter", "flatpak"}));
+        QVERIFY(!m.component("flatpak").isValid());
         QCOMPARE(m.plan({"medium"}),
                  QStringList({"tools", "mesa", "kwayland", "kwin", "proxy", "kpipewire", "qtbase",
                               "ksvg", "kirigami", "mutter", "medium"}));
@@ -564,6 +566,20 @@ private slots:
         QVERIFY(write(m_tmp.filePath("cache/go"), "\n"));
         QVERIFY(finished.wait(10000));
 
+        /* nor while build-flatpak.sh runs, its lock beside its output */
+        Builds::Places withFlatpak = places;
+        withFlatpak.flatpakDir = m_tmp.filePath("cache/data/flatpak");
+        m.setPlaces(withFlatpak);
+        QVERIFY(write(withFlatpak.flatpakDir + ".lock", ""));
+        const int flatpakFd =
+            ::open(QFile::encodeName(withFlatpak.flatpakDir + ".lock").constData(), O_WRONLY);
+        QVERIFY(flatpakFd >= 0);
+        QCOMPARE(::flock(flatpakFd, LOCK_EX | LOCK_NB), 0);
+        QVERIFY(!m.clearCache(&error));
+        QVERIFY2(error.contains("from a terminal"), qPrintable(error));
+        ::flock(flatpakFd, LOCK_UN);
+        ::close(flatpakFd);
+
         QVERIFY2(m.clearCache(&error), qPrintable(error));
         QVERIFY(!QFileInfo::exists(one));
         QVERIFY(!QFileInfo::exists(two));
@@ -571,6 +587,8 @@ private slots:
         QVERIFY(QFileInfo::exists(places.stackDir + "/virglrenderer"));
         /* nothing there: nothing to do */
         QVERIFY(m.clearCache(&error));
+        /* the app's: BuildStream's of the Mesa for Flatpak apps among them */
+        QVERIFY(BuildManager().cacheDirs().contains(GuestToolsBuilder::flatpakCacheDir()));
     }
 };
 

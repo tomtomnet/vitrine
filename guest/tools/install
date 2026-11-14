@@ -29,6 +29,12 @@
 #     compositor: the first seconds of motion after a new screen mode no
 #     longer skip refreshes), each where the guest has the version it is
 #     built from, all of its packages or none
+#   - vitrine's Mesa for Flatpak apps (the medium's flatpak/, where the guest
+#     has flatpak): Flathub's GL extension of the Flatpak runtimes as
+#     freedesktop-sdk builds it, with vitrine's Mesa patches and the native
+#     contexts, in place of Flathub's for the runtimes the guest has, and
+#     for those installed later (libexec/flatpak-gl); --uninstall brings
+#     Flathub's back
 # then keeps Mesa, KWin, KWayland, KPipeWire and the proxy at those versions
 # (dnf versionlock), and with vitrine's KWin Qt Base (that KWin is built
 # against its private API), KSvg and Kirigami (as the research's dev install
@@ -70,12 +76,15 @@
 #          --yes        ask nothing (the default off a terminal)
 #          --uninstall  remove the tools, back to Fedora's Mesa, KWin,
 #                       KWayland, KPipeWire, Qt Base, KSvg, Kirigami and
-#                       Mutter
+#                       Mutter, and Flathub's Mesa for Flatpak apps
 # The output goes to the journal too: journalctl -t vitrine-guest-tools
 set -uo pipefail
 
 medium=$(cd -- "$(dirname -- "$(readlink -f "${BASH_SOURCE[0]}")")" && pwd)
 state=/var/lib/vitrine-guest-tools
+flatpak_gl=/usr/libexec/vitrine-guest-tools/flatpak-gl
+# The medium's Mesa for Flatpak apps goes in where the guest has flatpak
+flatpak_gl_wanted() { [ -d "$medium/flatpak/repo" ] && command -v flatpak > /dev/null; }
 run=/run/vitrine-guest-tools
 lockfile=/etc/dnf/versionlock.toml
 override=/etc/modprobe.d/vitrine-virtio-gpu.conf
@@ -103,6 +112,7 @@ fi
 # The source packages of the builds that take the place of Fedora's
 sources="mesa kwin kwayland kpipewire qt6-qtbase kf6-ksvg kf6-kirigami mutter"
 n=0 total=6
+flatpak_gl_wanted && total=7
 step() { n=$((n + 1)); echo "== [$n/$total] $*"; }
 say() { echo "   $*"; }
 error=""
@@ -274,8 +284,18 @@ migrate_research() {
 
 if [ "$uninstall" = 1 ]; then
 	total=3
+	[ ! -d "$state/flatpak-gl" ] || total=4
 	step "Removing the version locks of Mesa, KWin, KWayland, KPipeWire, the proxy, Qt Base and Plasma"
 	versionlock || die "cannot edit $lockfile"
+	# before the package, which has flatpak-gl
+	if [ -d "$state/flatpak-gl" ]; then
+		step "Flathub's Mesa for Flatpak apps again"
+		if [ -x "$flatpak_gl" ]; then
+			"$flatpak_gl" remove || say "WARNING: see above: some of vitrine's Mesa for Flatpak apps stays"
+		else
+			say "WARNING: no $flatpak_gl: vitrine's Mesa for Flatpak apps stays (flatpak list --runtime)"
+		fi
+	fi
 	step "Removing vitrine-guest-tools (driver, settings, agent)"
 	if installed vitrine-guest-tools; then
 		dnf -y remove vitrine-guest-tools || die "dnf remove failed"
@@ -717,6 +737,7 @@ up_to_date() {
 	[ "$force" = 0 ] && [ "$(cat "$state/medium" 2> /dev/null)" = "$MEDIUM_ID" ] || return 1
 	[ ${#fedora_again[@]} = 0 ] && [ ${#plasma_move[@]} = 0 ] || return 1
 	rpm -q "${want[@]}" > /dev/null 2>&1 || return 1
+	! flatpak_gl_wanted || [ "$(cat "$state/flatpak-gl-medium" 2> /dev/null)" = "$MEDIUM_ID" ] || return 1
 	if [ "$use_kwin" = 1 ]; then [ -s "$state/kwin" ]; else [ ! -e "$state/kwin" ]; fi
 }
 if up_to_date; then
@@ -856,6 +877,21 @@ else
 	say "nothing changed"
 fi
 
+if flatpak_gl_wanted; then
+	step "Mesa for Flatpak apps"
+	# its own failure is no failure of the tools: said, and done again by
+	# the next run
+	rm -f "$state/flatpak-gl-medium"
+	if "$flatpak_gl" install "$medium/flatpak"; then
+		echo "$MEDIUM_ID" > "$state/flatpak-gl-medium"
+		# for the runtimes installed from now on, not only after a restart
+		systemctl start vitrine-flatpak-gl.path > /dev/null 2>&1 || true
+	else
+		flatpak_failed=1
+		say "WARNING: vitrine's Mesa for Flatpak apps is not in place everywhere (see above)"
+	fi
+fi
+
 step "Finishing"
 if [ "$use_kwin" = 1 ]; then
 	rpm -q kwin > "$state/kwin"
@@ -887,6 +923,9 @@ if [ -n "${driver_failed:-}" ]; then
 else
 	echo "The guest tools are installed."
 fi
+[ -z "${flatpak_failed:-}" ] ||
+	echo "Flatpak apps may still have Flathub's Mesa for some runtimes (see above): installing the tools again tries once more."
+
 [ "$plasma_after" = "$plasma" ] ||
 	echo "Plasma moved from $plasma to $KWIN_VERSION: restart the guest before going on with its desktop."
 if [ -e "$run/reboot-needed" ]; then

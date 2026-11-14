@@ -459,6 +459,118 @@ private slots:
     }
 
     /*
+     * The Mesa for Flatpak apps (kind=flatpak): a step before the medium
+     * while its folder has no build of these sources; build-flatpak.sh, into
+     * that folder and with a cache of its own, which the medium is told of
+     * too; and the medium out of date without it
+     */
+    void flatpakStep()
+    {
+        const QString guest = guestDir("flatpak-guest");
+        QVERIFY(!guest.isEmpty());
+        QVERIFY(write(guest + "/components.conf",
+                      "[tools]\nspec=tools/vitrine-guest-tools.spec\n"
+                      "[mesa]\nspec=mesa/mesa.spec\nheavy=1\n"
+                      "[flatpak]\ntitle=Mesa for Flatpak apps\nkind=flatpak\nheavy=1\n"
+                      "[medium]\nkind=medium\ndeps=tools mesa flatpak\n"));
+        QVERIFY(write(guest + "/flatpak/branches.conf",
+                      "[25.08]\nmesa=26.2.7\npatches=mesa/mesa-fix.patch\n"));
+        QVERIFY(write(guest + "/build-flatpak.sh", kFlatpakStandIn, true));
+        /* the medium's folders, as it is told them */
+        QVERIFY(write(guest + "/build-medium.sh",
+                      QByteArray(kMediumStandIn)
+                          .replace("echo \"$*\" >> \"$here/medium-args\"",
+                                   "echo \"$FLATPAK_DIR\" > \"$here/medium-flatpak\""),
+                      true));
+        const QString hash = GuestToolsBuilder::flatpakHash(guest);
+        QVERIFY(!hash.isEmpty());
+        QVERIFY(write(guest + "/flatpak-hash", hash.toUtf8() + '\n'));
+        QCOMPARE(GuestToolsBuilder::flatpakId(guest), "flatpak");
+        QCOMPARE(GuestToolsBuilder::flatpakId(guestDir("flatpak-none")), QString());
+        const QString rpms = m_tmp.filePath("flatpak/rpms");
+        const QString out = m_tmp.filePath("flatpak/data/flatpak");
+        const auto names = [&]() {
+            QStringList list;
+            for (const GuestToolsBuilder::Step &s : GuestToolsBuilder::plan(guest, rpms, "44", out)) {
+                list << s.name + (s.heavy ? "*" : "");
+            }
+            return list;
+        };
+
+        /* no package of build-rpms.sh */
+        QCOMPARE(GuestToolsBuilder::packages(guest), QStringList({"tools", "mesa"}));
+        QCOMPARE(names(), QStringList({"tools", "mesa*", "flatpak*", "medium"}));
+        QCOMPARE(GuestToolsBuilder::step(guest, "flatpak").text, "building Mesa for Flatpak apps");
+        QVERIFY(write(out + "/.inputs", "an older one\n"));
+        QCOMPARE(names(), QStringList({"tools", "mesa*", "flatpak*", "medium"}));
+        QVERIFY(write(out + "/.inputs", hash.toUtf8() + '\n'));
+        QCOMPARE(names(), QStringList({"tools", "mesa*", "medium"}));
+        QVERIFY(QFile::remove(out + "/.inputs"));
+
+        GuestToolsBuilder b;
+        setUp(b, guest, "flatpak");
+        b.setFlatpakDir(out);
+        b.setFlatpakCacheDir(m_tmp.filePath("flatpak/flatpak-cache"));
+        QSignalSpy done(&b, &GuestToolsBuilder::packageDone);
+        QSignalSpy finished(&b, &GuestToolsBuilder::finished);
+        b.start(QStringList{"flatpak", "medium"});
+        QVERIFY(finished.wait(20000));
+        QCOMPARE(finished[0][0].toString(), QString());
+        QCOMPARE(done.size(), 1);
+        QCOMPARE(done[0][0].toString(), "flatpak");
+        QCOMPARE(read(guest + "/flatpak-args"), "--verbose\n");
+        QCOMPARE(read(guest + "/flatpak-env"),
+                 QString("CACHE_DIR=%1\nFLATPAK_DIR=%2\n")
+                     .arg(m_tmp.filePath("flatpak/flatpak-cache"), out)
+                     .toUtf8());
+        QCOMPARE(read(guest + "/medium-flatpak"), out.toUtf8() + '\n');
+        QCOMPARE(GuestToolsBuilder::builtFlatpak(out), hash);
+        QCOMPARE(names(), QStringList({"tools", "mesa*", "medium"}));
+        /* a failed build: no medium after it */
+        qputenv("FAKE_FLATPAK_FAIL", "1");
+        finished.clear();
+        b.start(QStringList{"flatpak", "medium"});
+        QVERIFY(finished.wait(20000));
+        qunsetenv("FAKE_FLATPAK_FAIL");
+        QCOMPARE(finished[0][0].toString(), "No build of freedesktop-sdk");
+        QCOMPARE(b.step(), 1);
+
+        /* the medium: out of date without it */
+        const QString image = m_tmp.filePath("flatpak/state/vitrine-guest-tools-fc44.img");
+        QVERIFY(write(image, "image\n"));
+        const auto manifest = [&](const QString &flatpak) {
+            return write(GuestToolsBuilder::manifestOf(image),
+                         QString(R"({"mediumId": "a", "tools": "0.1.0-14.fc44", "inputs": {"tools": "%1",
+                                     "mesa": "%2", %3"medium": "%4"}})")
+                             .arg(GuestToolsBuilder::inputsHash(guest, "tools"),
+                                  GuestToolsBuilder::inputsHash(guest, "mesa"),
+                                  flatpak.isEmpty() ? QString()
+                                                    : QString("\"flatpak\": \"%1\", ").arg(flatpak),
+                                  GuestToolsBuilder::mediumHash(guest))
+                             .toUtf8());
+        };
+        QVERIFY(manifest({}));
+        QCOMPARE(GuestToolsBuilder::state(guest, image), State::Outdated);
+        QVERIFY(manifest("other"));
+        QCOMPARE(GuestToolsBuilder::state(guest, image), State::Outdated);
+        QVERIFY(manifest(hash));
+        QCOMPARE(GuestToolsBuilder::state(guest, image), State::UpToDate);
+        /* a medium without it: neither built nor looked for */
+        QVERIFY(QFile::remove(out + "/.inputs"));
+        QVERIFY(write(guest + "/components.conf",
+                      "[tools]\nspec=tools/vitrine-guest-tools.spec\n"
+                      "[mesa]\nspec=mesa/mesa.spec\nheavy=1\n"
+                      "[flatpak]\ntitle=Mesa for Flatpak apps\nkind=flatpak\nheavy=1\n"
+                      "[medium]\nkind=medium\ndeps=tools mesa\n"));
+        QCOMPARE(names(), QStringList({"tools", "mesa*", "medium"}));
+        QVERIFY(manifest({}));
+        QCOMPARE(GuestToolsBuilder::state(guest, image), State::UpToDate);
+        /* the app's own: every release's */
+        QCOMPARE(GuestToolsBuilder::flatpakDir(), GuestTools::dataDir() + "/flatpak");
+        QCOMPARE(GuestToolsBuilder::flatpakCacheDir(), m_tmp.filePath("cache/vitrine/flatpak-build"));
+    }
+
+    /*
      * One Fedora release's tools: its packages (components.conf's releases=),
      * its plan and its medium's state; the real build-rpms.sh's packages for
      * each release, as the app's

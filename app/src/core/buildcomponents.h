@@ -15,15 +15,17 @@
 /*
  * What Vitrine builds: the components host/components.conf and
  * guest/components.conf describe (virglrenderer, rutabaga_gfx, passt and QEMU;
- * the guest tools' packages and the medium made of them), and the host's
- * KDE packages of host/kde/components.conf (KWin, KSvg, Kirigami, Qt base),
- * each with its source, its patches and what it is built against; and
- * whether what is built is what the sources make now, and if not, why.
+ * the guest tools' packages, the Mesa for Flatpak apps and the medium made of
+ * them), and the host's KDE packages of host/kde/components.conf (KWin, KSvg,
+ * Kirigami, Qt base), each with its source, its patches and what it is built
+ * against; and whether what is built is what the sources make now, and if
+ * not, why.
  *
  * The scripts build them (host/build.sh, guest/build-rpms.sh,
- * guest/build-medium.sh) and record with each build the lines of inputs
- * its key sums up; this computes the same lines, to tell without running
- * them, and compares them with those recorded to say what changed.
+ * guest/build-flatpak.sh, guest/build-medium.sh) and record with each build
+ * the lines of inputs its key sums up; this computes the same lines, to tell
+ * without running them, and compares them with those recorded to say what
+ * changed.
  */
 namespace Builds {
 
@@ -32,6 +34,7 @@ enum class Kind {
     Package,    // guest/build-rpms.sh: a spec and the files beside it
     Medium,     // guest/build-medium.sh: the medium of the packages
     System,     // host/kde/build.sh: installed into the host's system (HostKde)
+    Flatpak,    // guest/build-flatpak.sh: the Mesa for Flatpak apps, every release's
 };
 
 struct Component {
@@ -69,6 +72,7 @@ struct Places {
     QString guestRelease;
     QString rpmsDir;                // GuestToolsBuilder::rpmsDir(guestRelease)
     QString mediumImage;            // GuestToolsBuilder::mediumImage(guestRelease)
+    QString flatpakDir;             // GuestToolsBuilder::flatpakDir(): every release's
     /* The host's KDE packages: their folder (HostKde::sourceDir()), empty
        where none is offered; by component id, what HostKde makes of each
        package and of the system (HostKdeMonitor's, with the builds read
@@ -99,6 +103,18 @@ struct Change {
     QString name;                   // fork/0001-x.patch, a dependency's title
     QString was;                    // Source: the commit or URL before
     QString now;
+};
+
+/*
+ * A Flatpak runtime branch the Mesa for Flatpak apps is built for: a
+ * section of the component's branches.conf (guest/flatpak/branches.conf)
+ */
+struct FlatpakBranch {
+    QString branch;                 // org.freedesktop.Platform's: 25.08
+    QString commit;                 // of freedesktop-sdk's release/25.08
+    QString image;                  // its CI's BuildStream image: bst2:ID
+    QString mesa;                   // the Mesa release it builds: 26.2.7
+    QStringList patches;            // by their path in guest/, in their order
 };
 
 /* What is built of a component */
@@ -132,6 +148,8 @@ QStringList patchPaths(const QString &dir, const QString &folder);
 Source source(const Component &component);
 /* Its patches, in the order they apply */
 QList<Patch> patches(const Component &component);
+/* The branches of a Flatpak component, in their order: none for another */
+QList<FlatpakBranch> flatpakBranches(const Component &component);
 /* What @patch does, in a line: its Subject, else the first line of its
    description, else the spec's comment over it, else its name */
 QString subject(const Component &component, const Patch &patch);
@@ -139,8 +157,9 @@ QString text(const Component &component, const Patch &patch);
 
 /*
  * The lines its key sums up, as its script prints them (build.sh
- * --print-inputs, build-rpms.sh's inputs_hash); empty if an input cannot be
- * read.  The medium's: its packages' keys and build-medium.sh.
+ * --print-inputs, build-rpms.sh's and build-flatpak.sh's inputs_lines); empty
+ * if an input cannot be read.  The medium's: its packages' keys and
+ * build-medium.sh.
  */
 QByteArray inputLines(const Component &component, const QList<Component> &all);
 /* The sha256 of those lines; empty without them */

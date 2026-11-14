@@ -54,6 +54,21 @@ inputs_hash "$pkg" > "$RPMS_DIR/$pkg/.inputs"
 printf 'vitrine-build: built: %s' "$RPMS_DIR/$pkg"
 )sh";
 
+/* A stand-in for build-flatpak.sh: its arguments and folders recorded, then
+   the inputs the test wrote in flatpak-hash recorded as its build's;
+   FAKE_FLATPAK_FAIL=1 fails it */
+inline constexpr char kFlatpakStandIn[] = R"sh(#!/bin/bash
+here=$(cd "$(dirname "$0")" && pwd)
+echo "$*" >> "$here/flatpak-args"
+env | grep -E '^(FLATPAK_DIR|CACHE_DIR)=' | sort > "$here/flatpak-env"
+echo "vitrine-build: building: flatpak (log: $FLATPAK_DIR.log)"
+echo "vitrine-build: phase: building Mesa 26.2.7 for 25.08"
+[ "${FAKE_FLATPAK_FAIL:-0}" = 1 ] && { echo "vitrine-build: error: no build of freedesktop-sdk" >&2; exit 1; }
+mkdir -p "$FLATPAK_DIR"
+cp "$here/flatpak-hash" "$FLATPAK_DIR/.inputs"
+echo "vitrine-build: built: $FLATPAK_DIR"
+)sh";
+
 /* A stand-in for build-medium.sh: a medium, with the manifest the real one writes */
 inline constexpr char kMediumStandIn[] = R"sh(#!/bin/bash
 here=$(cd "$(dirname "$0")" && pwd)

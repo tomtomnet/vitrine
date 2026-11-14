@@ -90,6 +90,7 @@ const char *kindIcon(Kind kind)
     case Kind::System:
         return "computer-symbolic";
     case Kind::Package:
+    case Kind::Flatpak:
         break;
     }
     return "package-x-generic-symbolic";

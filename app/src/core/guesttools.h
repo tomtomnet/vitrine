@@ -67,6 +67,8 @@ struct Medium {
     QString ksvg;           // kf6-ksvg
     QString kirigami;       // kf6-kirigami
     QString mutter;         // GNOME's compositor (Fedora 45's medium)
+    /* the Mesa for Flatpak apps, by runtime branch: "25.08:26.2.7 26.08:26.2.6" */
+    QString flatpak;
     QStringList packages;   // name-version-release.arch
     bool isValid() const { return !image.isEmpty(); }
 };

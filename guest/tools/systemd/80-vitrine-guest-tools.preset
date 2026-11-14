@@ -4,3 +4,5 @@ enable vitrine-mtrr-hostmem-wb.service
 enable vitrine-virtio-gpu-check.service
 enable vitrine-kernel-settings.service
 enable vitrine-nested-boot.service
+enable vitrine-flatpak-gl.path
+enable vitrine-flatpak-gl.service

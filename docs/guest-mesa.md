@@ -328,6 +328,33 @@ sides talk a protocol of their own, and cmspam warns that mismatched
 versions can crash. Vitrine pins the host's side: virglrenderer's commit in
 `host/versions.conf` and its patches in `host/patches/virglrenderer`.
 
+## Flatpak apps
+
+Flatpak apps don't use the guest's Mesa: they take the GL extension of
+their runtime, `org.freedesktop.Platform.GL.default`, which Flathub ships
+from freedesktop-sdk's build of Mesa. In November 2026, the extension of
+runtime 26.08 has AMD's native context (freedesktop-sdk builds it with
+`-Damdgpu-virtio`), the one of 25.08 doesn't, and neither has Intel's.
+Apps of 25.08 then draw through virgl, with llvmpipe alone for Vulkan,
+whatever the guest's own Mesa has.
+
+Vitrine's guest tools carry an extension of their own in its place:
+`guest/build-flatpak.sh` builds freedesktop-sdk's recipe at a pinned commit
+of each runtime branch, with the guest Mesa's patches (the Xe one included)
+and `-Dintel-virtio-experimental=true -Damdgpu-virtio=true`, with
+BuildStream, which downloads everything but Mesa already built from
+freedesktop-sdk's cache. The guest installs it from the tools medium as
+the flatpak remote `vitrine-gl`, in place of Flathub's for the runtimes
+it has, and for those installed later (flatpak runs its triggers after the
+transactions of apps only: a runtime installed alone gets it at the next
+boot). `FLATPAK_GL_DRIVERS=mesa-git` enables Flathub's mesa-git extension
+alone: the apps of a runtime without it have no GPU driver at all.
+
+Flatpak refuses a commit over a newer one of another remote, even with
+`--reinstall`: putting Flathub's back takes `flatpak uninstall` of
+vitrine's, then `flatpak install flathub`, which the tools' `--uninstall`
+does.
+
 ## Checking it works
 
 Log out and in again, or restart the guest, so that programs load the new

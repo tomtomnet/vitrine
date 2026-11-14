@@ -1,0 +1,211 @@
+#!/bin/bash
+# vitrine guest tools @VERSION@: vitrine's Mesa for Flatpak apps.  The tools
+# medium carries it as an OSTree repository (guest/build-flatpak.sh: the GL
+# extension freedesktop-sdk builds for Flathub, org.freedesktop.Platform.
+# GL.default, with vitrine's Mesa patches and the native contexts), kept here
+# and added as the flatpak remote vitrine-gl.  For each runtime branch the
+# guest uses, its GL.default//BRANCH and //BRANCH-extra (a sandbox takes
+# -extra where it is installed) are vitrine's in place of Flathub's; flatpak
+# update keeps them, as vitrine-gl has nothing newer.  The system
+# installation only.
+#   flatpak-gl install DIR   DIR (the medium's flatpak/) copied here, then sync
+#   flatpak-gl sync          vitrine's for each branch in use; nothing else
+#   flatpak-gl remove        back to the GL extension of the remote each
+#                            branch's came from (Flathub's), and no vitrine-gl
+#   flatpak-gl status        which GL extension each branch has
+# A branch is in use where its runtime (org.freedesktop.Platform//BRANCH) or
+# a GL extension of it is installed: the KDE and GNOME runtimes bring
+# GL.default of the branch they are built on.  A runtime installed later
+# gets vitrine's too: after each flatpak transaction that installs, updates
+# or removes an app, flatpak runs vitrine-gl.trigger, which starts
+# vitrine-flatpak-gl.service; a runtime installed alone, at the next boot.
+set -uo pipefail
+# (elsewhere for guest/tests/flatpak-gl.sh)
+dir=${VITRINE_FLATPAK_GL_DIR:-/var/lib/vitrine-guest-tools/flatpak-gl}
+environment=${VITRINE_ENVIRONMENT:-/etc/environment}
+remote=vitrine-gl
+gl=org.freedesktop.Platform.GL.default
+say() { echo "   $*"; }
+
+[ "$(id -u)" = 0 ] || [ -n "${VITRINE_FLATPAK_GL_DIR:-}" ] || { echo "run it as root" >&2; exit 1; }
+if ! command -v flatpak > /dev/null; then
+	[ "${1:-}" != remove ] || rm -rf "$dir"
+	echo "   no flatpak in this guest: nothing to do"
+	exit 0
+fi
+arch=$(flatpak --default-arch 2> /dev/null || uname -m)
+
+# the origin and commit of the installed GL.default//@1, empty if none
+origin_of() { flatpak info --system --show-origin "$gl//$1" < /dev/null 2> /dev/null; }
+commit_of() { flatpak info --system --show-commit "$gl//$1" < /dev/null 2> /dev/null; }
+# the commit of vitrine's GL.default//@1, empty if none
+ours() { cat "$dir/repo/refs/heads/runtime/$gl/$arch/$1" 2> /dev/null; }
+in_use() {
+	flatpak info --system "org.freedesktop.Platform//$1" < /dev/null > /dev/null 2>&1 ||
+		[ -n "$(origin_of "$1")" ] || [ -n "$(origin_of "$1-extra")" ]
+}
+# the remote to bring the other one back from: the one vitrine's replaced,
+# else the runtime's, else Flathub
+other_remote() {
+	local r
+	r=$(awk -v v="$1" '$1 == v { r = $2 } END { print r }' "$dir/replaced" 2> /dev/null)
+	[ -n "$r" ] || r=$(flatpak info --system --show-origin "org.freedesktop.Platform//${1%-extra}" < /dev/null 2> /dev/null)
+	[ -n "$r" ] || r=flathub
+	[ "$r" != "$remote" ] && flatpak remote-info --system "$r" "$gl//$1" < /dev/null > /dev/null 2>&1 && echo "$r"
+}
+
+# the branches vitrine's repository has: "BRANCH MESA COMMIT" lines, read
+# before flatpak runs (which might read its standard input)
+branches=()
+[ ! -s "$dir/branches" ] || mapfile -t branches < "$dir/branches"
+
+sync() {
+	local line b m v want origin rc=0
+	[ ${#branches[@]} -gt 0 ] && [ -d "$dir/repo" ] || { say "no Mesa for Flatpak apps here: nothing to do"; return 0; }
+	flatpak remote-add --system --if-not-exists --no-gpg-verify --prio=0 \
+		--title="vitrine's Mesa" "$remote" "file://$dir/repo" < /dev/null &&
+		flatpak remote-modify --system --no-gpg-verify --url="file://$dir/repo" "$remote" < /dev/null ||
+		{ say "WARNING: the flatpak remote $remote could not be added"; return 1; }
+	for line in "${branches[@]}"; do
+		read -r b m _ <<< "$line"
+		[ -n "$b" ] || continue
+		if ! in_use "$b"; then
+			say "runtime $b: not installed"
+			continue
+		fi
+		for v in "$b" "$b-extra"; do
+			want=$(ours "$v")
+			[ -n "$want" ] || continue
+			origin=$(origin_of "$v")
+			if [ "$origin" = "$remote" ] && [ "$(commit_of "$v")" = "$want" ]; then
+				say "$gl//$v: vitrine's Mesa $m"
+				continue
+			fi
+			if [ "$origin" = "$remote" ] &&
+			   flatpak update --system -y --noninteractive "$gl//$v" < /dev/null > /dev/null 2>&1 &&
+			   [ "$(commit_of "$v")" = "$want" ]; then
+				say "$gl//$v: vitrine's Mesa $m, updated"
+				continue
+			fi
+			# another remote's goes first: flatpak takes no commit over a
+			# newer one of another remote, even with --reinstall
+			if [ -n "$origin" ] &&
+			   ! flatpak uninstall --system -y --noninteractive "$gl//$v" < /dev/null > /dev/null; then
+				say "WARNING: $gl//$v of $origin could not be uninstalled: it stays"
+				rc=1
+				continue
+			fi
+			if flatpak install --system -y --noninteractive "$remote" "$gl//$v" < /dev/null > /dev/null; then
+				if [ -n "$origin" ] && [ "$origin" != "$remote" ]; then
+					say "$gl//$v: vitrine's Mesa $m, in place of $origin's"
+					{ grep -v "^$v " "$dir/replaced" 2> /dev/null; echo "$v $origin"; } > "$dir/replaced.new" &&
+						mv "$dir/replaced.new" "$dir/replaced"
+				else
+					say "$gl//$v: vitrine's Mesa $m"
+				fi
+			else
+				say "WARNING: vitrine's $gl//$v could not be installed"
+				rc=1
+				[ -z "$origin" ] || [ "$origin" = "$remote" ] ||
+					flatpak install --system -y --noninteractive "$origin" "$gl//$v" < /dev/null > /dev/null ||
+					say "WARNING: nor $origin's again"
+			fi
+		done
+	done
+	return "$rc"
+}
+
+# Each of vitrine's GL.default refs replaced by the other remote's; one with
+# no other to have now (no network) stays, said with what to do later.  The
+# remote goes in any case: with no repository behind it, flatpak and the
+# software centres would show errors at each update.
+remove() {
+	local v r rc=0 ours_now=()
+	mapfile -t ours_now < <(flatpak list --system --runtime --columns=ref,origin 2> /dev/null < /dev/null |
+		awk -v g="$gl/" -v r="$remote" '$2 == r && index($1, g) == 1 { n = split($1, f, "/"); print f[n] }')
+	for v in ${ours_now[@]+"${ours_now[@]}"}; do
+		r=$(other_remote "$v")
+		if [ -z "$r" ]; then
+			say "WARNING: no remote has another $gl//$v now (no network?): vitrine's stays. Later, as root:"
+			say "    flatpak uninstall $gl//$v && flatpak install flathub $gl//$v"
+			rc=1
+		elif ! flatpak uninstall --system -y --noninteractive "$gl//$v" < /dev/null > /dev/null; then
+			say "WARNING: vitrine's $gl//$v could not be uninstalled"
+			rc=1
+		elif flatpak install --system -y --noninteractive "$r" "$gl//$v" < /dev/null > /dev/null; then
+			say "$gl//$v: $r's again"
+		else
+			say "WARNING: $gl//$v of $r could not be installed. Later, as root: flatpak install $r $gl//$v"
+			rc=1
+		fi
+	done
+	if flatpak remote-list --system --columns=name < /dev/null 2> /dev/null | grep -qx "$remote"; then
+		flatpak remote-delete --system --force "$remote" < /dev/null || rc=1
+	fi
+	# the line the install took out of /etc/environment, back where Flathub's
+	# mesa-git extension is there for each runtime branch the guest has: it
+	# enables that extension alone, and a branch without it has no GPU
+	# driver at all
+	if [ -s "$dir/environment" ] && ! grep -q '^[[:space:]]*FLATPAK_GL_DRIVERS=' "$environment" 2> /dev/null; then
+		local b without=()
+		for b in $(flatpak list --system --runtime --columns=ref 2> /dev/null < /dev/null |
+			awk -v g="$gl/" 'index($1, g) == 1 { n = split($1, f, "/"); if (f[n] !~ /-extra$/) print f[n] }'); do
+			flatpak info --system "org.freedesktop.Platform.GL.mesa-git//$b" < /dev/null > /dev/null 2>&1 ||
+				without+=("$b")
+		done
+		if [ ${#without[@]} = 0 ]; then
+			cat "$dir/environment" >> "$environment" && say "$(cat "$dir/environment") back in $environment"
+		else
+			say "$(cat "$dir/environment") stays out of $environment: the runtimes ${without[*]} have no mesa-git"
+			say "extension, and their apps would have no GPU driver at all"
+		fi
+	fi
+	rm -rf "$dir"
+	return "$rc"
+}
+
+case ${1:-} in
+install)
+	src=${2:?flatpak-gl install DIR}
+	[ -d "$src/repo" ] && [ -s "$src/branches" ] || { echo "no Mesa for Flatpak apps in $src" >&2; exit 1; }
+	mkdir -p "$(dirname "$dir")"
+	rm -rf "$dir.new"
+	cp -r "$src" "$dir.new" || { rm -rf "$dir.new"; echo "copying $src failed" >&2; exit 1; }
+	for f in replaced environment; do
+		[ ! -e "$dir/$f" ] || cp "$dir/$f" "$dir.new/$f"
+	done
+	rm -rf "$dir.old"
+	[ ! -e "$dir" ] || mv "$dir" "$dir.old"
+	mv "$dir.new" "$dir"
+	rm -rf "$dir.old"
+	mapfile -t branches < "$dir/branches"
+	# Flathub's mesa-git extension, which Flatpak apps would take in place of
+	# vitrine's: the line that set it by hand for AMD's native context
+	if grep -qx 'FLATPAK_GL_DRIVERS=mesa-git' "$environment" 2> /dev/null; then
+		sed -i '/^FLATPAK_GL_DRIVERS=mesa-git$/d' "$environment" &&
+			echo 'FLATPAK_GL_DRIVERS=mesa-git' > "$dir/environment" &&
+			say "FLATPAK_GL_DRIVERS=mesa-git taken out of $environment: Flatpak apps take vitrine's Mesa from the next login"
+	elif grep -sq '^[[:space:]]*\(export[[:space:]]*\)\{0,1\}FLATPAK_GL_DRIVERS=' "$environment" "$environment.d"/*.conf; then
+		say "WARNING: FLATPAK_GL_DRIVERS is set ($(grep -sh 'FLATPAK_GL_DRIVERS=' "$environment" "$environment.d"/*.conf | head -n 1)): Flatpak apps take that GL extension, not vitrine's"
+	fi
+	sync
+	;;
+sync) sync ;;
+remove) remove ;;
+status)
+	for line in ${branches[@]+"${branches[@]}"}; do
+		read -r b m _ <<< "$line"
+		for v in "$b" "$b-extra"; do
+			origin=$(origin_of "$v")
+			if [ -z "$origin" ]; then
+				echo "$gl//$v: not installed"
+			elif [ "$origin" = "$remote" ]; then
+				echo "$gl//$v: vitrine's Mesa $m ($(commit_of "$v" | cut -c1-12))"
+			else
+				echo "$gl//$v: $origin's ($(commit_of "$v" | cut -c1-12))"
+			fi
+		done
+	done
+	;;
+*) echo "flatpak-gl install DIR | sync | remove | status" >&2; exit 2 ;;
+esac

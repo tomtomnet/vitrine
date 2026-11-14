@@ -6,13 +6,16 @@
 #include <QLabel>
 #include <QPlainTextEdit>
 #include <QPushButton>
+#include <QScopeGuard>
 #include <QStyleFactory>
 #include <QTemporaryDir>
 #include <QTreeWidget>
 
 #include <algorithm>
 
+#include "core/buildcomponents.h"
 #include "core/buildmanager.h"
+#include "core/guesttoolsbuilder.h"
 #include "core/paths.h"
 #include "core/vmstore.h"
 #include "scales.h"
@@ -235,6 +238,55 @@ private slots:
         window->close();
         dialog->close();
         QTRY_VERIFY(!opened("BuildsWindow") && !opened("GuestToolsDialog"));
+    }
+
+    /* The Mesa for Flatpak apps: a row of the guest tools, its runtimes in its source, and the
+       medium made of it too */
+    void buildsFlatpakMesa()
+    {
+        BuildManager *m = BuildManager::instance();
+        const Builds::Component flatpak = m->component("flatpak");
+        QVERIFY(flatpak.isValid());
+        const QList<Builds::FlatpakBranch> branches = Builds::flatpakBranches(flatpak);
+        QVERIFY(!branches.isEmpty());
+        /* a build of other sources, whose Mesa versions its row does not show */
+        const QString built = GuestToolsBuilder::flatpakDir();
+        const auto removeBuilt = qScopeGuard([built, m]() {
+            QDir(built).removeRecursively();
+            m->refresh();
+        });
+        QVERIFY(QDir().mkpath(built));
+        QFile inputs(built + "/.inputs");
+        QFile versions(built + "/branches");
+        QVERIFY(inputs.open(QIODevice::WriteOnly) && inputs.write("other\n") == 6);
+        QVERIFY(versions.open(QIODevice::WriteOnly) &&
+                versions.write("25.08 26.2.7 a\n26.08 26.2.6 b\n") > 0);
+        inputs.close();
+        versions.close();
+        m->refresh();
+        QCOMPARE(m->status("flatpak").version, "Mesa 26.2.7 for 25.08, 26.2.6 for 26.08");
+        BuildsWindow window;
+        window.show();
+        window.select("flatpak");
+        QTRY_COMPARE(window.selected(), "flatpak");
+        auto *source = window.findChild<QLabel *>("source");
+        QVERIFY(source);
+        QVERIFY2(source->text().contains("freedesktop-sdk</a>'s recipe, the one of Flathub's: "),
+                 qPrintable(source->text()));
+        for (const Builds::FlatpakBranch &b : branches) {
+            const QString runtime = QString("Mesa %1 for the runtimes %2 (commit <code>%3</code>)")
+                                        .arg(b.mesa, b.branch, b.commit.left(12));
+            QVERIFY2(source->text().contains(runtime), qPrintable(source->text()));
+        }
+        /* its title alone: a Mesa for each runtime */
+        auto *tree = window.findChild<QTreeWidget *>("components");
+        QVERIFY(tree);
+        const QList<QTreeWidgetItem *> rows = tree->findItems("Mesa for Flatpak apps",
+                                                              Qt::MatchExactly | Qt::MatchRecursive);
+        QCOMPARE(rows.size(), 1);
+        window.select("medium");
+        QTRY_VERIFY2(source->text().contains("; Mesa for Flatpak apps and the installer"),
+                     qPrintable(source->text()));
     }
 
     /* The other release's guest tools in a row of their medium: selected, they show instead */

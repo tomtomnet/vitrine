@@ -377,7 +377,10 @@ QString title(const BuildManager &m, const QString &id)
     if (c.kind == Kind::Package && version.isEmpty()) {
         version = Builds::source(c).revision.section('-', 0, 0);
     }
-    return c.kind == Kind::Medium || version.isEmpty() ? c.title : c.title + ' ' + version;
+    /* the Mesa for Flatpak apps: one for each runtime, in its Source */
+    return c.kind == Kind::Medium || c.kind == Kind::Flatpak || version.isEmpty()
+               ? c.title
+               : c.title + ' ' + version;
 }
 
 Status status(const BuildManager &m, const QString &id)
@@ -859,16 +862,34 @@ Details details(const BuildManager &m, const QString &id,
             d.properties << Property{"Project", escaped(shortUrl(source.url)), source.url, {}};
         }
         break;
+    case Kind::Flatpak: {
+        QStringList parts;
+        for (const Builds::FlatpakBranch &b : Builds::flatpakBranches(c)) {
+            parts << QString("Mesa %1 for the runtimes %2 (commit %3)")
+                         .arg(escaped(b.mesa), escaped(b.branch), code(b.commit.left(12)));
+        }
+        d.properties << Property{"Source",
+                                 QString("%1's recipe, the one of Flathub's: %2")
+                                     .arg(escaped(shortUrl(source.url)), parts.join(", ")),
+                                 source.url, {}};
+        break;
+    }
     case Kind::Medium: {
         QStringList parts;
+        QStringList others;
         for (const QString &dep : c.deps) {
             const Component dc = m.component(dep);
             if (dc.isValid()) {
-                parts << escaped(dc.title);
+                (dc.kind == Kind::Flatpak ? others : parts) << escaped(dc.title);
             }
         }
         d.properties << Property{
-            "Made of", QString("the packages %1, and the installer").arg(parts.join(", ")), {}, {}};
+            "Made of",
+            others.isEmpty()
+                ? QString("the packages %1, and the installer").arg(parts.join(", "))
+                : QString("the packages %1; %2 and the installer")
+                      .arg(parts.join(", "), others.join(", ")),
+            {}, {}};
         break;
     }
     case Kind::System:
