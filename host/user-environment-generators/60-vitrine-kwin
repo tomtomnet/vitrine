@@ -41,7 +41,16 @@
 sys=${VITRINE_SYSFS:-/sys}
 card=
 if [ -n "${KWIN_DRM_DEVICES:-}" ]; then
-	dev=${KWIN_DRM_DEVICES%%:*}
+	# the first of the list: KWin separates its devices with ':', and the
+	# colons of a name are escaped (/dev/dri/by-path/pci-0000\:01\:00.0-card)
+	rest=$KWIN_DRM_DEVICES dev=
+	while [ -n "$rest" ]; do
+		case $rest in
+		'\:'*) dev=$dev:; rest=${rest#??} ;;
+		:*) break ;;
+		*) dev=$dev${rest%"${rest#?}"}; rest=${rest#?} ;;
+		esac
+	done
 	# a /dev/dri/cardN, or a link to one (/dev/dri/by-path)
 	dev=$(readlink -f -- "$dev" 2> /dev/null || printf '%s' "$dev")
 	case ${dev##*/} in

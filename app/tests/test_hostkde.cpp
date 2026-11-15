@@ -2028,6 +2028,13 @@ private slots:
         QTest::newRow("KWIN_DRM_DEVICES: the APU")
             << QStringList{"1:amdgpu:" + apu + ":0", "2:amdgpu:" + dgpu + ":1"}
             << QStringList{"KWIN_DRM_DEVICES=/dev/dri/card1"} << false << true;
+        /* a /dev/dri/by-path name, its colons escaped as KWin wants them (@BYPATH@: a link to card2) */
+        QTest::newRow("KWIN_DRM_DEVICES: by path, the dedicated GPU first")
+            << QStringList{"1:amdgpu:" + apu + ":1", "2:amdgpu:" + dgpu + ":0"}
+            << QStringList{"KWIN_DRM_DEVICES=@BYPATH@:/dev/dri/card1"} << true << true;
+        QTest::newRow("KWIN_DRM_DEVICES: by path after the APU")
+            << QStringList{"1:amdgpu:" + apu + ":0", "2:amdgpu:" + dgpu + ":1"}
+            << QStringList{"KWIN_DRM_DEVICES=/dev/dri/card1:@BYPATH@"} << false << true;
         QTest::newRow("no boot_vga: the first card")
             << QStringList{"1:amdgpu:" + dgpu + ":-", "2:i915:0:-"} << QStringList{} << true
             << true;
@@ -2070,12 +2077,16 @@ private slots:
                 write(card + "/device/boot_vga", f[3].toLatin1() + '\n');
             }
         }
+        /* /dev/dri/by-path's kind of link to card2, its name with colons */
+        QTemporaryDir links;
+        QVERIFY(QFile::link("card2", links.path() + "/pci-0000:65:00.0-card"));
         /* as systemd runs it: what the earlier generators left, no more */
         QProcessEnvironment e;
         e.insert("PATH", "/usr/bin:/bin");
         e.insert("VITRINE_SYSFS", sys.path());
         for (const QString &v : env) {
-            e.insert(v.section('=', 0, 0), v.section('=', 1));
+            e.insert(v.section('=', 0, 0),
+                     v.section('=', 1).replace("@BYPATH@", links.path() + "/pci-0000\\:65\\:00.0-card"));
         }
         QProcess p;
         p.setProcessEnvironment(e);
