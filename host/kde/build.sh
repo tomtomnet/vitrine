@@ -290,6 +290,31 @@ trap 'stop 143' TERM
 trap 'stop 129' HUP
 trap 'stop 141' PIPE
 
+# Why kde-rpms.sh failed ($1 its status), in words.  A patch that does not
+# apply in the build's %prep (the last one rpm uncompressed before "Bad exit
+# status ... (%prep)"): the set this Vitrine has for the package was made for
+# an earlier release of it, as a 6.8.x set for KWin 6.8.4 would be, and a
+# newer Vitrine may have one for this release.  Else the status.
+failed_why() {
+	local log found= patch= built=
+	for log in "$logs"/build-*.log; do
+		[ -f "$log" ] && grep -q 'Bad exit status from .* (%prep)' "$log" || continue
+		found=$log
+		patch=$(sed -n 's|^+ /usr/bin/rpmuncompress .*/\([^/ ]*\.patch\)$|\1|p' "$log" | tail -n 1)
+		built=$(sed -n 's|^+ cd .*/BUILD/\(.*\)-build$|\1|p' "$log" | tail -n 1)
+	done
+	if [ -n "$patch" ]; then
+		[ -z "$built" ] || built="${built%-*} ${built##*-}"
+		echo "the patch $patch does not apply to ${built:-$package}: this Vitrine has its" \
+			"patches for an earlier release, and a newer Vitrine may have them for this one" \
+			"(log: $found)"
+	elif [ -n "$found" ]; then
+		echo "the research's kde-rpms.sh failed in preparing the sources (status $1, log: $found)"
+	else
+		echo "the research's kde-rpms.sh failed (status $1)"
+	fi
+}
+
 # kde-rpms.sh as it is, told through its environment: no paths.conf of the
 # research's, Vitrine's folders, the jobs, the Plasma, the host's Fedora,
 # podman's options (the cap, the name Stop needs), its output as it comes
@@ -332,7 +357,7 @@ pid=
 wait "$watch" 2> /dev/null || true
 if [ "$rc" != 0 ]; then
 	rm -rf "$new"
-	die "the research's kde-rpms.sh failed (status $rc)"
+	die "$(failed_why "$rc")"
 fi
 
 # --- what was built -------------------------------------------------------------

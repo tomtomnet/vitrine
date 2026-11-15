@@ -112,7 +112,8 @@ Details systemDetails(const BuildManager &m, const Component &c,
             }
             sets << QString("%1 for %2 %3").arg(set.series, title, versions.join(", "));
         }
-        d.paragraphs << escaped(QString("The research has no host set for %1 %2. Its sets: %3.")
+        d.paragraphs << escaped(QString("This Vitrine has no patches for %1 %2: a newer Vitrine may have "
+                                        "them. The research's sets it has: %3.")
                                     .arg(title, host.version,
                                          sets.isEmpty() ? QString("none") : sets.join(", ")));
     }
@@ -128,14 +129,22 @@ Details systemDetails(const BuildManager &m, const Component &c,
                    escaped(target.package == "kwin"
                                ? QString("Vitrine's KWin no longer matches this computer (%1). At "
                                          "the next login the desktop would run it with the new "
-                                         "libraries, and might not start: build and install the "
-                                         "matching KWin, or revert, before you log out.")
-                                     .arg(moved.join(", "))
+                                         "libraries, and might not start: %2")
+                                     .arg(moved.join(", "),
+                                          host.offer == HostKde::Status::Offer::NoSet
+                                              ? QString("revert before you log out, or a newer Vitrine "
+                                                        "may build a matching KWin.")
+                                              : QString("build and install the matching KWin, or "
+                                                        "revert, before you log out."))
                                : QString("Vitrine's %1 no longer matches this computer (%2): "
                                          "programs use it with the newer libraries, which upstream "
-                                         "does not support. Build and install the matching one, "
-                                         "or revert.")
-                                     .arg(title, moved.join(", "))) +
+                                         "does not support. %3")
+                                     .arg(title, moved.join(", "),
+                                          host.offer == HostKde::Status::Offer::NoSet
+                                              ? QString("Revert, or a newer Vitrine may build a "
+                                                        "matching one.")
+                                              : QString("Build and install the matching one, or "
+                                                        "revert."))) +
                    "</b>";
     } else if (host.owner == Owner::Foreign) {
         d.paragraphs << escaped(

@@ -1075,7 +1075,11 @@ QString Status::summary() const
     /* Vitrine's own first: out of date, it matters whatever else holds */
     if (owner == Owner::Vitrine) {
         if (!outdated.isEmpty()) {
-            return tr("Out of date: %1 is installed").arg(nameNow(outdated.first()));
+            /* nothing to build for it in this Vitrine: said, as Rebuild is not offered */
+            return offer == Offer::NoSet
+                       ? tr("Out of date: %1 is installed (no patches for it in this Vitrine)")
+                             .arg(nameNow(outdated.first()))
+                       : tr("Out of date: %1 is installed").arg(nameNow(outdated.first()));
         }
         if (!locked) {
             return tr("Installed, not version-locked");
@@ -1097,7 +1101,7 @@ QString Status::summary() const
     case Offer::Unsupported:
         return tr("Not available for this computer");
     case Offer::NoSet:
-        return tr("No host set for %1 %2").arg(target.title, version);
+        return tr("No patches for %1 %2 in this Vitrine").arg(target.title, version);
     }
     switch (owner) {
     case Owner::Vitrine:
@@ -1137,7 +1141,8 @@ bool Status::canBuild(QString *why) const
         reason = this->why;
         break;
     case Offer::NoSet:
-        reason = tr("The research has no host set for %1 %2.").arg(target.title, version);
+        reason = tr("This Vitrine has no patches for %1 %2: a newer Vitrine may have them.")
+                     .arg(target.title, version);
         break;
     case Offer::Offered:
         break;

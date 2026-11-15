@@ -313,20 +313,29 @@ QString text(const QList<Status> &statuses)
                                   "libraries, and might not start.")
                              .arg(moved.join(noticeTr(" and ")),
                                   s.installed.version.toHtmlEscaped());
+            if (s.offer == HostKde::Status::Offer::NoSet) {
+                sentences << noticeTr("This Vitrine has no patches for KWin %1: a newer Vitrine may "
+                                      "have them.")
+                                 .arg(s.version.toHtmlEscaped());
+            }
         } else {
             sentences << noticeTr("<b>Vitrine's %1 no longer matches this computer's %2.</b> "
                                   "Programs use %1 %3 with the newer libraries, which upstream "
                                   "does not support: some may not work as they should.")
                              .arg(title, moved.join(noticeTr(" and ")),
                                   s.installed.version.toHtmlEscaped());
+            if (s.offer == HostKde::Status::Offer::NoSet) {
+                sentences << noticeTr("This Vitrine has no patches for %1 %2: a newer Vitrine may "
+                                      "have them.")
+                                 .arg(title, s.version.toHtmlEscaped());
+            }
         }
     }
     if (sentences.isEmpty()) {
         return {};
     }
     const QString what = rebuildable(statuses).isEmpty()
-                             ? noticeTr("The research has no set for the new version yet: put "
-                                        "the distribution's packages back")
+                             ? noticeTr("Put the distribution's packages back")
                              : noticeTr("Build and install the matching packages, or put the "
                                         "distribution's back");
     return sentences.join(' ') + ' ' +

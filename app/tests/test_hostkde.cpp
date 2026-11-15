@@ -745,7 +745,7 @@ private slots:
         QCOMPARE(s.offer, Offer::NoSet);
         QCOMPARE(s.plasmaFrom, "fedora");
         QCOMPARE(s.version, "6.7.5");
-        QCOMPARE(s.summary(), "No host set for KWin 6.7.5");
+        QCOMPARE(s.summary(), "No patches for KWin 6.7.5 in this Vitrine");
         QString why;
         QVERIFY(!s.canBuild(&why));
         QVERIFY(why.contains("6.7.5"));
@@ -782,7 +782,7 @@ private slots:
         noQt.sets.remove("qt6-qtbase");
         s = status(qtbase(), host(), noQt, {}, {});
         QCOMPARE(s.offer, Offer::NoSet);
-        QCOMPARE(s.summary(), "No host set for Qt base 6.11.2");
+        QCOMPARE(s.summary(), "No patches for Qt base 6.11.2 in this Vitrine");
     }
 
     void notBuiltThenBuilt()
@@ -1073,9 +1073,11 @@ private slots:
                    record);
         QCOMPARE(s.offer, Offer::NoSet);
         QVERIFY(s.isOutdated());
-        QCOMPARE(s.summary(), "Out of date: Plasma 6.9.0 is installed");
+        QCOMPARE(s.summary(), "Out of date: Plasma 6.9.0 is installed (no patches for it in this Vitrine)");
         QVERIFY(s.canRevert());
-        QVERIFY(!s.canBuild());
+        QString why;
+        QVERIFY(!s.canBuild(&why));
+        QCOMPARE(why, "This Vitrine has no patches for KWin 6.9.0: a newer Vitrine may have them.");
         QVERIFY(!s.wantsUpdates());
 
         /* Qt: the version a lock lets through, which KWin's private API does not */
@@ -1105,7 +1107,8 @@ private slots:
         s = status(ksvg(), system, none, {svg}, {});
         QCOMPARE(s.version, "6.32.0");
         QCOMPARE(s.outdated, QStringList{"kf6-kcoreaddons 6.31.0 6.32.0"});
-        QCOMPARE(s.summary(), "Out of date: KDE Frameworks 6.32.0 is installed");
+        /* no set for it in this Vitrine: the row says so, as Rebuild is not offered */
+        QCOMPARE(s.summary(), "Out of date: KDE Frameworks 6.32.0 is installed (no patches for it in this Vitrine)");
         QCOMPARE(s.offer, Offer::NoSet);
         QVERIFY(!s.canBuild());
         QVERIFY(s.canRevert());

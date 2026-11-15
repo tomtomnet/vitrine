@@ -242,7 +242,11 @@ private slots:
         QVERIFY(!banner->text().contains("log out"));
         QCOMPARE(banner->outdated(), QStringList{"host-kirigami"});
         QVERIFY(banner->rebuildable().isEmpty());
-        QVERIFY(banner->text().contains("no set for the new version yet"));
+        /* nothing to build for it in this Vitrine: said, and what is left */
+        QVERIFY2(banner->text().contains("This Vitrine has no patches for Kirigami 6.32.0: a newer Vitrine may "
+                                         "have them."),
+                 qPrintable(banner->text()));
+        QVERIFY(banner->text().endsWith("Put the distribution's packages back."));
 
         /* and Qt with KWin: both said, and Revert… for both */
         QVERIFY(install("qt6-qtbase", "6.11.3-1.fc44", "qt2"));
@@ -250,6 +254,13 @@ private slots:
         QVERIFY(changed.wait(10000));
         QVERIFY(banner->text().contains("Vitrine's KWin no longer matches this computer's Qt 6.11.3"));
         QVERIFY(banner->text().contains("KDE Frameworks 6.32.0 and Qt 6.11.3"));
+        /* KWin can be built for it, Kirigami cannot: each said as it is */
+        QCOMPARE(banner->rebuildable(), QString("host-kwin"));
+        QVERIFY(banner->text().contains("This Vitrine has no patches for Kirigami 6.32.0"));
+        QVERIFY(!banner->text().contains("no patches for KWin"));
+        QVERIFY2(banner->text().endsWith("Build and install the matching packages, or put the distribution's "
+                                         "back before you log out."),
+                 qPrintable(banner->text()));
         QCOMPARE(banner->outdated(), QStringList({"host-kwin", "host-kirigami"}));
 
         /* back as they were */
@@ -334,7 +345,7 @@ private slots:
         QCOMPARE(rows.value("KWin"), "Installed, not version-locked");
         QCOMPARE(rows.value("KSvg"), "Built, not installed");
         QCOMPARE(rows.value("Kirigami"), "Not built");
-        QCOMPARE(rows.value("Qt"), "No host set for Qt base 6.11.2");
+        QCOMPARE(rows.value("Qt"), "No patches for Qt base 6.11.2 in this Vitrine");
         QCOMPARE(group->text(1), "Installed: KWin");
 
         const QString dir = qEnvironmentVariable("HOSTKDE_SHOTS");
@@ -358,7 +369,8 @@ private slots:
         QVERIFY(revertButton->toolTip().contains("distribution's KSvg is installed"));
         shot("builds-ksvg");
         window.select("host-qtbase");
-        QVERIFY(source->text().contains("The research has no host set for Qt base 6.11.2"));
+        QVERIFY(source->text().contains("This Vitrine has no patches for Qt base 6.11.2: a newer Vitrine may "
+                                        "have them."));
         QVERIFY(!installButton->isEnabled());
         shot("builds-qtbase");
         window.select("host-kwin");

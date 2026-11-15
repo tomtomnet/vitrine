@@ -1466,7 +1466,8 @@ QString BuildsWindow::systemSource(const Component &c)
             }
             sets << tr("%1 for %2 %3").arg(set.series, title, versions.join(", "));
         }
-        html += para(tr("The research has no host set for %1 %2. Its sets: %3.")
+        html += para(tr("This Vitrine has no patches for %1 %2: a newer Vitrine may have them. "
+                        "The research's sets it has: %3.")
                          .arg(title, host.version, sets.isEmpty() ? tr("none") : sets.join(", ")));
     }
     if (host.isOutdated()) {
@@ -1478,13 +1479,19 @@ QString BuildsWindow::systemSource(const Component &c)
         }
         html += para(target.package == "kwin"
                          ? tr("Vitrine's KWin no longer matches this computer (%1). At the next login "
-                              "the desktop would run it with the new libraries, and might not start: "
-                              "build and install the matching KWin, or revert, before you log out.")
-                               .arg(moved.join(", "))
+                              "the desktop would run it with the new libraries, and might not start: %2")
+                               .arg(moved.join(", "),
+                                    host.offer == Offer::NoSet
+                                        ? tr("revert before you log out, or a newer Vitrine may build "
+                                             "a matching KWin.")
+                                        : tr("build and install the matching KWin, or revert, before "
+                                             "you log out."))
                          : tr("Vitrine's %1 no longer matches this computer (%2): programs use it with "
-                              "the newer libraries, which upstream does not support. Build and install "
-                              "the matching one, or revert.")
-                               .arg(title, moved.join(", ")),
+                              "the newer libraries, which upstream does not support. %3")
+                               .arg(title, moved.join(", "),
+                                    host.offer == Offer::NoSet
+                                        ? tr("Revert, or a newer Vitrine may build a matching one.")
+                                        : tr("Build and install the matching one, or revert.")),
                      true);
     } else if (host.owner == Owner::Foreign) {
         html += para(host.installed.isLocal()
