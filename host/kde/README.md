@@ -9,10 +9,11 @@ pinned copy of the research's recipe, `research/`.
 
 What the sets change (the research's measurements):
 
-- KWin, sets `hl39y` for Plasma 6.7.91, `hl39-68` for 6.8.0, `h681zz` for
-  6.8.1 and later (Fedora 44's and 45's Plasma 6.8.2); none for Fedora 44's
-  earlier Plasma 6.7.5. Patch 0082 (damage-free layers) is left out of the
-  builds of the sets that have it (`h681zz_no82`): with a host window over a
+- KWin, sets `hl39y` for Plasma 6.7.91, `hl39-68` for 6.8.0, `h681zz2` for
+  6.8.1 and 6.8.2 (Fedora 44's Plasma 6.8.2), `h683a` for 6.8.3 (Fedora 45's,
+  2026-11); none for Fedora 44's earlier Plasma 6.7.5. Patch 0082
+  (damage-free layers) is left out of the builds of the sets that have it
+  (`h681zz2_no82`, `h683a_no82`): with a host window over a
   VM, Firefox in the guest froze. Keys in a VM take 8.5-9.3 ms against 12.5
   ms with Fedora's KWin; drags and the launcher under load are smoother;
   the guest's frames are paced to the host's deadlines (presentation-time
@@ -78,9 +79,22 @@ What the sets change (the research's measurements):
   against 1.50 that binds version 3 gets an event it does not know and
   loses its Wayland connection. Guests get the deadline from it with
   vitrine's guest KWin `g28v4` and later.
-- KSvg 6.31.0, set `k2`: Plasma's popups stop uploading their themed frames
+- `h681zz2` is `h681zz` with two fixes of the research's review of its
+  patches (2026-11-15): 0102, a pointer confined to a window two levels of
+  subsurfaces down no longer crashes KWin when the middle one goes first
+  (a VM's view closed while its guest had the pointer confined, say), and
+  0103, after a GPU stall of a second the upload buffer of 0090 waits for
+  the GPU again instead of handing out memory the GPU may still read (a
+  corrupted window).
+- `h683a` is `h681zz2` on Plasma 6.8.3: its 0010 is left out, as 6.8.3 has
+  the same fix ("fix scheduling with triple buffering and commit timing"),
+  and 0074, 0075, 0083 and 0093 have versions for 6.8.3's code (`.683`: the
+  render loop's renamed counts, the udmabuf check moved into value_or()),
+  the same changes otherwise. Built by the research on Fedora 45 and checked
+  in its container smoke test (2026-11-15), not yet on hardware.
+- KSvg 6.31.0 and 6.32.0, set `k2`: Plasma's popups stop uploading their themed frames
   again at each opening.
-- Kirigami 6.31.0, set `f1`: its items react to the frame contrast only
+- Kirigami 6.31.0 and 6.32.0, set `f1`: its items react to the frame contrast only
   when it changes (Plasma's style set it again at each color sync). With
   KSvg's set, on an Arc Pro B50 at 4K and 120 Hz: the launcher opens in
   61-69 ms instead of 72-78, and Super pressed 8 times a second repeats 0.2
@@ -207,7 +221,7 @@ sudo rm -f /etc/user-tmpfiles.d/vitrine-host-kwin.conf /etc/environment.d/vitrin
 ## `research/`: the research's recipe, pinned
 
 A copy of what `kde-rpms.sh` reads in the research's repository
-(virtio-gpu-desktop) at commit `c9a6e0d97f26288b24a84cbd1c9974ab32af6ecf`
+(virtio-gpu-desktop) at commit `7d18c25b1904d6dcbc2a957cba28c57a1fe14726`
 (2026-11-15), in its layout (the container mounts the folder as `/repo`),
 byte for byte and with its files' modes: the scripts, the host sets of the
 four packages (`kde_set_for host ...` in `setup/versions.sh`) and the
@@ -254,7 +268,9 @@ installing.
 | `77e23df8ec1ac727f8071e84f4218125a6a3c56bcf79692fd1a80fb8dc5fd10e` | `patches/kwin/0066-FIX-renderloop-a-render-journal-of-its-own-for-direct-scanout.patch` |
 | `9632c39dc81d0f01ffe5da4c2327f9615444b93f538c20e503c2432ce9ba1c28` | `patches/kwin/0068-UPSTREAM-e3f5caef-pointerconstraints-no-commit-for-lock-or-unlock.hl.patch` |
 | `c0155baae94d01e5c615ba304c4a7278347cbaac8a71c51b9fbdbd26ba201bf5` | `patches/kwin/0070-FIX-drm-keep-both-layer-surfaces-when-switching-back.patch` |
+| `06a9fb335c05834811b629dcaa7254ae65f000ca8601720c071eaf159289183f` | `patches/kwin/0074-EXP-renderloop-lone-frame-lead-hl.683.patch` |
 | `e192e81e652926ea735b0a275c69a5ac2c3230e9b366a53737dd60551a3f4382` | `patches/kwin/0074-EXP-renderloop-lone-frame-lead-hl.patch` |
+| `caecd252fa279466a85e5f83023e62646e00a29927df292d782b2176cf069b79` | `patches/kwin/0075-FIX-opengl-no-udmabuf-import-on-Intel-xe-either.683.patch` |
 | `557137af68be546c9c66cd78da147f54b056d39a9d654526e7f106962d56cb42` | `patches/kwin/0075-FIX-opengl-no-udmabuf-import-on-Intel-xe-either.patch` |
 | `8fceb6e1df83b20a0d5e15cb4236d31e05a8928fb05fd915f4e6f04b1fd7571a` | `patches/kwin/0077-EXP-effects-first-animation-frame-one-refresh-in-at-run-time.68.patch` |
 | `32b5598cb6e643d11e56bbd0466a4816fc8ea6a42d3cefa4aa569d1cce407916` | `patches/kwin/0077-EXP-effects-first-animation-frame-one-refresh-in-at-run-time.patch` |
@@ -263,15 +279,20 @@ installing.
 | `31673bd7249b7eb8609e2fb97820f9dc29f5d07636203a32ee6f8bd95f3059af` | `patches/kwin/0080-EXP-scene-the-active-window-a-layer-candidate-at-run-time.patch` |
 | `9a8b47ba2feab7753103975e1e8d8cc9a40762146a5efd0972400489bd0edea1` | `patches/kwin/0081-EXP-compositor-an-empty-render-is-not-content-at-run-time.patch` |
 | `5ca98067b01dba5dc8c9b9c7804d1726d937f19c3fc73ed3b77d89c4636f8642` | `patches/kwin/0082-EXP-compositor-a-layer-with-no-damage-keeps-its-buffer-at-run-time.patch` |
+| `e2e8bdbf8b635c921a76efbdcc8d25842a82c95d6e3454fd5772474f668172a5` | `patches/kwin/0083-EXP-opengl-udmabuf-import-at-run-time.683.patch` |
 | `318443465694ad35a85d1f5686e8a34837abadeb9ef2eb96bd3b2b31394d0f18` | `patches/kwin/0083-EXP-opengl-udmabuf-import-at-run-time.patch` |
 | `a2cafc576a9bcce8b7064daba66578b71f7a71f3fd9350cc7c90e3ebae933c2a` | `patches/kwin/0089-EXP-drm-night-light-after-blending-at-run-time.patch` |
 | `bc91ee813206b23353a848555ee9fc62a5c7b71b837291b98a215408f42b3c6c` | `patches/kwin/0090-EXP-opengl-persistent-upload-buffer-for-big-texture-uploads.patch` |
 | `18dd95d05d04bfdb04810403663e216ea986c9b7870cf1795fbc904ab1f9f6e7` | `patches/kwin/0092-EXP-opengl-new-textures-big-uploads-through-the-upload-buffer.patch` |
+| `c5d0bc31d272dec53b58b91c38ac30f330227ee859e6417bff84d2797ce1e144` | `patches/kwin/0093-FIX-wayland-a-wl_shm-buffer-s-udmabuf-made-when-first-asked-for.683.patch` |
 | `b497dca1af670d1795671a0a639ac6511c0a62748284a50664bea808928b622d` | `patches/kwin/0093-FIX-wayland-a-wl_shm-buffer-s-udmabuf-made-when-first-asked-for.patch` |
 | `0ccdf78c3fcc9c50bc7902989d4ca925ffe8d47336e1d1072d7753ccd6d888d6` | `patches/kwin/0094-EXP-wayland-a-client-s-shm-memory-let-go-on-a-thread-of-its-own.patch` |
 | `90ffb02e25ac75ab1e305d3592e2cacfa262b69d8c6a2251cdd578b4c4cdf30e` | `patches/kwin/0095-EXP-overview-keep-the-views-between-openings.patch` |
 | `1afe99bbcd5b04da7865274f9256cffa6df922b51c0eb40666fb4be893bef515` | `patches/kwin/0096-EXP-opengl-the-GPU-s-clock-read-once-a-second-for-render-time-queries.patch` |
-| `d60e79bb3e9f102904ebf4a591af7b6a33856dc13c9130033c96e4490a0e1c7f` | `patches/kwin/sets/h681zz.series` |
+| `5cc6aefc6610a701ca514d1cecf7ec7c9c1b4dd7e7b81e0d5ae754419ad494e3` | `patches/kwin/0102-FIX-input-a-broken-subsurface-chain-does-not-crash-the-confinement.patch` |
+| `d424c814aebc19cbf235b2d4dffdf333092f4d70200b03733e3a859da8167557` | `patches/kwin/0103-FIX-opengl-the-upload-buffer-keeps-its-fence-after-a-timeout.patch` |
+| `19f8b54d78cf8e5bff27ffec1a156a5d4635dcb23be5d0a7c0e7e33e53216f0b` | `patches/kwin/sets/h681zz2.series` |
+| `8768b811e44fce3e318fe1bef81f949eea2dabe6b02a1e28231a62eb243518e9` | `patches/kwin/sets/h683a.series` |
 | `c18c004fe7319f2d4509deeadf37df8434088affde845d0eb96b11bb6642367d` | `patches/kwin/sets/hl39-68.series` |
 | `45da20f38c96aeb3d44540c0567de26c293e6aba799b1e64e01eebb79ee7ad11` | `patches/kwin/sets/hl39y.series` |
 | `bdfcd81c8c252a31ffad2f62bd99e793a0c6d0d0300c5704d74ee0ccba454b25` | `patches/qtbase/qtbase-wayland-shm-reuse-pools-v3.patch` |
@@ -280,7 +301,7 @@ installing.
 | `761707846b55e70bac195d24e30520ca5c7b96164c0ce45b113317fc13150deb` | `setup/paths.sh` |
 | `fa2026f1f4b365859cf919667685f23bb7d6988ec8906dbdf2c8831428750182` | `setup/tools/build-patched-rpm.sh` |
 | `044bf5dc522dc2ae268ae734bf0389569eff2ef095f2ddd48ddd270488656bdb` | `setup/tools/kde-rpms.sh` |
-| `55f26b85a5a73b257dd39c7cee4ad4d53597321dec3395473b4c31e29d86c771` | `setup/versions.sh` |
+| `bedc26fb42b0a273d118ee1b6224091bbc645ad19e1df42a3b25596b91c4bf09` | `setup/versions.sh` |
 | `19cf4324887903cc1185fc8dc83d38bb9e97176a36ef8ed9506611be4f6e1ddf` | `src/host-config/kwin-active-window-candidate.conf` |
 | `cf647e7f955d60ec6cae1ee58196b94d939996df44697f9e479023921bbe1f91` | `src/host-config/kwin-animation-start-step.conf` |
 | `ebb40936ea5b94c0970194727a29954e954780bc5b7817421e79fc5ee9d04911` | `src/host-config/kwin-empty-render-not-content.conf` |
@@ -294,7 +315,7 @@ When the research's recipe moves (`r` its repository, `c` the commit, `v`
 this folder), take it again as it is, the sets' patches with it:
 
 ```sh
-r=~/Documents/virtio-gpu-desktop c=c9a6e0d v=~/Documents/vitrine/host/kde/research
+r=~/Documents/virtio-gpu-desktop c=7d18c25 v=~/Documents/vitrine/host/kde/research
 rm -rf "$v" && mkdir -p "$v/setup/tools" "$v/src/host-config"
 for f in setup/lib.sh setup/paths.sh setup/versions.sh setup/tools/kde-rpms.sh \
 	setup/tools/build-patched-rpm.sh \
@@ -302,7 +323,7 @@ for f in setup/lib.sh setup/paths.sh setup/versions.sh setup/tools/kde-rpms.sh \
 	git -C "$r" show "$c:$f" > "$v/$f"
 done
 # patches/DIR (kde_patch_dir) and the host sets kde_set_for names for each package
-for d in kwin:hl39y,hl39-68,h681zz ksvg:k2 kirigami:f1 qtbase:q4; do
+for d in kwin:hl39y,hl39-68,h681zz2,h683a ksvg:k2 kirigami:f1 qtbase:q4; do
 	dir=${d%%:*} sets=${d#*:}
 	mkdir -p "$v/patches/$dir/sets"
 	for s in ${sets//,/ }; do

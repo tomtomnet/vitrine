@@ -388,7 +388,7 @@ private slots:
     void setsOfTheRecipe()
     {
         const QList<Set> sets = HostKde::sets(hostKdeDir(), "kwin");
-        QCOMPARE(sets.size(), 3);
+        QCOMPARE(sets.size(), 4);
         /* "${VGD_HOST_KWIN_SET:-hl39y}": the research's override left out */
         QCOMPARE(sets[0].series, "hl39y");
         /* host_kwin_set: 0082 left out of the host builds since 2026-11-01 */
@@ -399,19 +399,25 @@ private slots:
         QCOMPARE(sets[1].tag, "h18");
         QCOMPARE(sets[1].versions, QStringList{"6.8.0"});
         QCOMPARE(sets[1].excluded, QStringList());
-        QCOMPARE(sets[2].series, "h681zz");
-        QCOMPARE(sets[2].tag, "h681zz_no82");
+        /* 6.8.3's own set before the one of the other 6.8 releases, as the case statement
+           tries them */
+        QCOMPARE(sets[2].series, "h683a");
+        QCOMPARE(sets[2].tag, "h683a_no82");
         QCOMPARE(sets[2].excluded, QStringList{"0082"});
-        QCOMPARE(sets[2].versions, QStringList{"6.8.*"});
-        /* the libraries' */
-        for (const auto &[package, series, version] :
-             {std::tuple<QString, QString, QString>{"kf6-ksvg", "k2", "6.31.0"},
-              {"kf6-kirigami", "f1", "6.31.0"},
-              {"qt6-qtbase", "q4", "6.11.2"}}) {
+        QCOMPARE(sets[2].versions, QStringList{"6.8.3"});
+        QCOMPARE(sets[3].series, "h681zz2");
+        QCOMPARE(sets[3].tag, "h681zz2_no82");
+        QCOMPARE(sets[3].excluded, QStringList{"0082"});
+        QCOMPARE(sets[3].versions, QStringList{"6.8.*"});
+        /* the libraries': one set for two releases of KDE Frameworks ("A | B)") */
+        for (const auto &[package, series, versions] :
+             {std::tuple<QString, QString, QStringList>{"kf6-ksvg", "k2", {"6.31.0", "6.32.0"}},
+              {"kf6-kirigami", "f1", {"6.31.0", "6.32.0"}},
+              {"qt6-qtbase", "q4", {"6.11.2"}}}) {
             const QList<Set> list = HostKde::sets(hostKdeDir(), package);
             QCOMPARE(list.size(), 1);
             QCOMPARE(list[0].series, series);
-            QCOMPARE(list[0].versions, QStringList{version});
+            QCOMPARE(list[0].versions, versions);
         }
         /* the guests' are not the host's */
         QVERIFY(HostKde::sets(hostKdeDir(), "kpipewire").isEmpty());
@@ -442,7 +448,10 @@ private slots:
         QCOMPARE(r.keys.size(), 4);
         QCOMPARE(Recipe::read(hostKdeDir(), "44", {{"kwin", "6.8.0"}}).series("kwin"), "hl39-68");
         QCOMPARE(Recipe::read(hostKdeDir(), "44", {{"kwin", "6.8.0"}}).tag("kwin"), "h18");
-        QCOMPARE(Recipe::read(hostKdeDir(), "44", {{"kwin", "6.8.3"}}).series("kwin"), "h681zz");
+        QCOMPARE(Recipe::read(hostKdeDir(), "44", {{"kwin", "6.8.3"}}).series("kwin"), "h683a");
+        QCOMPARE(Recipe::read(hostKdeDir(), "44", {{"kwin", "6.8.2"}}).series("kwin"), "h681zz2");
+        QCOMPARE(Recipe::read(hostKdeDir(), "45", {{"kf6-ksvg", "6.32.0"}}).series("kf6-ksvg"), "k2");
+        QCOMPARE(Recipe::read(hostKdeDir(), "45", {{"kf6-kirigami", "6.32.0"}}).series("kf6-kirigami"), "f1");
         /* the research's overrides of its sets, and its switches, stay its own */
         qputenv("VGD_HOST_KWIN_SET", "hl39");
         qputenv("VGD_HOST_KWIN_SET_68", "hl39-681");
@@ -452,15 +461,16 @@ private slots:
         const Recipe overridden = Recipe::read(hostKdeDir(), "44", {{"kwin", "6.7.91"}, {"qt6-qtbase", "6.11.2"}});
         QCOMPARE(overridden.series("kwin"), "hl39y");
         QCOMPARE(overridden.series("qt6-qtbase"), "q4");
-        QCOMPARE(Recipe::read(hostKdeDir(), "44", {{"kwin", "6.8.3"}}).series("kwin"), "h681zz");
-        QCOMPARE(Recipe::read(hostKdeDir(), "44", {{"kwin", "6.8.3"}}).tag("kwin"), "h681zz_no82");
+        QCOMPARE(Recipe::read(hostKdeDir(), "44", {{"kwin", "6.8.3"}}).series("kwin"), "h683a");
+        QCOMPARE(Recipe::read(hostKdeDir(), "44", {{"kwin", "6.8.3"}}).tag("kwin"), "h683a_no82");
+        QCOMPARE(Recipe::read(hostKdeDir(), "44", {{"kwin", "6.8.2"}}).tag("kwin"), "h681zz2_no82");
         QCOMPARE(HostKde::sets(hostKdeDir(), "kwin").last().excluded, QStringList{"0082"});
         for (const char *v : {"VGD_HOST_KWIN_SET", "VGD_HOST_KWIN_SET_68", "VGD_HOST_QT_SET", "HOST_QT_Q4",
                               "VGD_HOST_KWIN_0082"}) {
             qunsetenv(v);
         }
         /* Fedora 44's own Plasma, one after the sets, the next frameworks and Qt */
-        const Recipe none = Recipe::read(hostKdeDir(), "44", {{"kwin", "6.7.5"}, {"kf6-ksvg", "6.32.0"},
+        const Recipe none = Recipe::read(hostKdeDir(), "44", {{"kwin", "6.7.5"}, {"kf6-ksvg", "6.33.0"},
                                                              {"qt6-qtbase", "6.11.3"}});
         QVERIFY(none.isValid());
         QVERIFY(none.series("kwin").isEmpty());
@@ -512,28 +522,43 @@ private slots:
         const QList<Builds::Component> all = Builds::load(places);
         const Builds::Component c = Builds::find(all, "host-kwin");
         const QList<Builds::Patch> patches = Builds::patches(c);
-        QCOMPARE(patches.size(), 29 + 14 + 36);
+        QCOMPARE(patches.size(), 29 + 14 + 37 + 38);
         QCOMPARE(patches.first().origin, "hl39y, for KWin 6.7.91");
         /* each set's patch the builds leave out (0082) after its own, apart */
         QCOMPARE(patches[28].origin, "hl39y: left out of the build");
         QVERIFY(patches[28].left);
         QVERIFY(!patches[27].left);
-        /* h681zz: h681zu, 0092-0096, and 0012 at presentation-time version 4 */
-        const Builds::Patch &p0096 = patches[patches.size() - 2];
-        QCOMPARE(p0096.origin, "h681zz, for KWin 6.8.x");
+        const auto in = [&patches](const QString &origin, const QString &name) {
+            return std::any_of(patches.begin(), patches.end(), [&](const Builds::Patch &p) {
+                return p.origin == origin && p.name() == name;
+            });
+        };
+        /* h683a: h681zz2 on 6.8.3, without 0010 (6.8.3 has the same fix), 0074 0075 0083 0093 for
+           6.8.3's code */
+        const QString h683a = "h683a, for KWin 6.8.3";
+        QCOMPARE(patches[29 + 14].origin, h683a);
+        QCOMPARE(patches[29 + 14 + 36].origin, "h683a: left out of the build");
+        QVERIFY(in(h683a, "0074-EXP-renderloop-lone-frame-lead-hl.683.patch"));
+        QVERIFY(in(h683a, "0093-FIX-wayland-a-wl_shm-buffer-s-udmabuf-made-when-first-asked-for.683.patch"));
+        QVERIFY(!in(h683a, "0010-FIX-G-renderloop-commit-timing-target-sets-the-earliest-vblank.patch"));
+        QVERIFY(!in(h683a, "0074-EXP-renderloop-lone-frame-lead-hl.patch"));
+        QVERIFY(in(h683a, "0102-FIX-input-a-broken-subsurface-chain-does-not-crash-the-confinement.patch"));
+        /* h681zz2: h681zz (0092-0096, 0012 at presentation-time version 4) and the review's 0102, 0103 */
+        const QString h681zz2 = "h681zz2, for KWin 6.8.x";
+        const Builds::Patch &p0096 = patches[patches.size() - 4];
+        QCOMPARE(p0096.origin, h681zz2);
         QCOMPARE(p0096.name(), "0096-EXP-opengl-the-GPU-s-clock-read-once-a-second-for-render-time-queries.patch");
         QVERIFY(!p0096.left);
-        /* its 0012: the content-update deadline at presentation-time version 4 */
-        QVERIFY(std::any_of(patches.begin(), patches.end(), [](const Builds::Patch &p) {
-            return p.origin == "h681zz, for KWin 6.8.x" &&
-                   p.name() == "0012-presentation-time-v4-content-update-deadline.patch";
-        }));
+        QVERIFY(in(h681zz2, "0012-presentation-time-v4-content-update-deadline.patch"));
+        QVERIFY(in(h681zz2, "0010-FIX-G-renderloop-commit-timing-target-sets-the-earliest-vblank.patch"));
+        QCOMPARE(patches[patches.size() - 2].name(),
+                 "0103-FIX-opengl-the-upload-buffer-keeps-its-fence-after-a-timeout.patch");
         /* a subject on two lines of the mail header */
         QCOMPARE(Builds::subject(c, p0096), "EXP opengl: the GPU's clock read once a second for render-time "
                                             "queries (KWIN_GPU_CLOCK_EVERY_FRAME=1 reads it every frame)");
-        QCOMPARE(patches[patches.size() - 7].name(),
+        QCOMPARE(patches[patches.size() - 9].name(),
                  "0090-EXP-opengl-persistent-upload-buffer-for-big-texture-uploads.patch");
-        QCOMPARE(patches.last().origin, "h681zz: left out of the build");
+        QCOMPARE(patches.last().origin, "h681zz2: left out of the build");
         QVERIFY(patches.last().left);
         QCOMPARE(patches.last().name(),
                  "0082-EXP-compositor-a-layer-with-no-damage-keeps-its-buffer-at-run-time.patch");
@@ -543,14 +568,14 @@ private slots:
         const Builds::Component svg = Builds::find(all, "host-ksvg");
         const QList<Builds::Patch> k2 = Builds::patches(svg);
         QCOMPARE(k2.size(), 2);
-        QCOMPARE(k2.first().origin, "k2, for KSvg 6.31.0");
+        QCOMPARE(k2.first().origin, "k2, for KSvg 6.31.0, 6.32.0");
         QVERIFY(QFileInfo::exists(svg.dir + '/' + k2.first().path));
         QCOMPARE(Builds::patches(Builds::find(all, "host-kirigami")).size(), 1);
         const QList<Builds::Patch> q4 = Builds::patches(Builds::find(all, "host-qtbase"));
         QCOMPARE(q4.size(), 1);
         QCOMPARE(q4.first().name(), "qtbase-wayland-shm-reuse-pools-v3.patch");
         QVERIFY(Builds::subject(Builds::find(all, "host-qtbase"), q4.first()).startsWith("Qt Wayland: a resized window"));
-        QCOMPARE(Builds::source(svg).revision, "c9a6e0d97f26288b24a84cbd1c9974ab32af6ecf");
+        QCOMPARE(Builds::source(svg).revision, "7d18c25b1904d6dcbc2a957cba28c57a1fe14726");
     }
 
     void parsing()

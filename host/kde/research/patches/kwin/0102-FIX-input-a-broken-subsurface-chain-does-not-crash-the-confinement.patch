@@ -1,0 +1,82 @@
+input: a broken subsurface chain does not crash the pointer confinement (2026-11-15)
+
+Fixes 0039 (pointer constraints on subsurfaces). PointerInputRedirection::constraintOffset() used
+SurfaceInterface::mapToChild(), which follows subSurface()->parentSurface() up to the main surface - into null when
+a parent of the constrained surface was destroyed before it (the subsurface keeps a null QPointer parent). With the
+pointer confined to a surface two levels down and its middle parent gone, the next motion ran updatePosition() ->
+applyPointerConfinement() -> constraintOffset() before 0039's re-check of the constraint, and the compositor crashed
+(the 2026-11-15 patch review; e.g. a VM view closed while the guest has the pointer confined, depending on the order
+the client destroys its subsurfaces). Now the chain is walked with null checks; a broken chain leaves the motion
+unconfined and 0039's check after it drops the constraint.
+
+diff --git a/src/pointer_input.cpp b/src/pointer_input.cpp
+index ef190ac..cff3420 100644
+--- a/src/pointer_input.cpp
++++ b/src/pointer_input.cpp
+@@ -792,6 +792,11 @@ QPointF PointerInputRedirection::applyPointerConfinement(const QPointF &pos) con
+         return pos;
+     }
+     const auto s = m_constrainedSurface.data();
++    // a parent of the constrained subsurface destroyed before it: the surface is no longer placed in the window,
++    // the motion goes unconfined - the check after it (processMotionInternal) drops the constraint
++    if (!constraintChainIntact(s)) {
++        return pos;
++    }
+     const RegionF region = *s->confinedPointerRegion();
+     // in the constrained surface's coordinates (a subsurface's, where its parents place it now)
+     const QPointF offset = constraintOffset(s);
+@@ -839,12 +844,40 @@ std::pair<SurfaceInterface *, QPointF> PointerInputRedirection::constraintTarget
+ 
+ QPointF PointerInputRedirection::constraintOffset(SurfaceInterface *surface) const
+ {
+-    // where a subsurface lies in the focused window's main surface, now (its parents' commits move it)
++    // where a subsurface lies in the focused window's main surface, now (its parents' commits move it); walked here
++    // with null checks rather than by SurfaceInterface::mapToChild(), which follows parentSurface() into null when a
++    // parent was destroyed before the subsurface (2026-11-15 review: a confined surface two levels down, its middle
++    // parent gone, crashed the compositor at the next motion)
+     SurfaceInterface *mainSurface = focus() ? focus()->surface() : nullptr;
+     if (!mainSurface || !surface || surface == mainSurface) {
+         return QPointF();
+     }
+-    return -mainSurface->mapToChild(surface, QPointF());
++    QPointF offset;
++    for (SurfaceInterface *s = surface; s != mainSurface;) {
++        SubSurfaceInterface *subsurface = s->subSurface();
++        if (!subsurface || !subsurface->parentSurface()) {
++            return QPointF();
++        }
++        offset += subsurface->position();
++        s = subsurface->parentSurface();
++    }
++    return offset;
++}
++
++bool PointerInputRedirection::constraintChainIntact(SurfaceInterface *surface) const
++{
++    SurfaceInterface *mainSurface = focus() ? focus()->surface() : nullptr;
++    if (!mainSurface || !surface) {
++        return false;
++    }
++    for (SurfaceInterface *s = surface; s != mainSurface;) {
++        SubSurfaceInterface *subsurface = s->subSurface();
++        if (!subsurface || !subsurface->parentSurface()) {
++            return false;
++        }
++        s = subsurface->parentSurface();
++    }
++    return true;
+ }
+ 
+ void PointerInputRedirection::watchInputSurface()
+diff --git a/src/pointer_input.h b/src/pointer_input.h
+index b66e590..6141779 100644
+--- a/src/pointer_input.h
++++ b/src/pointer_input.h
+@@ -184,6 +184,7 @@ private:
+     QPointF applyPointerConfinement(const QPointF &pos) const;
+     std::pair<SurfaceInterface *, QPointF> constraintTarget() const;
+     QPointF constraintOffset(SurfaceInterface *surface) const;
++    bool constraintChainIntact(SurfaceInterface *surface) const;
+     void watchInputSurface();
+     void disconnectConfinedPointerRegionConnection();
+     void disconnectPointerConstraintsConnection();

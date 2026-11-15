@@ -1,0 +1,30 @@
+opengl: the upload buffer keeps its fence after a timeout (2026-11-15)
+
+Fixes 0090 (persistent upload buffer). GLUploadBuffer::map() deleted its fence when the 1 s wait for the previous
+upload timed out (or failed) and returned nullptr; the next map() then found no fence and handed out the same memory
+at once - after a GPU stall of a second or more the CPU could overwrite pixels the GPU was still reading (a corrupted
+window texture). The fence is now kept on a timeout: the next map() waits for it again, and the caller copies its own
+way meanwhile (callers unmap() only after a successful map()). Found by the 2026-11-15 patch review.
+
+diff --git a/src/opengl/eglcontext.cpp b/src/opengl/eglcontext.cpp
+index f591d03..29c1f33 100644
+--- a/src/opengl/eglcontext.cpp
++++ b/src/opengl/eglcontext.cpp
+@@ -454,11 +454,15 @@ uint8_t *GLUploadBuffer::map(size_t size)
+     if (m_fence) {
+         // the GPU still reading the last upload: rare, big uploads come seconds apart
+         const GLenum ret = glClientWaitSync(m_fence, GL_SYNC_FLUSH_COMMANDS_BIT, 1000000000);
+-        glDeleteSync(m_fence);
+-        m_fence = nullptr;
+         if (ret == GL_TIMEOUT_EXPIRED || ret == GL_WAIT_FAILED) {
++            // still read (or the wait failed): the fence is kept, so that the next map() waits for it again instead
++            // of handing out memory the GPU may still read (2026-11-15 review: the fence was deleted here, and after a
++            // stall of a second or more the next upload overwrote a texture being sampled); the caller copies its
++            // own way meanwhile
+             return nullptr;
+         }
++        glDeleteSync(m_fence);
++        m_fence = nullptr;
+     }
+     if (size <= m_size) {
+         return m_data;
