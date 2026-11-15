@@ -11,6 +11,9 @@ qt_standard_project_setup()
 option(BUILD_TESTING "Build the unit tests" ON)
 if(BUILD_TESTING)
     enable_testing()
+    # the tests' programs without core dumps (app/tests/no-core-dumps.sh says
+    # why); CMake 3.29 and later
+    set(CMAKE_TEST_LAUNCHER sh ${CMAKE_CURRENT_SOURCE_DIR}/app/tests/no-core-dumps.sh)
 endif()
 
 include(GNUInstallDirs)

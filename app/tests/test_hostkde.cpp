@@ -995,6 +995,58 @@ private slots:
         QVERIFY(!status(kwin(), system, recipe(), {b}, record).nextLogin);
     }
 
+    /* A desktop of 2026-11-15: Fedora's Plasma 6.8.3 and KF 6.32 installed around Vitrine's KWin
+       6.8.2 (h681zy) and KSvg and Kirigami 6.31.0 (k2, f1), all locked.  The recipe in host/kde has
+       sets for both: each is offered to build, then to install */
+    void plasma683AroundVitrines682()
+    {
+        const Recipe real = Recipe::read(hostKdeDir(), "44", {{"kwin", "6.8.3"}, {"kf6-ksvg", "6.32.0"},
+                                                             {"kf6-kirigami", "6.32.0"},
+                                                             {"qt6-qtbase", "6.11.2"}});
+        QVERIFY(real.isValid());
+        const Build kw = build("6.8.2-3.h681zy_no82.fc44", "6.11.2-3.fc44", "key1", "fedora");
+        const Build svg = libraryBuild("kf6-ksvg", "6.31.0-1.k2.fc44", "k2", {"kf6-ksvg"}, "6.11.2-3.fc44",
+                                       "fedora");
+        const Build kir = libraryBuild("kf6-kirigami", "6.31.0-1.f1.fc44", "f1", {"kf6-kirigami"},
+                                       "6.11.2-3.fc44", "fedora");
+        System system = host("6.8.2", "6.8.2-3.fc44", "updates");
+        system = withVitrines(withVitrines(withVitrines(system, kw), svg), kir);
+        system = moved(system, "plasma-workspace", "6.8.3-1.fc44");
+        system = moved(system, "kf6-kcoreaddons", "6.32.0-1.fc44");
+        system.newest.insert("kwin", "6.8.3-1.fc44");
+        system.newest.insert("kf6-ksvg", "6.32.0-1.fc44");
+        system.newest.insert("kf6-kirigami", "6.32.0-1.fc44");
+
+        const Record kwRecord = Record::of(kw, QDateTime::currentDateTimeUtc(), kwin().against);
+        Status s = status(kwin(), system, real, {kw}, kwRecord);
+        QCOMPARE(s.owner, Owner::Vitrine);
+        QCOMPARE(s.version, "6.8.3");
+        QCOMPARE(s.series, "h683a");
+        QCOMPARE(s.summary(), "Out of date: Plasma 6.8.3 is installed");
+        QString why;
+        QVERIFY2(s.canBuild(&why), qPrintable(why));
+        QVERIFY(!s.canInstall());
+        Build kw683 = build("6.8.3-1.h683a_no82.fc44", "6.11.2-3.fc44", "key1", "fedora");
+        kw683.buildroot.insert("libplasma", "6.8.3-1.fc44");
+        s = status(kwin(), system, real, {kw683, kw}, kwRecord);
+        QVERIFY2(s.canInstall(&why), qPrintable(why));
+
+        for (const auto &[target, old, name] :
+             {std::tuple<Target, Build, QString>{ksvg(), svg, "kf6-ksvg"}, {kirigami(), kir, "kf6-kirigami"}}) {
+            const Record record = Record::of(old, QDateTime::currentDateTimeUtc(), target.against);
+            Status lib = status(target, system, real, {old}, record);
+            QCOMPARE(lib.owner, Owner::Vitrine);
+            QCOMPARE(lib.version, "6.32.0");
+            QCOMPARE(lib.series, name == "kf6-ksvg" ? "k2" : "f1");
+            QCOMPARE(lib.summary(), "Out of date: KDE Frameworks 6.32.0 is installed");
+            QVERIFY2(lib.canBuild(&why), qPrintable(why));
+            const Build next = libraryBuild(name, "6.32.0-1." + lib.series + ".fc44", lib.series, {name},
+                                            "6.11.2-3.fc44", "fedora");
+            lib = status(target, system, real, {next, old}, record);
+            QVERIFY2(lib.canInstall(&why), qPrintable(why));
+        }
+    }
+
     /* Plasma or Qt updated past Vitrine's KWin: out of date, said plainly */
     void outdatedByUpdates()
     {
