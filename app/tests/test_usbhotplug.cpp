@@ -504,6 +504,49 @@ private slots:
         unplug("99-4");
     }
 
+    /*
+     * Kept for good (Keep for This VM): vitrine's own by bus and address goes,
+     * one by the device's IDs comes, and that one stays when the device leaves:
+     * QEMU takes it back at its next connection, on any port.  Nothing more to
+     * do for a device the VM has by its IDs already
+     */
+    void kept()
+    {
+        plug("99-5", 99, 11, "0781", "5567", "SanDisk", "Cruzer Blade");
+        FakeVm vm(m_tmp.path(), vmId());
+        vm.qemu->plugged = {"99/11"};
+        vm.qemu->idsPlugged = {"0781:5567"};
+        UsbHotplug *hotplug = UsbHotplug::of(&vm.runner);
+        vm.attach();
+        QTRY_VERIFY(hotplug->isKnown());
+        const UsbDevice stick = host("99-5");
+        QCOMPARE(wait([&](const UsbHotplug::Done &done) { hotplug->attach(stick, done); }),
+                 QString());
+        QTRY_VERIFY(hotplug->has(stick));
+
+        QCOMPARE(wait([&](const UsbHotplug::Done &done) { hotplug->keep(stick, done); }), QString());
+        QCOMPARE(vm.qemu->executed("device_del").size(), 1);
+        QCOMPARE(vm.qemu->executed("device_del").first()["arguments"].toObject(),
+                 QJsonObject({{"id", "vitrine-usb-99-11-0781-5567"}}));
+        QCOMPARE(vm.qemu->executed("device_add").last()["arguments"].toObject(),
+                 QJsonObject({{"driver", "usb-host"}, {"id", "vitrine-usbid-0781-5567"},
+                              {"vendorid", 0x0781}, {"productid", 0x5567}}));
+        QCOMPARE(UsbHotplug::keepIdFor(0x0781, 0x5567), QString("vitrine-usbid-0781-5567"));
+        QTRY_VERIFY(hotplug->devices().size() == 1 && !hotplug->devices().first().isOwn());
+        QVERIFY(hotplug->has(stick));
+        QVERIFY(readFile(vm.runner.logPath()).contains("it comes back at each reconnect"));
+        /* kept already: nothing asked of QEMU */
+        const qsizetype adds = vm.qemu->executed("device_add").size();
+        QCOMPARE(wait([&](const UsbHotplug::Done &done) { hotplug->keep(stick, done); }), QString());
+        QCOMPARE(vm.qemu->executed("device_add").size(), adds);
+
+        /* it leaves: not taken back, QEMU waits for it */
+        unplug("99-5");
+        QTest::qWait(500);
+        QCOMPARE(vm.qemu->executed("device_del").size(), 1);
+        QCOMPARE(hotplug->devices().size(), 1);
+    }
+
     /* The run ends: nothing known of the next */
     void stops()
     {

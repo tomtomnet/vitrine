@@ -9,6 +9,7 @@
 
 #include "core/helpersession.h"
 #include "core/hostsettings.h"
+#include "core/usbaside.h"
 #include "core/vmrunner.h"
 #include "core/vmstore.h"
 
@@ -28,6 +29,9 @@ struct PciPassthrough::Run {
     QStringList addresses;
     qint64 lockMiB = 0;
     QString verb;                               // devices, devices-bind
+    bool pci = true;                            // PCI devices to make ready: an error ends the start
+    QList<UsbAside::Ids> usb;                   // USB devices by IDs: the desktop keeps away
+    QList<UsbAside::Ids> usbAdd;                // of those, the ones set aside first (devices-bind)
     HelperSession *helper = nullptr;
     QTimer *timeout = nullptr;                  // for the answer
     std::function<void(const QString &)> done;  // until answered
@@ -93,6 +97,13 @@ void PciPassthrough::startTimeout(Run *run)
         if (Run *r = current(vmId, serial); r && r->done) {
             if (r->helper) {
                 r->helper->cancel();
+            }
+            if (!r->pci) {
+                /* USB devices alone: the VM starts all the same */
+                note(vmId, tr("USB devices: vitrine-helper did not answer in time: the desktop does "
+                              "not keep away from them."));
+                answer(r, QString());
+                return;
             }
             answer(r, tr("PCI passthrough: vitrine-helper did not answer in time."));
         }
@@ -248,12 +259,13 @@ void PciPassthrough::watchVm(Vm *vm)
     const QString id = vm->id();
 
     vm->runner()->setDevicePreparer([self, id, vm](const QStringList &addresses, qint64 lockMiB,
+                                                    const QList<std::pair<quint16, quint16>> &usb,
                                                     const std::function<void(const QString &)> &done) {
         if (!self) {
-            done(tr("PCI passthrough: Vitrine is closing."));
+            done(addresses.isEmpty() ? QString() : tr("PCI passthrough: Vitrine is closing."));
             return;
         }
-        self->prepare(id, vm->name(), addresses, lockMiB, done);
+        self->prepare(id, vm->name(), addresses, lockMiB, usb, done);
     });
     connect(vm->runner(), &VmRunner::qemuLaunched, this,
             [this, id](qint64 pid) { launched(id, pid); });
@@ -284,6 +296,7 @@ QString PciPassthrough::takenFrom(const QString &vmId, const QString &address) c
 
 void PciPassthrough::prepare(const QString &vmId, const QString &vmName,
                              const QStringList &addresses, qint64 lockMiB,
+                             const QList<std::pair<quint16, quint16>> &usb,
                              const std::function<void(const QString &)> &done)
 {
     /*
@@ -297,8 +310,8 @@ void PciPassthrough::prepare(const QString &vmId, const QString &vmName,
 
         delete m_waiting.take(vmId).guard;
         waiting.guard = new QObject(this);
-        waiting.go = [this, vmId, vmName, addresses, lockMiB, done]() {
-            prepare(vmId, vmName, addresses, lockMiB, done);
+        waiting.go = [this, vmId, vmName, addresses, lockMiB, usb, done]() {
+            prepare(vmId, vmName, addresses, lockMiB, usb, done);
         };
         QTimer::singleShot(m_waitMs, waiting.guard, [this, vmId, guard = waiting.guard]() {
             if (m_waiting.value(vmId).guard != guard) {
@@ -313,7 +326,7 @@ void PciPassthrough::prepare(const QString &vmId, const QString &vmName,
         m_waiting.insert(vmId, waiting);
         return;
     }
-    const Plan p = plan(addresses, lockMiB, m_sysRoot, m_procRoot);
+    const Plan p = addresses.isEmpty() ? Plan() : plan(addresses, lockMiB, m_sysRoot, m_procRoot);
     if (!p.problem.isEmpty()) {
         done(p.problem);
         return;
@@ -335,9 +348,17 @@ void PciPassthrough::prepare(const QString &vmId, const QString &vmName,
         }
     }
     forget(m_runs.take(vmId));
-    if (p.verb.isEmpty()) {
+    /* its USB devices: set aside first if they are not (the password, once), then
+       kept away from the desktop while it runs */
+    const QList<UsbAside::Ids> usbAdd = UsbAside::missing(usb, UsbAside::read());
+    const QString usbVerb = usb.isEmpty()      ? QString()
+                            : usbAdd.isEmpty() ? QString("devices")
+                                               : QString("devices-bind");
+    if (!addresses.isEmpty() && p.verb.isEmpty()) {
         /* set up by hand: nothing to ask for */
         note(vmId, tr("PCI devices ready already: %1").arg(addresses.join(", ")));
+    }
+    if (p.verb.isEmpty() && usbVerb.isEmpty()) {
         done(QString());
         return;
     }
@@ -347,7 +368,11 @@ void PciPassthrough::prepare(const QString &vmId, const QString &vmName,
     run->vmName = vmName;
     run->addresses = addresses;
     run->lockMiB = lockMiB;
-    run->verb = p.verb;
+    run->pci = !p.verb.isEmpty();
+    run->usb = usb;
+    run->usbAdd = usbAdd;
+    run->verb = p.verb == "devices-bind" || usbVerb == "devices-bind" ? QString("devices-bind")
+                                                                     : QString("devices");
     run->done = done;
     m_runs.insert(vmId, run);
     ask(run);
@@ -372,6 +397,23 @@ void PciPassthrough::ask(Run *run)
         Run *run = current(vmId, serial);
 
         if (!run) {
+            return;
+        }
+        if (!run->pci && (status.problem == Problem::NotInstalled ||
+                          status.problem == Problem::NoPolicy || status.problem == Problem::Failed)) {
+            /* USB devices alone: as without the helper, the VM starts */
+            note(vmId, tr("USB devices: %1: the desktop does not keep away from them.")
+                           .arg(status.problem == Problem::NotInstalled
+                                    ? tr("vitrine-helper is not installed")
+                                    : clause(status.why())));
+            answer(run, QString());
+            return;
+        }
+        /* no password asked at every start: the vitrine group's members only (README.md) */
+        if (!run->pci && run->verb == "devices" && !status.active()) {
+            note(vmId, tr("USB devices: you are not in the vitrine group: the desktop does not keep "
+                          "away from them."));
+            answer(run, QString());
             return;
         }
         switch (status.problem) {
@@ -415,9 +457,18 @@ void PciPassthrough::spawn(Run *run)
         answer(run, tr("PCI passthrough: %1.").arg(error));
         return;
     }
-    /* sent once it is ready (pkexec's password dialog may come first) */
-    run->helper->send(
-        QString("vfio %1 %2").arg(run->addresses.join(',')).arg(run->lockMiB).toLatin1());
+    /* sent once it is ready (pkexec's password dialog may come first): USB first, its
+       answer ends a start of USB devices alone */
+    if (!run->usbAdd.isEmpty()) {
+        run->helper->send("usb-aside add " + UsbAside::text(run->usbAdd).toLatin1());
+    }
+    if (!run->usb.isEmpty()) {
+        run->helper->send("usb " + UsbAside::text(run->usb).toLatin1());
+    }
+    if (run->pci) {
+        run->helper->send(
+            QString("vfio %1 %2").arg(run->addresses.join(',')).arg(run->lockMiB).toLatin1());
+    }
     /* without a dialog, it answers in seconds from now */
     if (run->noPassword) {
         startTimeout(run);
@@ -455,7 +506,30 @@ void PciPassthrough::handleLine(const QString &vmId, quint64 serial, const QStri
         if (run->helper) {
             run->helper->cancel();
         }
+        if (!run->pci) {
+            answer(run, QString());
+            return;
+        }
         answer(run, tr("PCI passthrough: vitrine-helper: %1.").arg(clause(line.mid(7))));
+    } else if (line.startsWith("ok usb-aside ")) {
+        note(vmId, tr("USB devices set aside: %1").arg(line.mid(13)));
+    } else if (line.startsWith("ok usb ")) {
+        note(vmId, tr("USB devices kept from the desktop while the VM runs: %1").arg(line.mid(7)));
+        if (!run->pci) {
+            answer(run, QString());
+        }
+    } else if (line.startsWith("error usb")) {
+        /* the device goes to the VM all the same: QEMU takes it by its IDs */
+        note(vmId, line);
+        emit notice(tr("USB devices of %1: %2.").arg(run->vmName, clause(line.section(": ", 1))));
+        if (!run->pci && !line.startsWith("error usb-aside") && run->done) {
+            if (run->helper) {
+                run->helper->cancel();
+            }
+            answer(run, QString());
+        }
+    } else if (line.startsWith("restored usb") || line.startsWith("left usb")) {
+        note(vmId, line);
     } else if (line.startsWith("error vfio") && run->done && run->verb == "devices" &&
                !run->retried && line.contains("needs vitrine-helper devices-bind")) {
         /*
@@ -577,7 +651,14 @@ void PciPassthrough::finished(const QString &vmId, quint64 serial)
                 why = helper->foreign().isEmpty() ? tr("vitrine-helper ended without an answer")
                                                   : clause(helper->foreign().first());
             }
-            answer(run, tr("PCI passthrough: %1.").arg(why));
+            if (run->pci) {
+                answer(run, tr("PCI passthrough: %1.").arg(why));
+            } else {
+                /* USB devices alone: the VM starts, and QEMU takes them if it can open them */
+                note(vmId, tr("USB devices: %1: they are not set aside, and the desktop does not "
+                              "keep away from them.").arg(why));
+                answer(run, QString());
+            }
         }
         forget(run);
     }
@@ -588,6 +669,75 @@ void PciPassthrough::finished(const QString &vmId, quint64 serial)
         waiting.guard->deleteLater();
         waiting.go();
     }
+}
+
+void PciPassthrough::keepUsb(const QString &vmId, const QString &vmName,
+                             const QList<std::pair<quint16, quint16>> &usb, qint64 pid)
+{
+    const QList<UsbAside::Ids> add = UsbAside::missing(usb, UsbAside::read());
+    const QString verb = add.isEmpty() ? QString("devices") : QString("devices-bind");
+    const QPointer<PciPassthrough> self(this);
+    const auto spawnIt = [self, vmId, vmName, usb, add, pid, verb]() {
+        if (!self) {
+            return;
+        }
+        const QStringList command =
+            self->m_command.isEmpty()
+                ? QStringList{"pkexec", "--disable-internal-agent", VITRINE_HELPER_PATH, verb}
+                : self->m_command + QStringList{verb};
+        auto *helper = new HelperSession(self);
+        QString error;
+        connect(helper, &HelperSession::line, self, [self, vmId, vmName](const QString &line) {
+            self->note(vmId, line);
+            emit self->helperLine(vmId, line);
+            if (line.startsWith("error usb")) {
+                emit self->notice(
+                    tr("USB devices of %1: %2.").arg(vmName, clause(line.section(": ", 1))));
+            }
+        });
+        connect(helper, &HelperSession::finished, helper, &QObject::deleteLater);
+        if (!helper->start(command, &error)) {
+            self->note(vmId, tr("USB devices: %1.").arg(error));
+            helper->deleteLater();
+            return;
+        }
+        if (!add.isEmpty()) {
+            helper->send("usb-aside add " + UsbAside::text(add).toLatin1());
+        }
+        helper->send("usb " + UsbAside::text(usb).toLatin1());
+        helper->send("watch " + QByteArray::number(pid));
+        /* on its own from now on: it ends after that QEMU */
+        helper->closeInput();
+    };
+
+    if (usb.isEmpty() || pid <= 0) {
+        return;
+    }
+    if (!m_command.isEmpty()) {
+        spawnIt();
+        return;
+    }
+    HostSettings::checkAction("org.vitrine.helper." + verb, this,
+                              [self, vmId, verb, spawnIt](const HostSettings::Status &status) {
+        using Problem = HostSettings::Problem;
+        if (!self) {
+            return;
+        }
+        if (status.problem == Problem::NotInstalled || status.problem == Problem::NoPolicy ||
+            status.problem == Problem::Failed) {
+            self->note(vmId, tr("USB devices: %1: the desktop does not keep away from them.")
+                                 .arg(status.problem == Problem::NotInstalled
+                                          ? tr("vitrine-helper is not installed")
+                                          : clause(status.why())));
+            return;
+        }
+        if (verb == "devices" && !status.active()) {
+            self->note(vmId, tr("USB devices: you are not in the vitrine group: the desktop does "
+                                "not keep away from them."));
+            return;
+        }
+        spawnIt();
+    });
 }
 
 void PciPassthrough::note(const QString &vmId, const QString &text) const

@@ -370,13 +370,27 @@ window; spice-vdagent does not start there.
 
 USB: Machine > USB Devices (also in the VM list's context menu) gives the
 host's USB devices to a running VM, whatever shows its screen, and takes them
-back; Keep for the Next Starts gives the VM the same devices at each start, as
-its USB Devices settings do. A keyboard, mouse or Bluetooth adapter given to a
-VM is no longer usable on the host: vitrine asks first. QEMU must open the
-device's node (`/dev/bus/usb/BBB/DDD`); when your user cannot, vitrine asks
-for access (pkexec: polkit's password dialog) and gives it with setfacl until
-the device is unplugged. A udev rule gives it for good, e.g. in
-`/etc/udev/rules.d/70-qemu-usb.rules`:
+back: until the device is unplugged. Keep for This VM keeps the devices
+given for good, as the VM's USB Devices settings do: the VM gets them at each
+start and whenever they reconnect while it runs, on any port, even with
+vitrine closed (QEMU looks for them by their IDs every 2 seconds). While the
+VM runs, the desktop leaves them alone: no automount of a stick, no sound
+output switched to a headset, no phone mounted by Files, no keyboard typing
+on the host. When it is off, this computer uses them as usual. vitrine-helper
+does both: the first time a device is kept, an administrator's password once
+sets it aside (`/etc/udev/rules.d/70-vitrine-usb-aside.rules`: your user's
+access to its node at every connection, which QEMU needs); then, at each
+start of a VM that keeps it, without a password for the vitrine group, a
+rule of its own keeps the desktop away until that VM's QEMU ends. Without
+the helper, a kept device still comes back to the VM when QEMU can open it.
+A device whose IDs change as it reconnects in another mode (a phone moving
+from file transfer to fastboot, a keyboard's firmware updater) comes back
+only in the mode it was kept in. A keyboard, mouse or Bluetooth adapter
+given to a VM is no longer usable on the host: vitrine asks first. QEMU
+must open the device's node (`/dev/bus/usb/BBB/DDD`); without the helper,
+vitrine asks for access when your user cannot (pkexec: polkit's password
+dialog) and gives it with setfacl until the device is unplugged; a udev rule
+gives it for good, e.g. in `/etc/udev/rules.d/70-qemu-usb.rules`:
 `SUBSYSTEM=="usb", ATTR{idVendor}=="0781", ATTR{idProduct}=="5567", TAG+="uaccess"`.
 
 A USB device goes to one running VM at a time: a VM does not start while

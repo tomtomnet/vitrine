@@ -41,6 +41,7 @@
 #include "core/paths.h"
 #include "core/pcipassthrough.h"
 #include "core/qemuinfo.h"
+#include "core/usbaside.h"
 #include "core/vmhardware.h"
 #include "core/vmrunner.h"
 #include "core/vmstore.h"
@@ -52,6 +53,7 @@
 #include "ui/qemudocs.h"
 #include "ui/referencepanel.h"
 #include "ui/uiconfig.h"
+#include "ui/usbchoices.h"
 #include "ui/widgets.h"
 
 /* General */
@@ -1957,6 +1959,7 @@ void UsbPage::load(const ArgsFile &args)
     for (const UsbDevice &dev : devices) {
         const VmConfig::UsbId id{dev.vendorId, dev.productId};
         const bool access = QFileInfo(dev.devNode()).isWritable();
+        const QList<UsbChoices::Ids> aside = UsbAside::read();
         QString name = QString("%1 %2").arg(dev.manufacturer, dev.product).simplified();
 
         if (dev.isHub) {
@@ -1965,27 +1968,19 @@ void UsbPage::load(const ArgsFile &args)
         if (name.isEmpty()) {
             name = tr("Unknown device");
         }
+        const UsbChoices::SettingsStatus status = UsbChoices::settingsStatus(dev, access, aside);
         auto *item = new QTreeWidgetItem(
             m_tree, {name,
                      QString("%1:%2")
                          .arg(dev.vendorId, 4, 16, QChar('0'))
                          .arg(dev.productId, 4, 16, QChar('0')),
-                     access ? tr("Ready") : tr("No access")});
+                     status.text});
         item->setData(0, Qt::UserRole, dev.vendorId);
         item->setData(0, Qt::UserRole + 1, dev.productId);
         item->setFlags(Qt::ItemIsEnabled | Qt::ItemIsSelectable | Qt::ItemIsUserCheckable);
         item->setCheckState(0, m_loaded.contains(id) ? Qt::Checked : Qt::Unchecked);
         item->setToolTip(0, tr("Bus %1, port %2").arg(dev.bus).arg(dev.port));
-        if (!access) {
-            item->setToolTip(
-                2, tr("QEMU cannot open %1. Give your user access with a udev rule, e.g. in "
-                      "/etc/udev/rules.d/70-qemu-usb.rules:\n"
-                      "SUBSYSTEM==\"usb\", ATTR{idVendor}==\"%2\", ATTR{idProduct}==\"%3\", "
-                      "TAG+=\"uaccess\"")
-                       .arg(dev.devNode())
-                       .arg(dev.vendorId, 4, 16, QChar('0'))
-                       .arg(dev.productId, 4, 16, QChar('0')));
-        }
+        item->setToolTip(2, status.details);
         missing.removeAll(id);
     }
     for (const VmConfig::UsbId &id : std::as_const(missing)) {
@@ -1994,7 +1989,7 @@ void UsbPage::load(const ArgsFile &args)
                      QString("%1:%2")
                          .arg(id.vendor, 4, 16, QChar('0'))
                          .arg(id.product, 4, 16, QChar('0')),
-                     tr("Attached when connected before the VM starts")});
+                     UsbChoices::notConnected()});
         item->setData(0, Qt::UserRole, id.vendor);
         item->setData(0, Qt::UserRole + 1, id.product);
         item->setFlags(Qt::ItemIsEnabled | Qt::ItemIsSelectable | Qt::ItemIsUserCheckable);

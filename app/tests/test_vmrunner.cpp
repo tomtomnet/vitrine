@@ -2198,14 +2198,17 @@ private slots:
         const QString ran = tmp.filePath("devices-ran");
         QStringList asked;
         qint64 askedMiB = 0;
+        QList<std::pair<quint16, quint16>> askedUsb;
         std::function<void(const QString &)> answer;
 
         QFile::remove(ran);
         Paths::setQemuBinary(script("qemu-devices", "echo ran > " + ran.toUtf8()));
         runner.setDevicePreparer([&](const QStringList &addresses, qint64 lockMiB,
+                                     const QList<std::pair<quint16, quint16>> &usb,
                                      const std::function<void(const QString &)> &done) {
             asked = addresses;
             askedMiB = lockMiB;
+            askedUsb = usb;
             answer = done;
         });
         const ArgsFile args = ArgsFile::parse("-m 2G\n-device vfio-pci,host=6e:00.0\n"
@@ -2245,10 +2248,25 @@ private slots:
         QTest::qWait(200);
         QVERIFY(!QFileInfo::exists(ran));
 
+        /* USB devices kept by their IDs alone: asked too (the desktop keeps away from them) */
+        askedUsb.clear();
+        runner.start(ArgsFile::parse("-m 2G\n-device qemu-xhci\n"
+                                     "-device usb-host,vendorid=0x0781,productid=0x5567\n"
+                                     "-device usb-host,hostbus=1,hostaddr=4\n"));
+        QCOMPARE(runner.state(), VmRunner::State::Starting);
+        QCOMPARE(asked, QStringList());
+        QCOMPARE(askedUsb, (QList<std::pair<quint16, quint16>>{{0x0781, 0x5567}}));
+        runner.forceOff();
+        QCOMPARE(runner.state(), VmRunner::State::Stopped);
+        launched.clear();
+
         /* none passed through: nothing asked */
         asked.clear();
+        askedUsb.clear();
+        answer = nullptr;
         runner.start(ArgsFile::parse("-m 2G\n"));
         QVERIFY(asked.isEmpty());
+        QVERIFY(!answer);
         QCOMPARE(launched.size(), 1);
         QTRY_COMPARE_WITH_TIMEOUT(runner.state(), VmRunner::State::Stopped, 10000);
         Paths::setQemuBinary(testQemu());
@@ -2269,6 +2287,7 @@ private slots:
             bool asked = false;
 
             runner.setDevicePreparer([&asked](const QStringList &, qint64,
+                                              const QList<std::pair<quint16, quint16>> &,
                                               const std::function<void(const QString &)> &) {
                 asked = true;
             });

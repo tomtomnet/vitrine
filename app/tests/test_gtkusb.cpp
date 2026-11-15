@@ -33,7 +33,7 @@
  * host (its sysfs and /dev) and stand-in QEMUs answering QMP as QEMU does:
  * never this computer's devices.  The devices of a running VM with their
  * states, a VM without a USB controller, giving a device and taking it
- * back, Keep for the Next Starts, the question before a keyboard goes, a
+ * back, Keep for This VM, the question before a keyboard goes, a
  * device plugged out, a device another VM has, the notice of a program of
  * this computer holding one (a fake /proc), the VM stopping.
  */
@@ -274,7 +274,7 @@ private slots:
         QCOMPARE(texts, QStringList({"SanDisk Cruzer Blade | 0781:5567",
                                      "Logitech Keyboard K120 & Co | 046d:c31c",
                                      "dead:beef | in beta", "Intel Bluetooth | 8087:0026",
-                                     "&Keep for the Next Starts", "USB &Settings…"}));
+                                     "&Keep for This VM", "USB &Settings…"}));
         /* the rows: a switch each, beta's insensitive, saying why */
         GtkWidget *stick = dialog->row(entry(*dialog, "SanDisk"));
         QVERIFY(ADW_IS_SWITCH_ROW(stick));
@@ -292,7 +292,7 @@ private slots:
         QVERIFY(gtk_widget_get_visible(keep));
         QVERIFY(!gtk_widget_get_sensitive(keep));
         QCOMPARE(QString::fromUtf8(adw_preferences_row_get_title(ADW_PREFERENCES_ROW(keep))),
-                 QString("_Keep for the Next Starts"));
+                 QString("_Keep for This VM"));
 
         /* in beta's, on */
         auto beta = open("beta");
@@ -324,14 +324,19 @@ private slots:
 
         QTRY_VERIFY(gtk_widget_get_sensitive(dialog->row(entry(*dialog, "&Keep"))));
         dialog->keep();
-        QCOMPARE(dialog->lastMessage(), QString("alpha gets these USB devices at its next starts too"));
+        QCOMPARE(dialog->lastMessage(), QString("alpha gets these USB devices at every start and reconnect"));
         QVERIFY(readFile(vm("alpha")->argsPath())
                     .contains("-device usb-host,vendorid=0x0781,productid=0x5567"));
+        /* now by its IDs, in place of vitrine's own by bus and address */
+        QTRY_COMPARE(qemu("alpha")->executed("device_add").size(), 2);
+        QCOMPARE(qemu("alpha")->executed("device_add").last()["arguments"].toObject()["id"].toString(),
+                 QString("vitrine-usbid-0781-5567"));
+        QTRY_VERIFY(has("alpha", "99-1"));
         QTRY_VERIFY(!gtk_widget_get_sensitive(dialog->row(entry(*dialog, "&Keep"))));
 
         dialog->toggle(stick, false);
         QTRY_COMPARE(dialog->lastMessage(), QString("SanDisk Cruzer Blade is back on this computer"));
-        QCOMPARE(qemu("alpha")->executed("device_del").size(), 1);
+        QCOMPARE(qemu("alpha")->executed("device_del").size(), 2);
         QTRY_VERIFY(!has("alpha", "99-1"));
         QTRY_VERIFY(gtk_widget_get_sensitive(dialog->row(entry(*dialog, "&Keep"))));
         dialog->keep();

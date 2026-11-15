@@ -164,8 +164,10 @@ public:
      * with the error otherwise.  Force Off meanwhile ends the start, and the
      * answer comes to nothing.  Without it, QEMU starts as it is.
      */
+    /* and the USB devices it keeps by their IDs (PciPassthrough: the desktop keeps away) */
     using DevicePreparer =
         std::function<void(const QStringList &addresses, qint64 lockMiB,
+                           const QList<std::pair<quint16, quint16>> &usb,
                            const std::function<void(const QString &error)> &done)>;
     void setDevicePreparer(const DevicePreparer &prepare);
     /*

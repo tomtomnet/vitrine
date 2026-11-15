@@ -12,11 +12,13 @@
 #include "core/hostmemory.h"
 #include "core/paths.h"
 #include "core/pcipassthrough.h"
+#include "core/usbaside.h"
 #include "core/vmstore.h"
 #include "core/vmtemplate.h"
 #include "gtk/rows.h"
 #include "gtk/widgets.h"
 #include "ui/qemudocs.h"
+#include "ui/usbchoices.h"
 
 using Gtk4::utf8;
 
@@ -472,6 +474,8 @@ void UsbPage::load(const ArgsFile &args)
     for (const UsbDevice &dev : devices) {
         const VmConfig::UsbId id{dev.vendorId, dev.productId};
         const bool access = QFileInfo(dev.devNode()).isWritable();
+        const UsbChoices::SettingsStatus status =
+            UsbChoices::settingsStatus(dev, access, UsbAside::read());
         QString name = QString("%1 %2").arg(dev.manufacturer, dev.product).simplified();
         GtkWidget *check;
 
@@ -483,19 +487,9 @@ void UsbPage::load(const ArgsFile &args)
         }
         GtkWidget *row = checkRow(name,
                                   QString("%1 · %2").arg(usbId(dev.vendorId, dev.productId),
-                                                         access ? QString("Ready")
-                                                                : QString("No access")),
+                                                         status.text),
                                   m_loaded.contains(id), &check);
-        gtk_widget_set_tooltip_text(
-            row, utf8(access ? QString("Bus %1, port %2").arg(dev.bus).arg(dev.port)
-                             : QString("QEMU cannot open %1. Give your user access with a udev "
-                                       "rule, e.g. in /etc/udev/rules.d/70-qemu-usb.rules:\n"
-                                       "SUBSYSTEM==\"usb\", ATTR{idVendor}==\"%2\", "
-                                       "ATTR{idProduct}==\"%3\", TAG+=\"uaccess\"")
-                                   .arg(dev.devNode())
-                                   .arg(dev.vendorId, 4, 16, QChar('0'))
-                                   .arg(dev.productId, 4, 16, QChar('0')))
-                     .constData());
+        gtk_widget_set_tooltip_text(row, utf8(status.details).constData());
         on<void(GParamSpec *)>(check, "notify::active", [this](GParamSpec *) { changed(); });
         m_items << Item{id, check};
         add(row);
@@ -504,8 +498,9 @@ void UsbPage::load(const ArgsFile &args)
     for (const VmConfig::UsbId &id : std::as_const(missing)) {
         GtkWidget *check;
         GtkWidget *row = checkRow("Not connected",
-                                  QString("%1 · attached when connected before the VM starts")
-                                      .arg(usbId(id.vendor, id.product)),
+                                  QString("%1 · %2")
+                                      .arg(usbId(id.vendor, id.product),
+                                           UsbChoices::notConnected().replace(0, 1, "a")),
                                   true, &check);
         on<void(GParamSpec *)>(check, "notify::active", [this](GParamSpec *) { changed(); });
         m_items << Item{id, check};

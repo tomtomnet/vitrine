@@ -8,6 +8,8 @@
 
 #include <unistd.h>
 
+#include "core/hostsettings.h"
+#include "core/pcipassthrough.h"
 #include "core/usbguard.h"
 #include "core/usbhotplug.h"
 #include "core/vmconfig.h"
@@ -167,11 +169,13 @@ QList<UsbChoices::Entry> UsbChoices::entries(VmStore *store, Vm *vm, const QList
         keptIds(vm, hosts, &changes);
         Entry keep;
         keep.kind = Entry::Keep;
-        keep.text = tr("&Keep for the Next Starts");
+        keep.text = tr("&Keep for This VM");
         keep.enabled = changes;
-        keep.tips << (changes ? tr("%1 gets the devices checked here at each start, as its "
-                                   "USB Devices settings say").arg(vm->name())
-                              : tr("%1 gets these devices at its next starts already")
+        keep.tips << (changes ? tr("%1 gets the devices checked here at each start and whenever "
+                                   "they reconnect while it runs, on any port, as its USB Devices "
+                                   "settings say; the desktop leaves them alone meanwhile")
+                                    .arg(vm->name())
+                              : tr("%1 gets these devices at each start and reconnect already")
                                     .arg(vm->name()));
         list << keep;
     }
@@ -195,6 +199,10 @@ bool UsbChoices::keep(Vm *vm, const QList<UsbDevice> &hosts, QString *message, Q
         return true;
     }
     ArgsFile args = vm->args();
+    QList<Ids> saved;
+    for (const VmConfig::UsbId &id : VmConfig::usbPassthrough(args)) {
+        saved << Ids(id.vendor, id.product);
+    }
     QList<VmConfig::UsbId> ids;
     for (const Ids &id : want) {
         ids << VmConfig::UsbId{id.first, id.second};
@@ -208,8 +216,63 @@ bool UsbChoices::keep(Vm *vm, const QList<UsbDevice> &hosts, QString *message, Q
         return false;
     }
     *message = ids.isEmpty() ? tr("%1 starts without USB devices from now on").arg(vm->name())
-                             : tr("%1 gets these USB devices at its next starts too").arg(vm->name());
+                             : tr("%1 gets these USB devices at every start and reconnect").arg(vm->name());
+    /* running: those kept now by their IDs at once, so that QEMU takes them back after a
+       reconnect, and the desktop kept away from them while it runs */
+    if (runs(vm)) {
+        UsbHotplug *hotplug = UsbHotplug::of(vm->runner());
+        QList<Ids> added;
+        for (const Ids &id : want) {
+            if (!saved.contains(id)) {
+                added << id;
+            }
+        }
+        for (const UsbDevice &d : hosts) {
+            if (added.contains(Ids(d.vendorId, d.productId)) && hotplug->has(d)) {
+                hotplug->keep(d, [](const QString &) {});
+            }
+        }
+        if (!added.isEmpty() && PciPassthrough::instance()) {
+            PciPassthrough::instance()->keepUsb(vm->id(), vm->name(), added, vm->runner()->pid());
+        }
+    }
     return true;
+}
+
+UsbChoices::SettingsStatus UsbChoices::settingsStatus(const UsbDevice &dev, bool access,
+                                                     const QList<Ids> &aside)
+{
+    const QString ids = idText(dev.vendorId, dev.productId);
+    SettingsStatus s;
+
+    if (aside.contains(Ids(dev.vendorId, dev.productId))) {
+        s.text = tr("Ready");
+        s.details = tr("Set aside for VMs: a VM that keeps it gets it at each start and whenever it "
+                       "reconnects, on any port, and the desktop leaves it alone while that VM "
+                       "runs. Bus %1, port %2.").arg(dev.bus).arg(dev.port);
+    } else if (HostSettings::helperInstalled()) {
+        s.text = tr("Set aside at start");
+        s.details = tr("When a VM that keeps it starts, vitrine-helper sets it aside, with an "
+                       "administrator's password once: your user opens it at every connection, "
+                       "and the VM gets it back whenever it reconnects. Bus %1, port %2.")
+                        .arg(dev.bus).arg(dev.port);
+    } else if (access) {
+        s.text = tr("Ready");
+        s.details = tr("Bus %1, port %2").arg(dev.bus).arg(dev.port);
+    } else {
+        s.text = tr("No access");
+        s.details = tr("QEMU cannot open %1. Give your user access with a udev rule, e.g. in "
+                       "/etc/udev/rules.d/70-qemu-usb.rules:\n"
+                       "SUBSYSTEM==\"usb\", ATTR{idVendor}==\"%2\", ATTR{idProduct}==\"%3\", "
+                       "TAG+=\"uaccess\"")
+                        .arg(dev.devNode(), ids.section(':', 0, 0), ids.section(':', 1));
+    }
+    return s;
+}
+
+QString UsbChoices::notConnected()
+{
+    return tr("Attached whenever it connects while the VM runs");
 }
 
 QString UsbChoices::attaching()

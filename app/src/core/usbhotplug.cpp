@@ -491,6 +491,85 @@ void UsbHotplug::detach(const UsbDevice &host, const Done &done)
     }
 }
 
+void UsbHotplug::keep(const UsbDevice &host, const Done &done)
+{
+    QmpClient *client = qmp();
+
+    if (!client) {
+        done(tr("The VM is not running."));
+        return;
+    }
+    if (const QString why = unavailable(); !why.isEmpty()) {
+        done(why);
+        return;
+    }
+    /* by these IDs already: its arguments', or kept before */
+    for (const Device &d : std::as_const(m_devices)) {
+        if (!d.bus && !d.address && d.port.isEmpty() && d.node.isEmpty() &&
+            d.vendorId == host.vendorId && d.productId == host.productId) {
+            done({});
+            return;
+        }
+    }
+    const QString what = described(host);
+    if (const QString why = m_attachCheck ? m_attachCheck(host) : QString(); !why.isEmpty()) {
+        note(tr("USB: did not keep %1: %2").arg(what, why));
+        done(why);
+        return;
+    }
+    QStringList own;
+    for (const Device &d : devicesFor(host)) {
+        if (d.isOwn()) {
+            own << d.id;
+        }
+    }
+    const QString id = keepIdFor(host.vendorId, host.productId);
+    const QPointer<UsbHotplug> self(this);
+    const auto add = [self, what, id, done, vendor = host.vendorId, product = host.productId]() {
+        QmpClient *client = self ? self->qmp() : nullptr;
+        if (!client) {
+            done(tr("The VM is not running."));
+            return;
+        }
+        const QJsonObject arguments{{"driver", "usb-host"}, {"id", id},
+                                    {"vendorid", int(vendor)}, {"productid", int(product)}};
+        client->execute("device_add", arguments,
+                        [self, what, id, done](const QJsonValue &, const QString &error) {
+            if (!self) {
+                return;
+            }
+            self->note(error.isEmpty()
+                           ? tr("USB: kept %1 by its IDs, as %2: it comes back at each reconnect")
+                                 .arg(what, id)
+                           : tr("USB: could not keep %1: %2").arg(what, error));
+            self->refresh();
+            done(error.isEmpty() ? QString() : explain(error));
+        });
+    };
+    if (own.isEmpty()) {
+        add();
+        return;
+    }
+    /* vitrine's own by bus and address let go of the device first: a USB device
+       goes at once, without the guest */
+    auto pending = std::make_shared<int>(int(own.size()));
+    for (const QString &which : std::as_const(own)) {
+        client->execute("device_del", {{"id", which}},
+                        [pending, add](const QJsonValue &, const QString &) {
+            if (--*pending == 0) {
+                add();
+            }
+        });
+    }
+}
+
+QString UsbHotplug::keepIdFor(quint16 vendor, quint16 product)
+{
+    return QString("vitrine-usbid-%1-%2")
+        .arg(vendor, 4, 16, QChar('0'))
+        .arg(product, 4, 16, QChar('0'));
+}
+
 QString UsbHotplug::idFor(const UsbDevice &host)
 {
     return QString("%1%2-%3-%4-%5")

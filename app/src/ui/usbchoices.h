@@ -18,7 +18,7 @@ class VmStore;
  * What both apps offer of this computer's USB devices for a running VM
  * (the Qt app's USB Devices menu, the GTK app's dialog): each device
  * plugged in, whether the VM has it, whether it may have it and what to
- * say of it; Keep for the Next Starts, which writes the choice to the
+ * say of it; Keep for This VM, which writes the choice to the
  * VM's arguments as its USB Devices settings do; and the words of giving
  * a device and taking it back.  Qt Core only.
  */
@@ -91,6 +91,20 @@ public:
     static QString noAccess(const UsbDevice &dev, const QString &why);
     static QString stillIn(const UsbDevice &dev, const Vm *vm);
     static QString notKept(const Vm *vm);
+    /*
+     * What a VM's USB Devices settings say of @dev, plugged in, and its
+     * explanation: ready, set aside at the VM's next start (vitrine-helper,
+     * the password once), or no access without the helper (@access: the user
+     * opens its node now; @aside: UsbAside's devices)
+     */
+    struct SettingsStatus {
+        QString text;
+        QString details;
+    };
+    static SettingsStatus settingsStatus(const UsbDevice &dev, bool access,
+                                         const QList<Ids> &aside);
+    /* Of a device the settings keep that is not plugged in */
+    static QString notConnected();
     /* What USB Devices does, for its menu or its button */
     static QString tip();
 };

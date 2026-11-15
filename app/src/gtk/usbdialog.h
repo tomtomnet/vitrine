@@ -26,7 +26,7 @@ class VmStore;
  * off, it is back on this computer.  A device another VM has, and every
  * one while the VM cannot have any (no USB controller), are insensitive,
  * saying why.  Read again each second while it shows, the devices plugged
- * in or out meanwhile come and go.  Keep for the Next Starts writes the
+ * in or out meanwhile come and go.  Keep for This VM writes the
  * choice to the VM's arguments, as its USB Devices settings do; USB
  * Settings… opens those.
  */

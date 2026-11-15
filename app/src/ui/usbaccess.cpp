@@ -11,6 +11,7 @@
 #include <unistd.h>
 
 #include "core/hostdevices.h"
+#include "core/hostsettings.h"
 #include "core/vmconfig.h"
 #include "core/vmstore.h"
 
@@ -95,6 +96,13 @@ void request(Vm *vm, QObject *context, const std::function<void(const QString &w
              const QString &sysfs, const QString &dev)
 {
     QList<std::pair<quint16, quint16>> ids;
+
+    /* vitrine-helper sets them aside as the VM starts (PciPassthrough): their node is the
+       user's at every connection from then on, with the password once */
+    if (HostSettings::helperInstalled()) {
+        done({});
+        return;
+    }
 
     for (const VmConfig::UsbId &id : VmConfig::usbPassthrough(vm->args())) {
         ids << std::pair(id.vendor, id.product);

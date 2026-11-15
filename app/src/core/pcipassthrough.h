@@ -28,6 +28,15 @@ class VmStore;
  * minutes.  Polkit's dialog asks whoever needs a password.  No helper at
  * all when everything is ready already (bound at boot, a udev rule for the
  * node, a limit of the session's).  README.md, PCI passthrough.
+ *
+ * And the USB devices a VM keeps by their IDs, in the same helper session:
+ * set aside first if they are not (usb-aside add, devices-bind: the
+ * password once; UsbAside), then kept away from the desktop while that QEMU
+ * runs (usb).  QEMU takes them back after each reconnect by itself.  Unlike
+ * the PCI devices, nothing of theirs keeps the VM from starting: without the
+ * helper, a password, or with an error, a note in the VM's log and the start
+ * goes on.  A VM of USB devices alone runs the helper only without a password
+ * (the vitrine group), but to set a device aside.  README.md, USB.
  */
 class PciPassthrough : public QObject
 {
@@ -69,7 +78,15 @@ public:
      * devices are ready, else why the start cannot go on
      */
     void prepare(const QString &vmId, const QString &vmName, const QStringList &addresses,
-                 qint64 lockMiB, const std::function<void(const QString &error)> &done);
+                 qint64 lockMiB, const QList<std::pair<quint16, quint16>> &usb,
+                 const std::function<void(const QString &error)> &done);
+    /*
+     * USB devices kept for @vmId while it runs as @pid (Keep in its USB Devices):
+     * set aside if they are not, and kept away from the desktop until that
+     * QEMU ends, by a helper of their own; what it says goes to the VM's log
+     */
+    void keepUsb(const QString &vmId, const QString &vmName,
+                 const QList<std::pair<quint16, quint16>> &usb, qint64 pid);
     /* Its QEMU started as @pid: the helper watches it, then it is on its own */
     void launched(const QString &vmId, qint64 pid);
     /* Its run is over, or its start before QEMU: what QEMU did not take goes back */

@@ -30,6 +30,7 @@
 #include "core/vmstore.h"
 #include "fakeusbqemu.h"
 #include "ui/usbaccess.h"
+#include "ui/usbchoices.h"
 #include "ui/usbmenu.h"
 
 static bool writeFile(const QString &path, const QByteArray &data)
@@ -232,6 +233,8 @@ private slots:
         QDir().mkpath(m_bin);
         qputenv("PATH", QFile::encodeName(m_bin));
         QVERIFY(QStandardPaths::findExecutable("pkexec").isEmpty());
+        /* no vitrine-helper (whatever this computer has): the access is asked with setfacl */
+        qputenv("VITRINE_HELPER", QFile::encodeName(m_tmp.filePath("no-helper")));
         UsbHotplug::setRoots(m_sys, m_dev);
         UsbHotplug::setWatchInterval(100);
         UsbMenu::setRefreshInterval(100);
@@ -298,7 +301,7 @@ private slots:
                                        "dead:beef\tin beta",
                                        "Intel Bluetooth\t8087:0026",
                                        "--",
-                                       "&Keep for the Next Starts",
+                                       "&Keep for This VM",
                                        "--",
                                        "USB &Settings…"}));
         QAction *stick = entry("SanDisk");
@@ -358,22 +361,33 @@ private slots:
         QVERIFY(entry("SanDisk")->isChecked());
         QVERIFY(entry("SanDisk")->isEnabled());
 
-        /* kept: its arguments say so, for the next starts */
+        /* kept: its arguments say so, for the next starts; and now by its IDs, which QEMU
+           takes back after a reconnect, in place of vitrine's own by bus and address */
         QVERIFY(entry("&Keep")->isEnabled());
         entry("&Keep")->trigger();
         QTRY_COMPARE(messages.size(), 2);
         QCOMPARE(messages.last().first().toString(),
-                 "alpha gets these USB devices at its next starts too");
+                 "alpha gets these USB devices at every start and reconnect");
         QVERIFY(readFile(vm("alpha")->argsPath())
                     .contains("-device usb-host,vendorid=0x0781,productid=0x5567"));
+        QTRY_COMPARE(qemu("alpha")->executed("device_add").size(), 2);
+        QCOMPARE(qemu("alpha")->executed("device_del").first()["arguments"].toObject(),
+                 QJsonObject({{"id", "vitrine-usb-99-2-0781-5567"}}));
+        QCOMPARE(qemu("alpha")->executed("device_add").last()["arguments"].toObject(),
+                 QJsonObject({{"driver", "usb-host"}, {"id", "vitrine-usbid-0781-5567"},
+                              {"vendorid", 0x0781}, {"productid", 0x5567}}));
+        QTRY_VERIFY(has("alpha", "99-1"));
         open("alpha");
         QVERIFY(!entry("&Keep")->isEnabled());
+        QVERIFY(entry("SanDisk")->isChecked());
 
-        /* taken back */
+        /* taken back: the device by its IDs goes */
         entry("SanDisk")->trigger();
         QTRY_COMPARE(messages.size(), 3);
         QCOMPARE(messages.last().first().toString(), "SanDisk Cruzer Blade is back on this computer");
-        QCOMPARE(qemu("alpha")->executed("device_del").size(), 1);
+        QCOMPARE(qemu("alpha")->executed("device_del").size(), 2);
+        QCOMPARE(qemu("alpha")->executed("device_del").last()["arguments"].toObject(),
+                 QJsonObject({{"id", "vitrine-usbid-0781-5567"}}));
         QTRY_VERIFY(!has("alpha", "99-1"));
         open("alpha");
         QVERIFY(!entry("SanDisk")->isChecked());
@@ -392,11 +406,11 @@ private slots:
         answer("Cancel");
         entry("Logitech")->trigger();
         QTest::qWait(300);
-        QVERIFY(qemu("alpha")->executed("device_add").size() == 1);
+        QVERIFY(qemu("alpha")->executed("device_add").size() == 2);
 
         answer("Attach");
         entry("Logitech")->trigger();
-        QTRY_COMPARE(qemu("alpha")->executed("device_add").size(), 2);
+        QTRY_COMPARE(qemu("alpha")->executed("device_add").size(), 3);
         QTRY_VERIFY(has("alpha", "99-2"));
         open("alpha");
         QVERIFY(entry("Logitech")->isChecked());
@@ -482,6 +496,44 @@ private slots:
         program("pkexec", "exit 1");
         request();
         QCOMPARE(warning, QString());
+
+        /* with vitrine-helper, which sets them aside as the VM starts: nothing asked here */
+        QFile::setPermissions(node(99, 2), QFileDevice::Permissions());
+        program("pkexec", "exit 126");
+        program("vitrine-helper", "exit 0");
+        qputenv("VITRINE_HELPER", QFile::encodeName(m_bin + "/vitrine-helper"));
+        request();
+        QCOMPARE(warning, QString());
+        qputenv("VITRINE_HELPER", QFile::encodeName(m_tmp.filePath("no-helper")));
+    }
+
+    /* What the VM's USB Devices settings say of a device: set aside, to be, or no access */
+    void settingsWords()
+    {
+        UsbDevice stick;
+        stick.bus = 99;
+        stick.device = 2;
+        stick.port = "99-1";
+        stick.vendorId = 0x0781;
+        stick.productId = 0x5567;
+        /* without the helper: by the node's access */
+        QCOMPARE(UsbChoices::settingsStatus(stick, true, {}).text, QString("Ready"));
+        const UsbChoices::SettingsStatus none = UsbChoices::settingsStatus(stick, false, {});
+        QCOMPARE(none.text, QString("No access"));
+        QVERIFY2(none.details.contains("ATTR{idVendor}==\"0781\", ATTR{idProduct}==\"5567\""),
+                 qPrintable(none.details));
+        /* set aside: ready, whatever the node says now */
+        const UsbChoices::SettingsStatus aside =
+            UsbChoices::settingsStatus(stick, false, {{0x18d1, 0x4ee7}, {0x0781, 0x5567}});
+        QCOMPARE(aside.text, QString("Ready"));
+        QVERIFY(aside.details.startsWith("Set aside for VMs: "));
+        /* with the helper: set aside as the VM starts */
+        program("vitrine-helper", "exit 0");
+        qputenv("VITRINE_HELPER", QFile::encodeName(m_bin + "/vitrine-helper"));
+        QCOMPARE(UsbChoices::settingsStatus(stick, false, {}).text, QString("Set aside at start"));
+        QCOMPARE(UsbChoices::settingsStatus(stick, true, {}).text, QString("Set aside at start"));
+        qputenv("VITRINE_HELPER", QFile::encodeName(m_tmp.filePath("no-helper")));
+        QCOMPARE(UsbChoices::notConnected(), QString("Attached whenever it connects while the VM runs"));
     }
 
     /* Plugged out while the menu shows: it goes */

@@ -319,7 +319,7 @@ struct VmRunner::Private
     enum class Phase {
         Idle,       // stopped, or running with QMP ready
         Helpers,    // waiting for the sockets of virtiofsd
-        Devices,    // waiting for its PCI devices to be made ready (setDevicePreparer)
+        Devices,    // waiting for its PCI (and USB) devices to be made ready (setDevicePreparer)
         Qemu,       // waiting for QMP
         Attach,     // connecting to a QEMU started earlier
         Exiting,    // QMP closed, waiting for QEMU to end
@@ -686,8 +686,12 @@ void VmRunner::Private::cleanup()
 void VmRunner::Private::prepareDevices()
 {
     const QStringList addresses = VmConfig::pciPassthrough(args);
+    QList<std::pair<quint16, quint16>> usb;
 
-    if (addresses.isEmpty() || !devicePreparer) {
+    for (const VmConfig::UsbId &id : VmConfig::usbPassthrough(args)) {
+        usb << std::pair(id.vendor, id.product);
+    }
+    if ((addresses.isEmpty() && usb.isEmpty()) || !devicePreparer) {
         launchQemu();
         return;
     }
@@ -705,7 +709,7 @@ void VmRunner::Private::prepareDevices()
         }
         launchQemu();
     };
-    devicePreparer(addresses, VmConfig::lockedMemoryMiB(args), done);
+    devicePreparer(addresses, VmConfig::lockedMemoryMiB(args), usb, done);
 }
 
 void VmRunner::Private::launchQemu()

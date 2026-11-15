@@ -82,6 +82,17 @@ public:
     void setAttachCheck(const AttachCheck &check);
     /* @done once the VM no longer has @host, or with why not */
     void detach(const UsbDevice &host, const Done &done);
+    /*
+     * @host kept by the VM for good (Keep for This VM): added by its
+     * IDs, as the VM's arguments add it at its next starts, so that QEMU
+     * takes it back after each reconnect, on any port; vitrine's own device
+     * for it by bus and address goes first.  Nothing when a device by these
+     * IDs is there already.  @done once the VM has it so, or with why not
+     */
+    void keep(const UsbDevice &host, const Done &done);
+    /* What vitrine names the usb-host device it adds by IDs:
+       vitrine-usbid-VENDOR-PRODUCT, which leaving the host does not take back */
+    static QString keepIdFor(quint16 vendor, quint16 product);
 
     /* What vitrine names the usb-host device of @host:
        vitrine-usb-BUS-ADDRESS-VENDOR-PRODUCT */

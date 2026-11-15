@@ -16,7 +16,9 @@
  * QEMU's end of QMP for USB, as QEMU 11.1 answers: its usb-host devices
  * in /machine/peripheral (with an id) and /machine/peripheral-anon;
  * device_add usb-host by bus and address opening the host device at once,
- * failing for one not plugged in or busy; device_del taking a USB device
+ * failing for one not plugged in or busy, and by vendor and product IDs
+ * taken whatever is plugged in (QEMU's scan waits for a device of those
+ * IDs: attached when one is, as idsPlugged says); device_del taking a USB device
  * out of QOM at once, DEVICE_DELETED following its reply here (QEMU sends
  * it as it frees the device, through RCU: before or after the reply).
  */
@@ -51,6 +53,8 @@ public:
     /* host devices QEMU finds, "bus/address", and those another program holds */
     QSet<QString> plugged;
     QSet<QString> busy;
+    /* the IDs of what is plugged in, "vvvv:pppp", for a device by IDs */
+    QSet<QString> idsPlugged;
     QList<Device> devices;
     QList<QJsonObject> commands;
 
@@ -187,6 +191,17 @@ private:
                                      QString("Duplicate device ID '%1' for device").arg(id));
                     return {};
                 }
+            }
+            if (args.contains("vendorid")) {
+                Device d;
+                d.path = "/machine/peripheral/" + id;
+                d.vendor = args["vendorid"].toInt();
+                d.product = args["productid"].toInt();
+                d.attached = idsPlugged.contains(QString("%1:%2")
+                                                     .arg(d.vendor, 4, 16, QChar('0'))
+                                                     .arg(d.product, 4, 16, QChar('0')));
+                devices << d;
+                return QJsonObject();
             }
             if (!plugged.contains(at)) {
                 *failure = error("GenericError", QString("failed to find host usb device %1")

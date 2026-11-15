@@ -101,6 +101,8 @@ qt_add_library(vitrine_core STATIC
     src/core/udmabuf.h
     src/core/updatecheck.cpp
     src/core/updatecheck.h
+    src/core/usbaside.cpp
+    src/core/usbaside.h
     src/core/usbguard.cpp
     src/core/usbguard.h
     src/core/usbhotplug.cpp

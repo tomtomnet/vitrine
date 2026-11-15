@@ -24,6 +24,7 @@
 #include "core/hostdevices.h"
 #include "core/paths.h"
 #include "core/pcipassthrough.h"
+#include "core/usbaside.h"
 #include "core/vmrunner.h"
 #include "core/vmstore.h"
 
@@ -268,7 +269,7 @@ private slots:
             finished(&pt, &PciPassthrough::helperFinished);
         QString answer = "none";
         fake(pt);
-        pt.prepare("vm1", "VM 1", {"0000:6e:00.0", "0000:6e:00.1"}, 3072,
+        pt.prepare("vm1", "VM 1", {"0000:6e:00.0", "0000:6e:00.1"}, 3072, {},
                    [&answer](const QString &error) { answer = error; });
         QTRY_COMPARE(answer, QString());
         QCOMPARE(driverOf("0000:6e:00.0"), QString("vfio-pci"));
@@ -299,7 +300,7 @@ private slots:
         QSignalSpy finished(&pt, &PciPassthrough::helperFinished);
         QString answer = "none";
         fake(pt);
-        pt.prepare("vm1", "VM 1", {"0000:6e:00.0", "0000:6e:00.1"}, 3072,
+        pt.prepare("vm1", "VM 1", {"0000:6e:00.0", "0000:6e:00.1"}, 3072, {},
                    [&answer](const QString &error) { answer = error; });
         QTRY_VERIFY(answer != "none");
         QVERIFY2(answer.startsWith("PCI passthrough: 0000:6e:00.0 is in use by gnome-shell (pid "
@@ -320,7 +321,7 @@ private slots:
         QString answer = "none";
         fake(pt);
         pt.setHelperCommand({"/bin/false"});
-        pt.prepare("vm1", "VM 1", {"0000:01:00.0", "0000:01:00.1"}, 1,
+        pt.prepare("vm1", "VM 1", {"0000:01:00.0", "0000:01:00.1"}, 1, {},
                    [&answer](const QString &error) { answer = error; });
         QCOMPARE(answer, QString());
         QVERIFY(!pt.helperRunning("vm1"));
@@ -333,7 +334,7 @@ private slots:
         QSignalSpy finished(&pt, &PciPassthrough::helperFinished);
         QString answer = "none";
         fake(pt);
-        pt.prepare("vm1", "VM 1", {"0000:6e:00.0", "0000:6e:00.1"}, 3072,
+        pt.prepare("vm1", "VM 1", {"0000:6e:00.0", "0000:6e:00.1"}, 3072, {},
                    [&answer](const QString &error) { answer = error; });
         QTRY_COMPARE(answer, QString());
         pt.stopped("vm1");
@@ -343,7 +344,7 @@ private slots:
 
         /* Force Off while it is asked: its request never goes, the answer comes to nothing */
         answer = "none";
-        pt.prepare("vm1", "VM 1", {"0000:6e:00.0", "0000:6e:00.1"}, 3072,
+        pt.prepare("vm1", "VM 1", {"0000:6e:00.0", "0000:6e:00.1"}, 3072, {},
                    [&answer](const QString &error) { answer = error; });
         pt.stopped("vm1");
         QTRY_COMPARE(finished.size(), 2);
@@ -357,10 +358,10 @@ private slots:
         PciPassthrough pt(nullptr);
         QString first = "none", second = "none";
         fake(pt);
-        pt.prepare("vm1", "VM 1", {"0000:6e:00.0", "0000:6e:00.1"}, 3072,
+        pt.prepare("vm1", "VM 1", {"0000:6e:00.0", "0000:6e:00.1"}, 3072, {},
                    [&first](const QString &error) { first = error; });
         QTRY_COMPARE(first, QString());
-        pt.prepare("vm2", "VM 2", {"0000:6e:00.1", "0000:6e:00.0"}, 2048,
+        pt.prepare("vm2", "VM 2", {"0000:6e:00.1", "0000:6e:00.0"}, 2048, {},
                    [&second](const QString &error) { second = error; });
         QCOMPARE(second, QString("PCI passthrough: 0000:6e:00.1 goes to VM 1, which runs."));
         pt.stopped("vm1");
@@ -379,13 +380,13 @@ private slots:
         QString first = "none", second = "none";
         fake(pt);
         pt.setWaitMs(200);
-        pt.prepare("vm1", "VM 1", m_both, 3072, [&first](const QString &error) { first = error; });
+        pt.prepare("vm1", "VM 1", m_both, 3072, {}, [&first](const QString &error) { first = error; });
         QTRY_COMPARE(first, QString());
         FakeQemu qemu;
         pt.launched("vm1", qemu.pid());
         QTRY_VERIFY(saw(lines, "ok watch "));
         /* its helper runs on, watching: the next start waits for it */
-        pt.prepare("vm1", "VM 1", m_both, 3072, [&second](const QString &error) { second = error; });
+        pt.prepare("vm1", "VM 1", m_both, 3072, {}, [&second](const QString &error) { second = error; });
         QVERIFY(pt.helperRunning("vm1"));
         pt.stopped("vm1");
         QTest::qWait(600);
@@ -436,7 +437,7 @@ private slots:
             finished(&pt, &PciPassthrough::helperFinished);
         QString answer = "none";
         fake(pt);
-        pt.prepare("vm1", "VM 1", m_both, 3072, [&answer](const QString &error) { answer = error; });
+        pt.prepare("vm1", "VM 1", m_both, 3072, {}, [&answer](const QString &error) { answer = error; });
         QTRY_COMPARE(answer, QString());
         QVERIFY(saw(lines, "restored vfio 21: 0000:6e:00.0 back to amdgpu"));
         QVERIFY(saw(lines, "error vfio 0000:6e:00.0: 0000:6e:00.0 is bound to amdgpu: taking it "
@@ -456,7 +457,7 @@ private slots:
         fake(pt);
         pt.setHelperCommand({"/bin/sh", "-c", "sleep 3", "sh"});
         pt.setAnswerMs(300);
-        pt.prepare("vm1", "VM 1", m_both, 3072, [&answer](const QString &error) { answer = error; });
+        pt.prepare("vm1", "VM 1", m_both, 3072, {}, [&answer](const QString &error) { answer = error; });
         QTRY_COMPARE(answer, QString("PCI passthrough: vitrine-helper did not answer in time."));
     }
 
@@ -469,7 +470,7 @@ private slots:
         fake(pt);
         pt.setHelperCommand(
             {"/bin/sh", "-c", "echo 'error: cannot use /run/vitrine-helper'; exit 1", "sh"});
-        pt.prepare("vm1", "VM 1", m_both, 3072, [&answer](const QString &error) { answer = error; });
+        pt.prepare("vm1", "VM 1", m_both, 3072, {}, [&answer](const QString &error) { answer = error; });
         QTRY_COMPARE(answer, QString("PCI passthrough: vitrine-helper: cannot use /run/vitrine-helper."));
         QTRY_COMPARE(finished.size(), 1);
     }
@@ -502,6 +503,99 @@ private slots:
         QVERIFY(QString::fromUtf8(readFile(vm->runner()->logPath()))
                     .contains("vitrine: PCI devices: 0000:6e:00.0=amdgpu,0000:6e:00.1=snd_hda_intel"));
         Paths::setQemuBinary({});
+    }
+
+    /*
+     * USB devices a VM keeps by IDs: set aside first if they are not (devices-bind:
+     * the password once), then kept from the desktop while the VM runs; never a
+     * reason not to start.  Against a stand-in helper that writes down its verb and
+     * requests, and answers as vitrine-helper does (USB_REPLY: its answer to usb)
+     */
+    void usbDevices()
+    {
+        const QString requests = path("/requests"), aside = path("/aside.rules");
+        const QString stand = path("/helper.sh");
+        writeFile(stand, "#!/bin/bash\n"
+                         "echo \"verb $1\" >> " + requests.toLocal8Bit() + "\n"
+                         "[ -z \"$USB_EXIT\" ] || exit \"$USB_EXIT\"\n"
+                         "echo ready\n"
+                         "while read -r line; do\n"
+                         "  echo \"$line\" >> " + requests.toLocal8Bit() + "\n"
+                         "  case $line in\n"
+                         "  usb-aside*) echo \"ok usb-aside ${line#usb-aside add }\" ;;\n"
+                         "  usb\\ *) echo \"${USB_REPLY:-ok usb ${line#usb }}\" ;;\n"
+                         "  watch*) echo \"ok ${line}\" ;;\n"
+                         "  vfio*) echo \"ok vfio 0000:01:00.0=vfio-pci,0000:01:00.1=vfio-pci: ready\" ;;\n"
+                         "  esac\n"
+                         "done\n");
+        QFile::setPermissions(stand, QFileDevice::ReadOwner | QFileDevice::ExeOwner);
+        UsbAside::setPath(aside);
+        const QList<std::pair<quint16, quint16>> stick{{0x0781, 0x5567}}, both{{0x0781, 0x5567},
+                                                                                {0x18d1, 0x4ee7}};
+        const auto start = [&](const QStringList &addresses,
+                               const QList<std::pair<quint16, quint16>> &usb) -> std::pair<QString, int> {
+            QFile::remove(requests);
+            PciPassthrough pt(nullptr);
+            QSignalSpy notices(&pt, &PciPassthrough::notice);
+            pt.setHelperCommand({stand});
+            pt.setSysRoot(path("/sys"));
+            pt.setProcRoot(path("/proc"));
+            QString answer = "none";
+            pt.prepare("vm1", "VM 1", addresses, 3072, usb,
+                       [&answer](const QString &error) { answer = error; });
+            QTest::qWaitFor([&answer]() { return answer != "none"; }, 10000);
+            if (answer.isEmpty()) {
+                pt.launched("vm1", 4242);
+                QTest::qWaitFor([&]() { return readFile(requests).contains("watch 4242"); }, 5000);
+            }
+            return {answer, int(notices.size())};
+        };
+
+        /* the file the helper writes, read */
+        QVERIFY(writeFile(aside, "# vitrine-helper\n"
+                                 "SUBSYSTEM==\"usb\", ENV{DEVTYPE}==\"usb_device\", ATTR{idVendor}==\"18d1\", "
+                                 "ATTR{idProduct}==\"4ee7\", TAG+=\"uaccess\"\n"
+                                 "SUBSYSTEM==\"usb\", ATTR{idVendor}==\"zzzz\", ATTR{idProduct}==\"1\"\n"));
+        QCOMPARE(UsbAside::read(), (QList<UsbAside::Ids>{{0x18d1, 0x4ee7}}));
+        QCOMPARE(UsbAside::text(both), QString("0781:5567,18d1:4ee7"));
+        QCOMPARE(UsbAside::missing(both, UsbAside::read()), stick);
+        QVERIFY(UsbAside::read(path("/nowhere")).isEmpty());
+
+        /* one not set aside: the password's verb, set aside, then kept away */
+        QCOMPARE(start({}, both), std::pair(QString(), 0));
+        QCOMPARE(readFile(requests), QByteArray("verb devices-bind\nusb-aside add 0781:5567\n"
+                                                "usb 0781:5567,18d1:4ee7\nwatch 4242"));
+        /* all set aside: no password */
+        QCOMPARE(start({}, {{0x18d1, 0x4ee7}}), std::pair(QString(), 0));
+        QCOMPARE(readFile(requests), QByteArray("verb devices\nusb 18d1:4ee7\nwatch 4242"));
+        /* the helper's refusal: said, and the VM starts all the same */
+        qputenv("USB_REPLY", "error usb 18d1:4ee7: not set aside: the password first");
+        QCOMPARE(start({}, {{0x18d1, 0x4ee7}}), std::pair(QString(), 1));
+        qunsetenv("USB_REPLY");
+        /* the password dialog dismissed: it starts */
+        qputenv("USB_EXIT", "126");
+        QCOMPARE(start({}, both).first, QString());
+        qunsetenv("USB_EXIT");
+        /* with PCI devices: one helper, USB first, the answer vfio's */
+        QCOMPARE(start({"0000:01:00.0", "0000:01:00.1"}, both), std::pair(QString(), 0));
+        const QByteArray asked = readFile(requests);
+        QVERIFY2(asked.startsWith("verb devices-bind\nusb-aside add 0781:5567\nusb 0781:5567,18d1:4ee7\n"
+                                  "vfio 0000:01:00.0,0000:01:00.1 3072\n"),
+                 asked.constData());
+        /* a PCI device's refusal still ends the start */
+        qputenv("USB_EXIT", "126");
+        QVERIFY(!start({"0000:01:00.0", "0000:01:00.1"}, both).first.isEmpty());
+        qunsetenv("USB_EXIT");
+
+        /* kept while the VM runs: a helper of their own, which watches its QEMU */
+        QFile::remove(requests);
+        PciPassthrough pt(nullptr);
+        pt.setHelperCommand({stand});
+        pt.keepUsb("vm1", "VM 1", both, 4343);
+        QTRY_VERIFY(readFile(requests).contains("watch 4343"));
+        QCOMPARE(readFile(requests), QByteArray("verb devices-bind\nusb-aside add 0781:5567\n"
+                                                "usb 0781:5567,18d1:4ee7\nwatch 4343"));
+        UsbAside::setPath("/etc/udev/rules.d/70-vitrine-usb-aside.rules");
     }
 };
 
