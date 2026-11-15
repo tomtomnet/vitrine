@@ -19,12 +19,17 @@ HostKdeBanner::HostKdeBanner(QWidget *parent)
     setObjectName("hostKdeBanner");
     layout->setContentsMargins(6, 6, 6, 6);
     layout->addWidget(m_banner);
-    m_banner->button()->setText(tr("Rebuild…"));
-    m_banner->button()->setToolTip(tr("The Builds window, on the package to build again"));
     QPushButton *revert = m_banner->addButton(tr("Revert…"));
     revert->setToolTip(tr("Put the distribution's packages back"));
-    connect(m_banner->button(), &QPushButton::clicked, this,
-            [this]() { emit rebuildRequested(rebuildable()); });
+    /* the builds that are ready first: building them again would change nothing */
+    connect(m_banner->button(), &QPushButton::clicked, this, [this]() {
+        const QStringList ready = installable();
+        if (!ready.isEmpty()) {
+            emit installRequested(ready);
+        } else {
+            emit rebuildRequested(rebuildable());
+        }
+    });
     connect(revert, &QPushButton::clicked, this, [this]() { emit revertRequested(outdated()); });
     connect(monitor, &HostKdeMonitor::changed, this, &HostKdeBanner::refresh);
     /*
@@ -66,6 +71,11 @@ QStringList HostKdeBanner::outdated() const
     return HostKdeNotice::outdated(HostKdeMonitor::instance()->statuses());
 }
 
+QStringList HostKdeBanner::installable() const
+{
+    return HostKdeNotice::installable(HostKdeMonitor::instance()->statuses());
+}
+
 QString HostKdeBanner::rebuildable() const
 {
     return HostKdeNotice::rebuildable(HostKdeMonitor::instance()->statuses());
@@ -80,7 +90,13 @@ void HostKdeBanner::refresh()
 {
     const QString text = this->text();
 
+    const bool install = !installable().isEmpty();
+
     m_banner->setText(text);
-    m_banner->button()->setVisible(!rebuildable().isEmpty());
+    m_banner->button()->setText(install ? tr("Install…") : tr("Rebuild…"));
+    m_banner->button()->setToolTip(install ? tr("Install the builds that are ready, at once, with the "
+                                                "administrator's password")
+                                           : tr("The Builds window, on the package to build again"));
+    m_banner->button()->setVisible(install || !rebuildable().isEmpty());
     setVisible(!text.isEmpty());
 }

@@ -71,6 +71,9 @@ MainWindowBuilds::MainWindowBuilds(MainWindow *window)
     m_banners->revert = [this](const QStringList &ids) {
         HostKdeAlerts::revert(m_window->presenter(), ids);
     };
+    m_banners->install = [this](const QStringList &ids) {
+        HostKdeAlerts::installAll(m_window->presenter(), ids);
+    };
     m_banners->addTo(ADW_TOOLBAR_VIEW(window->m_page->widget()));
     if (GtkWidget *empty = gtk_stack_get_child_by_name(window->m_main, "empty")) {
         m_banners->addTo(ADW_TOOLBAR_VIEW(empty));

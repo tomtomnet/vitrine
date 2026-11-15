@@ -1484,6 +1484,9 @@ QString BuildsWindow::systemSource(const Component &c)
                                     host.offer == Offer::NoSet
                                         ? tr("revert before you log out, or a newer Vitrine may build "
                                              "a matching KWin.")
+                                    : host.canInstall()
+                                        ? tr("the matching build is ready: install it (Install…), or "
+                                             "revert, before you log out.")
                                         : tr("build and install the matching KWin, or revert, before "
                                              "you log out."))
                          : tr("Vitrine's %1 no longer matches this computer (%2): programs use it with "
@@ -1491,6 +1494,9 @@ QString BuildsWindow::systemSource(const Component &c)
                                .arg(title, moved.join(", "),
                                     host.offer == Offer::NoSet
                                         ? tr("Revert, or a newer Vitrine may build a matching one.")
+                                    : host.canInstall()
+                                        ? tr("The matching build is ready: install it (Install…), or "
+                                             "revert.")
                                         : tr("Build and install the matching one, or revert.")),
                      true);
     } else if (host.owner == Owner::Foreign) {

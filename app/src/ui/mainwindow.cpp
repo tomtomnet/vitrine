@@ -182,6 +182,8 @@ MainWindow::MainWindow(VmStore *store, QWidget *parent)
             [this]() { showBuilds("qemu"); });
     /* Vitrine's host packages installed, no longer matching Plasma, the KDE Frameworks or Qt */
     HostKdeBanner *hostBanner = HostKdeBanner::addTo(this);
+    connect(hostBanner, &HostKdeBanner::installRequested, this,
+            [this](const QStringList &ids) { HostKdeDialog::installAll(this, ids); });
     connect(hostBanner, &HostKdeBanner::rebuildRequested, this,
             [this](const QString &id) { showBuilds(id); });
     connect(hostBanner, &HostKdeBanner::revertRequested, this,

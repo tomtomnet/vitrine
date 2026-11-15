@@ -535,6 +535,9 @@ if(BUILD_TESTING)
         add_test(NAME ${name} COMMAND test_${name})
         vitrine_test_env(${name})
     endforeach()
+    # the banner's choice between Install…, Rebuild… and Revert… (Qt Core only), with the
+    # host statuses' own helpers
+    target_link_libraries(test_hostkde PRIVATE vitrine_uishared)
     # the windows': widgets that are never shown, so no screen either
     foreach(name
             consoleviews

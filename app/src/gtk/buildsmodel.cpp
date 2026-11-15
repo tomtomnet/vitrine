@@ -134,6 +134,9 @@ Details systemDetails(const BuildManager &m, const Component &c,
                                           host.offer == HostKde::Status::Offer::NoSet
                                               ? QString("revert before you log out, or a newer Vitrine "
                                                         "may build a matching KWin.")
+                                          : host.canInstall()
+                                              ? QString("the matching build is ready: install it "
+                                                        "(Install…), or revert, before you log out.")
                                               : QString("build and install the matching KWin, or "
                                                         "revert, before you log out."))
                                : QString("Vitrine's %1 no longer matches this computer (%2): "
@@ -143,6 +146,9 @@ Details systemDetails(const BuildManager &m, const Component &c,
                                           host.offer == HostKde::Status::Offer::NoSet
                                               ? QString("Revert, or a newer Vitrine may build a "
                                                         "matching one.")
+                                          : host.canInstall()
+                                              ? QString("The matching build is ready: install it "
+                                                        "(Install…), or revert.")
                                               : QString("Build and install the matching one, or "
                                                         "revert."))) +
                    "</b>";

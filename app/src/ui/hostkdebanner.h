@@ -14,10 +14,11 @@ class QPushButton;
  * update (at the next login the desktop would run it against other
  * libraries, and might not start), KSvg or Kirigami once the KDE Frameworks
  * moved to another release (mixed releases, which upstream does not
- * support), Kirigami after a Qt update.  Rebuild… opens the Builds window on
- * the first of them that the recipe has a set for; Revert… puts the
- * distribution's back, all of them at once.  Hidden otherwise, which is
- * nearly always.
+ * support), Kirigami after a Qt update.  Install… installs the builds made
+ * for what the system has now, those of them that are ready, at once (one
+ * password); without one, Rebuild… opens the Builds window on the first that
+ * the recipe has a set for; Revert… puts the distribution's back, all of them
+ * at once.  Hidden otherwise, which is nearly always.
  */
 class HostKdeBanner : public QWidget
 {
@@ -32,12 +33,14 @@ public:
     void refresh();
     /* What it says, for the tests; empty while hidden */
     QString text() const;
-    /* The components out of date, and the one Rebuild… is for (empty: none
-       has a set for its new version) */
+    /* The components out of date, those whose matching build is ready (Install…), and the
+       one Rebuild… is for (empty: none to build, or none has a set for its new version) */
     QStringList outdated() const;
+    QStringList installable() const;
     QString rebuildable() const;
 
 signals:
+    void installRequested(const QStringList &ids);
     void rebuildRequested(const QString &id);
     void revertRequested(const QStringList &ids);
 

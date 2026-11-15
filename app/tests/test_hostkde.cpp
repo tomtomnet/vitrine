@@ -16,6 +16,7 @@
 #include "core/buildmanager.h"
 #include "core/guesttoolsbuilder.h"
 #include "core/hostkde.h"
+#include "ui/hostkdetext.h"
 #include "core/hostkdebuilder.h"
 #include "core/stackbuilder.h"
 #include "hostkdestandins.h"
@@ -1030,6 +1031,9 @@ private slots:
         kw683.buildroot.insert("libplasma", "6.8.3-1.fc44");
         s = status(kwin(), system, real, {kw683, kw}, kwRecord);
         QVERIFY2(s.canInstall(&why), qPrintable(why));
+        /* built: the row says what is left, and the banner offers Install…, not Rebuild… */
+        QCOMPARE(s.summary(), "Out of date: Plasma 6.8.3 is installed; the matching build is ready");
+        QList<Status> statuses{s};
 
         for (const auto &[target, old, name] :
              {std::tuple<Target, Build, QString>{ksvg(), svg, "kf6-ksvg"}, {kirigami(), kir, "kf6-kirigami"}}) {
@@ -1042,9 +1046,32 @@ private slots:
             QVERIFY2(lib.canBuild(&why), qPrintable(why));
             const Build next = libraryBuild(name, "6.32.0-1." + lib.series + ".fc44", lib.series, {name},
                                             "6.11.2-3.fc44", "fedora");
+            const Status unbuilt = lib;
             lib = status(target, system, real, {next, old}, record);
             QVERIFY2(lib.canInstall(&why), qPrintable(why));
+            QCOMPARE(lib.summary(), "Out of date: KDE Frameworks 6.32.0 is installed; the matching build is ready");
+            /* KSvg built, Kirigami not yet: each offered what is left for it */
+            statuses << (name == "kf6-ksvg" ? lib : unbuilt);
         }
+        QCOMPARE(HostKdeNotice::installable(statuses), QStringList({"host-kwin", "host-ksvg"}));
+        QCOMPARE(HostKdeNotice::rebuildable(statuses), QString("host-kirigami"));
+        QVERIFY2(HostKdeNotice::text(statuses).endsWith("Install the builds that are ready, build the others, "
+                                                       "or put the distribution's back before you log out."),
+                 qPrintable(HostKdeNotice::text(statuses)));
+        /* all three built: Install… alone, nothing to build */
+        statuses[2] = status(kirigami(), system, real,
+                             {libraryBuild("kf6-kirigami", "6.32.0-1.f1.fc44", "f1", {"kf6-kirigami"},
+                                           "6.11.2-3.fc44", "fedora"),
+                              kir},
+                             Record::of(kir, QDateTime::currentDateTimeUtc(), kirigami().against));
+        QCOMPARE(HostKdeNotice::installable(statuses),
+                 QStringList({"host-kwin", "host-ksvg", "host-kirigami"}));
+        QVERIFY(HostKdeNotice::rebuildable(statuses).isEmpty());
+        QVERIFY(HostKdeNotice::text(statuses).endsWith("The matching builds are ready: install them, or put "
+                                                       "the distribution's back before you log out."));
+        /* KSvg alone, no KWin: one build, and no logout to wait for */
+        QVERIFY(HostKdeNotice::text({statuses[1]}).endsWith("The matching build is ready: install it, or put "
+                                                            "the distribution's back."));
     }
 
     /* Plasma or Qt updated past Vitrine's KWin: out of date, said plainly */

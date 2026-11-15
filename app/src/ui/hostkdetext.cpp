@@ -282,10 +282,23 @@ QStringList outdated(const QList<Status> &statuses)
     return ids;
 }
 
+QStringList installable(const QList<Status> &statuses)
+{
+    QStringList ids;
+
+    for (const HostKde::Status &s : statuses) {
+        if (s.isOutdated() && s.canInstall()) {
+            ids << s.target.id;
+        }
+    }
+    return ids;
+}
+
 QString rebuildable(const QList<Status> &statuses)
 {
     for (const HostKde::Status &s : statuses) {
-        if (s.isOutdated() && s.canBuild()) {
+        /* built already: its build is installed rather than made again */
+        if (s.isOutdated() && s.canBuild() && !s.canInstall()) {
             return s.target.id;
         }
     }
@@ -334,10 +347,19 @@ QString text(const QList<Status> &statuses)
     if (sentences.isEmpty()) {
         return {};
     }
-    const QString what = rebuildable(statuses).isEmpty()
-                             ? noticeTr("Put the distribution's packages back")
-                             : noticeTr("Build and install the matching packages, or put the "
-                                        "distribution's back");
+    const int ready = int(installable(statuses).size());
+    const int all = int(outdated(statuses).size());
+    const QString what =
+        ready > 0 && ready == all
+            ? (all == 1 ? noticeTr("The matching build is ready: install it, or put the "
+                                   "distribution's back")
+                        : noticeTr("The matching builds are ready: install them, or put the "
+                                   "distribution's back"))
+        : ready > 0 ? noticeTr("Install the builds that are ready, build the others, or put the "
+                               "distribution's back")
+        : !rebuildable(statuses).isEmpty() ? noticeTr("Build and install the matching packages, or "
+                                                      "put the distribution's back")
+                                           : noticeTr("Put the distribution's packages back");
     return sentences.join(' ') + ' ' +
            (kwin ? noticeTr("%1 before you log out.").arg(what) : noticeTr("%1.").arg(what));
 }

@@ -47,6 +47,8 @@ public:
     std::function<void(const QString &component)> showBuilds;
     /* Revert…: the distribution's packages back, of @ids */
     std::function<void(const QStringList &ids)> revert;
+    /* Install…: the builds of @ids that are ready, installed at once (one password) */
+    std::function<void(const QStringList &ids)> install;
 
     /* For tests: what they say (plain text) and their buttons; empty while hidden */
     QString stackText() const;
@@ -77,7 +79,8 @@ private:
     QString m_stackButton;
     QString m_hostText;
     QString m_hostButton;
-    /* what Rebuild… is for, and what Revert… puts back */
+    /* what Install… installs, what Rebuild… is for, and what Revert… puts back */
+    QStringList m_install;
     QString m_rebuild;
     QStringList m_outdated;
 };

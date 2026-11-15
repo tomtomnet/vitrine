@@ -1076,10 +1076,14 @@ QString Status::summary() const
     if (owner == Owner::Vitrine) {
         if (!outdated.isEmpty()) {
             /* nothing to build for it in this Vitrine: said, as Rebuild is not offered */
-            return offer == Offer::NoSet
-                       ? tr("Out of date: %1 is installed (no patches for it in this Vitrine)")
-                             .arg(nameNow(outdated.first()))
-                       : tr("Out of date: %1 is installed").arg(nameNow(outdated.first()));
+            if (offer == Offer::NoSet) {
+                return tr("Out of date: %1 is installed (no patches for it in this Vitrine)")
+                    .arg(nameNow(outdated.first()));
+            }
+            /* built for it already: what is left is installing it */
+            return canInstall() ? tr("Out of date: %1 is installed; the matching build is ready")
+                                      .arg(nameNow(outdated.first()))
+                                : tr("Out of date: %1 is installed").arg(nameNow(outdated.first()));
         }
         if (!locked) {
             return tr("Installed, not version-locked");

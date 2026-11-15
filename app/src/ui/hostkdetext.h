@@ -47,7 +47,11 @@ namespace HostKdeNotice {
 
 /* The packages out of date: Vitrine's, installed, no longer matching */
 QStringList outdated(const QList<HostKde::Status> &statuses);
-/* The first of them that the recipe has a set for, to build again; empty if none */
+/* Those of them whose build for what the system has now is ready: to install (Install…,
+   all at once, one password) */
+QStringList installable(const QList<HostKde::Status> &statuses);
+/* The first of them that the recipe has a set for and that has no such build yet, to build
+   again; empty if none */
 QString rebuildable(const QList<HostKde::Status> &statuses);
 /* What the banner says (rich text); empty when none is out of date */
 QString text(const QList<HostKde::Status> &statuses);

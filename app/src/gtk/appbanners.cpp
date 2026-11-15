@@ -125,8 +125,11 @@ void AppBanners::refreshHost()
 
     m_hostText = HostKdeNotice::text(statuses);
     m_outdated = HostKdeNotice::outdated(statuses);
+    m_install = HostKdeNotice::installable(statuses);
     m_rebuild = HostKdeNotice::rebuildable(statuses);
+    /* the builds that are ready first: building them again would change nothing */
     m_hostButton = m_hostText.isEmpty()   ? QString()
+                   : !m_install.isEmpty() ? QString("Install…")
                    : !m_rebuild.isEmpty() ? QString("Rebuild…")
                                           : QString("Revert…");
     for (const Place &place : std::as_const(m_places)) {
@@ -143,7 +146,11 @@ void AppBanners::activateStack()
 
 void AppBanners::activateHost()
 {
-    if (!m_rebuild.isEmpty()) {
+    if (!m_install.isEmpty()) {
+        if (install) {
+            install(m_install);
+        }
+    } else if (!m_rebuild.isEmpty()) {
         if (showBuilds) {
             showBuilds(m_rebuild);
         }
