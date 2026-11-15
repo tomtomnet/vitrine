@@ -32,7 +32,8 @@
  *
  * vfio.c's records go through the same holds: an IOMMU group handed to a VM
  * (vfio-<group>, one helper at a time) and the locked memory limit of the
- * process that started the helpers (memlock-<pid>, shared).
+ * process that started the helpers (memlock-<pid>, shared); and usb.c's, a
+ * helper's runtime udev rules for USB devices a VM has (usb-<pid>, its own).
  */
 #define _GNU_SOURCE
 #include <dirent.h>
@@ -56,18 +57,19 @@ static int lock_fd = -1;
 struct hold {
     char key[32];       /* fair-server, ext-server, gpu-floor-cardN,
                            gpu-profile-cardN, udmabuf, thp, epp,
-                           vfio-<group>, memlock-<pid>, sched-<pid>; empty
-                           when free */
+                           vfio-<group>, memlock-<pid>, usb-<pid>,
+                           sched-<pid>; empty when free */
     int fd;             /* <key>.hold */
     char value[16];     /* what was asked: on, auto or MHz */
 };
 /* the fair and ext servers, the udmabuf limits, huge pages, the CPUs'
    preference, eight cards' floors and eight cards' profiles, the IOMMU
    groups of PCI devices handed to VMs and the parent's locked memory limit
-   (vfio.c); then the records of the QEMUs watched, and of the process
-   that started the helper (view-rt) */
+   (vfio.c), the runtime rules of USB devices - this helper's, or dead
+   helpers' at the recovery (usb.c); then the records of the QEMUs watched,
+   and of the process that started the helper (view-rt) */
 #define MAX_CARDS 8
-#define MAX_SETTINGS (5 + 2 * MAX_CARDS + MAX_VFIO_GROUPS + 1)
+#define MAX_SETTINGS (5 + 2 * MAX_CARDS + MAX_VFIO_GROUPS + 1 + MAX_USB_ORPHANS)
 #define MAX_HOLDS (MAX_SETTINGS + MAX_WATCHED + 1)
 static struct hold holds[MAX_HOLDS];
 
@@ -2771,12 +2773,14 @@ static void restore_key(const char *key)
         thp_restore();
     } else if (strcmp(key, "epp") == 0) {
         epp_restore();
-    } else if (strncmp(key, "vfio-", 5) == 0) {
+    } else if (strncmp(key, "vfio-", 5) == 0 || strncmp(key, "usb-", 4) == 0) {
         /*
          * Kept: PCI devices go back to their drivers outside the lock, as a
          * driver may take its time to let go of one, or to take it back
          * (vfio.c gives them back with the group's hold: group_drop() and,
-         * for a dead helper's record, the recovery's adoption)
+         * for a dead helper's record, the recovery's adoption); so does
+         * udev's reload of its rules once a runtime rules file is gone
+         * (usb.c, the same way)
          */
     } else if (strncmp(key, "memlock-", 8) == 0) {
         memlock_restore(key);
@@ -2821,9 +2825,14 @@ static void recover_pass(bool sched)
         if (hfd >= 0 && flock(hfd, LOCK_EX | LOCK_NB) == 0) {
             struct hold *h;
 
-            /* PCI devices: this helper's to give back after the lock */
+            /* PCI devices, USB devices' rules: this helper's to give back
+               after the lock */
             if (strncmp(key, "vfio-", 5) == 0 && (h = hold_adopt(key, hfd))) {
                 vfio_adopt(key, h);
+                continue;
+            }
+            if (strncmp(key, "usb-", 4) == 0 && (h = hold_adopt(key, hfd))) {
+                usb_adopt(key, h);
                 continue;
             }
             restore_key(key);

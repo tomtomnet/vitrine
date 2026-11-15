@@ -212,11 +212,12 @@ bool sys_group_has(const char *user, gid_t primary, gid_t gid)
 }
 
 /*
- * Runs a tool of the shadow suite, which keeps /etc/group and /etc/gshadow
- * consistent and locked while it edits them, and tells caches (nscd, sssd)
- * about the change.  It is looked for in the usual places only, run with a
- * fixed environment, and the first line of its error output goes to @err
- * (its output says what it is doing - gpasswd's "Adding user ..." - and is
+ * Runs a system tool: one of the shadow suite, which keeps /etc/group and
+ * /etc/gshadow consistent and locked while it edits them, and tells caches
+ * (nscd, sssd) about the change; modprobe; udevadm.  It is looked for in
+ * the usual places only (no shell, no PATH lookup), run with a fixed
+ * environment, and the first line of its error output goes to @err (its
+ * output says what it is doing - gpasswd's "Adding user ..." - and is
  * dropped).
  */
 static int run_tool(const char *const places[], char *const argv[], char *err, size_t size)
@@ -555,4 +556,34 @@ char *sys_read_all(const char *path, size_t max)
 int sys_vfio_expiry_ms(void)
 {
     return VFIO_EXPIRY_MS;
+}
+
+int sys_rules_put(int dirfd, int fd, const char *tmp, const char *name)
+{
+    /* root's: the helper runs as root, but a group of the folder's (setgid)
+       or of pkexec's caller must not come along */
+    if (fchown(fd, 0, 0) < 0 || fsync(fd) < 0 || renameat(dirfd, tmp, dirfd, name) < 0) {
+        return -errno;
+    }
+    fsync(dirfd);
+    return 0;
+}
+
+int sys_rules_remove(int dirfd, const char *name)
+{
+    if (unlinkat(dirfd, name, 0) < 0) {
+        return -errno;
+    }
+    fsync(dirfd);
+    return 0;
+}
+
+int sys_udev_reload(char *err, size_t size)
+{
+    static const char *const places[] = {"/usr/bin/udevadm", "/usr/sbin/udevadm", "/bin/udevadm",
+                                         "/sbin/udevadm", NULL};
+    /* a udevd that does not answer holds up the helper ten seconds at most */
+    char *const argv[] = {"udevadm", "control", "--reload", "--timeout=10", NULL};
+
+    return run_tool(places, argv, err, size);
 }

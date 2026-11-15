@@ -107,7 +107,9 @@ run. Nothing is applied while no VM runs. QEMU itself gets no privilege:
 the helper sets its threads' scheduling, and that of the view's threads.
 
 The same helper gets PCI devices ready for a VM that passes them through
-([below](#pci-devices-passed-through)), whether host tuning is on or not.
+([below](#pci-devices-passed-through)), and keeps the desktop away from
+the USB devices a VM takes again at each reconnect
+([below](#usb-devices-that-reconnect)), whether host tuning is on or not.
 
 ## Allowing it without a password
 
@@ -174,6 +176,9 @@ for them. It does only this, for the user who started it:
 | `setup-group` | The caller in the `vitrine` group, the group created (`groupadd --system`) if there is none | See below |
 | `vfio ADDRESSES MIB` (`devices`) | For IOMMU groups already on vfio-pci, before the VM's QEMU starts: `/dev/vfio/<group>` the caller's (owner read-write, mode kept), and the locked memory limit (`RLIMIT_MEMLOCK`) of the program that started the helper at MIB at least | Strict addresses (`0000:6e:00.0`) of devices that exist; every device of the group on vfio-pci, pci-stub or no driver, or a bridge; no device taken from a driver or bound to vfio-pci (a helper of any verb gives back, as it starts, what a killed one left); a group another helper holds, or that a program has open, refused; the limit raised only, to the computer's memory and 1 GiB at most, which the answer says |
 | `vfio ADDRESSES MIB` (`devices-bind`) | The same, and the devices taken from their drivers for vfio-pci first (`driver_override`, the driver's unbind, vfio-pci's bind, read back; vfio-pci loaded if need be) | Also refused: the GPU the computer started on (`boot_vga`), a GPU with a display connected, a device whose nodes a process has open (but the sound servers on its ALSA nodes: PipeWire, WirePlumber and PulseAudio, by the program they run, `/usr/bin/pipewire` and so on), a disk mounted, swapped on or with holders (dm, md), a network interface that is up, NVIDIA's driver while its nodes are open, platform devices (bridges, SMBus, the IOMMU, timers); the whole group or nothing; all of it recorded before the first change |
+| `usb-aside add IDS` (`devices-bind`) | USB devices set aside for VMs for good: a line each (`TAG+="uaccess"`) in `/etc/udev/rules.d/70-vitrine-usb-aside.rules`, so that their nodes are the desktop user's at each plug; udev's reload, a change event for each one present | Strict IDs (`0781:5567`, lowercase, 16 at most, none twice); no USB root hub; fixed lines, sorted, written whole (a file beside it, synced, renamed), root's, 0644; a link there (a mask) or a line vitrine-helper did not write is left as it is |
+| `usb-aside remove IDS` (`devices`) | Those lines taken out (the file goes with the last one); udev's reload, the change events | The same IDs; nothing else in the file is touched |
+| `usb IDS` (`devices`) | While the VM runs, the desktop kept away from those USB devices and from what is under them (no automount, no sound card, no input device, no modem, no phone or camera mount): `/run/udev/rules.d/60-vitrine-usb-<pid>.rules`, udev's reload, a change event for each device and each one under it | Devices set aside only; recorded before the file; it waits for the next `watch` and goes with that QEMU, or with the helper; a helper of any verb removes what a killed one left |
 
 The settings need a watched QEMU, and each value is put back only if it
 still holds what the helper wrote: another tool that changed it since keeps
@@ -210,6 +215,11 @@ What this amounts to:
   itself, a disk controller that is not mounted for one, its data
   included. Without a password, a helper may give devices back to their
   drivers: those a killed helper left on vfio-pci, as it starts.
+- For USB devices, a lasting change only with an administrator's
+  password: `usb-aside add` makes a device's node yours at each plug, as
+  the desktop's own devices are (a webcam, a sound card). Without one, a
+  member can only keep the desktop away from devices set aside while a VM
+  of theirs runs, and give devices back.
 - Nothing for QEMU itself. Earlier versions gave vitrine's QEMU build the
   `cap_sys_nice` file capability, so that QEMU could switch its vCPUs
   itself; that also gave a guest that escaped into QEMU the scheduling of
@@ -248,8 +258,9 @@ Rename that group, or add yourself to it by hand if that is what you want.
 
 Each verb of the helper has a polkit action of its own, named by its
 first argument: `org.vitrine.helper` (`session`, the settings while VMs
-run), `org.vitrine.helper.devices` (PCI devices already on vfio-pci),
-`org.vitrine.helper.devices-bind` (devices taken from the host's drivers)
+run), `org.vitrine.helper.devices` (PCI devices already on vfio-pci, USB
+devices already set aside), `org.vitrine.helper.devices-bind` (devices
+taken from the host's drivers, USB devices set aside)
 and `org.vitrine.helper.setup-group`. The group's rule grants the first two
 only: devices-bind wants an administrator's password from members too,
 which polkit keeps for a few minutes (`auth_admin_keep`; the rule has a
@@ -315,6 +326,49 @@ giving you the node, a limit of your session's - vitrine runs no helper.
 When a device does not go back to its driver (a GPU that does not reset
 well), it stays without one, the status bar says so, and a restart of the
 computer gives it back.
+
+## USB devices that reconnect
+
+A VM keeps a USB device by its IDs (`-device usb-host,vendorid=,productid=`,
+its USB Devices settings): QEMU takes it again by itself after each
+reconnect, on any port, even with vitrine closed. Two things need root, and
+the helper does them with udev rules:
+
+- The device's node must be yours at each plug, not only until it is
+  unplugged. `usb-aside add` (devices-bind: an administrator's password,
+  once per device) adds a line to `/etc/udev/rules.d/70-vitrine-usb-aside.rules`
+  with systemd's `uaccess` tag, which gives the user at the desktop an ACL
+  on the node, as for the desktop's own devices; `usb-aside remove` (no
+  password) takes it out. The file is vitrine-helper's: a mask
+  (`ln -s /dev/null` in its place) or a line of your own in it makes the
+  helper leave it as it is.
+- While the VM runs, the host's desktop keeps away from the device: no
+  automount of its disk (udisks), no switch to its sound card (PipeWire,
+  PulseAudio), no input device (libinput), no modem (ModemManager), no
+  phone or camera mount (libmtp, libgphoto2, gvfs). At the VM's start,
+  before QEMU, the helper writes `/run/udev/rules.d/60-vitrine-usb-<pid>.rules`
+  for the VM's devices set aside, with `UDISKS_IGNORE`, `ACP_IGNORE`,
+  `PULSE_IGNORE`, `LIBINPUT_IGNORE_DEVICE`, `ID_MM_DEVICE_IGNORE` and
+  `MTP_NO_PROBE` for the device and everything under it, and clears
+  `ID_MTP_DEVICE` and `ID_GPHOTO2`. It goes with the VM's QEMU, crash
+  included (or after a minute if no QEMU comes), and the desktop sees the
+  device again. When the VM is off, the device is the host's as usual.
+
+After each change udev reads its rules again (`udevadm control --reload`)
+and each device concerned that is plugged in gets a change event (`change`
+to its `uevent`; for the runtime rules, every device under it too: its
+disk and partitions, sound card, input devices), so that the rules apply at
+once and not at the next plug. A reload or change event that fails is
+said as a warning in the answer, the rest done all the same. The
+runtime file has a record (`usb-<pid>` in `/run/vitrine-helper`), written
+first: a helper killed while it has the file leaves it, and the next
+helper, whatever its verb, removes the file, tells udev and sends the
+change events.
+
+The rules match by IDs, as QEMU does: two identical devices are both set
+aside and both kept away from the desktop while the VM runs. A USB root
+hub is refused: it is the bus itself, and every device on it - the host's
+keyboard and mouse included - would match.
 
 ## The CPU ready to wake up
 

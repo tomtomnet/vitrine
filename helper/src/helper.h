@@ -85,6 +85,21 @@
 #define PCI_DIR "/sys/bus/pci"
 #define IOMMU_GROUPS_DIR "/sys/kernel/iommu_groups"
 #define VFIO_DEV_DIR "/dev/vfio"
+/*
+ * USB devices a VM keeps by their IDs (usb.c): the IDs of one request at
+ * most; the udev rules that set them aside for good (uaccess: their nodes
+ * the desktop user's at each plug, from a number below 73-seat-late's,
+ * which turns that tag into an ACL); the folder of each helper's runtime
+ * rules that keep the desktop away from them while its VM runs (60-...:
+ * before 69-libmtp, whose probe MTP_NO_PROBE stops); and the dead helpers'
+ * runtime files one recovery takes over at once
+ */
+#define MAX_USB_IDS 16
+#define USB_ASIDE_DIR "/etc/udev/rules.d"
+#define USB_ASIDE_FILE "70-vitrine-usb-aside.rules"
+#define USB_RUN_DIR "/run/udev/rules.d"
+#define USB_DEVICES_DIR "/sys/bus/usb/devices"
+#define MAX_USB_ORPHANS 8
 
 /* What a session takes, from the verb that started it (main.c) */
 enum session_kind {
@@ -181,8 +196,21 @@ int sys_device_users(const struct devnum *devs, int ndevs, struct devuser *users
 /* All of @path (under the root), NUL terminated, at most @max bytes, in a
    malloc'ed buffer; NULL when it cannot be read */
 char *sys_read_all(const char *path, size_t max);
-/* How long a group made ready waits for its QEMU, in ms: VFIO_EXPIRY_MS */
+/* How long a group, or USB devices, made ready wait for their QEMU, in ms:
+   VFIO_EXPIRY_MS */
 int sys_vfio_expiry_ms(void);
+/*
+ * A udev rules file put in place: @tmp in the folder @dirfd (a folder root's
+ * alone), written whole through @fd, made root's, synced and renamed over
+ * @name, the folder synced.  0 or -errno.
+ */
+int sys_rules_put(int dirfd, int fd, const char *tmp, const char *name);
+/* The rules file @name of the folder @dirfd removed, the folder synced: 0 or
+   -errno (-ENOENT: there was none) */
+int sys_rules_remove(int dirfd, const char *name);
+/* udev reads its rules again (udevadm control --reload): 0, or -1 with why
+   in @err */
+int sys_udev_reload(char *err, size_t size);
 
 /* --- helpers shared by the files --- */
 
@@ -407,6 +435,34 @@ void memlock_restore(const char *key);
 void vfio_adopt(const char *key, struct hold *h);
 /* Those records given back, after settings_init() */
 void vfio_recover(void);
+
+/* --- usb.c: USB devices that reconnect to a VM --- */
+
+/*
+ * The protocol's usb-aside add|remove IDS (vvvv:pppp, comma-separated): the
+ * devices set aside for VMs for good, their nodes the desktop user's at each
+ * plug, or no longer.  @bind: add is allowed (devices-bind).
+ */
+void usb_aside(const char *action, const char *ids, bool bind);
+/* The protocol's usb IDS, before the VM's QEMU starts: the desktop keeps away
+   from those devices, set aside, until that QEMU ends */
+void usb_request(const char *ids);
+/* A watch: the devices of usb not taken yet are that QEMU's now */
+void usb_claim(const struct watched *w);
+/* After watched QEMUs exited: the devices of the one that had them go back
+   to the desktop */
+void usb_check(void);
+/* The ms until the devices waiting for their QEMU are due, -1 for none */
+int usb_timeout(void);
+/* Those no QEMU came for in time go back */
+void usb_expire(void);
+/* The end: the devices back to the desktop */
+void usb_release(void);
+/* The recovery (under the lock): the record of a dead helper, whose hold @h
+   this helper took, to give back after it (usb_recover) */
+void usb_adopt(const char *key, struct hold *h);
+/* Those records given back, after settings_init() */
+void usb_recover(void);
 
 /* --- group.c: the vitrine group --- */
 
