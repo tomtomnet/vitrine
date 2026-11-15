@@ -8,10 +8,13 @@
  *   vitrine-helper session        one session: requests on stdin, one per
  *                                 line (org.vitrine.helper)
  *   vitrine-helper devices        a session for PCI devices passed through
- *                                 that are on vfio-pci already: vfio, watch
- *                                 and release only (org.vitrine.helper.devices)
+ *                                 that are on vfio-pci already, and USB
+ *                                 devices set aside: vfio, usb, usb-aside
+ *                                 remove, watch and release only
+ *                                 (org.vitrine.helper.devices)
  *   vitrine-helper devices-bind   the same, and devices taken from the host's
- *                                 drivers (org.vitrine.helper.devices-bind)
+ *                                 drivers, USB devices set aside (usb-aside
+ *                                 add) (org.vitrine.helper.devices-bind)
  *   vitrine-helper setup-group    the caller in the vitrine group (created if
  *                                 need be), then exit
  *                                 (org.vitrine.helper.setup-group)
@@ -91,13 +94,43 @@
  *                          next watch, which takes it, VFIO_EXPIRY_MS at
  *                          most, and goes back with that QEMU - or with
  *                          the helper, if no QEMU came.
- * and watch PID, release.
+ *   usb IDS                USB devices a VM keeps by their IDs (vvvv:pppp,
+ *                          lowercase hex, comma-separated, 16 at most, none
+ *                          twice), each one set aside: while that VM runs,
+ *                          the host's desktop keeps away from them and from
+ *                          the devices under them (their disks, sound
+ *                          cards, input devices: no automount, no sound
+ *                          output, no phone mount), through the runtime
+ *                          rules /run/udev/rules.d/60-vitrine-usb-<pid>.rules,
+ *                          udev's reload and a change event for each.  As
+ *                          vfio's groups, they wait for the next watch and
+ *                          go back with that QEMU, or with the helper; a
+ *                          second usb replaces the first's devices.  "ok
+ *                          usb IDS"; "error usb vvvv:pppp: not set aside:
+ *                          ..." for a device that is not; unprompted,
+ *                          "restored usb IDS" once they are back.
+ * and, at any time:
+ *   usb-aside add|remove IDS
+ *                          those devices set aside for VMs for good, or no
+ *                          longer: a line each in /etc/udev/rules.d/
+ *                          70-vitrine-usb-aside.rules (systemd's uaccess:
+ *                          their nodes the desktop user's at each plug),
+ *                          udev's reload and a change event for each one
+ *                          present.  add in devices-bind only (an
+ *                          administrator's password), remove in both.  "ok
+ *                          usb-aside IDS".  add and usb refuse a USB root
+ *                          hub.
+ *   watch PID, release.
+ * The answers of usb and usb-aside may end with " warning: ..." (udev did
+ * not read its rules again, a change event was not sent): done all the
+ * same.
  *
  * When the last watched QEMU exits, crash included, or stdin closes while
  * none is watched, everything is put back and the helper exits; with stdin
  * closed it keeps going while watched QEMUs run (they outlive vitrine).  A
  * PCI device something still has open stays on vfio-pci, recorded: a later
- * helper, whatever its verb, gives it back once it is free.
+ * helper, whatever its verb, gives it back once it is free.  So does it
+ * with the runtime rules of USB devices a killed helper left.
  */
 #define _GNU_SOURCE
 #include <errno.h>
@@ -233,12 +266,17 @@ static void devices_request(char **words, int n)
 {
 #define IS(verb, args) (strcmp(words[0], verb) == 0 && n == (args) + 1)
     if (IS("watch", 1)) {
-        /* the QEMU that takes what vfio made ready */
+        /* the QEMU that takes what vfio and usb made ready */
         if (watch(words[1])) {
             vfio_claim(find_watched(words[1]));
+            usb_claim(find_watched(words[1]));
         }
     } else if (IS("vfio", 2)) {
         vfio_request(words[1], words[2], session_kind == SESSION_DEVICES_BIND);
+    } else if (IS("usb-aside", 2)) {
+        usb_aside(words[1], words[2], session_kind == SESSION_DEVICES_BIND);
+    } else if (IS("usb", 1)) {
+        usb_request(words[1]);
     } else {
         reply("error %.32s: unknown request", words[0]);
     }
@@ -280,6 +318,10 @@ static bool request(char *line)
         /* a polkit action of their own: taking a device from the host is more
            than tuning it */
         reply("error vfio: PCI devices go through vitrine-helper devices or devices-bind");
+        return true;
+    }
+    if (strcmp(words[0], "usb") == 0 || strcmp(words[0], "usb-aside") == 0) {
+        reply("error %s: USB devices go through vitrine-helper devices or devices-bind", words[0]);
         return true;
     }
     if (IS("watch", 1)) {
@@ -331,6 +373,12 @@ static bool request(char *line)
     return true;
 }
 
+/* The sooner of two poll timeouts (-1: none) */
+static int sooner(int a, int b)
+{
+    return a < 0 ? b : b < 0 ? a : a < b ? a : b;
+}
+
 static int session(enum session_kind kind)
 {
     char buf[MAX_LINE + 1];
@@ -350,8 +398,10 @@ static int session(enum session_kind kind)
         return 1;
     }
     /* PCI devices a dead helper left, given back outside the lock: any verb
-       gives back what an earlier one took, none takes one without its own */
+       gives back what an earlier one took, none takes one without its own;
+       the USB devices its runtime rules kept away from the desktop too */
     vfio_recover();
+    usb_recover();
     /* who started it, before any request can come */
     parent_init();
     reply("ready %d", HELPER_PROTOCOL);
@@ -367,8 +417,8 @@ static int session(enum session_kind kind)
         for (int i = 0; i < nwatched; i++) {
             fds[nfds++] = (struct pollfd){.fd = watched[i].pidfd, .events = POLLIN};
         }
-        /* awake for the PCI devices that wait for their QEMU */
-        if (poll(fds, (nfds_t)nfds, vfio_timeout()) < 0) {
+        /* awake for the PCI and USB devices that wait for their QEMU */
+        if (poll(fds, (nfds_t)nfds, sooner(vfio_timeout(), usb_timeout())) < 0) {
             if (errno == EINTR) {
                 continue;
             }
@@ -376,6 +426,7 @@ static int session(enum session_kind kind)
         }
         /* those no QEMU came for in time go back */
         vfio_expire();
+        usb_expire();
         if (fds[0].revents) {
             /* SIGTERM (shutdown) or SIGINT: everything back first */
             break;
@@ -433,11 +484,12 @@ static int session(enum session_kind kind)
         }
         /* the udmabuf limits go with the last QEMU that asked for them, not
            with the last QEMU; the view's threads with the QEMU in front; PCI
-           devices with the QEMU that had them */
+           and USB devices with the QEMU that had them */
         if (ngone) {
             udmabuf_check();
             view_check();
             vfio_check();
+            usb_check();
         }
         /* the last VM is gone, or vitrine with none left */
         if ((ever && !nwatched) || (!input && !nwatched)) {
@@ -446,9 +498,10 @@ static int session(enum session_kind kind)
     }
 end:
     /* release, a signal, or the end: threads of QEMUs still running first,
-       then PCI devices (those still open stay recorded) */
+       then PCI devices (those still open stay recorded), USB devices */
     rt_off_all();
     vfio_release();
+    usb_release();
     settings_release();
     reply("bye");
     return 0;

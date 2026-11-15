@@ -43,13 +43,21 @@
  * time limits are (memlock.refuse: a change fails); <root>/chown.refuse
  * makes a node's owner change fail; a driver's unbind.slow (ms) makes its
  * unbind take that long.  VITRINE_HELPER_TEST_VFIO_EXPIRY_MS shortens the
- * wait of prepared groups for their QEMU.
+ * wait of prepared groups (and USB devices) for their QEMU.
+ *
+ * udev's rules files are real files of the tree, put in place and removed
+ * as the helper asks (journal: "rules put PATH", "rules remove PATH"; with
+ * <root>/rules.refuse both fail); udevadm control --reload is not run, the
+ * journal says "udevadm control --reload" instead (<root>/udevadm.refuse:
+ * it fails, as with no udevd).  A device's uevent takes "change" as any
+ * other file takes a write.
  *
  * VITRINE_HELPER_TEST_KILL_AT=N kills it (SIGKILL) right after its Nth
- * write (a latency request, a module, a node's owner and a limit count as
- * one), as a crash or a kill in the middle of a change would;
- * VITRINE_HELPER_TEST_KILL_BEFORE=TEXT kills it right before its first
- * write to a path holding TEXT.
+ * write (a latency request, a module, a node's owner, a limit, a rules
+ * file put or removed and udev's reload count as one), as a crash or a
+ * kill in the middle of a change would; VITRINE_HELPER_TEST_KILL_BEFORE=
+ * TEXT kills it right before its first write to a path holding TEXT
+ * ("udevadm": before udev's reload).
  */
 #define _GNU_SOURCE
 #include <dirent.h>
@@ -735,18 +743,26 @@ static void count_write(void)
     }
 }
 
-int sys_write(const char *path, const char *value)
+/* VITRINE_HELPER_TEST_KILL_BEFORE=TEXT: killed right before the first write
+   to a path holding TEXT (@rel, under the root) */
+static void kill_before(const char *rel)
 {
-    const char *rel = path + strlen(root);
-    const char *base = strrchr(path, '/') + 1;
     const char *before = getenv("VITRINE_HELPER_TEST_KILL_BEFORE");
-    char v[128];
-    int err;
 
     if (before && before[0] && strstr(rel, before)) {
         journal("killed before %s", rel);
         raise(SIGKILL);
     }
+}
+
+int sys_write(const char *path, const char *value)
+{
+    const char *rel = path + strlen(root);
+    const char *base = strrchr(path, '/') + 1;
+    char v[128];
+    int err;
+
+    kill_before(rel);
 
     snprintf(v, sizeof(v), "%s", value);
     v[strcspn(v, "\n")] = '\0';
@@ -1354,6 +1370,90 @@ int sys_vfio_expiry_ms(void)
     const char *ms = getenv("VITRINE_HELPER_TEST_VFIO_EXPIRY_MS");
 
     return ms ? atoi(ms) : VFIO_EXPIRY_MS;
+}
+
+/* --- udev: its rules files, its reload --- */
+
+/* @name in the folder @dirfd, as a path under the root */
+static void at_path(int dirfd, const char *name, char *out, size_t size)
+{
+    char link[64], dir[PATH_MAX], top[PATH_MAX];
+    ssize_t n;
+
+    snprintf(link, sizeof(link), "/proc/self/fd/%d", dirfd);
+    n = readlink(link, dir, sizeof(dir) - 1);
+    dir[n > 0 ? n : 0] = '\0';
+    /* the folder's path has no link in it: nor has the root's here */
+    if (!realpath(root, top)) {
+        snprintf(top, sizeof(top), "%s", root);
+    }
+    if (snprintf(out, size, "%s/%s", strncmp(dir, top, strlen(top)) == 0 ? dir + strlen(top) : dir,
+                 name) >= (int)size) {
+        out[0] = '\0';
+    }
+}
+
+static bool rules_refused(void)
+{
+    char path[PATH_MAX];
+
+    snprintf(path, sizeof(path), "%s/rules.refuse", root);
+    return access(path, F_OK) == 0;
+}
+
+/* As the real one, but for the owner: the test runs as itself */
+int sys_rules_put(int dirfd, int fd, const char *tmp, const char *name)
+{
+    char rel[PATH_MAX];
+    int err = 0;
+
+    at_path(dirfd, name, rel, sizeof(rel));
+    kill_before(rel);
+    if (rules_refused()) {
+        err = -EROFS;
+    } else if (fsync(fd) < 0 || renameat(dirfd, tmp, dirfd, name) < 0) {
+        err = -errno;
+    }
+    journal("rules put %s%s", rel, err ? " FAILED" : "");
+    count_write();
+    return err;
+}
+
+int sys_rules_remove(int dirfd, const char *name)
+{
+    char rel[PATH_MAX];
+    int err = 0;
+
+    at_path(dirfd, name, rel, sizeof(rel));
+    if (faccessat(dirfd, name, F_OK, AT_SYMLINK_NOFOLLOW) < 0) {
+        /* nothing to remove: nothing done */
+        return -errno;
+    }
+    kill_before(rel);
+    if (rules_refused()) {
+        err = -EROFS;
+    } else if (unlinkat(dirfd, name, 0) < 0) {
+        err = -errno;
+    }
+    journal("rules remove %s%s", rel, err ? " FAILED" : "");
+    count_write();
+    return err;
+}
+
+int sys_udev_reload(char *err, size_t size)
+{
+    char path[PATH_MAX];
+
+    kill_before("udevadm");
+    snprintf(path, sizeof(path), "%s/udevadm.refuse", root);
+    if (access(path, F_OK) == 0) {
+        snprintf(err, size, "Failed to send reload request: Connection refused");
+        journal("udevadm control --reload FAILED");
+        return -1;
+    }
+    journal("udevadm control --reload");
+    count_write();
+    return 0;
 }
 
 void sys_log(const char *fmt, ...)

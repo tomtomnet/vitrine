@@ -677,10 +677,152 @@ private:
         const QString got = h.answer(request);
         h.closeInput();
         h.finished();
-        if (!writes().isEmpty() || stateFiles() != QStringList({"lock"})) {
-            return "changed: " + writes().join("; ") + " / " + stateFiles().join("; ");
+        if (!writes().isEmpty() || !udev().isEmpty() || stateFiles() != QStringList({"lock"})) {
+            return "changed: " + writes().join("; ") + " / " + udev().join("; ") + " / " +
+                   stateFiles().join("; ");
         }
         return got;
+    }
+
+    /* udev's side of the journal: rules files put and removed, reloads */
+    QStringList udev() const { return journal().filter(QRegularExpression("^(rules|udevadm) ")); }
+    QString asideFile() const { return path("/etc/udev/rules.d/70-vitrine-usb-aside.rules"); }
+    QString runRules(qint64 pid) const
+    {
+        return QString("/run/udev/rules.d/60-vitrine-usb-%1.rules").arg(pid);
+    }
+    /* what the rules folders hold (temporary files included) */
+    QStringList rulesFiles(const QString &dir) const
+    {
+        return QDir(path(dir)).entryList(QDir::Files | QDir::System | QDir::Hidden);
+    }
+    static QByteArray asideLine(const QByteArray &id)
+    {
+        return "SUBSYSTEM==\"usb\", ENV{DEVTYPE}==\"usb_device\", ATTR{idVendor}==\"" + id.left(4) +
+               "\", ATTR{idProduct}==\"" + id.mid(5) + "\", TAG+=\"uaccess\"\n";
+    }
+    static QByteArray aside(const QList<QByteArray> &ids)
+    {
+        QByteArray text = "# Written by vitrine-helper (usb-aside): USB devices set aside for virtual "
+                          "machines, their\n# nodes open to the user at the desktop at each plug.  "
+                          "vitrine's USB settings change it.\n";
+        for (const QByteArray &id : ids) {
+            text += asideLine(id);
+        }
+        return text;
+    }
+    static QByteArray away(const QList<QByteArray> &ids)
+    {
+        QByteArray text = "# Written by vitrine-helper (usb) while a virtual machine has these USB "
+                          "devices: the desktop\n# keeps away from them.  It goes with the virtual "
+                          "machine.\n";
+        for (const QByteArray &id : ids) {
+            text += "SUBSYSTEMS==\"usb\", ATTRS{idVendor}==\"" + id.left(4) +
+                    "\", ATTRS{idProduct}==\"" + id.mid(5) +
+                    "\", ENV{UDISKS_IGNORE}=\"1\", ENV{ACP_IGNORE}=\"1\", ENV{PULSE_IGNORE}=\"1\", "
+                    "ENV{LIBINPUT_IGNORE_DEVICE}=\"1\", ENV{ID_MM_DEVICE_IGNORE}=\"1\", "
+                    "ENV{ID_MTP_DEVICE}=\"\", ENV{ID_GPHOTO2}=\"\", ENV{MTP_NO_PROBE}=\"1\"\n";
+        }
+        return text;
+    }
+    /* A file's permission bits */
+    static int modeOf(const QString &file)
+    {
+        struct stat st;
+        return ::lstat(QFile::encodeName(file).constData(), &st) == 0 ? int(st.st_mode & 07777) : -1;
+    }
+    /* A device folder of the fake sysfs: its uevent */
+    void sysDevice(const QString &dir) const { writeFile(dir + "/uevent", ""); }
+    /* A USB device's folder (@name on the bus, its IDs), and the bus's link to it */
+    void usbDevice(const QString &dir, const QString &name, const QByteArray &id) const
+    {
+        writeFile(dir + "/uevent", "DEVTYPE=usb_device\n");
+        writeFile(dir + "/idVendor", id.left(4) + '\n');
+        writeFile(dir + "/idProduct", id.mid(5) + '\n');
+        QDir().mkpath(dir + "/power");
+        QDir().mkpath(path("/sys/bus/usb/devices"));
+        QFile::link(dir, path("/sys/bus/usb/devices/" + name));
+    }
+    /*
+     * The fake USB bus, as sysfs has it: under one controller, a USB stick
+     * 0781:5567 at 2-1 (its interface, its SCSI host, target and disk sdb
+     * with a partition) and another one at 2-2; under another, a headset
+     * 046d:0a87 at 3-1.4 behind a hub 05e3:0610 at 3-1 (its sound card, and
+     * an input device for its buttons); the root hubs usb2 and usb3; links
+     * that a walk must not follow (subsystem, driver, port: one to the
+     * headset); udev's folders /etc/udev and /run/udev
+     */
+    void usbTree()
+    {
+        const QString usb2 = path("/sys/devices/pci0000:00/0000:00:14.0/usb2");
+        const QString usb3 = path("/sys/devices/pci0000:00/0000:00:08.1/usb3");
+        usbDevice(usb2, "usb2", "1d6b:0003");
+        const QString stick = usb2 + "/2-1";
+        usbDevice(stick, "2-1", "0781:5567");
+        sysDevice(stick + "/2-1:1.0");
+        QFile::link(stick + "/2-1:1.0", path("/sys/bus/usb/devices/2-1:1.0"));
+        const QString scsi = stick + "/2-1:1.0/host3/target3:0:0/3:0:0:0";
+        sysDevice(stick + "/2-1:1.0/host3");
+        sysDevice(stick + "/2-1:1.0/host3/target3:0:0");
+        sysDevice(scsi);
+        sysDevice(scsi + "/block/sdb");
+        sysDevice(scsi + "/block/sdb/sdb1");
+        QDir().mkpath(scsi + "/block/sdb/queue");
+        usbDevice(usb2 + "/2-2", "2-2", "0781:5567");
+        usbDevice(usb3, "usb3", "1d6b:0002");
+        usbDevice(usb3 + "/3-1", "3-1", "05e3:0610");
+        const QString headset = usb3 + "/3-1/3-1.4";
+        usbDevice(headset, "3-1.4", "046d:0a87");
+        sysDevice(headset + "/3-1.4:1.0");
+        sysDevice(headset + "/3-1.4:1.0/sound/card2");
+        sysDevice(headset + "/3-1.4:1.0/sound/card2/controlC2");
+        sysDevice(headset + "/3-1.4:1.0/sound/card2/pcmC2D0p");
+        sysDevice(headset + "/3-1.4:1.3");
+        sysDevice(headset + "/3-1.4:1.3/0003:046D:0A87.0001/input/input9");
+        sysDevice(headset + "/3-1.4:1.3/0003:046D:0A87.0001/input/input9/event9");
+        QDir().mkpath(path("/sys/bus/usb/drivers/usb"));
+        QFile::link(path("/sys/bus/usb"), stick + "/subsystem");
+        QFile::link(path("/sys/bus/usb/drivers/usb"), stick + "/driver");
+        QFile::link(headset, stick + "/port");
+        QFile::link(headset, stick + "/2-1:1.0/port");
+        QDir().mkpath(path("/etc/udev"));
+        QDir().mkpath(path("/run/udev"));
+    }
+    /* The change events sent: the devices' folders, from the bus's links */
+    QStringList events() const
+    {
+        QStringList out;
+        for (const QString &w : writes()) {
+            if (w.endsWith("/uevent change") && w.startsWith("/sys/bus/usb/devices/")) {
+                out << w.mid(21, w.size() - 21 - 14);
+            }
+        }
+        return out;
+    }
+    /* the stick at 2-1 and what is under it, the other one at 2-2 */
+    static QStringList stickEvents()
+    {
+        return {"2-1", "2-1/2-1:1.0", "2-1/2-1:1.0/host3", "2-1/2-1:1.0/host3/target3:0:0",
+                "2-1/2-1:1.0/host3/target3:0:0/3:0:0:0",
+                "2-1/2-1:1.0/host3/target3:0:0/3:0:0:0/block/sdb",
+                "2-1/2-1:1.0/host3/target3:0:0/3:0:0:0/block/sdb/sdb1", "2-2"};
+    }
+    static QStringList headsetEvents()
+    {
+        return {"3-1.4", "3-1.4/3-1.4:1.0", "3-1.4/3-1.4:1.0/sound/card2",
+                "3-1.4/3-1.4:1.0/sound/card2/controlC2", "3-1.4/3-1.4:1.0/sound/card2/pcmC2D0p",
+                "3-1.4/3-1.4:1.3", "3-1.4/3-1.4:1.3/0003:046D:0A87.0001/input/input9",
+                "3-1.4/3-1.4:1.3/0003:046D:0A87.0001/input/input9/event9"};
+    }
+    /* @ids set aside, as a devices-bind session does it */
+    void setAside(const QString &ids)
+    {
+        Helper h(m_root, {}, HELPER_FAKE, {"devices-bind"});
+        QVERIFY(h.ready());
+        QCOMPARE(h.answer("usb-aside add " + ids), "ok usb-aside " + ids);
+        h.closeInput();
+        QVERIFY(h.finished());
+        clearJournal();
     }
 
 private slots:
@@ -4706,6 +4848,587 @@ private slots:
         QVERIFY(b.finished());
         QVERIFY(c.finished());
         QCOMPARE(driverOf("0000:6e:00.0"), QString("amdgpu"));
+    }
+
+    /*
+     * usb-aside: a line per device in 70-vitrine-usb-aside.rules (sorted, its
+     * header first), written whole, 0644, then udev's reload and a change
+     * event for each matching device present - the device alone; another
+     * add keeps what is there; remove (devices: no password) takes lines
+     * out, the file goes with the last one
+     */
+    void usbAsideAddAndRemove()
+    {
+        usbTree();
+        {
+            Helper h(m_root, {}, HELPER_FAKE, {"devices-bind"});
+            QVERIFY(h.ready());
+            QCOMPARE(h.answer("usb-aside add 0781:5567"), QString("ok usb-aside 0781:5567"));
+            QCOMPARE(readFile(asideFile()), aside({"0781:5567"}));
+            QCOMPARE(modeOf(asideFile()), 0644);
+            QCOMPARE(modeOf(path("/etc/udev/rules.d")), 0755);
+            QCOMPARE(udev(), QStringList({"rules put /etc/udev/rules.d/70-vitrine-usb-aside.rules",
+                                          "udevadm control --reload"}));
+            /* both sticks, not what is under them */
+            QCOMPARE(events(), QStringList({"2-1", "2-2"}));
+            /* the reload before the events */
+            const QStringList j = journal();
+            QVERIFY(j.indexOf("udevadm control --reload") <
+                    j.indexOf("write /sys/bus/usb/devices/2-1/uevent change"));
+            QVERIFY(!j.filter(QRegularExpression("^log uid \\d+: USB devices 0781:5567 set aside for "
+                                                 "virtual machines$")).isEmpty());
+            clearJournal();
+            QCOMPARE(h.answer("usb-aside add 046d:0a87,05e3:0610"),
+                     QString("ok usb-aside 046d:0a87,05e3:0610"));
+            QCOMPARE(readFile(asideFile()), aside({"046d:0a87", "05e3:0610", "0781:5567"}));
+            QCOMPARE(events(), QStringList({"3-1", "3-1.4"}));
+            /* the same again: nothing written, the events again */
+            clearJournal();
+            QCOMPARE(h.answer("usb-aside add 0781:5567,046d:0a87"),
+                     QString("ok usb-aside 0781:5567,046d:0a87"));
+            QVERIFY(udev().isEmpty());
+            QCOMPARE(events(), QStringList({"2-1", "2-2", "3-1.4"}));
+            h.closeInput();
+            QVERIFY(h.finished());
+        }
+        QCOMPARE(rulesFiles("/etc/udev/rules.d"), QStringList({"70-vitrine-usb-aside.rules"}));
+        clearJournal();
+        Helper h(m_root, {}, HELPER_FAKE, {"devices"});
+        QVERIFY(h.ready());
+        QCOMPARE(h.answer("usb-aside remove 046d:0a87,05e3:0610"),
+                 QString("ok usb-aside 046d:0a87,05e3:0610"));
+        QCOMPARE(readFile(asideFile()), aside({"0781:5567"}));
+        QCOMPARE(udev(), QStringList({"rules put /etc/udev/rules.d/70-vitrine-usb-aside.rules",
+                                      "udevadm control --reload"}));
+        QCOMPARE(events(), QStringList({"3-1", "3-1.4"}));
+        /* one that is not there: nothing written */
+        clearJournal();
+        QCOMPARE(h.answer("usb-aside remove 1234:abcd"), QString("ok usb-aside 1234:abcd"));
+        QVERIFY(udev().isEmpty());
+        QCOMPARE(readFile(asideFile()), aside({"0781:5567"}));
+        /* the last one: the file goes */
+        clearJournal();
+        QCOMPARE(h.answer("usb-aside remove 0781:5567"), QString("ok usb-aside 0781:5567"));
+        QVERIFY(!QFile::exists(asideFile()));
+        QCOMPARE(rulesFiles("/etc/udev/rules.d"), QStringList());
+        QCOMPARE(udev(), QStringList({"rules remove /etc/udev/rules.d/70-vitrine-usb-aside.rules",
+                                      "udevadm control --reload"}));
+        QCOMPARE(events(), QStringList({"2-1", "2-2"}));
+        QVERIFY(!journal().filter(QRegularExpression("^log uid \\d+: USB devices 0781:5567 no longer "
+                                                     "set aside")).isEmpty());
+        /* none left, no folder: nothing to take out */
+        QDir(path("/etc/udev/rules.d")).removeRecursively();
+        clearJournal();
+        QCOMPARE(h.answer("usb-aside remove 0781:5567"), QString("ok usb-aside 0781:5567"));
+        QVERIFY(udev().isEmpty());
+        QVERIFY(!QFile::exists(path("/etc/udev/rules.d")));
+        h.closeInput();
+        QVERIFY(h.finished());
+        QCOMPARE(stateFiles(), QStringList({"lock"}));
+    }
+
+    /* Setting aside wants devices-bind; the tuning session takes neither verb */
+    void usbAsideRefused()
+    {
+        usbTree();
+        QCOMPARE(refusal("usb-aside add 0781:5567", "devices"),
+                 QString("error usb-aside: setting USB devices aside needs vitrine-helper devices-bind"));
+        QVERIFY(!QFile::exists(asideFile()));
+        QCOMPARE(refusal("usb-aside add 0781:5567", "session"),
+                 QString("error usb-aside: USB devices go through vitrine-helper devices or devices-bind"));
+        QCOMPARE(refusal("usb-aside remove 0781:5567", "session"),
+                 QString("error usb-aside: USB devices go through vitrine-helper devices or devices-bind"));
+        QCOMPARE(refusal("usb 0781:5567", "session"),
+                 QString("error usb: USB devices go through vitrine-helper devices or devices-bind"));
+        /* the bus itself, and every device on it */
+        QCOMPARE(refusal("usb-aside add 0781:5567,1d6b:0002"),
+                 QString("error usb-aside 1d6b:0002: a USB root hub: it stays with this computer"));
+        QCOMPARE(refusal("usb-aside add 1d6b:0003"),
+                 QString("error usb-aside 1d6b:0003: a USB root hub: it stays with this computer"));
+        QVERIFY(!QFile::exists(path("/etc/udev/rules.d")));
+    }
+
+    void usbValidation()
+    {
+        usbTree();
+        Helper h(m_root, {}, HELPER_FAKE, {"devices-bind"});
+        QVERIFY(h.ready());
+        QStringList many;
+        for (int i = 0; i < 17; i++) {
+            many << QString("0781:%1").arg(i, 4, 16, QChar('0'));
+        }
+        const QStringList bad{"0781:556",  "0781:55677", "0781-5567", "0781:556G",  "0781:556A",
+                              "781:5567",  "0781:5567,", ",0781:5567", "0781:5567,,046d:0a87",
+                              "0781:5567,0781:5567", "../../x", "0781:5567/", many.join(',')};
+        for (const QString &ids : bad) {
+            QCOMPARE(h.answer("usb-aside add " + ids),
+                     QString("error usb-aside: give the USB devices as vvvv:pppp (lowercase hex), at "
+                             "most 16, separated by commas, none twice"));
+            QCOMPARE(h.answer("usb-aside remove " + ids),
+                     QString("error usb-aside: give the USB devices as vvvv:pppp (lowercase hex), at "
+                             "most 16, separated by commas, none twice"));
+            QCOMPARE(h.answer("usb " + ids),
+                     QString("error usb: give the USB devices as vvvv:pppp (lowercase hex), at most 16, "
+                             "separated by commas, none twice"));
+        }
+        /* sixteen is fine */
+        many.removeLast();
+        QCOMPARE(h.answer("usb-aside remove " + many.join(',')), "ok usb-aside " + many.join(','));
+        QCOMPARE(h.answer("usb-aside put 0781:5567"), QString("error usb-aside: add or remove"));
+        QCOMPARE(h.answer("usb-aside add"), QString("error usb-aside: unknown request"));
+        QCOMPARE(h.answer("usb-aside add 0781:5567 0781:5568"), QString("error usb-aside: unknown request"));
+        QCOMPARE(h.answer("usb"), QString("error usb: unknown request"));
+        QCOMPARE(h.answer("usb 0781:5567 0781:5568"), QString("error usb: unknown request"));
+        h.closeInput();
+        QVERIFY(h.finished());
+        QVERIFY(writes().isEmpty());
+        QVERIFY(udev().isEmpty());
+        QCOMPARE(stateFiles(), QStringList({"lock"}));
+    }
+
+    /*
+     * The aside file is left as it is when vitrine-helper did not write it
+     * all: a link (an administrator's mask), lines of someone else's; and
+     * a folder others may write in is not written in
+     */
+    void usbAsideLeftAsItIs()
+    {
+        usbTree();
+        QDir().mkpath(path("/etc/udev/rules.d"));
+        QVERIFY(QFile::link("/dev/null", asideFile()));
+        QCOMPARE(refusal("usb-aside add 0781:5567"),
+                 QString("error usb-aside: /etc/udev/rules.d/70-vitrine-usb-aside.rules is a link (a "
+                         "mask?): left as it is"));
+        QCOMPARE(refusal("usb-aside remove 0781:5567", "devices"),
+                 QString("error usb-aside: /etc/udev/rules.d/70-vitrine-usb-aside.rules is a link (a "
+                         "mask?): left as it is"));
+        QCOMPARE(QFileInfo(asideFile()).symLinkTarget(), QString("/dev/null"));
+        QFile::remove(asideFile());
+        const QByteArray theirs = aside({"0781:5567"}) + "SUBSYSTEM==\"usb\", MODE=\"0666\"\n";
+        writeFile(asideFile(), theirs);
+        QCOMPARE(refusal("usb-aside add 046d:0a87"),
+                 QString("error usb-aside: /etc/udev/rules.d/70-vitrine-usb-aside.rules has lines "
+                         "vitrine-helper did not write: left as it is"));
+        QCOMPARE(refusal("usb-aside remove 0781:5567", "devices"),
+                 QString("error usb-aside: /etc/udev/rules.d/70-vitrine-usb-aside.rules has lines "
+                         "vitrine-helper did not write: left as it is"));
+        QCOMPARE(readFile(asideFile()), theirs);
+        /* a line of ours with more after it is not one of ours */
+        writeFile(asideFile(), aside({"0781:5567"}).replace("TAG+=\"uaccess\"", "TAG+=\"uaccess\", MODE=\"0666\""));
+        QCOMPARE(refusal("usb-aside add 046d:0a87"),
+                 QString("error usb-aside: /etc/udev/rules.d/70-vitrine-usb-aside.rules has lines "
+                         "vitrine-helper did not write: left as it is"));
+        QFile::remove(asideFile());
+        QVERIFY(QFile::setPermissions(path("/etc/udev/rules.d"),
+                                      QFileDevice::ReadOwner | QFileDevice::WriteOwner | QFileDevice::ExeOwner |
+                                          QFileDevice::ReadGroup | QFileDevice::WriteGroup |
+                                          QFileDevice::ExeGroup | QFileDevice::ReadOther |
+                                          QFileDevice::ExeOther));
+        QCOMPARE(refusal("usb-aside add 0781:5567"),
+                 QString("error usb-aside: /etc/udev/rules.d is not root's alone: left as it is"));
+        QVERIFY(!QFile::exists(asideFile()));
+        /* no udev at all */
+        QDir(path("/etc/udev")).removeRecursively();
+        QCOMPARE(refusal("usb-aside add 0781:5567"),
+                 QString("error usb-aside: cannot open /etc/udev/rules.d: No such file or directory"));
+    }
+
+    /*
+     * usb: the desktop keeps away from devices set aside while the VM has
+     * them - a runtime file of the helper's (recorded first), udev's reload,
+     * change events for each device and what is under it - claimed by the
+     * next watch, gone with that QEMU, the events again
+     */
+    void usbKeptAwayWhileTheVmRuns()
+    {
+        usbTree();
+        setAside("0781:5567,046d:0a87");
+        FakeQemu qemu;
+        Helper h(m_root, {"VITRINE_HELPER_TEST_VFIO_EXPIRY_MS=500"}, HELPER_FAKE, {"devices"});
+        QVERIFY(h.ready());
+        const QString file = runRules(h.pid());
+        QCOMPARE(h.answer("usb 0781:5567"), QString("ok usb 0781:5567"));
+        QCOMPARE(readFile(path(file)), away({"0781:5567"}));
+        QCOMPARE(modeOf(path(file)), 0644);
+        QCOMPARE(modeOf(path("/run/udev/rules.d")), 0755);
+        QCOMPARE(rulesFiles("/run/udev/rules.d"), QStringList({QFileInfo(file).fileName()}));
+        QCOMPARE(udev(), QStringList({"rules put " + file, "udevadm control --reload"}));
+        /* each stick and what is under it - not through the links (the headset) */
+        QCOMPARE(events(), stickEvents());
+        const QString key = QString("usb-%1").arg(h.pid());
+        QCOMPARE(readFile(path("/run/vitrine-helper/" + key + ".state")), QByteArray("ids 0781:5567\n"));
+        QVERIFY(!journal().filter(QRegularExpression("^log uid \\d+: the desktop keeps away from USB "
+                                                     "devices 0781:5567 while a VM has them$")).isEmpty());
+        /* the same again: nothing more */
+        clearJournal();
+        QCOMPARE(h.answer("usb 0781:5567"), QString("ok usb 0781:5567"));
+        QVERIFY(journal().isEmpty());
+
+        QCOMPARE(h.answer("watch " + qemu.pidText()), "ok watch " + qemu.pidText());
+        /* the record says which QEMU took it (after the answer) */
+        QTRY_VERIFY(readFile(path("/run/vitrine-helper/" + key + ".state"))
+                        .startsWith(QString("ids 0781:5567\nqemu %1 ").arg(qemu.pid()).toLatin1()));
+        /* no expiry once taken */
+        QTest::qWait(800);
+        QVERIFY(QFile::exists(path(file)));
+        QVERIFY(journal().isEmpty());
+
+        clearJournal();
+        const QString pid = qemu.pidText();
+        qemu.stop();
+        QCOMPARE(h.waitFor("exited"), "exited " + pid);
+        QCOMPARE(h.line(), QString("restored usb 0781:5567"));
+        QCOMPARE(h.waitFor("bye"), QString("bye"));
+        QVERIFY(h.finished());
+        QVERIFY(!QFile::exists(path(file)));
+        QCOMPARE(rulesFiles("/run/udev/rules.d"), QStringList());
+        QCOMPARE(udev(), QStringList({"rules remove " + file, "udevadm control --reload"}));
+        QCOMPARE(events(), stickEvents());
+        QCOMPARE(stateFiles(), QStringList({"lock"}));
+        /* the devices stay set aside */
+        QCOMPARE(readFile(asideFile()), aside({"046d:0a87", "0781:5567"}));
+    }
+
+    /* Only devices set aside, and nothing written for one that is not */
+    void usbNotSetAside()
+    {
+        usbTree();
+        const QString notAside("error usb 046d:0a87: not set aside: set it aside first (usb-aside add, "
+                               "vitrine-helper devices-bind)");
+        QCOMPARE(refusal("usb 046d:0a87", "devices"), notAside);
+        setAside("0781:5567");
+        QCOMPARE(refusal("usb 0781:5567,046d:0a87", "devices"), notAside);
+        /* in a comment, or someone else's line, it is not */
+        writeFile(asideFile(), aside({"0781:5567"}) + "# " + asideLine("046d:0a87") +
+                                   "SUBSYSTEM==\"usb\", ATTR{idVendor}==\"046d\", "
+                                   "ATTR{idProduct}==\"0a87\", TAG+=\"uaccess\"\n");
+        QCOMPARE(refusal("usb 046d:0a87", "devices-bind"), notAside);
+        /* a masked file sets nothing aside */
+        QFile::remove(asideFile());
+        QVERIFY(QFile::link("/dev/null", asideFile()));
+        QCOMPARE(refusal("usb 0781:5567", "devices"),
+                 QString("error usb 0781:5567: not set aside: set it aside first (usb-aside add, "
+                         "vitrine-helper devices-bind)"));
+        QCOMPARE(refusal("usb 1d6b:0003", "devices"),
+                 QString("error usb 1d6b:0003: a USB root hub: it stays with this computer"));
+        QVERIFY(!QFile::exists(path("/run/udev/rules.d")));
+    }
+
+    /* A second usb replaces the first's devices: the events for both */
+    void usbReplaced()
+    {
+        usbTree();
+        setAside("0781:5567,046d:0a87");
+        Helper h(m_root, {}, HELPER_FAKE, {"devices"});
+        QVERIFY(h.ready());
+        const QString file = runRules(h.pid());
+        QCOMPARE(h.answer("usb 0781:5567"), QString("ok usb 0781:5567"));
+        FakeQemu qemu;
+        QCOMPARE(h.answer("watch " + qemu.pidText()), "ok watch " + qemu.pidText());
+        clearJournal();
+        QCOMPARE(h.answer("usb 046d:0a87"), QString("ok usb 046d:0a87"));
+        QCOMPARE(readFile(path(file)), away({"046d:0a87"}));
+        QCOMPARE(udev(), QStringList({"rules put " + file, "udevadm control --reload"}));
+        QCOMPARE(events(), stickEvents() + headsetEvents());
+        const QByteArray record = readFile(path(QString("/run/vitrine-helper/usb-%1.state").arg(h.pid())));
+        /* still that QEMU's */
+        QVERIFY(record.startsWith(QString("ids 046d:0a87\nqemu %1 ").arg(qemu.pid()).toLatin1()));
+        clearJournal();
+        QCOMPARE(h.answer("usb 046d:0a87,0781:5567"), QString("ok usb 046d:0a87,0781:5567"));
+        QCOMPARE(readFile(path(file)), away({"046d:0a87", "0781:5567"}));
+        clearJournal();
+        h.ask("release");
+        QVERIFY(h.finished());
+        QVERIFY(h.all().contains("restored usb 046d:0a87,0781:5567"));
+        QCOMPARE(events(), stickEvents() + headsetEvents());
+        QVERIFY(!QFile::exists(path(file)));
+        QCOMPARE(stateFiles(), QStringList({"lock"}));
+    }
+
+    /* No QEMU came in time: back to the desktop, the helper waits on */
+    void usbNoQemuCame()
+    {
+        usbTree();
+        setAside("0781:5567");
+        Helper h(m_root, {"VITRINE_HELPER_TEST_VFIO_EXPIRY_MS=300"}, HELPER_FAKE, {"devices"});
+        QVERIFY(h.ready());
+        QCOMPARE(h.answer("usb 0781:5567"), QString("ok usb 0781:5567"));
+        clearJournal();
+        QCOMPARE(h.waitFor("restored usb"), QString("restored usb 0781:5567 (no QEMU came for it)"));
+        QVERIFY(h.running());
+        QVERIFY(!QFile::exists(path(runRules(h.pid()))));
+        QCOMPARE(udev(), QStringList({"rules remove " + runRules(h.pid()), "udevadm control --reload"}));
+        QCOMPARE(events(), stickEvents());
+        QCOMPARE(stateFiles(), QStringList({"lock"}));
+        /* a QEMU later takes nothing back */
+        FakeQemu qemu;
+        QCOMPARE(h.answer("watch " + qemu.pidText()), "ok watch " + qemu.pidText());
+        QVERIFY(!QFile::exists(path(runRules(h.pid()))));
+        h.closeInput();
+        qemu.stop();
+        QVERIFY(h.finished());
+    }
+
+    /* The VM's start failed before its QEMU (or vitrine went): its input ends */
+    void usbInputClosed()
+    {
+        usbTree();
+        setAside("046d:0a87");
+        Helper h(m_root, {}, HELPER_FAKE, {"devices-bind"});
+        QVERIFY(h.ready());
+        const QString file = runRules(h.pid());
+        QCOMPARE(h.answer("usb 046d:0a87"), QString("ok usb 046d:0a87"));
+        QCOMPARE(events(), headsetEvents());
+        clearJournal();
+        h.closeInput();
+        QVERIFY(h.finished());
+        const QStringList all = h.all();
+        QVERIFY2(all.contains("restored usb 046d:0a87"), qPrintable(all.join('\n')));
+        QCOMPARE(all.last(), QString("bye"));
+        QVERIFY(!QFile::exists(path(file)));
+        QCOMPARE(udev(), QStringList({"rules remove " + file, "udevadm control --reload"}));
+        QCOMPARE(events(), headsetEvents());
+        QCOMPARE(stateFiles(), QStringList({"lock"}));
+    }
+
+    /* PCI and USB devices in one session: the watch takes both, its QEMU's end gives both back */
+    void usbWithVfio()
+    {
+        pciTree();
+        usbTree();
+        setAside("0781:5567");
+        Helper h(m_root, {}, HELPER_FAKE, {"devices-bind"});
+        QVERIFY(h.ready());
+        const QString file = runRules(h.pid());
+        QVERIFY(h.answer("vfio 0000:6e:00.0,0000:6e:00.1 3072").startsWith("ok vfio "));
+        QCOMPARE(h.answer("usb 0781:5567"), QString("ok usb 0781:5567"));
+        QVERIFY(QFile::exists(path(file)));
+        FakeQemu qemu;
+        QCOMPARE(h.answer("watch " + qemu.pidText()), "ok watch " + qemu.pidText());
+        QCOMPARE(h.line(), QString("restored memlock %1: 8 MiB").arg(getpid()));
+        const QString pid = qemu.pidText();
+        qemu.stop();
+        QCOMPARE(h.waitFor("exited"), "exited " + pid);
+        QVERIFY(h.line().startsWith("restored vfio 21: "));
+        QCOMPARE(h.line(), QString("restored usb 0781:5567"));
+        QCOMPARE(h.line(), QString("bye"));
+        QVERIFY(h.finished());
+        QCOMPARE(driverOf("0000:6e:00.0"), QString("amdgpu"));
+        QVERIFY(!QFile::exists(path(file)));
+        QCOMPARE(stateFiles(), QStringList({"lock"}));
+    }
+
+    /* udev that does not answer: a warning, not a failure */
+    void usbReloadFails()
+    {
+        usbTree();
+        writeFile(path("/udevadm.refuse"), "");
+        const QString warning(" warning: udev did not read its rules again (Failed to send reload "
+                              "request: Connection refused)");
+        Helper h(m_root, {}, HELPER_FAKE, {"devices-bind"});
+        QVERIFY(h.ready());
+        const QString file = runRules(h.pid());
+        QCOMPARE(h.answer("usb-aside add 0781:5567"), "ok usb-aside 0781:5567" + warning);
+        QCOMPARE(readFile(asideFile()), aside({"0781:5567"}));
+        QCOMPARE(h.answer("usb 0781:5567"), "ok usb 0781:5567" + warning);
+        QCOMPARE(readFile(path(file)), away({"0781:5567"}));
+        QCOMPARE(events(), QStringList({"2-1", "2-2"}) + stickEvents());
+        /* a change event refused: said too */
+        QFile::remove(path("/udevadm.refuse"));
+        QFile::remove(path("/sys/bus/usb/devices/2-2/uevent"));
+        QVERIFY(QDir().mkpath(path("/sys/bus/usb/devices/2-2/uevent")));
+        h.closeInput();
+        QVERIFY(h.finished());
+        QVERIFY2(h.all().contains("restored usb 0781:5567 warning: 1 change event not sent (2-2: Is a "
+                                  "directory)"), qPrintable(h.all().join('\n')));
+        QVERIFY(!QFile::exists(path(file)));
+        QCOMPARE(stateFiles(), QStringList({"lock"}));
+    }
+
+    /* A rules file that cannot be written: refused, nothing left behind */
+    void usbWriteFails()
+    {
+        usbTree();
+        setAside("0781:5567");
+        writeFile(path("/rules.refuse"), "");
+        Helper h(m_root, {}, HELPER_FAKE, {"devices-bind"});
+        QVERIFY(h.ready());
+        const qint64 pid = h.pid();
+        QCOMPARE(h.answer("usb 0781:5567"),
+                 QString("error usb: cannot write %1: Read-only file system").arg(runRules(pid)));
+        QCOMPARE(h.answer("usb-aside add 046d:0a87"),
+                 QString("error usb-aside: cannot write /etc/udev/rules.d/70-vitrine-usb-aside.rules: "
+                         "Read-only file system"));
+        QCOMPARE(readFile(asideFile()), aside({"0781:5567"}));
+        QCOMPARE(rulesFiles("/etc/udev/rules.d"), QStringList({"70-vitrine-usb-aside.rules"}));
+        QCOMPARE(rulesFiles("/run/udev/rules.d"), QStringList());
+        QVERIFY(events().isEmpty());
+        QVERIFY(!journal().contains("udevadm control --reload"));
+        QCOMPARE(stateFiles(), QStringList({"lock"}));
+        /* a removal refused, at the end: the record stays for a later helper */
+        QFile::remove(path("/rules.refuse"));
+        QCOMPARE(h.answer("usb 0781:5567"), QString("ok usb 0781:5567"));
+        writeFile(path("/rules.refuse"), "");
+        h.closeInput();
+        QVERIFY(h.finished());
+        QVERIFY2(h.all().contains(QString("left usb: cannot remove %1: Read-only file system")
+                                      .arg(runRules(pid))),
+                 qPrintable(h.all().join('\n')));
+        QVERIFY(QFile::exists(path(runRules(pid))));
+        QVERIFY(stateExists(QString("usb-%1").arg(pid)));
+        QFile::remove(path("/rules.refuse"));
+        Helper next(m_root);
+        QVERIFY(next.ready());
+        QVERIFY(!QFile::exists(path(runRules(pid))));
+        QCOMPARE(stateFiles(), QStringList({"lock"}));
+        next.closeInput();
+        QVERIFY(next.finished());
+    }
+
+    /*
+     * Killed anywhere in the way, or while its VM runs: the next helper, of
+     * any verb, removes the runtime file (and what a write of it left),
+     * tells udev, and the devices get their change events again
+     */
+    void usbKilledHalfWay_data()
+    {
+        QTest::addColumn<QString>("kill");
+        QTest::addColumn<QString>("verb");
+        QTest::newRow("before the file") << "VITRINE_HELPER_TEST_KILL_BEFORE=60-vitrine-usb" << "devices";
+        QTest::newRow("before the reload") << "VITRINE_HELPER_TEST_KILL_BEFORE=udevadm" << "session";
+        /* the file, the reload, the change events */
+        for (int at = 1; at <= 2 + 8; at++) {
+            QTest::addRow("write %d", at) << QString("VITRINE_HELPER_TEST_KILL_AT=%1").arg(at)
+                                          << (at % 2 ? "session" : "devices-bind");
+        }
+        QTest::newRow("while its VM runs") << "" << "session";
+    }
+
+    void usbKilledHalfWay()
+    {
+        QFETCH(QString, kill);
+        QFETCH(QString, verb);
+        usbTree();
+        setAside("0781:5567");
+        FakeQemu qemu;
+        qint64 dead;
+        {
+            Helper h(m_root, kill.isEmpty() ? QStringList() : QStringList{kill}, HELPER_FAKE, {"devices"});
+            QVERIFY(h.ready());
+            dead = h.pid();
+            if (kill.isEmpty()) {
+                QCOMPARE(h.answer("usb 0781:5567"), QString("ok usb 0781:5567"));
+                QCOMPARE(h.answer("watch " + qemu.pidText()), "ok watch " + qemu.pidText());
+                QTRY_VERIFY(readFile(path(QString("/run/vitrine-helper/usb-%1.state").arg(dead)))
+                                .contains("\nqemu "));
+                h.kill();
+            } else {
+                h.ask("usb 0781:5567");
+                QVERIFY(h.finished());
+                QVERIFY(journal().filter(QRegularExpression("^killed")).size() == 1);
+            }
+        }
+        QVERIFY(stateExists(QString("usb-%1").arg(dead)));
+        clearJournal();
+        Helper next(m_root, {}, HELPER_FAKE, {verb});
+        QStringList before;
+        for (QString l = next.line(); !l.isNull() && !l.startsWith("ready"); l = next.line()) {
+            before << l;
+        }
+        QVERIFY2(before.contains("restored usb 0781:5567"), qPrintable(before.join('\n')));
+        QVERIFY(!QFile::exists(path(runRules(dead))));
+        QCOMPARE(rulesFiles("/run/udev/rules.d"), QStringList());
+        QVERIFY(journal().contains("udevadm control --reload"));
+        QCOMPARE(events(), stickEvents());
+        QCOMPARE(stateFiles(), QStringList({"lock"}));
+        /* the devices stay set aside */
+        QCOMPARE(readFile(asideFile()), aside({"0781:5567"}));
+        next.closeInput();
+        QVERIFY(next.finished());
+    }
+
+    /* The devices go with the QEMU that took them, while the helper watches another */
+    void usbGoesWithItsQemu()
+    {
+        usbTree();
+        setAside("0781:5567");
+        FakeQemu first, second;
+        Helper h(m_root, {}, HELPER_FAKE, {"devices"});
+        QVERIFY(h.ready());
+        const QString file = runRules(h.pid());
+        QCOMPARE(h.answer("usb 0781:5567"), QString("ok usb 0781:5567"));
+        QCOMPARE(h.answer("watch " + first.pidText()), "ok watch " + first.pidText());
+        QCOMPARE(h.answer("watch " + second.pidText()), "ok watch " + second.pidText());
+        /* another QEMU's end changes nothing */
+        QString pid = second.pidText();
+        second.stop();
+        QCOMPARE(h.waitFor("exited"), "exited " + pid);
+        QCOMPARE(h.answer("usb 0781:5567"), QString("ok usb 0781:5567"));
+        QVERIFY(QFile::exists(path(file)));
+        /* the first one's end, another one still watched: the devices go, the helper stays */
+        FakeQemu third;
+        QCOMPARE(h.answer("watch " + third.pidText()), "ok watch " + third.pidText());
+        pid = first.pidText();
+        first.stop();
+        QCOMPARE(h.waitFor("exited"), "exited " + pid);
+        QCOMPARE(h.line(), QString("restored usb 0781:5567"));
+        QVERIFY(!QFile::exists(path(file)));
+        QVERIFY(h.running());
+        QCOMPARE(stateFiles(), QStringList({"lock"}));
+        pid = third.pidText();
+        third.stop();
+        QCOMPARE(h.waitFor("exited"), "exited " + pid);
+        QCOMPARE(h.line(), QString("bye"));
+        QVERIFY(h.finished());
+    }
+
+    /* More dead helpers' files than one recovery takes: the rest for the next helper */
+    void usbManyDeadHelpers()
+    {
+        usbTree();
+        setAside("0781:5567");
+        QDir().mkpath(path("/run/vitrine-helper"));
+        QFile::setPermissions(path("/run/vitrine-helper"),
+                              QFileDevice::ReadOwner | QFileDevice::WriteOwner | QFileDevice::ExeOwner);
+        for (int pid = 900001; pid <= 900009; pid++) {
+            writeFile(path(QString("/run/vitrine-helper/usb-%1.state").arg(pid)), "ids 0781:5567\n");
+            writeFile(path(runRules(pid)), away({"0781:5567"}));
+        }
+        Helper h(m_root, {}, HELPER_FAKE, {"devices"});
+        QStringList before;
+        for (QString l = h.line(); !l.isNull() && !l.startsWith("ready"); l = h.line()) {
+            before << l;
+        }
+        QCOMPARE(before, QStringList(8, "restored usb 0781:5567"));
+        QCOMPARE(rulesFiles("/run/udev/rules.d").size(), 1);
+        QCOMPARE(stateFiles().filter(".state").size(), 1);
+        h.closeInput();
+        QVERIFY(h.finished());
+        Helper next(m_root, {}, HELPER_FAKE, {"devices"});
+        QCOMPARE(next.line(), QString("restored usb 0781:5567"));
+        QVERIFY(next.ready());
+        QCOMPARE(rulesFiles("/run/udev/rules.d"), QStringList());
+        QCOMPARE(stateFiles(), QStringList({"lock"}));
+        next.closeInput();
+        QVERIFY(next.finished());
+    }
+
+    /* Killed before the aside file is in place: the next write takes its leftover */
+    void usbAsideKilledHalfWay()
+    {
+        usbTree();
+        {
+            Helper h(m_root, {"VITRINE_HELPER_TEST_KILL_BEFORE=70-vitrine-usb-aside"}, HELPER_FAKE,
+                     {"devices-bind"});
+            QVERIFY(h.ready());
+            h.ask("usb-aside add 0781:5567");
+            QVERIFY(h.finished());
+        }
+        QCOMPARE(rulesFiles("/etc/udev/rules.d"), QStringList({"70-vitrine-usb-aside.rules.new"}));
+        QCOMPARE(stateFiles(), QStringList({"lock"}));
+        setAside("046d:0a87");
+        QCOMPARE(rulesFiles("/etc/udev/rules.d"), QStringList({"70-vitrine-usb-aside.rules"}));
+        QCOMPARE(readFile(asideFile()), aside({"046d:0a87"}));
     }
 
     void polkitFiles()
