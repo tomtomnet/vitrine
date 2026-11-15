@@ -228,6 +228,16 @@ files it changes, and the guest packages compile through ccache.
    each guest that has flatpak. `guest/build-flatpak.sh` does the same by
    hand.
 
+   The guest's clock follows the host's: chronyd takes KVM's PTP clock
+   (`ptp_kvm`) as its preferred source, keeps Fedora's NTP servers for a VM
+   without it, and corrects at most 0.1 % of the time's pace, stepping an
+   offset over 0.1 s. With Fedora's settings a guest that booted a fraction
+   of a second behind ran up to 8 % fast for 10 to 20 seconds, and the
+   nested desktop skipped frames meanwhile. `/etc/chrony.conf` stays as it
+   is; an empty
+   `/etc/systemd/system/chronyd.service.d/vitrine-guest-tools.conf` turns
+   this off.
+
    A VM's Console and Details tabs offer them only once its guest has said
    it runs Fedora 44 or 45: QEMU's guest agent tells at each boot (Fedora
    installs qemu-guest-agent in VMs), the tools' agent once they are in.

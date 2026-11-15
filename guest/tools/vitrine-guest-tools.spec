@@ -2,7 +2,7 @@
 # exact version, and dnf takes an installed one of the same version as done.
 Name:           vitrine-guest-tools
 Version:        0.1.0
-Release:        46%{?dist}
+Release:        47%{?dist}
 Summary:        vitrine guest tools: patched virtio-gpu driver, settings and agent
 
 # the driver's sources (dkms/vendor, dkms/patches) are the kernel's: MIT
@@ -46,7 +46,9 @@ nested desktop's session (a boot with the VM's Nested desktop box logs
 Plasma into a window of the host's desktop, with KWin's settings for the
 host's GPU), and the vitrine agent, which tells vitrine the state of the
 guest tools and installs their updates; and vitrine's Mesa for Flatpak apps
-in place of Flathub's GL extension, for the runtimes installed later too.
+in place of Flathub's GL extension, for the runtimes installed later too;
+and the guest's clock on the host's (KVM's PTP clock), its corrections
+capped, so that the nested desktop keeps its frame timing after a boot.
 vitrine's Mesa, KWin with the KWayland it is built against, KPipeWire, the
 nested desktop's proxy, Qt Base, KSvg, Kirigami, Mutter and the Mesa for
 Flatpak apps come from the same tools medium.
@@ -74,6 +76,9 @@ done
 # trigger after its transactions, for the runtimes installed later
 install -Dm 0755 flatpak/vitrine-gl.trigger %{buildroot}%{_datadir}/flatpak/triggers/vitrine-gl.trigger
 install -Dm 0644 systemd/80-vitrine-guest-tools.preset %{buildroot}%{_presetdir}/80-vitrine-guest-tools.preset
+# the guest's clock: chronyd on the host's clock, its corrections capped
+# (libexec/guest-clock, run before chronyd)
+install -Dm 0644 systemd/chronyd.service.d/vitrine-guest-tools.conf %{buildroot}%{_unitdir}/chronyd.service.d/vitrine-guest-tools.conf
 # the nested desktop (nested/: the research's session, nested/README.md): the
 # session, its settings, its entry for the login screen (found only in a
 # nested-desktop boot, vitrine-nested-boot.service), plasmalogin's and SDDM's
@@ -139,9 +144,15 @@ fi
 if [ $1 -eq 0 ]; then
 	# the stock driver, without the options, from every kernel's initramfs
 	dracut -f --regenerate-all > /dev/null 2>&1 || :
+	# chronyd as Fedora sets it up again
+	systemctl daemon-reload > /dev/null 2>&1 || :
+	systemctl try-restart chronyd.service > /dev/null 2>&1 || :
 fi
 
 %posttrans
+# chronyd with the guest's clock (its drop-in) from now on, not at the next boot
+systemctl daemon-reload > /dev/null 2>&1 || :
+systemctl try-restart chronyd.service > /dev/null 2>&1 || :
 # the driver for every kernel with headers, now that the whole transaction
 # (kernel-devel included) is in.  Under the installer, its own step builds
 # it, which says so kernel by kernel: here, in dnf's transaction, the
@@ -169,6 +180,8 @@ fi
 %{_unitdir}/vitrine-nested-boot.service
 %{_unitdir}/vitrine-flatpak-gl.path
 %{_unitdir}/vitrine-flatpak-gl.service
+%dir %{_unitdir}/chronyd.service.d
+%{_unitdir}/chronyd.service.d/vitrine-guest-tools.conf
 %{_datadir}/flatpak/triggers/vitrine-gl.trigger
 %dir %{_unitdir}/plasmalogin.service.d
 %{_unitdir}/plasmalogin.service.d/vitrine-nested.conf
@@ -191,6 +204,20 @@ fi
 %dir %{_sharedstatedir}/%{name}
 
 %changelog
+* Sun Nov 15 2026 vitrine <noreply@anthropic.com> - 0.1.0-47
+- the guest's clock (libexec/guest-clock, chronyd.service's drop-in):
+  chronyd takes the host's clock through KVM's PTP clock (ptp_kvm, loaded
+  before chronyd) as its preferred source, Fedora's NTP sources staying for
+  a VM without it, and corrects at 1000 ppm at most (maxslewrate 1000),
+  stepping an offset over 0.1 s (makestep 0.1 -1).  chrony slewed a boot's
+  offset under a second at up to 83333 ppm: the guest's monotonic clock ran
+  8 % fast for 10-20 s, the nested desktop's proxy lost the host's
+  presentation times and the nested KWin skipped frames (the research,
+  2026-11-15).  /etc/chrony.conf is left as it is (included); an empty
+  /etc/systemd/system/chronyd.service.d/vitrine-guest-tools.conf turns it off
+- nested.conf's notes: the host's commit deadline at presentation-time
+  version 4 (host set h681zz)
+
 * Sat Nov 14 2026 vitrine <noreply@anthropic.com> - 0.1.0-46
 - vitrine's Mesa for Flatpak apps: the medium carries freedesktop-sdk's
   GL extension (org.freedesktop.Platform.GL.default, the one Flathub

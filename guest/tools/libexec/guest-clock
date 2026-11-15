@@ -1,0 +1,73 @@
+#!/bin/bash
+# SPDX-License-Identifier: GPL-2.0-or-later
+# The guest's clock (vitrine guest tools @VERSION@), run by chronyd.service
+# before chronyd (systemd/chronyd.service.d/vitrine-guest-tools.conf).
+#
+# chrony slews an offset under a second at up to 83333 ppm by default: after a
+# boot that starts a little behind, the guest's CLOCK_MONOTONIC runs up to 8 %
+# fast for 10-20 s, the nested desktop's proxy - which follows the host's
+# presentation times at 1000 ppm - loses them, and the nested KWin skips
+# frames (the research, 2026-11-15).  So chronyd gets, after the
+# configuration it would read anyway (/etc/chrony.conf, or OPTIONS' -f):
+# - the host's clock as its preferred source when the VM has KVM's PTP clock
+#   (ptp_kvm, which nothing else loads), unless that configuration has a
+#   reference clock of its own; its NTP sources stay, for a VM without it;
+# - corrections at 1000 ppm at most (maxslewrate 1000), and a step for an
+#   offset over 0.1 s at any time (makestep 0.1 -1): a step moves
+#   CLOCK_REALTIME only, not the monotonic clock frames are timed with.
+# They go to chronyd as directives on its command line, through
+# $VITRINE_CLOCK_RUN/guest-clock.env (EnvironmentFile): chronyd reads no
+# configuration file then, hence the include.  /etc/chrony.conf is left as
+# it is; an empty /etc/systemd/system/chronyd.service.d/vitrine-guest-tools.conf
+# turns all this off.
+set -u
+run=${VITRINE_CLOCK_RUN:-/run/vitrine-guest-tools}
+sysconfig=${VITRINE_CHRONY_SYSCONFIG:-/etc/sysconfig/chronyd}
+ptp=${VITRINE_PTP_CLASS:-/sys/class/ptp}
+dev=${VITRINE_DEV:-/dev}
+modprobe=${VITRINE_MODPROBE:-modprobe}
+
+# chronyd's own configuration: OPTIONS' -f FILE, else the compiled-in one
+conf=${VITRINE_CHRONY_CONF:-/etc/chrony.conf}
+options=$(sed -n 's/^[[:space:]]*OPTIONS=//p' "$sysconfig" 2> /dev/null | tail -n 1)
+options=${options#[\"\']}
+options=${options%[\"\']}
+read -r -a words <<< "$options"
+for ((i = 0; i < ${#words[@]}; i++)); do
+	case ${words[i]} in
+	-f) [ $((i + 1)) -lt ${#words[@]} ] && conf=${words[i + 1]} ;;
+	esac
+done
+
+# KVM's PTP clock, the host's time (an x86 KVM guest with kvmclock)
+"$modprobe" -q ptp_kvm > /dev/null 2>&1 || :
+phc=
+for c in "$ptp"/ptp*/clock_name; do
+	if [ "$(cat "$c" 2> /dev/null)" = "KVM virtual PTP" ]; then
+		phc=$dev/$(basename "$(dirname "$c")")
+		break
+	fi
+done
+[ -n "$phc" ] && [ ! -e "$phc" ] && phc=
+
+ref=
+if [ -n "$phc" ]; then
+	if grep -Eqs '^[[:space:]]*refclock([[:space:]]|$)' "$conf"; then
+		echo "guest clock: $conf has a reference clock of its own: the host's clock ($phc) not added"
+	else
+		ref="refclock PHC $phc poll 2 dpoll -2 prefer"
+		echo "guest clock: the host's clock through $phc (KVM's PTP clock), corrections at 1000 ppm at most"
+	fi
+else
+	echo "guest clock: no KVM PTP clock: $conf's sources, corrections at 1000 ppm at most"
+fi
+
+mkdir -p "$run" || exit 1
+tmp=$run/guest-clock.env.new
+{
+	echo "# Written by vitrine guest tools (libexec/guest-clock) at chronyd's start"
+	printf 'VITRINE_CLOCK_CONF="include %s"\n' "$conf"
+	printf 'VITRINE_CLOCK_REF="%s"\n' "$ref"
+	echo 'VITRINE_CLOCK_STEP="makestep 0.1 -1"'
+	echo 'VITRINE_CLOCK_SLEW="maxslewrate 1000"'
+} > "$tmp" && mv -f "$tmp" "$run/guest-clock.env"
