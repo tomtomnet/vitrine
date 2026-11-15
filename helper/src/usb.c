@@ -13,8 +13,9 @@
  *   either verb: giving a device back needs no password.
  * - usb: while the VM runs, the host's desktop kept away from those devices
  *   - no automount (udisks), no sound card (PipeWire, PulseAudio), no
- *   input device (libinput), no modem (ModemManager), no phone or camera
- *   (libmtp, libgphoto2, gvfs) - through a runtime rules file of this
+ *   input device (libinput), no modem (ModemManager), no network
+ *   (NetworkManager: a phone's tethering), no phone or camera (libmtp,
+ *   libgphoto2, gvfs) - through a runtime rules file of this
  *   helper's, USB_RUN_DIR/60-vitrine-usb-<pid>.rules, that matches the
  *   device and every device under it (its disks, sound cards, input
  *   devices, ttys).  Only for devices set aside.  Like vfio's groups, it is
@@ -258,7 +259,7 @@ static void away_line(char *out, size_t size, const char *id)
              "SUBSYSTEMS==\"usb\", ATTRS{idVendor}==\"%.4s\", ATTRS{idProduct}==\"%.4s\", "
              "ENV{UDISKS_IGNORE}=\"1\", ENV{ACP_IGNORE}=\"1\", ENV{PULSE_IGNORE}=\"1\", "
              "ENV{LIBINPUT_IGNORE_DEVICE}=\"1\", ENV{ID_MM_DEVICE_IGNORE}=\"1\", "
-             "ENV{ID_MTP_DEVICE}=\"\", ENV{ID_GPHOTO2}=\"\", ENV{MTP_NO_PROBE}=\"1\"",
+             "ENV{ID_MTP_DEVICE}=\"\", ENV{ID_GPHOTO2}=\"\", ENV{MTP_NO_PROBE}=\"1\", ENV{NM_UNMANAGED}=\"1\"",
              id, id + 5);
 }
 

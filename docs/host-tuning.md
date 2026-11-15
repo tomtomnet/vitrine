@@ -178,7 +178,7 @@ for them. It does only this, for the user who started it:
 | `vfio ADDRESSES MIB` (`devices-bind`) | The same, and the devices taken from their drivers for vfio-pci first (`driver_override`, the driver's unbind, vfio-pci's bind, read back; vfio-pci loaded if need be) | Also refused: the GPU the computer started on (`boot_vga`), a GPU with a display connected, a device whose nodes a process has open (but the sound servers on its ALSA nodes: PipeWire, WirePlumber and PulseAudio, by the program they run, `/usr/bin/pipewire` and so on), a disk mounted, swapped on or with holders (dm, md), a network interface that is up, NVIDIA's driver while its nodes are open, platform devices (bridges, SMBus, the IOMMU, timers); the whole group or nothing; all of it recorded before the first change |
 | `usb-aside add IDS` (`devices-bind`) | USB devices set aside for VMs for good: a line each (`TAG+="uaccess"`) in `/etc/udev/rules.d/70-vitrine-usb-aside.rules`, so that their nodes are the desktop user's at each plug; udev's reload, a change event for each one present | Strict IDs (`0781:5567`, lowercase, 16 at most, none twice); no USB root hub; fixed lines, sorted, written whole (a file beside it, synced, renamed), root's, 0644; a link there (a mask) or a line vitrine-helper did not write is left as it is |
 | `usb-aside remove IDS` (`devices`) | Those lines taken out (the file goes with the last one); udev's reload, the change events | The same IDs; nothing else in the file is touched |
-| `usb IDS` (`devices`) | While the VM runs, the desktop kept away from those USB devices and from what is under them (no automount, no sound card, no input device, no modem, no phone or camera mount): `/run/udev/rules.d/60-vitrine-usb-<pid>.rules`, udev's reload, a change event for each device and each one under it | Devices set aside only; recorded before the file; it waits for the next `watch` and goes with that QEMU, or with the helper; a helper of any verb removes what a killed one left |
+| `usb IDS` (`devices`) | While the VM runs, the desktop kept away from those USB devices and from what is under them (no automount, no sound card, no input device, no modem, no network, no phone or camera mount): `/run/udev/rules.d/60-vitrine-usb-<pid>.rules`, udev's reload, a change event for each device and each one under it | Devices set aside only; recorded before the file; it waits for the next `watch` and goes with that QEMU, or with the helper; a helper of any verb removes what a killed one left |
 
 The settings need a watched QEMU, and each value is put back only if it
 still holds what the helper wrote: another tool that changed it since keeps
@@ -345,11 +345,12 @@ the helper does them with udev rules:
 - While the VM runs, the host's desktop keeps away from the device: no
   automount of its disk (udisks), no switch to its sound card (PipeWire,
   PulseAudio), no input device (libinput), no modem (ModemManager), no
-  phone or camera mount (libmtp, libgphoto2, gvfs). At the VM's start,
+  network through it (NetworkManager: a phone's tethering), no phone or
+  camera mount (libmtp, libgphoto2, gvfs). At the VM's start,
   before QEMU, the helper writes `/run/udev/rules.d/60-vitrine-usb-<pid>.rules`
   for the VM's devices set aside, with `UDISKS_IGNORE`, `ACP_IGNORE`,
-  `PULSE_IGNORE`, `LIBINPUT_IGNORE_DEVICE`, `ID_MM_DEVICE_IGNORE` and
-  `MTP_NO_PROBE` for the device and everything under it, and clears
+  `PULSE_IGNORE`, `LIBINPUT_IGNORE_DEVICE`, `ID_MM_DEVICE_IGNORE`,
+  `NM_UNMANAGED` and `MTP_NO_PROBE` for the device and everything under it, and clears
   `ID_MTP_DEVICE` and `ID_GPHOTO2`. It goes with the VM's QEMU, crash
   included (or after a minute if no QEMU comes), and the desktop sees the
   device again. When the VM is off, the device is the host's as usual.

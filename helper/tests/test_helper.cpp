@@ -721,7 +721,7 @@ private:
                     "\", ATTRS{idProduct}==\"" + id.mid(5) +
                     "\", ENV{UDISKS_IGNORE}=\"1\", ENV{ACP_IGNORE}=\"1\", ENV{PULSE_IGNORE}=\"1\", "
                     "ENV{LIBINPUT_IGNORE_DEVICE}=\"1\", ENV{ID_MM_DEVICE_IGNORE}=\"1\", "
-                    "ENV{ID_MTP_DEVICE}=\"\", ENV{ID_GPHOTO2}=\"\", ENV{MTP_NO_PROBE}=\"1\"\n";
+                    "ENV{ID_MTP_DEVICE}=\"\", ENV{ID_GPHOTO2}=\"\", ENV{MTP_NO_PROBE}=\"1\", ENV{NM_UNMANAGED}=\"1\"\n";
         }
         return text;
     }
