@@ -5,6 +5,7 @@
 #include <QDateTime>
 #include <QLocale>
 
+#include "core/buildcomponents.h"
 #include "core/buildmanager.h"
 #include "core/guesttoolsbuilder.h"
 #include "core/vmconfig.h"
@@ -196,9 +197,18 @@ QString what(Vm *vm, const GuestTools::Medium &medium)
                     .arg(medium.mutter.toHtmlEscaped(), medium.mutter.section('-', 0, 0));
     }
     /* Flathub's GL extension of the Flatpak runtimes, vitrine's in its place */
-    QStringList runtimes;
+    /* "25.08:26.2.7 26.08:26.2.7": Mesa 26.2.7 for 25.08 and 26.08 */
+    QList<std::pair<QString, QStringList>> byMesa;
     for (const QString &branch : medium.flatpak.split(' ', Qt::SkipEmptyParts)) {
-        runtimes << tr("Mesa %1 for %2").arg(branch.section(':', 1), branch.section(':', 0, 0));
+        const QString mesa = branch.section(':', 1);
+        if (byMesa.isEmpty() || byMesa.last().first != mesa) {
+            byMesa.append({mesa, {}});
+        }
+        byMesa.last().second << branch.section(':', 0, 0);
+    }
+    QStringList runtimes;
+    for (const auto &[mesa, branches] : std::as_const(byMesa)) {
+        runtimes << tr("Mesa %1 for %2").arg(mesa, Builds::listed(branches));
     }
     if (!runtimes.isEmpty()) {
         what += tr("<li>vitrine's Mesa for Flatpak apps (%1), in place of Flathub's for the "

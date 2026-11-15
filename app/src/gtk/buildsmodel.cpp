@@ -865,8 +865,13 @@ Details details(const BuildManager &m, const QString &id,
     case Kind::Flatpak: {
         QStringList parts;
         for (const Builds::FlatpakBranch &b : Builds::flatpakBranches(c)) {
-            parts << QString("Mesa %1 for runtime %2 (commit %3)")
-                         .arg(escaped(b.mesa), escaped(b.branch), code(b.commit.left(12)));
+            /* one build, of the oldest runtime's recipe, for the later ones too */
+            parts << (b.serves.isEmpty()
+                          ? QString("Mesa %1 for runtime %2 (commit %3)")
+                                .arg(escaped(b.mesa), escaped(b.branch), code(b.commit.left(12)))
+                          : QString("Mesa %1 for runtimes %2, one build of %3's (commit %4)")
+                                .arg(escaped(b.mesa), escaped(Builds::listed(b.runtimes())),
+                                     escaped(b.branch), code(b.commit.left(12))));
         }
         d.properties << Property{"Source",
                                  QString("%1, the recipe of Flathub's: %2")

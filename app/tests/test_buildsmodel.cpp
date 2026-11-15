@@ -255,6 +255,14 @@ private slots:
         QCOMPARE(Markup::plain(d.properties[0].value),
                  "gitlab.com/freedesktop-sdk/freedesktop-sdk, the recipe of Flathub's: "
                  "Mesa 26.2.7 for runtime 25.08 (commit 279b0ea50eb4)");
+        /* one build for the later runtimes too */
+        QVERIFY(write(places.guestDir + "/flatpak/branches.conf",
+                      "[25.08]\ncommit=279b0ea50eb42917af81a28d4582f11a5d18a39c\nmesa=26.2.7\n"
+                      "patches=mesa/fix.patch\nserves=26.08 27.08\n"));
+        m.refresh();
+        QCOMPARE(Markup::plain(BuildsModel::details(m, "flatpak", unknownSize).properties[0].value),
+                 "gitlab.com/freedesktop-sdk/freedesktop-sdk, the recipe of Flathub's: Mesa 26.2.7 "
+                 "for runtimes 25.08, 26.08 and 27.08, one build of 25.08's (commit 279b0ea50eb4)");
         const BuildsModel::Details medium = BuildsModel::details(m, "medium", unknownSize);
         QCOMPARE(labels(medium).value(0), "Made of");
         QCOMPARE(Markup::plain(medium.properties[0].value),

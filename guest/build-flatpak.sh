@@ -2,17 +2,19 @@
 # SPDX-License-Identifier: GPL-2.0-or-later
 # Build vitrine's Mesa for Flatpak apps: freedesktop-sdk's GL extension of
 # org.freedesktop.Platform (GL.default, the one Flathub ships, every video
-# codec: flatpak-images/mesa-extra.bst) for each runtime branch of
-# flatpak/branches.conf, from freedesktop-sdk's recipe at the commit pinned
-# there, with the patches it names (the Xe native context, vitrine's guest
-# Mesa's) and the Intel and AMD native contexts on.  BuildStream builds it in
-# freedesktop-sdk's CI image (rootless podman, flatpak/build-inside.sh); all
-# but Mesa comes built from freedesktop-sdk's cache, so a build compiles Mesa
-# alone, 5 to 10 min a branch.  Each branch goes into one OSTree repository
-# as GL.default//BRANCH and //BRANCH-extra (Flathub installs both, and a
-# sandbox takes -extra), stamped with the build's time: flatpak replaces a
-# commit only with a later one.  The medium carries it; the guest tools
-# install it over Flathub's.
+# codec: flatpak-images/mesa-extra.bst) from freedesktop-sdk's recipe at the
+# commit flatpak/branches.conf pins, with the patches it names (the Xe
+# native context, vitrine's guest Mesa's) and the Intel and AMD native
+# contexts on.  One build, of the oldest runtime's recipe, for every runtime
+# branch that file names (a [BRANCH] and its serves=): it loads in the later
+# runtimes too.  BuildStream builds it in freedesktop-sdk's CI image
+# (rootless podman, flatpak/build-inside.sh); all but Mesa comes built from
+# freedesktop-sdk's cache, so a build compiles Mesa alone, 5 to 10 min.  It
+# goes into one OSTree repository as GL.default//BRANCH and //BRANCH-extra
+# for each runtime branch (Flathub installs both, and a sandbox takes
+# -extra), stamped with the build's time: flatpak replaces a commit only
+# with a later one.  The medium carries it; the guest tools install it over
+# Flathub's.
 #
 #   guest/build-flatpak.sh [--force] [--verbose]
 #   guest/build-flatpak.sh --print-inputs
@@ -30,8 +32,9 @@
 #                   (status 1 if something is)
 #
 # Output: $FLATPAK_DIR [~/.local/share/vitrine/guest-tools/flatpak]: repo/
-#   (the OSTree repository), branches ("BRANCH MESA COMMIT" lines), .inputs,
-#   .inputs.list; replaced once complete; its log beside it (flatpak.log).
+#   (the OSTree repository), branches (a "BRANCH MESA COMMIT" line for each
+#   runtime branch it has an extension for), .inputs, .inputs.list; replaced
+#   once complete; its log beside it (flatpak.log).
 # Cache: $CACHE_DIR [~/.cache/vitrine/flatpak-build]: BuildStream's (what it
 #   downloads of freedesktop-sdk's builds, ~10 GB) and freedesktop-sdk's
 #   checkouts, kept for the next build.
@@ -88,7 +91,21 @@ for b in $(branches); do
 	for p in $(value "$b" patches); do
 		[[ /$p/ != */../* ]] && [ -f "$here/$p" ] || die "$conf: [$b]'s patch $p is no file of $here"
 	done
+	for r in $(value "$b" serves); do
+		[[ $r =~ ^[0-9]+\.[0-9]+$ ]] || die "$conf: [$b] serves $r, which is no runtime branch, as 26.08"
+	done
 done
+# each runtime branch once: a build's own, and those it serves
+all_runtimes() {
+	local b
+	for b in $(branches); do
+		echo "$b"
+		# shellcheck disable=SC2046
+		printf '%s\n' $(value "$b" serves)
+	done | grep -v '^$'
+}
+twice=$(all_runtimes | LC_ALL=C sort | uniq -d | head -n 1)
+[ -z "$twice" ] || die "$conf: the runtime $twice is built or served twice"
 
 # What a build depends on: this script, flatpak/ and the patches it names, in
 # the C locale's order; a build records these lines, and their hash
@@ -209,9 +226,10 @@ for b in $(branches); do
 	podman image exists "$image" || podman pull -q "$image" > /dev/null 9>&- ||
 		die "podman pull $image failed"
 	read -r -a patches <<< "$(value "$b" patches)"
+	serves=$(value "$b" serves)
 	rc=0
 	run "$b" "$image" bash /guest/flatpak/build-inside.sh "$b" "$commit" "${image##*:}" "$mesa" \
-		"$jobs" "${patches[@]}" || rc=$?
+		"$jobs" "$serves" "${patches[@]}" || rc=$?
 	if [ "$rc" != 0 ]; then
 		rm -rf "$new"
 		if [ "$verbose" = 0 ]; then
@@ -220,7 +238,9 @@ for b in $(branches); do
 		fi
 		die "building the Mesa for Flatpak runtime $b failed (status $rc)"
 	fi
-	echo "$b $mesa $commit" >> "$new/branches"
+	for r in $b $serves; do
+		echo "$r $mesa $commit" >> "$new/branches"
+	done
 done
 src=
 say "phase: making the repository"

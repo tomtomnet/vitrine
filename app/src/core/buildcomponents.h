@@ -106,8 +106,9 @@ struct Change {
 };
 
 /*
- * A Flatpak runtime branch the Mesa for Flatpak apps is built for: a
- * section of the component's branches.conf (guest/flatpak/branches.conf)
+ * A build of the Mesa for Flatpak apps: a section of the component's
+ * branches.conf (guest/flatpak/branches.conf), the runtime branch whose
+ * recipe makes it, and the later ones that get it too
  */
 struct FlatpakBranch {
     QString branch;                 // org.freedesktop.Platform's: 25.08
@@ -115,6 +116,10 @@ struct FlatpakBranch {
     QString image;                  // its CI's BuildStream image: bst2:ID
     QString mesa;                   // the Mesa release it builds: 26.2.7
     QStringList patches;            // by their path in guest/, in their order
+    QStringList serves;             // the later runtime branches it is for too: 26.08
+
+    /* Those it is for, its own first: 25.08, 26.08 */
+    QStringList runtimes() const { return QStringList{branch} + serves; }
 };
 
 /* What is built of a component */
@@ -148,8 +153,10 @@ QStringList patchPaths(const QString &dir, const QString &folder);
 Source source(const Component &component);
 /* Its patches, in the order they apply */
 QList<Patch> patches(const Component &component);
-/* The branches of a Flatpak component, in their order: none for another */
+/* The builds of a Flatpak component, in their order: none for another */
 QList<FlatpakBranch> flatpakBranches(const Component &component);
+/* "25.08", "25.08 and 26.08", "25.08, 26.08 and 27.08" */
+QString listed(const QStringList &names);
 /* What @patch does, in a line: its Subject, else the first line of its
    description, else the spec's comment over it, else its name */
 QString subject(const Component &component, const Patch &patch);

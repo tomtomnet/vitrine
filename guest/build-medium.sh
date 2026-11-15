@@ -262,9 +262,15 @@ EOF
 		echo "  VM's screen resized, or out of full screen) no longer skip refreshes"
 	fi
 	if [ ${#flatpak_branches[@]} -gt 0 ]; then
-		parts=()
-		for e in "${flatpak_branches[@]}"; do
-			parts+=("${e#*:} for ${e%%:*}")
+		# "26.2.7 for 25.08 and 26.08": the runtimes of each Mesa together
+		parts=() names=() last=
+		for e in "${flatpak_branches[@]}" ""; do
+			if [ -n "$last" ] && [ "${e#*:}" != "$last" ]; then
+				parts+=("$last for $(join "${names[@]}")")
+				names=()
+			fi
+			[ -z "$e" ] || names+=("${e%%:*}")
+			last=${e#*:}
 		done
 		echo "- Mesa for Flatpak apps: vitrine's Mesa with native context in place of"
 		echo "  Flathub's GL extension (org.freedesktop.Platform.GL.default) of the runtimes"

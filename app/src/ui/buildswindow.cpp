@@ -1056,9 +1056,15 @@ void BuildsWindow::showSource()
     case Kind::Flatpak: {
         QStringList parts;
         for (const Builds::FlatpakBranch &b : Builds::flatpakBranches(c)) {
-            parts << tr("Mesa %1 for runtime %2 (commit %3)")
-                         .arg(b.mesa.toHtmlEscaped(), b.branch.toHtmlEscaped(),
-                              "<code>" + b.commit.left(12).toHtmlEscaped() + "</code>");
+            const QString commit = "<code>" + b.commit.left(12).toHtmlEscaped() + "</code>";
+            /* one build, of the oldest runtime's recipe, for the later ones too */
+            parts << (b.serves.isEmpty()
+                          ? tr("Mesa %1 for runtime %2 (commit %3)")
+                                .arg(b.mesa.toHtmlEscaped(), b.branch.toHtmlEscaped(), commit)
+                          : tr("Mesa %1 for runtimes %2, one build of %3's (commit %4)")
+                                .arg(b.mesa.toHtmlEscaped(),
+                                     Builds::listed(b.runtimes()).toHtmlEscaped(),
+                                     b.branch.toHtmlEscaped(), commit));
         }
         rows += row(tr("Source:"),
                     tr("<a href=\"%1\">%2</a>, the recipe of Flathub's: %3")

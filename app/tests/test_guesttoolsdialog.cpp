@@ -654,6 +654,12 @@ private slots:
                                    "Mesa 26.2.6 for 26.08), in place of Flathub's"),
                      qPrintable(text));
         }
+        /* one build for both runtimes: said once */
+        kde.flatpak = "25.08:26.2.7 26.08:26.2.7";
+        QVERIFY2(GuestToolsText::what(vm(), kde)
+                     .contains("<li>vitrine's Mesa for Flatpak apps (Mesa 26.2.7 for 25.08 and 26.08), "
+                               "in place of Flathub's"),
+                 qPrintable(GuestToolsText::what(vm(), kde)));
         QCOMPARE(GuestTools::parseManifest(R"({"mediumId": "m", "tools": "0.1.0-46.fc45",
                                                 "flatpak": "25.08:26.2.7 26.08:26.2.6"})",
                                            "x.img")

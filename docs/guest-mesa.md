@@ -340,10 +340,20 @@ whatever the guest's own Mesa has.
 
 Vitrine's guest tools carry an extension of their own in its place:
 `guest/build-flatpak.sh` builds freedesktop-sdk's recipe at a pinned commit
-of each runtime branch, with the guest Mesa's patches (the Xe one included)
-and `-Dintel-virtio-experimental=true -Damdgpu-virtio=true`, with
-BuildStream, which downloads everything but Mesa already built from
-freedesktop-sdk's cache. The guest installs it from the tools medium as
+of runtime 25.08, with the guest Mesa's patches (the Xe one included) and
+`-Dintel-virtio-experimental=true -Damdgpu-virtio=true`, with BuildStream,
+which downloads everything but Mesa already built from freedesktop-sdk's
+cache. That one build is the extension of runtime 26.08 too: a Mesa built
+in an older runtime loads in a newer one, whose libraries keep the names
+and symbols it was linked against, and it brings its own LLVM (a newer
+runtime's build does not load in an older runtime). In November 2026, in a
+sandbox of each of the two runtimes on an AMD GPU, all 33 shared objects of
+the extension loaded, a triangle was drawn through EGL by radeonsi, RADV
+made a device, and VA-API listed H.264, H.265, VP9 and AV1
+(`guest/tests/flatpak-check/kit.sh`, which a later runtime is tried with
+before it joins `serves=` in `guest/flatpak/branches.conf`). 32-bit apps
+(Steam, Wine) take the GL32 extension, which stays Flathub's. The guest
+installs it from the tools medium as
 the flatpak remote `vitrine-gl`, in place of Flathub's for the runtimes
 it has, and for those installed later (flatpak runs its triggers after the
 transactions of apps only: a runtime installed alone gets it at the next

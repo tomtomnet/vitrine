@@ -4,13 +4,15 @@
 # root: the user outside), for one runtime branch: freedesktop-sdk at COMMIT
 # in /src, Mesa's patches and options, the build, and its export as
 # org.freedesktop.Platform.GL.default//BRANCH and //BRANCH-extra into the
-# OSTree repository /out/repo.  /guest is guest/ (read-only), /root/.cache
-# BuildStream's cache.
-#   build-inside.sh BRANCH COMMIT IMAGE-ID MESA JOBS PATCH...
+# OSTree repository /out/repo, and the same for each runtime branch of
+# SERVES, which gets this build as its own extension.  /guest is guest/
+# (read-only), /root/.cache BuildStream's cache.
+#   build-inside.sh BRANCH COMMIT IMAGE-ID MESA JOBS SERVES PATCH...
+# SERVES: runtime branches, space-separated in one argument, "" for none.
 # PATCH: by its path in guest/, in the order they apply.
 set -euo pipefail
-branch=$1 commit=$2 image_id=$3 mesa=$4 jobs=$5
-shift 5
+branch=$1 commit=$2 image_id=$3 mesa=$4 jobs=$5 serves=$6
+shift 6
 target=flatpak-images/mesa-extra.bst
 say() { echo "vitrine-build: $*"; }
 die() { say "error: $*" >&2; exit 1; }
@@ -72,11 +74,19 @@ rm -rf "/out/tree-$branch"
 bst --no-colors artifact checkout "$target" --directory "/out/tree-$branch"
 cat "/out/tree-$branch/metadata"
 
-say "phase: exporting $branch"
-# stamped now: flatpak replaces a commit only with a later one
-for b in "$branch" "$branch-extra"; do
-	flatpak build-export --runtime --timestamp=NOW \
-		--subject="vitrine's Mesa $mesa (Xe and AMD native contexts) as GL.default//$b" \
-		/out/repo "/out/tree-$branch" "$b"
+# each runtime's extension names that runtime: the recipe's metadata, with
+# the branch of the one it goes to
+metadata=/out/tree-$branch/metadata
+cp "$metadata" /out/metadata-$branch
+grep -q "/x86_64/$branch\$" "$metadata" || die "the build's metadata does not name the runtime $branch"
+for r in "$branch" $serves; do
+	say "phase: exporting $r"
+	sed "s|/x86_64/$branch\$|/x86_64/$r|" "/out/metadata-$branch" > "$metadata"
+	# stamped now: flatpak replaces a commit only with a later one
+	for b in "$r" "$r-extra"; do
+		flatpak build-export --runtime --timestamp=NOW \
+			--subject="vitrine's Mesa $mesa (Xe and AMD native contexts) as GL.default//$b" \
+			/out/repo "/out/tree-$branch" "$b"
+	done
 done
-rm -rf "/out/tree-$branch"
+rm -rf "/out/tree-$branch" "/out/metadata-$branch"

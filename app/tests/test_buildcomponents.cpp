@@ -38,7 +38,9 @@ class TestBuildComponents : public QObject
     }
 
     /* bash with @args, @env's NAME=value pairs on top of this process's environment */
-    static QString run(const QStringList &args, int *status = nullptr, const QStringList &env = {})
+    /* What the script @args says on its output; on its error output too with @errors */
+    static QString run(const QStringList &args, int *status = nullptr, const QStringList &env = {},
+                       bool errors = false)
     {
         QProcess p;
         QProcessEnvironment e = QProcessEnvironment::systemEnvironment();
@@ -46,6 +48,9 @@ class TestBuildComponents : public QObject
             e.insert(pair.section('=', 0, 0), pair.section('=', 1));
         }
         p.setProcessEnvironment(e);
+        if (errors) {
+            p.setProcessChannelMode(QProcess::MergedChannels);
+        }
         p.start("bash", args);
         p.waitForFinished(60000);
         if (status) {
@@ -211,17 +216,19 @@ private slots:
         QCOMPARE(find(all, "medium").deps,
                  QStringList({"tools", "mesa", "kwayland", "kwin", "proxy", "kpipewire", "qtbase",
                               "ksvg", "kirigami", "mutter", "flatpak"}));
-        /* the Mesa for Flatpak apps, on every release's medium: freedesktop-sdk's
-           recipe for each runtime, with the Xe patch for its Mesa and guest/mesa's */
+        /* the Mesa for Flatpak apps, on every release's medium: one build, of
+           freedesktop-sdk's recipe for the oldest runtime, for the later one too,
+           with the Xe patch for its Mesa and guest/mesa's */
         const Component flatpak = find(all, "flatpak");
         QCOMPARE(flatpak.kind, Kind::Flatpak);
         QCOMPARE(flatpak.title, "Mesa for Flatpak apps");
         QVERIFY(flatpak.heavy);
         QVERIFY(builtFor(flatpak, "44") && builtFor(flatpak, "45"));
         const QList<FlatpakBranch> branches = flatpakBranches(flatpak);
-        QCOMPARE(branches.size(), 2);
+        QCOMPARE(branches.size(), 1);
         QCOMPARE(branches[0].branch, "25.08");
-        QCOMPARE(branches[1].branch, "26.08");
+        QCOMPARE(branches[0].serves, QStringList({"26.08"}));
+        QCOMPARE(branches[0].runtimes(), QStringList({"25.08", "26.08"}));
         for (const FlatpakBranch &b : branches) {
             QCOMPARE(b.commit.size(), 40);
             QVERIFY(b.image.startsWith("bst2:"));
@@ -231,8 +238,8 @@ private slots:
                 QVERIFY2(QFileInfo(flatpak.dir + '/' + patch).isFile(), qPrintable(patch));
             }
         }
-        /* each once: the two Xe patches, the four others of guest/mesa */
-        QCOMPARE(patches(flatpak).size(), 6);
+        /* the Xe patch for its Mesa, the four others of guest/mesa */
+        QCOMPARE(patches(flatpak).size(), 5);
         QCOMPARE(patches(flatpak).first().origin, "Research");
         QCOMPARE(source(flatpak).url, "https://gitlab.com/freedesktop-sdk/freedesktop-sdk");
         /* KWin built against vitrine's KWayland, whose signals its nested desktop uses */
@@ -347,9 +354,10 @@ private slots:
         const QString commit(40, 'a');
         const QString image = "bst2:" + QString(40, 'b');
         QVERIFY(write(guest + "/flatpak/branches.conf",
-                      QString("# two runtimes\n[25.08]\ncommit=%1\nimage=%2\nmesa=26.2.7\n"
+                      QString("# two builds\n[25.08]\ncommit=%1\nimage=%2\nmesa=26.2.7\n"
                               "patches=flatpak/xe.patch mesa/b.patch\n\n[26.08]\ncommit=%1\n"
-                              "image=%2\nmesa=26.2.6\npatches = mesa/a.patch   mesa/b.patch\n")
+                              "image=%2\nmesa=26.2.6\npatches = mesa/a.patch   mesa/b.patch\n"
+                              "serves = 27.08  28.08\n")
                           .arg(commit, image)
                           .toUtf8()));
         QVERIFY(write(guest + "/flatpak/xe.patch", "xe\n"));
@@ -375,8 +383,17 @@ private slots:
         QCOMPARE(branches[0].image, image);
         QCOMPARE(branches[0].mesa, "26.2.7");
         QCOMPARE(branches[0].patches, QStringList({"flatpak/xe.patch", "mesa/b.patch"}));
+        QVERIFY(branches[0].serves.isEmpty());
+        QCOMPARE(branches[0].runtimes(), QStringList({"25.08"}));
         QCOMPARE(branches[1].mesa, "26.2.6");
         QCOMPARE(branches[1].patches, QStringList({"mesa/a.patch", "mesa/b.patch"}));
+        /* the later runtimes its build is for too */
+        QCOMPARE(branches[1].serves, QStringList({"27.08", "28.08"}));
+        QCOMPARE(branches[1].runtimes(), QStringList({"26.08", "27.08", "28.08"}));
+        QCOMPARE(listed({}), QString());
+        QCOMPARE(listed({"25.08"}), "25.08");
+        QCOMPARE(listed({"25.08", "26.08"}), "25.08 and 26.08");
+        QCOMPARE(listed({"25.08", "26.08", "27.08"}), "25.08, 26.08 and 27.08");
         QStringList paths;
         for (const Patch &p : patches(c)) {
             paths << p.path;
@@ -410,6 +427,11 @@ private slots:
         QCOMPARE(built.state, Status::State::UpToDate);
         QCOMPARE(built.version, "Mesa 26.2.7 for 25.08, 26.2.6 for 26.08");
         QCOMPARE(built.output, places.flatpakDir);
+        /* one build for several runtimes: said once */
+        QVERIFY(write(places.flatpakDir + "/branches",
+                      "25.08 26.2.7 " + commit.toUtf8() + "\n26.08 26.2.7 " + commit.toUtf8() +
+                          "\n27.08 26.3.0 " + commit.toUtf8() + '\n'));
+        QCOMPARE(statusOf("flatpak").version, "Mesa 26.2.7 for 25.08 and 26.08, 26.3.0 for 27.08");
         QVERIFY(built.built.isValid());
         QCOMPARE(GuestToolsBuilder::builtFlatpak(places.flatpakDir), key(c, all));
         /* a patch no branch names is none of its inputs */
@@ -445,6 +467,23 @@ private slots:
         QVERIFY(manifest(QString("\"flatpak\": \"%1\", \"medium\": \"%2\"")
                              .arg(key(find(all, "flatpak"), all), QString::fromLatin1(script))));
         QCOMPARE(statusOf("medium").state, Status::State::UpToDate);
+
+        /* a runtime built or served twice, or one that is no branch: the script refuses */
+        const QByteArray conf = read(guest + "/flatpak/branches.conf");
+        QVERIFY(write(guest + "/flatpak/branches.conf", QByteArray(conf).replace("27.08  28.08", "25.08")));
+        QVERIFY2(run({guest + "/build-flatpak.sh", "--print-inputs"}, &status, {}, true)
+                     .contains("the runtime 25.08 is built or served twice"),
+                 "a runtime served twice");
+        QVERIFY(status != 0);
+        QVERIFY(write(guest + "/flatpak/branches.conf", QByteArray(conf).replace("27.08  28.08", "newest")));
+        QVERIFY2(run({guest + "/build-flatpak.sh", "--print-inputs"}, &status, {}, true)
+                     .contains("serves newest, which is no runtime branch"),
+                 "a runtime that is no branch");
+        QVERIFY(status != 0);
+        QVERIFY(write(guest + "/flatpak/branches.conf", conf));
+        QCOMPARE(run({guest + "/build-flatpak.sh", "--print-inputs"}, &status),
+                 QString("flatpak %1\n").arg(key(find(load(places), "flatpak"), load(places))));
+        QCOMPARE(status, 0);
 
         /* no branches: no Mesa for Flatpak apps */
         QVERIFY(QFile::remove(guest + "/flatpak/branches.conf"));

@@ -273,11 +273,13 @@ private slots:
         QVERIFY(source);
         QVERIFY2(source->text().contains("freedesktop-sdk</a>, the recipe of Flathub's: "),
                  qPrintable(source->text()));
-        for (const Builds::FlatpakBranch &b : branches) {
-            const QString runtime = QString("Mesa %1 for runtime %2 (commit <code>%3</code>)")
-                                        .arg(b.mesa, b.branch, b.commit.left(12));
-            QVERIFY2(source->text().contains(runtime), qPrintable(source->text()));
-        }
+        /* one build for both runtimes, of the older one's recipe */
+        QCOMPARE(branches.size(), 1);
+        QCOMPARE(branches[0].runtimes(), QStringList({"25.08", "26.08"}));
+        const QString runtime =
+            QString("Mesa %1 for runtimes 25.08 and 26.08, one build of 25.08's (commit <code>%2</code>)")
+                .arg(branches[0].mesa, branches[0].commit.left(12));
+        QVERIFY2(source->text().contains(runtime), qPrintable(source->text()));
         /* its title alone: a Mesa for each runtime */
         auto *tree = window.findChild<QTreeWidget *>("components");
         QVERIFY(tree);

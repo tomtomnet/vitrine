@@ -587,9 +587,17 @@ QList<FlatpakBranch> flatpakBranches(const Component &c)
         b.image = values.value("image");
         b.mesa = values.value("mesa");
         b.patches = values.value("patches").split(blanks, Qt::SkipEmptyParts);
+        b.serves = values.value("serves").split(blanks, Qt::SkipEmptyParts);
         list << b;
     }
     return list;
+}
+
+QString listed(const QStringList &names)
+{
+    return names.size() < 2 ? names.join(QString())
+                            : tr("%1 and %2").arg(names.mid(0, names.size() - 1).join(", "),
+                                                  names.last());
 }
 
 /* Where a diff starts, after a patch's description */
@@ -1089,16 +1097,25 @@ static Status packageStatus(const Component &c, const QList<Component> &all,
     return s;
 }
 
-/* "Mesa 26.2.7 for 25.08, 26.2.6 for 26.08": what build-flatpak.sh records in branches */
+/* "Mesa 26.2.7 for 25.08 and 26.08", "Mesa 26.2.7 for 25.08, 26.2.6 for 26.08": what
+   build-flatpak.sh records in branches, a "BRANCH MESA COMMIT" line for each runtime */
 static QString flatpakVersion(const QString &dir)
 {
+    QList<std::pair<QString, QStringList>> byMesa;
     QStringList parts;
 
     for (const QByteArray &raw : readFile(dir + "/branches").split('\n')) {
         const QStringList f = QString::fromUtf8(raw).split(' ', Qt::SkipEmptyParts);
-        if (f.size() >= 2) {
-            parts << tr("%1 for %2").arg(f.at(1), f.at(0));
+        if (f.size() < 2) {
+            continue;
         }
+        if (byMesa.isEmpty() || byMesa.last().first != f.at(1)) {
+            byMesa.append({f.at(1), {}});
+        }
+        byMesa.last().second << f.at(0);
+    }
+    for (const auto &[mesa, runtimes] : std::as_const(byMesa)) {
+        parts << tr("%1 for %2").arg(mesa, listed(runtimes));
     }
     return parts.isEmpty() ? QString() : tr("Mesa %1").arg(parts.join(", "));
 }
