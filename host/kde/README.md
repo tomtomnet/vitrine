@@ -9,14 +9,14 @@ pinned copy of the research's recipe, `research/`.
 
 What the sets change (the research's measurements):
 
-- KWin, sets `hl39y` for Plasma 6.7.91, `hl39-68` for 6.8.0, `h681zy` for
+- KWin, sets `hl39y` for Plasma 6.7.91, `hl39-68` for 6.8.0, `h681zz` for
   6.8.1 and later (Fedora 44's and 45's Plasma 6.8.2); none for Fedora 44's
   earlier Plasma 6.7.5. Patch 0082 (damage-free layers) is left out of the
-  builds of the sets that have it (`h681zy_no82`): with a host window over a
+  builds of the sets that have it (`h681zz_no82`): with a host window over a
   VM, Firefox in the guest froze. Keys in a VM take 8.5-9.3 ms against 12.5
   ms with Fedora's KWin; drags and the launcher under load are smoother;
   the guest's frames are paced to the host's deadlines (presentation-time
-  v3); the pointer grab (Ctrl+Alt+G) works inside Vitrine's Desktop view
+  v4); the pointer grab (Ctrl+Alt+G) works inside Vitrine's Desktop view
   (patch 0039). On Intel xe GPUs (Arc), KWin no longer makes the GPU read
   every window the CPU draws from system memory at each frame (patch
   0075): with Fedora's KWin and the sets before `hl39y`, Konsole drags
@@ -71,6 +71,13 @@ What the sets change (the research's measurements):
   in 24 for either. With `h681zu`, a cluster of short minimize and restore
   animations was seen once on Fedora 44 (kernel 7.2.13), and not on Fedora
   45.
+- `h681zz` is `h681zy` with its 0012 at presentation-time version 4: the
+  host's content-update deadline for the guests' KWin had been version 3,
+  which wayland-protocols 1.50 (Fedora 45, 2026-11-13) gave to its own
+  fixed_rate and variable_rate kinds; with `h681zy`, a program built
+  against 1.50 that binds version 3 gets an event it does not know and
+  loses its Wayland connection. Guests get the deadline from it with
+  vitrine's guest KWin `g28v4` and later.
 - KSvg 6.31.0, set `k2`: Plasma's popups stop uploading their themed frames
   again at each opening.
 - Kirigami 6.31.0, set `f1`: its items react to the frame contrast only
@@ -200,8 +207,8 @@ sudo rm -f /etc/user-tmpfiles.d/vitrine-host-kwin.conf /etc/environment.d/vitrin
 ## `research/`: the research's recipe, pinned
 
 A copy of what `kde-rpms.sh` reads in the research's repository
-(virtio-gpu-desktop) at commit `81d91258c16d342b9e84848e5bfdef24b9950906`
-(2026-11-12), in its layout (the container mounts the folder as `/repo`),
+(virtio-gpu-desktop) at commit `c9a6e0d97f26288b24a84cbd1c9974ab32af6ecf`
+(2026-11-15), in its layout (the container mounts the folder as `/repo`),
 byte for byte and with its files' modes: the scripts, the host sets of the
 four packages (`kde_set_for host ...` in `setup/versions.sh`) and the
 patches they name, and the run-time switches of KWin's patches
@@ -235,6 +242,7 @@ installing.
 | `0579945143f039832773f7fd862cd604659939365f25ccf77142f797a36a1f68` | `patches/kwin/0009-FIX-F-renderloop-the-2-ms-render-time-floor-only-for.patch` |
 | `040869c66d3e8fade70d8f38b4f1c990b6a9d9d1050318066cf5c87170f4eacd` | `patches/kwin/0010-FIX-G-renderloop-commit-timing-target-sets-the-earliest-vblank.patch` |
 | `e3b01390318bb995147b65772051d2972fdaebe5bdf9c5ad51279442ee9c07a9` | `patches/kwin/0012-presentation-time-v3-content-update-deadline.patch` |
+| `6ebb9aae02aa48d942f5f6dd358cec300e0d3a463fc13b8f811c0f04ce4b79f4` | `patches/kwin/0012-presentation-time-v4-content-update-deadline.patch` |
 | `774bf1a2abb37b3accfd5a07e15e1615065d2916e0d86b3aa6a048f1ef4a88e1` | `patches/kwin/0038-FIX-window-activate-raise-and-unrestricted-resize-is-unrestricted.patch` |
 | `727678c258456da0e67cf2db0dd6501f05471f74c3e5d2aefc9d9c6156b140a8` | `patches/kwin/0039-EXP-input-pointer-constraints-on-subsurfaces.68.patch` |
 | `1621f555a8ecd3595a534778c737aea6a4956845a7624d779674eea2596cb102` | `patches/kwin/0039-EXP-input-pointer-constraints-on-subsurfaces.patch` |
@@ -263,7 +271,7 @@ installing.
 | `0ccdf78c3fcc9c50bc7902989d4ca925ffe8d47336e1d1072d7753ccd6d888d6` | `patches/kwin/0094-EXP-wayland-a-client-s-shm-memory-let-go-on-a-thread-of-its-own.patch` |
 | `90ffb02e25ac75ab1e305d3592e2cacfa262b69d8c6a2251cdd578b4c4cdf30e` | `patches/kwin/0095-EXP-overview-keep-the-views-between-openings.patch` |
 | `1afe99bbcd5b04da7865274f9256cffa6df922b51c0eb40666fb4be893bef515` | `patches/kwin/0096-EXP-opengl-the-GPU-s-clock-read-once-a-second-for-render-time-queries.patch` |
-| `c43b05c3c6c2fc11a460184fd73046399c57df4360f80c17a10230ff69d1fd38` | `patches/kwin/sets/h681zy.series` |
+| `d60e79bb3e9f102904ebf4a591af7b6a33856dc13c9130033c96e4490a0e1c7f` | `patches/kwin/sets/h681zz.series` |
 | `c18c004fe7319f2d4509deeadf37df8434088affde845d0eb96b11bb6642367d` | `patches/kwin/sets/hl39-68.series` |
 | `45da20f38c96aeb3d44540c0567de26c293e6aba799b1e64e01eebb79ee7ad11` | `patches/kwin/sets/hl39y.series` |
 | `bdfcd81c8c252a31ffad2f62bd99e793a0c6d0d0300c5704d74ee0ccba454b25` | `patches/qtbase/qtbase-wayland-shm-reuse-pools-v3.patch` |
@@ -272,7 +280,7 @@ installing.
 | `761707846b55e70bac195d24e30520ca5c7b96164c0ce45b113317fc13150deb` | `setup/paths.sh` |
 | `fa2026f1f4b365859cf919667685f23bb7d6988ec8906dbdf2c8831428750182` | `setup/tools/build-patched-rpm.sh` |
 | `044bf5dc522dc2ae268ae734bf0389569eff2ef095f2ddd48ddd270488656bdb` | `setup/tools/kde-rpms.sh` |
-| `8868c2cecf05cf8fa0f8695dd05d0bfcd3ea4917935a0cae594a63ff77e89816` | `setup/versions.sh` |
+| `55f26b85a5a73b257dd39c7cee4ad4d53597321dec3395473b4c31e29d86c771` | `setup/versions.sh` |
 | `19cf4324887903cc1185fc8dc83d38bb9e97176a36ef8ed9506611be4f6e1ddf` | `src/host-config/kwin-active-window-candidate.conf` |
 | `cf647e7f955d60ec6cae1ee58196b94d939996df44697f9e479023921bbe1f91` | `src/host-config/kwin-animation-start-step.conf` |
 | `ebb40936ea5b94c0970194727a29954e954780bc5b7817421e79fc5ee9d04911` | `src/host-config/kwin-empty-render-not-content.conf` |
@@ -286,7 +294,7 @@ When the research's recipe moves (`r` its repository, `c` the commit, `v`
 this folder), take it again as it is, the sets' patches with it:
 
 ```sh
-r=~/Documents/virtio-gpu-desktop c=81d9125 v=~/Documents/vitrine/host/kde/research
+r=~/Documents/virtio-gpu-desktop c=c9a6e0d v=~/Documents/vitrine/host/kde/research
 rm -rf "$v" && mkdir -p "$v/setup/tools" "$v/src/host-config"
 for f in setup/lib.sh setup/paths.sh setup/versions.sh setup/tools/kde-rpms.sh \
 	setup/tools/build-patched-rpm.sh \
@@ -294,7 +302,7 @@ for f in setup/lib.sh setup/paths.sh setup/versions.sh setup/tools/kde-rpms.sh \
 	git -C "$r" show "$c:$f" > "$v/$f"
 done
 # patches/DIR (kde_patch_dir) and the host sets kde_set_for names for each package
-for d in kwin:hl39y,hl39-68,h681zy ksvg:k2 kirigami:f1 qtbase:q4; do
+for d in kwin:hl39y,hl39-68,h681zz ksvg:k2 kirigami:f1 qtbase:q4; do
 	dir=${d%%:*} sets=${d#*:}
 	mkdir -p "$v/patches/$dir/sets"
 	for s in ${sets//,/ }; do

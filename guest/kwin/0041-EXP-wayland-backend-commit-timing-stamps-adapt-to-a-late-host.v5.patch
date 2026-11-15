@@ -12,13 +12,11 @@ s1: 123 images/s). Eight frames in a row committed in time for their target (the
 deadline + 0.5 ms, or 3.5 ms) but shown exactly a refresh after it move the stamps a refresh
 earlier, which that host's arithmetic turns into the target again; a frame shown before its
 target means the host does not do that (any more), and the stamps go back at once.
----
- src/backends/wayland/wayland_output.cpp | 38 +++++++++++++++++++++++--
- src/backends/wayland/wayland_output.h   |  7 +++++
- 2 files changed, 43 insertions(+), 2 deletions(-)
 
+2026-11-15: the same change, its context refreshed for 0031-...v5 (a comment there names version 5).
+---
 diff --git a/src/backends/wayland/wayland_output.cpp b/src/backends/wayland/wayland_output.cpp
-index e7ca919..8d86cac 100644
+index 5c5e7f5..1645fbe 100644
 --- a/src/backends/wayland/wayland_output.cpp
 +++ b/src/backends/wayland/wayland_output.cpp
 @@ -17,6 +17,7 @@
@@ -96,12 +94,12 @@ index e7ca919..8d86cac 100644
      // of the frame callback estimate below. A host that scans the nested output out directly
      // latches it ~3 ms before its vblank, but sends the frame callback ~5.4 ms ahead (KWin
 diff --git a/src/backends/wayland/wayland_output.h b/src/backends/wayland/wayland_output.h
-index 044be62..b343b11 100644
+index 90eeaf2..57b6636 100644
 --- a/src/backends/wayland/wayland_output.h
 +++ b/src/backends/wayland/wayland_output.h
 @@ -155,6 +155,8 @@ private:
          std::optional<std::chrono::nanoseconds> contentUpdateDeadline;
-         // when the host had this frame's buffers ready (v4, ours), in this guest's clock
+         // when the host had this frame's buffers ready (v5, ours), in this guest's clock
          std::optional<std::chrono::nanoseconds> contentUpdateReady;
 +        // the commit-timing shift this frame was stamped with (see m_commitTimingShift)
 +        std::optional<int> commitTimingShift;
@@ -120,6 +118,3 @@ index 044be62..b343b11 100644
      std::unique_ptr<WaylandClient::Viewport> m_viewport;
      zwp_keyboard_shortcuts_inhibitor_v1 *m_shortcutInhibition = nullptr;
      uint32_t m_refreshRate = 60'000;
--- 
-2.56.0
-

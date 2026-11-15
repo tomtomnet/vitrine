@@ -259,13 +259,15 @@ add_custom_command(OUTPUT ${NESTED_GEN_DIR}/protocols_table.cpp
     COMMAND Python3::Interpreter ${NESTED_DIR}/gen_protocols.py ${WAYLAND_XML_DIR}/wayland.xml
             ${WAYLAND_PROTOCOLS_DIR} ${NESTED_DIR}/protocols.txt ${NESTED_GEN_DIR}/protocols_table.cpp
     DEPENDS ${NESTED_DIR}/gen_protocols.py ${NESTED_DIR}/protocols.txt ${NESTED_PROTOCOL_XML})
-# The library's presentation-time is version 3 (the host's content-update deadline for the guest), the views'
-# (vitrine_wlprotocols) version 2: their listeners know three events, and a view bound at 3 would get a fourth.
-# One program has one symbol of each name, so the library's v3 interfaces get names of their own in the two
-# generated files that define and use them; vmview.cpp's own feedback (version 1) keeps the shared v2 ones.
+# The library's presentation-time is version 4 (wayland-protocols 1.50's version 3, and the host's content-update
+# deadline for the guest since 4), the views' (vitrine_wlprotocols, from this system's wayland-protocols) version 2
+# at most (presentationVersion()): their listeners know three events, and a host KWin of an older set sends its
+# deadline, a fourth, at version 3. One program has one symbol of each name, so the library's v4 interfaces get
+# names of their own in the two generated files that define and use them; vmview.cpp's own feedback (version 1)
+# keeps the shared ones.
 set_source_files_properties(${NESTED_GEN_DIR}/presentation-time-protocol.c ${NESTED_GEN_DIR}/protocols_table.cpp
     PROPERTIES COMPILE_DEFINITIONS
-    "wp_presentation_interface=vmview_v3_wp_presentation_interface;wp_presentation_feedback_interface=vmview_v3_wp_presentation_feedback_interface")
+    "wp_presentation_interface=vmview_v4_wp_presentation_interface;wp_presentation_feedback_interface=vmview_v4_wp_presentation_feedback_interface")
 add_library(nestedvmview STATIC
     src/nested/protocols.h
     src/nested/vmview.cpp

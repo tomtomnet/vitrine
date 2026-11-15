@@ -8,7 +8,7 @@
 0008-FIX-E-Patch103-111-renderedByCompositor-from-the-lay.patch
 0009-FIX-F-renderloop-the-2-ms-render-time-floor-only-for.patch
 0010-FIX-G-renderloop-commit-timing-target-sets-the-earliest-vblank.patch
-0012-presentation-time-v3-content-update-deadline.patch
+0012-presentation-time-v4-content-update-deadline.patch
 0038-FIX-window-activate-raise-and-unrestricted-resize-is-unrestricted.patch
 0008-upstream-maximize-size-tolerance.patch
 0039-EXP-input-pointer-constraints-on-subsurfaces.68.patch

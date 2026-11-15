@@ -1,8 +1,10 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <protocol name="presentation_time">
-  <!-- Local copy: wayland-protocols' stable presentation-time with the proposed
-       version 3 (content_update_deadline, wayland-protocols merge request 454,
-       not merged as of 2026-10-07), for an experimental host build. -->
+  <!-- Local copy: wayland-protocols' stable presentation-time (1.50: version 3,
+       the fixed_rate and variable_rate kinds) with content_update_deadline as
+       version 4, after wayland-protocols merge request 454 (proposed there as
+       version 3 before 1.50 took that number; not merged as of 2026-11-15),
+       for an experimental host build. -->
 <!-- wrap:70 -->
 
   <copyright>
@@ -28,7 +30,7 @@
     DEALINGS IN THE SOFTWARE.
   </copyright>
 
-  <interface name="wp_presentation" version="3">
+  <interface name="wp_presentation" version="4">
     <description summary="timed presentation related wl_surface requests">
 
 <!-- Introduction -->
@@ -126,7 +128,7 @@
 
   </interface>
 
-  <interface name="wp_presentation_feedback" version="3">
+  <interface name="wp_presentation_feedback" version="4">
     <description summary="presentation time feedback event">
       A presentation_feedback object returns an indication that a
       wl_surface content update has become visible to the user.
@@ -198,6 +200,29 @@
           fullscreen surface and a surface on a hardware overlay.
         </description>
       </entry>
+      <entry name="fixed_rate" value="0x10" since="3">
+        <description summary="presentation is at a fixed refresh rate">
+          The display hardware is operating at a fixed refresh rate.
+          The presentation was aligned to a multiple of this event's
+          'refresh' argument.
+          If this is set, the refresh argument must not be 0.
+        </description>
+      </entry>
+      <entry name="variable_rate" value="0x20" since="3">
+        <description summary="presentation is at a variable refresh rate">
+          The display hardware is operating at a variable refresh rate, with
+          updates to this surface consistently determining the display refresh
+          timing. The definition of 'consistent' is compositor policy.
+
+          The content update was displayed as soon as possible after it became
+          ready, but no sooner than 'refresh' nanoseconds after the previous
+          presentation on this surface. In other words, the presentation time
+          was determined by when this surface's content became ready, not by
+          a periodic display refresh or by updates to other surfaces.
+
+          If this is set, the refresh argument must not be 0.
+        </description>
+      </entry>
     </enum>
 
     <event name="presented" type="destructor">
@@ -234,6 +259,11 @@
         For version 1, if the output does not have a constant refresh rate,
         the refresh argument must be zero.
 
+        If the 'fixed_rate' flag is set, then the refresh argument is
+        the output's constant refresh rate. If the 'variable_rate' flag
+        is set, then the refresh argument is the output's fastest refresh
+        rate.
+
         The 64-bit value combined from seq_hi and seq_lo is the value
         of the output's vertical retrace counter when the content
         update was first scanned out to the display. This value must
@@ -267,7 +297,7 @@
       </description>
     </event>
 
-    <event name="content_update_deadline" since="3">
+    <event name="content_update_deadline" since="4">
       <description summary="The content update deadline for the presentation cycle">
         Describes the latching deadline for the presentation of the relevant
         content update, expressed as a duration before the presentation

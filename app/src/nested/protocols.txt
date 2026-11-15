@@ -5,9 +5,11 @@
 # is always in (its interfaces come from libwayland-client itself).
 stable/xdg-shell/xdg-shell.xml
 stable/linux-dmabuf/linux-dmabuf-v1.xml
-# presentation-time v3 (content_update_deadline, wayland-protocols MR 454), the copy the host KWin's 0012 builds:
-# from wayland-protocols' v2 the forwarder offered v2 only, and the nested KWin's commit deadline (guest 0029)
-# never got the host's deadline (vitrine's Desktop view, 2026-11-12)
+# presentation-time v4 (wayland-protocols 1.50's v3 + content_update_deadline as v4, after MR 454), the copy the
+# host KWin's 0012-...-v4 builds: from wayland-protocols' v2 the forwarder offered v2 only, and the nested KWin's
+# commit deadline (guest 0029) never got the host's deadline (vitrine's Desktop view, 2026-11-12). 2026-11-15: the
+# deadline moved from v3 to v4 (1.50 gave v3 to the fixed_rate/variable_rate kinds); with a host KWin of the old 0012
+# (v3) the forwarder offers v3 and passes the same event through (same opcode)
 ./protocols/presentation-time.xml
 stable/viewporter/viewporter.xml
 stable/tablet/tablet-v2.xml

@@ -1,6 +1,6 @@
 Name:    kwin
 Version: 6.8.2
-Release: 3.3.g28%{?dist}
+Release: 3.4.g28v4%{?dist}
 Summary: KDE Window manager
 
 License: BSD-2-Clause AND BSD-3-Clause AND CC0-1.0 AND GPL-2.0-only AND GPL-2.0-or-later AND GPL-3.0-only AND GPL-3.0-or-later AND LGPL-2.0-only AND LGPL-2.0-or-later AND LGPL-2.1-only AND LGPL-2.1-or-later AND LGPL-3.0-only AND (GPL-2.0-only OR GPL-3.0-only) AND (LGPL-2.1-only OR LGPL-3.0-only) AND MIT
@@ -73,9 +73,9 @@ Patch1025: 0025-EXP-wayland-backend-KWIN_WAYLAND_SAFETY_MARGIN_US.patch
 Patch1026: 0026-EXP-wayland-backend-KWIN_WAYLAND_ADAPTIVE_MARGIN.patch
 Patch1027: 0027-EXP-wayland-backend-KWIN_WAYLAND_COMMIT_TIMING.patch
 Patch1028: 0028-FIX-H-wayland-backend-match-presentation-feedback-to-its-frame.patch
-Patch1029: 0029-EXP-wayland-backend-commit-deadline-from-presentation-time-v3.patch
+Patch1029: 0029-EXP-wayland-backend-commit-deadline-from-presentation-time-v4.patch
 Patch1030: 0030-EXP-renderloop-wayland-backend-KWIN_RENDER_TIME_FLOO.patch
-Patch1031: 0031-EXP-wayland-backend-KWIN_WAYLAND_READY-the-way-to-th.patch
+Patch1031: 0031-EXP-wayland-backend-KWIN_WAYLAND_READY-the-way-to-th.v5.patch
 Patch1032: 0032-EXP-wayland-backend-3-frames-in-flight-KWIN_WAYLAND_.patch
 Patch1033: 0034-FIX-J-wayland-backend-start-at-the-host-output-s-ref.patch
 Patch1034: 0035-EXP-effects-QML-animations-steady-animation-clock.68.patch
@@ -84,7 +84,7 @@ Patch1036: 0037-EXP-effects-first-animation-frame-one-refresh-in.68.patch
 Patch1037: 0038-FIX-window-activate-raise-and-unrestricted-resize-is-unrestricted.patch
 Patch1038: 0039-EXP-renderloop-lone-frames-aimed-at-the-next-vblank.patch
 Patch1039: 0028-EXP-outputlayer-async-cursor-moves-do-not-wake-the-render-loop.68.patch
-Patch1040: 0041-EXP-wayland-backend-commit-timing-stamps-adapt-to-a-late-host.patch
+Patch1040: 0041-EXP-wayland-backend-commit-timing-stamps-adapt-to-a-late-host.v5.patch
 Patch1041: 0042-EXP-renderloop-KWIN_RENDERLOOP_TRACE.68.patch
 Patch1042: 0043-EXP-wayland-backend-commit-timing-auto-waits-for-a-host-deadline.patch
 Patch1043: 0044-EXP-wayland-backend-no-stamp-shifting-with-a-deadline-host.patch
@@ -387,6 +387,14 @@ sed -i \
 
 
 %changelog
+* Sun Nov 15 2026 vitrine <noreply@anthropic.com> - 6.8.2-3.4.g28v4
+- the research's guest set g21jmc98v4-681 as g28v4: g28 with the host's
+  content-update deadline taken from presentation-time version 4 (0029 v4;
+  0031 and 0041 follow it), as vitrine's host KWin h681zz sends it:
+  wayland-protocols 1.50 gave version 3 to its own fixed_rate and
+  variable_rate kinds.  From a host KWin of an older set (h681zy) the same
+  event at version 3 is still taken
+
 * Sun Nov 08 2026 vitrine <noreply@anthropic.com> - 6.8.2-3.3.g28
 - the research's guest set g21jmc98-681 as g28 (61 patches: g27's 60, then
   0098): the nested desktop binds the host's seat up to version 9, and hands

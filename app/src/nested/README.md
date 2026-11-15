@@ -6,7 +6,7 @@ VM's own screen.
 
 `vmview.{h,cpp}`, `protocols.{h,txt}`, `protocols/presentation-time.xml`,
 `gen_protocols.py` and `LICENSE` are the research side's vmview library
-(`src/vmview` of the virtio-gpu-desktop repository, commit 3770e96, which
+(`src/vmview` of the virtio-gpu-desktop repository, commit c9a6e0d, which
 has vitrine's changes up to 0327fe9; its 9240dd0 took those of 776a6f2,
 4a8e155, cbb9ebc and 175aa1a). QEMU's
 cross-domain connects to a socket the
@@ -22,18 +22,22 @@ library, its protocol code generated with wayland-scanner and
 `gen_protocols.py` from wayland-protocols, `./` lines of protocols.txt from
 this folder), its demo, tools and README.
 
-presentation-time is the library's own copy at version 3 (its 3770e96): the
-host KWin's content-update deadline (vitrine's host KWin, patch 0012) reaches
-the guest's nested KWin (its 0029). From wayland-protocols' version 2 the
-library offered the guest version 2 only, and the guest's commits were paced
-without the host's deadline (2026-11-12). vitrine's views use version 2 for
-their own feedback (`vitrine_wlprotocols`: their listeners know three events,
-and a view bound at version 3 would be sent a fourth). One program has one
-symbol of each name, so app/CMakeLists.txt compiles the two generated files of
-the library that define and use its v3 interfaces with
-`wp_presentation_interface` and `wp_presentation_feedback_interface` renamed
-(`vmview_v3_...`); the names on the wire stay the same, and vmview.cpp's own
-feedback (version 1) keeps the shared version 2 interfaces.
+presentation-time is the library's own copy at version 4 (its 12e2772):
+wayland-protocols 1.50's version 3, and the host KWin's content-update
+deadline (vitrine's host KWin, patch 0012) since version 4, which reaches the
+guest's nested KWin (its 0029). From wayland-protocols' version 2 the library
+offered the guest version 2 only, and the guest's commits were paced without
+the host's deadline (2026-11-12); the deadline was version 3 until
+wayland-protocols 1.50 took that version (2026-11-15). vitrine's views use
+version 2 at most for their own feedback (`vitrine_wlprotocols`, from this
+system's wayland-protocols, and `presentationVersion()`: their listeners know
+three events, and a host KWin of an older set sends its deadline, a fourth,
+at version 3). One program has one symbol of each name, so app/CMakeLists.txt
+compiles the two generated files of the library that define and use its v4
+interfaces with `wp_presentation_interface` and
+`wp_presentation_feedback_interface` renamed (`vmview_v4_...`); the names on
+the wire stay the same, and vmview.cpp's own feedback (version 1) keeps the
+shared interfaces.
 
 The library is under the GNU General Public License, version 2 or later, as
 `LICENSE` says; the `../../LICENSE` it names is the research repository's

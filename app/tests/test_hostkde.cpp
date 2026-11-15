@@ -399,8 +399,8 @@ private slots:
         QCOMPARE(sets[1].tag, "h18");
         QCOMPARE(sets[1].versions, QStringList{"6.8.0"});
         QCOMPARE(sets[1].excluded, QStringList());
-        QCOMPARE(sets[2].series, "h681zy");
-        QCOMPARE(sets[2].tag, "h681zy_no82");
+        QCOMPARE(sets[2].series, "h681zz");
+        QCOMPARE(sets[2].tag, "h681zz_no82");
         QCOMPARE(sets[2].excluded, QStringList{"0082"});
         QCOMPARE(sets[2].versions, QStringList{"6.8.*"});
         /* the libraries' */
@@ -442,7 +442,7 @@ private slots:
         QCOMPARE(r.keys.size(), 4);
         QCOMPARE(Recipe::read(hostKdeDir(), "44", {{"kwin", "6.8.0"}}).series("kwin"), "hl39-68");
         QCOMPARE(Recipe::read(hostKdeDir(), "44", {{"kwin", "6.8.0"}}).tag("kwin"), "h18");
-        QCOMPARE(Recipe::read(hostKdeDir(), "44", {{"kwin", "6.8.3"}}).series("kwin"), "h681zy");
+        QCOMPARE(Recipe::read(hostKdeDir(), "44", {{"kwin", "6.8.3"}}).series("kwin"), "h681zz");
         /* the research's overrides of its sets, and its switches, stay its own */
         qputenv("VGD_HOST_KWIN_SET", "hl39");
         qputenv("VGD_HOST_KWIN_SET_68", "hl39-681");
@@ -452,8 +452,8 @@ private slots:
         const Recipe overridden = Recipe::read(hostKdeDir(), "44", {{"kwin", "6.7.91"}, {"qt6-qtbase", "6.11.2"}});
         QCOMPARE(overridden.series("kwin"), "hl39y");
         QCOMPARE(overridden.series("qt6-qtbase"), "q4");
-        QCOMPARE(Recipe::read(hostKdeDir(), "44", {{"kwin", "6.8.3"}}).series("kwin"), "h681zy");
-        QCOMPARE(Recipe::read(hostKdeDir(), "44", {{"kwin", "6.8.3"}}).tag("kwin"), "h681zy_no82");
+        QCOMPARE(Recipe::read(hostKdeDir(), "44", {{"kwin", "6.8.3"}}).series("kwin"), "h681zz");
+        QCOMPARE(Recipe::read(hostKdeDir(), "44", {{"kwin", "6.8.3"}}).tag("kwin"), "h681zz_no82");
         QCOMPARE(HostKde::sets(hostKdeDir(), "kwin").last().excluded, QStringList{"0082"});
         for (const char *v : {"VGD_HOST_KWIN_SET", "VGD_HOST_KWIN_SET_68", "VGD_HOST_QT_SET", "HOST_QT_Q4",
                               "VGD_HOST_KWIN_0082"}) {
@@ -518,17 +518,22 @@ private slots:
         QCOMPARE(patches[28].origin, "hl39y: left out of the build");
         QVERIFY(patches[28].left);
         QVERIFY(!patches[27].left);
-        /* h681zy: h681zu and 0092-0096 */
+        /* h681zz: h681zu, 0092-0096, and 0012 at presentation-time version 4 */
         const Builds::Patch &p0096 = patches[patches.size() - 2];
-        QCOMPARE(p0096.origin, "h681zy, for KWin 6.8.x");
+        QCOMPARE(p0096.origin, "h681zz, for KWin 6.8.x");
         QCOMPARE(p0096.name(), "0096-EXP-opengl-the-GPU-s-clock-read-once-a-second-for-render-time-queries.patch");
         QVERIFY(!p0096.left);
+        /* its 0012: the content-update deadline at presentation-time version 4 */
+        QVERIFY(std::any_of(patches.begin(), patches.end(), [](const Builds::Patch &p) {
+            return p.origin == "h681zz, for KWin 6.8.x" &&
+                   p.name() == "0012-presentation-time-v4-content-update-deadline.patch";
+        }));
         /* a subject on two lines of the mail header */
         QCOMPARE(Builds::subject(c, p0096), "EXP opengl: the GPU's clock read once a second for render-time "
                                             "queries (KWIN_GPU_CLOCK_EVERY_FRAME=1 reads it every frame)");
         QCOMPARE(patches[patches.size() - 7].name(),
                  "0090-EXP-opengl-persistent-upload-buffer-for-big-texture-uploads.patch");
-        QCOMPARE(patches.last().origin, "h681zy: left out of the build");
+        QCOMPARE(patches.last().origin, "h681zz: left out of the build");
         QVERIFY(patches.last().left);
         QCOMPARE(patches.last().name(),
                  "0082-EXP-compositor-a-layer-with-no-damage-keeps-its-buffer-at-run-time.patch");
@@ -545,7 +550,7 @@ private slots:
         QCOMPARE(q4.size(), 1);
         QCOMPARE(q4.first().name(), "qtbase-wayland-shm-reuse-pools-v3.patch");
         QVERIFY(Builds::subject(Builds::find(all, "host-qtbase"), q4.first()).startsWith("Qt Wayland: a resized window"));
-        QCOMPARE(Builds::source(svg).revision, "81d91258c16d342b9e84848e5bfdef24b9950906");
+        QCOMPARE(Builds::source(svg).revision, "c9a6e0d97f26288b24a84cbd1c9974ab32af6ecf");
     }
 
     void parsing()

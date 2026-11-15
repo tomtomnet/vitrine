@@ -42,6 +42,7 @@
 #include <unistd.h>
 
 #include "core/physicalsize.h"
+#include "nested/protocols.h"
 #include "vmview/dbusdisplay.h"
 #include "vmview/qmp.h"
 #include "vmview/renderer.h"
@@ -632,6 +633,23 @@ private Q_SLOTS:
         QCOMPARE(presentationVersion(2), 2u);
         QCOMPARE(presentationVersion(3), 2u);
         QCOMPARE(presentationVersion(5), 2u);
+    }
+
+    /* the nested desktop's forwarder: presentation-time at version 4, the
+       library's own copy (wayland-protocols 1.50's version 3 and the host
+       KWin's content-update deadline since 4), whatever this system's
+       wayland-protocols has */
+    void nestedPresentationVersion()
+    {
+        QStringList seen;
+        for (unsigned i = 0; i < vmview_iface_count; i++) {
+            const QString name = QString::fromLatin1(vmview_ifaces[i].name);
+            if (name == "wp_presentation" || name == "wp_presentation_feedback") {
+                QCOMPARE(vmview_ifaces[i].version, 4u);
+                seen << name;
+            }
+        }
+        QCOMPARE(seen, QStringList({"wp_presentation", "wp_presentation_feedback"}));
     }
 
     void attachAndDetach()

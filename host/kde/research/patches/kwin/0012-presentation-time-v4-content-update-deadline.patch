@@ -1,114 +1,64 @@
-diff --git a/src/backends/wayland/wayland_display.cpp b/src/backends/wayland/wayland_display.cpp
-index 84d3f55..89061d9 100644
---- a/src/backends/wayland/wayland_display.cpp
-+++ b/src/backends/wayland/wayland_display.cpp
-@@ -5,6 +5,7 @@
- */
- 
- #include "wayland_display.h"
-+#include "utils/envvar.h"
- #include "utils/memorymap.h"
- #include "wayland-client/linuxdmabuf.h"
- #include "wayland-client/viewporter.h"
-@@ -421,7 +422,10 @@ void WaylandDisplay::registry_global(void *data, wl_registry *registry, uint32_t
-         }
-         display->m_linuxDmabuf = std::make_unique<WaylandClient::LinuxDmabufV1>(registry, name, std::min(version, 4u));
-     } else if (strcmp(interface, wp_presentation_interface.name) == 0) {
--        display->m_presentationTime = reinterpret_cast<wp_presentation *>(wl_registry_bind(registry, name, &wp_presentation_interface, std::min(version, 2u)));
-+        // version 3 (proposed: wayland-protocols merge request 454) adds the host's commit
-+        // deadline to each presentation feedback; KWIN_WAYLAND_DEADLINE=0 stays at 2
-+        static const bool s_deadline = environmentVariableBoolValue("KWIN_WAYLAND_DEADLINE").value_or(true);
-+        display->m_presentationTime = reinterpret_cast<wp_presentation *>(wl_registry_bind(registry, name, &wp_presentation_interface, std::min(version, s_deadline ? 3u : 2u)));
-     } else if (strcmp(interface, wp_commit_timing_manager_v1_interface.name) == 0) {
-         display->m_commitTiming = reinterpret_cast<wp_commit_timing_manager_v1 *>(wl_registry_bind(registry, name, &wp_commit_timing_manager_v1_interface, 1));
-     } else if (strcmp(interface, wp_tearing_control_manager_v1_interface.name) == 0) {
-diff --git a/src/backends/wayland/wayland_output.cpp b/src/backends/wayland/wayland_output.cpp
-index ade99d1..a82984f 100644
---- a/src/backends/wayland/wayland_output.cpp
-+++ b/src/backends/wayland/wayland_output.cpp
-@@ -241,10 +241,17 @@ static void handleSyncOutput(void *data, struct wp_presentation_feedback *, stru
-     // intentionally ignored
- }
- 
-+// version 3: how long before the presentation the host latched this frame (sent before presented)
-+static void handleDeadline(void *data, struct wp_presentation_feedback *wp_presentation_feedback, uint32_t tv_nsec)
-+{
-+    reinterpret_cast<WaylandOutput *>(data)->frameDeadline(wp_presentation_feedback, std::chrono::nanoseconds(tv_nsec));
-+}
-+
- static constexpr struct wp_presentation_feedback_listener s_presentationListener{
-     .sync_output = handleSyncOutput,
-     .presented = handlePresented,
-     .discarded = handleDiscarded,
-+    .content_update_deadline = handleDeadline,
- };
- 
- void WaylandOutput::handleFrame(void *data, wl_callback *callback, uint32_t time)
-@@ -290,6 +297,7 @@ WaylandOutput::FrameData::FrameData(FrameData &&move)
-     , frameCallback(std::exchange(move.frameCallback, nullptr))
-     , frameCallbackTime(std::exchange(move.frameCallbackTime, std::nullopt))
-     , commitTime(move.commitTime)
-+    , contentUpdateDeadline(std::exchange(move.contentUpdateDeadline, std::nullopt))
+presentation-time: the host's content-update deadline as version 4 (2026-11-15)
+
+The same event as 0012-presentation-time-v3-content-update-deadline.patch, renumbered.
+wayland-protocols 1.50 (Fedora 45, 2026-11) made stable presentation-time version 3 with the
+fixed_rate and variable_rate kinds; the v3 of 0012 had already used version 3 for the
+content_update_deadline event, so a client built against 1.50 binding version 3 got an
+event it did not know and libwayland dropped its connection (vitrine's view, 2026-11-15:
+"interface 'wp_presentation_feedback' has no event 3"). Here: the local copy is 1.50's XML
+with content_update_deadline since version 4; KWin advertises 4, sends the deadline to
+version 4 resources and FIXED_RATE (version 3) with a fixed refresh (VSync mode, non-zero
+refresh); variable_rate is not set (which surface drives a variable refresh is policy).
+Guests: 0029-...-v4 binds 4 (and handles the event at 3 from a host with the old 0012).
+
+diff --git a/src/core/renderbackend.cpp b/src/core/renderbackend.cpp
+index a7c1b3c..aca85c6 100644
+--- a/src/core/renderbackend.cpp
++++ b/src/core/renderbackend.cpp
+@@ -49,6 +49,7 @@ OutputFrame::OutputFrame(RenderLoop *loop, std::chrono::nanoseconds refreshDurat
+     , m_targetPageflipTime(loop->nextPresentationTimestamp())
+     , m_predictedRenderTime(loop->predictedRenderTime())
+     , m_scheduledLate(loop->scheduledLate())
++    , m_compositeStart(std::chrono::steady_clock::now())
  {
  }
  
-@@ -308,6 +316,7 @@ WaylandOutput::FrameData &WaylandOutput::FrameData::operator=(FrameData &&move)
-         frameCallback = std::exchange(move.frameCallback, nullptr);
-         frameCallbackTime = std::exchange(move.frameCallbackTime, std::nullopt);
-         commitTime = move.commitTime;
-+        contentUpdateDeadline = std::exchange(move.contentUpdateDeadline, std::nullopt);
-     }
-     return *this;
- }
-@@ -397,6 +406,16 @@ void WaylandOutput::frameDiscarded(struct wp_presentation_feedback *feedback)
-     }
+@@ -155,6 +156,11 @@ std::chrono::steady_clock::time_point OutputFrame::targetPageflipTime() const
+     return m_targetPageflipTime;
  }
  
-+void WaylandOutput::frameDeadline(struct wp_presentation_feedback *feedback, std::chrono::nanoseconds deadline)
++std::chrono::steady_clock::time_point OutputFrame::compositeStart() const
 +{
-+    const auto it = std::ranges::find_if(m_frames, [feedback](const FrameData &frame) {
-+        return frame.presentationFeedback == feedback;
-+    });
-+    if (it != m_frames.end()) {
-+        it->contentUpdateDeadline = deadline;
-+    }
++    return m_compositeStart;
 +}
 +
- void WaylandOutput::framePresented(struct wp_presentation_feedback *feedback, std::chrono::nanoseconds timestamp, uint32_t refreshRate)
+ std::chrono::nanoseconds OutputFrame::refreshDuration() const
  {
-     const auto it = std::ranges::find_if(m_frames, [feedback](const FrameData &frame) {
-@@ -440,6 +459,10 @@ void WaylandOutput::framePresented(struct wp_presentation_feedback *feedback, st
-         m_renderLoop->setPresentationSafetyMargin(std::max<std::chrono::nanoseconds>(m_missLead + std::chrono::microseconds(500), std::chrono::microseconds(1500)));
-     } else if (s_safetyMarginUs) {
-         m_renderLoop->setPresentationSafetyMargin(std::chrono::microseconds(*s_safetyMarginUs));
-+    } else if (auto deadline = frame.contentUpdateDeadline) {
-+        // the host's own word (wp_presentation v3, proposed in wayland-protocols merge request
-+        // 454): its latching deadline for this frame, plus a millisecond for our way to it
-+        m_renderLoop->setPresentationSafetyMargin(*deadline + std::chrono::milliseconds(1));
-     } else if (auto t = frame.frameCallbackTime) {
-         // NOTE that the frame callback gets signaled *after* the host compositor
-         // is done compositing the frame on the CPU side, not before!
-diff --git a/src/backends/wayland/wayland_output.h b/src/backends/wayland/wayland_output.h
-index fb32aad..f620b9a 100644
---- a/src/backends/wayland/wayland_output.h
-+++ b/src/backends/wayland/wayland_output.h
-@@ -106,6 +106,7 @@ public:
+     return m_refreshDuration;
+diff --git a/src/core/renderbackend.h b/src/core/renderbackend.h
+index bf4e3b9..b89268b 100644
+--- a/src/core/renderbackend.h
++++ b/src/core/renderbackend.h
+@@ -97,6 +97,11 @@ public:
+     void addRenderTimeQuery(std::unique_ptr<RenderTimeQuery> &&query);
  
-     void frameDiscarded(struct wp_presentation_feedback *feedback);
-     void framePresented(struct wp_presentation_feedback *feedback, std::chrono::nanoseconds timestamp, uint32_t refreshRate);
-+    void frameDeadline(struct wp_presentation_feedback *feedback, std::chrono::nanoseconds deadline);
- 
-     void applyChanges(const OutputConfiguration &config) override;
- 
-@@ -149,6 +150,8 @@ private:
-         wl_callback *frameCallback;
-         std::optional<std::chrono::steady_clock::time_point> frameCallbackTime;
-         std::chrono::steady_clock::time_point commitTime;
-+        // the host's latching deadline before this frame's presentation (wp_presentation v3)
-+        std::optional<std::chrono::nanoseconds> contentUpdateDeadline;
-     };
-     std::deque<FrameData> m_frames;
-     // KWIN_WAYLAND_ADAPTIVE_MARGIN: the largest commit lead (target vblank - commit) that
+     std::chrono::steady_clock::time_point targetPageflipTime() const;
++    /**
++     * When the compositor started this frame: client content committed after it waits for
++     * the next one (the latching deadline of wp_presentation_feedback.content_update_deadline)
++     */
++    std::chrono::steady_clock::time_point compositeStart() const;
+     std::chrono::nanoseconds refreshDuration() const;
+     std::chrono::nanoseconds predictedRenderTime() const;
+     bool scheduledLate() const;
+@@ -134,6 +139,7 @@ private:
+     const std::chrono::steady_clock::time_point m_targetPageflipTime;
+     const std::chrono::nanoseconds m_predictedRenderTime;
+     const bool m_scheduledLate;
++    const std::chrono::steady_clock::time_point m_compositeStart;
+     struct Feedback
+     {
+         std::shared_ptr<PresentationFeedback> feedback;
 diff --git a/src/wayland/CMakeLists.txt b/src/wayland/CMakeLists.txt
 index 0ca08c3..b57ba9d 100644
 --- a/src/wayland/CMakeLists.txt
@@ -122,17 +72,75 @@ index 0ca08c3..b57ba9d 100644
          ${WaylandProtocols_DATADIR}/stable/tablet/tablet-v2.xml
          ${WaylandProtocols_DATADIR}/stable/viewporter/viewporter.xml
          ${WaylandProtocols_DATADIR}/stable/xdg-shell/xdg-shell.xml
+diff --git a/src/wayland/presentationtime.cpp b/src/wayland/presentationtime.cpp
+index df32489..fe62ff1 100644
+--- a/src/wayland/presentationtime.cpp
++++ b/src/wayland/presentationtime.cpp
+@@ -9,12 +9,15 @@
+ #include "surface.h"
+ #include "surface_p.h"
+ 
++#include <algorithm>
++#include <limits>
++
+ namespace KWin
+ {
+ 
+ PresentationTime::PresentationTime(Display *display, QObject *parent)
+     : QObject(parent)
+-    , QtWaylandServer::wp_presentation(*display, 2)
++    , QtWaylandServer::wp_presentation(*display, 4)
+ {
+ }
+ 
+@@ -85,16 +88,33 @@ void PresentationTimeFeedback::presented(OutputFrame *frame, std::chrono::nanose
+         flags |= WP_PRESENTATION_FEEDBACK_KIND_ZERO_COPY;
+     }
+ 
++    // the latching deadline of this presentation: content committed later than the start of
++    // the frame that showed it would have waited for the next one (version 4, ours, after
++    // wayland-protocols merge request 454 - proposed there as version 3, which wayland-protocols
++    // 1.50 gave to the fixed_rate/variable_rate kinds; a nested compositor - a VM's display - aims at it)
++    const uint32_t deadline = std::clamp<int64_t>((timestamp - frame->compositeStart().time_since_epoch()).count(),
++                                                  0, std::numeric_limits<uint32_t>::max());
++
+     wl_resource *resource;
+     wl_resource *tmp;
+     wl_resource_for_each_safe (resource, tmp, &resources) {
++        if (wl_resource_get_version(resource) >= WP_PRESENTATION_FEEDBACK_CONTENT_UPDATE_DEADLINE_SINCE_VERSION) {
++            wp_presentation_feedback_send_content_update_deadline(resource, deadline);
++        }
+         // TODO with adaptive sync, send an estimation of the current actual refresh rate?
+         uint32_t refreshDuration = frame->refreshDuration().count();
+         if (adaptiveSync && wl_resource_get_version(resource) == 1) {
+             // version 1 requires sending zero when the refresh rate isn't stable
+             refreshDuration = 0;
+         }
+-        wp_presentation_feedback_send_presented(resource, tvSecHi, tvSecLo, tvNsec, refreshDuration, 0, 0, flags);
++        // version 3: a fixed refresh rate said so; variable_rate is left out (whether this surface
++        // drives a variable refresh is the compositor's policy, not known here)
++        uint32_t resourceFlags = flags;
++        if (mode == PresentationMode::VSync && refreshDuration != 0
++            && wl_resource_get_version(resource) >= WP_PRESENTATION_FEEDBACK_KIND_FIXED_RATE_SINCE_VERSION) {
++            resourceFlags |= WP_PRESENTATION_FEEDBACK_KIND_FIXED_RATE;
++        }
++        wp_presentation_feedback_send_presented(resource, tvSecHi, tvSecLo, tvNsec, refreshDuration, 0, 0, resourceFlags);
+         wl_resource_destroy(resource);
+     }
+ }
 diff --git a/src/wayland/protocols/presentation-time.xml b/src/wayland/protocols/presentation-time.xml
 new file mode 100644
-index 0000000..53d3c96
+index 0000000..88238f6
 --- /dev/null
 +++ b/src/wayland/protocols/presentation-time.xml
-@@ -0,0 +1,284 @@
+@@ -0,0 +1,314 @@
 +<?xml version="1.0" encoding="UTF-8"?>
 +<protocol name="presentation_time">
-+  <!-- Local copy: wayland-protocols' stable presentation-time with the proposed
-+       version 3 (content_update_deadline, wayland-protocols merge request 454,
-+       not merged as of 2026-10-07), for an experimental host build. -->
++  <!-- Local copy: wayland-protocols' stable presentation-time (1.50: version 3,
++       the fixed_rate and variable_rate kinds) with content_update_deadline as
++       version 4, after wayland-protocols merge request 454 (proposed there as
++       version 3 before 1.50 took that number; not merged as of 2026-11-15),
++       for an experimental host build. -->
 +<!-- wrap:70 -->
 +
 +  <copyright>
@@ -158,7 +166,7 @@ index 0000000..53d3c96
 +    DEALINGS IN THE SOFTWARE.
 +  </copyright>
 +
-+  <interface name="wp_presentation" version="3">
++  <interface name="wp_presentation" version="4">
 +    <description summary="timed presentation related wl_surface requests">
 +
 +<!-- Introduction -->
@@ -256,7 +264,7 @@ index 0000000..53d3c96
 +
 +  </interface>
 +
-+  <interface name="wp_presentation_feedback" version="3">
++  <interface name="wp_presentation_feedback" version="4">
 +    <description summary="presentation time feedback event">
 +      A presentation_feedback object returns an indication that a
 +      wl_surface content update has become visible to the user.
@@ -328,6 +336,29 @@ index 0000000..53d3c96
 +          fullscreen surface and a surface on a hardware overlay.
 +        </description>
 +      </entry>
++      <entry name="fixed_rate" value="0x10" since="3">
++        <description summary="presentation is at a fixed refresh rate">
++          The display hardware is operating at a fixed refresh rate.
++          The presentation was aligned to a multiple of this event's
++          'refresh' argument.
++          If this is set, the refresh argument must not be 0.
++        </description>
++      </entry>
++      <entry name="variable_rate" value="0x20" since="3">
++        <description summary="presentation is at a variable refresh rate">
++          The display hardware is operating at a variable refresh rate, with
++          updates to this surface consistently determining the display refresh
++          timing. The definition of 'consistent' is compositor policy.
++
++          The content update was displayed as soon as possible after it became
++          ready, but no sooner than 'refresh' nanoseconds after the previous
++          presentation on this surface. In other words, the presentation time
++          was determined by when this surface's content became ready, not by
++          a periodic display refresh or by updates to other surfaces.
++
++          If this is set, the refresh argument must not be 0.
++        </description>
++      </entry>
 +    </enum>
 +
 +    <event name="presented" type="destructor">
@@ -364,6 +395,11 @@ index 0000000..53d3c96
 +        For version 1, if the output does not have a constant refresh rate,
 +        the refresh argument must be zero.
 +
++        If the 'fixed_rate' flag is set, then the refresh argument is
++        the output's constant refresh rate. If the 'variable_rate' flag
++        is set, then the refresh argument is the output's fastest refresh
++        rate.
++
 +        The 64-bit value combined from seq_hi and seq_lo is the value
 +        of the output's vertical retrace counter when the content
 +        update was first scanned out to the display. This value must
@@ -397,7 +433,7 @@ index 0000000..53d3c96
 +      </description>
 +    </event>
 +
-+    <event name="content_update_deadline" since="3">
++    <event name="content_update_deadline" since="4">
 +      <description summary="The content update deadline for the presentation cycle">
 +        Describes the latching deadline for the presentation of the relevant
 +        content update, expressed as a duration before the presentation
