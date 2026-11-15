@@ -1458,6 +1458,11 @@ QStringList VmRunner::Private::commandLine(const ArgsFile &args, const QString &
                     [&hostArgs](int i) { return isGlDbusDisplay(hostArgs.valueAt(i)); })) {
         hostArgs = withDisplayRenderNode(hostArgs, HostGpus::displayNode());
     }
+    /* egl-headless's: the card's GPU, else Automatic's (with several GPUs) */
+    if (std::any_of(displays.cbegin(), displays.cend(),
+                    [&hostArgs](int i) { return hostArgs.valueAt(i).implied() == "egl-headless"; })) {
+        hostArgs = withHeadlessRenderNode(hostArgs, HostGpus::displayNode());
+    }
     hostArgs = withRefcountCache(hostArgs, dir);
     /* the NAT network's passt: Vitrine's, with its fix */
     hostArgs = withPasstPath(hostArgs, StackBuilder::passtFor(qemu));
@@ -1672,6 +1677,26 @@ ArgsFile VmRunner::withDisplayRenderNode(const ArgsFile &args, const QString &no
         OptionValue v = out.valueAt(i);
         if (isGlDbusDisplay(v) && !v.has("rendernode")) {
             v.set("rendernode", node);
+            out.setValueAt(i, v);
+        }
+    }
+    return out;
+}
+
+ArgsFile VmRunner::withHeadlessRenderNode(const ArgsFile &args, const QString &node)
+{
+    ArgsFile out = args;
+    /* the card's GPU first: its scanouts are imported where they are made */
+    const QString card = NestedDesktop::renderNode(args);
+    const QString chosen = card.isEmpty() ? node : card;
+
+    if (chosen.isEmpty()) {
+        return out;
+    }
+    for (int i : out.indexesOf("display")) {
+        OptionValue v = out.valueAt(i);
+        if (v.implied() == "egl-headless" && !v.has("rendernode")) {
+            v.set("rendernode", chosen);
             out.setValueAt(i, v);
         }
     }

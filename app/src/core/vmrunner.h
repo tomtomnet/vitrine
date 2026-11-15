@@ -96,6 +96,16 @@ public:
      */
     static ArgsFile withDisplayRenderNode(const ArgsFile &args, const QString &node);
     /*
+     * @args with rendernode= on its -display egl-headless (a 3D card
+     * without a window), unless it sets one: the GPU its rutabaga card
+     * renders on (its x-render-node), else @node (Automatic's, as above).
+     * Without one, QEMU opens the first render node /dev/dri lists, which
+     * on a host with an iGPU beside the GPU may be the iGPU's: the scanout,
+     * and all the 3D of a card without x-render-node, went there
+     * (2026-11-16, a desktop's iGPU turned on).  Nothing without either.
+     */
+    static ArgsFile withHeadlessRenderNode(const ArgsFile &args, const QString &node);
+    /*
      * @args with path=@passt on each -netdev passt and -nic passt (JSON
      * -netdev lines too) that sets no path of its own: Vitrine's passt,
      * which has the fix for a VM paused while a connection is closed or

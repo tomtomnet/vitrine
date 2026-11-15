@@ -562,6 +562,35 @@ private slots:
         }
     }
 
+    /* egl-headless (a 3D card without a window): the card's GPU, else Automatic's; without one,
+       QEMU took the first render node /dev/dri listed, an iGPU's beside the GPU */
+    void headlessRenderNode()
+    {
+        const QString automatic = "/dev/dri/renderD129";
+        auto with = [](const QString &args, const QString &node) {
+            return VmRunner::withHeadlessRenderNode(ArgsFile::parse(args), node).toText();
+        };
+        /* a rutabaga card's own GPU before Automatic's */
+        QCOMPARE(with("-device virtio-vga-rutabaga,x-render-node=/dev/dri/renderD128\n-display egl-headless\n",
+                      automatic),
+                 "-device virtio-vga-rutabaga,x-render-node=/dev/dri/renderD128\n"
+                 "-display egl-headless,rendernode=/dev/dri/renderD128\n");
+        /* virgl's card renders in the display's EGL: Automatic's GPU for both */
+        QCOMPARE(with("-device virtio-vga-gl\n-display egl-headless\n", automatic),
+                 "-device virtio-vga-gl\n-display egl-headless,rendernode=/dev/dri/renderD129\n");
+        /* the VM's own */
+        QCOMPARE(with("-device virtio-vga-gl\n-display egl-headless,rendernode=/dev/dri/renderD128\n", automatic),
+                 "-device virtio-vga-gl\n-display egl-headless,rendernode=/dev/dri/renderD128\n");
+        /* one GPU: nothing to choose */
+        QCOMPARE(with("-device virtio-vga-gl\n-display egl-headless\n", ""),
+                 "-device virtio-vga-gl\n-display egl-headless\n");
+        /* other displays: not this one's */
+        for (const char *display : {"-display dbus,p2p=yes,gl=on\n", "-display sdl,gl=on\n", "-display none\n"}) {
+            QCOMPARE(with(QString("-device virtio-vga-gl\n") + display, automatic),
+                     QString("-device virtio-vga-gl\n") + display);
+        }
+    }
+
     /* Vitrine's passt on each passt network without a path of its own */
     void passtPath()
     {
