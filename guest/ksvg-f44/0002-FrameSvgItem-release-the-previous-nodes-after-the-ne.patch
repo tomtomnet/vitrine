@@ -1,0 +1,49 @@
+From 53e460558a37b2b6d873b24fe4fa0833b16e9d64 Mon Sep 17 00:00:00 2001
+From: tomtomnet <tompere8000@proton.me>
+Date: Thu, 15 Oct 2026 02:24:37 +0200
+Subject: [PATCH 2/2] FrameSvgItem: release the previous nodes after the new
+ ones took their textures
+
+When the frame's texture changed (colors, prefix, borders, ...), updatePaintNode()
+deleted the old nodes before creating the new ones. Their textures left
+ImageTexturesCache with them, so a piece whose image did not change was uploaded
+again. Plasma's popups disable their content while hidden (CompactApplet,
+QTBUG-146992): with Plasma's style the colors change when a popup closes and
+change back when it opens, and every frame in it was rebuilt and re-uploaded in
+the opening's first frame.
+
+Delete the previous nodes at the end instead: unchanged pieces find their
+textures in the cache.
+---
+ src/declarativeimports/framesvgitem.cpp | 7 ++++++-
+ 1 file changed, 6 insertions(+), 1 deletion(-)
+
+diff --git a/src/declarativeimports/framesvgitem.cpp b/src/declarativeimports/framesvgitem.cpp
+index 9ead731..2912c4f 100644
+--- a/src/declarativeimports/framesvgitem.cpp
++++ b/src/declarativeimports/framesvgitem.cpp
+@@ -22,6 +22,7 @@
+ #include <ksvg/private/framesvg_p.h>
+ 
+ #include <cmath> //floor()
++#include <memory>
+ 
+ #include <Kirigami/Platform/PlatformTheme>
+ #include <debug_p.h>
+@@ -587,8 +588,12 @@ QSGNode *FrameSvgItem::updatePaintNode(QSGNode *oldNode, QQuickItem::UpdatePaint
+     const QSGTexture::Filtering filtering = smooth() ? QSGTexture::Linear : QSGTexture::Nearest;
+ 
+     if (m_fastPath) {
++        // The previous nodes go only once the new ones have their textures: a piece whose image did not change
++        // finds its texture in ImageTexturesCache instead of being uploaded again (an item whose colors changed
++        // and changed back before the next frame, as a hidden popup's content does when it is shown again).
++        std::unique_ptr<QSGNode> previousNode;
+         if (m_textureChanged) {
+-            delete oldNode;
++            previousNode.reset(oldNode);
+             oldNode = nullptr;
+         }
+ 
+-- 
+2.56.0
+

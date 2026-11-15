@@ -1,0 +1,247 @@
+From 5b348ff7eb248c834b4c31583d2205ebddb3d134 Mon Sep 17 00:00:00 2001
+From: Local build <local@localhost>
+Date: Thu, 8 Oct 2026 18:03:21 +0200
+Subject: [PATCH] EXP effects, QML animations: steady animation clock
+ (KWIN_STEADY_ANIMATION_CLOCK)
+
+Mutter 51's timeline pacing (!5157) for KWin: animation time follows the expected presentation
+times, but after a dropped or late frame (more than 1.5 refresh intervals) it steps one refresh,
+catches up by 1/32 of a refresh per frame and resynchronises when more than 100 ms behind - a
+dropped frame is a pause, not a pause and a jump (KWin's own clamp is one 60 Hz frame, so at
+240 Hz a dropped frame still doubled the step). Effects' AnimationClock also keeps the fraction
+of a millisecond it used to drop at every tick (animations ran 4 % slow at 240 Hz, 14 % at
+144 Hz). Off unless KWIN_STEADY_ANIMATION_CLOCK=1.
+
+Plasma/6.8 version (from 82c9fd1b, 2026-10-13): effects get no refresh rate while VRR throttles
+repaints for the window that drives it, which skips the steady path for them; QML animations
+still get the output's period here. Untested under VRR - the nested guests, where this is on,
+have none.
+---
+ src/compositor.cpp                       |  3 +-
+ src/effect/timeline.cpp                  | 58 ++++++++++++++++++++++++
+ src/effect/timeline.h                    | 31 +++++++++++++
+ src/renderloopdrivenqanimationdriver.cpp | 16 ++++++-
+ src/renderloopdrivenqanimationdriver.h   |  8 +++-
+ 5 files changed, 113 insertions(+), 3 deletions(-)
+
+diff --git a/src/compositor.cpp b/src/compositor.cpp
+index db2444c..b61962f 100644
+--- a/src/compositor.cpp
++++ b/src/compositor.cpp
+@@ -809,7 +809,8 @@ void Compositor::composite(RenderLoop *renderLoop)
+     primaryView->setNextPresentationTimestamp(renderLoop->nextPresentationTimestamp(), output->refreshRate(), renderLoop->repaintDriver());
+ 
+     if (m_renderLoopDrivenAnimationDriver->isRunning()) {
+-        m_renderLoopDrivenAnimationDriver->advanceToNextFrame(renderLoop->nextPresentationTimestamp());
++        m_renderLoopDrivenAnimationDriver->advanceToNextFrame(renderLoop->nextPresentationTimestamp(),
++                                                              std::chrono::nanoseconds(1'000'000'000'000 / std::max(output->refreshRate(), 1u)));
+     }
+ 
+     auto totalTimeQuery = std::make_unique<CpuRenderTimeQuery>();
+diff --git a/src/effect/timeline.cpp b/src/effect/timeline.cpp
+index fb46a1f..25630f9 100644
+--- a/src/effect/timeline.cpp
++++ b/src/effect/timeline.cpp
+@@ -10,6 +10,46 @@
+ namespace KWin
+ {
+ 
++bool SteadyAnimationTime::enabled()
++{
++    static const bool on = qEnvironmentVariableIntValue("KWIN_STEADY_ANIMATION_CLOCK") == 1;
++    return on;
++}
++
++bool SteadyAnimationTime::started() const
++{
++    return m_presentation.has_value();
++}
++
++void SteadyAnimationTime::reset()
++{
++    m_presentation.reset();
++    m_time = std::chrono::nanoseconds::zero();
++}
++
++std::chrono::nanoseconds SteadyAnimationTime::advance(std::chrono::nanoseconds presentation, std::chrono::nanoseconds period)
++{
++    if (!m_presentation) {
++        m_presentation = presentation;
++        m_time = presentation;
++        return m_time;
++    }
++    if (presentation <= *m_presentation) {
++        return m_time;
++    }
++    const std::chrono::nanoseconds delta = presentation - *m_presentation;
++    m_presentation = presentation;
++    // a dropped or late frame: one refresh now, the rest little by little
++    m_time += (period > std::chrono::nanoseconds::zero() && delta > period * 3 / 2) ? period : delta;
++    const std::chrono::nanoseconds lag = presentation - m_time;
++    if (lag > std::chrono::milliseconds(100)) {
++        m_time = presentation;
++    } else if (lag > std::chrono::nanoseconds::zero()) {
++        m_time += std::min(lag, period / 32);
++    }
++    return m_time;
++}
++
+ AnimationClock::AnimationClock()
+ {
+ }
+@@ -17,10 +57,28 @@ AnimationClock::AnimationClock()
+ void AnimationClock::reset()
+ {
+     m_lastTimestamp.reset();
++    m_steady.reset();
++    m_steadyReported = std::chrono::milliseconds::zero();
+ }
+ 
+ std::chrono::milliseconds AnimationClock::tick(std::chrono::nanoseconds timestamp, uint refreshRate)
+ {
++    if (SteadyAnimationTime::enabled() && refreshRate) {
++        const std::chrono::nanoseconds period(1'000'000'000'000 / refreshRate);
++        const bool first = !m_steady.started();
++        const std::chrono::nanoseconds time = m_steady.advance(timestamp, period);
++        if (first) {
++            m_steadyStart = time;
++            m_steadyReported = std::chrono::milliseconds::zero();
++            return std::chrono::milliseconds::zero();
++        }
++        // the whole milliseconds since the start, minus those already handed out: no fraction lost
++        const auto total = std::chrono::duration_cast<std::chrono::milliseconds>(time - m_steadyStart);
++        const std::chrono::milliseconds delta = total - m_steadyReported;
++        m_steadyReported = total;
++        return delta;
++    }
++
+     std::chrono::milliseconds delta = std::chrono::milliseconds::zero();
+     if (m_lastTimestamp) {
+         if (timestamp < m_lastTimestamp) {
+diff --git a/src/effect/timeline.h b/src/effect/timeline.h
+index d1c018b..3d6d1ee 100644
+--- a/src/effect/timeline.h
++++ b/src/effect/timeline.h
+@@ -12,12 +12,37 @@
+ #include <QSharedDataPointer>
+ 
+ #include <chrono>
++#include <optional>
+ 
+ namespace KWin
+ {
+ 
+ class RenderView;
+ 
++/**
++ * Animation time that follows the expected presentation times, but steps at most one refresh
++ * interval after a dropped or late frame, catching up by 1/32 of a refresh per frame and
++ * resynchronising when more than 100 ms behind (Mutter 51's timeline pacing, !5157): a dropped
++ * frame is then a pause, not a pause and a jump. On with KWIN_STEADY_ANIMATION_CLOCK=1.
++ */
++class KWIN_EXPORT SteadyAnimationTime
++{
++public:
++    static bool enabled();
++
++    /**
++     * The animation time for a frame expected on screen at @a presentation, frames being
++     * @a period apart; the first call returns @a presentation itself.
++     */
++    std::chrono::nanoseconds advance(std::chrono::nanoseconds presentation, std::chrono::nanoseconds period);
++    bool started() const;
++    void reset();
++
++private:
++    std::optional<std::chrono::nanoseconds> m_presentation;
++    std::chrono::nanoseconds m_time = std::chrono::nanoseconds::zero();
++};
++
+ /**
+  * The AnimationClock type provides a convenient to compute animation delta times.
+  */
+@@ -45,6 +70,12 @@ public:
+ 
+ private:
+     std::optional<std::chrono::nanoseconds> m_lastTimestamp;
++    // KWIN_STEADY_ANIMATION_CLOCK: the steady time, where it started, the milliseconds handed out
++    // (kept whole: tick() used to drop each frame's fraction of a millisecond, 4 % of the time at
++    // 240 Hz, 14 % at 144 Hz)
++    SteadyAnimationTime m_steady;
++    std::chrono::nanoseconds m_steadyStart = std::chrono::nanoseconds::zero();
++    std::chrono::milliseconds m_steadyReported = std::chrono::milliseconds::zero();
+ };
+ 
+ /**
+diff --git a/src/renderloopdrivenqanimationdriver.cpp b/src/renderloopdrivenqanimationdriver.cpp
+index 39082c8..6cd4b91 100644
+--- a/src/renderloopdrivenqanimationdriver.cpp
++++ b/src/renderloopdrivenqanimationdriver.cpp
+@@ -17,9 +17,21 @@ RenderLoopDrivenQAnimationDriver::RenderLoopDrivenQAnimationDriver(QObject *pare
+ {
+ }
+ 
+-void RenderLoopDrivenQAnimationDriver::advanceToNextFrame(std::chrono::nanoseconds nextFramePresentationTime)
++void RenderLoopDrivenQAnimationDriver::advanceToNextFrame(std::chrono::nanoseconds nextFramePresentationTime, std::chrono::nanoseconds refreshInterval)
+ {
+     Q_ASSERT(isRunning());
++    if (SteadyAnimationTime::enabled() && refreshInterval > std::chrono::nanoseconds::zero()) {
++        if (m_lastPresentation && m_lastPresentation >= nextFramePresentationTime) {
++            return;
++        }
++        m_lastPresentation = nextFramePresentationTime;
++        m_nextTime = m_steady.advance(nextFramePresentationTime, refreshInterval);
++        if (!m_offset) {
++            m_offset = m_nextTime;
++        }
++        advance();
++        return;
++    }
+     if (m_nextTime && m_nextTime >= nextFramePresentationTime) {
+         return;
+     }
+@@ -36,6 +48,8 @@ void RenderLoopDrivenQAnimationDriver::stop()
+ {
+     m_offset.reset();
+     m_nextTime.reset();
++    m_lastPresentation.reset();
++    m_steady.reset();
+     QAnimationDriver::stop();
+ }
+ 
+diff --git a/src/renderloopdrivenqanimationdriver.h b/src/renderloopdrivenqanimationdriver.h
+index 8fd8a00..e1de6f9 100644
+--- a/src/renderloopdrivenqanimationdriver.h
++++ b/src/renderloopdrivenqanimationdriver.h
+@@ -8,6 +8,8 @@
+ */
+ #pragma once
+ 
++#include "effect/timeline.h"
++
+ #include <QAnimationDriver>
+ #include <chrono>
+ 
+@@ -24,7 +26,8 @@ class RenderLoopDrivenQAnimationDriver : public QAnimationDriver
+ public:
+     explicit RenderLoopDrivenQAnimationDriver(QObject *parent = nullptr);
+ 
+-    void advanceToNextFrame(std::chrono::nanoseconds nextPresentation);
++    /// @a refreshInterval: the output's, for KWIN_STEADY_ANIMATION_CLOCK (zero: not known)
++    void advanceToNextFrame(std::chrono::nanoseconds nextPresentation, std::chrono::nanoseconds refreshInterval = std::chrono::nanoseconds::zero());
+ 
+     /*
+      * The overrides are for Qt's usage
+@@ -37,6 +40,9 @@ private:
+     std::optional<std::chrono::nanoseconds> m_nextTime = std::nullopt;
+     // the elapsed time is a relative offset to when the animationDriver starts
+     std::optional<std::chrono::nanoseconds> m_offset = std::nullopt;
++    // KWIN_STEADY_ANIMATION_CLOCK: the last presentation time, and the steady time
++    std::optional<std::chrono::nanoseconds> m_lastPresentation = std::nullopt;
++    SteadyAnimationTime m_steady;
+ };
+ 
+ } // namespace KWin
+-- 
+2.56.0
+

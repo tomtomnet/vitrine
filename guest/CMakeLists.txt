@@ -45,10 +45,12 @@ install(DIRECTORY ${vitrine_guest_packages} DESTINATION ${VITRINE_GUEST_DESTINAT
 # boot check's lone-frame lead for the guest's own sessions
 # (tests/gpu-check-lead.sh), and vitrine's Mesa for Flatpak apps in place of
 # Flathub's and back (tests/flatpak-gl.sh), and the guest's clock on the
-# host's, its corrections capped (tests/guest-clock.sh)
+# host's, its corrections capped (tests/guest-clock.sh), and the installer's
+# move of a guest's KDE Frameworks to the medium's release (tests/kf-move.sh)
 if(BUILD_TESTING)
     add_test(NAME nestedsession COMMAND bash ${CMAKE_CURRENT_SOURCE_DIR}/tests/nested-session.sh)
     add_test(NAME gpuchecklead COMMAND bash ${CMAKE_CURRENT_SOURCE_DIR}/tests/gpu-check-lead.sh)
     add_test(NAME flatpakgl COMMAND bash ${CMAKE_CURRENT_SOURCE_DIR}/tests/flatpak-gl.sh)
     add_test(NAME guestclock COMMAND bash ${CMAKE_CURRENT_SOURCE_DIR}/tests/guest-clock.sh)
+    add_test(NAME kfmove COMMAND bash ${CMAKE_CURRENT_SOURCE_DIR}/tests/kf-move.sh)
 endif()

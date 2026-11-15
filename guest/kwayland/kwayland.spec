@@ -1,5 +1,5 @@
 Name:       kwayland
-Version:    6.8.2
+Version:    6.8.3
 Release:    1.1.w1%{?dist}
 Summary:    Qt-style API to interact with the wayland-client API
 
@@ -95,14 +95,13 @@ Developer Documentation files for %{name} for use with KDevelop or QtCreator.
 %{_qt6_docdir}/*.qch
 
 %changelog
-* Sun Nov 08 2026 vitrine <noreply@anthropic.com> - 6.8.2-1.1.w1
-- the research's set w1 on Fedora's 6.8.2-1: Pointer and Touch handle the
-  events of wl_seat versions 6 to 9, axis_value120 and
-  axis_relative_direction as two new signals (axisValue120Changed,
-  axisRelativeDirectionChanged).  vitrine's KWin 6.8.2-3.3.g28 uses them:
-  its nested desktop binds the host's seat at version 9 and hands a
-  scroll's wheel steps and direction on.  It requires kwayland(vitrine-w1),
-  which this build provides and Fedora's do not
+* Sun Nov 15 2026 vitrine <noreply@anthropic.com> - 6.8.3-1.1.w1
+- Fedora's 6.8.3-1 with the research's w1 (the pointer and touch events of wl_seat versions 6 to 9, which vitrine's KWin 0098 uses), which
+  applies as it was: for Fedora 45's guest tools (Plasma 6.8.3); Fedora 44's keep
+  the build of the release before until its updates have it (guest/kwayland-f44)
+
+* Thu Nov 12 2026 Steve Cossette <farchord@gmail.com> - 6.8.3-1
+- 6.8.3
 
 * Tue Oct 27 2026 Steve Cossette <steve@ninjasinpajamas.com> - 6.8.2-1
 - 6.8.2

@@ -1,0 +1,64 @@
+From 31f63879ff4e9b4a5f89f8ce7ca3006dd2a315d7 Mon Sep 17 00:00:00 2001
+From: tomtomnet <tompere8000@proton.me>
+Date: Sat, 3 Oct 2026 14:31:19 +0200
+Subject: [PATCH 15/22] kwin-dmabuf-release-wait-readers (applies with offset)
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ src/wayland/linuxdmabufv1clientbuffer.cpp | 27 +++++++++++++++++++++++
+ 1 file changed, 27 insertions(+)
+
+diff --git a/src/wayland/linuxdmabufv1clientbuffer.cpp b/src/wayland/linuxdmabufv1clientbuffer.cpp
+index 1b0c88cb79..753ed31e37 100644
+--- a/src/wayland/linuxdmabufv1clientbuffer.cpp
++++ b/src/wayland/linuxdmabufv1clientbuffer.cpp
+@@ -18,6 +18,10 @@
+ #include "linuxdmabufv1clientbuffer_p.h"
+ #include "surface_p.h"
+ #include "utils/common.h"
++#include "utils/envvar.h"
++
++#include <QSocketNotifier>
++#include <poll.h>
+ 
+ #include <cstdint>
+ #include <errno.h>
+@@ -435,12 +439,35 @@ LinuxDmaBufV1ClientBuffer::LinuxDmaBufV1ClientBuffer(DmaBufAttributes &&attrs)
+     m_hasAlphaChannel = alphaChannelFromDrmFormat(m_attrs.format);
+ }
+ 
++// KWIN_SWAPCHAIN_WAIT_READERS=1: a client's dma-buf goes back to the client
++// once its readers are done.  In a virtual machine whose host shows the
++// guest's buffers themselves (zero copy), the guest's virtio-gpu driver
++// (blob_flush_fence=3) puts on a buffer scanned out directly a fence that
++// completes when the host no longer shows it: the client must not render into
++// it before.
++static const bool s_waitReaders = environmentVariableBoolValue("KWIN_SWAPCHAIN_WAIT_READERS").value_or(false);
++
+ void LinuxDmaBufV1ClientBuffer::initialize(wl_resource *resource)
+ {
+     m_resource = resource;
+     wl_resource_set_implementation(resource, &implementation, this, buffer_destroy_resource);
+ 
+     connect(this, &GraphicsBuffer::released, this, [this]() {
++        if (s_waitReaders && m_attrs.fd[0].isValid()) {
++            pollfd pfd{.fd = m_attrs.fd[0].get(), .events = POLLOUT, .revents = 0};
++            if (poll(&pfd, 1, 0) == 0) {
++                // readers left: the release goes out when they are done (POLLOUT)
++                auto notifier = new QSocketNotifier(m_attrs.fd[0].get(), QSocketNotifier::Write, this);
++                connect(notifier, &QSocketNotifier::activated, this, [this, notifier]() {
++                    notifier->setEnabled(false);
++                    notifier->deleteLater();
++                    if (!isReferenced()) {
++                        wl_buffer_send_release(m_resource);
++                    }
++                });
++                return;
++            }
++        }
+         wl_buffer_send_release(m_resource);
+     });
+ }
+-- 
+2.55.0
+

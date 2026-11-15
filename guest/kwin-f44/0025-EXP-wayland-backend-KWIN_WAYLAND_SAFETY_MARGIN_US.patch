@@ -1,0 +1,41 @@
+From b7d1c676bf3ce92821e0fe7568fc702dd46bfb0d Mon Sep 17 00:00:00 2001
+From: research <research@localhost>
+Date: Tue, 6 Oct 2026 02:57:28 +0200
+Subject: [PATCH] EXP wayland backend: KWIN_WAYLAND_SAFETY_MARGIN_US fixed
+ commit deadline instead of the frame callback estimate
+
+---
+ src/backends/wayland/wayland_output.cpp | 10 +++++++++-
+ 1 file changed, 9 insertions(+), 1 deletion(-)
+
+diff --git a/src/backends/wayland/wayland_output.cpp b/src/backends/wayland/wayland_output.cpp
+index 1543058..57093c7 100644
+--- a/src/backends/wayland/wayland_output.cpp
++++ b/src/backends/wayland/wayland_output.cpp
+@@ -31,6 +31,7 @@
+ #include "wayland-single-pixel-buffer-v1-client-protocol.h"
+ #include "wayland-tearing-control-v1-client-protocol.h"
+ #include "wayland-xdg-toplevel-icon-v1-client-protocol.h"
++#include "utils/envvar.h"
+ #include "workspace.h"
+ 
+ #include <KLocalizedString>
+@@ -357,7 +358,14 @@ void WaylandOutput::framePresented(std::chrono::nanoseconds timestamp, uint32_t
+         m_renderLoop->setRefreshRate(m_refreshRate);
+     }
+     const auto &frame = m_frames.front();
+-    if (auto t = frame.frameCallbackTime) {
++    // KWIN_WAYLAND_SAFETY_MARGIN_US: a fixed commit deadline before the host's vblank instead
++    // of the frame callback estimate below. A host that scans the nested output out directly
++    // latches it ~3 ms before its vblank, but sends the frame callback ~5.4 ms ahead (KWin
++    // 6.8 host, 240 Hz): the estimate kept every nested frame two refreshes ahead
++    static const std::optional<int> s_safetyMarginUs = environmentVariableIntValue("KWIN_WAYLAND_SAFETY_MARGIN_US");
++    if (s_safetyMarginUs) {
++        m_renderLoop->setPresentationSafetyMargin(std::chrono::microseconds(*s_safetyMarginUs));
++    } else if (auto t = frame.frameCallbackTime) {
+         // NOTE that the frame callback gets signaled *after* the host compositor
+         // is done compositing the frame on the CPU side, not before!
+         // This is the best estimate we currently have for the commit deadline, but
+-- 
+2.55.0
+

@@ -1,0 +1,46 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: Local build <local@localhost>
+Date: Thu, 22 Oct 2026 15:40:00 +0200
+Subject: [PATCH] EXP wayland backend: KWIN_WAYLAND_SCANOUT_BUFFERS allocates the output's buffers for scanout
+
+The nested KWin allocates its output swapchain with scanout = false. On an Intel Xe host (Arc Pro B50, Xe native
+context) the host compositor could then never put the VM's full-screen frames on a plane: xe refuses a framebuffer
+of a buffer that is VM-bound without XE_BO_FLAG_SCANOUT (xe_display_bo.c, "xe_bo_is_vm_bound(bo)"), and the guest's
+iris sets DRM_XE_GEM_CREATE_FLAG_SCANOUT only for GBM_BO_USE_SCANOUT allocations (forwarded as is by the host's
+native context). With the variable set, the output layer's buffers are allocated for scanout. Off by default: on
+amdgpu a scanout allocation may change the buffers' placement. (2026-10-22; the CCS modifiers, the first refusal,
+are left out by the guest's proxy.)
+---
+ src/backends/wayland/wayland_egl_backend.cpp | 8 +++++++-
+ 1 file changed, 7 insertions(+), 1 deletion(-)
+
+diff --git a/src/backends/wayland/wayland_egl_backend.cpp b/src/backends/wayland/wayland_egl_backend.cpp
+--- a/src/backends/wayland/wayland_egl_backend.cpp
++++ b/src/backends/wayland/wayland_egl_backend.cpp
+@@ -22,6 +22,7 @@
+ #include "wayland_display.h"
+ #include "wayland_logging.h"
+ #include "wayland_output.h"
++#include "utils/envvar.h"
+ 
+ #include <KWayland/Client/subsurface.h>
+ #include <KWayland/Client/surface.h>
+@@ -74,12 +75,17 @@
+             if (it == formatTable.constEnd()) {
+                 continue;
+             }
++            // EXP (2026-10-22): KWIN_WAYLAND_SCANOUT_BUFFERS=1 allocates the output's buffers for scanout. A nested
++            // KWin whose frames the host puts on a plane (a VM's full-screen desktop) needs it on Intel Xe: the
++            // host's display refuses a buffer that is VM-bound without XE_BO_FLAG_SCANOUT (xe_display_bo.c), which
++            // iris only sets for GBM_BO_USE_SCANOUT. Off by default (on amdgpu it may change the placement).
++            static const bool s_scanoutBuffers = environmentVariableBoolValue("KWIN_WAYLAND_SCANOUT_BUFFERS").value_or(false);
+             GraphicsBufferOptions options{
+                 .size = nativeSize,
+                 .format = it.key(),
+                 .modifiers = it.value(),
+                 .software = false,
+-                .scanout = false,
++                .scanout = s_scanoutBuffers,
+             };
+             m_swapchain = EglSwapchain::create(m_backend->renderDevice(), options);
+             if (m_swapchain) {

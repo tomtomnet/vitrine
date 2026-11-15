@@ -1,0 +1,82 @@
+From b97dbade565369f372ddf0080c0193cd5cb282a5 Mon Sep 17 00:00:00 2001
+From: research <research@localhost>
+Date: Thu, 5 Nov 2026 07:12:09 +0100
+Subject: [PATCH] FIX wayland backend: the frame callback and the presentation
+ feedback on the content layer
+
+The nested compositor asked for them on its main surface, which holds only a black pixel under the
+opaque, full-size subsurface of the primary layer. A host that culls surfaces covered by opaque ones -
+Mutter, as the Wayland spec allows for frame callbacks - treats that main surface as not visible: it
+sent no frame callbacks and discarded every presentation feedback, so the nested compositor never
+learned when its frames were shown (a GNOME 51 host, 2026-11-05: 855 of 857 feedbacks discarded, 7
+frame callbacks, against 856 presented and 869 frame callbacks with a KWin host). They are now asked
+for on the enabled primary layer's surface, committed with it (a synchronized subsurface: applied with
+the main surface's commit); an empty commit of that layer carries them when it has nothing new.
+KWIN_WAYLAND_FEEDBACK_ON_CONTENT=0 asks on the main surface as before.
+---
+ src/backends/wayland/wayland_output.cpp | 39 ++++++++++++++++++++-----
+ 1 file changed, 32 insertions(+), 7 deletions(-)
+
+diff --git a/src/backends/wayland/wayland_output.cpp b/src/backends/wayland/wayland_output.cpp
+index bd3bf66..8fceac4 100644
+--- a/src/backends/wayland/wayland_output.cpp
++++ b/src/backends/wayland/wayland_output.cpp
+@@ -402,23 +402,48 @@ std::expected<void, OutputError> WaylandOutput::present(const QList<OutputLayer
+         m_viewport->setDestination(rect.size());
+         m_sentDestination = rect.size();
+     }
++    // KWIN_WAYLAND_FEEDBACK_ON_CONTENT (default 1): the frame callback and the presentation feedback are asked for
++    // on the layer that shows the output's content, not on the main surface. The main surface holds only a black
++    // pixel under that opaque, full-size subsurface, and a host that culls surfaces covered by opaque ones (Mutter,
++    // as the Wayland spec allows for frame callbacks) treats it as not visible: no frame callbacks and every
++    // feedback discarded, so the nested compositor never learns when the host shows its frames (a GNOME 51 host,
++    // 2026-11-05: 855 of 857 feedbacks discarded and 7 frame callbacks, against 856 presented and 869 frame
++    // callbacks with a KWin host). The requests go with the layer's commit: a synchronized subsurface, applied with
++    // the main surface's commit below. 0 asks on the main surface as before.
++    static const bool s_feedbackOnContent = environmentVariableBoolValue("KWIN_WAYLAND_FEEDBACK_ON_CONTENT").value_or(true);
++    WaylandLayer *contentLayer = nullptr;
++    if (s_feedbackOnContent) {
++        for (const auto &layer : m_layers) {
++            if (layer->type() == OutputLayerType::Primary && layer->isEnabled()) {
++                contentLayer = static_cast<WaylandLayer *>(layer.get());
++                break;
++            }
++        }
++    }
++    KWayland::Client::Surface *feedbackSurface = contentLayer ? contentLayer->surface() : m_surface.get();
++    FrameData frameData{
++        frame,
++        wp_presentation_feedback(m_backend->display()->presentationTime(), *feedbackSurface),
++        wl_surface_frame(*feedbackSurface),
++    };
++    wp_presentation_feedback_add_listener(frameData.presentationFeedback, &s_presentationListener, this);
++    wl_callback_add_listener(frameData.frameCallback, &s_frameCallbackListener, this);
+     // commit the subsurfaces before the main surface
++    bool contentCommitted = false;
+     for (OutputLayer *layer : layersToUpdate) {
+         // TODO maybe also make the cursor a WaylandLayer?
+         if (layer->type() != OutputLayerType::CursorOnly) {
+             static_cast<WaylandLayer *>(layer)->commit(frame->presentationMode());
++            contentCommitted = contentCommitted || layer == contentLayer;
+         }
+     }
++    if (contentLayer && !contentCommitted) {
++        // nothing new on the content layer in this frame: an empty commit carries the requests
++        contentLayer->surface()->commit(KWayland::Client::Surface::CommitFlag::None);
++    }
+     if (m_backend->display()->tearingControl()) {
+         m_renderLoop->setPresentationMode(frame->presentationMode());
+     }
+-    FrameData frameData{
+-        frame,
+-        wp_presentation_feedback(m_backend->display()->presentationTime(), *m_surface),
+-        wl_surface_frame(*m_surface),
+-    };
+-    wp_presentation_feedback_add_listener(frameData.presentationFeedback, &s_presentationListener, this);
+-    wl_callback_add_listener(frameData.frameCallback, &s_frameCallbackListener, this);
+     frameData.commitTime = std::chrono::steady_clock::now();
+     if (m_commitTimer && (!m_commitTimingNeedsDeadline || m_hostSentDeadline)) {
+         // not before half a refresh ahead of the target: the host's first vblank at or
+-- 
+2.56.0
+

@@ -48,6 +48,9 @@
 # vitrine's newer KWin in, never before or after it.  Fedora's
 # repositories keep only their newest Plasma: once it is newer than the
 # medium's KWin, the installed KWin stays and Plasma is no longer held.
+# Fedora's KDE Frameworks move with it to the release of the medium's KSvg
+# and Kirigami (kf_moves): earlier tools held them at theirs, and Plasma 6.8.3
+# needs Frameworks 6.32, which dnf would otherwise take only as required.
 # Where vitrine's KWin, KWayland or KPipeWire of earlier tools no longer
 # matches the guest's Plasma (updated before these tools), Fedora's go back in
 # until then.  With vitrine's KSvg and Kirigami locked, Fedora's KDE
@@ -635,7 +638,8 @@ take_source() {  # take_source SOURCE MAIN TITLE: vitrine's build of SOURCE in s
 		;;
 	-1)
 		local hv=${have#*:} ov=${ours#*:}
-		if [ "${hv%%-*}" != "${ov%%-*}" ]; then
+		# another release, unless the Frameworks move to the medium's (kf_moves)
+		if [ "${hv%%-*}" != "${ov%%-*}" ] && ! { [ -n "$kf_to" ] && [[ $main == kf6-* ]] && [ "${ov%%-*}" = "$kf_to" ]; }; then
 			say "$title: this guest has ${hv%%-*}, this medium's is built from ${ov%%-*}: the installed one stays (update the guest, then install the tools again)"
 			return 0
 		fi
@@ -674,6 +678,43 @@ if [ ${#qt_pkgs[@]} -gt 0 ]; then
 	else
 		say "         not locked (no vitrine's KWin here): Fedora's next Qt takes its place"
 	fi
+fi
+# KDE Frameworks' move, with vitrine's KWin: the medium's KSvg and Kirigami
+# are for the Frameworks of the Plasma its KWin is for (KSVG_VERSION).  A
+# guest whose Fedora Frameworks are of an older release (earlier tools held
+# them at theirs) moves them to Fedora's of that release in the same
+# transaction, as its Plasma: Plasma 6.8.3 needs Frameworks 6.32, and dnf
+# would otherwise update only those it requires, a mix KDE does not release,
+# and keep the earlier tools' KSvg and Kirigami.  kf_move: NAME-VERSION of
+# each (dnf's queries see past the locks, as for Plasma); kf_from, kf_to: the
+# release they leave and the one they move to
+kf_move=() kf_from='' kf_to=''
+kf_moves() {
+	local v=${KSVG_VERSION:-${KIRIGAMI_VERSION:-}} names=() n have
+	kf_move=()
+	[ -n "$v" ] && installed kf6-kcoreaddons || return 1
+	kf_from=$(rpm -q --qf '%{VERSION}\n' kf6-kcoreaddons 2> /dev/null | head -n 1)
+	[ "$(evr_cmp "$kf_from" "$v")" = -1 ] || return 1
+	[ "$(rpm -q --qf '%{VENDOR}\n' kf6-kcoreaddons 2> /dev/null | head -n 1)" = "Fedora Project" ] || return 1
+	# Fedora's, at that release; the medium's own (KSvg, Kirigami) come from the medium
+	while read -r n; do
+		[ -n "$(medium_nevra "$n")" ] || names+=("$n")
+	done < <(rpm -qa --qf '%{NAME}|%{VERSION}|%{VENDOR}\n' 'kf6-*' |
+		awk -F'|' -v v="$kf_from" '$2 == v && $3 == "Fedora Project" { print $1 }' | LC_ALL=C sort -u)
+	[ ${#names[@]} -gt 0 ] || return 1
+	have=$(dnf -q repoquery --qf '%{name}\n' "${names[@]/%/-$v}" 2> /dev/null) || return 1
+	for n in "${names[@]}"; do
+		! grep -qx -- "$n" <<< "$have" || kf_move+=("$n-$v")
+	done
+	if [[ " ${kf_move[*]} " != *" kf6-kcoreaddons-$v "* ]]; then
+		kf_move=()
+		return 1
+	fi
+	kf_to=$v
+}
+if [ "$use_kwin" = 1 ] && kf_moves; then
+	say "KDE Frameworks: Fedora's $kf_to in place of this guest's $kf_from (${#kf_move[@]} packages), in the"
+	say "         same transaction as vitrine's KWin, with vitrine's KSvg and Kirigami for $kf_to"
 fi
 take_source kf6-ksvg kf6-ksvg KSvg
 ksvg_pkgs=("${source_pkgs[@]}")
@@ -735,7 +776,7 @@ lock_installed() {
 # nothing to do when what this medium installs is all there
 up_to_date() {
 	[ "$force" = 0 ] && [ "$(cat "$state/medium" 2> /dev/null)" = "$MEDIUM_ID" ] || return 1
-	[ ${#fedora_again[@]} = 0 ] && [ ${#plasma_move[@]} = 0 ] || return 1
+	[ ${#fedora_again[@]} = 0 ] && [ ${#plasma_move[@]} = 0 ] && [ ${#kf_move[@]} = 0 ] || return 1
 	rpm -q "${want[@]}" > /dev/null 2>&1 || return 1
 	! flatpak_gl_wanted || [ "$(cat "$state/flatpak-gl-medium" 2> /dev/null)" = "$MEDIUM_ID" ] || return 1
 	if [ "$use_kwin" = 1 ]; then [ -s "$state/kwin" ]; else [ ! -e "$state/kwin" ]; fi
@@ -764,6 +805,8 @@ if [ "$yes" = 0 ]; then
 	echo "This installs: ${want[*]}"
 	[ ${#plasma_move[@]} = 0 ] ||
 		echo "with Fedora's Plasma $KWIN_VERSION in place of $move_from: ${plasma_move[*]}"
+	[ ${#kf_move[@]} = 0 ] ||
+		echo "and Fedora's KDE Frameworks $kf_to in place of $kf_from: ${kf_move[*]}"
 	echo "and dkms with the kernel headers from Fedora, then rebuilds the initramfs."
 	read -r -p "Go on? [Y/n] " answer
 	case "$answer" in [nN]*) exit 1 ;; esac
@@ -802,10 +845,12 @@ if [ ${#plasma_move[@]} = 1 ]; then
 elif [ ${#plasma_move[@]} -gt 1 ]; then
 	say "Fedora's Plasma $KWIN_VERSION in place of $move_from, with vitrine's KWin: ${#plasma_move[@]} packages"
 fi
-"${dnf_medium[@]}" install --skip-unavailable "${want[@]}" "${plasma_move[@]}" "${extra[@]}" ||
+[ ${#kf_move[@]} = 0 ] ||
+	say "Fedora's KDE Frameworks $kf_to in place of $kf_from, with vitrine's KSvg and Kirigami: ${#kf_move[@]} packages"
+"${dnf_medium[@]}" install --skip-unavailable "${want[@]}" "${plasma_move[@]}" "${kf_move[@]}" "${extra[@]}" ||
 	die "dnf failed: see above (no network? the guest needs Fedora's repositories)"
 missing=()
-for p in "${want[@]}" "${plasma_move[@]}"; do
+for p in "${want[@]}" "${plasma_move[@]}" "${kf_move[@]}"; do
 	rpm -q "$p" > /dev/null 2>&1 || missing+=("$p")
 done
 [ ${#missing[@]} -eq 0 ] || die "not installed: ${missing[*]}"

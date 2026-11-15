@@ -1,6 +1,6 @@
 Name:    kpipewire
 Summary: Set of convenient classes to use PipeWire in Qt projects
-Version: 6.8.2
+Version: 6.8.3
 Release: 1.1.k2%{?dist}
 
 License: BSD-3-Clause AND CC0-1.0 AND LGPL-2.1-only AND LGPL-3.0-only
@@ -112,9 +112,13 @@ developing applications that use %{name}.
 %{_libdir}/cmake/KPipeWire/*.cmake
 
 %changelog
-* Tue Nov 03 2026 vitrine <noreply@anthropic.com> - 6.8.2-1.1.k2
-- the research's set k2 on Fedora's 6.8.2-1: plasmashell's window thumbnails import
-  their own copies of a frame's dma-buf fds, at the frame's size
+* Sun Nov 15 2026 vitrine <noreply@anthropic.com> - 6.8.3-1.1.k2
+- Fedora's 6.8.3-1 with the research's set k2 (its dma-buf frames imported from their own fds, at their own size), which
+  applies as it was: for Fedora 45's guest tools (Plasma 6.8.3); Fedora 44's keep
+  the build of the release before until its updates have it (guest/kpipewire-f44)
+
+* Thu Nov 12 2026 Steve Cossette <farchord@gmail.com> - 6.8.3-1
+- 6.8.3
 
 * Tue Oct 27 2026 Steve Cossette <steve@ninjasinpajamas.com> - 6.8.2-1
 - 6.8.2

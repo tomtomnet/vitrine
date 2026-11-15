@@ -1,0 +1,54 @@
+From 83845105940b3f0ddd6a740298d7d13f5a37bf7b Mon Sep 17 00:00:00 2001
+From: tomtomnet <tompere8000@proton.me>
+Date: Sat, 3 Oct 2026 14:30:10 +0200
+Subject: [PATCH 10/22] Patch109 kwin-warmup-frames (applies with offset)
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ src/core/renderloop.cpp | 10 ++++++++++
+ src/core/renderloop_p.h |  1 +
+ 2 files changed, 11 insertions(+)
+
+diff --git a/src/core/renderloop.cpp b/src/core/renderloop.cpp
+index 4d99f9c30d..f722a6d610 100644
+--- a/src/core/renderloop.cpp
++++ b/src/core/renderloop.cpp
+@@ -22,6 +22,9 @@ RenderLoopPrivate *RenderLoopPrivate::get(RenderLoop *loop)
+     return loop->d.get();
+ }
+ 
++// KWIN_WARMUP_FRAMES: how many frames after an idle stretch start a whole refresh
++// early, as the first one does (0: only the first)
++static const int s_warmupFrames = qEnvironmentVariableIntValue("KWIN_WARMUP_FRAMES");
+ static const bool s_printDebugInfo = qEnvironmentVariableIntValue("KWIN_LOG_PERFORMANCE_DATA") != 0;
+ // KWIN_LATE_FLIP_COMPENSATION=1 turns the late flip compensation on (off by default: on the
+ // panel it shows no gain, and it costs up to a refresh of latency long after a loaded phase),
+@@ -74,6 +77,13 @@ void RenderLoopPrivate::scheduleRepaint(std::chrono::nanoseconds lastTargetTimes
+             // if it's been a while since the last frame, the GPU is likely in a low power state and render time will be increased
+             // -> take that into account and start compositing very early
+             expectedCompositingTime = std::max(vblankInterval - 1us, expectedCompositingTime);
++            // and so will the frames right after it (KWIN_WARMUP_FRAMES): in a virtual
++            // machine the first frames of an animation take longer than the estimate,
++            // which only remembers the last second, and each one lost is a repeat
++            warmupFramesLeft = s_warmupFrames;
++        } else if (warmupFramesLeft > 0) {
++            expectedCompositingTime = std::max(vblankInterval - 1us, expectedCompositingTime);
++            warmupFramesLeft--;
+         }
+         const uint64_t pageflipsSinceLastToTarget = std::max<int64_t>(std::round((lastTargetTimestamp - lastPresentationTimestamp).count() / double(vblankInterval.count())), 0);
+         uint64_t pageflipsInAdvance = std::min<int64_t>(expectedCompositingTime / vblankInterval + 1, maxPendingFrameCount);
+diff --git a/src/core/renderloop_p.h b/src/core/renderloop_p.h
+index 18aa8290d0..ede711d075 100644
+--- a/src/core/renderloop_p.h
++++ b/src/core/renderloop_p.h
+@@ -60,6 +60,7 @@ public:
+ 
+     PresentationMode presentationMode = PresentationMode::VSync;
+     int maxPendingFrameCount = 1;
++    int warmupFramesLeft = 0;
+ 
+     QBasicTimer delayedVrrTimer;
+ };
+-- 
+2.55.0
+

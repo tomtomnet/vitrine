@@ -1,0 +1,160 @@
+From 287bd742a008bd62b563ab406196cb3589ad27f9 Mon Sep 17 00:00:00 2001
+From: research <research@localhost>
+Date: Fri, 6 Nov 2026 13:20:20 +0100
+Subject: [PATCH] client: the pointer and touch events of wl_seat versions 6 to
+ 9
+
+Pointer handled the wl_pointer events up to version 5 (axis_discrete) and Touch the wl_touch events
+up to version 5, so a client that binds a newer wl_seat and makes its pointer or touch through
+KWayland would have its version 6+ events dispatched past the end of their listeners. Pointer now
+handles axis_value120 (version 8: high-resolution wheel steps, 120 a notch; it replaces
+axis_discrete) and axis_relative_direction (version 9), as two new signals; Touch takes the version
+6 shape and orientation events and drops them. Registry still binds wl_seat at version 5: a newer
+seat stops axis_discrete, which existing users of axisDiscreteChanged rely on. For KWin's wayland
+backend, which binds its seat itself (2026-11-06: the nested desktop's scrolling).
+---
+ src/client/pointer.cpp | 30 +++++++++++++++++++++++++++++-
+ src/client/pointer.h   | 24 ++++++++++++++++++++++++
+ src/client/touch.cpp   | 22 +++++++++++++++++++++-
+ 3 files changed, 74 insertions(+), 2 deletions(-)
+
+diff --git a/src/client/pointer.cpp b/src/client/pointer.cpp
+index 41f8f42..5b0a062 100644
+--- a/src/client/pointer.cpp
++++ b/src/client/pointer.cpp
+@@ -50,6 +50,8 @@ private:
+     static void axisSourceCallback(void *data, wl_pointer *pointer, uint32_t axis_source);
+     static void axisStopCallback(void *data, wl_pointer *pointer, uint32_t time, uint32_t axis);
+     static void axisDiscreteCallback(void *data, wl_pointer *pointer, uint32_t axis, int32_t discrete);
++    static void axisValue120Callback(void *data, wl_pointer *pointer, uint32_t axis, int32_t value120);
++    static void axisRelativeDirectionCallback(void *data, wl_pointer *pointer, uint32_t axis, uint32_t direction);
+ 
+     Pointer *q;
+     static const wl_pointer_listener s_listener;
+@@ -69,7 +71,17 @@ void Pointer::Private::setup(wl_pointer *p)
+ }
+ 
+ const wl_pointer_listener Pointer::Private::s_listener =
+-    {enterCallback, leaveCallback, motionCallback, buttonCallback, axisCallback, frameCallback, axisSourceCallback, axisStopCallback, axisDiscreteCallback};
++    {enterCallback,
++     leaveCallback,
++     motionCallback,
++     buttonCallback,
++     axisCallback,
++     frameCallback,
++     axisSourceCallback,
++     axisStopCallback,
++     axisDiscreteCallback,
++     axisValue120Callback,
++     axisRelativeDirectionCallback};
+ 
+ Pointer::Pointer(QObject *parent)
+     : QObject(parent)
+@@ -199,6 +211,22 @@ void Pointer::Private::axisDiscreteCallback(void *data, wl_pointer *pointer, uin
+     Q_EMIT p->q->axisDiscreteChanged(wlAxisToPointerAxis(axis), discrete);
+ }
+ 
++void Pointer::Private::axisValue120Callback(void *data, wl_pointer *pointer, uint32_t axis, int32_t value120)
++{
++    auto p = reinterpret_cast<Pointer::Private *>(data);
++    Q_ASSERT(p->pointer == pointer);
++    Q_EMIT p->q->axisValue120Changed(wlAxisToPointerAxis(axis), value120);
++}
++
++void Pointer::Private::axisRelativeDirectionCallback(void *data, wl_pointer *pointer, uint32_t axis, uint32_t direction)
++{
++    auto p = reinterpret_cast<Pointer::Private *>(data);
++    Q_ASSERT(p->pointer == pointer);
++    const auto relativeDirection =
++        direction == WL_POINTER_AXIS_RELATIVE_DIRECTION_INVERTED ? AxisRelativeDirection::Inverted : AxisRelativeDirection::Identical;
++    Q_EMIT p->q->axisRelativeDirectionChanged(wlAxisToPointerAxis(axis), relativeDirection);
++}
++
+ void Pointer::setCursor(Surface *surface, const QPoint &hotspot)
+ {
+     Q_ASSERT(isValid());
+diff --git a/src/client/pointer.h b/src/client/pointer.h
+index 1c01bf6..5cc0f21 100644
+--- a/src/client/pointer.h
++++ b/src/client/pointer.h
+@@ -46,6 +46,15 @@ public:
+         Continuous,
+         WheelTilt,
+     };
++    /**
++     * The direction of a scroll against the physical motion of the fingers or the wheel.
++     * @see axisRelativeDirectionChanged
++     * @since 6.9
++     **/
++    enum class AxisRelativeDirection {
++        Identical,
++        Inverted,
++    };
+     explicit Pointer(QObject *parent = nullptr);
+     ~Pointer() override;
+ 
+@@ -178,6 +187,21 @@ Q_SIGNALS:
+      * @since 5.59
+      **/
+     void axisStopped(quint32 time, KWayland::Client::Pointer::Axis axis);
++    /**
++     * High-resolution scroll steps on @p axis: 120 is one logical step (a wheel notch), and a
++     * high-resolution wheel sends fractions of it. Sent from wl_pointer version 8 on, in place of
++     * axisDiscreteChanged; it may come before or after the axisChanged of the same frame.
++     *
++     * @since 6.9
++     **/
++    void axisValue120Changed(KWayland::Client::Pointer::Axis axis, qint32 value120);
++    /**
++     * Whether the scroll on @p axis in this frame goes with the fingers or the wheel or against
++     * them (natural scrolling). Sent from wl_pointer version 9 on, in the frame of the axisChanged.
++     *
++     * @since 6.9
++     **/
++    void axisRelativeDirectionChanged(KWayland::Client::Pointer::Axis axis, KWayland::Client::Pointer::AxisRelativeDirection direction);
+ 
+     /**
+      * Indicates the end of a set of events that logically belong together.
+diff --git a/src/client/touch.cpp b/src/client/touch.cpp
+index aeafa26..f5016e1 100644
+--- a/src/client/touch.cpp
++++ b/src/client/touch.cpp
+@@ -33,6 +33,9 @@ private:
+     static void motionCallback(void *data, wl_touch *touch, uint32_t time, int32_t id, wl_fixed_t x, wl_fixed_t y);
+     static void frameCallback(void *data, wl_touch *touch);
+     static void cancelCallback(void *data, wl_touch *touch);
++    // wl_touch version 6: the shape and orientation of a touch point, not passed on
++    static void shapeCallback(void *data, wl_touch *touch, int32_t id, wl_fixed_t major, wl_fixed_t minor);
++    static void orientationCallback(void *data, wl_touch *touch, int32_t id, wl_fixed_t orientation);
+     void down(quint32 serial, quint32 time, qint32 id, const QPointF &position, const QPointer<Surface> &surface);
+     void up(quint32 serial, quint32 time, qint32 id);
+     void motion(quint32 time, qint32 id, const QPointF &position);
+@@ -124,7 +127,24 @@ void Touch::Private::setup(wl_touch *t)
+     wl_touch_add_listener(touch, &s_listener, this);
+ }
+ 
+-const wl_touch_listener Touch::Private::s_listener = {downCallback, upCallback, motionCallback, frameCallback, cancelCallback};
++const wl_touch_listener Touch::Private::s_listener = {downCallback, upCallback, motionCallback, frameCallback, cancelCallback, shapeCallback, orientationCallback};
++
++void Touch::Private::shapeCallback(void *data, wl_touch *touch, int32_t id, wl_fixed_t major, wl_fixed_t minor)
++{
++    Q_UNUSED(data)
++    Q_UNUSED(touch)
++    Q_UNUSED(id)
++    Q_UNUSED(major)
++    Q_UNUSED(minor)
++}
++
++void Touch::Private::orientationCallback(void *data, wl_touch *touch, int32_t id, wl_fixed_t orientation)
++{
++    Q_UNUSED(data)
++    Q_UNUSED(touch)
++    Q_UNUSED(id)
++    Q_UNUSED(orientation)
++}
+ 
+ void Touch::Private::downCallback(void *data, wl_touch *touch, uint32_t serial, uint32_t time, wl_surface *surface, int32_t id, wl_fixed_t x, wl_fixed_t y)
+ {
+-- 
+2.56.0
+

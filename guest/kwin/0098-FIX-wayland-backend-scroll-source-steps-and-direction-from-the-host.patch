@@ -20,6 +20,8 @@ hands on its own: the source, the steps in 120ths of a notch, the natural-scroll
 an axis event without an amount for a stop. Needs a KWayland whose Pointer and Touch handle the
 events of seat versions 6 to 9 (axisValue120Changed, axisRelativeDirectionChanged, touch shape and
 orientation): without them a version 8 host's events would index past KWayland's listeners.
+Version 10 (wl_pointer.warp, libwayland 1.24) is not bound: KWayland w1's pointer listener has no warp
+member yet, and whoever raises the bind to 10 must add one there first.
 ---
  src/backends/wayland/wayland_backend.cpp | 74 ++++++++++++++++++++----
  src/backends/wayland/wayland_backend.h   | 15 +++++

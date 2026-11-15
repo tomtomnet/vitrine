@@ -1,0 +1,160 @@
+From 8c440c00da684bae90cdd4c2dcb635cf7a5c2848 Mon Sep 17 00:00:00 2001
+From: research <research@localhost>
+Date: Tue, 6 Oct 2026 20:38:43 +0200
+Subject: [PATCH] EXP wayland backend: KWIN_WAYLAND_COMMIT_TIMING stamps each
+ frame's commit with its target vblank (wp_commit_timer_v1)
+
+---
+ src/backends/wayland/wayland_display.cpp | 11 +++++++++++
+ src/backends/wayland/wayland_display.h   |  3 +++
+ src/backends/wayland/wayland_output.cpp  | 18 ++++++++++++++++++
+ src/backends/wayland/wayland_output.h    |  5 +++++
+ 4 files changed, 37 insertions(+)
+
+diff --git a/src/backends/wayland/wayland_display.cpp b/src/backends/wayland/wayland_display.cpp
+index 381bc0f..84d3f55 100644
+--- a/src/backends/wayland/wayland_display.cpp
++++ b/src/backends/wayland/wayland_display.cpp
+@@ -44,6 +44,7 @@
+ #include "wayland-relative-pointer-unstable-v1-client-protocol.h"
+ #include "wayland-single-pixel-buffer-v1-client-protocol.h"
+ #include "wayland-tearing-control-v1-client-protocol.h"
++#include "wayland-commit-timing-v1-client-protocol.h"
+ #include "wayland-viewporter-client-protocol.h"
+ #include "wayland-xdg-decoration-unstable-v1-client-protocol.h"
+ #include "wayland-xdg-shell-client-protocol.h"
+@@ -189,6 +190,9 @@ WaylandDisplay::~WaylandDisplay()
+     if (m_presentationTime) {
+         wp_presentation_destroy(m_presentationTime);
+     }
++    if (m_commitTiming) {
++        wp_commit_timing_manager_v1_destroy(m_commitTiming);
++    }
+     if (m_tearingControl) {
+         wp_tearing_control_manager_v1_destroy(m_tearingControl);
+     }
+@@ -340,6 +344,11 @@ wp_presentation *WaylandDisplay::presentationTime() const
+     return m_presentationTime;
+ }
+ 
++wp_commit_timing_manager_v1 *WaylandDisplay::commitTiming() const
++{
++    return m_commitTiming;
++}
++
+ wp_tearing_control_manager_v1 *WaylandDisplay::tearingControl() const
+ {
+     return m_tearingControl;
+@@ -413,6 +422,8 @@ void WaylandDisplay::registry_global(void *data, wl_registry *registry, uint32_t
+         display->m_linuxDmabuf = std::make_unique<WaylandClient::LinuxDmabufV1>(registry, name, std::min(version, 4u));
+     } else if (strcmp(interface, wp_presentation_interface.name) == 0) {
+         display->m_presentationTime = reinterpret_cast<wp_presentation *>(wl_registry_bind(registry, name, &wp_presentation_interface, std::min(version, 2u)));
++    } else if (strcmp(interface, wp_commit_timing_manager_v1_interface.name) == 0) {
++        display->m_commitTiming = reinterpret_cast<wp_commit_timing_manager_v1 *>(wl_registry_bind(registry, name, &wp_commit_timing_manager_v1_interface, 1));
+     } else if (strcmp(interface, wp_tearing_control_manager_v1_interface.name) == 0) {
+         display->m_tearingControl = reinterpret_cast<wp_tearing_control_manager_v1 *>(wl_registry_bind(registry, name, &wp_tearing_control_manager_v1_interface, 1));
+     } else if (strcmp(interface, wp_color_manager_v1_interface.name) == 0) {
+diff --git a/src/backends/wayland/wayland_display.h b/src/backends/wayland/wayland_display.h
+index 2c5225e..b2379c8 100644
+--- a/src/backends/wayland/wayland_display.h
++++ b/src/backends/wayland/wayland_display.h
+@@ -16,6 +16,7 @@ struct wl_registry;
+ struct wl_shm;
+ struct zwp_linux_dmabuf_v1;
+ struct wp_presentation;
++struct wp_commit_timing_manager_v1;
+ struct wp_tearing_control_manager_v1;
+ struct wp_fractional_scale_manager_v1;
+ struct wp_single_pixel_buffer_manager_v1;
+@@ -78,6 +79,7 @@ public:
+     KWayland::Client::XdgShell *xdgShell() const;
+     WaylandClient::LinuxDmabufV1 *linuxDmabuf() const;
+     wp_presentation *presentationTime() const;
++    wp_commit_timing_manager_v1 *commitTiming() const;
+     wp_tearing_control_manager_v1 *tearingControl() const;
+     ColorManager *colorManager() const;
+     wp_fractional_scale_manager_v1 *fractionalScale() const;
+@@ -97,6 +99,7 @@ private:
+     wl_registry *m_registry = nullptr;
+     wl_shm *m_shm = nullptr;
+     wp_presentation *m_presentationTime = nullptr;
++    wp_commit_timing_manager_v1 *m_commitTiming = nullptr;
+     wp_tearing_control_manager_v1 *m_tearingControl = nullptr;
+     wp_fractional_scale_manager_v1 *m_fractionalScaleV1 = nullptr;
+     std::unique_ptr<WaylandClient::Viewporter> m_viewporter;
+diff --git a/src/backends/wayland/wayland_output.cpp b/src/backends/wayland/wayland_output.cpp
+index 8d10b7c..5031c42 100644
+--- a/src/backends/wayland/wayland_output.cpp
++++ b/src/backends/wayland/wayland_output.cpp
+@@ -30,6 +30,7 @@
+ #include "wayland-presentation-time-client-protocol.h"
+ #include "wayland-single-pixel-buffer-v1-client-protocol.h"
+ #include "wayland-tearing-control-v1-client-protocol.h"
++#include "wayland-commit-timing-v1-client-protocol.h"
+ #include "wayland-xdg-toplevel-icon-v1-client-protocol.h"
+ #include "utils/envvar.h"
+ #include "workspace.h"
+@@ -146,6 +147,10 @@ WaylandOutput::WaylandOutput(const QString &name, Capabilities capabilities, Way
+         m_fractionalScale = wp_fractional_scale_manager_v1_get_fractional_scale(manager, *m_surface);
+         wp_fractional_scale_v1_add_listener(m_fractionalScale, &s_fractionalScaleListener, this);
+     }
++    static const bool s_commitTiming = environmentVariableBoolValue("KWIN_WAYLAND_COMMIT_TIMING").value_or(false);
++    if (auto manager = backend->display()->commitTiming(); manager && s_commitTiming) {
++        m_commitTimer = wp_commit_timing_manager_v1_get_timer(manager, *m_surface);
++    }
+     m_viewport = backend->display()->viewporter()->createViewport(*m_surface);
+     setInformation(Information{
+         .name = name,
+@@ -175,6 +180,9 @@ WaylandOutput::WaylandOutput(const QString &name, Capabilities capabilities, Way
+ WaylandOutput::~WaylandOutput()
+ {
+     m_frames.clear();
++    if (m_commitTimer) {
++        wp_commit_timer_v1_destroy(m_commitTimer);
++    }
+     if (m_shortcutInhibition) {
+         zwp_keyboard_shortcuts_inhibitor_v1_destroy(m_shortcutInhibition);
+     }
+@@ -338,6 +346,16 @@ std::expected<void, OutputError> WaylandOutput::present(const QList<OutputLayer
+     wp_presentation_feedback_add_listener(frameData.presentationFeedback, &s_presentationListener, this);
+     wl_callback_add_listener(frameData.frameCallback, &s_frameCallbackListener, this);
+     frameData.commitTime = std::chrono::steady_clock::now();
++    if (m_commitTimer) {
++        // not before half a refresh ahead of the target: the host's first vblank at or
++        // after that is the target itself (the timestamp is in this guest's clock; the
++        // cross-domain proxy translates it to the host's)
++        const std::chrono::nanoseconds vblankInterval(1'000'000'000'000LL / std::max<uint32_t>(m_refreshRate, 1));
++        const auto notBefore = std::chrono::duration_cast<std::chrono::nanoseconds>(frame->targetPageflipTime().time_since_epoch()) - vblankInterval / 2;
++        const uint64_t ns = std::max<int64_t>(notBefore.count(), 0);
++        const uint64_t sec = ns / 1'000'000'000;
++        wp_commit_timer_v1_set_timestamp(m_commitTimer, uint32_t(sec >> 32), uint32_t(sec & 0xffffffff), uint32_t(ns % 1'000'000'000));
++    }
+     m_surface->commit(KWayland::Client::Surface::CommitFlag::None);
+     m_frames.push_back(std::move(frameData));
+     return {};
+diff --git a/src/backends/wayland/wayland_output.h b/src/backends/wayland/wayland_output.h
+index 172fb49..96c2375 100644
+--- a/src/backends/wayland/wayland_output.h
++++ b/src/backends/wayland/wayland_output.h
+@@ -39,6 +39,8 @@ struct zwp_keyboard_shortcuts_inhibitor_v1;
+ struct wl_callback;
+ struct wl_callback_listener;
+ 
++struct wp_commit_timer_v1;
++
+ namespace KWin
+ {
+ 
+@@ -156,6 +158,9 @@ private:
+     QTimer m_configureThrottleTimer;
+     std::unique_ptr<ColorSurfaceFeedback> m_colorSurfaceFeedback;
+     wp_fractional_scale_v1 *m_fractionalScale = nullptr;
++    // KWIN_WAYLAND_COMMIT_TIMING=1: each frame's commit carries its target vblank
++    // (wp_commit_timer_v1), so the host shows it then and not a refresh earlier
++    wp_commit_timer_v1 *m_commitTimer = nullptr;
+     std::unique_ptr<WaylandClient::Viewport> m_viewport;
+     zwp_keyboard_shortcuts_inhibitor_v1 *m_shortcutInhibition = nullptr;
+     uint32_t m_refreshRate = 60'000;
+-- 
+2.55.0
+

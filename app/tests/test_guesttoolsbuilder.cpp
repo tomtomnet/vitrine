@@ -305,6 +305,8 @@ private slots:
         QProcessEnvironment env = QProcessEnvironment::systemEnvironment();
         env.remove("LC_ALL");
         env.insert("LANG", "en_US.UTF-8");
+        /* the release KWin is built for (components.conf's releases=) */
+        env.insert("FEDORA_RELEASE", "45");
         for (const QString &guest : {QString(GUEST_SOURCE_DIR), odd}) {
             int status = -1;
             const QString printed = run("bash", {guest + "/build-rpms.sh", "--print-inputs",
@@ -331,14 +333,17 @@ private slots:
                  QString(QCryptographicHash::hash(read(GUEST_SOURCE_DIR "/build-medium.sh"),
                                                   QCryptographicHash::Sha256)
                              .toHex()));
-        QCOMPARE(GuestToolsBuilder::version(GUEST_SOURCE_DIR, "kwin"), "6.8.2");
+        QCOMPARE(GuestToolsBuilder::version(GUEST_SOURCE_DIR, "kwin"), "6.8.3");
+        QCOMPARE(GuestToolsBuilder::version(GUEST_SOURCE_DIR, "kwin-f44"), "6.8.2");
         QCOMPARE(GuestToolsBuilder::packages(GUEST_SOURCE_DIR),
                  QStringList({"tools", "mesa", "kwayland", "kwin", "proxy", "kpipewire", "qtbase",
-                              "ksvg", "kirigami", "mutter"}));
-        /* the KDE packages every release's, Mutter Fedora 45's */
+                              "ksvg", "kirigami", "kwayland-f44", "kwin-f44", "kpipewire-f44", "ksvg-f44",
+                              "kirigami-f44", "mutter"}));
+        /* the KDE packages: Plasma 6.8.3's Fedora 45's, 6.8.2's Fedora 44's until its updates
+           have 6.8.3; Mutter Fedora 45's */
         QCOMPARE(GuestToolsBuilder::packages(GUEST_SOURCE_DIR, "44"),
-                 QStringList({"tools", "mesa", "kwayland", "kwin", "proxy", "kpipewire", "qtbase",
-                              "ksvg", "kirigami"}));
+                 QStringList({"tools", "mesa", "proxy", "qtbase", "kwayland-f44", "kwin-f44", "kpipewire-f44",
+                              "ksvg-f44", "kirigami-f44"}));
         QCOMPARE(GuestToolsBuilder::packages(GUEST_SOURCE_DIR, "45"),
                  QStringList({"tools", "mesa", "kwayland", "kwin", "proxy", "kpipewire", "qtbase",
                               "ksvg", "kirigami", "mutter"}));

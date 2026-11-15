@@ -8,12 +8,17 @@
 #   mesa   Mesa 26.2.6 + the Xe native context, the iris upload fix, longer BO
 #          caches for radeonsi/iris over virtio and a floor of big buffers
 #          for iris's, RADV's virtio probe fix; every video codec
-#   kwayland  KWayland 6.8.2 (Fedora's 6.8.2-1) + the research's set w1 (the
+#   kwayland  KWayland 6.8.3 (Fedora's 6.8.3-1) + the research's set w1 (the
 #          pointer events of wl_seat versions 6 to 9), which KWin is built against
-#   kwin   KWin 6.8.2 (Fedora's 6.8.2-3) + the research's guest set g28 (VM frame
-#          pacing, the nested desktop): for Plasma 6.8.2 guests (guest/kwin/kwin.spec)
-#   qtbase, ksvg, kirigami  Qt 6.11.2's qtbase, KSvg and Kirigami 6.31.0 with
+#   kwin   KWin 6.8.3 (Fedora's 6.8.3-1) + the research's guest set g28v4 (VM
+#          frame pacing, the nested desktop): for Plasma 6.8.3 guests
+#          (guest/kwin/kwin.spec)
+#   qtbase, ksvg, kirigami  Qt 6.11.2's qtbase, KSvg and Kirigami 6.32.0 with
 #          the research's sets (q4, k2, f1): Fedora's specs, as the others
+#   kpipewire  KPipeWire 6.8.3 with the research's set k2
+#   kwayland, kwin, kpipewire, ksvg and kirigami are Fedora 45's; Fedora 44's
+#          keep 6.8.2 and 6.31.0 until its updates have Plasma 6.8.3
+#          (guest/*-f44, their own sections in components.conf)
 #   mutter  Mutter 51.1 (Fedora's 51.1-1) + the research's set m1 (a new frame
 #          clock's first estimates of at most one refresh): for Fedora 45's
 #          GNOME guests

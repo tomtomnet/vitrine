@@ -2,7 +2,7 @@
 # exact version, and dnf takes an installed one of the same version as done.
 Name:           vitrine-guest-tools
 Version:        0.1.0
-Release:        47%{?dist}
+Release:        48%{?dist}
 Summary:        vitrine guest tools: patched virtio-gpu driver, settings and agent
 
 # the driver's sources (dkms/vendor, dkms/patches) are the kernel's: MIT
@@ -204,6 +204,16 @@ fi
 %dir %{_sharedstatedir}/%{name}
 
 %changelog
+* Sun Nov 15 2026 vitrine <noreply@anthropic.com> - 0.1.0-48
+- Fedora 45's medium: KWin, KWayland and KPipeWire 6.8.3, KSvg and Kirigami
+  6.32.0 (Fedora's 6.8.3 and 6.32.0 with the research's sets, KWin's
+  g21jmc98v4-683 as g28v4); Fedora 44's keeps 6.8.2 and 6.31.0 until its
+  updates have Plasma 6.8.3
+- the installer moves a guest's KDE Frameworks with its Plasma, in the same
+  transaction, to the release of the medium's KSvg and Kirigami (kf_moves):
+  the tools held them at theirs, and Plasma 6.8.3 needs Frameworks 6.32,
+  which dnf would otherwise take only where required, a mix
+
 * Sun Nov 15 2026 vitrine <noreply@anthropic.com> - 0.1.0-47
 - the guest's clock (libexec/guest-clock, chronyd.service's drop-in):
   chronyd takes the host's clock through KVM's PTP clock (ptp_kvm, loaded

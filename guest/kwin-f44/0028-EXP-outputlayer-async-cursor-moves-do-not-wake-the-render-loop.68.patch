@@ -1,0 +1,199 @@
+From: Local build <local@localhost>
+Subject: [PATCH] EXP: outputlayer: a cursor move pushed out asynchronously does not wake the render loop (KWIN_ASYNC_CURSOR_MOVES)
+
+A cursor move is committed on its own (the compositor's repaintScheduled handler: presentAsync, a
+cursor-plane-only commit) but OutputLayer::scheduleRepaint also woke the render loop, and composite()
+then presented an empty frame that claimed the next vblank: a client redrawing in response to the
+same pointer move (a VM's window during a drag, ready ~1.8 ms before that vblank, 2026-10-10) could
+only take the one after. With the knob (environment or $XDG_RUNTIME_DIR/kwin-async-cursor-moves), the
+cursor layer emits repaintScheduled first and wakes the render loop only when the handler did not
+push a pure move out itself (a new cursor image still gets a frame, for its frame callbacks). Every
+other source of frames keeps its own scheduleRepaint; screencasts follow the cursor through
+Cursors::positionChanged. Off by default. Replaces the withdrawn h16/0027 (skip empty frames).
+
+
+6.8.1 version (2026-10-20), redesigned: 6.8.1 runs the cursor handler from a 0 ms timer (9503285406), after
+scheduleRepaint() has returned, so the handler can no longer tell scheduleRepaint() synchronously that it pushed
+the move out. The cursor layer now defers the render loop's wake to a 0 ms timer of its own, started after the
+handler's: the handler drops it for a pure move it presented asynchronously, composite() drops it when it handles
+the cursor layer in its frame (where 6.8.1 stops the handler's timer), and in every other case - a new image, a
+failed asynchronous commit, no handler at all - the timer wakes the render loop with the earliest target asked for.
+---
+ src/compositor.cpp       | 10 ++++++-
+ src/core/outputlayer.cpp | 70 ++++++++++++++++++++++++++++++++++++++++++++++++
+ src/core/outputlayer.h   | 13 +++++++++
+ 3 files changed, 92 insertions(+), 1 deletion(-)
+
+diff --git a/src/compositor.cpp b/src/compositor.cpp
+index 44b33e0..5a04adc 100644
+--- a/src/compositor.cpp
++++ b/src/compositor.cpp
+@@ -720,7 +720,8 @@ std::pair<QList<Compositor::LayerData>, std::expected<void, OutputError>> Compos
+                     }
+                     outputLayer->setTargetRect(mapGlobalLogicalToOutputDeviceCoordinates(cursorView->viewport(), logicalOutput, backendOutput));
+                     outputLayer->setEnabled(true);
+-                    if (cursorView->needsRepaint()) {
++                    const bool imageChanged = cursorView->needsRepaint();
++                    if (imageChanged) {
+                         if (!prepareRendering(cursorView, logicalOutput, backendOutput, 8)) {
+                             return;
+                         }
+@@ -732,6 +733,11 @@ std::pair<QList<Compositor::LayerData>, std::expected<void, OutputError>> Compos
+                         // prevent composite() from also pushing an update with the cursor layer
+                         // to avoid adding cursor updates that are synchronized with primary layer updates
+                         outputLayer->resetRepaints();
++                        // KWIN_ASYNC_CURSOR_MOVES: a pure move needs no frame of the render loop (a new cursor
++                        // image still gets one: its surface's frame callbacks are sent there)
++                        if (!imageChanged) {
++                            outputLayer->dropDeferredRepaint();
++                        }
+                     }
+                 });
+             } else {
+@@ -742,6 +748,8 @@ std::pair<QList<Compositor::LayerData>, std::expected<void, OutputError>> Compos
+             const auto it = timers.find(layer);
+             if (it != timers.end()) {
+                 it->second->stop();
++                // this frame handles the cursor layer's update (KWIN_ASYNC_CURSOR_MOVES: no frame after it)
++                layer->dropDeferredRepaint();
+             }
+         }
+         layers.push_back(LayerData{
+diff --git a/src/core/outputlayer.cpp b/src/core/outputlayer.cpp
+index 5b08959..922a448 100644
+--- a/src/core/outputlayer.cpp
++++ b/src/core/outputlayer.cpp
+@@ -9,6 +9,11 @@
+ #include "scene/surfaceitem_wayland.h"
+ #include "wayland/surface.h"
+ 
++#include <QFile>
++#include <QTimer>
++#include <chrono>
++#include <utility>
++
+ namespace KWin
+ {
+ 
+@@ -73,18 +78,83 @@ Region OutputLayer::deviceRepaints() const
+     return m_repaints;
+ }
+ 
++// KWIN_ASYNC_CURSOR_MOVES=1 (EXP), or $XDG_RUNTIME_DIR/kwin-async-cursor-moves holding 1 or 0 (read at most
++// once a second, for A/B tests without a restart): a cursor move the compositor pushed out on its own (a
++// cursor-plane-only commit, presentAsync) doesn't also wake the render loop. That wake made composite()
++// present an empty frame which claimed the next vblank, so a client redrawing in response to the same
++// pointer move - a VM's window during a drag, ready ~1.8 ms before that vblank (2026-10-10) - could only
++// take the one after. Everything else that needs a frame still schedules its own repaint.
++static bool asyncCursorMoves()
++{
++    static const bool environment = qEnvironmentVariableIntValue("KWIN_ASYNC_CURSOR_MOVES") == 1;
++    static bool value = environment;
++    static std::chrono::steady_clock::time_point checked{};
++    const auto now = std::chrono::steady_clock::now();
++    if (checked != std::chrono::steady_clock::time_point{} && now - checked < std::chrono::seconds(1)) {
++        return value;
++    }
++    checked = now;
++    value = environment;
++    QFile file(qEnvironmentVariable("XDG_RUNTIME_DIR") + QStringLiteral("/kwin-async-cursor-moves"));
++    if (file.open(QIODevice::ReadOnly)) {
++        const QByteArray content = file.readAll().trimmed();
++        if (content == "1") {
++            value = true;
++        } else if (content == "0") {
++            value = false;
++        }
++    }
++    return value;
++}
++
+ void OutputLayer::scheduleRepaint(Item *item, std::optional<std::chrono::steady_clock::time_point> targetTime)
+ {
+     if (!m_output) {
+         return;
+     }
+     m_repaintScheduled = true;
++    if (type() == OutputLayerType::CursorOnly && asyncCursorMoves()) {
++        // the compositor's cursor handler runs from a 0 ms timer started by repaintScheduled() and pushes a
++        // pure move out on its own (dropDeferredRepaint); this layer's own 0 ms timer, started after it,
++        // wakes the render loop for whatever the handler left to composite() - or if no handler ran
++        if (!m_deferredRepaint) {
++            m_deferredRepaint = true;
++            m_deferredItem = item;
++            m_deferredTarget = targetTime;
++        } else if (!targetTime || (m_deferredTarget && *targetTime < *m_deferredTarget)) {
++            // the earliest target wins, none = as soon as possible
++            m_deferredTarget = targetTime;
++        }
++        Q_EMIT repaintScheduled();
++        if (!m_deferredTimer) {
++            m_deferredTimer = new QTimer(this);
++            m_deferredTimer->setSingleShot(true);
++            m_deferredTimer->setInterval(0);
++            connect(m_deferredTimer, &QTimer::timeout, this, [this]() {
++                const bool wake = std::exchange(m_deferredRepaint, false);
++                const auto item = std::exchange(m_deferredItem, nullptr);
++                const auto target = std::exchange(m_deferredTarget, std::nullopt);
++                if (wake && m_renderLoop) {
++                    m_renderLoop->scheduleRepaint(item.data(), this, target);
++                }
++            });
++        }
++        m_deferredTimer->start();
++        return;
++    }
+     if (m_renderLoop) {
+         m_renderLoop->scheduleRepaint(item, this, targetTime);
+     }
+     Q_EMIT repaintScheduled();
+ }
+ 
++void OutputLayer::dropDeferredRepaint()
++{
++    m_deferredRepaint = false;
++    m_deferredItem.clear();
++    m_deferredTarget.reset();
++}
++
+ void OutputLayer::addDeviceRepaint(const Region &region)
+ {
+     if (region.isEmpty() || !m_output) {
+diff --git a/src/core/outputlayer.h b/src/core/outputlayer.h
+index e7183d3..002da92 100644
+--- a/src/core/outputlayer.h
++++ b/src/core/outputlayer.h
+@@ -18,6 +18,8 @@
+ #include <chrono>
+ #include <optional>
+ 
++class QTimer;
++
+ namespace KWin
+ {
+ 
+@@ -81,6 +83,12 @@ public:
+     void resetRepaints();
+     void scheduleRepaint(Item *item, std::optional<std::chrono::steady_clock::time_point> targetTime = std::nullopt);
+     void addDeviceRepaint(const Region &region);
++    /**
++     * EXP (KWIN_ASYNC_CURSOR_MOVES): the compositor pushed this cursor layer's update out on its own
++     * (presentAsync, a pure move), or composite() is handling it: the render loop wake that
++     * scheduleRepaint() deferred is not needed
++     */
++    void dropDeferredRepaint();
+     bool needsRepaint() const;
+ 
+     /**
+@@ -178,6 +186,11 @@ protected:
+     QPointer<BackendOutput> m_output;
+     uint32_t m_requiredAlphaBits = 0;
+     bool m_repaintScheduled = false;
++    // KWIN_ASYNC_CURSOR_MOVES: the render loop wake a cursor layer's scheduleRepaint() deferred to its timer
++    bool m_deferredRepaint = false;
++    QPointer<Item> m_deferredItem;
++    std::optional<std::chrono::steady_clock::time_point> m_deferredTarget;
++    QTimer *m_deferredTimer = nullptr;
+     RenderLoop *m_renderLoop = nullptr;
+     int m_zpos = 0;
+     int m_minZpos = 0;

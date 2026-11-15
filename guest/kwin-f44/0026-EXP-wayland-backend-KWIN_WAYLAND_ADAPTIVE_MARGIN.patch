@@ -1,0 +1,75 @@
+From 967520830d1007be9eead7b72c2316c39d760789 Mon Sep 17 00:00:00 2001
+From: research <research@localhost>
+Date: Tue, 6 Oct 2026 19:09:20 +0200
+Subject: [PATCH] EXP wayland backend: KWIN_WAYLAND_ADAPTIVE_MARGIN learns the
+ host's commit deadline from missed frames
+
+---
+ src/backends/wayland/wayland_output.cpp | 19 ++++++++++++++++++-
+ src/backends/wayland/wayland_output.h   |  4 ++++
+ 2 files changed, 22 insertions(+), 1 deletion(-)
+
+diff --git a/src/backends/wayland/wayland_output.cpp b/src/backends/wayland/wayland_output.cpp
+index 57093c7..8d10b7c 100644
+--- a/src/backends/wayland/wayland_output.cpp
++++ b/src/backends/wayland/wayland_output.cpp
+@@ -281,6 +281,7 @@ WaylandOutput::FrameData::FrameData(FrameData &&move)
+     , presentationFeedback(std::exchange(move.presentationFeedback, nullptr))
+     , frameCallback(std::exchange(move.frameCallback, nullptr))
+     , frameCallbackTime(std::exchange(move.frameCallbackTime, std::nullopt))
++    , commitTime(move.commitTime)
+ {
+ }
+ 
+@@ -336,6 +337,7 @@ std::expected<void, OutputError> WaylandOutput::present(const QList<OutputLayer
+     };
+     wp_presentation_feedback_add_listener(frameData.presentationFeedback, &s_presentationListener, this);
+     wl_callback_add_listener(frameData.frameCallback, &s_frameCallbackListener, this);
++    frameData.commitTime = std::chrono::steady_clock::now();
+     m_surface->commit(KWayland::Client::Surface::CommitFlag::None);
+     m_frames.push_back(std::move(frameData));
+     return {};
+@@ -363,7 +365,22 @@ void WaylandOutput::framePresented(std::chrono::nanoseconds timestamp, uint32_t
+     // latches it ~3 ms before its vblank, but sends the frame callback ~5.4 ms ahead (KWin
+     // 6.8 host, 240 Hz): the estimate kept every nested frame two refreshes ahead
+     static const std::optional<int> s_safetyMarginUs = environmentVariableIntValue("KWIN_WAYLAND_SAFETY_MARGIN_US");
+-    if (s_safetyMarginUs) {
++    // KWIN_WAYLAND_ADAPTIVE_MARGIN=1: learn the host's real commit deadline from the frames
++    // themselves - a frame shown a refresh or more after its target was committed too late, so
++    // the deadline moves above its commit lead at once (+0.5 ms, at most one refresh per miss);
++    // frames on target let it creep back down by 1 us each (floor 1.5 ms)
++    static const bool s_adaptiveMargin = environmentVariableBoolValue("KWIN_WAYLAND_ADAPTIVE_MARGIN").value_or(false);
++    if (s_adaptiveMargin && frame.outputFrame) {
++        const std::chrono::nanoseconds vblankInterval(1'000'000'000'000LL / std::max<uint32_t>(m_refreshRate, 1));
++        const auto target = std::chrono::duration_cast<std::chrono::nanoseconds>(frame.outputFrame->targetPageflipTime().time_since_epoch());
++        const auto lead = target - std::chrono::duration_cast<std::chrono::nanoseconds>(frame.commitTime.time_since_epoch());
++        if (timestamp > target + vblankInterval / 2) {
++            m_missLead = std::max(m_missLead, std::min(lead, vblankInterval));
++        } else {
++            m_missLead = std::max(m_missLead - std::chrono::microseconds(1), std::chrono::nanoseconds::zero());
++        }
++        m_renderLoop->setPresentationSafetyMargin(std::max<std::chrono::nanoseconds>(m_missLead + std::chrono::microseconds(500), std::chrono::microseconds(1500)));
++    } else if (s_safetyMarginUs) {
+         m_renderLoop->setPresentationSafetyMargin(std::chrono::microseconds(*s_safetyMarginUs));
+     } else if (auto t = frame.frameCallbackTime) {
+         // NOTE that the frame callback gets signaled *after* the host compositor
+diff --git a/src/backends/wayland/wayland_output.h b/src/backends/wayland/wayland_output.h
+index dab061b..172fb49 100644
+--- a/src/backends/wayland/wayland_output.h
++++ b/src/backends/wayland/wayland_output.h
+@@ -145,8 +145,12 @@ private:
+         wp_presentation_feedback *presentationFeedback;
+         wl_callback *frameCallback;
+         std::optional<std::chrono::steady_clock::time_point> frameCallbackTime;
++        std::chrono::steady_clock::time_point commitTime;
+     };
+     std::deque<FrameData> m_frames;
++    // KWIN_WAYLAND_ADAPTIVE_MARGIN: the largest commit lead (target vblank - commit) that
++    // still missed its vblank recently; the commit deadline is kept just above it
++    std::chrono::nanoseconds m_missLead{2'500'000};
+     quint32 m_pendingConfigureSerial = 0;
+     QSize m_pendingConfigureSize;
+     QTimer m_configureThrottleTimer;
+-- 
+2.55.0
+

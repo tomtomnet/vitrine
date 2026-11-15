@@ -1,0 +1,33 @@
+From 905913b1f0ac70b6770a43902c0255db1b133d03 Mon Sep 17 00:00:00 2001
+From: research <research@localhost>
+Date: Tue, 6 Oct 2026 01:49:21 +0200
+Subject: [PATCH] EXP compositor: KWIN_CURSOR_IMAGE_IN_FRAME=1 puts a new
+ cursor image back into the frame's commit (6.7 behaviour)
+
+
+6.8.1 version (2026-10-20): the cursor handler now hangs off 6.8.1's cursor timer (9503285406), same change.
+---
+ src/compositor.cpp | 7 ++++++-
+ 1 file changed, 6 insertions(+), 1 deletion(-)
+
+diff --git a/src/compositor.cpp b/src/compositor.cpp
+index da541a0..23285a6 100644
+--- a/src/compositor.cpp
++++ b/src/compositor.cpp
+@@ -697,10 +697,15 @@ std::pair<QList<Compositor::LayerData>, std::expected<void, OutputError>> Compos
+                 connect(timer.get(), &QTimer::timeout, view.get(), [logicalOutput, backendOutput, cursorView = view.get()]() {
+                     // this just deals with moving the plane asynchronously, for improved latency.
+                     // enabling and disabling the cursor image still happen in composite()
++                    // KWIN_CURSOR_IMAGE_IN_FRAME=1: a new cursor image waits for composite() as in
++                    // 6.7, in the same commit as the frame (on virtio-gpu a cursor commit of its own
++                    // takes a vblank, which can push the frame that follows it back a refresh)
++                    static const bool s_cursorImageInFrame = environmentVariableBoolValue("KWIN_CURSOR_IMAGE_IN_FRAME").value_or(false);
+                     const auto outputLayer = cursorView->layer();
+                     if (!outputLayer->isEnabled()
+                         || !outputLayer->deviceRepaints().isEmpty()
+-                        || !cursorView->isVisible()) {
++                        || !cursorView->isVisible()
++                        || (s_cursorImageInFrame && cursorView->needsRepaint())) {
+                         // composite() handles this
+                         return;
+                     }

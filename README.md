@@ -137,10 +137,13 @@ files it changes, and the guest packages compile through ccache.
 3. **Guest tools** for Fedora 44 and 45 x86-64 guests, a medium for each
    release, for GNOME and KDE Plasma guests alike: each guest installs the
    packages of its desktop. Both have the virtio-gpu driver, Mesa 26.2.6, KWin
-   (with the KWayland it is built against) and KPipeWire for Plasma 6.8.2, Qt
-   Base 6.11.2, KSvg and Kirigami 6.31.0, the nested desktop's session and
-   proxy, and an agent; Fedora 45's also has Mutter 51.1 (Fedora 44's GNOME
-   has Mutter 50, which the research's set is not made for). Their Mesa has
+   (with the KWayland it is built against) and KPipeWire, Qt Base 6.11.2, KSvg
+   and Kirigami, the nested desktop's session and proxy, and an agent: KWin
+   and KPipeWire for Plasma 6.8.3, KSvg and Kirigami 6.32.0 on Fedora 45's,
+   for Plasma 6.8.2 and KSvg and Kirigami 6.31.0 on Fedora 44's until its
+   updates have Plasma 6.8.3 (`guest/*-f44`). Fedora 45's also has Mutter 51.1
+   (Fedora 44's GNOME has Mutter 50, which the research's set is not made
+   for). Their Mesa has
    every video codec, as RPM Fusion's builds have and Fedora's has not (H.264,
    H.265, VC-1), and takes the place of RPM Fusion's freeworld drivers.
    The Builds window (also Build… in Machine > Install Guest Tools… and in
@@ -172,7 +175,7 @@ files it changes, and the guest packages compile through ccache.
    the two go in together, every installed KWayland package with them, or
    the guest keeps its KWin (a guest with 32-bit KWayland). Qt Base (qtbase
    6.11.2, with the research's shm pool reuse for resized Wayland windows),
-   KSvg and Kirigami (6.31.0, with the research's fix for Plasma's popups,
+   KSvg and Kirigami (6.32.0 or 6.31.0, with the research's fix for Plasma's popups,
    which no longer upload their frames again at each opening) replace the
    guest's only where it has that version, all of a package's subpackages or
    none, and so does Mutter (51.1, with the research's frame clock fix: after
@@ -187,10 +190,13 @@ files it changes, and the guest packages compile through ccache.
    newer release around them are a mix KDE does not release. Fedora's next
    KDE Frameworks, Plasma or Qt then waits for vitrine's next guest tools,
    which bring builds for it. A guest with Fedora's older Plasma (6.7.5,
-   which the tools held until 0.1.0-30) moves to Fedora's Plasma 6.8.2 in
-   the transaction that installs the tools' KWin, as long as Fedora's
-   repositories still have that Plasma; otherwise its KWin stays and its
-   Plasma is no longer held. Where a guest got a Plasma that does not match
+   which the tools held until 0.1.0-30, or 6.8.2 on Fedora 45 until 0.1.0-48)
+   moves to the Plasma of the tools' KWin in the transaction that installs
+   that KWin, as long as Fedora's repositories still have that Plasma;
+   otherwise its KWin stays and its Plasma is no longer held. Its KDE
+   Frameworks move with it, in the same transaction, to the release of the
+   tools' KSvg and Kirigami (6.31 to 6.32 with 0.1.0-48), so that none is
+   left at the release before. Where a guest got a Plasma that does not match
    the tools' KWin, the VM's Console and Details tabs say so, and installing
    the tools again repairs it. Mutter, and Qt Base, KSvg and Kirigami
    without vitrine's KWin, are not (a lock would keep Mutter at 51.1 while
@@ -328,9 +334,10 @@ KWin, KSvg, Kirigami and Qt base with the research's host sets. KWin's
 gives steadier frames and quicker input in VMs, and the pointer grab
 inside the Desktop view; KSvg's and Kirigami's make Plasma's popups cheaper
 to open; Qt base's makes windows cheaper to resize. The research has KWin
-sets for Plasma 6.7.91 (the KDE SIG's beta COPR) and 6.8 (`h681zy` for
-Fedora 44's and 45's 6.8.2), none for Fedora 44's earlier 6.7.5, and sets for KSvg
-and Kirigami 6.31.0 and Qt 6.11.2: the window says which apply. Build builds one in a Fedora container
+sets for Plasma 6.7.91 (the KDE SIG's beta COPR) and 6.8 (`h681zz2` for
+Fedora 44's 6.8.2, `h683a` for Fedora 45's 6.8.3), none for Fedora 44's earlier
+6.7.5, and sets for KSvg and Kirigami 6.31.0 and 6.32.0 and Qt 6.11.2: the
+window says which apply. Build builds one in a Fedora container
 (`host/kde/build.sh`, up to 10 GiB of memory). Install… says what it does
 first, then, with the administrator's password, replaces all the installed
 packages of that one (Qt base's: all from the same build) and version-locks

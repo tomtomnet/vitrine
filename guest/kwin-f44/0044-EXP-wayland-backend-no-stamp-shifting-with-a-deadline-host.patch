@@ -1,0 +1,35 @@
+From 111b59d5e04b797675b6480e8d9f69905e7921ff Mon Sep 17 00:00:00 2001
+From: research <research@localhost>
+Date: Sat, 10 Oct 2026 18:12:06 +0200
+Subject: [PATCH] EXP wayland backend: no stamp shifting with a host that sends
+ commit deadlines
+
+0041 moved the stamps a refresh earlier after eight in-time frames shown a refresh late. On the
+research host KWin (it sends the v3 deadline and shows a stamped frame at its target), late frames
+under host GPU load tripped it: 22 switches back and forth and 36 repeated refreshes a second in a
+launcher loop with the host GPU 40 % busy (2026-10-10, n1010c; 0 before). With a deadline-sending
+host the shift stays off; without one the stamps only come with KWIN_WAYLAND_COMMIT_TIMING=always.
+---
+ src/backends/wayland/wayland_output.cpp | 6 +++++-
+ 1 file changed, 5 insertions(+), 1 deletion(-)
+
+diff --git a/src/backends/wayland/wayland_output.cpp b/src/backends/wayland/wayland_output.cpp
+index 7bb7b65..ebec7bc 100644
+--- a/src/backends/wayland/wayland_output.cpp
++++ b/src/backends/wayland/wayland_output.cpp
+@@ -484,7 +484,11 @@ void WaylandOutput::framePresented(struct wp_presentation_feedback *feedback, st
+         m_renderLoop->setRefreshRate(m_refreshRate);
+     }
+     const auto &frame = m_frames.front();
+-    if (frame.commitTimingShift && frame.outputFrame) {
++    // (not with a host that sends commit deadlines: those are the research host KWin builds, whose
++    // commit timing shows a stamped frame at its target - there frames late by a refresh are load,
++    // and moving the stamps let frames out a refresh early: 22 switches and 36 repeats/s in a
++    // launcher loop with the host GPU 40 % busy, 2026-10-10 n1010c)
++    if (frame.commitTimingShift && frame.outputFrame && !m_hostSentDeadline) {
+         // KWin 6.8 counts its pipeline depth from a commit-timing stamp instead of from now: while
+         // it triple buffers (a direct-scanout client at 240 Hz) every stamped frame is shown a
+         // refresh after the vblank asked for, and this nested desktop runs at half its rate. Such a
+-- 
+2.56.0
+

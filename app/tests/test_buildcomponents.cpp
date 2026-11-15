@@ -195,7 +195,12 @@ private slots:
         }
         QCOMPARE(ids, QStringList({"virglrenderer", "rutabaga_gfx", "passt", "qemu", "tools", "mesa",
                                    "kwayland", "kwin", "proxy", "kpipewire", "qtbase", "ksvg",
-                                   "kirigami", "mutter", "flatpak", "medium"}));
+                                   "kirigami", "kwayland-f44", "kwin-f44", "kpipewire-f44", "ksvg-f44",
+                                   "kirigami-f44", "mutter", "flatpak", "medium"}));
+        /* Plasma 6.8.3 for Fedora 45, 6.8.2 kept for Fedora 44 until its updates have 6.8.3 */
+        QVERIFY(builtFor(find(all, "kwin"), "45") && !builtFor(find(all, "kwin"), "44"));
+        QVERIFY(builtFor(find(all, "kwin-f44"), "44") && !builtFor(find(all, "kwin-f44"), "45"));
+        QVERIFY(builtFor(find(all, "qtbase"), "44") && builtFor(find(all, "qtbase"), "45"));
         QCOMPARE(find(all, "qemu").kind, Kind::Host);
         QCOMPARE(find(all, "qemu").title, "QEMU");
         QCOMPARE(find(all, "qemu").deps, QStringList({"virglrenderer", "rutabaga_gfx"}));
@@ -215,7 +220,8 @@ private slots:
         QCOMPARE(find(all, "medium").kind, Kind::Medium);
         QCOMPARE(find(all, "medium").deps,
                  QStringList({"tools", "mesa", "kwayland", "kwin", "proxy", "kpipewire", "qtbase",
-                              "ksvg", "kirigami", "mutter", "flatpak"}));
+                              "ksvg", "kirigami", "kwayland-f44", "kwin-f44", "kpipewire-f44", "ksvg-f44",
+                              "kirigami-f44", "mutter", "flatpak"}));
         /* the Mesa for Flatpak apps, on every release's medium: one build, of
            freedesktop-sdk's recipe for the oldest runtime, for the later one too,
            with the Xe patch for its Mesa and guest/mesa's */
@@ -301,19 +307,27 @@ private slots:
         /* the stamp, which the app compares with the build's */
         QCOMPARE(key(find(all, "qemu"), all), StackBuilder::inputStamp(places.hostDir));
 
-        const QString inputs = run({places.guestDir + "/build-rpms.sh", "--print-inputs"}, &status);
-        QCOMPARE(status, 0);
-        for (const char *id : {"tools", "mesa", "kwayland", "kwin", "proxy", "kpipewire", "qtbase",
-                               "ksvg", "kirigami"}) {
-            QVERIFY2(inputs.contains(QString("%1 %2\n").arg(id, key(find(all, id), all))),
-                     qPrintable(inputs));
-            QCOMPARE(key(find(all, id), all), GuestToolsBuilder::inputsHash(places.guestDir, id));
+        /* each release's packages: KDE's of 6.8.3 for Fedora 45, of 6.8.2 for Fedora 44 */
+        for (const auto &[release, ids] :
+             {std::pair<QString, QStringList>{"45", {"tools", "mesa", "kwayland", "kwin", "proxy", "kpipewire",
+                                                     "qtbase", "ksvg", "kirigami", "mutter"}},
+              {"44", {"tools", "mesa", "kwayland-f44", "kwin-f44", "proxy", "kpipewire-f44", "qtbase",
+                      "ksvg-f44", "kirigami-f44"}}}) {
+            const QString inputs = run({places.guestDir + "/build-rpms.sh", "--print-inputs"}, &status,
+                                       {"FEDORA_RELEASE=" + release});
+            QCOMPARE(status, 0);
+            for (const QString &id : ids) {
+                QVERIFY2(inputs.contains(QString("%1 %2\n").arg(id, key(find(all, id), all))),
+                         qPrintable(release + ": " + inputs));
+                QCOMPARE(key(find(all, id), all), GuestToolsBuilder::inputsHash(places.guestDir, id));
+            }
+            QVERIFY2(!inputs.contains(release == "45" ? "kwin-f44 " : "\nkwin "), qPrintable(inputs));
+            /* Mutter's, built for Fedora 45 only */
+            QVERIFY2(release == "45" || !inputs.contains("mutter "), qPrintable(inputs));
         }
         /* KWin's: KWayland's key last */
         QVERIFY(inputLines(find(all, "kwin"), all)
                     .endsWith("\ndep kwayland " + key(find(all, "kwayland"), all).toLatin1() + '\n'));
-        /* Mutter's, built for Fedora 45 only */
-        QVERIFY2(!inputs.contains("mutter "), qPrintable(inputs));
         const QString inputs45 = run({places.guestDir + "/build-rpms.sh", "--print-inputs", "mutter"},
                                      &status, {"FEDORA_RELEASE=45"});
         QCOMPARE(status, 0);
@@ -663,34 +677,37 @@ private slots:
         QCOMPARE(ffiPatches[0].origin, "Research");
         QVERIFY(subject(ffi, ffiPatches[0]).startsWith("rutabaga_gfx: native contexts through the FFI"));
 
-        /* a spec's Patch lines: Fedora's own fix (6.8.2-3's Patch0), then the research's guest
-           set g28v4 from Patch1001, each patch with its own subject */
+        /* a spec's Patch lines: the research's guest set g28v4 for 6.8.3 from Patch1001 (Fedora's
+           6.8.3-1 has no patch of its own: its Patch0 is upstream), each with its own subject */
         const Component kwin = find(all, "kwin");
         const QList<Patch> kwinPatches = patches(kwin);
-        QCOMPARE(kwinPatches.size(), 62);
-        QCOMPARE(kwinPatches.first().number, "0");
-        QCOMPARE(kwinPatches.first().origin, "Fedora");
-        QCOMPARE(subject(kwin, kwinPatches.first()), "compositor: handle possibly missing render device");
-        QCOMPARE(kwinPatches[1].path, "kwin/0001-Patch100-kwin-vm-frame-timing-ported-to-6.8.v2.patch");
-        QCOMPARE(kwinPatches[1].number, "1001");
-        QCOMPARE(kwinPatches[1].origin, "Research");
-        QCOMPARE(subject(kwin, kwinPatches[1]), "Patch100 kwin-vm-frame-timing (ported to 6.8)");
-        /* the host's content-update deadline at presentation-time version 4 (host set h681zz) */
-        QCOMPARE(kwinPatches[29].number, "1029");
-        QCOMPARE(kwinPatches[29].path,
+        QCOMPARE(kwinPatches.size(), 60);
+        QCOMPARE(kwinPatches.first().path, "kwin/0001-Patch100-kwin-vm-frame-timing-ported-to-6.8.v2.patch");
+        QCOMPARE(kwinPatches.first().number, "1001");
+        QCOMPARE(kwinPatches.first().origin, "Research");
+        QCOMPARE(subject(kwin, kwinPatches.first()), "Patch100 kwin-vm-frame-timing (ported to 6.8)");
+        /* 6.8.3's versions of three; 0023 left out, as 6.8.3 has its fix */
+        QCOMPARE(kwinPatches[9].path, "kwin/0010-Patch109-kwin-warmup-frames-applies-with-offset.683.patch");
+        QCOMPARE(kwinPatches[36].path,
+                 "kwin/0039-EXP-renderloop-lone-frames-aimed-at-the-next-vblank.683.patch");
+        QVERIFY(std::none_of(kwinPatches.begin(), kwinPatches.end(),
+                             [](const Patch &p) { return p.path.contains("/0023-"); }));
+        /* the host's content-update deadline at presentation-time version 4 (host sets h681zz and later) */
+        QCOMPARE(kwinPatches[27].number, "1028");
+        QCOMPARE(kwinPatches[27].path,
                  "kwin/0029-EXP-wayland-backend-commit-deadline-from-presentation-time-v4.patch");
-        QCOMPARE(kwinPatches[57].number, "1057");
-        QCOMPARE(subject(kwin, kwinPatches[57]),
+        QCOMPARE(kwinPatches[55].number, "1056");
+        QCOMPARE(subject(kwin, kwinPatches[55]),
                  "EXP wayland backend: the cursor handed to the host as wl_shm (KWIN_WAYLAND_SHM_CURSOR)");
-        QCOMPARE(kwinPatches[59].path,
+        QCOMPARE(kwinPatches[57].path,
                  "kwin/0096-EXP-opengl-the-GPU-s-clock-read-once-a-second-for-render-time-queries.patch");
         /* a Subject folded over two lines, read as one */
-        QCOMPARE(kwinPatches[60].number, "1060");
-        QCOMPARE(kwinPatches[60].path,
+        QCOMPARE(kwinPatches[58].number, "1059");
+        QCOMPARE(kwinPatches[58].path,
                  "kwin/0097-FIX-wayland-backend-frame-callback-and-feedback-on-the-content-layer.patch");
-        QCOMPARE(subject(kwin, kwinPatches[60]),
+        QCOMPARE(subject(kwin, kwinPatches[58]),
                  "FIX wayland backend: the frame callback and the presentation feedback on the content layer");
-        QCOMPARE(kwinPatches.last().number, "1061");
+        QCOMPARE(kwinPatches.last().number, "1060");
         QCOMPARE(kwinPatches.last().path,
                  "kwin/0098-FIX-wayland-backend-scroll-source-steps-and-direction-from-the-host.patch");
         QCOMPARE(subject(kwin, kwinPatches.last()),
@@ -698,6 +715,16 @@ private slots:
         QCOMPARE(kwinPatches.last().origin, "Research");
         for (const Patch &p : kwinPatches) {
             QVERIFY2(QFileInfo::exists(kwin.dir + '/' + p.path), qPrintable(p.path));
+        }
+        /* Fedora 44's copy: Fedora's 6.8.2-3 with its Patch0, then the 6.8.2 set */
+        const Component kwin44 = find(all, "kwin-f44");
+        const QList<Patch> kwin44Patches = patches(kwin44);
+        QCOMPARE(kwin44Patches.size(), 62);
+        QCOMPARE(kwin44Patches.first().number, "0");
+        QCOMPARE(kwin44Patches.first().origin, "Fedora");
+        QCOMPARE(kwin44Patches.last().number, "1061");
+        for (const Patch &p : kwin44Patches) {
+            QVERIFY2(QFileInfo::exists(kwin44.dir + '/' + p.path), qPrintable(p.path));
         }
         /* KWayland: Fedora's spec without patches of its own, the research's w1 */
         const Component kwayland = find(all, "kwayland");
@@ -813,12 +840,14 @@ private slots:
         const Source kwin = source(find(all, "kwin"));
         QVERIFY(kwin.archive.startsWith("kwin-") && kwin.archive.endsWith(".tar.xz"));
         QCOMPARE(kwin.archiveHost, "download.kde.org");
-        QCOMPARE(kwin.revision, "6.8.2-3.4.g28v4");
+        QCOMPARE(kwin.revision, "6.8.3-1.1.g28v4");
+        QCOMPARE(source(find(all, "kwin-f44")).revision, "6.8.2-3.4.g28v4");
         const Source kwayland = source(find(all, "kwayland"));
-        QCOMPARE(kwayland.archive, "kwayland-6.8.2.tar.xz");
+        QCOMPARE(kwayland.archive, "kwayland-6.8.3.tar.xz");
         QCOMPARE(kwayland.archiveHost, "download.kde.org");
         QCOMPARE(kwayland.url, "https://invent.kde.org/plasma/kwayland");
-        QCOMPARE(kwayland.revision, "6.8.2-1.1.w1");
+        QCOMPARE(kwayland.revision, "6.8.3-1.1.w1");
+        QCOMPARE(source(find(all, "kwayland-f44")).revision, "6.8.2-1.1.w1");
         const Source proxy = source(find(all, "proxy"));
         QCOMPARE(proxy.archive, "wl-cross-domain-proxy-c6ce1ca.tar.gz");
         QCOMPARE(proxy.archiveHost, "codeberg.org");
@@ -833,13 +862,15 @@ private slots:
         QCOMPARE(qtbase.url, "http://qt-project.org/");
         QCOMPARE(qtbase.revision, "6.11.2-3.1.q4");
         const Source ksvg = source(find(all, "ksvg"));
-        QCOMPARE(ksvg.archive, "ksvg-6.31.0.tar.xz");
+        QCOMPARE(ksvg.archive, "ksvg-6.32.0.tar.xz");
         QCOMPARE(ksvg.archiveHost, "download.kde.org");
         QCOMPARE(ksvg.url, "https://invent.kde.org/frameworks/ksvg");
-        QCOMPARE(ksvg.revision, "6.31.0-1.1.k2");
+        QCOMPARE(ksvg.revision, "6.32.0-1.1.k2");
+        QCOMPARE(source(find(all, "ksvg-f44")).revision, "6.31.0-1.1.k2");
         const Source kirigami = source(find(all, "kirigami"));
-        QCOMPARE(kirigami.archive, "kirigami-6.31.0.tar.xz");
-        QCOMPARE(kirigami.revision, "6.31.0-1.1.f1");
+        QCOMPARE(kirigami.archive, "kirigami-6.32.0.tar.xz");
+        QCOMPARE(kirigami.revision, "6.32.0-1.1.f1");
+        QCOMPARE(source(find(all, "kirigami-f44")).revision, "6.31.0-1.1.f1");
         /* GNOME's %{gnome_tarball_version}; the release set by hand in place of %autorelease */
         const Source mutter = source(find(all, "mutter"));
         QCOMPARE(mutter.archive, "mutter-51.1.tar.xz");

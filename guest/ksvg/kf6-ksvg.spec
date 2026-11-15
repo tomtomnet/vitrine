@@ -2,7 +2,7 @@
 
 Name:    kf6-ksvg
 Summary: Components for handling SVGs
-Version: 6.31.0
+Version: 6.32.0
 Release: 1.1.k2%{?dist}
 
 License: CC0-1.0 AND GPL-2.0-or-later AND LGPL-2.0-or-later
@@ -93,11 +93,13 @@ Developer Documentation files for %{name} in HTML format
 %exclude %{_qt6_docdir}/*/*.index
 
 %changelog
-* Sat Oct 31 2026 vitrine <noreply@anthropic.com> - 6.31.0-1.1.k2
-- the research's set k2: Plasma's popups no longer upload their themed frames
-  again at each opening (a cached pixmap keeps one copy at the requested
-  device pixel ratio; a frame drops its previous nodes after the new ones
-  took their textures)
+* Sun Nov 15 2026 vitrine <noreply@anthropic.com> - 6.32.0-1.1.k2
+- Fedora's 6.32.0-1 with the research's set k2 (Plasma's popups keep their themed frames, its copies bounded), which
+  applies as it was: for Fedora 45's guest tools (KDE Frameworks 6.32); Fedora 44's keep
+  the build of the release before until its updates have it (guest/ksvg-f44)
+
+* Sun Nov 08 2026 Steve Cossette <farchord@gmail.com> - 6.32.0-1
+- 6.32.0
 
 * Fri Oct 02 2026 Steve Cossette <farchord@gmail.com> - 6.31.0-1
 - 6.31.0

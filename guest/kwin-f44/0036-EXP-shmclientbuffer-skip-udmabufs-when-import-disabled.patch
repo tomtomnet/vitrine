@@ -1,0 +1,32 @@
+From: Local <local@localhost>
+Subject: [PATCH] EXP shmclientbuffer: KWIN_DISABLE_UDMABUF_IMPORT also skips making the udmabufs
+
+---
+--- a/src/wayland/shmclientbuffer.cpp	2026-10-08 23:13:02.071835344 +0200
++++ b/src/wayland/shmclientbuffer.cpp	2026-10-08 23:13:02.078674919 +0200
+@@ -11,6 +11,7 @@
+ #include "wayland/display.h"
+ #include "wayland/shmclientbuffer.h"
+ #include "wayland/shmclientbuffer_p.h"
++#include "utils/envvar.h"
+ 
+ #include <drm_fourcc.h>
+ #include <fcntl.h>
+@@ -178,10 +179,16 @@
+     .destroy = buffer_destroy,
+ };
+ 
++// KWIN_DISABLE_UDMABUF_IMPORT=1 also skips making the udmabufs: with the import off nothing reads
++// them, and each one cost a UDMABUF_CREATE (pinning the client's pages), two DMA_BUF_IOCTL_SYNC per
++// use and the unpinning on release - in a VM guest whose host takes no guest dma-bufs, ~15 ms per
++// second of the compositor thread while three windows resized (2026-10-08).
++static const bool s_skipUdmabuf = environmentVariableBoolValue("KWIN_DISABLE_UDMABUF_IMPORT").value_or(false);
++
+ ShmClientBuffer::ShmClientBuffer(ShmPool *pool, ShmAttributes attributes, wl_client *client, uint32_t id)
+     : m_shmPool(pool)
+     , m_shmAttributes(std::move(attributes))
+-    , m_udmabufAttributes(GpuManager::self()->createUdmabuf(&m_shmAttributes))
++    , m_udmabufAttributes(s_skipUdmabuf ? std::nullopt : GpuManager::self()->createUdmabuf(&m_shmAttributes))
+ {
+     m_shmPool->ref();
+     if (m_udmabufAttributes) {

@@ -1,6 +1,6 @@
 Name:    kwin
-Version: 6.8.2
-Release: 3.4.g28v4%{?dist}
+Version: 6.8.3
+Release: 1.1.g28v4%{?dist}
 Summary: KDE Window manager
 
 License: BSD-2-Clause AND BSD-3-Clause AND CC0-1.0 AND GPL-2.0-only AND GPL-2.0-or-later AND GPL-3.0-only AND GPL-3.0-or-later AND LGPL-2.0-only AND LGPL-2.0-or-later AND LGPL-2.1-only AND LGPL-2.1-or-later AND LGPL-3.0-only AND (GPL-2.0-only OR GPL-3.0-only) AND (LGPL-2.1-only OR LGPL-3.0-only) AND MIT
@@ -16,17 +16,15 @@ Source10: macros.kwin.in
 
 ## upstream patches
 
-# compositor: handle possibly missing render device
-# https://invent.kde.org/plasma/kwin/-/commit/c9d720793bbcef9483ab290673032d39441c0e6f
-Patch0:  c9d720793bbcef9483ab290673032d39441c0e6f.patch
 
 ## proposed patches
-## the research's guest set g21jmc98-681, as g28 (virtio-gpu-desktop 5192412,
-## patches/kwin/sets/g21jmc98-681.series), without its 0033 (upstream in 6.8).
+## the research's guest set g21jmc98v4-683, as g28v4 (virtio-gpu-desktop 7d18c25,
+## patches/kwin/sets/g21jmc98v4-683.series), without its 0033 (upstream in 6.8).
 # KWin as the guest's compositor, on the VM's screen and as the nested desktop:
 # - frames paced to the host's: render timing from the CPU, a commit grace for
 #   buffers the GPU has not finished, late frames scheduled for the next vblank,
-#   presentation-time v3 deadlines and commit timing (0001-0034, 0039, 0041-0044)
+#   presentation-time v4 deadlines and commit timing (0001-0034, 0039, 0041-0044;
+#   0023's fix is 6.8.3's own, and 0010, 0011 and 0039 have their 6.8.3 versions)
 # - buffers shared with the host without copies, swapchains that wait for their
 #   readers, no udmabufs when their import is off (0013-0015, 0036, 0073)
 # - the nested desktop's Wayland backend: the pointer grab (Ctrl+Alt+G), the host's
@@ -54,8 +52,8 @@ Patch1006: 0006-Patch105-kwin-commit-grace-applies-with-offset-NB-th.patch
 Patch1007: 0007-Patch106-kwin-cursor-layer-scene-repaints-applies-wi.patch
 Patch1008: 0008-Patch107-kwin-gpu-done-from-commit-ported-to-6.8-Out.patch
 Patch1009: 0009-Patch108-kwin-watch-gpu-ported-to-6.8-uses-the-locke.patch
-Patch1010: 0010-Patch109-kwin-warmup-frames-applies-with-offset.patch
-Patch1011: 0011-Patch110-kwin-early-lone-frames-ported-to-6.8-wait-b.patch
+Patch1010: 0010-Patch109-kwin-warmup-frames-applies-with-offset.683.patch
+Patch1011: 0011-Patch110-kwin-early-lone-frames-ported-to-6.8-wait-b.683.patch
 Patch1012: 0012-Patch112-kwin-drm-damage-clips-ported-to-6.8-endFram.patch
 Patch1013: 0013-Patch113-kwin-swapchain-min-slots-ported-to-6.8-allo.patch
 Patch1014: 0014-kwin-swapchain-wait-readers-applies-with-offset.patch
@@ -67,45 +65,44 @@ Patch1019: 0019-FIX-C-Patch108-110-watchGpu-waits-with-ppoll-until-t.patch
 Patch1020: 0020-FIX-D-Patch112-queued-buffers-recorded-only-for-comm.patch
 Patch1021: 0021-FIX-E-Patch103-111-renderedByCompositor-from-the-lay.patch
 Patch1022: 0022-FIX-F-renderloop-the-2-ms-render-time-floor-only-for.patch
-Patch1023: 0023-FIX-G-renderloop-commit-timing-target-sets-the-earliest-vblank.patch
-Patch1024: 0024-EXP-compositor-KWIN_CURSOR_IMAGE_IN_FRAME.68.patch
-Patch1025: 0025-EXP-wayland-backend-KWIN_WAYLAND_SAFETY_MARGIN_US.patch
-Patch1026: 0026-EXP-wayland-backend-KWIN_WAYLAND_ADAPTIVE_MARGIN.patch
-Patch1027: 0027-EXP-wayland-backend-KWIN_WAYLAND_COMMIT_TIMING.patch
-Patch1028: 0028-FIX-H-wayland-backend-match-presentation-feedback-to-its-frame.patch
-Patch1029: 0029-EXP-wayland-backend-commit-deadline-from-presentation-time-v4.patch
-Patch1030: 0030-EXP-renderloop-wayland-backend-KWIN_RENDER_TIME_FLOO.patch
-Patch1031: 0031-EXP-wayland-backend-KWIN_WAYLAND_READY-the-way-to-th.v5.patch
-Patch1032: 0032-EXP-wayland-backend-3-frames-in-flight-KWIN_WAYLAND_.patch
-Patch1033: 0034-FIX-J-wayland-backend-start-at-the-host-output-s-ref.patch
-Patch1034: 0035-EXP-effects-QML-animations-steady-animation-clock.68.patch
-Patch1035: 0036-EXP-shmclientbuffer-skip-udmabufs-when-import-disabled.patch
-Patch1036: 0037-EXP-effects-first-animation-frame-one-refresh-in.68.patch
-Patch1037: 0038-FIX-window-activate-raise-and-unrestricted-resize-is-unrestricted.patch
-Patch1038: 0039-EXP-renderloop-lone-frames-aimed-at-the-next-vblank.patch
-Patch1039: 0028-EXP-outputlayer-async-cursor-moves-do-not-wake-the-render-loop.68.patch
-Patch1040: 0041-EXP-wayland-backend-commit-timing-stamps-adapt-to-a-late-host.v5.patch
-Patch1041: 0042-EXP-renderloop-KWIN_RENDERLOOP_TRACE.68.patch
-Patch1042: 0043-EXP-wayland-backend-commit-timing-auto-waits-for-a-host-deadline.patch
-Patch1043: 0044-EXP-wayland-backend-no-stamp-shifting-with-a-deadline-host.patch
-Patch1044: 0045-FIX-wayland-backend-pointer-grab-on-ctrl-alt-g.patch
-Patch1045: 0046-FIX-wayland-backend-apply-the-host-s-preferred-scale-when-it-arrives.patch
-Patch1046: 0051-FIX-wayland-backend-commit-after-pointer-lock-changes.patch
-Patch1047: 0060-EXP-interactive-move-once-per-frame.68.patch
-Patch1048: 0061-EXP-plasma-window-geometry-once-per-pass.patch
-Patch1049: 0062-EXP-cursor-async-test-once.g21.patch
-Patch1050: 0063-EXP-pointer-motion-to-clients-once-per-ms.patch
-Patch1051: 0064-FIX-wayland-backend-wl_output-follows-the-presented-refresh-rate.patch
-Patch1052: 0073-EXP-wayland-backend-KWIN_WAYLAND_SCANOUT_BUFFERS.patch
-Patch1053: 0084-FIX-wayland-backend-black-background-without-single-pixel-buffers.patch
-Patch1054: 0085-FIX-wayland-backend-layer-image-description-only-when-the-color-changes.patch
-Patch1055: 0086-FIX-wayland-backend-unchanged-geometry-viewports-positions-not-resent.patch
-Patch1056: 0087-FIX-wayland-backend-frames-whose-feedback-the-host-loses-are-dropped.patch
-Patch1057: 0091-EXP-wayland-backend-cursor-as-wl_shm.patch
-Patch1058: 0095-EXP-overview-keep-the-views-between-openings.patch
-Patch1059: 0096-EXP-opengl-the-GPU-s-clock-read-once-a-second-for-render-time-queries.patch
-Patch1060: 0097-FIX-wayland-backend-frame-callback-and-feedback-on-the-content-layer.patch
-Patch1061: 0098-FIX-wayland-backend-scroll-source-steps-and-direction-from-the-host.patch
+Patch1023: 0024-EXP-compositor-KWIN_CURSOR_IMAGE_IN_FRAME.68.patch
+Patch1024: 0025-EXP-wayland-backend-KWIN_WAYLAND_SAFETY_MARGIN_US.patch
+Patch1025: 0026-EXP-wayland-backend-KWIN_WAYLAND_ADAPTIVE_MARGIN.patch
+Patch1026: 0027-EXP-wayland-backend-KWIN_WAYLAND_COMMIT_TIMING.patch
+Patch1027: 0028-FIX-H-wayland-backend-match-presentation-feedback-to-its-frame.patch
+Patch1028: 0029-EXP-wayland-backend-commit-deadline-from-presentation-time-v4.patch
+Patch1029: 0030-EXP-renderloop-wayland-backend-KWIN_RENDER_TIME_FLOO.patch
+Patch1030: 0031-EXP-wayland-backend-KWIN_WAYLAND_READY-the-way-to-th.v5.patch
+Patch1031: 0032-EXP-wayland-backend-3-frames-in-flight-KWIN_WAYLAND_.patch
+Patch1032: 0034-FIX-J-wayland-backend-start-at-the-host-output-s-ref.patch
+Patch1033: 0035-EXP-effects-QML-animations-steady-animation-clock.68.patch
+Patch1034: 0036-EXP-shmclientbuffer-skip-udmabufs-when-import-disabled.patch
+Patch1035: 0037-EXP-effects-first-animation-frame-one-refresh-in.68.patch
+Patch1036: 0038-FIX-window-activate-raise-and-unrestricted-resize-is-unrestricted.patch
+Patch1037: 0039-EXP-renderloop-lone-frames-aimed-at-the-next-vblank.683.patch
+Patch1038: 0028-EXP-outputlayer-async-cursor-moves-do-not-wake-the-render-loop.68.patch
+Patch1039: 0041-EXP-wayland-backend-commit-timing-stamps-adapt-to-a-late-host.v5.patch
+Patch1040: 0042-EXP-renderloop-KWIN_RENDERLOOP_TRACE.68.patch
+Patch1041: 0043-EXP-wayland-backend-commit-timing-auto-waits-for-a-host-deadline.patch
+Patch1042: 0044-EXP-wayland-backend-no-stamp-shifting-with-a-deadline-host.patch
+Patch1043: 0045-FIX-wayland-backend-pointer-grab-on-ctrl-alt-g.patch
+Patch1044: 0046-FIX-wayland-backend-apply-the-host-s-preferred-scale-when-it-arrives.patch
+Patch1045: 0051-FIX-wayland-backend-commit-after-pointer-lock-changes.patch
+Patch1046: 0060-EXP-interactive-move-once-per-frame.68.patch
+Patch1047: 0061-EXP-plasma-window-geometry-once-per-pass.patch
+Patch1048: 0062-EXP-cursor-async-test-once.g21.patch
+Patch1049: 0063-EXP-pointer-motion-to-clients-once-per-ms.patch
+Patch1050: 0064-FIX-wayland-backend-wl_output-follows-the-presented-refresh-rate.patch
+Patch1051: 0073-EXP-wayland-backend-KWIN_WAYLAND_SCANOUT_BUFFERS.patch
+Patch1052: 0084-FIX-wayland-backend-black-background-without-single-pixel-buffers.patch
+Patch1053: 0085-FIX-wayland-backend-layer-image-description-only-when-the-color-changes.patch
+Patch1054: 0086-FIX-wayland-backend-unchanged-geometry-viewports-positions-not-resent.patch
+Patch1055: 0087-FIX-wayland-backend-frames-whose-feedback-the-host-loses-are-dropped.patch
+Patch1056: 0091-EXP-wayland-backend-cursor-as-wl_shm.patch
+Patch1057: 0095-EXP-overview-keep-the-views-between-openings.patch
+Patch1058: 0096-EXP-opengl-the-GPU-s-clock-read-once-a-second-for-render-time-queries.patch
+Patch1059: 0097-FIX-wayland-backend-frame-callback-and-feedback-on-the-content-layer.patch
+Patch1060: 0098-FIX-wayland-backend-scroll-source-steps-and-direction-from-the-host.patch
 
 
 # Base
@@ -196,7 +193,7 @@ BuildRequires:  libdisplay-info-devel
 BuildRequires:  cmake(KWayland)
 # vitrine's KWayland w1 (guest/kwayland), whose pointer signals 0098 uses: Fedora's
 # has none of them
-BuildRequires:  kwayland-devel(vitrine-w1) >= 6.8.2
+BuildRequires:  kwayland-devel(vitrine-w1) >= 6.8.3
 BuildRequires:  cmake(Plasma)
 BuildRequires:  cmake(PlasmaActivities)
 
@@ -387,64 +384,20 @@ sed -i \
 
 
 %changelog
-* Sun Nov 15 2026 vitrine <noreply@anthropic.com> - 6.8.2-3.4.g28v4
-- the research's guest set g21jmc98v4-681 as g28v4: g28 with the host's
-  content-update deadline taken from presentation-time version 4 (0029 v4;
-  0031 and 0041 follow it), as vitrine's host KWin h681zz sends it:
-  wayland-protocols 1.50 gave version 3 to its own fixed_rate and
-  variable_rate kinds.  From a host KWin of an older set (h681zy) the same
-  event at version 3 is still taken
+* Sun Nov 15 2026 vitrine <noreply@anthropic.com> - 6.8.3-1.1.g28v4
+- Fedora's 6.8.3-1 with the research's guest set g21jmc98v4-683 as g28v4
+  (virtio-gpu-desktop 7d18c25), without its 0033: g28v4 on Plasma 6.8.3.
+  0023 is left out, as 6.8.3's "fix scheduling with triple buffering and
+  commit timing" is the same fix; 0010, 0011 and 0039 have their versions for
+  6.8.3's render loop (its counts renamed).  Fedora's Patch0 is in 6.8.3.
+  For Fedora 45's guest tools (Fedora 44's keep 6.8.2 until its updates have
+  Plasma 6.8.3: guest/kwin-f44)
 
-* Sun Nov 08 2026 vitrine <noreply@anthropic.com> - 6.8.2-3.3.g28
-- the research's guest set g21jmc98-681 as g28 (61 patches: g27's 60, then
-  0098): the nested desktop binds the host's seat up to version 9, and hands
-  a scroll's source, wheel steps (axis_value120) and direction on with its
-  pointer frame, as the libinput backend does.  It bound the seat at
-  version 5 and handed every scroll on as a bare amount: a KDE host held a
-  high-resolution wheel's steps back from that seat until a whole notch was
-  full, and Chromium in the nested desktop animated each notch on its own,
-  198 new images a second at 240 Hz with a 29 ms pause six times a second.
-  With g28 239.6-239.9 a second in every boot (the research's Arc Pro B50
-  under KDE, 8 alternated boots); Super at 8/s and keys level.  A GNOME
-  host did not hold the steps back
-- built against KWayland 6.8.2-1.1.w1 (the research's set w1), whose pointer
-  signals 0098 uses: the build needs its devel package, and kwin-libs
-  requires it (kwayland(vitrine-w1))
-
-* Thu Nov 05 2026 vitrine <noreply@anthropic.com> - 6.8.2-3.2.g27
-- the research's guest set g21jmc97-681 as g27 (60 patches: g26's 59, then
-  0097): the nested desktop asks for its frame callbacks and presentation
-  feedback on its content layer, not on the black main surface under it.
-  A GNOME host culls that covered surface: it sent no frame callbacks and
-  discarded every feedback (855 of 857), so the nested KWin never learned
-  when the host showed its frames and aimed them from a stale vblank phase.
-  With 0097 a GNOME host presents them (80 of 80 key frames on the
-  research's Arc Pro B50, none missing its target), and its keys reach the
-  screen sooner: 7.73 ms mean against 8.72, 75 % at the first refresh
-  against 48 %, with fewer refreshes shown twice in the launcher's
-  animations; a KDE host as before.
-  KWIN_WAYLAND_FEEDBACK_ON_CONTENT=0 asks on the main surface again
-
-* Thu Nov 05 2026 vitrine <noreply@anthropic.com> - 6.8.2-3.1.g26
-- the research's guest set g21jmc96-681 as g26 (59 patches: g24's 56, then 0091,
-  0095 and 0096) on Fedora's 6.8.2-3 and its upstream crash fix (c9d72079: no
-  direct scanout of another GPU's buffer on an output without a render device,
-  such as DisplayLink's, where kwin_wayland crashed):
-  - 0091: the nested desktop's cursor goes to the host as shared memory, which
-    GNOME puts on its cursor plane: the full-screen VM stays scanned out there,
-    keys ~1.5 ms and drags ~2 ms sooner on a GNOME host (KDE hosts unchanged)
-  - 0095: the Overview keeps its views between openings: its later openings
-    18 ms to a first frame instead of 35-44 (the research's Arc Pro B50)
-  - 0096: the GPU's clock read once a second for render times: on Intel xe each
-    read wakes the GPU
+* Thu Nov 12 2026 Steve Cossette <farchord@gmail.com> - 6.8.3-1
+- 6.8.3
 
 * Tue Nov 03 2026 Steve Cossette <farchord@gmail.com> - 6.8.2-3
 - Fix for a kwin crash
-
-* Tue Nov 03 2026 vitrine <noreply@anthropic.com> - 6.8.2-2.1.g24
-- the research's guest set g21jmc87-681 as g24 (56 patches, its 0033 is upstream)
-  on Fedora's 6.8.2-2, in place of vitrine's ports of its earlier sets to 6.7.5:
-  for Fedora 44's Plasma 6.8.2, which the guest tools install with it
 
 * Sat Oct 31 2026 Neal Gompa <ngompa@fedoraproject.org> - 6.8.2-2
 - Add RPM macros for kwin versioning to devel package

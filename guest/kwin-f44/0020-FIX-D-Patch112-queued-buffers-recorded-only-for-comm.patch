@@ -1,0 +1,144 @@
+From 4285ff13b8336fb4e88a6a5581e40c114f65b029 Mon Sep 17 00:00:00 2001
+From: tomtomnet <tompere8000@proton.me>
+Date: Sat, 3 Oct 2026 14:34:25 +0200
+Subject: [PATCH 20/22] FIX-D Patch112: queued buffers recorded only for
+ commits handed over, full damage after a dropped commit, none on rotated
+ outputs, unsigned counter
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ src/backends/drm/drm_commit_thread.cpp |  6 ++++++
+ src/backends/drm/drm_egl_layer.cpp     |  3 ++-
+ src/backends/drm/drm_pipeline.cpp      | 21 ++++++++++++++++++---
+ src/backends/drm/drm_plane.h           |  7 ++++++-
+ 4 files changed, 32 insertions(+), 5 deletions(-)
+
+diff --git a/src/backends/drm/drm_commit_thread.cpp b/src/backends/drm/drm_commit_thread.cpp
+index 6f2ff8f829..36113d8a39 100644
+--- a/src/backends/drm/drm_commit_thread.cpp
++++ b/src/backends/drm/drm_commit_thread.cpp
+@@ -10,6 +10,7 @@
+ #include "drm_commit.h"
+ #include "drm_buffer.h"
+ #include "drm_gpu.h"
++#include "drm_plane.h"
+ #include "core/renderbackend.h"
+ #include "drm_logging.h"
+ #include "utils/envvar.h"
+@@ -328,6 +329,11 @@ void DrmCommitThread::submit()
+             }
+         }
+         for (auto &commit : m_commits) {
++            // FB_DAMAGE_CLIPS of later commits are relative to these buffers,
++            // which never reach the screen
++            for (DrmPlane *plane : commit->modifiedPlanes()) {
++                plane->damageInvalid = true;
++            }
+             m_commitsToDelete.push_back(std::move(commit));
+         }
+         m_commits.clear();
+diff --git a/src/backends/drm/drm_egl_layer.cpp b/src/backends/drm/drm_egl_layer.cpp
+index 7d6d29142c..0387b123fd 100644
+--- a/src/backends/drm/drm_egl_layer.cpp
++++ b/src/backends/drm/drm_egl_layer.cpp
+@@ -89,7 +89,8 @@ std::optional<Region> EglGbmLayer::damageSince(const std::shared_ptr<DrmFramebuf
+         || m_damageBuffer != m_surface.currentBuffer()
+         || m_previousBuffer != previous
+         || drmOutput()->needsShadowBuffer()
+-        || offloadTransform() != OutputTransform::Kind::Normal) {
++        || offloadTransform() != OutputTransform::Kind::Normal
++        || bufferTransform() != OutputTransform::Kind::Normal) {
+         return std::nullopt;
+     }
+     return m_damage;
+diff --git a/src/backends/drm/drm_pipeline.cpp b/src/backends/drm/drm_pipeline.cpp
+index a23fae833e..b3d7800589 100644
+--- a/src/backends/drm/drm_pipeline.cpp
++++ b/src/backends/drm/drm_pipeline.cpp
+@@ -74,25 +74,36 @@ std::expected<void, OutputError> DrmPipeline::present(const QList<OutputLayer *>
+         if (!ret) {
+             return ret;
+         }
++        // the buffers this commit puts on its planes, for the next commit's damage;
++        // remembered only once the whole commit is handed to the commit thread
++        std::vector<std::pair<DrmPlane *, std::shared_ptr<DrmFramebuffer>>> queued;
+         for (const auto layer : layersToUpdate) {
+             const auto pipelineLayer = static_cast<DrmPipelineLayer *>(layer);
++            if (pipelineLayer->plane()) {
++                // a commit for this plane failed in the commit thread: the screen
++                // shows an older buffer than the damage would be relative to
++                pipelineLayer->plane()->forceFullDamage |= pipelineLayer->plane()->damageInvalid.exchange(false);
++            }
+             ret = prepareAtomicPlane(partialUpdate.get(), pipelineLayer->plane(), pipelineLayer, frame);
+             if (!ret) {
+                 return ret;
+             }
+             if (pipelineLayer->plane()) {
+-                pipelineLayer->plane()->setQueuedBuffer(pipelineLayer->isEnabled() ? pipelineLayer->currentBuffer() : nullptr);
++                queued.emplace_back(pipelineLayer->plane(), pipelineLayer->isEnabled() ? pipelineLayer->currentBuffer() : nullptr);
+             }
+         }
+         if (layersToUpdate.isEmpty()) {
+             // work around amdgpu not giving us a valid pageflip timestamp
+             // if the commit doesn't contain a drm plane
++            if (const auto plane = m_pending.layers.front()->plane()) {
++                plane->forceFullDamage |= plane->damageInvalid.exchange(false);
++            }
+             ret = prepareAtomicPlane(partialUpdate.get(), m_pending.layers.front()->plane(), m_pending.layers.front(), frame);
+             if (!ret) {
+                 return ret;
+             }
+             if (const auto plane = m_pending.layers.front()->plane()) {
+-                plane->setQueuedBuffer(m_pending.layers.front()->isEnabled() ? m_pending.layers.front()->currentBuffer() : nullptr);
++                queued.emplace_back(plane, m_pending.layers.front()->isEnabled() ? m_pending.layers.front()->currentBuffer() : nullptr);
+             }
+         }
+         if (m_pending.needsModesetProperties) {
+@@ -103,6 +114,10 @@ std::expected<void, OutputError> DrmPipeline::present(const QList<OutputLayer *>
+         }
+         m_next.needsModesetProperties = m_pending.needsModesetProperties = false;
+         m_commitThread->addCommit(std::move(partialUpdate));
++        for (const auto &[plane, buffer] : queued) {
++            plane->setQueuedBuffer(buffer);
++            plane->forceFullDamage = false;
++        }
+         return {};
+     } else {
+         return presentLegacy(layersToUpdate, frame);
+@@ -315,7 +330,7 @@ std::expected<void, OutputError> DrmPipeline::prepareAtomicPlane(DrmAtomicCommit
+          */
+         static const bool s_damageClips = environmentVariableBoolValue("KWIN_DRM_DAMAGE_CLIPS").value_or(true);
+         std::shared_ptr<DrmBlob> blob;
+-        if (s_damageClips && fb != plane->queuedBuffer() && fb->buffer()) {
++        if (s_damageClips && !plane->forceFullDamage && fb != plane->queuedBuffer() && fb->buffer()) {
+             const auto damage = layer->damageSince(plane->queuedBuffer());
+             const QSize size = fb->buffer()->size();
+             const Rect bounds(0, 0, size.width(), size.height());
+diff --git a/src/backends/drm/drm_plane.h b/src/backends/drm/drm_plane.h
+index 91b7e86555..db58ffca8a 100644
+--- a/src/backends/drm/drm_plane.h
++++ b/src/backends/drm/drm_plane.h
+@@ -17,6 +17,7 @@
+ #include <QMap>
+ #include <QPoint>
+ #include <QSize>
++#include <atomic>
+ #include <deque>
+ #include <memory>
+ #include <qobjectdefs.h>
+@@ -56,7 +57,11 @@ public:
+     std::shared_ptr<DrmFramebuffer> queuedBuffer() const;
+     void setQueuedBuffer(const std::shared_ptr<DrmFramebuffer> &b);
+     /** counts commits with damage clips, for a full one now and then */
+-    int damageCommits = 0;
++    uint32_t damageCommits = 0;
++    /** set by the commit thread when a commit for this plane was dropped */
++    std::atomic<bool> damageInvalid{false};
++    /** main thread: the next commit for this plane says "everything" */
++    bool forceFullDamage = false;
+     void releaseCurrentBuffer();
+ 
+     void set(DrmAtomicCommit *commit, const Rect &src, const Rect &dst);
+-- 
+2.55.0
+

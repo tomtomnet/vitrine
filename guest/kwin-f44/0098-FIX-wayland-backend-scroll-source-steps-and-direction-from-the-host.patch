@@ -1,0 +1,177 @@
+From 4c30597f68f72f465e75e2a1586bf95f6259f103 Mon Sep 17 00:00:00 2001
+From: research <research@localhost>
+Date: Fri, 6 Nov 2026 13:20:11 +0100
+Subject: [PATCH] FIX wayland backend: the scroll source, wheel steps and
+ direction from the host
+
+The nested compositor bound the host's wl_seat at version 5 and handed every wl_pointer.axis on as a
+bare amount, with no source and no wheel steps (a TODO said so). A KWin host holds the
+high-resolution wheel steps of a seat older than version 8 back until a whole notch is full, so a
+free-spinning or high-resolution wheel reached the nested session's clients one notch at a time; and
+with no steps and no source, those clients could not tell a wheel from a touchpad. Chromium in the
+nested desktop then animated each notch on its own: a quarter notch every 40 ms (bench
+scroll_rate.sh --hires) gave 198 new images a second at 240 Hz instead of 240, a 29 ms pause six
+times a second (2026-11-06, RX 6900 XT, three runs; wheel notches, Firefox and bare Chromium smooth).
+
+The seat is now bound up to version 9, and the parts of a scroll the host sends within a pointer
+frame - axis_source, axis_value120 (axis_discrete before version 8), axis_relative_direction,
+axis, axis_stop - are gathered and handed on together with the frame, as the libinput backend
+hands on its own: the source, the steps in 120ths of a notch, the natural-scrolling direction, and
+an axis event without an amount for a stop. Needs a KWayland whose Pointer and Touch handle the
+events of seat versions 6 to 9 (axisValue120Changed, axisRelativeDirectionChanged, touch shape and
+orientation): without them a version 8 host's events would index past KWayland's listeners.
+---
+ src/backends/wayland/wayland_backend.cpp | 74 ++++++++++++++++++++----
+ src/backends/wayland/wayland_backend.h   | 15 +++++
+ src/backends/wayland/wayland_display.cpp |  4 +-
+ 3 files changed, 81 insertions(+), 12 deletions(-)
+
+diff --git a/src/backends/wayland/wayland_backend.cpp b/src/backends/wayland/wayland_backend.cpp
+index 2e0f03e..c4afc8c 100644
+--- a/src/backends/wayland/wayland_backend.cpp
++++ b/src/backends/wayland/wayland_backend.cpp
+@@ -37,6 +37,7 @@
+ #include <ranges>
+ #include <unistd.h>
+ #include <wayland-client-core.h>
++#include <wayland-client-protocol.h>
+ 
+ #include "wayland-linux-dmabuf-v1-client-protocol.h"
+ 
+@@ -143,23 +144,57 @@ WaylandInputDevice::WaylandInputDevice(KWayland::Client::Pointer *pointer, Wayla
+         }
+         Q_EMIT pointerButtonChanged(button, state, std::chrono::milliseconds(time), this);
+     });
+-    // TODO: Send discreteDelta and source as well.
+-    connect(pointer, &Pointer::axisChanged, this, [this](quint32 time, Pointer::Axis nativeAxis, qreal delta) {
+-        PointerAxis axis;
+-        switch (nativeAxis) {
+-        case Pointer::Axis::Horizontal:
+-            axis = PointerAxis::Horizontal;
++    // A scroll comes from the host in parts within a pointer frame: the source, the wheel steps
++    // (axis_value120 from version 8 of the seat, whole notches as axis_discrete before it), the
++    // direction against the fingers or wheel (version 9) and the amount, in an order the protocol
++    // leaves open. The parts are gathered and handed on with the frame, so that the nested
++    // session's clients get what the host's own clients get. (Bound at version 5 and handed on
++    // as bare amounts, a high-resolution wheel reached clients one notch at a time: the host holds
++    // the steps of an older seat back until a notch is full, and Chromium then animated each
++    // notch on its own, with pauses between them.)
++    m_axisFramed = wl_pointer_get_version(*pointer) >= WL_POINTER_FRAME_SINCE_VERSION;
++    connect(pointer, &Pointer::axisSourceChanged, this, [this](Pointer::AxisSource source) {
++        switch (source) {
++        case Pointer::AxisSource::Wheel:
++            m_axisSource = PointerAxisSource::Wheel;
+             break;
+-        case Pointer::Axis::Vertical:
+-            axis = PointerAxis::Vertical;
++        case Pointer::AxisSource::Finger:
++            m_axisSource = PointerAxisSource::Finger;
+             break;
+-        default:
+-            Q_UNREACHABLE();
++        case Pointer::AxisSource::Continuous:
++            m_axisSource = PointerAxisSource::Continuous;
++            break;
++        case Pointer::AxisSource::WheelTilt:
++            m_axisSource = PointerAxisSource::WheelTilt;
++            break;
++        }
++    });
++    connect(pointer, &Pointer::axisDiscreteChanged, this, [this](Pointer::Axis axis, qint32 discreteDelta) {
++        m_axisFrames[axis == Pointer::Axis::Vertical ? 0 : 1].deltaV120 += discreteDelta * 120;
++    });
++    connect(pointer, &Pointer::axisValue120Changed, this, [this](Pointer::Axis axis, qint32 value120) {
++        m_axisFrames[axis == Pointer::Axis::Vertical ? 0 : 1].deltaV120 += value120;
++    });
++    connect(pointer, &Pointer::axisRelativeDirectionChanged, this, [this](Pointer::Axis axis, Pointer::AxisRelativeDirection direction) {
++        m_axisFrames[axis == Pointer::Axis::Vertical ? 0 : 1].inverted = direction == Pointer::AxisRelativeDirection::Inverted;
++    });
++    connect(pointer, &Pointer::axisChanged, this, [this](quint32 time, Pointer::Axis axis, qreal delta) {
++        AxisFrame &frame = m_axisFrames[axis == Pointer::Axis::Vertical ? 0 : 1];
++        frame.delta += delta;
++        frame.hasDelta = true;
++        frame.time = time;
++        if (!m_axisFramed) {
++            flushAxisFrames();
+         }
+-        Q_EMIT pointerAxisChanged(axis, delta, 0, PointerAxisSource::Unknown, false, false, std::chrono::milliseconds(time), this);
++    });
++    connect(pointer, &Pointer::axisStopped, this, [this](quint32 time, Pointer::Axis axis) {
++        AxisFrame &frame = m_axisFrames[axis == Pointer::Axis::Vertical ? 0 : 1];
++        frame.stopped = true;
++        frame.time = time;
+     });
+ 
+     connect(pointer, &Pointer::frame, this, [this]() {
++        flushAxisFrames();
+         Q_EMIT pointerFrame(this);
+     });
+ 
+@@ -237,6 +272,23 @@ WaylandInputDevice::WaylandInputDevice(KWayland::Client::Touch *touch, WaylandSe
+     });
+ }
+ 
++void WaylandInputDevice::flushAxisFrames()
++{
++    for (int i = 0; i < 2; ++i) {
++        AxisFrame &frame = m_axisFrames[i];
++        const PointerAxis axis = i == 0 ? PointerAxis::Vertical : PointerAxis::Horizontal;
++        if (frame.hasDelta) {
++            Q_EMIT pointerAxisChanged(axis, frame.delta, frame.deltaV120, m_axisSource, frame.inverted, false, std::chrono::milliseconds(frame.time), this);
++        }
++        if (frame.stopped) {
++            // the end of a finger scroll: an axis event without an amount, which clients get as axis_stop
++            Q_EMIT pointerAxisChanged(axis, 0, 0, m_axisSource, frame.inverted, false, std::chrono::milliseconds(frame.time), this);
++        }
++        frame = AxisFrame();
++    }
++    m_axisSource = PointerAxisSource::Unknown;
++}
++
+ WaylandInputDevice::~WaylandInputDevice()
+ {
+ }
+diff --git a/src/backends/wayland/wayland_backend.h b/src/backends/wayland/wayland_backend.h
+index 59eef0b..3932d38 100644
+--- a/src/backends/wayland/wayland_backend.h
++++ b/src/backends/wayland/wayland_backend.h
+@@ -99,6 +99,21 @@ private:
+     std::unique_ptr<KWayland::Client::PointerPinchGesture> m_pinchGesture;
+     std::unique_ptr<KWayland::Client::PointerSwipeGesture> m_swipeGesture;
+ 
++    // one axis's part of the host's scroll events of a pointer frame, handed on with the frame
++    struct AxisFrame
++    {
++        qreal delta = 0;
++        qint32 deltaV120 = 0;
++        bool inverted = false;
++        bool hasDelta = false;
++        bool stopped = false;
++        quint32 time = 0;
++    };
++    void flushAxisFrames();
++    AxisFrame m_axisFrames[2]; // vertical, horizontal
++    PointerAxisSource m_axisSource = PointerAxisSource::Unknown;
++    bool m_axisFramed = true;
++
+     QSet<quint32> m_pressedKeys;
+     // keys of the grab chord kept from the session (their release too)
+     QSet<quint32> m_swallowedKeys;
+diff --git a/src/backends/wayland/wayland_display.cpp b/src/backends/wayland/wayland_display.cpp
+index da99d45..c4437e6 100644
+--- a/src/backends/wayland/wayland_display.cpp
++++ b/src/backends/wayland/wayland_display.cpp
+@@ -460,7 +460,9 @@ void WaylandDisplay::registry_global(void *data, wl_registry *registry, uint32_t
+         display->m_shm = static_cast<wl_shm *>(wl_registry_bind(registry, name, &wl_shm_interface, std::min(version, 1u)));
+     } else if (strcmp(interface, wl_seat_interface.name) == 0) {
+         display->m_seat = std::make_unique<KWayland::Client::Seat>();
+-        display->m_seat->setup(static_cast<wl_seat *>(wl_registry_bind(registry, name, &wl_seat_interface, std::min(version, 5u))));
++        // version 8 for the high-resolution wheel steps (a host sends an older seat whole notches
++        // only), 9 for the scroll direction; KWayland's pointer and touch handle the events to 9
++        display->m_seat->setup(static_cast<wl_seat *>(wl_registry_bind(registry, name, &wl_seat_interface, std::min(version, 9u))));
+     } else if (strcmp(interface, xdg_wm_base_interface.name) == 0) {
+         display->m_xdgShell = std::make_unique<KWayland::Client::XdgShellStable>();
+         display->m_xdgShell->setup(static_cast<xdg_wm_base *>(wl_registry_bind(registry, name, &xdg_wm_base_interface, std::min(version, 1u))));
+-- 
+2.56.0
+

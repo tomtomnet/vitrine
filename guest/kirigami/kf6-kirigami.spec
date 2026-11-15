@@ -1,7 +1,7 @@
 %global framework kirigami
 
 Name:           kf6-%{framework}
-Version:        6.31.0
+Version:        6.32.0
 Release:        1.1.f1%{?dist}
 Summary:        QtQuick plugins to build user interfaces based on the KDE UX guidelines
 License:        BSD-3-Clause AND CC0-1.0 AND FSFAP AND GPL-2.0-or-later AND LGPL-2.0-or-later AND LGPL-2.1-only AND LGPL-2.1-or-later AND LGPL-3.0-only AND (LGPL-2.1-only OR LGPL-3.0-only) AND MIT
@@ -95,8 +95,6 @@ Developer Documentation files for %{name} in HTML format
 %{_kf6_libdir}/libKirigamiPrimitives.so.%{version}
 %{_kf6_libdir}/libKirigamiPrivate.so.6
 %{_kf6_libdir}/libKirigamiPrivate.so.%{version}
-%{_kf6_libdir}/libKirigamiPolyfill.so.6
-%{_kf6_libdir}/libKirigamiPolyfill.so.%{version}
 %{_kf6_libdir}/libKirigamiTemplates.so.6
 %{_kf6_libdir}/libKirigamiTemplates.so.%{version}
 %{_kf6_libdir}/libKirigamiControls.so.6
@@ -119,7 +117,6 @@ Developer Documentation files for %{name} in HTML format
 %{_kf6_libdir}/libKirigamiPlatform.so
 %{_kf6_libdir}/libKirigamiPrimitives.so
 %{_kf6_libdir}/libKirigamiPrivate.so
-%{_kf6_libdir}/libKirigamiPolyfill.so
 %{_kf6_libdir}/libKirigamiTemplates.so
 %{_kf6_libdir}/libKirigamiControls.so
 %{_kf6_libdir}/libKirigamiForms.so
@@ -138,10 +135,16 @@ Developer Documentation files for %{name} in HTML format
 
 
 %changelog
-* Sat Oct 31 2026 vitrine <noreply@anthropic.com> - 6.31.0-1.1.f1
-- the research's set f1: PlatformTheme signals a frame contrast change only
-  when the value changes (Plasma's popups updated their themed items for
-  nothing at each opening and closing)
+* Sun Nov 15 2026 vitrine <noreply@anthropic.com> - 6.32.0-1.1.f1
+- Fedora's 6.32.0-1 with the research's set f1 (a frame contrast change signalled only when it changes), which
+  applies as it was: for Fedora 45's guest tools (KDE Frameworks 6.32); Fedora 44's keep
+  the build of the release before until its updates have it (guest/kirigami-f44)
+
+* Sun Nov 08 2026 Steve Cossette <farchord@gmail.com> - 6.32.0-1
+- 6.32.0
+
+* Fri Oct 23 2026 Jan Grulich <jgrulich@redhat.com> - 6.31.0-2
+- Rebuild (qt6)
 
 * Fri Oct 02 2026 Steve Cossette <farchord@gmail.com> - 6.31.0-1
 - 6.31.0

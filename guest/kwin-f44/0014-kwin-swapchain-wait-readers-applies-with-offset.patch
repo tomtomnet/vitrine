@@ -1,0 +1,58 @@
+From 7c08a71e5b743618e9eebf3ebbc11a1fa9d83865 Mon Sep 17 00:00:00 2001
+From: tomtomnet <tompere8000@proton.me>
+Date: Sat, 3 Oct 2026 14:31:19 +0200
+Subject: [PATCH 14/22] kwin-swapchain-wait-readers (applies with offset)
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ src/opengl/eglswapchain.cpp | 23 ++++++++++++++++++++++-
+ 1 file changed, 22 insertions(+), 1 deletion(-)
+
+diff --git a/src/opengl/eglswapchain.cpp b/src/opengl/eglswapchain.cpp
+index 58cb581fc1..4f947e6c38 100644
+--- a/src/opengl/eglswapchain.cpp
++++ b/src/opengl/eglswapchain.cpp
+@@ -19,6 +19,7 @@
+ 
+ #include <drm_fourcc.h>
+ #include <errno.h>
++#include <poll.h>
+ 
+ namespace KWin
+ {
+@@ -61,11 +62,31 @@ int EglSwapchainSlot::age() const
+     return m_age;
+ }
+ 
++// KWIN_SWAPCHAIN_WAIT_READERS=1: a slot is also busy while its dma-buf has
++// fences of readers.  In a virtual machine whose host shows the guest's buffers
++// themselves (zero copy), the guest's virtio-gpu driver (blob_flush_fence=3)
++// puts on the buffer flipped away from a fence that completes once the host
++// released it: the buffer is not rendered into while the host may still scan
++// it out, and the flip events need not wait for the host.
++static const bool s_waitReaders = environmentVariableBoolValue("KWIN_SWAPCHAIN_WAIT_READERS").value_or(false);
++
++static bool hasReaders(GraphicsBuffer *buffer)
++{
++    const DmaBufAttributes *attributes = buffer->dmabufAttributes();
++    if (!attributes || !attributes->fd[0].isValid()) {
++        return false;
++    }
++    // POLLOUT: no fence of any kind left on the dma-buf, readers' included
++    pollfd pfd{.fd = attributes->fd[0].get(), .events = POLLOUT, .revents = 0};
++    return poll(&pfd, 1, 0) == 0;
++}
++
+ bool EglSwapchainSlot::isBusy() const
+ {
+     return m_buffer->isReferenced()
+         || m_releasePoint.use_count() > 1
+-        || (m_releasePoint->releaseFd().isValid() && !m_releasePoint->releaseFd().isReadable());
++        || (m_releasePoint->releaseFd().isValid() && !m_releasePoint->releaseFd().isReadable())
++        || (s_waitReaders && hasReaders(m_buffer));
+ }
+ 
+ const FileDescriptor &EglSwapchainSlot::releaseFd() const
+-- 
+2.55.0
+

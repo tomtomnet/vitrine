@@ -1,0 +1,106 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: Local build <local@localhost>
+Date: Sat, 31 Oct 2026 08:11:14 +0100
+Subject: [PATCH] FIX wayland backend: frames whose presentation feedback the
+ host loses are dropped
+
+A host that loses a frame's presentation feedback - sends neither presented
+nor discarded - left the frame pending for good, and once all the frames
+the render loop allows in flight were such frames, the nested desktop
+stopped drawing. Hyprland 0.57 did it to a VM's nested desktop after a
+minute or two: the last frames got their frame callbacks, their feedback
+never came. A frame still without feedback 100 ms after its frame
+callback, or 1 s after its commit without one, is dropped as a discarded
+frame is; real feedback comes within a refresh or two of the callback.
+---
+ src/backends/wayland/wayland_output.cpp | 38 +++++++++++++++++++++++++
+ src/backends/wayland/wayland_output.h   |  3 ++
+ 2 files changed, 41 insertions(+)
+
+diff --git a/src/backends/wayland/wayland_output.cpp b/src/backends/wayland/wayland_output.cpp
+index 1733253..e435d79 100644
+--- a/src/backends/wayland/wayland_output.cpp
++++ b/src/backends/wayland/wayland_output.cpp
+@@ -132,6 +132,8 @@ WaylandOutput::WaylandOutput(const QString &name, Capabilities capabilities, Way
+     , m_backend(backend)
+     , m_cursor(std::make_unique<WaylandCursor>(backend))
+ {
++    m_lostFeedbackTimer.setSingleShot(true);
++    connect(&m_lostFeedbackTimer, &QTimer::timeout, this, &WaylandOutput::dropLostFeedback);
+     // EXP: 3 frames in flight by default (KWIN_WAYLAND_MAX_PENDING_FRAMES, 2 as upstream). The
+     // host's commit deadline can sit two refreshes before its vblank for seconds (its render
+     // time estimate after a full-screen transition, a composited window); planning a frame that
+@@ -297,6 +299,7 @@ void WaylandOutput::handleFrame(void *data, wl_callback *callback, uint32_t time
+     if (it != output->m_frames.end()) {
+         // don't use the "time" argument for this, as it's in an unspecified base.
+         it->frameCallbackTime = std::chrono::steady_clock::now();
++        output->dropLostFeedback();
+     }
+ }
+ 
+@@ -431,6 +434,7 @@ std::expected<void, OutputError> WaylandOutput::present(const QList<OutputLayer
+     }
+     m_surface->commit(KWayland::Client::Surface::CommitFlag::None);
+     m_frames.push_back(std::move(frameData));
++    dropLostFeedback();
+     return {};
+ }
+ 
+@@ -441,6 +445,40 @@ std::expected<void, OutputError> WaylandOutput::present(const QList<OutputLayer
+ // presented event was lost with its destroyed feedback object, and every later presentation
+ // was attributed to the frame before it for the rest of the session: a nested desktop at
+ // 240 Hz stuck at half rate (2026-10-07).
++// A host that loses a frame's presentation feedback - neither presented nor discarded - left the frame
++// pending for good, and once the frames the render loop allows in flight were all such, the nested
++// desktop stopped drawing: Hyprland 0.57 with a VM's nested desktop, after a minute or two (2026-10-31:
++// the last frames got their frame callbacks, no feedback ever came). A frame still without feedback
++// 100 ms after its frame callback, or 1 s after its commit without one, is dropped as a discarded
++// one is. Real feedback comes within a refresh or two of the frame callback.
++void WaylandOutput::dropLostFeedback()
++{
++    const auto now = std::chrono::steady_clock::now();
++    std::optional<std::chrono::steady_clock::time_point> next;
++    for (auto it = m_frames.begin(); it != m_frames.end();) {
++        const auto limit = it->frameCallbackTime ? *it->frameCallbackTime + std::chrono::milliseconds(100)
++                                                 : it->commitTime + std::chrono::seconds(1);
++        if (now >= limit) {
++            static bool warned = false;
++            if (!warned) {
++                qCWarning(KWIN_WAYLAND_BACKEND) << "The host lost the presentation feedback of a frame: dropped (this message once)";
++                warned = true;
++            }
++            it = m_frames.erase(it);
++            continue;
++        }
++        if (!next || limit < *next) {
++            next = limit;
++        }
++        ++it;
++    }
++    if (next) {
++        m_lostFeedbackTimer.start(std::max<int>(1, std::chrono::ceil<std::chrono::milliseconds>(*next - now).count()));
++    } else {
++        m_lostFeedbackTimer.stop();
++    }
++}
++
+ void WaylandOutput::frameDiscarded(struct wp_presentation_feedback *feedback)
+ {
+     const auto it = std::ranges::find_if(m_frames, [feedback](const FrameData &frame) {
+diff --git a/src/backends/wayland/wayland_output.h b/src/backends/wayland/wayland_output.h
+index f0eb05d..efc13cd 100644
+--- a/src/backends/wayland/wayland_output.h
++++ b/src/backends/wayland/wayland_output.h
+@@ -177,6 +177,9 @@ private:
+     quint32 m_pendingConfigureSerial = 0;
+     QSize m_pendingConfigureSize;
+     QTimer m_configureThrottleTimer;
++    // frames whose presentation feedback the host loses are dropped (dropLostFeedback)
++    QTimer m_lostFeedbackTimer;
++    void dropLostFeedback();
+     std::unique_ptr<ColorSurfaceFeedback> m_colorSurfaceFeedback;
+     wp_fractional_scale_v1 *m_fractionalScale = nullptr;
+     // KWIN_WAYLAND_COMMIT_TIMING=1: each frame's commit carries its target vblank
+-- 
+2.56.0
+

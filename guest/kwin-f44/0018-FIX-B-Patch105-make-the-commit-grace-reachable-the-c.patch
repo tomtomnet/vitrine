@@ -1,0 +1,102 @@
+From 2aadd0d8b2956d0293c54d7848ac9ba68b97113f Mon Sep 17 00:00:00 2001
+From: tomtomnet <tompere8000@proton.me>
+Date: Sat, 3 Oct 2026 14:33:20 +0200
+Subject: [PATCH 18/22] FIX-B Patch105: make the commit grace reachable (the
+ condition required readable buffers) and keep grace commits out of the margin
+ regulator (UNTESTED: changes behaviour, A/B before use)
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ src/backends/drm/drm_commit.cpp        | 9 +++++++--
+ src/backends/drm/drm_commit.h          | 5 +++++
+ src/backends/drm/drm_commit_thread.cpp | 8 +++++---
+ src/backends/drm/drm_commit_thread.h   | 2 ++
+ 4 files changed, 19 insertions(+), 5 deletions(-)
+
+diff --git a/src/backends/drm/drm_commit.cpp b/src/backends/drm/drm_commit.cpp
+index afdb19477a..e44e8250ae 100644
+--- a/src/backends/drm/drm_commit.cpp
++++ b/src/backends/drm/drm_commit.cpp
+@@ -371,10 +371,15 @@ std::optional<std::chrono::steady_clock::time_point> DrmAtomicCommit::targetPage
+     return m_targetPageflipTime;
+ }
+ 
+-bool DrmAtomicCommit::isReadyFor(std::chrono::steady_clock::time_point pageflipTarget) const
++bool DrmAtomicCommit::isDueFor(std::chrono::steady_clock::time_point pageflipTarget) const
+ {
+     static constexpr auto s_pageflipSlop = 500us;
+-    return (!m_targetPageflipTime || pageflipTarget + s_pageflipSlop >= *m_targetPageflipTime) && areBuffersReadable();
++    return !m_targetPageflipTime || pageflipTarget + s_pageflipSlop >= *m_targetPageflipTime;
++}
++
++bool DrmAtomicCommit::isReadyFor(std::chrono::steady_clock::time_point pageflipTarget) const
++{
++    return isDueFor(pageflipTarget) && areBuffersReadable();
+ }
+ 
+ bool DrmAtomicCommit::isTearing() const
+diff --git a/src/backends/drm/drm_commit.h b/src/backends/drm/drm_commit.h
+index 9ff19a17b3..d4c6f0570e 100644
+--- a/src/backends/drm/drm_commit.h
++++ b/src/backends/drm/drm_commit.h
+@@ -118,6 +118,11 @@ public:
+     std::optional<std::chrono::nanoseconds> allowedVrrDelay() const;
+ 
+     std::optional<std::chrono::steady_clock::time_point> targetPageflipTime() const;
++    /**
++     * Whether the commit may go out for @p pageflipTarget as far as its target
++     * time goes, whether its buffers are readable yet or not
++     */
++    bool isDueFor(std::chrono::steady_clock::time_point pageflipTarget) const;
+     bool isReadyFor(std::chrono::steady_clock::time_point pageflipTarget) const;
+     bool isTearing() const;
+ 
+diff --git a/src/backends/drm/drm_commit_thread.cpp b/src/backends/drm/drm_commit_thread.cpp
+index a2b8aa6940..5b7963ed56 100644
+--- a/src/backends/drm/drm_commit_thread.cpp
++++ b/src/backends/drm/drm_commit_thread.cpp
+@@ -119,8 +119,8 @@ DrmCommitThread::DrmCommitThread(DrmGpu *gpu, const QString &name)
+                 }
+             }
+             optimizeCommits(m_targetPageflipTime);
+-            if (s_commitGrace > 0ns && !m_vrr && !m_tearing && !m_commits.front()->isReadyFor(m_targetPageflipTime)
+-                && m_commits.front()->isReadyFor(m_targetPageflipTime + m_minVblankInterval)) {
++            if (s_commitGrace > 0ns && !m_vrr && !m_tearing && m_commits.front()->isDueFor(m_targetPageflipTime)
++                && !m_commits.front()->areBuffersReadable()) {
+                 // The commit is for this vblank but its buffers are not readable yet
+                 // (their GPU work is not done). In a virtual machine the vblank is
+                 // told early on purpose, and a commit a little after it still makes
+@@ -146,6 +146,8 @@ DrmCommitThread::DrmCommitThread(DrmGpu *gpu, const QString &name)
+                 if (waited && m_commits.front()->areBuffersReadable()) {
+                     // the render loop learns how long the GPU really took
+                     m_commits.front()->markGpuDone(std::chrono::steady_clock::now());
++                    // it goes out after its deadline on purpose: not a reason to grow the margin
++                    m_graceCommit = true;
+                 }
+             }
+             if (!m_commits.front()->isReadyFor(m_targetPageflipTime)) {
+@@ -273,7 +275,7 @@ void DrmCommitThread::submit()
+     // read before the ioctl: once it returned, the main thread may already handle
+     // the pageflip event and clear the commit's frames (DrmAtomicCommit::pageFlipped
+     // runs without m_mutex)
+-    const bool scheduledLate = commit->scheduledLate();
++    const bool scheduledLate = commit->scheduledLate() || std::exchange(m_graceCommit, false);
+     const auto success = commit->commit();
+     if (success) {
+         m_vrr = vrr.value_or(m_vrr);
+diff --git a/src/backends/drm/drm_commit_thread.h b/src/backends/drm/drm_commit_thread.h
+index 2e11ad536f..bf37205f27 100644
+--- a/src/backends/drm/drm_commit_thread.h
++++ b/src/backends/drm/drm_commit_thread.h
+@@ -73,6 +73,8 @@ private:
+     std::chrono::nanoseconds m_additionalSafetyMargin = std::chrono::milliseconds(1);
+     bool m_ping = false;
+     bool m_pageflipTimeoutDetected = false;
++    // the commit at the front waited in the commit grace (KWIN_DRM_COMMIT_GRACE_US)
++    bool m_graceCommit = false;
+ };
+ 
+ }
+-- 
+2.55.0
+
