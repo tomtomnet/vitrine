@@ -1294,21 +1294,26 @@ void memlock_restore(const char *key)
     char a[32];
     pid_t pid;
     u64 start;
+    bool restored = false, changed = false;
 
     if (memlock_read(key, &pid, &start, &was_soft, &was_hard, &wrote_soft, &wrote_hard) &&
         process_started(pid, start) && sys_getmemlock(pid, &soft, &hard) == 0) {
         if (soft == wrote_soft && hard == wrote_hard) {
-            if ((soft != was_soft || hard != was_hard) &&
-                sys_setmemlock(pid, was_soft, was_hard) == 0) {
-                reply("restored memlock %d: %s", (int)pid, rlim_text(was_soft, a, sizeof(a)));
-                sys_log("pid %d: locked memory limit back to %s", (int)pid,
-                        rlim_text(was_soft, a, sizeof(a)));
-            }
-        } else if (soft != was_soft || hard != was_hard) {
-            reply("left memlock %d: changed by someone else since", (int)pid);
+            restored = (soft != was_soft || hard != was_hard) &&
+                       sys_setmemlock(pid, was_soft, was_hard) == 0;
+        } else {
+            changed = soft != was_soft || hard != was_hard;
         }
     }
+    /* the record first: what the answer says is done once it comes (a client
+       reading it, a test, found the record still there) */
     state_remove(key);
+    if (restored) {
+        reply("restored memlock %d: %s", (int)pid, rlim_text(was_soft, a, sizeof(a)));
+        sys_log("pid %d: locked memory limit back to %s", (int)pid, rlim_text(was_soft, a, sizeof(a)));
+    } else if (changed) {
+        reply("left memlock %d: changed by someone else since", (int)pid);
+    }
 }
 
 /* --- the requests --- */
