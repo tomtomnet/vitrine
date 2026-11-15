@@ -5347,6 +5347,72 @@ private slots:
         QVERIFY(next.finished());
     }
 
+    /* The devices go with the QEMU that took them, while the helper watches another */
+    void usbGoesWithItsQemu()
+    {
+        usbTree();
+        setAside("0781:5567");
+        FakeQemu first, second;
+        Helper h(m_root, {}, HELPER_FAKE, {"devices"});
+        QVERIFY(h.ready());
+        const QString file = runRules(h.pid());
+        QCOMPARE(h.answer("usb 0781:5567"), QString("ok usb 0781:5567"));
+        QCOMPARE(h.answer("watch " + first.pidText()), "ok watch " + first.pidText());
+        QCOMPARE(h.answer("watch " + second.pidText()), "ok watch " + second.pidText());
+        /* another QEMU's end changes nothing */
+        QString pid = second.pidText();
+        second.stop();
+        QCOMPARE(h.waitFor("exited"), "exited " + pid);
+        QCOMPARE(h.answer("usb 0781:5567"), QString("ok usb 0781:5567"));
+        QVERIFY(QFile::exists(path(file)));
+        /* the first one's end, another one still watched: the devices go, the helper stays */
+        FakeQemu third;
+        QCOMPARE(h.answer("watch " + third.pidText()), "ok watch " + third.pidText());
+        pid = first.pidText();
+        first.stop();
+        QCOMPARE(h.waitFor("exited"), "exited " + pid);
+        QCOMPARE(h.line(), QString("restored usb 0781:5567"));
+        QVERIFY(!QFile::exists(path(file)));
+        QVERIFY(h.running());
+        QCOMPARE(stateFiles(), QStringList({"lock"}));
+        pid = third.pidText();
+        third.stop();
+        QCOMPARE(h.waitFor("exited"), "exited " + pid);
+        QCOMPARE(h.line(), QString("bye"));
+        QVERIFY(h.finished());
+    }
+
+    /* More dead helpers' files than one recovery takes: the rest for the next helper */
+    void usbManyDeadHelpers()
+    {
+        usbTree();
+        setAside("0781:5567");
+        QDir().mkpath(path("/run/vitrine-helper"));
+        QFile::setPermissions(path("/run/vitrine-helper"),
+                              QFileDevice::ReadOwner | QFileDevice::WriteOwner | QFileDevice::ExeOwner);
+        for (int pid = 900001; pid <= 900009; pid++) {
+            writeFile(path(QString("/run/vitrine-helper/usb-%1.state").arg(pid)), "ids 0781:5567\n");
+            writeFile(path(runRules(pid)), away({"0781:5567"}));
+        }
+        Helper h(m_root, {}, HELPER_FAKE, {"devices"});
+        QStringList before;
+        for (QString l = h.line(); !l.isNull() && !l.startsWith("ready"); l = h.line()) {
+            before << l;
+        }
+        QCOMPARE(before, QStringList(8, "restored usb 0781:5567"));
+        QCOMPARE(rulesFiles("/run/udev/rules.d").size(), 1);
+        QCOMPARE(stateFiles().filter(".state").size(), 1);
+        h.closeInput();
+        QVERIFY(h.finished());
+        Helper next(m_root, {}, HELPER_FAKE, {"devices"});
+        QCOMPARE(next.line(), QString("restored usb 0781:5567"));
+        QVERIFY(next.ready());
+        QCOMPARE(rulesFiles("/run/udev/rules.d"), QStringList());
+        QCOMPARE(stateFiles(), QStringList({"lock"}));
+        next.closeInput();
+        QVERIFY(next.finished());
+    }
+
     /* Killed before the aside file is in place: the next write takes its leftover */
     void usbAsideKilledHalfWay()
     {
