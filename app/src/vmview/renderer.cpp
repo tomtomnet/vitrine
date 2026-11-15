@@ -42,6 +42,11 @@
 #define DRM_FORMAT_MOD_INVALID 0x00ffffffffffffffULL
 #endif
 
+uint32_t presentationVersion(uint32_t advertised)
+{
+    return std::min({advertised, uint32_t(wp_presentation_interface.version), 2u});
+}
+
 QRect fitRect(QSize view, QSize image)
 {
     if (image.isEmpty() || view.isEmpty()) {
@@ -279,10 +284,10 @@ const wl_registry_listener kRegistryListener = {
         auto *s = static_cast<RenderState *>(data);
         if (strcmp(iface, wp_presentation_interface.name) == 0) {
             // version 2 when there is one: under a variable refresh rate a
-            // version 1 client gets refresh 0, so QEMU keeps its default
+            // version 1 client gets refresh 0, so QEMU keeps its default;
+            // never 3 (presentationVersion())
             s->presentation = static_cast<wp_presentation *>(wl_registry_bind(
-                reg, name, &wp_presentation_interface,
-                std::min(version, uint32_t(wp_presentation_interface.version))));
+                reg, name, &wp_presentation_interface, presentationVersion(version)));
             wp_presentation_add_listener(s->presentation, &kPresentationListener, s);
         } else if (strcmp(iface, zwp_linux_dmabuf_v1_interface.name) == 0) {
             if (s->swapchain) {

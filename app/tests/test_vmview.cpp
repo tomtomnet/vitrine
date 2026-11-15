@@ -44,6 +44,7 @@
 #include "core/physicalsize.h"
 #include "vmview/dbusdisplay.h"
 #include "vmview/qmp.h"
+#include "vmview/renderer.h"
 #include "vmview/vmview.h"
 
 namespace {
@@ -620,6 +621,17 @@ private Q_SLOTS:
         /* the deferred parts of the views gone */
         QTest::qWait(50);
         QFile::remove(socketPath());
+    }
+
+    /* presentation-time: version 2 at most, whatever the compositor and
+       wayland-protocols have (1.50's is 3, the host KWin's 3 has an event
+       of its own) */
+    void presentationVersions()
+    {
+        QCOMPARE(presentationVersion(1), 1u);
+        QCOMPARE(presentationVersion(2), 2u);
+        QCOMPARE(presentationVersion(3), 2u);
+        QCOMPARE(presentationVersion(5), 2u);
     }
 
     void attachAndDetach()

@@ -9,6 +9,7 @@
 #include <QRect>
 #include <QThread>
 #include <atomic>
+#include <cstdint>
 
 class QOpenGLContext;
 class QWindow;
@@ -43,6 +44,13 @@ public:
 
 // Where a width x height image lands in a view (letterboxed, top-left origin).
 QRect fitRect(QSize view, QSize image);
+
+// The version of wp_presentation to bind of the @advertised one: 2 at most,
+// whose events the view's listeners know.  wayland-protocols 1.50's version
+// 3 adds none, but the host KWin's own version 3 (the research's patch)
+// sends a content-update deadline event, which libwayland would take as a
+// fatal error for a client that has no such event.
+uint32_t presentationVersion(uint32_t advertised);
 
 class Renderer : public QThread
 {
