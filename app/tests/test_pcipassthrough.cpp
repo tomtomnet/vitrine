@@ -532,8 +532,10 @@ private slots:
         UsbAside::setPath(aside);
         const QList<std::pair<quint16, quint16>> stick{{0x0781, 0x5567}}, both{{0x0781, 0x5567},
                                                                                 {0x18d1, 0x4ee7}};
-        const auto start = [&](const QStringList &addresses,
-                               const QList<std::pair<quint16, quint16>> &usb) -> std::pair<QString, int> {
+        /* the start's answer and its notices; once the VM runs, the helper watches its QEMU
+           (watched), or none is left to (a refusal or a dismissed password ends it) */
+        const auto start = [&](const QStringList &addresses, const QList<std::pair<quint16, quint16>> &usb,
+                               bool watched = true) -> std::pair<QString, int> {
             QFile::remove(requests);
             PciPassthrough pt(nullptr);
             QSignalSpy notices(&pt, &PciPassthrough::notice);
@@ -543,10 +545,22 @@ private slots:
             QString answer = "none";
             pt.prepare("vm1", "VM 1", addresses, 3072, usb,
                        [&answer](const QString &error) { answer = error; });
-            QTest::qWaitFor([&answer]() { return answer != "none"; }, 10000);
+            /* a wait that times out is the answer: the caller's comparison fails with it */
+            if (!QTest::qWaitFor([&answer]() { return answer != "none"; }, 10000)) {
+                return {"no answer within 10 s", int(notices.size())};
+            }
             if (answer.isEmpty()) {
                 pt.launched("vm1", 4242);
-                QTest::qWaitFor([&]() { return readFile(requests).contains("watch 4242"); }, 5000);
+                if (watched &&
+                    !QTest::qWaitFor([&]() { return readFile(requests).contains("watch 4242"); }, 5000)) {
+                    return {"no watch 4242 within 5 s", int(notices.size())};
+                }
+                if (!watched) {
+                    QTest::qWait(300);
+                    if (readFile(requests).contains("watch")) {
+                        return {"a watch for a helper that ended", int(notices.size())};
+                    }
+                }
             }
             return {answer, int(notices.size())};
         };
@@ -570,11 +584,12 @@ private slots:
         QCOMPARE(readFile(requests), QByteArray("verb devices\nusb 18d1:4ee7\nwatch 4242"));
         /* the helper's refusal: said, and the VM starts all the same */
         qputenv("USB_REPLY", "error usb 18d1:4ee7: not set aside: the password first");
-        QCOMPARE(start({}, {{0x18d1, 0x4ee7}}), std::pair(QString(), 1));
+        QCOMPARE(start({}, {{0x18d1, 0x4ee7}}, false), std::pair(QString(), 1));
+        QCOMPARE(readFile(requests), QByteArray("verb devices\nusb 18d1:4ee7"));
         qunsetenv("USB_REPLY");
         /* the password dialog dismissed: it starts */
         qputenv("USB_EXIT", "126");
-        QCOMPARE(start({}, both).first, QString());
+        QCOMPARE(start({}, both, false).first, QString());
         qunsetenv("USB_EXIT");
         /* with PCI devices: one helper, USB first, the answer vfio's */
         QCOMPARE(start({"0000:01:00.0", "0000:01:00.1"}, both), std::pair(QString(), 0));
