@@ -1,5 +1,5 @@
 # Upstream's commit c6ce1ca89fb4, where the research's work starts, with that
-# work as one patch, taken at the research's commit 456b1de (the patch's
+# work as one patch, taken at the research's commit 48e6ad5 (the patch's
 # description has what it adds).  Literal, without macros: vitrine's Builds
 # window reads Version and Source0 as they are written.  The date the patch
 # was taken comes first, so that each version sorts after the one before
@@ -7,7 +7,7 @@
 # a counter after it for another one on the same day: 20261015.1 sorts after
 # 20261015, .2 after .1, the next day's date after both.
 Name:           wl-cross-domain-proxy
-Version:        0.1.0^20261112gitc6ce1ca.r456b1de
+Version:        0.1.0^20261115gitc6ce1ca.r48e6ad5
 Release:        1%{?dist}
 Summary:        Wayland proxy over virtio-gpu cross-domain, for vitrine's nested desktop
 
@@ -63,6 +63,15 @@ install -Dm 0644 %{SOURCE1} %{buildroot}%{_licensedir}/%{name}/GPL-2.0.txt
 %{_bindir}/%{name}
 
 %changelog
+* Sun Nov 15 2026 vitrine <noreply@anthropic.com> - 0.1.0^20261115gitc6ce1ca.r48e6ad5-1
+- the research's 48e6ad5: the estimate of the host's clock offset follows a
+  guest clock that runs fast (it decayed at 1000 ppm only: chrony slewing a
+  boot's offset at 83333 ppm left the presentation times up to 50 ms off,
+  and the nested KWin skipped frames for 10-20 s; 150 images a second
+  under a fast clock before, 237 now, on the user's VM)
+- the research's 12e2772: wp_presentation up to version 5 in the numbering
+  of 2026-11-15 (1.50's version 3, the commit deadline at 4, ready at 5)
+
 * Thu Nov 12 2026 vitrine <noreply@anthropic.com> - 0.1.0^20261112gitc6ce1ca.r456b1de-1
 - the research's 456b1de: input events reach the guest's apps with their
   times in the guest's clock, as the presentation times do - the pointer's,

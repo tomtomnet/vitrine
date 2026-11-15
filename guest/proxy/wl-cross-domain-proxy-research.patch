@@ -1,5 +1,5 @@
 The research's work on wl-cross-domain-proxy (virtio-gpu-desktop,
-src/wl-cross-domain-proxy at its commit 456b1de), as one diff against
+src/wl-cross-domain-proxy at its commit 48e6ad5), as one diff against
 upstream c6ce1ca89fb4, the commit it started from
 (patches/wl-cross-domain-proxy/BASE.md there).  What the nested desktop
 needs of the proxy beyond upstream: the presentation clock and the input
@@ -87,6 +87,23 @@ wrap), and zwp_relative_pointer_v1's relative motion (microseconds).  They
 carried the host compositor's monotonic clock, days ahead of the guest's:
 a wl_pointer.motion at 560151735 ms with the guest's clock at 1382680, and
 Firefox's event.timeStamp saturated.
+
+The estimate of the host's clock offset follows a guest clock that runs
+fast: the upper envelope of the last 400 ms of samples gives the rate at
+which the offset falls, and the estimate decays at that rate while it is
+over 3000 ppm and the line explains the samples better than a flat one
+(kept 5 s across rests).  It decayed at 1000 ppm only: chrony slewing a
+boot's offset at its default 83333 ppm left the presentation times up to
+50 ms off and resynchronized every 0.75 s, and the nested KWin skipped
+frames for 10-20 s (the user's VM, 2026-11-15: 150 images a second under
+a fast clock, 237 with this, 238 with a normal clock).  Steps and runs of
+late samples resynchronize as before.
+
+wp_presentation up to version 5, in the numbering of 2026-11-15:
+wayland-protocols 1.50's version 3 (the fixed_rate and variable_rate
+kinds), the host's commit deadline at 4 and content_update_ready at 5
+(they were 3 and 4).  The events keep their opcodes, which the proxy
+forwards by: a host KWin of the old numbering still gets them through.
 
 Licence: these changes are GPL-2.0-or-later (the research's, the user's
 choice of 2026-10-14); Victoria Brekenfeld's proxy stays MIT, with her
@@ -578,7 +595,7 @@ diff -ruN a/src/args.rs b/src/args.rs
 diff -ruN a/src/clock.rs b/src/clock.rs
 --- a/src/clock.rs
 +++ b/src/clock.rs
-@@ -0,0 +1,559 @@
+@@ -0,0 +1,898 @@
 +//! Translation of host presentation timestamps into the guest's clock domain.
 +//!
 +//! `wp_presentation_feedback.presented` carries the time at which the host
@@ -599,8 +616,25 @@ diff -ruN a/src/clock.rs b/src/clock.rs
 +//! time, and are late by the smallest recent delivery latency at most.
 +//! A run of samples far below the estimate means the clocks stepped apart
 +//! (for example after a VM pause), and resynchronizes the estimate.
++//!
++//! The guest's clock can also run fast for a while: chrony slews it at up to
++//! 83333 ppm (Fedora's maxslewrate) when it starts less than a second off,
++//! for 10-20 s after boot. The offset then falls by 83 ms a second, far faster
++//! than `decay_ppm`: the estimate stayed up to ~50 ms ahead, resynchronized
++//! every ~0.75 s, and the nested compositor's frame pacing collapsed
++//! (2026-11-15: Super hammered 8 times a second gave 150 images/s instead of
++//! 238). So the fall is measured as well, over the last 400 ms of samples: the
++//! upper envelope line of the samples (the line above them all with the least
++//! total gap, along the samples that came the fastest). When it falls faster
++//! than 3000 ppm and explains the samples far better than a flat line - as
++//! well as a flat line does on a steady clock - the estimate decays at that
++//! rate on top of `decay_ppm`, and an estimate left above the line (the start
++//! of a slew) is brought down to it. A step down, or a run of samples that all
++//! came late, fits no line: it stays with the max filter as before, as does a
++//! steady clock. A fall measured is kept for 5 s while the samples are too
++//! few to measure it again (the desktop resting between animations).
 +
-+use std::{cell::RefCell, rc::Rc};
++use std::{cell::RefCell, collections::VecDeque, rc::Rc};
 +
 +use log::{debug, info, warn};
 +use wayland_server::backend::protocol::{Argument, Message};
@@ -612,6 +646,25 @@ diff -ruN a/src/clock.rs b/src/clock.rs
 +const STEP_NS: i64 = 50_000_000;
 +/// Number of consecutive low samples that trigger a resynchronization.
 +const STEP_STREAK: u32 = 4;
++/// The window of recent samples the offset's fall is measured over (guest time).
++const SLOPE_WINDOW_NS: i64 = 400_000_000;
++/// Samples kept at most (a 400 ms window at 1000 Hz).
++const SLOPE_MAX_SAMPLES: usize = 400;
++/// The fewest samples in the window for a measurement (sparse samples, a desktop at rest presenting a frame now and
++/// then: the plain decay only).
++const SLOPE_MIN_SAMPLES: usize = 8;
++/// The least a falling line must lower the samples' mean gap below a flat line's.
++const FALL_MIN_GAIN_NS: i64 = 1_000_000;
++/// An estimate this far above the falling line is brought down to it.
++const LINE_MARGIN_NS: i64 = 1_000_000;
++/// A fall measured is kept this long while the samples are too few to measure it again (a desktop that rests
++/// between animations, the clock still slewing): falling too fast is harmless, the next sample pulls the estimate up.
++const FALL_HOLD_NS: i64 = 5 * NSEC_PER_SEC;
++/// A fall slower than this is taken as noise: the plain decay applies. A disciplined clock drifts by tens of ppm,
++/// ntpd and systemd-timesyncd slew at 500 ppm at most, chrony at up to 83333 ppm.
++const FALL_MIN_PPM: i64 = 3_000;
++/// The fastest fall followed.
++const FALL_MAX_PPM: i64 = 200_000;
 +
 +#[derive(Debug, Clone)]
 +pub struct ClockConfig {
@@ -637,7 +690,8 @@ diff -ruN a/src/clock.rs b/src/clock.rs
 +    }
 +}
 +
-+/// Max-filter offset estimator with slow downward decay. Pure, for testing.
++/// Max-filter offset estimator with slow downward decay that also follows a guest clock running fast. Pure, for
++/// testing.
 +#[derive(Debug, Clone)]
 +pub struct OffsetEstimator {
 +    decay_ppm: i64,
@@ -645,6 +699,69 @@ diff -ruN a/src/clock.rs b/src/clock.rs
 +    last_now: i64,
 +    low_streak: u32,
 +    pub resyncs: u64,
++    /// Recent samples (guest time, sample), oldest first, for the fall.
++    window: VecDeque<(i64, i64)>,
++    /// The fall being followed, ppm of guest time (0: none).
++    fall_ppm: i64,
++    /// Guest time the fall was last measured.
++    fall_at: i64,
++    /// The highest fall followed since `take_fall_max()`, for the statistics line.
++    fall_ppm_max: i64,
++    /// The samples' mean gap below the window's best while the clock is steady (the delivery latencies' spread):
++    /// once a window, quick down and slow up (a window over a run of late samples has a larger gap), ns.
++    steady_gap: Option<i64>,
++    /// Guest time of the last `steady_gap` update.
++    steady_at: i64,
++}
++
++/// The upper envelope line of SAMPLES (guest time, sample; in time order): the line above every sample with the
++/// least total gap to them, the edge of their upper convex hull over their mean time (linear programming clock skew
++/// estimation, Moon, Skelly and Towsley 1999; a sample's delivery latency only ever lowers it, so the line runs along
++/// the samples that came the fastest). Returns a point of the line and its slope (ppm), None for fewer than 2 samples
++/// or a hull without an edge over the mean time.
++fn upper_envelope(samples: &[(i64, i64)]) -> Option<((i64, i64), i64)> {
++    if samples.len() < 2 {
++        return None;
++    }
++    let mut hull: Vec<(i64, i64)> = Vec::with_capacity(samples.len());
++    for &p in samples {
++        while hull.len() >= 2 {
++            let (o, a) = (hull[hull.len() - 2], hull[hull.len() - 1]);
++            // a under (or on) the segment o-p: not on the upper hull
++            let cross = (a.0 - o.0) as i128 * (p.1 - o.1) as i128 - (a.1 - o.1) as i128 * (p.0 - o.0) as i128;
++            if cross >= 0 {
++                hull.pop();
++            } else {
++                break;
++            }
++        }
++        hull.push(p);
++    }
++    let t0 = samples[0].0;
++    let mean = t0 + (samples.iter().map(|&(t, _)| (t - t0) as i128).sum::<i128>() / samples.len() as i128) as i64;
++    let k = hull.windows(2).position(|e| e[0].0 <= mean && mean <= e[1].0)?;
++    let (a, b) = (hull[k], hull[k + 1]);
++    if b.0 <= a.0 {
++        return None;
++    }
++    let slope = ((b.1 - a.1) as i128 * 1_000_000 / (b.0 - a.0) as i128).clamp(i64::MIN as i128, i64::MAX as i128);
++    Some((a, slope as i64))
++}
++
++/// What the window says of the offset's fall.
++enum Fall {
++    /// Falling along this line (a point of it, its slope in ppm).
++    Line((i64, i64), i64),
++    /// Steady, rising, or a drop no line follows.
++    None,
++    /// Too few samples to tell (the fall measured last is kept for FALL_HOLD_NS).
++    TooFew,
++}
++
++/// The value at time T of the line through POINT with SLOPE (ppm).
++fn line_at(point: (i64, i64), slope_ppm: i64, t: i64) -> i64 {
++    let v = point.1 as i128 + (t - point.0) as i128 * slope_ppm as i128 / 1_000_000;
++    v.clamp(i64::MIN as i128, i64::MAX as i128) as i64
 +}
 +
 +impl OffsetEstimator {
@@ -655,6 +772,12 @@ diff -ruN a/src/clock.rs b/src/clock.rs
 +            last_now: 0,
 +            low_streak: 0,
 +            resyncs: 0,
++            window: VecDeque::with_capacity(SLOPE_MAX_SAMPLES + 1),
++            fall_ppm: 0,
++            fall_at: 0,
++            fall_ppm_max: 0,
++            steady_gap: None,
++            steady_at: i64::MIN,
 +        }
 +    }
 +
@@ -662,9 +785,22 @@ diff -ruN a/src/clock.rs b/src/clock.rs
 +        self.estimate
 +    }
 +
++    /// The fall being followed now, ppm of guest time (0: none).
++    #[cfg(test)]
++    pub fn fall_ppm(&self) -> i64 {
++        self.fall_ppm
++    }
++
++    /// The highest fall followed since the last call, ppm.
++    pub fn take_fall_max(&mut self) -> i64 {
++        std::mem::take(&mut self.fall_ppm_max)
++    }
++
 +    pub fn reset(&mut self) {
 +        self.estimate = None;
 +        self.low_streak = 0;
++        self.window.clear();
++        self.fall_ppm = 0;
 +    }
 +
 +    /// Feeds one sample (`host_timestamp - guest_now`) taken at guest time
@@ -674,9 +810,10 @@ diff -ruN a/src/clock.rs b/src/clock.rs
 +            None => sample,
 +            Some(prev) => {
 +                let elapsed = (now - self.last_now).max(0) as i128;
-+                let decay = (elapsed * self.decay_ppm as i128 / 1_000_000) as i64;
++                let ppm = self.decay_ppm as i128 + self.fall_ppm as i128;
++                let decay = (elapsed * ppm / 1_000_000).min(i64::MAX as i128) as i64;
 +                let decayed = prev.saturating_sub(decay);
-+                if sample < prev.saturating_sub(STEP_NS) {
++                if sample < decayed.saturating_sub(STEP_NS) {
 +                    self.low_streak += 1;
 +                } else {
 +                    self.low_streak = 0;
@@ -686,17 +823,92 @@ diff -ruN a/src/clock.rs b/src/clock.rs
 +                    self.resyncs += 1;
 +                    warn!(
 +                        "clock: host and guest clocks stepped apart by {:.3} ms, resynchronizing",
-+                        (prev - sample) as f64 / 1e6
++                        (decayed - sample) as f64 / 1e6
 +                    );
++                    // the window describes the clocks before the step
++                    self.window.clear();
++                    self.fall_ppm = 0;
 +                    sample
 +                } else {
 +                    decayed.max(sample)
 +                }
 +            }
 +        };
++        self.window.push_back((now, sample));
++        while self.window.len() > SLOPE_MAX_SAMPLES || self.window.front().is_some_and(|&(t, _)| now - t > SLOPE_WINDOW_NS) {
++            self.window.pop_front();
++        }
++        let est = match self.measure_fall() {
++            Fall::Line(point, slope) => {
++                // falling: the max filter decays at that rate from now on; an estimate well above the window's line
++                // was left ahead while the fall was not known yet (the start of a slew): down to the line, never
++                // below the sample (never in the future)
++                self.fall_ppm = (-slope).min(FALL_MAX_PPM);
++                self.fall_at = now;
++                let line = line_at(point, slope.max(-FALL_MAX_PPM), now);
++                if est > line.saturating_add(LINE_MARGIN_NS) {
++                    line.max(sample)
++                } else {
++                    est
++                }
++            }
++            Fall::None => {
++                self.fall_ppm = 0;
++                est
++            }
++            Fall::TooFew => {
++                if now - self.fall_at > FALL_HOLD_NS {
++                    self.fall_ppm = 0;
++                }
++                est
++            }
++        };
++        self.fall_ppm_max = self.fall_ppm_max.max(self.fall_ppm);
 +        self.estimate = Some(est);
 +        self.last_now = now;
 +        est
++    }
++
++    /// The window's envelope line when the offset falls faster than FALL_MIN_PPM along it, and the line explains the
++    /// samples much better than a flat one (its mean gap to them less than half the flat line's, by 1 ms at least)
++    /// and about as well as a flat line does while the clock is steady (the delivery latencies' own spread). A step
++    /// down, or a run of samples that all came late, is a drop no line follows (the line's gaps stay large): left to
++    /// the max filter and its resync.
++    fn measure_fall(&mut self) -> Fall {
++        let w: &[(i64, i64)] = self.window.make_contiguous();
++        let (Some(&(first, _)), Some(&(last, _))) = (w.first(), w.last()) else {
++            return Fall::TooFew;
++        };
++        if w.len() < SLOPE_MIN_SAMPLES || last - first < SLOPE_WINDOW_NS / 2 {
++            return Fall::TooFew;
++        }
++        let Some((point, slope)) = upper_envelope(w) else {
++            return Fall::None;
++        };
++        let top = w.iter().map(|&(_, s)| s).max().unwrap_or(0);
++        let n = w.len() as i128;
++        let gap_flat = (w.iter().map(|&(_, s)| (top - s) as i128).sum::<i128>() / n) as i64;
++        if slope.abs() < FALL_MIN_PPM {
++            if last.saturating_sub(self.steady_at) >= SLOPE_WINDOW_NS {
++                self.steady_at = last;
++                let g = self.steady_gap.get_or_insert(gap_flat);
++                *g += if gap_flat < *g { (gap_flat - *g) / 2 } else { (gap_flat - *g) / 16 };
++            }
++            return Fall::None;
++        }
++        if slope > 0 {
++            return Fall::None;
++        }
++        let gap_line = (w.iter().map(|&(t, s)| (line_at(point, slope, t) - s) as i128).sum::<i128>() / n) as i64;
++        if gap_flat - gap_line < (gap_flat / 2).max(FALL_MIN_GAIN_NS) {
++            return Fall::None;
++        }
++        if let Some(steady) = self.steady_gap {
++            if gap_line > steady + steady / 2 + LINE_MARGIN_NS / 2 {
++                return Fall::None;
++            }
++        }
++        Fall::Line(point, slope)
 +    }
 +}
 +
@@ -893,8 +1105,9 @@ diff -ruN a/src/clock.rs b/src/clock.rs
 +        self.stat_lag_max = self.stat_lag_max.max(lag);
 +        self.stat_lag_sum += lag as i128;
 +        if now - since >= self.cfg.log_interval_s * NSEC_PER_SEC {
++            let fall_max = self.estimator.take_fall_max();
 +            info!(
-+                "clock: offset {:+.6} s ({}), {} samples in {:.1} s, arrival lag over best min/mean/max {:.3}/{:.3}/{:.3} ms, resyncs {}",
++                "clock: offset {:+.6} s ({}), {} samples in {:.1} s, arrival lag over best min/mean/max {:.3}/{:.3}/{:.3} ms, resyncs {}{}",
 +                est as f64 / 1e9,
 +                if self.cfg.translate { "applied" } else { "NOT applied" },
 +                self.stat_n,
@@ -902,7 +1115,12 @@ diff -ruN a/src/clock.rs b/src/clock.rs
 +                self.stat_lag_min as f64 / 1e6,
 +                (self.stat_lag_sum / self.stat_n as i128) as f64 / 1e6,
 +                self.stat_lag_max as f64 / 1e6,
-+                self.estimator.resyncs
++                self.estimator.resyncs,
++                if fall_max > 0 {
++                    format!(", guest clock running fast followed (up to {fall_max} ppm)")
++                } else {
++                    String::new()
++                }
 +            );
 +            self.stat_since = Some(now);
 +            self.stat_n = 0;
@@ -921,7 +1139,7 @@ diff -ruN a/src/clock.rs b/src/clock.rs
 +                }
 +            }
 +            ("wp_presentation_feedback", "content_update_ready") => {
-+                // content_update_ready(tv_sec_hi, tv_sec_lo, tv_nsec), version 4 (ours)
++                // content_update_ready(tv_sec_hi, tv_sec_lo, tv_nsec), version 5 (ours; 4 before 2026-11-15)
 +                if let [Argument::Uint(hi), Argument::Uint(lo), Argument::Uint(nsec)] = msg.args.as_slice() {
 +                    let guest = self.host_to_guest_past(join_timestamp(*hi, *lo, *nsec));
 +                    let (hi, lo, nsec) = split_timestamp(guest);
@@ -1128,6 +1346,144 @@ diff -ruN a/src/clock.rs b/src/clock.rs
 +        let e = est.estimate().unwrap();
 +        assert!((e - 8 * NSEC_PER_SEC).abs() < 5_000_000, "estimate {e}");
 +        assert_eq!(est.resyncs, 1);
++    }
++
++    /// The estimator over presentations every PERIOD ns of guest time for SECS s, the true offset THETA(guest time
++    /// since the start), the delivery latency LAT(index, guest time since the start). Per presentation: (guest time
++    /// since the start, error of the translated timestamp: > 0 late, < 0 early); and the resyncs.
++    fn run(period: i64, secs: i64, theta: impl Fn(i64) -> i64, lat: impl Fn(u64, i64) -> i64) -> (Vec<(i64, i64)>, u64) {
++        let start = 100 * NSEC_PER_SEC;
++        let mut est = OffsetEstimator::new(1000);
++        let mut out = Vec::new();
++        for i in 0..(secs * NSEC_PER_SEC / period) as u64 {
++            let t = i as i64 * period;
++            let host = start + t + theta(t);
++            let arrival = start + t + lat(i, t);
++            let e = est.update(host - arrival, arrival);
++            let translated = host - e;
++            assert!(translated <= arrival, "translated timestamp in the future at {t}");
++            out.push((t, translated - (start + t)));
++        }
++        (out, est.resyncs)
++    }
++
++    /// Delivery latency in [0.05, 3.05) ms, independent from one sample to the next (splitmix64; `lag` above is a
++    /// sawtooth of ~92 us steps - fine for a max filter, a trend for a slope).
++    fn rand_lag(i: u64) -> i64 {
++        let mut z = i.wrapping_add(0x9E37_79B9_7F4A_7C15);
++        z = (z ^ (z >> 30)).wrapping_mul(0xBF58_476D_1CE4_E5B9);
++        z = (z ^ (z >> 27)).wrapping_mul(0x94D0_49BB_1331_11EB);
++        z ^= z >> 31;
++        50_000 + (z % 3_000_000) as i64
++    }
++
++    /// (most early, most late, mean) of the errors between FROM and TO ns.
++    fn errors(errs: &[(i64, i64)], from: i64, to: i64) -> (i64, i64, i64) {
++        let v: Vec<i64> = errs.iter().filter(|(t, _)| *t >= from && *t < to).map(|(_, e)| *e).collect();
++        let (lo, hi) = (*v.iter().min().unwrap(), *v.iter().max().unwrap());
++        (lo, hi, v.iter().sum::<i64>() / v.len() as i64)
++    }
++
++    /// chrony's default maxslewrate: the guest's clock this fast (2026-11-15: the user's boots right after start).
++    const SLEW_PPM: i64 = 83_333;
++
++    #[test]
++    fn follows_a_fast_guest_clock() {
++        for period in [4_166_667i64, 8_333_333, 16_666_667] {
++            for (name, sawtooth) in [("random", false), ("sawtooth", true)] {
++                let l = |i: u64, _| if sawtooth { lag(i) } else { rand_lag(i) };
++                let (errs, resyncs) = run(period, 20, |t| 3600 * NSEC_PER_SEC - t * SLEW_PPM / 1_000_000, l);
++                let (lo, hi, mean) = errors(&errs, NSEC_PER_SEC, 20 * NSEC_PER_SEC);
++                let (lo0, _, _) = errors(&errs, 0, NSEC_PER_SEC);
++                eprintln!("fast clock, period {period}, {name} latency: resyncs {resyncs}, first second most early {lo0}, then early {lo} late {hi} mean {mean} ns");
++                // the sawtooth's trends tilt the measured fall at 60 Hz: a looser mean
++                let mean_max = if sawtooth { 1_500_000 } else { 500_000 };
++                assert_eq!(resyncs, 0, "period {period} {name}: resyncs");
++                assert!(lo0 > -25_000_000, "period {period} {name}: first second {lo0} ns early");
++                assert!(lo > -1_000_000, "period {period} {name}: {lo} ns early");
++                assert!(hi < 3_100_000, "period {period} {name}: {hi} ns late");
++                assert!(mean.abs() < mean_max, "period {period} {name}: mean {mean} ns");
++            }
++        }
++    }
++
++    #[test]
++    fn a_slew_that_starts_and_ends() {
++        // 5 s steady, 15 s fast, 5 s steady, 240 Hz
++        let theta = |t: i64| {
++            let fast = (t - 5 * NSEC_PER_SEC).clamp(0, 15 * NSEC_PER_SEC);
++            3600 * NSEC_PER_SEC - fast * SLEW_PPM / 1_000_000
++        };
++        let (errs, resyncs) = run(4_166_667, 25, theta, |i, _| rand_lag(i));
++        let s = NSEC_PER_SEC;
++        let before = errors(&errs, s, 5 * s);
++        let onset = errors(&errs, 5 * s, 6 * s);
++        let during = errors(&errs, 6 * s, 20 * s);
++        let end = errors(&errs, 20 * s, 21 * s);
++        let after = errors(&errs, 21 * s, 25 * s);
++        eprintln!("start/end: resyncs {resyncs}; before {before:?}, onset {onset:?}, during {during:?}, end {end:?}, after {after:?}");
++        assert_eq!(resyncs, 0);
++        assert!(onset.0 > -25_000_000, "onset {onset:?}");
++        for (name, (lo, hi, mean)) in [("before", before), ("during", during), ("after", after)] {
++            assert!(lo > -1_000_000 && hi < 3_100_000 && mean < 1_000_000, "{name} ({lo}, {hi}, {mean})");
++        }
++        assert!(end.0 > -1_000_000 && end.1 < 3_100_000, "end {end:?}");
++    }
++
++    #[test]
++    fn a_slew_with_rests_between_animations() {
++        // the clock fast for 20 s; the nested desktop animates 1 s (240 Hz), then rests 1.5 s (a frame now and then)
++        let start = 100 * NSEC_PER_SEC;
++        let mut est = OffsetEstimator::new(1000);
++        let (mut t, mut i, mut worst_after_first) = (0i64, 0u64, 0i64);
++        while t < 20 * NSEC_PER_SEC {
++            let dense = t % 2_500_000_000 < NSEC_PER_SEC;
++            let host = start + t + 3600 * NSEC_PER_SEC - t * SLEW_PPM / 1_000_000;
++            let arrival = start + t + rand_lag(i);
++            let e = est.update(host - arrival, arrival);
++            // 0.5 s into each animation after the first: the estimate followed
++            if t > 2_500_000_000 && dense && t % 2_500_000_000 > 500_000_000 {
++                worst_after_first = worst_after_first.max((e - (host - (start + t))).abs());
++            }
++            t += if dense { 4_166_667 } else { 500_000_000 };
++            i += 1;
++        }
++        eprintln!("rests: resyncs {}, worst error 0.5 s into the later animations {worst_after_first} ns", est.resyncs);
++        assert!(est.resyncs <= 1, "resyncs {}", est.resyncs);
++        assert!(worst_after_first < 3_100_000, "worst {worst_after_first} ns");
++    }
++
++    #[test]
++    fn late_runs_are_not_followed() {
++        // a steady clock; every 5 s, 300 ms of samples 20 ms late (the guest's vCPU or the proxy held up): the
++        // estimate keeps to the samples before (the max filter's long memory), as without the fall
++        for (name, sawtooth) in [("random", false), ("sawtooth", true)] {
++            let late = |i: u64, t: i64| {
++                (if sawtooth { lag(i) } else { rand_lag(i) }) + if t % (5 * NSEC_PER_SEC) >= 4_700_000_000 { 20_000_000 } else { 0 }
++            };
++            let (errs, resyncs) = run(4_166_667, 30, |_| 3600 * NSEC_PER_SEC, late);
++            let all = errors(&errs, NSEC_PER_SEC, 30 * NSEC_PER_SEC);
++            eprintln!("late runs, {name} latency: resyncs {resyncs}, all {all:?}");
++            assert_eq!(resyncs, 0);
++            assert!(all.0 > -1_000, "{name}: estimate above the offset: {all:?}");
++            assert!(all.1 < 1_500_000, "{name}: followed a late run: {all:?}");
++        }
++    }
++
++    #[test]
++    fn steady_clock_unchanged() {
++        // the fall never engages on a steady clock (random latency, 240 / 120 / 60 Hz, 2 minutes)
++        for period in [4_166_667i64, 8_333_333, 16_666_667] {
++            let mut est = OffsetEstimator::new(1000);
++            let mut engaged = 0;
++            for i in 0..(120 * NSEC_PER_SEC / period) as u64 {
++                let t = 100 * NSEC_PER_SEC + i as i64 * period;
++                est.update(3600 * NSEC_PER_SEC - rand_lag(i), t + rand_lag(i));
++                engaged += (est.fall_ppm() > 0) as u32;
++            }
++            eprintln!("steady, period {period}: fall engaged on {engaged} samples");
++            assert_eq!(engaged, 0, "period {period}");
++        }
 +    }
 +
 +    #[test]
@@ -8236,7 +8592,7 @@ diff -ruN a/src/session/stats.rs b/src/session/stats.rs
 +    rx: i64,
 +    fwd: i64,
 +    inputs: Vec<i64>,
-+    /// the host's content_update_ready (presentation-time v4, ours), guest clock
++    /// the host's content_update_ready (presentation-time v5, ours; v4 before 2026-11-15), guest clock
 +    ready: Option<i64>,
 +}
 +
@@ -10927,7 +11283,7 @@ diff -ruN a/src/wl_proto/mod.rs b/src/wl_proto/mod.rs
      use wayland_protocols::wp::pointer_gestures::zv1::server::__interfaces::ZWP_POINTER_GESTURES_V1_INTERFACE;
      use wayland_protocols::wp::pointer_warp::v1::server::__interfaces::WP_POINTER_WARP_V1_INTERFACE;
 -    use wayland_protocols::wp::presentation_time::server::__interfaces::WP_PRESENTATION_INTERFACE;
-+    // version 3 (the host's commit deadline, a proposal): our own descriptors
++    // versions 3-5 (1.50's kinds; ours: the host's commit deadline at 4, ready at 5): our own descriptors
 +    use self::presentation_v3::WP_PRESENTATION_INTERFACE;
      use wayland_protocols::wp::primary_selection::zv1::server::__interfaces::ZWP_PRIMARY_SELECTION_DEVICE_MANAGER_V1_INTERFACE;
      use wayland_protocols::wp::relative_pointer::zv1::server::__interfaces::ZWP_RELATIVE_POINTER_MANAGER_V1_INTERFACE;
@@ -10941,7 +11297,7 @@ diff -ruN a/src/wl_proto/mod.rs b/src/wl_proto/mod.rs
          "wl_output" => (&WL_OUTPUT_INTERFACE, 4),
          "wl_fixes" => (&WL_FIXES_INTERFACE, 1),
 -        "wp_presentation" => (&WP_PRESENTATION_INTERFACE, 2),
-+        "wp_presentation" => (&WP_PRESENTATION_INTERFACE, 4),
++        "wp_presentation" => (&WP_PRESENTATION_INTERFACE, 5),
          "wp_viewporter" => (&WP_VIEWPORTER_INTERFACE, 1),
          "xdg_wm_base" => (&XDG_WM_BASE_INTERFACE, 7),
          "zwp_linux_dmabuf_v1" => (&ZWP_LINUX_DMABUF_V1_INTERFACE, 5),
@@ -10954,28 +11310,35 @@ diff -ruN a/src/wl_proto/mod.rs b/src/wl_proto/mod.rs
 diff -ruN a/src/wl_proto/presentation_v3.rs b/src/wl_proto/presentation_v3.rs
 --- a/src/wl_proto/presentation_v3.rs
 +++ b/src/wl_proto/presentation_v3.rs
-@@ -0,0 +1,137 @@
-+//! `wp_presentation` version 3: the wayland-protocols crate stops at version 2. Version 3 is
-+//! the proposal of wayland-protocols merge request 454 (Xaver Hugl, open as of 2026-10-07):
-+//! `wp_presentation_feedback.content_update_deadline`, sent just before `presented`, says how
-+//! long before the presentation the host compositor latched the frame - a nested compositor
-+//! (the guest's KWin) plans its next commit from it instead of guessing from frame callbacks.
+@@ -0,0 +1,148 @@
++//! `wp_presentation` versions 3 to 5: the wayland-protocols crate stops at version 2.
++//! Version 3 is wayland-protocols 1.50's (2026-11): the `fixed_rate` and `variable_rate` kinds
++//! in `presented`'s flags, no new message. Version 4 (ours) is the proposal of wayland-protocols
++//! merge request 454 (Xaver Hugl, open as of 2026-11-15; proposed there as version 3 before 1.50
++//! took that number): `wp_presentation_feedback.content_update_deadline`, sent just before
++//! `presented`, says how long before the presentation the host compositor latched the frame - a
++//! nested compositor (the guest's KWin) plans its next commit from it instead of guessing from
++//! frame callbacks (host KWin 0012-...-v4, guest KWin 0029-...-v4).
 +//!
-+//! Version 4 (experimental, ours): `content_update_ready(tv_sec_hi, tv_sec_lo, tv_nsec)`, sent
++//! Version 5 (experimental, ours): `content_update_ready(tv_sec_hi, tv_sec_lo, tv_nsec)`, sent
 +//! before the deadline - when the host first considered the content update's buffers ready, after
-+//! Michel Dänzer's proposal on the same merge request (host KWin h5, patch 0016; 2026-10-08).
++//! Michel Dänzer's proposal on the same merge request (guest KWin 0031-...v5; the host side, 0016,
++//! is on the old numbering, where it was version 4).
++//!
++//! The events keep their opcodes in either numbering, and the proxy forwards by opcode: a host
++//! KWin of the old numbering (deadline at version 3, ready at 4) still gets its events through.
 +//!
 +//! The descriptors follow what wayland-scanner generates for the XML (requests and events in
 +//! protocol order; `arg_interfaces` lists the `object` arguments, a `new_id` names its interface
-+//! in `child_interface`), with the one event added. A host without version 3 offers 2 or less,
-+//! and the proxy then offers no more to the guest.
++//! in `child_interface`), with the two events added. The proxy offers the guest the host's
++//! version, at most 5.
 +
 +use wayland_server::backend::protocol::{AllowNull, ArgumentType, Interface, MessageDesc};
 +use wayland_server::protocol::__interfaces::{WL_OUTPUT_INTERFACE, WL_SURFACE_INTERFACE};
 +
 +pub static WP_PRESENTATION_INTERFACE: Interface = Interface {
 +    name: "wp_presentation",
-+    version: 4,
++    version: 5,
 +    requests: &[
 +        MessageDesc {
 +            name: "destroy",
@@ -11007,7 +11370,7 @@ diff -ruN a/src/wl_proto/presentation_v3.rs b/src/wl_proto/presentation_v3.rs
 +
 +pub static WP_PRESENTATION_FEEDBACK_INTERFACE: Interface = Interface {
 +    name: "wp_presentation_feedback",
-+    version: 4,
++    version: 5,
 +    requests: &[],
 +    events: &[
 +        MessageDesc {
@@ -11045,7 +11408,7 @@ diff -ruN a/src/wl_proto/presentation_v3.rs b/src/wl_proto/presentation_v3.rs
 +        MessageDesc {
 +            name: "content_update_deadline",
 +            signature: &[ArgumentType::Uint],
-+            since: 3,
++            since: 4,
 +            is_destructor: false,
 +            child_interface: None,
 +            arg_interfaces: &[],
@@ -11053,7 +11416,7 @@ diff -ruN a/src/wl_proto/presentation_v3.rs b/src/wl_proto/presentation_v3.rs
 +        MessageDesc {
 +            name: "content_update_ready",
 +            signature: &[ArgumentType::Uint, ArgumentType::Uint, ArgumentType::Uint],
-+            since: 4,
++            since: 5,
 +            is_destructor: false,
 +            child_interface: None,
 +            arg_interfaces: &[],
@@ -11090,6 +11453,10 @@ diff -ruN a/src/wl_proto/presentation_v3.rs b/src/wl_proto/presentation_v3.rs
 +        assert_eq!(WP_PRESENTATION_FEEDBACK_INTERFACE.events.len(), v2::WP_PRESENTATION_FEEDBACK_INTERFACE.events.len() + 2);
 +        assert_eq!(WP_PRESENTATION_FEEDBACK_INTERFACE.events[3].name, "content_update_deadline");
 +        assert_eq!(WP_PRESENTATION_FEEDBACK_INTERFACE.events[4].name, "content_update_ready");
++        // the numbering of 2026-11-15: wayland-protocols 1.50 is version 3, the deadline 4, ready 5
++        assert_eq!(WP_PRESENTATION_FEEDBACK_INTERFACE.events[3].since, 4);
++        assert_eq!(WP_PRESENTATION_FEEDBACK_INTERFACE.events[4].since, 5);
++        assert_eq!((WP_PRESENTATION_INTERFACE.version, WP_PRESENTATION_FEEDBACK_INTERFACE.version), (5, 5));
 +    }
 +}
 diff -ruN a/src/wl_proto/socket.rs b/src/wl_proto/socket.rs
