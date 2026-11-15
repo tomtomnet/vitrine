@@ -10,7 +10,9 @@
 #                          made, VA-API's codecs; and the installed apps with the runtime each one is on
 #   kit.sh vitrine         vitrine's Mesa (repo/ beside this script: ONE build, of 25.08's recipe, for both runtimes)
 #                          in place of Flathub's GL.default//25.08, //25.08-extra, //26.08 and //26.08-extra
-#   kit.sh back            Flathub's again, and no remote vitrine-gl
+#   kit.sh back            each GL.default from the remote it came from before `vitrine` (recorded in
+#                          /var/tmp/vitrine-kit-origins; Flathub when that remote no longer has it), and no
+#                          remote vitrine-gl
 # It needs no vitrine guest tools, and leaves them alone: with tools 0.1.0-46 or later in the guest, their own
 # remote has the same name, vitrine-gl; `back` then leaves the guest without vitrine's Mesa until the tools are
 # installed again.
@@ -30,8 +32,12 @@ origin_of() { flatpak info --system --show-origin "$gl//$1" 2> /dev/null < /dev/
 refs() { flatpak list --system --runtime --columns=ref,origin 2> /dev/null < /dev/null | grep -E 'Platform(\.GL(32)?)?\.?[A-Za-z0-9_-]*/' | sed 's/^/   /'; }
 
 check() {
-	# a user manager for the sandbox: lingering when the user has no session
-	[ -d "/run/user/$uid" ] || { loginctl enable-linger "$user"; sleep 2; }
+	# a user manager for the sandbox: lingering when the user has no session, for this check only
+	local lingered=
+	if [ ! -d "/run/user/$uid" ]; then
+		loginctl enable-linger "$user" && lingered=1
+		sleep 2
+	fi
 	echo "== $1: $(. /etc/os-release; echo "$PRETTY_NAME"), kernel $(uname -r), flatpak $(flatpak --version | cut -d' ' -f2), as $user"
 	echo "   guest Mesa: $(rpm -q mesa-dri-drivers 2> /dev/null | head -n 1)   guest tools: $(rpm -q vitrine-guest-tools 2> /dev/null | head -n 1)"
 	grep -sH FLATPAK_GL_DRIVERS /etc/environment /etc/environment.d/*.conf /etc/profile.d/*.sh | sed 's/^/   /' || true
@@ -61,6 +67,7 @@ check() {
 	echo "-- $1, the apps and the runtime each is on"
 	flatpak list --system --app --columns=application,runtime 2> /dev/null < /dev/null | sed 's/^/   /'
 	flatpak list --user --app --columns=application,runtime 2> /dev/null < /dev/null | sed 's/^/   (user) /' || true
+	[ -z "$lingered" ] || loginctl disable-linger "$user"
 }
 
 case ${1:-} in
@@ -87,6 +94,10 @@ vitrine)
 		for v in "$b" "$b-extra"; do
 			o=$(origin_of "$v")
 			[ -n "$o" ] || flatpak info --system "org.freedesktop.Platform//$b" > /dev/null 2>&1 < /dev/null || continue
+			# where it came from, for `back` (the first run's: a second `vitrine` sees vitrine-gl)
+			if [ -n "$o" ] && [ "$o" != "$remote" ] && ! grep -q "^$v " /var/tmp/vitrine-kit-origins 2> /dev/null; then
+				echo "$v $o" >> /var/tmp/vitrine-kit-origins
+			fi
 			# another remote's goes first: flatpak takes no commit over a newer one of another remote
 			[ -z "$o" ] || flatpak uninstall --system -y --noninteractive "$gl//$v" < /dev/null > /dev/null
 			was=
@@ -105,13 +116,19 @@ back)
 	for b in $branches; do
 		for v in "$b" "$b-extra"; do
 			[ "$(origin_of "$v")" = "$remote" ] || continue
+			# the remote it came from, if it still has it; else Flathub
+			r=$(awk -v v="$v" '$1 == v { print $2; exit }' /var/tmp/vitrine-kit-origins 2> /dev/null)
+			if [ -z "$r" ] || ! flatpak remote-info --system "$r" "$gl//$v" > /dev/null 2>&1 < /dev/null; then
+				[ -z "$r" ] || echo "   $gl//$v came from $r, which no longer has it: Flathub's instead"
+				r=flathub
+			fi
 			flatpak uninstall --system -y --noninteractive "$gl//$v" < /dev/null > /dev/null &&
-				flatpak install --system -y --noninteractive flathub "$gl//$v" < /dev/null > /dev/null &&
-				echo "   $gl//$v: Flathub's again" || echo "   $gl//$v: COULD NOT GO BACK (flatpak install flathub $gl//$v)"
+				flatpak install --system -y --noninteractive "$r" "$gl//$v" < /dev/null > /dev/null &&
+				echo "   $gl//$v: $r's again" || echo "   $gl//$v: COULD NOT GO BACK (flatpak install $r $gl//$v)"
 		done
 	done
 	flatpak remote-delete --system --force "$remote" < /dev/null
-	rm -rf /var/tmp/vitrine-kit-repo
+	rm -rf /var/tmp/vitrine-kit-repo /var/tmp/vitrine-kit-origins
 	refs
 	;;
 *) sed -n '2,/^set /{/^#/p}' "$here/kit.sh" | sed 's/^# \{0,1\}//'; exit 2 ;;
