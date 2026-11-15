@@ -563,7 +563,7 @@ void BuildManager::startSystem(const QStringList &ids)
     /* one package, in a container with the repositories of the host's Plasma */
     const HostKde::Status host = places().system.value(ids.first());
     setCurrent(ids.first());
-    m_hostKde->start(host.target, host.plasmaFrom);
+    m_hostKde->start(host.target, host.plasmaFrom, host.version);
 }
 
 void BuildManager::partFinished(const QString &error, bool stopped)

@@ -64,7 +64,7 @@ void HostKdeBuilder::setMemoryPoll(int ms)
     m_memoryTimer->setInterval(ms);
 }
 
-void HostKdeBuilder::start(const HostKde::Target &target, const QString &plasma)
+void HostKdeBuilder::start(const HostKde::Target &target, const QString &plasma, const QString &version)
 {
     if (m_running) {
         return;
@@ -74,6 +74,7 @@ void HostKdeBuilder::start(const HostKde::Target &target, const QString &plasma)
     m_cancelled = false;
     m_stopped = false;
     m_plasma = plasma;
+    m_version = version;
     m_log.clear();
     m_partial.clear();
     m_missing.clear();
@@ -162,6 +163,9 @@ void HostKdeBuilder::run()
          << work << "-j" << QString::number(jobs);
     if (!m_plasma.isEmpty()) {
         args << "--plasma" << m_plasma;
+    }
+    if (!m_version.isEmpty()) {
+        args << "--expect" << m_version;
     }
     m_process = new QProcess(this);
     m_process->setProcessChannelMode(QProcess::MergedChannels);

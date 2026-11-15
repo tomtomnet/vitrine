@@ -13,7 +13,8 @@
 # Fedora container (rootless podman).  This only builds: install.sh
 # installs them, as root.
 #
-#   host/kde/build.sh --package PACKAGE [--plasma beta|testing|fedora] [--out DIR] [--work DIR] [-j N]
+#   host/kde/build.sh --package PACKAGE [--plasma beta|testing|fedora] [--expect VERSION] [--out DIR]
+#                     [--work DIR] [-j N]
 #   host/kde/build.sh --print-set PACKAGE VERSION | --print-recipe FEDORA PACKAGE=VERSION... |
 #                     --print-plasma | --print-inputs PACKAGE | --print-key PACKAGE | --print-deps
 #
@@ -24,10 +25,15 @@
 #                  updates-testing) or fedora [from the repository
 #                  plasma-workspace was installed from].  The container has
 #                  the same repositories for every package.
+#   --expect VERSION  the version the build is for (the app's: this computer's
+#                  Plasma for KWin, its KDE Frameworks for KSvg and Kirigami):
+#                  a build of an older release fails, rather than leaving a
+#                  build that cannot be installed
 #   --out DIR      the package's builds [${XDG_DATA_HOME:-~/.local/share}/vitrine/ID,
 #                  ID its section in components.conf: host-kwin, host-ksvg...]
 #   --work DIR     kde-rpms.sh's work folder (its VGD_BUILD) and dnf's cache,
-#                  kept for the next build, one for all the packages
+#                  kept for the next build, one for all the packages (its
+#                  copy of the repositories' metadata expired at each build)
 #                  [${XDG_CACHE_HOME:-~/.cache}/vitrine/host-kde-build]
 #   -j N           parallel jobs [nproc, at most 8]
 #   --print-set PACKAGE VERSION  the research's host set for PACKAGE VERSION:
@@ -98,6 +104,39 @@ patch_dir() {
 	bash -c 'set -eu; . "$1"; kde_patch_dir "$2"' _ "$versions" "$1"
 }
 
+# How many parts of package $1's version make a release, of the follows= line
+# of its section (KWin 3: Plasma 6.8.3; KSvg 2: KDE Frameworks 6.32); 0: all
+release_parts() {
+	awk -v s="[$(section_of "$1")]" '$0 == s { on = 1; next } /^\[/ { on = 0 }
+		on && /^follows=/ { print $2; exit }' "$here/components.conf" | grep -E '^[0-9]+$' || echo 0
+}
+
+# Whether release $1 is older than release $2, both cut to $3 parts (0: all)
+older_release() {
+	local a=$1 b=$2
+	if [ "${3:-0}" -gt 0 ]; then
+		a=$(cut -d. -f1-"$3" <<< "$a")
+		b=$(cut -d. -f1-"$3" <<< "$b")
+	fi
+	[ "$a" != "$b" ] && [ "$(printf '%s\n%s\n' "$a" "$b" | sort -V | head -n 1)" = "$a" ]
+}
+
+# The copy of the repositories' metadata that kde-rpms.sh's dnf keeps in work
+# folder $1 between builds (its container's cache, keepcache): expired, as
+# dnf5's clean expire-cache does it (an empty attrs/expired in each
+# repository's folder), so that this build takes the release the
+# repositories have now.  Within its 6 hours, or from a lagging mirror, a
+# copy listed KWin 6.8.2 after 6.8.3 was out: each build came out 6.8.2
+# again, which no longer matched the Plasma installed (2026-11-15).
+expire_metadata() {
+	local repo
+	for repo in "$1"/dnf-cache/kde-host/*/; do
+		[ -d "$repo" ] || continue
+		{ mkdir -p "$repo/attrs" && : > "$repo/attrs/expired"; } 2> /dev/null ||
+			say "warning: the cached metadata of $(basename "$repo") stays as it is"
+	done
+}
+
 # What the key of package $1 sums up: this script, the recipe's scripts and
 # the package's patches, in the C locale's order
 inputs_lines() {
@@ -150,6 +189,7 @@ check_package() {
 action=build
 package=
 plasma=
+expect=
 out=
 work=${XDG_CACHE_HOME:-$HOME/.cache}/vitrine/host-kde-build
 jobs=$(nproc)
@@ -163,6 +203,8 @@ while [ $# -gt 0 ]; do
 	--package=*) package=${1#*=} ;;
 	--plasma) plasma=${2:?--plasma needs beta, testing or fedora}; shift ;;
 	--plasma=*) plasma=${1#*=} ;;
+	--expect) expect=${2:?--expect needs a version}; shift ;;
+	--expect=*) expect=${1#*=} ;;
 	--out) out=${2:?--out needs a folder}; shift ;;
 	--out=*) out=${1#*=} ;;
 	--work) work=${2:?--work needs a folder}; shift ;;
@@ -328,6 +370,7 @@ if podman container exists "$container" 2> /dev/null; then
 fi
 rm -rf "$new"
 mkdir -p "$new"
+expire_metadata "$work"
 say "phase: preparing the container"
 env "${env[@]}" bash "$recipe/setup/tools/kde-rpms.sh" host "$new" 8>&- 9>&- &
 pid=$!
@@ -369,6 +412,14 @@ done
 [ -n "$main" ] || { rm -rf "$new"; die "no $package package came out (logs: $logs)"; }
 evr=$(rpm -qp --qf '%{VERSION}-%{RELEASE}' "$main")
 built_version=$(rpm -qp --qf '%{VERSION}' "$main")
+# an older release than the one asked for: the repositories the container
+# reached were behind this computer's (a mirror); kept, it could not be
+# installed, and building again would only make it again
+if [ -n "$expect" ] && older_release "$built_version" "$expect" "$(release_parts "$package")"; then
+	rm -rf "$new"
+	die "the repositories gave $package $built_version, and this computer has $expect: the" \
+		"mirror the build reached was behind; build it again later"
+fi
 read -r series tag _ <<< "$(set_for "$package" "$built_version")" || true
 {
 	echo "# What host/kde/build.sh built, for Vitrine"

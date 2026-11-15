@@ -48,7 +48,9 @@ install(DIRECTORY gpu-input-awake/ DESTINATION ${VITRINE_HOST_DESTINATION}/gpu-i
 install(PROGRAMS user-environment-generators/60-vitrine-kwin
     DESTINATION lib/systemd/user-environment-generators)
 
-# why a host build failed, in words (tests/kde-build-why.sh)
+# build.sh's helpers: why a host build failed, in words; the repositories'
+# metadata expired before a build; a build of an older release than asked
+# (tests/kde-build.sh)
 if(BUILD_TESTING)
-    add_test(NAME kdebuildwhy COMMAND bash ${CMAKE_CURRENT_SOURCE_DIR}/tests/kde-build-why.sh)
+    add_test(NAME kdebuild COMMAND bash ${CMAKE_CURRENT_SOURCE_DIR}/tests/kde-build.sh)
 endif()

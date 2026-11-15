@@ -43,7 +43,9 @@ public:
     bool isRunning() const { return m_running; }
     /* @target's set for this computer, the container with the repositories
        of its Plasma (beta, testing, fedora: HostKde::Status::plasmaFrom) */
-    void start(const HostKde::Target &target, const QString &plasma);
+    /* @version: what the build is for (HostKde::Status::version): one of an older release
+       fails (build.sh --expect) */
+    void start(const HostKde::Target &target, const QString &plasma, const QString &version = {});
     /* The package building, or the last one */
     HostKde::Target target() const { return m_target; }
     /* Stops build.sh and what it runs (its process group: it removes its
@@ -98,6 +100,7 @@ private:
     QString m_meminfo;
     int m_jobs = 0;
     QString m_plasma;
+    QString m_version;
     HostKde::Target m_target;
 
     bool m_running = false;

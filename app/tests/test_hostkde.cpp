@@ -1952,6 +1952,9 @@ private slots:
         QCOMPARE(runs.size(), 2);
         QVERIFY(runs[0].startsWith("--package kf6-ksvg "));
         QVERIFY(runs[1].startsWith("--package qt6-qtbase "));
+        /* each for the version its status is for: an older build than that fails in build.sh */
+        QVERIFY2(runs[0].contains(" --expect 6.31.0"), runs[0].constData());
+        QVERIFY2(runs[1].contains(" --expect 6.11.2"), runs[1].constData());
         QCOMPARE(m.progress("host-ksvg").state, BuildManager::State::Built);
         QCOMPARE(m.progress("host-qtbase").state, BuildManager::State::Built);
 
