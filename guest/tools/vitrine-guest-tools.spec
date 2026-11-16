@@ -2,7 +2,7 @@
 # exact version, and dnf takes an installed one of the same version as done.
 Name:           vitrine-guest-tools
 Version:        0.1.0
-Release:        49%{?dist}
+Release:        50%{?dist}
 Summary:        vitrine guest tools: patched virtio-gpu driver, settings and agent
 
 # the driver's sources (dkms/vendor, dkms/patches) are the kernel's: MIT
@@ -204,6 +204,10 @@ fi
 %dir %{_sharedstatedir}/%{name}
 
 %changelog
+* Mon Nov 16 2026 vitrine <noreply@anthropic.com> - 0.1.0-50
+- KWin g28v4m: the maximize animation is kept when a window is maximized by
+  dragging it to the top (the host KWin's fix for it, in the guest too)
+
 * Mon Nov 16 2026 vitrine <noreply@anthropic.com> - 0.1.0-49
 - Fedora 44's medium: Plasma 6.8.3 and KDE Frameworks 6.32 too (KWin,
   KWayland, KPipeWire 6.8.3, KSvg and Kirigami 6.32.0), as Fedora 44's

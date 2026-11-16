@@ -671,37 +671,41 @@ private slots:
         QCOMPARE(ffiPatches[0].origin, "Research");
         QVERIFY(subject(ffi, ffiPatches[0]).startsWith("rutabaga_gfx: native contexts through the FFI"));
 
-        /* a spec's Patch lines: the research's guest set g28v4 for 6.8.3 from Patch1001 (Fedora's
+        /* a spec's Patch lines: the research's guest set g28v4m for 6.8.3 from Patch1001 (Fedora's
            6.8.3-1 has no patch of its own: its Patch0 is upstream), each with its own subject */
         const Component kwin = find(all, "kwin");
         const QList<Patch> kwinPatches = patches(kwin);
-        QCOMPARE(kwinPatches.size(), 60);
+        QCOMPARE(kwinPatches.size(), 61);
         QCOMPARE(kwinPatches.first().path, "kwin/0001-Patch100-kwin-vm-frame-timing-ported-to-6.8.v2.patch");
         QCOMPARE(kwinPatches.first().number, "1001");
         QCOMPARE(kwinPatches.first().origin, "Research");
         QCOMPARE(subject(kwin, kwinPatches.first()), "Patch100 kwin-vm-frame-timing (ported to 6.8)");
         /* 6.8.3's versions of three; 0023 left out, as 6.8.3 has its fix */
-        QCOMPARE(kwinPatches[9].path, "kwin/0010-Patch109-kwin-warmup-frames-applies-with-offset.683.patch");
-        QCOMPARE(kwinPatches[36].path,
+        QCOMPARE(kwinPatches[10].path, "kwin/0010-Patch109-kwin-warmup-frames-applies-with-offset.683.patch");
+        QCOMPARE(kwinPatches[37].path,
                  "kwin/0039-EXP-renderloop-lone-frames-aimed-at-the-next-vblank.683.patch");
         QVERIFY(std::none_of(kwinPatches.begin(), kwinPatches.end(),
                              [](const Patch &p) { return p.path.contains("/0023-"); }));
+        /* the host sets' maximize fix, in the research's order (g28v4m) */
+        QCOMPARE(kwinPatches[8].number, "1009");
+        QCOMPARE(kwinPatches[8].path, "kwin/0008-upstream-maximize-size-tolerance.patch");
+        QCOMPARE(subject(kwin, kwinPatches[8]), "maximize: compare window sizes with a tolerance, not exactly");
         /* the host's content-update deadline at presentation-time version 4 (host sets h681zz and later) */
-        QCOMPARE(kwinPatches[27].number, "1028");
-        QCOMPARE(kwinPatches[27].path,
+        QCOMPARE(kwinPatches[28].number, "1029");
+        QCOMPARE(kwinPatches[28].path,
                  "kwin/0029-EXP-wayland-backend-commit-deadline-from-presentation-time-v4.patch");
-        QCOMPARE(kwinPatches[55].number, "1056");
-        QCOMPARE(subject(kwin, kwinPatches[55]),
+        QCOMPARE(kwinPatches[56].number, "1057");
+        QCOMPARE(subject(kwin, kwinPatches[56]),
                  "EXP wayland backend: the cursor handed to the host as wl_shm (KWIN_WAYLAND_SHM_CURSOR)");
-        QCOMPARE(kwinPatches[57].path,
+        QCOMPARE(kwinPatches[58].path,
                  "kwin/0096-EXP-opengl-the-GPU-s-clock-read-once-a-second-for-render-time-queries.patch");
         /* a Subject folded over two lines, read as one */
-        QCOMPARE(kwinPatches[58].number, "1059");
-        QCOMPARE(kwinPatches[58].path,
+        QCOMPARE(kwinPatches[59].number, "1060");
+        QCOMPARE(kwinPatches[59].path,
                  "kwin/0097-FIX-wayland-backend-frame-callback-and-feedback-on-the-content-layer.patch");
-        QCOMPARE(subject(kwin, kwinPatches[58]),
+        QCOMPARE(subject(kwin, kwinPatches[59]),
                  "FIX wayland backend: the frame callback and the presentation feedback on the content layer");
-        QCOMPARE(kwinPatches.last().number, "1060");
+        QCOMPARE(kwinPatches.last().number, "1061");
         QCOMPARE(kwinPatches.last().path,
                  "kwin/0098-FIX-wayland-backend-scroll-source-steps-and-direction-from-the-host.patch");
         QCOMPARE(subject(kwin, kwinPatches.last()),
@@ -824,7 +828,7 @@ private slots:
         const Source kwin = source(find(all, "kwin"));
         QVERIFY(kwin.archive.startsWith("kwin-") && kwin.archive.endsWith(".tar.xz"));
         QCOMPARE(kwin.archiveHost, "download.kde.org");
-        QCOMPARE(kwin.revision, "6.8.3-1.1.g28v4");
+        QCOMPARE(kwin.revision, "6.8.3-1.2.g28v4m");
         const Source kwayland = source(find(all, "kwayland"));
         QCOMPARE(kwayland.archive, "kwayland-6.8.3.tar.xz");
         QCOMPARE(kwayland.archiveHost, "download.kde.org");

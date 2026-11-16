@@ -1,0 +1,51 @@
+From 2898d0a2c435cac95c33db59055e5d81594f402b Mon Sep 17 00:00:00 2001
+From: research <research@localhost>
+Date: Tue, 6 Oct 2026 18:48:11 +0200
+Subject: [PATCH] maximize: compare window sizes with a tolerance, not exactly
+
+The maximize effect cancels its animation when the window is resized halfway
+through it, comparing sizes with ==. Window geometry is floating point: when a
+window is maximized by dragging it to the top edge, KWin can first report the
+maximized width as 1919.9999999999998 and correct it to 1920 right after. The
+effect takes that correction for a resize and cancels the animation, so the
+window snaps to maximized without one (5 of 62 maximizes in a test, after the
+window had been resized smaller by hand).
+---
+ src/plugins/maximize/package/contents/code/main.js | 13 +++++++++++--
+ 1 file changed, 11 insertions(+), 2 deletions(-)
+
+diff --git a/src/plugins/maximize/package/contents/code/main.js b/src/plugins/maximize/package/contents/code/main.js
+index ba58a68..3a69556 100644
+--- a/src/plugins/maximize/package/contents/code/main.js
++++ b/src/plugins/maximize/package/contents/code/main.js
+@@ -8,6 +8,15 @@
+ 
+ "use strict";
+ 
++// Window sizes are floating point; a size that differs by less than this (logical px) is the
++// same size. Real resizes change by at least 1/120 px (fractional-scale-v1), floating-point
++// noise by ~1e-13 (a maximized width of 1919.9999999999998 corrected to 1920).
++const sizeEpsilon = 0.001;
++
++function sameSize(a, b) {
++    return Math.abs(a.width - b.width) < sizeEpsilon && Math.abs(a.height - b.height) < sizeEpsilon;
++}
++
+ class MaximizeEffect {
+     constructor() {
+         effect.configChanged.connect(this.loadConfig.bind(this));
+@@ -106,9 +115,9 @@ class MaximizeEffect {
+     onWindowFrameGeometryChanged(window, oldGeometry) {
+         if (!window.maximizeAnimation1 ||
+             // Check only dimension changes.
+-            (window.geometry.width == oldGeometry.width && window.geometry.height == oldGeometry.height) ||
++            sameSize(window.geometry, oldGeometry) ||
+             // Check only if last dimension isn't equal to dimension from which effect was started (window.oldGeometry).
+-            (window.oldGeometry.width == oldGeometry.width && window.oldGeometry.height == oldGeometry.height)
++            sameSize(window.oldGeometry, oldGeometry)
+         ) {
+             return;
+         }
+-- 
+2.55.0
+

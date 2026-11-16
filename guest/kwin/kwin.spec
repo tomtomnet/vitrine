@@ -1,6 +1,6 @@
 Name:    kwin
 Version: 6.8.3
-Release: 1.1.g28v4%{?dist}
+Release: 1.2.g28v4m%{?dist}
 Summary: KDE Window manager
 
 License: BSD-2-Clause AND BSD-3-Clause AND CC0-1.0 AND GPL-2.0-only AND GPL-2.0-or-later AND GPL-3.0-only AND GPL-3.0-or-later AND LGPL-2.0-only AND LGPL-2.0-or-later AND LGPL-2.1-only AND LGPL-2.1-or-later AND LGPL-3.0-only AND (GPL-2.0-only OR GPL-3.0-only) AND (LGPL-2.1-only OR LGPL-3.0-only) AND MIT
@@ -18,8 +18,8 @@ Source10: macros.kwin.in
 
 
 ## proposed patches
-## the research's guest set g21jmc98v4-683, as g28v4 (virtio-gpu-desktop 7d18c25,
-## patches/kwin/sets/g21jmc98v4-683.series), without its 0033 (upstream in 6.8).
+## the research's guest set g21jmc98v4m-683, as g28v4m (virtio-gpu-desktop 2c22acb,
+## patches/kwin/sets/g21jmc98v4m-683.series), without its 0033 (upstream in 6.8).
 # KWin as the guest's compositor, on the VM's screen and as the nested desktop:
 # - frames paced to the host's: render timing from the CPU, a commit grace for
 #   buffers the GPU has not finished, late frames scheduled for the next vblank,
@@ -41,8 +41,11 @@ Source10: macros.kwin.in
 #   per ms (0060-0063); animations on a steady clock, one refresh in (0035, 0037)
 # - the Overview keeps its views between openings (0095); the GPU's clock read
 #   once a second for render times, as each read wakes an Intel xe GPU (0096)
+# - the maximize effect's sizes compared with a tolerance, so that a maximize by
+#   dragging a window to the top keeps its animation (0008-upstream, from the
+#   host's sets)
 # Most act only with their KWIN_* variable, which the guest tools set; 0091, 0095,
-# 0096 and 0097 act unless theirs turns them off, 0098 always.
+# 0096 and 0097 act unless theirs turns them off, 0098 and 0008-upstream always.
 Patch1001: 0001-Patch100-kwin-vm-frame-timing-ported-to-6.8.v2.patch
 Patch1002: 0002-Patch101-kwin-render-journal-variance-cap-applies-un.v2.patch
 Patch1003: 0003-Patch102-kwin-late-frame-scheduling-ported-to-6.8-re.v2.68.patch
@@ -51,58 +54,59 @@ Patch1005: 0005-Patch104-kwin-cursor-frames-estimate-ported-to-6.8-L.v2.patch
 Patch1006: 0006-Patch105-kwin-commit-grace-applies-with-offset-NB-th.patch
 Patch1007: 0007-Patch106-kwin-cursor-layer-scene-repaints-applies-wi.patch
 Patch1008: 0008-Patch107-kwin-gpu-done-from-commit-ported-to-6.8-Out.patch
-Patch1009: 0009-Patch108-kwin-watch-gpu-ported-to-6.8-uses-the-locke.patch
-Patch1010: 0010-Patch109-kwin-warmup-frames-applies-with-offset.683.patch
-Patch1011: 0011-Patch110-kwin-early-lone-frames-ported-to-6.8-wait-b.683.patch
-Patch1012: 0012-Patch112-kwin-drm-damage-clips-ported-to-6.8-endFram.patch
-Patch1013: 0013-Patch113-kwin-swapchain-min-slots-ported-to-6.8-allo.patch
-Patch1014: 0014-kwin-swapchain-wait-readers-applies-with-offset.patch
-Patch1015: 0015-kwin-dmabuf-release-wait-readers-applies-with-offset.patch
-Patch1016: 0016-Patch116-kwin-frame-slack-ported-to-6.8-the-timerfd-.patch
-Patch1017: 0017-FIX-A-Patch102-read-scheduledLate-before-the-commit-.patch
-Patch1018: 0018-FIX-B-Patch105-make-the-commit-grace-reachable-the-c.patch
-Patch1019: 0019-FIX-C-Patch108-110-watchGpu-waits-with-ppoll-until-t.patch
-Patch1020: 0020-FIX-D-Patch112-queued-buffers-recorded-only-for-comm.patch
-Patch1021: 0021-FIX-E-Patch103-111-renderedByCompositor-from-the-lay.patch
-Patch1022: 0022-FIX-F-renderloop-the-2-ms-render-time-floor-only-for.patch
-Patch1023: 0024-EXP-compositor-KWIN_CURSOR_IMAGE_IN_FRAME.68.patch
-Patch1024: 0025-EXP-wayland-backend-KWIN_WAYLAND_SAFETY_MARGIN_US.patch
-Patch1025: 0026-EXP-wayland-backend-KWIN_WAYLAND_ADAPTIVE_MARGIN.patch
-Patch1026: 0027-EXP-wayland-backend-KWIN_WAYLAND_COMMIT_TIMING.patch
-Patch1027: 0028-FIX-H-wayland-backend-match-presentation-feedback-to-its-frame.patch
-Patch1028: 0029-EXP-wayland-backend-commit-deadline-from-presentation-time-v4.patch
-Patch1029: 0030-EXP-renderloop-wayland-backend-KWIN_RENDER_TIME_FLOO.patch
-Patch1030: 0031-EXP-wayland-backend-KWIN_WAYLAND_READY-the-way-to-th.v5.patch
-Patch1031: 0032-EXP-wayland-backend-3-frames-in-flight-KWIN_WAYLAND_.patch
-Patch1032: 0034-FIX-J-wayland-backend-start-at-the-host-output-s-ref.patch
-Patch1033: 0035-EXP-effects-QML-animations-steady-animation-clock.68.patch
-Patch1034: 0036-EXP-shmclientbuffer-skip-udmabufs-when-import-disabled.patch
-Patch1035: 0037-EXP-effects-first-animation-frame-one-refresh-in.68.patch
-Patch1036: 0038-FIX-window-activate-raise-and-unrestricted-resize-is-unrestricted.patch
-Patch1037: 0039-EXP-renderloop-lone-frames-aimed-at-the-next-vblank.683.patch
-Patch1038: 0028-EXP-outputlayer-async-cursor-moves-do-not-wake-the-render-loop.68.patch
-Patch1039: 0041-EXP-wayland-backend-commit-timing-stamps-adapt-to-a-late-host.v5.patch
-Patch1040: 0042-EXP-renderloop-KWIN_RENDERLOOP_TRACE.68.patch
-Patch1041: 0043-EXP-wayland-backend-commit-timing-auto-waits-for-a-host-deadline.patch
-Patch1042: 0044-EXP-wayland-backend-no-stamp-shifting-with-a-deadline-host.patch
-Patch1043: 0045-FIX-wayland-backend-pointer-grab-on-ctrl-alt-g.patch
-Patch1044: 0046-FIX-wayland-backend-apply-the-host-s-preferred-scale-when-it-arrives.patch
-Patch1045: 0051-FIX-wayland-backend-commit-after-pointer-lock-changes.patch
-Patch1046: 0060-EXP-interactive-move-once-per-frame.68.patch
-Patch1047: 0061-EXP-plasma-window-geometry-once-per-pass.patch
-Patch1048: 0062-EXP-cursor-async-test-once.g21.patch
-Patch1049: 0063-EXP-pointer-motion-to-clients-once-per-ms.patch
-Patch1050: 0064-FIX-wayland-backend-wl_output-follows-the-presented-refresh-rate.patch
-Patch1051: 0073-EXP-wayland-backend-KWIN_WAYLAND_SCANOUT_BUFFERS.patch
-Patch1052: 0084-FIX-wayland-backend-black-background-without-single-pixel-buffers.patch
-Patch1053: 0085-FIX-wayland-backend-layer-image-description-only-when-the-color-changes.patch
-Patch1054: 0086-FIX-wayland-backend-unchanged-geometry-viewports-positions-not-resent.patch
-Patch1055: 0087-FIX-wayland-backend-frames-whose-feedback-the-host-loses-are-dropped.patch
-Patch1056: 0091-EXP-wayland-backend-cursor-as-wl_shm.patch
-Patch1057: 0095-EXP-overview-keep-the-views-between-openings.patch
-Patch1058: 0096-EXP-opengl-the-GPU-s-clock-read-once-a-second-for-render-time-queries.patch
-Patch1059: 0097-FIX-wayland-backend-frame-callback-and-feedback-on-the-content-layer.patch
-Patch1060: 0098-FIX-wayland-backend-scroll-source-steps-and-direction-from-the-host.patch
+Patch1009: 0008-upstream-maximize-size-tolerance.patch
+Patch1010: 0009-Patch108-kwin-watch-gpu-ported-to-6.8-uses-the-locke.patch
+Patch1011: 0010-Patch109-kwin-warmup-frames-applies-with-offset.683.patch
+Patch1012: 0011-Patch110-kwin-early-lone-frames-ported-to-6.8-wait-b.683.patch
+Patch1013: 0012-Patch112-kwin-drm-damage-clips-ported-to-6.8-endFram.patch
+Patch1014: 0013-Patch113-kwin-swapchain-min-slots-ported-to-6.8-allo.patch
+Patch1015: 0014-kwin-swapchain-wait-readers-applies-with-offset.patch
+Patch1016: 0015-kwin-dmabuf-release-wait-readers-applies-with-offset.patch
+Patch1017: 0016-Patch116-kwin-frame-slack-ported-to-6.8-the-timerfd-.patch
+Patch1018: 0017-FIX-A-Patch102-read-scheduledLate-before-the-commit-.patch
+Patch1019: 0018-FIX-B-Patch105-make-the-commit-grace-reachable-the-c.patch
+Patch1020: 0019-FIX-C-Patch108-110-watchGpu-waits-with-ppoll-until-t.patch
+Patch1021: 0020-FIX-D-Patch112-queued-buffers-recorded-only-for-comm.patch
+Patch1022: 0021-FIX-E-Patch103-111-renderedByCompositor-from-the-lay.patch
+Patch1023: 0022-FIX-F-renderloop-the-2-ms-render-time-floor-only-for.patch
+Patch1024: 0024-EXP-compositor-KWIN_CURSOR_IMAGE_IN_FRAME.68.patch
+Patch1025: 0025-EXP-wayland-backend-KWIN_WAYLAND_SAFETY_MARGIN_US.patch
+Patch1026: 0026-EXP-wayland-backend-KWIN_WAYLAND_ADAPTIVE_MARGIN.patch
+Patch1027: 0027-EXP-wayland-backend-KWIN_WAYLAND_COMMIT_TIMING.patch
+Patch1028: 0028-FIX-H-wayland-backend-match-presentation-feedback-to-its-frame.patch
+Patch1029: 0029-EXP-wayland-backend-commit-deadline-from-presentation-time-v4.patch
+Patch1030: 0030-EXP-renderloop-wayland-backend-KWIN_RENDER_TIME_FLOO.patch
+Patch1031: 0031-EXP-wayland-backend-KWIN_WAYLAND_READY-the-way-to-th.v5.patch
+Patch1032: 0032-EXP-wayland-backend-3-frames-in-flight-KWIN_WAYLAND_.patch
+Patch1033: 0034-FIX-J-wayland-backend-start-at-the-host-output-s-ref.patch
+Patch1034: 0035-EXP-effects-QML-animations-steady-animation-clock.68.patch
+Patch1035: 0036-EXP-shmclientbuffer-skip-udmabufs-when-import-disabled.patch
+Patch1036: 0037-EXP-effects-first-animation-frame-one-refresh-in.68.patch
+Patch1037: 0038-FIX-window-activate-raise-and-unrestricted-resize-is-unrestricted.patch
+Patch1038: 0039-EXP-renderloop-lone-frames-aimed-at-the-next-vblank.683.patch
+Patch1039: 0028-EXP-outputlayer-async-cursor-moves-do-not-wake-the-render-loop.68.patch
+Patch1040: 0041-EXP-wayland-backend-commit-timing-stamps-adapt-to-a-late-host.v5.patch
+Patch1041: 0042-EXP-renderloop-KWIN_RENDERLOOP_TRACE.68.patch
+Patch1042: 0043-EXP-wayland-backend-commit-timing-auto-waits-for-a-host-deadline.patch
+Patch1043: 0044-EXP-wayland-backend-no-stamp-shifting-with-a-deadline-host.patch
+Patch1044: 0045-FIX-wayland-backend-pointer-grab-on-ctrl-alt-g.patch
+Patch1045: 0046-FIX-wayland-backend-apply-the-host-s-preferred-scale-when-it-arrives.patch
+Patch1046: 0051-FIX-wayland-backend-commit-after-pointer-lock-changes.patch
+Patch1047: 0060-EXP-interactive-move-once-per-frame.68.patch
+Patch1048: 0061-EXP-plasma-window-geometry-once-per-pass.patch
+Patch1049: 0062-EXP-cursor-async-test-once.g21.patch
+Patch1050: 0063-EXP-pointer-motion-to-clients-once-per-ms.patch
+Patch1051: 0064-FIX-wayland-backend-wl_output-follows-the-presented-refresh-rate.patch
+Patch1052: 0073-EXP-wayland-backend-KWIN_WAYLAND_SCANOUT_BUFFERS.patch
+Patch1053: 0084-FIX-wayland-backend-black-background-without-single-pixel-buffers.patch
+Patch1054: 0085-FIX-wayland-backend-layer-image-description-only-when-the-color-changes.patch
+Patch1055: 0086-FIX-wayland-backend-unchanged-geometry-viewports-positions-not-resent.patch
+Patch1056: 0087-FIX-wayland-backend-frames-whose-feedback-the-host-loses-are-dropped.patch
+Patch1057: 0091-EXP-wayland-backend-cursor-as-wl_shm.patch
+Patch1058: 0095-EXP-overview-keep-the-views-between-openings.patch
+Patch1059: 0096-EXP-opengl-the-GPU-s-clock-read-once-a-second-for-render-time-queries.patch
+Patch1060: 0097-FIX-wayland-backend-frame-callback-and-feedback-on-the-content-layer.patch
+Patch1061: 0098-FIX-wayland-backend-scroll-source-steps-and-direction-from-the-host.patch
 
 
 # Base
@@ -384,6 +388,13 @@ sed -i \
 
 
 %changelog
+* Mon Nov 16 2026 vitrine <noreply@anthropic.com> - 6.8.3-1.2.g28v4m
+- The research's guest set g21jmc98v4m-683 as g28v4m (virtio-gpu-desktop
+  2c22acb): g28v4 with the host sets' 0008-upstream, the maximize effect
+  comparing window sizes with a tolerance. A maximize by dragging a window to
+  the top reported a width of 1919.9999999999998, then 1920; the effect took
+  that for a resize and dropped its animation.
+
 * Sun Nov 15 2026 vitrine <noreply@anthropic.com> - 6.8.3-1.1.g28v4
 - Fedora's 6.8.3-1 with the research's guest set g21jmc98v4-683 as g28v4
   (virtio-gpu-desktop 7d18c25), without its 0033: g28v4 on Plasma 6.8.3.

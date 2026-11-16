@@ -10,7 +10,7 @@
 #          for iris's, RADV's virtio probe fix; every video codec
 #   kwayland  KWayland 6.8.3 (Fedora's 6.8.3-1) + the research's set w1 (the
 #          pointer events of wl_seat versions 6 to 9), which KWin is built against
-#   kwin   KWin 6.8.3 (Fedora's 6.8.3-1) + the research's guest set g28v4 (VM
+#   kwin   KWin 6.8.3 (Fedora's 6.8.3-1) + the research's guest set g28v4m (VM
 #          frame pacing, the nested desktop): for Plasma 6.8.3 guests
 #          (guest/kwin/kwin.spec)
 #   qtbase, ksvg, kirigami  Qt 6.11.2's qtbase, KSvg and Kirigami 6.32.0 with
