@@ -86,13 +86,6 @@ class TestBuildManager : public QObject
             write(places.guestDir + "/kirigami/kf6-kirigami.spec",
                   "Name: kf6-kirigami\nVersion: 6.31.0\n") &&
             write(places.guestDir + "/mutter/mutter.spec", "Name: mutter\nVersion: 51.1\n") &&
-            /* Fedora 44's KDE packages of the release before (components.conf's -f44 sections) */
-            write(places.guestDir + "/kwayland-f44/kwayland.spec", "Name: kwayland\nVersion: 6.8.2\n") &&
-            write(places.guestDir + "/kwin-f44/kwin.spec", "Name: kwin\nVersion: 6.8.2\n") &&
-            write(places.guestDir + "/kpipewire-f44/kpipewire.spec", "Name: kpipewire\nVersion: 6.8.2\n") &&
-            write(places.guestDir + "/ksvg-f44/kf6-ksvg.spec", "Name: kf6-ksvg\nVersion: 6.31.0\n") &&
-            write(places.guestDir + "/kirigami-f44/kf6-kirigami.spec",
-                  "Name: kf6-kirigami\nVersion: 6.31.0\n") &&
             QFile::copy(GuestToolsBuilder::guestDir() + "/components.conf",
                         places.guestDir + "/components.conf");
         if (!ok) {
@@ -191,9 +184,8 @@ private slots:
         QVERIFY(m.setGuestRelease("44"));
         QCOMPARE(changed.size(), 1);
         QCOMPARE(m.guestRelease(), "44");
-        /* KDE's packages of the release before, until Fedora 44's updates have Plasma 6.8.3 */
-        QCOMPARE(guestIds(), QStringList({"tools", "mesa", "proxy", "qtbase", "kwayland-f44", "kwin-f44",
-                                          "kpipewire-f44", "ksvg-f44", "kirigami-f44", "medium"}));
+        QCOMPARE(guestIds(), QStringList({"tools", "mesa", "kwayland", "kwin", "proxy", "kpipewire",
+                                          "qtbase", "ksvg", "kirigami", "medium"}));
         /* the same again: nothing; one the tools are not made for: refused */
         QVERIFY(m.setGuestRelease("44"));
         QVERIFY(!m.setGuestRelease("43"));
@@ -276,9 +268,6 @@ private slots:
         BuildManager m;
         const Builds::Places places = setUp(m, "plan");
         QVERIFY(!places.hostDir.isEmpty());
-        /* Fedora 45's guest tools, as the app shows one release's (Fedora 44's KDE packages are
-           of the release before) */
-        QVERIFY(m.setGuestRelease("45"));
         const QStringList all = {"virglrenderer", "rutabaga_gfx", "passt",    "qemu",
                                  "tools",         "mesa",         "kwayland", "kwin",
                                  "proxy",         "kpipewire",    "qtbase",   "ksvg",
@@ -326,7 +315,6 @@ private slots:
     {
         BuildManager m;
         const Builds::Places places = setUp(m, "run");
-        QVERIFY(m.setGuestRelease("45"));
         QStringList states;
         connect(&m, &BuildManager::progressChanged, this, [&m, &states](const QString &id) {
             const QString entry = id + ' ' + QString::number(int(m.progress(id).state));

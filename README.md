@@ -139,11 +139,9 @@ files it changes, and the guest packages compile through ccache.
    packages of its desktop. Both have the virtio-gpu driver, Mesa 26.2.6, KWin
    (with the KWayland it is built against) and KPipeWire, Qt Base 6.11.2, KSvg
    and Kirigami, the nested desktop's session and proxy, and an agent: KWin
-   and KPipeWire for Plasma 6.8.3, KSvg and Kirigami 6.32.0 on Fedora 45's,
-   for Plasma 6.8.2 and KSvg and Kirigami 6.31.0 on Fedora 44's until its
-   updates have Plasma 6.8.3 (`guest/*-f44`). Fedora 45's also has Mutter 51.1
-   (Fedora 44's GNOME has Mutter 50, which the research's set is not made
-   for). Their Mesa has
+   and KPipeWire for Plasma 6.8.3, KSvg and Kirigami 6.32.0. Fedora 45's also
+   has Mutter 51.1 (Fedora 44's GNOME has Mutter 50, which the research's set
+   is not made for). Their Mesa has
    every video codec, as RPM Fusion's builds have and Fedora's has not (H.264,
    H.265, VC-1), and takes the place of RPM Fusion's freeworld drivers.
    The Builds window (also Build… in Machine > Install Guest Tools… and in
@@ -175,7 +173,7 @@ files it changes, and the guest packages compile through ccache.
    the two go in together, every installed KWayland package with them, or
    the guest keeps its KWin (a guest with 32-bit KWayland). Qt Base (qtbase
    6.11.2, with the research's shm pool reuse for resized Wayland windows),
-   KSvg and Kirigami (6.32.0 or 6.31.0, with the research's fix for Plasma's popups,
+   KSvg and Kirigami (6.32.0, with the research's fix for Plasma's popups,
    which no longer upload their frames again at each opening) replace the
    guest's only where it has that version, all of a package's subpackages or
    none, and so does Mutter (51.1, with the research's frame clock fix: after
@@ -190,12 +188,13 @@ files it changes, and the guest packages compile through ccache.
    newer release around them are a mix KDE does not release. Fedora's next
    KDE Frameworks, Plasma or Qt then waits for vitrine's next guest tools,
    which bring builds for it. A guest with Fedora's older Plasma (6.7.5,
-   which the tools held until 0.1.0-30, or 6.8.2 on Fedora 45 until 0.1.0-48)
+   which the tools held until 0.1.0-30, or 6.8.2 until 0.1.0-48 on Fedora 45
+   and 0.1.0-49 on Fedora 44)
    moves to the Plasma of the tools' KWin in the transaction that installs
    that KWin, as long as Fedora's repositories still have that Plasma;
    otherwise its KWin stays and its Plasma is no longer held. Its KDE
    Frameworks move with it, in the same transaction, to the release of the
-   tools' KSvg and Kirigami (6.31 to 6.32 with 0.1.0-48), so that none is
+   tools' KSvg and Kirigami (6.31 to 6.32 with 0.1.0-48 and -49), so that none is
    left at the release before. Where a guest got a Plasma that does not match
    the tools' KWin, the VM's Console and Details tabs say so, and installing
    the tools again repairs it. Mutter, and Qt Base, KSvg and Kirigami

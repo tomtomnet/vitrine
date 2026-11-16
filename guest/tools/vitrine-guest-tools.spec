@@ -2,7 +2,7 @@
 # exact version, and dnf takes an installed one of the same version as done.
 Name:           vitrine-guest-tools
 Version:        0.1.0
-Release:        48%{?dist}
+Release:        49%{?dist}
 Summary:        vitrine guest tools: patched virtio-gpu driver, settings and agent
 
 # the driver's sources (dkms/vendor, dkms/patches) are the kernel's: MIT
@@ -204,6 +204,11 @@ fi
 %dir %{_sharedstatedir}/%{name}
 
 %changelog
+* Mon Nov 16 2026 vitrine <noreply@anthropic.com> - 0.1.0-49
+- Fedora 44's medium: Plasma 6.8.3 and KDE Frameworks 6.32 too (KWin,
+  KWayland, KPipeWire 6.8.3, KSvg and Kirigami 6.32.0), as Fedora 44's
+  updates have them now: its guests move as Fedora 45's did with -48
+
 * Sun Nov 15 2026 vitrine <noreply@anthropic.com> - 0.1.0-48
 - Fedora 45's medium: KWin, KWayland and KPipeWire 6.8.3, KSvg and Kirigami
   6.32.0 (Fedora's 6.8.3 and 6.32.0 with the research's sets, KWin's

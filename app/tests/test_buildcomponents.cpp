@@ -195,12 +195,9 @@ private slots:
         }
         QCOMPARE(ids, QStringList({"virglrenderer", "rutabaga_gfx", "passt", "qemu", "tools", "mesa",
                                    "kwayland", "kwin", "proxy", "kpipewire", "qtbase", "ksvg",
-                                   "kirigami", "kwayland-f44", "kwin-f44", "kpipewire-f44", "ksvg-f44",
-                                   "kirigami-f44", "mutter", "flatpak", "medium"}));
-        /* Plasma 6.8.3 for Fedora 45, 6.8.2 kept for Fedora 44 until its updates have 6.8.3 */
-        QVERIFY(builtFor(find(all, "kwin"), "45") && !builtFor(find(all, "kwin"), "44"));
-        QVERIFY(builtFor(find(all, "kwin-f44"), "44") && !builtFor(find(all, "kwin-f44"), "45"));
-        QVERIFY(builtFor(find(all, "qtbase"), "44") && builtFor(find(all, "qtbase"), "45"));
+                                   "kirigami", "mutter", "flatpak", "medium"}));
+        /* Plasma 6.8.3's for both releases (Fedora 44's updates have it since 2026-11-16) */
+        QVERIFY(builtFor(find(all, "kwin"), "44") && builtFor(find(all, "kwin"), "45"));
         QCOMPARE(find(all, "qemu").kind, Kind::Host);
         QCOMPARE(find(all, "qemu").title, "QEMU");
         QCOMPARE(find(all, "qemu").deps, QStringList({"virglrenderer", "rutabaga_gfx"}));
@@ -220,8 +217,7 @@ private slots:
         QCOMPARE(find(all, "medium").kind, Kind::Medium);
         QCOMPARE(find(all, "medium").deps,
                  QStringList({"tools", "mesa", "kwayland", "kwin", "proxy", "kpipewire", "qtbase",
-                              "ksvg", "kirigami", "kwayland-f44", "kwin-f44", "kpipewire-f44", "ksvg-f44",
-                              "kirigami-f44", "mutter", "flatpak"}));
+                              "ksvg", "kirigami", "mutter", "flatpak"}));
         /* the Mesa for Flatpak apps, on every release's medium: one build, of
            freedesktop-sdk's recipe for the oldest runtime, for the later one too,
            with the Xe patch for its Mesa and guest/mesa's */
@@ -307,12 +303,11 @@ private slots:
         /* the stamp, which the app compares with the build's */
         QCOMPARE(key(find(all, "qemu"), all), StackBuilder::inputStamp(places.hostDir));
 
-        /* each release's packages: KDE's of 6.8.3 for Fedora 45, of 6.8.2 for Fedora 44 */
+        /* each release's packages: the same, and Mutter for Fedora 45 */
         for (const auto &[release, ids] :
              {std::pair<QString, QStringList>{"45", {"tools", "mesa", "kwayland", "kwin", "proxy", "kpipewire",
                                                      "qtbase", "ksvg", "kirigami", "mutter"}},
-              {"44", {"tools", "mesa", "kwayland-f44", "kwin-f44", "proxy", "kpipewire-f44", "qtbase",
-                      "ksvg-f44", "kirigami-f44"}}}) {
+              {"44", {"tools", "mesa", "kwayland", "kwin", "proxy", "kpipewire", "qtbase", "ksvg", "kirigami"}}}) {
             const QString inputs = run({places.guestDir + "/build-rpms.sh", "--print-inputs"}, &status,
                                        {"FEDORA_RELEASE=" + release});
             QCOMPARE(status, 0);
@@ -321,7 +316,6 @@ private slots:
                          qPrintable(release + ": " + inputs));
                 QCOMPARE(key(find(all, id), all), GuestToolsBuilder::inputsHash(places.guestDir, id));
             }
-            QVERIFY2(!inputs.contains(release == "45" ? "kwin-f44 " : "\nkwin "), qPrintable(inputs));
             /* Mutter's, built for Fedora 45 only */
             QVERIFY2(release == "45" || !inputs.contains("mutter "), qPrintable(inputs));
         }
@@ -716,16 +710,6 @@ private slots:
         for (const Patch &p : kwinPatches) {
             QVERIFY2(QFileInfo::exists(kwin.dir + '/' + p.path), qPrintable(p.path));
         }
-        /* Fedora 44's copy: Fedora's 6.8.2-3 with its Patch0, then the 6.8.2 set */
-        const Component kwin44 = find(all, "kwin-f44");
-        const QList<Patch> kwin44Patches = patches(kwin44);
-        QCOMPARE(kwin44Patches.size(), 62);
-        QCOMPARE(kwin44Patches.first().number, "0");
-        QCOMPARE(kwin44Patches.first().origin, "Fedora");
-        QCOMPARE(kwin44Patches.last().number, "1061");
-        for (const Patch &p : kwin44Patches) {
-            QVERIFY2(QFileInfo::exists(kwin44.dir + '/' + p.path), qPrintable(p.path));
-        }
         /* KWayland: Fedora's spec without patches of its own, the research's w1 */
         const Component kwayland = find(all, "kwayland");
         const QList<Patch> kwaylandPatches = patches(kwayland);
@@ -841,13 +825,11 @@ private slots:
         QVERIFY(kwin.archive.startsWith("kwin-") && kwin.archive.endsWith(".tar.xz"));
         QCOMPARE(kwin.archiveHost, "download.kde.org");
         QCOMPARE(kwin.revision, "6.8.3-1.1.g28v4");
-        QCOMPARE(source(find(all, "kwin-f44")).revision, "6.8.2-3.4.g28v4");
         const Source kwayland = source(find(all, "kwayland"));
         QCOMPARE(kwayland.archive, "kwayland-6.8.3.tar.xz");
         QCOMPARE(kwayland.archiveHost, "download.kde.org");
         QCOMPARE(kwayland.url, "https://invent.kde.org/plasma/kwayland");
         QCOMPARE(kwayland.revision, "6.8.3-1.1.w1");
-        QCOMPARE(source(find(all, "kwayland-f44")).revision, "6.8.2-1.1.w1");
         const Source proxy = source(find(all, "proxy"));
         QCOMPARE(proxy.archive, "wl-cross-domain-proxy-c6ce1ca.tar.gz");
         QCOMPARE(proxy.archiveHost, "codeberg.org");
@@ -866,11 +848,9 @@ private slots:
         QCOMPARE(ksvg.archiveHost, "download.kde.org");
         QCOMPARE(ksvg.url, "https://invent.kde.org/frameworks/ksvg");
         QCOMPARE(ksvg.revision, "6.32.0-1.1.k2");
-        QCOMPARE(source(find(all, "ksvg-f44")).revision, "6.31.0-1.1.k2");
         const Source kirigami = source(find(all, "kirigami"));
         QCOMPARE(kirigami.archive, "kirigami-6.32.0.tar.xz");
         QCOMPARE(kirigami.revision, "6.32.0-1.1.f1");
-        QCOMPARE(source(find(all, "kirigami-f44")).revision, "6.31.0-1.1.f1");
         /* GNOME's %{gnome_tarball_version}; the release set by hand in place of %autorelease */
         const Source mutter = source(find(all, "mutter"));
         QCOMPARE(mutter.archive, "mutter-51.1.tar.xz");
