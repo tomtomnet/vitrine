@@ -14,6 +14,9 @@
 #     when the running one's headers are gone from the repositories)
 #   - vitrine's Mesa (native context, every video codec) in place of each Mesa
 #     package installed, and of RPM Fusion's freeworld drivers
+#   - vitrine's Intel media driver (VA-API through the Xe native context) in
+#     place of RPM Fusion's intel-media-driver, where the guest has that
+#     package; nothing uses it until LIBVA_DRIVER_NAME=iHD is set
 #   - vitrine's KWin and KPipeWire, on a Plasma guest whose Plasma is the
 #     version they were built for, or Fedora's Plasma of an older version,
 #     which then moves to Fedora's Plasma of their version in the same
@@ -35,8 +38,8 @@
 #     contexts, in place of Flathub's for the runtimes the guest has, and
 #     for those installed later (libexec/flatpak-gl); --uninstall brings
 #     Flathub's back
-# then keeps Mesa, KWin, KWayland, KPipeWire and the proxy at those versions
-# (dnf versionlock), and with vitrine's KWin Qt Base (that KWin is built
+# then keeps Mesa, the Intel media driver, KWin, KWayland, KPipeWire and the
+# proxy at those versions (dnf versionlock), and with vitrine's KWin Qt Base (that KWin is built
 # against its private API), KSvg and Kirigami (as the research's dev install
 # keeps them).  With vitrine's KWin, Fedora's Plasma stays at the version
 # that KWin is built for too (its packages installed at that version):
@@ -79,7 +82,8 @@
 #          --yes        ask nothing (the default off a terminal)
 #          --uninstall  remove the tools, back to Fedora's Mesa, KWin,
 #                       KWayland, KPipeWire, Qt Base, KSvg, Kirigami and
-#                       Mutter, and Flathub's Mesa for Flatpak apps
+#                       Mutter, RPM Fusion's Intel media driver, and
+#                       Flathub's Mesa for Flatpak apps
 # The output goes to the journal too: journalctl -t vitrine-guest-tools
 set -uo pipefail
 
@@ -288,7 +292,7 @@ migrate_research() {
 if [ "$uninstall" = 1 ]; then
 	total=3
 	[ ! -d "$state/flatpak-gl" ] || total=4
-	step "Removing the version locks of Mesa, KWin, KWayland, KPipeWire, the proxy, Qt Base and Plasma"
+	step "Removing the version locks of Mesa, the Intel media driver, KWin, KWayland, KPipeWire, the proxy, Qt Base and Plasma"
 	versionlock || die "cannot edit $lockfile"
 	# before the package, which has flatpak-gl
 	if [ -d "$state/flatpak-gl" ]; then
@@ -312,6 +316,11 @@ if [ "$uninstall" = 1 ]; then
 	names=$(for s in $sources; do from_source "$s"; done | cut -d' ' -f1 | sort -u)
 	# shellcheck disable=SC2086
 	[ -z "$names" ] || dnf -y distro-sync $names || die "dnf distro-sync failed: Fedora's repositories are needed"
+	# RPM Fusion's Intel media driver again; without its repository, none
+	if rpm -q --qf '%{RELEASE}\n' intel-media-driver 2> /dev/null | grep -q '\.xe\.'; then
+		dnf -y distro-sync intel-media-driver || dnf -y remove intel-media-driver ||
+			say "WARNING: vitrine's intel-media-driver stays: dnf could not replace or remove it"
+	fi
 	# RPM Fusion's drivers that vitrine's Mesa replaced (the install recorded them)
 	freeworld=
 	[ ! -s "$state/freeworld" ] || freeworld=$(tr '\n' ' ' < "$state/freeworld")
@@ -534,6 +543,28 @@ else
 		say "Mesa: none installed (no desktop?), nothing to replace"
 	fi
 fi
+# Intel's media driver: the medium's has the Xe native context, and takes the
+# place of RPM Fusion's where the guest has that package.  Fedora's
+# libva-intel-media-driver, which desktop installs bring on any hardware, does
+# not count, and stays.  libva gives virtio_gpu Mesa's driver: this one is used
+# only with LIBVA_DRIVER_NAME=iHD (the medium's docs: guest-mesa.md of vitrine).
+# Sets media_driver, and media_driver_note what to say.
+media_driver=() media_driver_note=
+media_driver_choice() {
+	local p
+	media_driver=() media_driver_note=
+	p=$(medium_nevra intel-media-driver)
+	[ -n "$p" ] && installed intel-media-driver x86_64 || return 0
+	if installed intel-media-driver i686; then
+		# dnf wants both architectures at one version, as for Mesa
+		media_driver_note="Intel media driver: RPM Fusion's stays: this guest has its 32-bit package too"
+		return 0
+	fi
+	media_driver=("$p")
+	media_driver_note="Intel media driver: vitrine's build in place of RPM Fusion's (not used until LIBVA_DRIVER_NAME=iHD is set)"
+}
+media_driver_choice
+[ -z "$media_driver_note" ] || say "$media_driver_note"
 kwin_pkgs=()
 if [ "$use_kwin" = 1 ]; then
 	for name in $(medium_names '^kwin'); do
@@ -740,7 +771,7 @@ fi
 # GNOME's compositor (Fedora 45's medium): never locked, as said above
 take_source mutter mutter Mutter
 mutter_pkgs=("${source_pkgs[@]}")
-want+=("${mesa[@]}" "${kwin_pkgs[@]}" "${kwayland_pkgs[@]}" "${kpipewire_pkgs[@]}" "${proxy_pkgs[@]}" \
+want+=("${mesa[@]}" "${media_driver[@]}" "${kwin_pkgs[@]}" "${kwayland_pkgs[@]}" "${kpipewire_pkgs[@]}" "${proxy_pkgs[@]}" \
        "${qt_pkgs[@]}" "${ksvg_pkgs[@]}" "${kirigami_pkgs[@]}" "${mutter_pkgs[@]}")
 
 # vitrine's builds of this medium locked at the versions installed (Qt Base,
@@ -752,7 +783,7 @@ want+=("${mesa[@]}" "${kwin_pkgs[@]}" "${kwayland_pkgs[@]}" "${kpipewire_pkgs[@]
 lock_installed() {
 	local p names
 	locks=() held=() held_kf=()
-	for p in "${mesa[@]}" "${kwin_pkgs[@]}" "${kwayland_pkgs[@]}" "${kpipewire_pkgs[@]}" "${proxy_pkgs[@]}" \
+	for p in "${mesa[@]}" "${media_driver[@]}" "${kwin_pkgs[@]}" "${kwayland_pkgs[@]}" "${kpipewire_pkgs[@]}" "${proxy_pkgs[@]}" \
 	         "${qt_locked[@]}" "${kf_locked[@]}"; do
 		locks+=("$(rpm -q --qf '%{NAME}=%{EPOCHNUM}:%{VERSION}-%{RELEASE}' "$p")")
 	done

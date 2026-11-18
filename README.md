@@ -143,7 +143,10 @@ files it changes, and the guest packages compile through ccache.
    has Mutter 51.1 (Fedora 44's GNOME has Mutter 50, which the research's set
    is not made for). Their Mesa has
    every video codec, as RPM Fusion's builds have and Fedora's has not (H.264,
-   H.265, VC-1), and takes the place of RPM Fusion's freeworld drivers.
+   H.265, VC-1), and takes the place of RPM Fusion's freeworld drivers. Where
+   a guest has RPM Fusion's `intel-media-driver`, Vitrine's build of it with
+   the Xe native context replaces it, unused until `LIBVA_DRIVER_NAME=iHD` is
+   set ([Intel Xe](docs/guest-mesa.md#intel-xe)).
    The Builds window (also Build… in Machine > Install Guest Tools… and in
    Preferences) shows the guest tools of one release in full (at first the
    newest one the VMs run; a VM's Install Guest Tools… its own) and the other

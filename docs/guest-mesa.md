@@ -282,6 +282,19 @@ It also explains how the Xe backend differs from the i915 one
 (`DIFFERENCES.md`), and links the prebuilt packages for Arch and a Nix
 flake.
 
+Vitrine's guest tools carry the media driver patch as it is
+(`guest/intel-media-driver/`), on Intel's 26.3.5 built as RPM Fusion's
+`intel-media-driver` is, and put that build in place of RPM Fusion's package
+where a guest has it. It is off. libva gives the guest's `virtio_gpu` device
+Mesa's driver, and iris has no video, so `vainfo` lists no Intel codec until a
+program runs with the media driver chosen:
+
+    LIBVA_DRIVER_NAME=iHD vainfo
+
+This build has not run on an Xe GPU yet. virglrenderer's Xe renderer refuses
+submissions of several batch buffers, which the media driver may send to
+decode high resolutions on a GPU with two video engines, as an Arc Pro B50.
+
 Vitrine's guest tools carry their own copy of the Mesa patch, refreshed for
 26.2.3 (`guest/mesa/mesa-01-xe-native-context-plus-iris-upload-fix-26.2.3.patch`),
 with one change since October 2026: Xe buffers are created with

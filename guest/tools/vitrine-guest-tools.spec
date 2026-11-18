@@ -2,7 +2,7 @@
 # exact version, and dnf takes an installed one of the same version as done.
 Name:           vitrine-guest-tools
 Version:        0.1.0
-Release:        50%{?dist}
+Release:        51%{?dist}
 Summary:        vitrine guest tools: patched virtio-gpu driver, settings and agent
 
 # the driver's sources (dkms/vendor, dkms/patches) are the kernel's: MIT
@@ -204,6 +204,13 @@ fi
 %dir %{_sharedstatedir}/%{name}
 
 %changelog
+* Wed Nov 18 2026 vitrine <noreply@anthropic.com> - 0.1.0-51
+- Intel's media driver with the Xe native context on the medium: it takes the
+  place of RPM Fusion's intel-media-driver where the guest has that package,
+  and nothing uses it until LIBVA_DRIVER_NAME=iHD is set
+- About -50: the maximize animation was lost at fractional scales, most of all
+  when a maximized window was pulled down to restore it
+
 * Mon Nov 16 2026 vitrine <noreply@anthropic.com> - 0.1.0-50
 - KWin g28v4m: the maximize animation is kept when a window is maximized by
   dragging it to the top (the host KWin's fix for it, in the guest too)

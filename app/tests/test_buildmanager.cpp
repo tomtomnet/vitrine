@@ -76,6 +76,8 @@ class TestBuildManager : public QObject
             write(places.guestDir + "/tools/vitrine-guest-tools.spec",
                   "Name: vitrine-guest-tools\nVersion: 0.1.0\n") &&
             write(places.guestDir + "/mesa/mesa.spec", "Name: mesa\nVersion: 26.2.3\n") &&
+            write(places.guestDir + "/intel-media-driver/intel-media-driver.spec",
+                  "Name: intel-media-driver\nVersion: 26.3.5\n") &&
             write(places.guestDir + "/kwayland/kwayland.spec", "Name: kwayland\nVersion: 6.8.2\n") &&
             write(places.guestDir + "/kwin/kwin.spec", "Name: kwin\nVersion: 6.7.5\n") &&
             write(places.guestDir + "/proxy/wl-cross-domain-proxy.spec",
@@ -169,23 +171,27 @@ private slots:
         places.guestRelease = "45";
         m.setPlaces(places);
         QCOMPARE(m.guestRelease(), "45");
-        QCOMPARE(guestIds(), QStringList({"tools", "mesa", "kwayland", "kwin", "proxy", "kpipewire",
-                                          "qtbase", "ksvg", "kirigami", "mutter", "medium"}));
+        QCOMPARE(guestIds(), QStringList({"tools", "mesa", "intel-media-driver", "kwayland", "kwin",
+                                          "proxy", "kpipewire", "qtbase", "ksvg", "kirigami",
+                                          "mutter", "medium"}));
         /* the Mesa for Flatpak apps too, which this guest/ has not (no flatpak/) */
         QCOMPARE(m.component("medium").deps,
-                 QStringList({"tools", "mesa", "kwayland", "kwin", "proxy", "kpipewire", "qtbase",
+                 QStringList({"tools", "mesa", "intel-media-driver", "kwayland", "kwin", "proxy",
+                              "kpipewire", "qtbase",
                               "ksvg", "kirigami", "mutter", "flatpak"}));
         QVERIFY(!m.component("flatpak").isValid());
         QCOMPARE(m.plan({"medium"}),
-                 QStringList({"tools", "mesa", "kwayland", "kwin", "proxy", "kpipewire", "qtbase",
+                 QStringList({"tools", "mesa", "intel-media-driver", "kwayland", "kwin", "proxy",
+                              "kpipewire", "qtbase",
                               "ksvg", "kirigami", "mutter", "medium"}));
 
         QSignalSpy changed(&m, &BuildManager::guestReleaseChanged);
         QVERIFY(m.setGuestRelease("44"));
         QCOMPARE(changed.size(), 1);
         QCOMPARE(m.guestRelease(), "44");
-        QCOMPARE(guestIds(), QStringList({"tools", "mesa", "kwayland", "kwin", "proxy", "kpipewire",
-                                          "qtbase", "ksvg", "kirigami", "medium"}));
+        QCOMPARE(guestIds(), QStringList({"tools", "mesa", "intel-media-driver", "kwayland", "kwin",
+                                          "proxy", "kpipewire", "qtbase", "ksvg", "kirigami",
+                                          "medium"}));
         /* the same again: nothing; one the tools are not made for: refused */
         QVERIFY(m.setGuestRelease("44"));
         QVERIFY(!m.setGuestRelease("43"));
@@ -268,12 +274,11 @@ private slots:
         BuildManager m;
         const Builds::Places places = setUp(m, "plan");
         QVERIFY(!places.hostDir.isEmpty());
-        const QStringList all = {"virglrenderer", "rutabaga_gfx", "passt",    "qemu",
-                                 "tools",         "mesa",         "kwayland", "kwin",
-                                 "proxy",         "kpipewire",    "qtbase",   "ksvg",
-                                 "kirigami",      "mutter",       "medium"};
+        const QStringList all = {"virglrenderer", "rutabaga_gfx", "passt", "qemu", "tools", "mesa",
+                                 "intel-media-driver", "kwayland", "kwin", "proxy", "kpipewire",
+                                 "qtbase", "ksvg", "kirigami", "mutter", "medium"};
 
-        QCOMPARE(m.components().size(), 15);
+        QCOMPARE(m.components().size(), 16);
         /* passt, which QEMU runs, as what it is built against */
         QCOMPARE(m.plan({"qemu"}),
                  QStringList({"virglrenderer", "rutabaga_gfx", "passt", "qemu"}));
@@ -282,7 +287,8 @@ private slots:
         QCOMPARE(m.plan({"passt"}), QStringList({"passt"}));
         QCOMPARE(m.plan({"mesa"}), QStringList({"mesa", "medium"}));
         QCOMPARE(m.plan({"medium"}),
-                 QStringList({"tools", "mesa", "kwayland", "kwin", "proxy", "kpipewire", "qtbase",
+                 QStringList({"tools", "mesa", "intel-media-driver", "kwayland", "kwin", "proxy",
+                              "kpipewire", "qtbase",
                               "ksvg", "kirigami", "mutter", "medium"}));
         /* KWin with KWayland, which it is built against */
         QCOMPARE(m.plan({"kwin", "virglrenderer"}),
@@ -349,12 +355,14 @@ private slots:
             QCOMPARE(m.durations(id).size(), 1);
         }
         QCOMPARE(m.queue(), QStringList({"virglrenderer", "rutabaga_gfx", "passt", "qemu", "tools",
-                                         "mesa", "kwayland", "kwin", "proxy", "kpipewire", "qtbase",
+                                         "mesa", "intel-media-driver", "kwayland", "kwin",
+                                         "proxy", "kpipewire", "qtbase",
                                          "ksvg", "kirigami", "mutter", "medium"}));
         /* the components one after the other, each script once */
         QCOMPARE(read(places.hostDir + "/calls"), "qemu\n");
         QCOMPARE(read(places.guestDir + "/rpms-calls"),
-                 "tools\nmesa\nkwayland\nkwin\nproxy\nkpipewire\nqtbase\nksvg\nkirigami\nmutter\n");
+                 "tools\nmesa\nintel-media-driver\nkwayland\nkwin\nproxy\nkpipewire\nqtbase\nksvg\n"
+                 "kirigami\nmutter\n");
         QCOMPARE(read(places.guestDir + "/medium-calls"), "medium\n");
 
         /* each its log, kept */
@@ -386,10 +394,11 @@ private slots:
         QVERIFY(task);
         QCOMPARE(task->kind(), Task::Kind::Build);
         QCOMPARE(task->state(), Task::State::Done);
-        QCOMPARE(task->title(), "15 components built");
+        QCOMPARE(task->title(), "16 components built");
         QCOMPARE(task->text(), "Built: virglrenderer, rutabaga_gfx, passt, QEMU, "
-                               "vitrine-guest-tools, Mesa, KWayland, KWin, wl-cross-domain-proxy, "
-                               "KPipeWire, Qt Base, KSvg, Kirigami, Mutter, Guest tools medium");
+                               "vitrine-guest-tools, Mesa, Intel Media Driver, KWayland, KWin, "
+                               "wl-cross-domain-proxy, KPipeWire, Qt Base, KSvg, Kirigami, Mutter, "
+                               "Guest tools medium");
         QCOMPARE(m.focus(), "medium");
 
         /* the next run's task replaces it */

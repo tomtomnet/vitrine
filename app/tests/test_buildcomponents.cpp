@@ -194,6 +194,7 @@ private slots:
             ids << c.id;
         }
         QCOMPARE(ids, QStringList({"virglrenderer", "rutabaga_gfx", "passt", "qemu", "tools", "mesa",
+                                   "intel-media-driver",
                                    "kwayland", "kwin", "proxy", "kpipewire", "qtbase", "ksvg",
                                    "kirigami", "mutter", "flatpak", "medium"}));
         /* Plasma 6.8.3's for both releases (Fedora 44's updates have it since 2026-11-16) */
@@ -214,9 +215,18 @@ private slots:
         QCOMPARE(find(all, "mesa").kind, Kind::Package);
         QVERIFY(find(all, "mesa").heavy);
         QVERIFY(!find(all, "tools").heavy);
+        /* Intel's media driver with cmspam's patch, on every release's medium */
+        const Component media = find(all, "intel-media-driver");
+        QCOMPARE(media.kind, Kind::Package);
+        QCOMPARE(media.title, "Intel Media Driver");
+        QVERIFY(builtFor(media, "44") && builtFor(media, "45"));
+        QCOMPARE(patches(media).size(), 1);
+        QCOMPARE(patches(media).first().number, "1000");
+        QCOMPARE(patches(media).first().origin, "cmspam: the Xe native context");
         QCOMPARE(find(all, "medium").kind, Kind::Medium);
         QCOMPARE(find(all, "medium").deps,
-                 QStringList({"tools", "mesa", "kwayland", "kwin", "proxy", "kpipewire", "qtbase",
+                 QStringList({"tools", "mesa", "intel-media-driver", "kwayland", "kwin", "proxy",
+                              "kpipewire", "qtbase",
                               "ksvg", "kirigami", "mutter", "flatpak"}));
         /* the Mesa for Flatpak apps, on every release's medium: one build, of
            freedesktop-sdk's recipe for the oldest runtime, for the later one too,
@@ -305,9 +315,11 @@ private slots:
 
         /* each release's packages: the same, and Mutter for Fedora 45 */
         for (const auto &[release, ids] :
-             {std::pair<QString, QStringList>{"45", {"tools", "mesa", "kwayland", "kwin", "proxy", "kpipewire",
+             {std::pair<QString, QStringList>{"45", {"tools", "mesa", "intel-media-driver",
+                                                     "kwayland", "kwin", "proxy", "kpipewire",
                                                      "qtbase", "ksvg", "kirigami", "mutter"}},
-              {"44", {"tools", "mesa", "kwayland", "kwin", "proxy", "kpipewire", "qtbase", "ksvg", "kirigami"}}}) {
+              {"44", {"tools", "mesa", "intel-media-driver", "kwayland", "kwin", "proxy",
+                      "kpipewire", "qtbase", "ksvg", "kirigami"}}}) {
             const QString inputs = run({places.guestDir + "/build-rpms.sh", "--print-inputs"}, &status,
                                        {"FEDORA_RELEASE=" + release});
             QCOMPARE(status, 0);
