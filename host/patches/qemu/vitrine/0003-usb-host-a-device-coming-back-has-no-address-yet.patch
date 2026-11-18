@@ -1,0 +1,38 @@
+From: Vitrine
+Subject: [PATCH] usb-host: a device coming back has no address yet
+
+usb_host_handle_reset() leaves alone a device that has no address yet, so
+that the guest's reset while it enumerates a device is not a real one. But
+only usb_device_reset() clears the address, after calling that handler, and
+detaching does not: a device given by its IDs that is unplugged and comes
+back still has the address of its last connection, and the guest's first
+port reset goes to the host device, in libusb_reset_device(), with the BQL
+held. The host has only just enumerated the device. If it does not answer at
+once, the whole VM stands still for the 20 seconds and more of the kernel's
+descriptor timeouts, and the kernel holds the device's lock for as long,
+which stops any program reading the device's strings in sysfs.
+
+Clear the address when opening the device, so that a reconnect goes as the
+first connection does.
+---
+ hw/usb/host-libusb.c | 7 +++++++
+ 1 file changed, 7 insertions(+)
+
+diff --git a/hw/usb/host-libusb.c b/hw/usb/host-libusb.c
+index 629505c..c2cbc86 100644
+--- a/hw/usb/host-libusb.c
++++ b/hw/usb/host-libusb.c
+@@ -1049,6 +1049,13 @@ static int usb_host_open(USBHostDevice *s, libusb_device *dev, int hostfd)
+                  "host:%d.%d", bus_num, addr);
+     }
+ 
++    /*
++     * A device coming back is a new device: without this, the address of its
++     * last connection makes the guest's first reset a real one, see
++     * usb_host_handle_reset().
++     */
++    udev->addr = 0;
++
+     usb_device_attach(udev, &local_err);
+     if (local_err) {
+         error_report_err(local_err);

@@ -53,3 +53,4 @@ research/virtio-gpu-vblank-deadline-hold.patch
 research/virtio-gpu-vblank-deadline-callback-gate.patch
 vitrine/0001-ui-sdl2-QEMU_SDL_POLL_FOCUSED-0-is-off.patch
 vitrine/0002-virtio-vga-forward-the-display-s-frame-feedback.patch
+vitrine/0003-usb-host-a-device-coming-back-has-no-address-yet.patch

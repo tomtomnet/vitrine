@@ -156,6 +156,7 @@ Vitrine's own, on top, for the research side to take over:
 |---|---|
 | `c477e012d64d05e0652e366bebc597e919af6ec64a02e794d471cd5188b0aafd` | `0001-ui-sdl2-QEMU_SDL_POLL_FOCUSED-0-is-off.patch`: `QEMU_SDL_POLL_FOCUSED=0` is off, as `QEMU_SDL_ZERO_COPY=0` is |
 | `491a23d8114ae5a517d39c2070c1302c902ff887a734d450306fe518507d6be6` | `0002-virtio-vga-forward-the-display-s-frame-feedback.patch`: virtio-vga and virtio-vga-gl pass the display's frame feedback (the research series' `gl_presented`, `gl_flush_pending`, `gl_flush_done`, `gl_flush_fenced`, `gl_zero_copy`) to the virtio-gpu inside, as they pass the other hooks: without it the guest's vblank is not locked to the host's and its frames are never shown as they are (zero copy) with virtio-vga-gl, the card of new Linux VMs; virtio-vga-rutabaga, the nested desktop's card, shares `virtio-vga.c` and gets them too |
+| `14a70ad14277d9a6c0948c436d91d924ae71ca206585b2aa9ce63a9234353d2c` | `0003-usb-host-a-device-coming-back-has-no-address-yet.patch`: a usb-host device that reconnects has no address until the guest gives it one, so that the guest's first reset does not become a real one, which stops the VM for as long as the device takes to answer |
 
 ## virglrenderer (upstream at `aafa9bd2`)
 
