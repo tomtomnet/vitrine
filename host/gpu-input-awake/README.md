@@ -19,6 +19,10 @@ tuning instead (docs/host-tuning.md).
   rest. Measured on that card only.
 - No such GPU (in a VM, say): it waits up to 60 s for the driver's files,
   then exits without doing anything.
+- A GPU that stops answering: after a wake that fails, none for 30 s, then
+  one more try. If that fails too it exits, and stays down until the next
+  boot or `systemctl restart gpu-input-awake`: each failed wake costs about
+  200 ms and a kernel warning.
 
 It runs as root, from boot, all the time: it reads the input devices
 (`/dev/input/event*`, without grabbing them: the keys go where they went)
@@ -93,22 +97,24 @@ Remove… leaves the drop-in, which is yours: after it, the `rm` and
 
 `gpu-input-awake` and `gpu-input-awake.service` are the research's
 (virtio-gpu-desktop) `bench/tools/gpu_input_awake.py` and
-`src/host-config/gpu-input-awake.service` at commit `4ee46dd` (2026-11-07,
-the same at `fd5c043`), byte for byte, with their modes. GPL-2.0-or-later,
-as the research's README says of its files without a notice of their own.
+`src/host-config/gpu-input-awake.service` at commit `a014570` (2026-11-18),
+byte for byte, with their modes. The unit is the one of `4ee46dd`
+(2026-11-07); the script's `--wake-rt` is off unless given, and the unit does
+not give it. GPL-2.0-or-later, as the research's README says of its files
+without a notice of their own.
 
 | sha256 | file |
 |---|---|
-| `e93c081ed9b7ab47d0a37db6fe2b7ea3ed64394f2abe02c4c2ae831316aeeae6` | `gpu-input-awake` |
+| `5ca1b19205e4453af85c14ded35c9bb15689fab0f7f5a580059bb5d6c72cd14a` | `gpu-input-awake` |
 | `ad36c266a625a4c5d37bd743316f1ca480dd8c7ebe81a4a3bc307d0eaa6b97da` | `gpu-input-awake.service` |
 
-The app tells Vitrine's copy from another by these: the copy of `6c4e5ed`
-(2026-10-28), installed before, shows as another version until Install…
-replaces it. When the research's moves, take it again (`r` its repository,
+The app tells Vitrine's copy from another by these: the copies of `6c4e5ed`
+(2026-10-28) and `4ee46dd`, installed before, show as another version until
+Install… replaces them. When the research's moves, take it again (`r` its repository,
 `c` the commit) and update the table:
 
 ```sh
-r=~/Documents/virtio-gpu-desktop c=4ee46dd
+r=~/Documents/virtio-gpu-desktop c=a014570
 git -C "$r" show "$c:bench/tools/gpu_input_awake.py" > gpu-input-awake
 git -C "$r" show "$c:src/host-config/gpu-input-awake.service" > gpu-input-awake.service
 chmod 0755 gpu-input-awake && chmod 0644 gpu-input-awake.service

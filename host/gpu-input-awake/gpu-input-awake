@@ -31,7 +31,27 @@ resting above that speed is left alone) or a "pkg" reading is --stale C or more 
 controller's (which keeps updating): after a 70 W load the fan then glides down within ~50 s (2,850 -> 1,460 rpm)
 instead of holding ~3,000 rpm; nothing at rest (b50fr: pokes every 2 s cost +0.3 W). The "pkg" against "mctrl" test
 alone came late (b50fs: the memory controller cools slowly, the fan held ~2,900 rpm for 20-25 s, then fell at once).
-    sudo ./gpu_input_awake.py [--hold 0.02] [--vm-hold S] [--activity [--cpu-busy 0.5] [--vm-activity] [--gt-busy 0.1]
+--wake-rt PRIO (2026-11-10, dlk5; measured in dlk6, see the end): the open of forcewake_all returns once every GT has
+answered - ~0.85 ms from C6 on the B50, which the Xe driver spends polling each GT's acknowledge register under that
+GT's spinlock with this CPU's interrupts off (xe_force_wake_get, once per GT: the B50 has two, ~0.57 and ~0.28 ms,
+interrupts on between the two). To the scheduler the CPU runs an ordinary task: a real-time thread that
+last ran there is woken for it again (select_task_rq_rt keeps a thread's CPU unless a real-time task of its priority
+or a higher one runs there) and waits until the poll ends - under vitrine, where QEMU's and the view's threads are
+SCHED_FIFO 1, a third of a GNOME guest's keys met it, ~0.4 ms each (the host's kernel traced, tools/host_key_path.py).
+Ordinary threads are placed on an idle CPU and did not meet it on the bare desktop. With PRIO (1-99) this process is
+SCHED_FIFO at PRIO for the open alone, back to what it was right after: a real-time thread of that priority or a lower
+one woken for this CPU meanwhile is sent to another. Nothing else changes - the poll is as long, the CPU as deaf.
+dlk6 (a GNOME guest in vitrine's view, 16 runs of 80 keys, the option on in every second one): the waits gone (411 of
+648 keys' threads waited without it, 5 of 647 with it), the key's frame at QEMU 0.125 +- 0.025 ms sooner (8 pairs of
+runs of 8) with a narrower tail, ~0.1 ms at the screen (within what 1280 keys resolve); the open takes this process
+as long in both states (0.85 ms: without the option the waiting thread cuts it between the two GTs).
+A GPU that stops answering (2026-11-18, the B50 of the user's main install, findings/xe-wedge-2026-11-18.md): a wake that
+fails takes ~200 ms (50 ms per power domain that does not acknowledge) and leaves a kernel warning with its backtrace.
+It used to end this process with a traceback; systemd started it again 5 s later and the next key or temperature check
+failed the same way, 105 times in the 12 minutes before the shutdown. Now a failed wake is followed by WAKE_RETRY_S
+without any, then one last try: if the GPU answers (a GT reset brought it back) all goes on, if not this process ends
+cleanly (Restart=on-failure leaves it down) until the next boot or a restart of the service.
+    sudo ./gpu_input_awake.py [--hold 0.02] [--vm-hold S] [--wake-rt PRIO] [--activity [--cpu-busy 0.5] [--vm-activity] [--gt-busy 0.1]
                               [--activity-hold 4] [--sample 0.1] [--busy-samples 2]] [--temp-refresh 2 [--fan-above 1500]
                               [--fan-window 120] [--stale 2] [--poke-ms 20]]
                               [--forcewake PATH] [--wait 60] [--verbose]
@@ -71,6 +91,8 @@ ap.add_argument("--fan-above", type=float, default=1500.0, help="--temp-refresh:
 ap.add_argument("--fan-window", type=float, default=120.0, help="--temp-refresh: seconds after the GT last drew that --fan-above applies")
 ap.add_argument("--stale", type=float, default=2.0, help="--temp-refresh: 'pkg' this many C above 'mctrl' = stale")
 ap.add_argument("--poke-ms", type=float, default=20.0, help="--temp-refresh: milliseconds the GT is woken")
+ap.add_argument("--wake-rt", type=int, default=0, metavar="PRIO",
+                help="Xe: SCHED_FIFO at PRIO (1-99) while a wake of the GT waits with the CPU's interrupts off (0: not)")
 ap.add_argument("--forcewake", default=None, help="debugfs forcewake_all (default: the first one found)")
 ap.add_argument("--wait", type=float, default=60.0, help="seconds to wait at start for the driver's debugfs, sysfs and hwmon files")
 ap.add_argument("--verbose", action="store_true")
@@ -104,10 +126,34 @@ if backend == "amdgpu" and (a.activity or a.temp_refresh > 0):
     a.temp_refresh = 0.0
 
 
+# --wake-rt: what this process is scheduled as outside a wake, and whether it may change that at all (asked once)
+sched0 = None
+if a.wake_rt and backend == "xe":
+    try:
+        sched0 = (os.sched_getscheduler(0), os.sched_getparam(0))
+        os.sched_setscheduler(0, os.SCHED_FIFO, os.sched_param(a.wake_rt))
+        os.sched_setscheduler(0, *sched0)
+        print(f"--wake-rt {a.wake_rt}: SCHED_FIFO {a.wake_rt} for each wake of the GT", flush=True)
+    except (OSError, ValueError) as e:
+        print(f"--wake-rt {a.wake_rt}: {e} - off", flush=True)
+        sched0 = None
+
+
+def wake():
+    """The Xe's forcewake taken (its fd): the open returns once the GT has answered, this CPU's interrupts off meanwhile."""
+    if sched0 is None:
+        return os.open(fw_path, os.O_RDONLY)
+    os.sched_setscheduler(0, os.SCHED_FIFO, os.sched_param(a.wake_rt))
+    try:
+        return os.open(fw_path, os.O_RDONLY)
+    finally:
+        os.sched_setscheduler(0, *sched0)
+
+
 def hold():
     """Keep the GPU awake: the Xe's forcewake held open (its fd), or AMD's GFXOFF disallowed (True)."""
     if backend == "xe":
-        return os.open(fw_path, os.O_RDONLY)
+        return wake()
     with open(fw_path, "wb", buffering=0) as f:
         f.write((0).to_bytes(4, "little"))
     return True
@@ -119,6 +165,32 @@ def release(token):
         return
     with open(fw_path, "wb", buffering=0) as f:
         f.write((1).to_bytes(4, "little"))
+
+
+# A GPU that stopped answering (the top of this file): after a failed wake, none for this long, then the last try
+WAKE_RETRY_S = 30.0
+wake_failed = None   # when the last wake failed (time.monotonic), None while the GPU answers
+
+
+def take(wake_up):
+    """wake_up() (hold or wake) and its result; None if the GPU did not answer, or is being left alone after that."""
+    global wake_failed
+    if wake_failed is not None and time.monotonic() - wake_failed < WAKE_RETRY_S:
+        return None
+    try:
+        token = wake_up()
+    except OSError as e:
+        if wake_failed is not None:
+            print(f"the GPU still does not answer ({e}): leaving it alone until the next boot "
+                  "(or systemctl restart gpu-input-awake)", flush=True)
+            sys.exit(0)
+        print(f"the GPU does not answer ({e}): no wake for {WAKE_RETRY_S:.0f} s, then one last try", flush=True)
+        wake_failed = time.monotonic()
+        return None
+    if wake_failed is not None:
+        print("the GPU answers again", flush=True)
+        wake_failed = None
+    return token
 
 
 # SIGTERM (systemd's stop) and SIGINT (ignored by default in a background job of a non-interactive shell) end the
@@ -271,8 +343,9 @@ try:
         if got:
             last_input = now
             if fw_fd is None:
-                fw_fd = hold()
-                log("input: GPU held awake")
+                fw_fd = take(hold)
+                if fw_fd is not None:
+                    log("input: GPU held awake")
             sample = None   # a sample needs the GT free to idle
         if a.activity and now >= sample_at:
             sample_at = now + a.sample
@@ -290,8 +363,9 @@ try:
                     if busy_run >= a.busy_samples:
                         busy_run = 0
                         activity_until = now + a.activity_hold
-                        fw_fd = hold()
-                        log(f"drawing under load (CPUs {cpu:.0%} busy{', a VM running' if vm else ''}, GT {gt:.0%} out of C6): GPU held awake")
+                        fw_fd = take(hold)
+                        if fw_fd is not None:
+                            log(f"drawing under load (CPUs {cpu:.0%} busy{', a VM running' if vm else ''}, GT {gt:.0%} out of C6): GPU held awake")
                         sample = None
                         continue
                 sample = (now, busy, total, c6)
@@ -315,11 +389,12 @@ try:
                     fan = 0
                 recent = not gtidle or now - last_drawing < a.fan_window
                 if pkg - mctrl >= a.stale * 1000 or (a.fan_above > 0 and fan > a.fan_above and recent):
-                    fd = os.open(fw_path, os.O_RDONLY)
-                    time.sleep(a.poke_ms / 1000)
-                    os.close(fd)
-                    sample = None   # the poke's wake is not the GT drawing
-                    log(f"pkg {pkg / 1000:.0f} C, mctrl {mctrl / 1000:.0f} C, fan {fan} rpm: GT woken for {a.poke_ms:.0f} ms")
+                    fd = take(wake)
+                    if fd is not None:
+                        time.sleep(a.poke_ms / 1000)
+                        os.close(fd)
+                        sample = None   # the poke's wake is not the GT drawing
+                        log(f"pkg {pkg / 1000:.0f} C, mctrl {mctrl / 1000:.0f} C, fan {fan} rpm: GT woken for {a.poke_ms:.0f} ms")
         if fw_fd is not None and now >= last_input + hold_s and now >= activity_until:
             release(fw_fd)
             fw_fd = None
