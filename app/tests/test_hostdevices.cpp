@@ -4,9 +4,16 @@
 #include <QFileInfo>
 #include <QTemporaryDir>
 #include <QTest>
+#include <QThread>
 
 #include "core/hostdevices.h"
+#include "fakeusbnames.h"
 
+#include <fcntl.h>
+#include <memory>
+#include <utility>
+
+#include <sys/stat.h>
 #include <unistd.h>
 
 class TestHostDevices : public QObject
@@ -72,10 +79,7 @@ private:
         write(dir + "/idVendor", vendor + "\n");
         write(dir + "/idProduct", product + "\n");
         write(dir + "/bDeviceClass", cls + "\n");
-        if (!manufacturer.isEmpty()) {
-            write(dir + "/manufacturer", manufacturer + "\n");
-            write(dir + "/product", productName + "\n");
-        }
+        writeUsbNames(sys, bus.toInt(), dev.toInt(), manufacturer, productName);
         QDir().mkpath(sys + "/bus/usb/devices");
         link(dir, sys + "/bus/usb/devices/" + name);
     }
@@ -242,6 +246,65 @@ private slots:
             QCOMPARE(list[2].manufacturer, "Logitech, Inc.");
             QCOMPARE(list[2].product, "Unifying Receiver");
         }
+    }
+
+    /* udev's encoding, and the ID it writes for a device without strings */
+    void usbNames()
+    {
+        QTemporaryDir root;
+        const QString saved = std::exchange(sys, root.path());
+
+        usb("1-1", "2", "5", "1234", "5678", "00", "Caf\xc3\xa9 Labs", "Back\\slash Mouse");
+        usb("1-2", "2", "6", "046d", "c52b", "00");
+        write(sys + QString("/run/udev/data/c189:%1").arg(128 + 5),
+              "E:ID_VENDOR_ENC=046d\nE:ID_MODEL_ENC=c52b\nE:ID_VENDOR=ignored\n");
+        const QList<UsbDevice> list = HostDevices::usbDevices(sys);
+        sys = saved;
+
+        QCOMPARE(list.size(), 2);
+        QCOMPARE(list[0].manufacturer, QString::fromUtf8("Caf\xc3\xa9 Labs"));
+        QCOMPARE(list[0].product, "Back\\slash Mouse");
+        QVERIFY(list[1].manufacturer != "046d");
+        QVERIFY(list[1].product != "c52b");
+    }
+
+    /*
+     * The kernel holds a USB device's lock through a reset, and what reads
+     * its strings or its configuration in sysfs waits for it: FIFOs here, that
+     * nothing writes.  The UI thread lists the devices, and must not wait.
+     */
+    void usbListWaitsForNoDevice()
+    {
+        QTemporaryDir root;
+        const QString saved = std::exchange(sys, root.path());
+        QStringList fifos;
+
+        usb("1-1", "1", "2", "1234", "5678", "00", "Maker", "Thing");
+        for (const char *name : {"manufacturer", "product", "serial", "configuration",
+                                 "bConfigurationValue", "bNumInterfaces", "bmAttributes",
+                                 "bMaxPower", "descriptors"}) {
+            fifos << sys + "/devices/usb/1-1/" + name;
+            QCOMPARE(::mkfifo(QFile::encodeName(fifos.last()).constData(), 0600), 0);
+        }
+        QList<UsbDevice> list;
+        const QString where = sys;
+        sys = saved;
+        const std::unique_ptr<QThread> reader(
+            QThread::create([&list, where]() { list = HostDevices::usbDevices(where); }));
+        reader->start();
+        const bool finished = reader->wait(5000);
+        /* a reader stuck in one gets its end, and goes on to the next */
+        while (!reader->wait(20)) {
+            for (const QString &fifo : std::as_const(fifos)) {
+                const int fd = ::open(QFile::encodeName(fifo).constData(), O_WRONLY | O_NONBLOCK);
+                if (fd >= 0) {
+                    ::close(fd);
+                }
+            }
+        }
+        QVERIFY2(finished, "the device list waited for a file that waits for the device");
+        QCOMPARE(list.size(), 1);
+        QCOMPARE(list[0].displayName(), "Maker Thing (1234:5678)");
     }
 
     /* What the host uses of a device: vitrine-helper does not take it from its driver */

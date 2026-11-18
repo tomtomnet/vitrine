@@ -31,6 +31,7 @@
 #include "core/qmpclient.h"
 #include "core/usbhotplug.h"
 #include "core/vmrunner.h"
+#include "fakeusbnames.h"
 #include "fakeusbqemu.h"
 
 static bool writeFile(const QString &path, const QByteArray &data)
@@ -119,10 +120,7 @@ private:
         writeFile(dir + "/idVendor", vendor + "\n");
         writeFile(dir + "/idProduct", product + "\n");
         writeFile(dir + "/bDeviceClass", "00\n");
-        if (!manufacturer.isEmpty()) {
-            writeFile(dir + "/manufacturer", manufacturer + "\n");
-            writeFile(dir + "/product", productName + "\n");
-        }
+        writeUsbNames(m_sys, bus, address, manufacturer, productName);
         QDir().mkpath(m_sys + "/bus/usb/devices");
         QFile::link(dir, m_sys + "/bus/usb/devices/" + name);
         writeFile(m_dev + QString::asprintf("/bus/usb/%03d/%03d", bus, address), {});

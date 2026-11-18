@@ -38,7 +38,6 @@ struct UsbDevice
     quint16 productId = 0;
     QString manufacturer;
     QString product;
-    QString serial;
     bool isHub = false;
     quint8 deviceClass = 0;         // bDeviceClass, 0 when its interfaces tell
     QList<quint8> interfaceClasses; // bInterfaceClass of each, e.g. 0x03 HID

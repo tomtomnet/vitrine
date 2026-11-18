@@ -28,6 +28,7 @@
 #include "core/usbhotplug.h"
 #include "core/vmrunner.h"
 #include "core/vmstore.h"
+#include "fakeusbnames.h"
 #include "fakeusbqemu.h"
 #include "ui/usbaccess.h"
 #include "ui/usbchoices.h"
@@ -102,10 +103,7 @@ private:
         writeFile(dir + "/idVendor", vendor + "\n");
         writeFile(dir + "/idProduct", product + "\n");
         writeFile(dir + "/bDeviceClass", deviceClass + "\n");
-        if (!manufacturer.isEmpty()) {
-            writeFile(dir + "/manufacturer", manufacturer + "\n");
-            writeFile(dir + "/product", productName + "\n");
-        }
+        writeUsbNames(m_sys, bus, address, manufacturer, productName);
         writeFile(dir + ":1.0/bInterfaceClass", interfaceClass + "\n");
         QDir().mkpath(m_sys + "/bus/usb/devices");
         QFile::link(dir, m_sys + "/bus/usb/devices/" + name);

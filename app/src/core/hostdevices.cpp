@@ -10,6 +10,8 @@
 #include <QSet>
 
 #include <algorithm>
+#include <tuple>
+#include <utility>
 
 #include <sys/resource.h>
 #include <sys/stat.h>
@@ -140,6 +142,58 @@ quint32 readHex(const QString &path)
         text.remove(0, 2);
     }
     return text.toUInt(nullptr, 16);
+}
+
+/* "2.4G\x20Receiver" for "2.4G Receiver": how udev writes what is not plain */
+QString udevDecoded(const QByteArray &text)
+{
+    QByteArray out;
+
+    for (qsizetype i = 0; i < text.size(); i++) {
+        bool ok = false;
+        const int byte = text.mid(i, 2) == "\\x" ? text.mid(i + 2, 2).toInt(&ok, 16) : 0;
+        if (ok) {
+            out += char(byte);
+            i += 3;
+        } else {
+            out += text[i];
+        }
+    }
+    return QString::fromUtf8(out).trimmed();
+}
+
+/*
+ * The manufacturer and product strings of @dev, from udev's database (under
+ * a fake /sys for the tests).  Not from their files in sysfs: reading those
+ * waits for the device's lock, which the kernel holds through a reset, many
+ * seconds for a device slow to answer, and this runs on the UI thread.  Empty
+ * until udev has seen the device, and for one without strings, for which
+ * udev writes its ID.
+ */
+std::pair<QString, QString> usbStrings(const QString &sysfs, const UsbDevice &dev)
+{
+    const QString data = sysfs == "/sys" ? QStringLiteral("/run/udev/data")
+                                         : sysfs + "/run/udev/data";
+    QFile f(QString("%1/c189:%2").arg(data).arg((dev.bus - 1) * 128 + dev.device - 1));
+    QString manufacturer, product;
+
+    if (dev.bus <= 0 || dev.device <= 0 || !f.open(QIODevice::ReadOnly)) {
+        return {};
+    }
+    for (const QByteArray &line : f.readAll().split('\n')) {
+        if (line.startsWith("E:ID_VENDOR_ENC=")) {
+            manufacturer = udevDecoded(line.mid(16));
+        } else if (line.startsWith("E:ID_MODEL_ENC=")) {
+            product = udevDecoded(line.mid(15));
+        }
+    }
+    if (manufacturer == QString::asprintf("%04x", dev.vendorId)) {
+        manufacturer.clear();
+    }
+    if (product == QString::asprintf("%04x", dev.productId)) {
+        product.clear();
+    }
+    return {manufacturer, product};
 }
 
 /* The name of what the symlink @path points to */
@@ -301,9 +355,7 @@ QList<UsbDevice> usbDevices(const QString &sysfs)
         dev.device = readText(path + "devnum").toInt();
         dev.vendorId = quint16(readHex(path + "idVendor"));
         dev.productId = quint16(readHex(path + "idProduct"));
-        dev.manufacturer = readText(path + "manufacturer");
-        dev.product = readText(path + "product");
-        dev.serial = readText(path + "serial");
+        std::tie(dev.manufacturer, dev.product) = usbStrings(sysfs, dev);
         dev.deviceClass = quint8(readHex(path + "bDeviceClass"));
         dev.isHub = dev.deviceClass == 0x09;
         dev.interfaceClasses = interfaces.value(name);
